@@ -20,6 +20,7 @@ from tolokaforge.core.budgets import LimitHitMarker, make_budget
 from tolokaforge.core.dry_run import load_tasks_for_dry_run, materialize_dry_run_sample
 from tolokaforge.core.duration import parse_duration
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
+from tolokaforge.core.grading.corpus_curation import CurationError, curate_corpus
 from tolokaforge.core.grading.replay import (
     KnowledgeSearchMode,
     ReplayOutcomeStatus,
@@ -86,6 +87,7 @@ from tolokaforge.dx.banners import (
     print_run_end_banner,
     print_run_start_banner,
 )
+from tolokaforge.dx.curation_render import render_curation
 from tolokaforge.dx.dry_run_render import render_dry_run
 from tolokaforge.dx.live_panel import LiveRunDisplay
 from tolokaforge.dx.rubric_migration_render import render_reconcile_report
@@ -210,6 +212,7 @@ class _GroupedCommandsGroup(click.Group):
         "status": "Runs",
         "analyze": "Runs",
         "browse": "Runs",
+        "curate": "Runs",
         "reconcile": "Runs",
         "rejudge": "Runs",
         "retrace": "Runs",
@@ -1170,6 +1173,111 @@ def retrace(
     )
     if any(o.status is TraceReplayOutcomeStatus.FAILED for o in outcomes):
         raise SystemExit(1)
+
+
+def _named_exclusions(
+    ctx: click.Context, param: click.Parameter, value: tuple[str, ...]
+) -> dict[Path, str]:
+    """Parse ``--exclude <bundle-dir>=<reason>`` into the paths and the reasons given."""
+    exclusions: dict[Path, str] = {}
+    for item in value:
+        directory, separator, reason = item.partition("=")
+        if not (separator and directory and reason.strip()):
+            raise click.BadParameter(
+                f"{item!r} is not <bundle-dir>=<reason>. An exclusion is the author's own "
+                "judgment about one bundle, and the corpus records the reason beside the path",
+                ctx=ctx,
+                param=param,
+            )
+        exclusions[Path(directory)] = reason.strip()
+    return exclusions
+
+
+@cli.command(name="curate")
+@click.option(
+    "--source",
+    "sources",
+    required=True,
+    multiple=True,
+    type=click.Path(exists=True, file_okay=False),
+    help=(
+        "Recorded run dir (trials/<task>/<idx> subtree) or a single bundle dir; repeatable, "
+        "because a corpus is often assembled from several runs. A directory is a bundle iff "
+        "it directly contains trajectory.yaml."
+    ),
+)
+@click.option(
+    "--into",
+    required=True,
+    type=click.Path(file_okay=False),
+    help="Corpus directory to write. A multi-part corpus is a directory of corpora: one "
+    "invocation per part, each with its own --into.",
+)
+@click.option(
+    "--criterion",
+    required=True,
+    help="Rubric criterion id the corpus carries the judge's recorded verdicts for.",
+)
+@click.option(
+    "--exclude",
+    "exclusions",
+    multiple=True,
+    metavar="DIR=REASON",
+    callback=_named_exclusions,
+    help="Reject one discovered bundle by the author's own judgment, recorded in the "
+    "manifest as 'by: author' with this reason; repeatable.",
+)
+@click.option(
+    "--replace",
+    is_flag=True,
+    help="Rewrite the whole --into directory. Without it, a destination that already holds "
+    "a corpus.yaml is an error.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Classify every discovered bundle and report what would be curated, writing nothing.",
+)
+def curate(
+    sources: tuple[str, ...],
+    into: str,
+    criterion: str,
+    exclusions: dict[Path, str],
+    replace: bool,
+    dry_run: bool,
+):
+    """Write a judge-labelled corpus from recorded runs, spending nothing.
+
+    A bundle enters the corpus iff it carries task.yaml, trajectory.yaml and grade.yaml,
+    its judge completed, its criterion_results holds a verdict for --criterion, and it is
+    not environment-dead — carrying a tool-call record whose calls all failed. Every trial
+    that does not enter is named with its reason, and both halves are written into the
+    corpus's own corpus.yaml, so the composition outlives the run directories it came from.
+
+    Exits non-zero when no bundle is admitted. See docs/RUBRIC_MIGRATION.md.
+    """
+    source_paths = [Path(source) for source in sources]
+    console.print(
+        f"[bold blue]Curating {criterion} from {len(source_paths)} source(s)...[/bold blue]"
+    )
+    try:
+        outcome = curate_corpus(
+            sources=source_paths,
+            into=Path(into),
+            criterion=criterion,
+            exclusions=exclusions,
+            replace=replace,
+            dry_run=dry_run,
+        )
+    except CurationError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    render_curation(outcome, dry_run=dry_run, console=console)
+    if not outcome.manifest.bundles:
+        raise click.ClickException(
+            f"no bundle under {', '.join(str(source) for source in source_paths)} is admissible "
+            f"evidence for {criterion} — a corpus of nothing is evidence of nothing"
+        )
 
 
 @cli.command(name="reconcile")

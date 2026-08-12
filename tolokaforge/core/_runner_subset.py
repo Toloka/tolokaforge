@@ -118,6 +118,7 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/grading/agreement.py",
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/config_validation.py",
+    "tolokaforge/core/grading/corpus_curation.py",
     "tolokaforge/core/grading/migration_declaration.py",
     "tolokaforge/core/grading/replay.py",
     "tolokaforge/core/grading/replay_layout.py",
@@ -139,11 +140,13 @@ orchestrator does that before handing a :class:`TrialRunner` to the
 conductor, and the runner-side wire protocol carries only the resolved
 per-turn artefacts.
 
-Six grading-side files (``core.grading.combine``, ``core.grading.replay``,
+Seven grading-side files (``core.grading.combine``,
+``core.grading.corpus_curation``, ``core.grading.replay``,
 ``core.grading.rubric_migration``, ``core.grading.state_checks``,
 ``core.grading.trace_replay``, ``core.tools.user_tools``) reach
-orchestrator-only siblings (``core.output.artifacts``, ``core.utils.diff``,
-``core.env_state``, ``adapters._task_loader``) — including any of these in
+orchestrator-only siblings (``core.output.artifacts``, ``core.output_writer``,
+``core.utils.diff``, ``core.env_state``, ``adapters._task_loader``) —
+including any of these in
 the subset would drag those orchestrator-only surfaces along with them, or
 fail at import time inside the runner container. The remaining six
 (``core.grading.agreement``, ``core.grading.config_validation``,

@@ -272,6 +272,62 @@ therefore satisfied by *declaring* a map, and this is where the declared map is 
 entry declaring the identity map on a criterion the judge scored below `1.0` reports the judge
 component **rising**, which is the accepted residual made visible rather than trusted.
 
+## Building a corpus
+
+`tolokaforge curate` turns recorded runs into a corpus. It spends nothing, writes only under
+`--into`, and states the composition it chose in the corpus's own `corpus.yaml`, so a reader
+can check the choice after the run directories behind it are gone — `results/` is gitignored,
+and the runs behind the corpus committed here are on nobody's disk.
+
+```bash
+# One half of a corpus, from three runs of the same arm.
+tolokaforge curate --criterion checked_duplicates_first \
+  --source results/<run-a> --source results/<run-b> --source results/<run-c> \
+  --into tests/data/migration_corpora/<criterion>/met --dry-run
+```
+
+| Flag | Meaning |
+|---|---|
+| `--source` | A recorded run dir (`trials/<task>/<idx>` subtree) or a single bundle dir; repeatable, because a corpus is usually assembled from several runs. Discovery is the one bundle identity every offline command uses: a directory is a bundle iff it directly holds `trajectory.yaml`. |
+| `--into` | The corpus directory to write. |
+| `--criterion` | The rubric criterion id whose recorded verdicts the corpus carries. |
+| `--exclude` | `<bundle-dir>=<reason>`; repeatable. The author's own judgment about one bundle, recorded in the manifest as `by: author` with the reason. |
+| `--replace` | Rewrite the whole `--into` directory. Without it, a destination already holding a `corpus.yaml` is an error — a corpus is never a half-refresh. |
+| `--dry-run` | Classify every discovered bundle and report, writing nothing. |
+
+**A bundle is admitted iff** it carries `task.yaml`, `trajectory.yaml` and `grade.yaml`; its
+`grade.yaml` records `judge_status: completed`; its `criterion_results` holds a verdict for
+`--criterion`; and it is not environment-dead. Every bundle that is not admitted is named on
+the console and in the manifest with its reason and the observation behind it. A run that
+admits nothing writes nothing and exits non-zero, naming the sources it searched.
+
+**Environment-dead is defined on the record, not on rendered text.** A bundle is
+environment-dead iff it carries a `tool_log.yaml`, that record holds at least one call, and
+**no** call has `status: success`: the trial's tools never worked and the judge scored a
+transcript of failures. `TraceEvent.status` comes from that record alone, and the `role: tool`
+message's `Error: ` prefix is harness-rendered rather than a field — so a **record-less**
+bundle is *not* rejected by this rule, because the claim would need evidence the bundle does
+not carry. Each admitted bundle's manifest entry carries `record_carried`, which says where
+the rule could reach.
+
+**The write set is the five files a differential reads** — `task.yaml`, `trajectory.yaml`,
+`grade.yaml`, `tools_schemas.yaml`, `metrics.yaml` — **plus `tool_log.yaml` wherever the
+source bundle had one**. A corpus is record-carrying exactly when its sources were, which is
+what a constraint reading `status`, `executor` or `latency_seconds` needs (see
+[The committed corpus](#the-committed-corpus)). Bundle directories are named
+`<run-id>_trial<index>`, uniformly; one run's two tasks share a trial index, so curating both
+into one corpus is refused rather than silently collapsed.
+
+`corpus.yaml` names the criterion, the task ids, the source runs, the curation time, every
+admitted bundle (its directory, source run, task id, agent and judge models, the judge's
+recorded `met`, and whether a record travelled with it) and every rejection (its source path,
+reason, `by: rule | author` and the observation behind it — `tool_calls: 6, succeeded: 0`).
+
+**A multi-part corpus is a directory whose subdirectories are corpora**, each written by its
+own invocation with its own `--into`. Nothing in the command knows about halves: `reconcile`
+discovers bundles recursively, so pointing it at the parent or at one part both work, and a
+one-sided part stays a corpus a reader can point a command at on its own.
+
 ## The committed corpus
 
 `tests/data/migration_corpora/notes_duplicate_check/` is the repo's judge-labelled corpus:

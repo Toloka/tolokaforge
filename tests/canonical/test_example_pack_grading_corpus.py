@@ -275,7 +275,7 @@ def _grading_config(task_yaml: Path) -> tuple[str, GradingConfig]:
 # Directories under ``tests/data`` holding recorded ``TaskDescription`` artifacts: a
 # bundle's own copy of the config the trial was graded under. They are not authored
 # packs, nothing may edit them, and a guard over authoring must not read them.
-_RECORDED_ARTIFACT_DIRS = ("output/trials", "migration_corpora")
+_RECORDED_ARTIFACT_DIRS = ("output/trials", "migration_corpora", "curation_runs")
 
 # The authored task files that load no grading config, so a pack losing its grading
 # block shows up as a guard failure rather than as a silent absence. The three

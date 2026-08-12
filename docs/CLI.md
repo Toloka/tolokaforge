@@ -376,7 +376,7 @@ Current mapping:
 
 | Section    | Commands                                     |
 |------------|----------------------------------------------|
-| Runs       | `analyze`, `browse`, `prepare`, `reconcile`, `rejudge`, `retrace`, `run`, `status`, `worker` |
+| Runs       | `analyze`, `browse`, `curate`, `prepare`, `reconcile`, `rejudge`, `retrace`, `run`, `status`, `worker` |
 | Tasks      | `validate`                                   |
 | Docker     | `docker`                                     |
 | Config     | `config`                                     |
@@ -389,6 +389,7 @@ Abbreviated transcript of the `Commands:` region:
 Runs:
   analyze    Analyze a single trial trajectory.
   browse     Open a run's output directory in the OS default handler.
+  curate     Write a judge-labelled corpus from recorded runs, spending...
   prepare    Prepare a queue-backed run directory for distributed workers.
   reconcile  Check a pack's declared rubric migration against recorded...
   rejudge    Re-judge the rubric stage of recorded trials offline...
