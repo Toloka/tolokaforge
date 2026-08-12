@@ -104,6 +104,13 @@ When the plan is written, return a structured handoff:
 - **Discovered issues filed:** #<n>, #<m> (or "None.")
 - **Discovered issues to fix in this PR:** <bullets, or "None.">
 - **Risks / open questions:** <bullets, or "None.">
+
+## Decisions needed before implementation
+<Enumerate every yes/no, contract-shape, or fork-in-the-road choice the plan makes or postpones. One line each, with a default recommendation the user can accept by silence. This block is load-bearing: overnight runs stall when a subagent hits a decision that could have been settled at plan approval. Ask more here, not less.>
+
+- **<Decision label>** — <question, plain-English>. Default: <recommended choice>. Impact if reversed: <one line>.
+- ...
+- If genuinely no decisions: write "None — mechanical change."
 ```
 
 Stop. Do not create the branch. Do not launch other agents. Do not start opening a PR. Main takes it from here — expect it to route your plan through `plan-critic` before the user sees it.
