@@ -22,6 +22,24 @@ logger = logging.getLogger(__name__)
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
+ImageSource = Literal["auto", "pull", "build"]
+"""Where a first-party service image comes from at ``tolokaforge run`` time.
+
+``auto`` — pull the published image (``tolokasoft1/tolokaforge-<svc>:<version>``)
+when running from a wheel install and the engine reports a concrete
+version; build locally otherwise (source checkout, unknown version). On
+pull failure in ``auto`` mode the code falls back to a local build with
+a warning naming the exact reason.
+
+``pull`` — always pull. On pull failure this is a hard failure; no
+fallback. The knob is only useful if the caller genuinely wants "pull
+or die".
+
+``build`` — always build locally. Skip pull entirely. The escape hatch
+for contributors editing Dockerfiles or debugging image content, and
+for environments that never touch Docker Hub.
+"""
+
 
 class DockerConfig(BaseModel):
     """Configuration for Docker foundation layer operations.
@@ -36,6 +54,8 @@ class DockerConfig(BaseModel):
         default_memory_limit: Default memory limit for containers (e.g., "256m", "1g").
         default_cpu_limit: Default CPU limit for containers (e.g., 0.5, 2.0).
         log_level: Logging level for docker operations.
+        image_source: Where first-party service images come from ("auto", "pull",
+            or "build"). See :data:`ImageSource` for the full semantics.
 
     Example:
         >>> config = DockerConfig(
@@ -72,6 +92,14 @@ class DockerConfig(BaseModel):
     log_level: LogLevel = Field(
         default="INFO",
         description="Logging level for docker operations",
+    )
+    image_source: ImageSource = Field(
+        default="auto",
+        description=(
+            "Where first-party service images come from. auto = pull on wheel "
+            "installs, build on source checkouts; pull = always pull (hard fail "
+            "on error); build = always build."
+        ),
     )
 
     model_config = {
