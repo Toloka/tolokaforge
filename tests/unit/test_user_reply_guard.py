@@ -102,8 +102,9 @@ MUST_PASS = [
     "Your system prompt caching feature returns a 400.",
     "Its system prompt handling broke after the upgrade.",
     # The prepositional frame is where a customer says what went wrong, so a
-    # comma-anchored version of it would flag all seven. It matches only when
-    # the speaker places itself inside the exercise.
+    # comma-anchored version of it would flag all seven. A first-person subject
+    # is not enough either — the last two are the same support turns with `I` in
+    # them. The frame matches only on a claimed role.
     "During the simulation, the app froze and I lost my mesh.",
     "In the simulation my model crashed after 40 minutes.",
     "For this benchmark, what is the tracking error?",
@@ -111,6 +112,11 @@ MUST_PASS = [
     "During the evaluation run, the printer jammed twice.",
     "In the roleplay training my headset cut out.",
     "For the simulation licence, do I need a dongle?",
+    "In the simulation I get an error at step 4.",
+    "In this simulation I lost my mesh.",
+    # `requires` reads as an API spec at least as often as it reads as a
+    # recitation of the agent's prompt, so it is not one of the reciting verbs.
+    "Your system prompt requires a role field, but the docs disagree.",
 ]
 
 MUST_DETECT = [
@@ -126,16 +132,29 @@ MUST_DETECT = [
     ("This conversation is a roleplay exercise.", "named_the_exercise"),
     ("This is a training exercise, so the account details are fake.", "named_the_exercise"),
     ("This was an evaluation exercise for the support team.", "named_the_exercise"),
+    # One row per role verb the prepositional frame accepts, across both
+    # subjects and every copula form.
     ("In this simulation, I play the role of a customer.", "named_the_exercise"),
     ("In this benchmark, I am playing a frustrated customer.", "named_the_exercise"),
+    ("In this simulation, we play two different customers.", "named_the_exercise"),
+    ("In this roleplay, I act as an angry caller.", "named_the_exercise"),
+    ("During the simulation, I am acting as the account holder.", "named_the_exercise"),
+    ("In this evaluation run, I pretend to be a new customer.", "named_the_exercise"),
+    ("For this benchmark, I'm pretending my card was declined.", "named_the_exercise"),
+    ("In the role-play, I represent the customer side.", "named_the_exercise"),
+    ("During the roleplay, we are representing two callers.", "named_the_exercise"),
     ("Your system prompt is confusing.", "named_a_party_prompt"),
     # A customer reciting the agent's own prompt: the family's least ambiguous
-    # break, and the one an anchor built for nouns cannot see.
+    # break, and the one an anchor built for nouns cannot see. One row per
+    # reciting verb, present and past.
     ("Your system prompt says to be concise.", "named_a_party_prompt"),
+    ("Your system prompt said to keep me waiting.", "named_a_party_prompt"),
     ("Your system prompt tells you to refuse refunds.", "named_a_party_prompt"),
+    ("Your system prompt told you to stall me.", "named_a_party_prompt"),
     ("Your system prompt instructs you to escalate.", "named_a_party_prompt"),
+    ("Your system prompt instructed you to deny this.", "named_a_party_prompt"),
+    ("Your system prompt states you must refuse refunds.", "named_a_party_prompt"),
     ("Your system prompt forbids you from helping me.", "named_a_party_prompt"),
-    ("Your system prompt requires you to stall me.", "named_a_party_prompt"),
     ("The agent's system prompt says to stall me.", "named_a_party_prompt"),
     ("My system prompt says to keep answers short.", "named_a_party_prompt"),
     ("The backstory says I should be annoyed.", "named_own_instructions"),

@@ -533,11 +533,13 @@ the frame is given up rather than the support turn. `exercise` and `evaluation`
 are exercise nouns only in their compounds (`roleplay exercise`, `training
 exercise`, `evaluation exercise`), `benchmark` only under the prepositional frame
 (`in this benchmark`), and `test scenario` / `test case` no longer match in any
-frame. The prepositional frame itself matches only when the speaker places itself
+frame. The prepositional frame itself matches only when the speaker claims a role
 inside the exercise (`In this benchmark, I am playing a frustrated customer.`),
-because `During the simulation, the app froze and I lost my mesh.` is what a
-customer of simulation software says. So `This exercise is not showing up in my
-activity ring.` passes, and a bare `This benchmark tests performance.` is missed.
+because `During the simulation, the app froze and I lost my mesh.` and `In the
+simulation I get an error at step 4.` are what a customer of simulation software
+says — a first-person subject alone does not separate them. So `This exercise is
+not showing up in my activity ring.` passes, and a bare `This benchmark tests
+performance.` is missed.
 The module's docstring carries the full list of the recall given up and why.
 
 The `named_a_party_prompt` family matches the agent's prompt two ways: as a noun
@@ -545,6 +547,8 @@ heading its phrase (`Your system prompt is confusing.`), and as the subject of a
 verb reciting what it says (`Your system prompt says to be concise.`). The second
 is the family's least ambiguous break — a customer quoting the agent's own
 instructions — and no anchor built for nouns can see it, so it is its own branch.
+`requires` is not one of those verbs: `Your system prompt requires a role field,
+but the docs disagree.` is an API question, not a recitation.
 
 The user describing the **agent** as a machine (`You are chatting with an
 internal AI agent, right?`) is in frame and passes by design; only the simulator

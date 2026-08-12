@@ -41,12 +41,14 @@ often enough that the demonstrative head cannot separate them:
   release."`` are ordinary support turns. Only the compounds (``roleplay
   exercise``, ``training exercise``, ``evaluation exercise``) survive, so a bare
   ``"This benchmark tests performance."`` is missed.
-* the prepositional frame without a first-person subject —
-  ``"During the simulation, the app froze and I lost my mesh."`` is what a
-  customer of simulation software says, so the frame only matches when the
-  speaker places itself inside it (``"In this simulation, I play the role of a
-  customer."``). A break phrased about a third party, ``"During the simulation
-  the agent refused twice."``, is missed.
+* the prepositional frame without a claimed role —
+  ``"During the simulation, the app froze and I lost my mesh."`` and ``"In the
+  simulation I get an error at step 4."`` are what a customer of simulation
+  software says, so the frame matches only on a role verb (``"In this
+  simulation, I play the role of a customer."``). Two shapes are missed: a break
+  phrased about a third party, ``"During the simulation the agent refused
+  twice."``, and one claiming the role with a copula rather than a role verb,
+  ``"In this simulation, I am the customer, not a developer."``
 * ``instructions`` in every position — ``"My instructions say to take two
   tablets daily."`` is a support turn far more often than a leaked persona.
 * ``"I'm an LLM-based assistant."`` — the hyphen makes the machine noun
@@ -137,23 +139,27 @@ _FOURTH_WALL_PATTERNS: tuple[tuple[str, str], ...] = (
     ),
     # The prepositional frame is where a customer describes what went wrong
     # ("during the simulation, the app froze"), so an end anchor cannot carry
-    # this one — a comma satisfies it. What separates the break is the speaker
-    # placing *itself* inside the exercise.
+    # this one — a comma satisfies it. A first-person subject is not enough
+    # either ("in the simulation I get an error at step 4"); what separates the
+    # break is the speaker claiming a ROLE inside the exercise.
     (
         "named_the_exercise",
         r"\b(?:in|for|during)\s+(?:this|the)\s+"
         r"(?:simulation|benchmark|roleplay|role[-\s]play|evaluation\s+run)\b"
-        r"\s*,?\s+(?:I|we)\b",
+        r"\s*,?\s+(?:I|we)(?:'m|\s+(?:am|are))?\s+"
+        r"(?:play|playing|act|acting|pretend|pretending|represent|representing)\b",
     ),
     # Two ways the agent's prompt heads its phrase: the general anchor, or a
     # verb reciting what the prompt says — the latter is the family's least
-    # ambiguous break and no anchor built for nouns can see it.
+    # ambiguous break and no anchor built for nouns can see it. `requires` is
+    # not on the list: it reads as an API spec ("your system prompt requires a
+    # role field") at least as often as it reads as a recitation.
     (
         "named_a_party_prompt",
         rf"\b(?:your|its|the\s+agent's)\s+system\s+prompt\b"
         rf"(?:{_MACHINE_END}"
         r"|(?=\s+(?:say|says|said|tells?|told|instructs?|instructed"
-        r"|states?|forbids?|requires?)\b))",
+        r"|states?|forbids?)\b))",
     ),
     (
         "named_a_party_prompt",
