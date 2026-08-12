@@ -7,6 +7,8 @@ and the trial that invokes it — so both read them from here:
 
 * :data:`INSTALL_SCRIPT` — the script the synthesised image layer runs.
 * :data:`HARNESS_COMMANDS` — the argv each CLI is driven with.
+* :data:`PROVIDER_ENV_KEYS` — the credentials a CLI may be handed, and
+  :func:`provider_env_input` the compose variable each travels in.
 
 The engine core never learns these names. The adapter resolves the harness
 to a concrete shell command and publishes it on
@@ -62,10 +64,10 @@ PROVIDER_ENV_KEYS: frozenset[str] = frozenset(
 )
 """Environment variables a harness CLI may be given inside the task container.
 
-An allow-list rather than a pass-through: everything named here lands in the
-per-trial compose ``.env``, so an open surface would let a run config push
-arbitrary values — including ones shadowing the task's own environment —
-into the container the agent works in."""
+An allow-list, not an open surface: every forwarded value lands in the
+per-trial compose ``.env`` and then in the container the agent works in, so an
+open surface would let a run config shadow the task's own environment with
+arbitrary values."""
 
 
 PROVIDER_ENV_INPUT_PREFIX = "TBENCH_PROVIDER_"

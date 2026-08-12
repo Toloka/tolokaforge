@@ -1394,6 +1394,13 @@ class TestProviderEnvWire:
                 agent_provider_env={"ANTHROPIC_API_KEY": "${secret:ANTHROPIC_API_KEY}"},
             )
 
+    def test_multiline_value_refused(self, fixture_dir, tmp_path):
+        """Each value is one ``.env`` line; a newline would truncate it silently."""
+        with pytest.raises(ValueError, match="newline"):
+            self._adapter(
+                fixture_dir, tmp_path, agent_provider_env={"OPENAI_API_KEY": "sk-a\nsk-b"}
+            )
+
     def test_no_provider_env_leaves_stack_inputs_empty(self, fixture_dir, tmp_path):
         adapter = self._adapter(fixture_dir, tmp_path)
         assert adapter.agent_provider_env == {}

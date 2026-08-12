@@ -94,12 +94,24 @@ def _resolve_provider_env(declared: dict[str, str]) -> dict[str, str]:
     from tolokaforge.secrets import expand_secret_refs, get_default
 
     secrets = get_default()
-    return {
+    resolved = {
         key: expand_secret_refs(
             value, secrets, where=f"terminal-bench adapter_params.agent_provider_env[{key!r}]"
         )
         for key, value in declared.items()
     }
+    # Each value is written as one ``KEY=value`` line in the per-trial compose
+    # ``.env``. A newline would split the line and turn the remainder into a
+    # variable of its own, so the container would silently get a truncated
+    # credential — refuse it here, where the offending key can be named.
+    multiline = sorted(key for key, value in resolved.items() if "\n" in value or "\r" in value)
+    if multiline:
+        raise ValueError(
+            f"terminal-bench adapter: agent_provider_env value(s) for {multiline!r} contain a "
+            "newline; each value becomes one line of the per-trial compose `.env`, which "
+            "cannot represent one."
+        )
+    return resolved
 
 
 class TerminalBenchAdapter(BaseAdapter):
