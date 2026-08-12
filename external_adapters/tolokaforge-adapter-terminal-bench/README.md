@@ -162,12 +162,21 @@ there. `agent_provider_env` declares them:
 
 ```yaml
 evaluation:
-  adapter_params:
-    agent_harness: claude-code
-    agent_provider_env:
-      ANTHROPIC_API_KEY: "${secret:ANTHROPIC_API_KEY}"
-      ANTHROPIC_BASE_URL: "${secret:ANTHROPIC_BASE_URL}"
+  harness_adapter:
+    type: "terminal_bench"
+    params:
+      agent_harness: "claude-code"
+      agent_model: "openrouter/anthropic/claude-sonnet-4-6"
+      agent_provider_env:
+        ANTHROPIC_API_KEY: "${secret:ANTHROPIC_API_KEY}"
+        ANTHROPIC_BASE_URL: "${secret:ANTHROPIC_BASE_URL}"
 ```
+
+Every adapter param goes under `evaluation.harness_adapter.params`.
+`EvaluationConfig` is `extra="ignore"`, so a block at the wrong depth is
+dropped without a word and the run goes through the engine loop instead —
+see [`run_harness.yaml`](../../examples/terminal_bench/run_harness.yaml) for a
+complete working config.
 
 Values resolve through `expand_secret_refs`, so a run config names a
 credential rather than carrying it. A value containing a newline or a `$` is
@@ -180,7 +189,7 @@ refused naming the accepted set.
 
 The path from config to container:
 
-`adapter_params.agent_provider_env` → `StackPatch.inputs` →
+`harness_adapter.params.agent_provider_env` → `StackPatch.inputs` →
 `project_loader.resolve` → `EnvironmentManifest.stack_inputs` →
 `PerTrialRuntimeBackend.provision` → the per-trial `.env` → compose
 interpolation at up-time.

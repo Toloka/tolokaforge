@@ -1,0 +1,59 @@
+# Run config for fix-billing-holds under a coding-harness CLI (Claude Code).
+#
+# The engine's turn loop does not drive this run: the CLI is installed into the
+# task image and invoked once inside the container. See
+# external_adapters/tolokaforge-adapter-terminal-bench/README.md § "Harness mode".
+#
+# Every adapter knob lives under `evaluation.harness_adapter.params`.
+# `EvaluationConfig` is `extra="ignore"`, so a block at any other depth is
+# dropped silently and the run falls back to the engine loop.
+
+models:
+  # A harness trial issues no LLM call from the engine, but the orchestrator
+  # still constructs its client — so this block must name a usable model. The
+  # model the *agent* uses is `harness_adapter.params.agent_model` below.
+  agent:
+    provider: "openrouter"
+    name: "openrouter/anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+
+compute:
+  workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
+  repeats: 1
+  # A failed task load is a config error the operator must see, not a task
+  # silently dropped. See docs/CONFIG.md § orchestrator.strict_task_load.
+  strict_task_load: true
+  timeouts:
+    # Must be at least the task's `[agent] timeout_sec` (1800 for this task).
+    # The harness runs to completion inside one `docker exec`, and the runner
+    # cannot cut that short without grading a container the CLI is still
+    # writing to — so a smaller budget is refused rather than silently applied.
+    episode_s: 1800
+
+evaluation:
+  projects:
+    - "examples/terminal_bench"
+  tasks_glob: "fix-billing-holds/task.yaml"
+  output_dir: "results/terminal_bench/fix-billing-holds-claude-code"
+  harness_adapter:
+    type: "terminal_bench"
+    params:
+      terminal_bench_dir: "examples/terminal_bench"
+      task_ids: ["fix-billing-holds"]
+      agent_harness: "claude-code"
+      # Passed to the CLI with any `openrouter/` prefix stripped: the CLI
+      # reaches OpenRouter through ANTHROPIC_BASE_URL below, not through
+      # litellm, and the prefix would make it pick its direct-vendor handler.
+      agent_model: "openrouter/anthropic/claude-sonnet-4-6"
+      # Resolved via SecretManager — set these in `.env`, never inline. Values
+      # reach the container through the per-trial compose `.env` only.
+      agent_provider_env:
+        ANTHROPIC_AUTH_TOKEN: "${secret:ANTHROPIC_AUTH_TOKEN}"
+        ANTHROPIC_BASE_URL: "${secret:ANTHROPIC_BASE_URL}"
