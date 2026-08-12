@@ -748,9 +748,10 @@ jobs:
           # Classify the staged tree BEFORE the verify-time `stash --keep-index` (the stash drops
           # every non-staged file so the worktree matches the future commit; classification must
           # read `git diff --cached` while the staged set is intact). Bucket A = models-wheel
-          # only; Bucket B = any engine-side path touched. The classifier is a taxonomy, not a
-          # policy check -- both buckets flow through the SAME commit + push code path; only the
-          # commit subject and the Slack surface differ. `--format plain` yields
+          # only; Bucket B = any engine-side path touched. Post-split the classifier is a POLICY
+          # GATE, not a taxonomy: this pipeline commits Bucket A only. `tolokaforge/core/llm` is
+          # still staged above so an engine-side write is *seen* here rather than left behind as
+          # an unstaged file the classifier would miss. `--format plain` yields
           # `bucket=A|B\nreason=...\nengine_paths=<csv>` (greppable from bash without jq). Fail
           # loud if the bucket parse returns anything other than A or B -- neither an empty
           # bucket nor an unrecognised value is a scenario the workflow should silently continue.
@@ -760,6 +761,22 @@ jobs:
           ENGINE_PATHS="$(printf '%s\n' "$CLASSIFICATION" | grep '^engine_paths=' | cut -d= -f2-)"
           if [ "$BUCKET" != "A" ] && [ "$BUCKET" != "B" ]; then
             echo "::error::classify-paths returned an unknown bucket: '$BUCKET' (raw output: $CLASSIFICATION)"
+            exit 1
+          fi
+          # Bucket B -> refuse. Per-model policy code belongs in the models wheel
+          # (`tolokaforge_models/.../policies/<family>.py` + an entry point); an engine-side write
+          # means the candidate needs a new base hook, a new slot, or a new capability category,
+          # and that is a human decision on the engine's own release axis. Nothing is committed:
+          # the staged tree is discarded with the runner. Send the terminal Slack ourselves and
+          # set the dedup marker so the catch-all handler does not double-ping.
+          if [ "$BUCKET" = "B" ]; then
+            echo "::error::engine-side paths written - refusing to commit (${ENGINE_PATHS})"
+            uv run automation slack reply \
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention \
+              --icon needs_human \
+              --text "$(printf '%s\n%s' 'Needs human: the fix requires engine-side code' "This automation commits models-wheel changes only. The resolve agent wrote to: ${ENGINE_PATHS}. A new base-class hook, policy slot or capability category is an engine decision - land it on the engine release axis first, then re-run the integration.")" \
+              --pr-url "$PR_URL" --run-url "$RUN_URL" || true
+            touch "$RUNNER_TEMP/slack_terminal_sent" || true
             exit 1
           fi
           # Cert-vs-baseline reconciliation - run BEFORE the stash so observation/findings.json is
@@ -799,16 +816,11 @@ jobs:
             exit 1
           fi
           # Commit subject tags the ADR-0030 bucket AFTER the model slug so the replay walker's
-          # `_MODEL_RE = ^integrate: (\S+?)(?:\s|$)` still parses the slug identically. Body
-          # names the bucket + the classifier reason so a reviewer sees why the taxonomy fired
-          # this way without opening the run log.
-          if [ "$BUCKET" = "A" ]; then
-            COMMIT_SUBJECT="integrate: ${TF_NAME} via auto-resolve (Bucket A: preset + cert)"
-            COMMIT_BODY="Bucket A per ADR-0030 (models-wheel only, no engine change). Reason: ${REASON}. See the PR comment for the reprobe evidence and known_unsupported ceilings. Do not merge if this is a disposable test branch."
-          else
-            COMMIT_SUBJECT="integrate: ${TF_NAME} via auto-resolve (Bucket B: engine + models-wheel)"
-            COMMIT_BODY="Bucket B per ADR-0030 (engine change alongside models-wheel). Engine paths touched: ${ENGINE_PATHS}. See the PR comment for the reprobe evidence and known_unsupported ceilings. Do not merge if this is a disposable test branch."
-          fi
+          # `_MODEL_RE = ^integrate: (\S+?)(?:\s|$)` still parses the slug identically, and so the
+          # models auto-release trigger (`release-models-on-integrate.yml`) can match `^integrate: `
+          # on the merge commit. Only Bucket A reaches this line -- Bucket B exited above.
+          COMMIT_SUBJECT="integrate: ${TF_NAME} via auto-resolve (Bucket A: preset + cert)"
+          COMMIT_BODY="Bucket A per ADR-0030 (models-wheel only, no engine change). Reason: ${REASON}. See the PR comment for the reprobe evidence and known_unsupported ceilings. Do not merge if this is a disposable test branch."
           git commit -m "$COMMIT_SUBJECT" -m "$COMMIT_BODY"
           # persist-credentials:false on checkout left no ambient token; supply one explicitly for
           # this push only (github.token is masked in logs; git redacts it from URL errors).
@@ -874,12 +886,10 @@ jobs:
             SETTINGS_URL="${GITHUB_SERVER_URL:-https://github.com}/$REPO/settings/variables/actions"
             # Every non-data-scope Slack surface carries the ADR-0030 bucket -- merged /
             # auto-merge-attempted-failed / auto-merge-off. A reader must be able to see the
-            # taxonomy without opening the PR or the run log.
-            if [ "$BUCKET" = "A" ]; then
-              BUCKET_LABEL="Bucket A: preset + cert (models-wheel only, no engine change)"
-            else
-              BUCKET_LABEL="Bucket B: engine + models-wheel (engine paths touched: ${ENGINE_PATHS})"
-            fi
+            # taxonomy without opening the PR or the run log. Only Bucket A can reach here; the
+            # label is kept explicit rather than dropped so the Slack surface still states which
+            # release axis the change lands on.
+            BUCKET_LABEL="Bucket A: preset + cert (models-wheel only, no engine change)"
             if [ "$MERGED" = "yes" ]; then
               ICON_ROLE=integrated_merged
               MSG="$(printf '%s\n%s' "Integrated + auto-merged (squash) - ${BUCKET_LABEL} landed on the base branch." "Auto-merge is on - squash-merged automatically on success (configure <$SETTINGS_URL|here>).")"

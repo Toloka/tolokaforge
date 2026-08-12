@@ -1,0 +1,48 @@
+name: Release tolokaforge-models on integrate
+
+# Closes the loop ADR-0030 opened: once a model integration lands on main, the
+# models wheel releases itself. Without this the split still leaves a human in
+# the release path, and "one engine version absorbs any number of model
+# integrations" only holds on paper — a consumer cannot pick a model up until
+# somebody remembers to cut `models-vX.Y.Z` by hand.
+#
+# Trigger is deliberately narrow: an `integrate:` commit that touched the models
+# wheel. A hand edit to `tolokaforge_models/` (fixing a price, editing a
+# docstring) does NOT release — that stays the manual `workflow_dispatch` on
+# `release-models.yml`, so routine maintenance does not consume version numbers.
+#
+# Increment is `minor` rather than `auto`: `integrate:` is not a Conventional
+# Commit type, so `auto` has nothing to derive from. Minor also keeps the patch
+# axis free for fixing a model that shipped wrong (bad price, over-broad preset)
+# without it reading as a new model.
+#
+# Test branches never reach here — this fires on pushes to `main` only, and the
+# arena's disposable `test/*` / `observe-*` integration branches are never
+# merged out.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tolokaforge_models/**"
+
+# Share the release lane with the manual workflow. A second integration merging
+# while a release is in flight queues behind it rather than racing it to the tag
+# push (`cancel-in-progress: false` — a queued model release must still happen).
+concurrency:
+  group: release-models
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # `head_commit` is the tip of the push. A squash-merged integration PR
+    # carries the `integrate: <slug>` subject through to main, which is the same
+    # prefix `tests/canonical/test_models_wheel_replay.py` walks, so the release
+    # trigger and the acceptance metric agree on what an integration is.
+    # Quoted: the `: ` inside the literal would otherwise read as a YAML mapping.
+    if: "startsWith(github.event.head_commit.message, 'integrate: ')"
+    uses: ./.github/workflows/release-models.yml
+    with:
+      bump: minor
+      dry_run: false
+    secrets: inherit

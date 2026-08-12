@@ -4,9 +4,8 @@
 The finalize step stages the models-wheel + engine surfaces produced by the
 resolve/finalize agent, classifies the staged tree as Bucket A (models-wheel
 only) or Bucket B (any engine-side path touched) via ``automation
-classify-paths``, and tags the commit subject + Slack notification with the
-result. This test locks four properties that a future refactor could
-silently regress:
+classify-paths``, and — post-ADR-0030 — commits Bucket A only. This test locks
+the properties a future refactor could silently regress:
 
 1. The ``git add`` whitelist references the current models-wheel layout
    (current) and drops the pre-cutover paths.
@@ -18,6 +17,10 @@ silently regress:
 4. The finalize ``git add`` no longer swallows missing-path errors via
    ``2>/dev/null || true`` — every whitelist entry exists in the tree, so a
    missing path signals a workflow bug, not a legitimate skip.
+5. Bucket B is refused before anything is committed, and the refusal reaches a
+   person (needs-human Slack + dedup marker) rather than only the run log.
+6. An ``integrate:`` commit on ``main`` auto-releases the models wheel at
+   ``minor``, and the release workflow it calls validates the increment.
 
 Runs under the ``canonical`` marker alongside
 ``test_python_version_single_source.py``; the same YAML-parse +
@@ -151,8 +154,9 @@ def test_commit_subject_carries_bucket_suffix() -> None:
     body = _finalize_step_body()
     a_msg = "finalize commit-subject template for Bucket A missing"
     assert re.search(r"Bucket A: preset \+ cert", body), a_msg
-    b_msg = "finalize commit-subject template for Bucket B missing"
-    assert re.search(r"Bucket B: engine \+ models-wheel", body), b_msg
+    # No Bucket B counterpart: post-split the finalize step refuses that tree
+    # instead of committing it under a different subject. See
+    # `test_finalize_refuses_to_commit_bucket_b`.
     integrate_subjects = re.findall(r"integrate: \$\{TF_NAME\}[^\"]*", body)
     template_msg = "expected at least one `integrate: ${TF_NAME}` commit-subject template"
     assert integrate_subjects, template_msg
@@ -292,3 +296,98 @@ def test_the_verdict_carries_a_reason_token() -> None:
     body = _strip_comments(_gate_step_body())
     assert "capability-suite-did-not-run" in body
     assert "infra-noise" in body
+
+# Post-split policy: this pipeline commits Bucket A only.
+#
+# Before the split the classifier was a taxonomy and both buckets flowed through
+# the same commit + push path, differing only in the commit subject. Per-model
+# policy code now belongs in the models wheel, so an engine-side write means the
+# candidate needs a base hook / slot / capability category that is a human
+# decision on the engine's release axis. These lock the refusal in shape.
+# ---------------------------------------------------------------------------
+
+_RELEASE_TRIGGER_PATH = _REPO_ROOT / ".github" / "workflows" / "release-models-on-integrate.yml"
+_RELEASE_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "release-models.yml"
+
+
+def test_finalize_refuses_to_commit_bucket_b() -> None:
+    body = _finalize_step_body()
+    # `_finalize_step_body` returns the YAML block scalar with its block
+    # indentation already stripped, so the closing `fi` sits at column 0.
+    match = re.search(r'if \[ "\$BUCKET" = "B" \]; then\n(.*?)\n *fi\n', body, re.DOTALL)
+    assert match is not None, (
+        "finalize must refuse Bucket B explicitly — expected an "
+        '`if [ "$BUCKET" = "B" ]; then ... fi` guard'
+    )
+    guard = match.group(1)
+    assert "exit 1" in guard, "the Bucket B guard must exit non-zero, not merely warn"
+    assert "needs_human" in guard, (
+        "the Bucket B guard must send a needs-human Slack reply so the refusal "
+        "reaches a person instead of only the run log"
+    )
+    assert "slack_terminal_sent" in guard, (
+        "the Bucket B guard must set the dedup marker so the catch-all handler does not double-ping"
+    )
+
+
+def test_bucket_b_guard_precedes_the_commit() -> None:
+    body = _finalize_step_body()
+    guard = body.index('if [ "$BUCKET" = "B" ]')
+    commit = body.index("git commit -m")
+    assert guard < commit, "the Bucket B refusal must run before anything is committed"
+
+
+def test_commit_subject_no_longer_branches_on_bucket() -> None:
+    body = _finalize_step_body()
+    subject_block = body[body.index("COMMIT_SUBJECT=") : body.index("git commit -m")]
+    assert "Bucket B" not in subject_block, (
+        "Bucket B cannot reach the commit, so the subject must not offer it as an "
+        "alternative — a dead branch here reads as if the old flow still exists"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Auto-release: an `integrate:` commit on main publishes the models wheel.
+# ---------------------------------------------------------------------------
+
+
+def test_release_trigger_fires_only_on_integrate_commits_touching_the_models_wheel() -> None:
+    doc = yaml.safe_load(_RELEASE_TRIGGER_PATH.read_text())
+    # `on` is the YAML 1.1 boolean True, not the string "on".
+    push = doc[True]["push"]
+    assert push["branches"] == ["main"], "auto-release must fire on main only"
+    assert push["paths"] == ["tolokaforge_models/**"], (
+        "a push that does not touch the models wheel has nothing to release"
+    )
+    job = doc["jobs"]["release"]
+    assert "startsWith(github.event.head_commit.message, 'integrate: ')" in job["if"], (
+        "only an integration commit auto-releases; a hand edit to the models "
+        "wheel stays on the manual workflow_dispatch"
+    )
+
+
+def test_release_trigger_requests_a_minor_bump() -> None:
+    doc = yaml.safe_load(_RELEASE_TRIGGER_PATH.read_text())
+    job = doc["jobs"]["release"]
+    assert job["uses"] == "./.github/workflows/release-models.yml"
+    assert job["with"]["bump"] == "minor", (
+        "`integrate:` is not a Conventional Commit type so `auto` derives "
+        "nothing; minor also keeps the patch axis free for fixing a model that "
+        "shipped wrong"
+    )
+    assert job["with"]["dry_run"] is False
+
+
+def test_release_workflow_is_callable_and_validates_the_increment() -> None:
+    doc = yaml.safe_load(_RELEASE_WORKFLOW_PATH.read_text())
+    triggers = doc[True]
+    assert "workflow_call" in triggers, (
+        "release-models.yml must be callable so the auto-release reuses it "
+        "rather than duplicating the bump + tag body"
+    )
+    assert "workflow_dispatch" in triggers, "the manual release path must survive"
+    body = _RELEASE_WORKFLOW_PATH.read_text()
+    assert "unknown bump increment" in body, (
+        "workflow_call passes `bump` as a free string (choice is dispatch-only), "
+        "so an unrecognised value must fail loud instead of silently meaning auto"
+    )

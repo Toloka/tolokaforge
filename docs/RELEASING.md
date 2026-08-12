@@ -62,8 +62,21 @@ The `tolokaforge-models` wheel — model data files, the 39 `ModelCertificate`
 registry, and the eight per-model policy subclasses — ships on its own release
 cadence. The release is driven entirely by
 [`.github/workflows/release-models.yml`](../.github/workflows/release-models.yml)
-("Release tolokaforge-models (cz bump)"). Run it from the Actions tab as a
-manual `workflow_dispatch`:
+("Release tolokaforge-models (cz bump)").
+
+**Model onboardings release themselves.** When an `integrate:` commit touching
+`tolokaforge_models/` lands on `main`,
+[`release-models-on-integrate.yml`](../.github/workflows/release-models-on-integrate.yml)
+calls the workflow below with `bump: minor`, so a new model reaches PyPI with
+nobody in the release path. That is the whole point of ADR-0030's split: a
+consumer picks the model up by moving its `tolokaforge-models` pin, and the
+engine version does not move. `minor` rather than `auto` because `integrate:`
+is not a Conventional Commit type — `auto` would have nothing to derive from —
+and it leaves the patch axis free for fixing a model that shipped wrong.
+
+Everything else (a hand-edited price, a docstring, a certificate correction) is
+still a manual `workflow_dispatch` from the Actions tab, so routine maintenance
+does not consume version numbers:
 
 - **`bump`** — `auto` (derive the increment from the Conventional Commits
   since the last `models-v*` tag: `fix` → patch, `feat` → minor,
