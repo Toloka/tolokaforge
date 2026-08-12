@@ -224,6 +224,14 @@ packages = ["tolokaforge"]
 "README.md" = "tolokaforge/_subset_build/README.md"
 "LICENSE" = "tolokaforge/_subset_build/LICENSE"
 "scripts/hatch" = "tolokaforge/_subset_build/scripts/hatch"
+# The runner Dockerfile also builds the tolokaforge-models wheel in-container
+# (Milestone 29, ADR-0030) from a workspace-sibling source tree. Force-include
+# the models project's `pyproject.toml` + `src/` layout so the wheel-install
+# path assembles the same build context the source-checkout path has. Without
+# these entries `_runner_definition()` cannot map the `tolokaforge_models/`
+# context entry to a packaged copy and `COPY tolokaforge_models/` fails.
+"tolokaforge_models/pyproject.toml" = "tolokaforge/_subset_build/tolokaforge_models/pyproject.toml"
+"tolokaforge_models/src" = "tolokaforge/_subset_build/tolokaforge_models/src"
 
 [tool.hatch.build.targets.sdist]
 
