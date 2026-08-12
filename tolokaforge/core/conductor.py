@@ -931,12 +931,8 @@ class InProcessConductor:
             else None
         )
 
-        # ``interaction_mode`` and ``initial_user_message`` are ``TaskConfig``
-        # fields, so a ``TaskConfig(**task.yaml)`` reload picks them up again;
-        # ``user_actor`` is not, and ``extra="ignore"`` drops it — such a reload
-        # resolves the default simulator, contradicting the ``user_actor``
-        # recorded here. This file records which user ran; it is not an
-        # authoring surface.
+        # user_actor is the record, not an authoring field: TaskConfig has no
+        # such field and extra="ignore" drops it on reload.
         task_config_dict = {
             "task_id": task.task_id,
             "trial_index": setup.trial_idx,

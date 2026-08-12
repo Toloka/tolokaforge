@@ -18,16 +18,11 @@ from unittest.mock import MagicMock
 from tolokaforge.core.conductor import InProcessConductor, _TrialSetup
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
-    ActorSpec,
     EvaluationConfig,
-    InitialStateConfig,
     ModelConfig,
     OrchestratorConfig,
     RunConfig,
-    TaskConfig,
-    ToolsConfig,
 )
-from tolokaforge.core.models.task_config import InteractionMode
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 
 
@@ -38,15 +33,6 @@ class RunnerStub:
     effective_system_prompt: str
     user_system_prompt: str
     logger: StructuredLogger
-
-
-class _UnsetActors:
-    """Sentinel: the caller said nothing about ``actors``, so the scripted user
-    actor applies. Distinct from an explicit ``actors=None``, which declares a
-    task whose user actor resolves from the simulator defaults."""
-
-
-_UNSET_ACTORS = _UnsetActors()
 
 
 def make_run_config(output_dir: Path, *, repeats: int = 1) -> RunConfig:
@@ -62,27 +48,6 @@ def make_run_config(output_dir: Path, *, repeats: int = 1) -> RunConfig:
             max_attempt_retries=1,
         ),
         evaluation=EvaluationConfig(output_dir=str(output_dir)),
-    )
-
-
-def make_task_config(
-    task_id: str,
-    *,
-    interaction_mode: InteractionMode = "conversational",
-    actors: dict[str, ActorSpec] | None | _UnsetActors = _UNSET_ACTORS,
-    initial_user_message: str | None = None,
-) -> TaskConfig:
-    return TaskConfig(
-        task_id=task_id,
-        name=task_id,
-        category="tool_use",
-        description="d",
-        initial_state=InitialStateConfig(),
-        tools=ToolsConfig(),
-        interaction_mode=interaction_mode,
-        actors={"user": ActorSpec(mode="scripted")} if isinstance(actors, _UnsetActors) else actors,
-        initial_user_message=initial_user_message,
-        grading="grading.yaml",
     )
 
 

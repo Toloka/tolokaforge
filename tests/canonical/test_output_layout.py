@@ -66,6 +66,7 @@ from tolokaforge.core.models import (
     TrialStatus,
     UserReplyGuardEvent,
     UserReplyOutcome,
+    UserSimulatorConfig,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 
@@ -164,6 +165,9 @@ def _task_snapshot(
         "trial_index": trial_index,
         "category": "canonical",
         "description": f"Trial {trial_index} of {task_id}",
+        "interaction_mode": "conversational",
+        "initial_user_message": None,
+        "user_actor": UserSimulatorConfig().model_dump(mode="json"),
         "grading_config": {},
         "tools": {"agent": {}, "user": {}},
         "policies": {},

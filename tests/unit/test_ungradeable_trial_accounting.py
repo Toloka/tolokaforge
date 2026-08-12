@@ -32,12 +32,11 @@ import yaml
 
 pytestmark = pytest.mark.unit
 
-from tests.canonical._factories import make_trial_spec
+from tests.canonical._factories import make_task_config, make_trial_spec
 from tests.utils.conductor_phases import (
     make_conductor,
     make_run_config,
     make_setup,
-    make_task_config,
     runner_stub,
 )
 from tests.utils.runner_requests import simple_task_description as make_task_description_dict

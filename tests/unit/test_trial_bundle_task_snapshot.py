@@ -14,6 +14,7 @@ file off disk.
 
 from __future__ import annotations
 
+import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,15 +23,21 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from tests.canonical._factories import make_trial_spec
+from tests.canonical._factories import make_task_config, make_trial_spec
 from tests.utils.conductor_phases import (
     make_conductor,
     make_run_config,
     make_setup,
-    make_task_config,
     runner_stub,
 )
-from tolokaforge.core.models import ActorSpec, Metrics, TaskConfig, Trajectory, TrialStatus
+from tolokaforge.core.models import (
+    ActorSpec,
+    Metrics,
+    TaskConfig,
+    Trajectory,
+    TrialStatus,
+    UserSimulatorConfig,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -87,8 +94,6 @@ def test_a_declared_user_actor_is_recorded_whole(tmp_path: Path) -> None:
         "backstory": "I lost my season pass last week.",
         "scripted_flow": flow,
     }
-    # The three keys are written where the bundle's shape documents them, and
-    # the writer hands the whole snapshot through in that order.
     assert list(snapshot) == [
         "task_id",
         "trial_index",
@@ -125,7 +130,12 @@ def test_an_agent_only_trial_records_a_null_actor_its_mode_attributes(tmp_path: 
     attributable to the turn-loop shape rather than to an undeclared actor —
     which is what ``interaction_mode`` beside it says."""
     snapshot = _written_snapshot(
-        tmp_path, make_task_config("agent_only_task", interaction_mode="agent_only")
+        tmp_path,
+        make_task_config(
+            "agent_only_task",
+            interaction_mode="agent_only",
+            actors={"user": ActorSpec(mode="scripted")},
+        ),
     )
 
     assert snapshot["interaction_mode"] == "agent_only"
@@ -151,3 +161,29 @@ def test_the_pinned_opener_is_recorded_verbatim(tmp_path: Path, opener: str | No
     )
 
     assert snapshot["initial_user_message"] == opener
+
+
+def test_the_recorded_snapshot_reloads_as_a_task_config_that_ignores_the_record(
+    tmp_path: Path,
+) -> None:
+    """``TaskConfig(**task.yaml)`` picks the two fields back up and drops the
+    record. The key is spelled ``user_actor``, not ``user_simulator``: the
+    latter is lifted into ``actors.user`` with a ``DeprecationWarning``, so
+    every reload of every bundle would warn — warnings are errors here, so a
+    rename to that spelling fails this test."""
+    task = make_task_config(
+        "reload",
+        actors={"user": ActorSpec(mode="scripted", persona="frustrated commuter")},
+        initial_user_message="Hi, I need to replace my pass.  ",
+    )
+
+    snapshot = _written_snapshot(tmp_path, task)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        reloaded = TaskConfig(**snapshot)
+
+    assert reloaded.interaction_mode == "conversational"
+    assert reloaded.initial_user_message == "Hi, I need to replace my pass.  "
+    assert snapshot["user_actor"]["persona"] == "frustrated commuter"
+    assert reloaded.resolve_user_simulator() == UserSimulatorConfig()
