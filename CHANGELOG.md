@@ -2,25 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## v0.18.1 (2026-08-12)
 
-### Added
+### Feat
 
-- **adapters**: `DockerStackRequirements.image_builds: list[ComposeImageBuild]` (default `[]`) declares task-side compose images the orchestrator builds once per run, immediately after the engine `:local` aliases are in place. Each entry runs `docker compose -f <compose_file> build <service>`, skipped when the service's pinned image already resolves locally. A build failure raises and aborts the run — instead of every trial of that task failing later with a `PROVISION_ERROR` naming compose, not the broken Dockerfile. The new field is deliberately absent from `to_core_stack_kwargs()` (same carve-out as `needs_rag_service`) — it is the orchestrator's declarative pre-build seam, not a stack kwarg. Every existing adapter keeps the empty default and needs no edit. (#1045)
-- **core**: `OrchestratorConfig.strict_task_load` (default `false`) turns an adapter's `get_task()` failure into a startup refusal instead of the historical log-and-skip. Left `false`, `Orchestrator.load_tasks` behaves exactly as before — a broken task id is logged at error level and the run proceeds with the remaining tasks. Set to `true`, the exception propagates naming the offending task so the run refuses to start with a silently shorter task list; the bundled `examples/terminal_bench/*.yaml` opt in. `--dry-run` is strict regardless via its own loader (`load_tasks_for_dry_run`). (#1045)
-
-### Changed
-
-- **runtime**: `RuntimeBackendBuildContext.mount_docker_socket` is now derived from the same predicate that decides `enable_docker_cli` on the runner image build (`_run_needs_docker_cli`) — the terminal-bench adapter or any task routing a shipped tool through the compose variant (`tools.agent.<tool>.service`). An image with the CLI and no socket, or a socket and no CLI, are both useless — the two flags are one decision. Terminal-bench runs now reach the host daemon from the per-trial runner without the adapter having to declare `mount_docker_socket=True` on `DockerStackRequirements` itself. (#1045)
-- **adapters**: `terminal_bench` adapter declares its environment as an `EnvironmentPatch(stack=StackPatch(compose_file=<staging path>, runner_service="runner"), network_policy=<param>)` on every `TaskConfig`, and the resolved `EnvironmentManifest` (with every compose service resolved to `ServiceSpec(isolation="ephemeral")` by `project_loader.resolve`) on every `TaskDescription`. Backend selection is task-driven, so terminal-bench runs now route through `PerTrialRuntimeBackend` — `TrialExecutor`'s bracket, per-trial network isolation, and `PROVISION_ERROR` attribution all apply — with no run-config change. The `bash` tool's `ToolSource.extra` shrinks to `{"service": <resolved agent service>, "compose_project_prefix": "tbench_"}`; `compose_file`, `task_dir`, `env_vars`, and `TaskDescription.tool_artifacts` are dropped. `docker_stack_requirements()` now carries only `image_builds` (one `ComposeImageBuild` per discovered task) — no task-pack mounts, no shared log bind, no socket flag. New adapter params: `network_policy` (default `full_internet`), `image_tag` (default `local`), `staging_root` (default: a `tolokaforge-tbench` directory under the system temp dir), `prebuild_images` (default `true`). `image_registry` now requires a companion `image_tag` — a floating tag is rejected up front with the adapter's own message. (#1045)
-
-### Removed
-
-- **adapters**: `terminal_bench` adapter params `runner_task_dir` and `logs_host_root` (plus the `LOGS_HOST_ROOT` class attribute). Task files are staged under `staging_root` and mounted into the agent service via relative volumes in the synthesised compose file, so no runner-side task path and no host-daemon log root are required. A config still passing either param raises in `TerminalBenchAdapter.__init__` naming the removed param and its replacement. (#1045)
+- **tbench-adapter**: synthesise EnvironmentManifest from task compose; migrate compose lifecycle to PerTrialRuntimeBackend (#1060)
+- **skills**: pre-flight decision extraction + educative PR/umbrella templates (#1034)
 
 ### Fix
 
-- **core**: `EnvironmentManifest.stack_inputs` now reaches `docker compose` at up-time. `PerTrialRuntimeBackend.provision` writes a per-trial `.env` alongside the copied compose file — task-authored `.env` content first, then `stack_inputs`, then the engine-reserved block. The reserved compose variable `TOLOKAFORGE_TRIAL_SLUG` is exposed so a task compose file can pin a per-trial-unique `container_name: <prefix>${TOLOKAFORGE_TRIAL_SLUG}_<service>`. Task keys under the reserved `TOLOKAFORGE_` prefix are rejected at provision time with a manifest-error message (not `docker compose up failed`). (#1045)
+- **docker**: ship tolokaforge_models sources in the base wheel for wheel-install Docker builds (#1073)
 
 ## v0.18.0 (2026-08-12)
 
