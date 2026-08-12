@@ -99,6 +99,7 @@ from tolokaforge.core.models.task_config import (
     UserSimulatorConfig,
 )
 from tolokaforge.core.models.trajectory import (
+    FirstUserMessageSource,
     Message,
     MessageRole,
     Metrics,
@@ -180,6 +181,7 @@ __all__ = [
     "JudgeStatus",
     "JudgeUsage",
     # Trajectory concern
+    "FirstUserMessageSource",
     "Message",
     "MessageRole",
     "Metrics",

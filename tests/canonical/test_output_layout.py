@@ -38,6 +38,7 @@ Spot-checks (content — not full snapshot; that lives in
 * ``task.yaml.model_config.agent.resolved.cache_policy`` = registered name.
 * ``prompts.yaml`` carries the agent + user-simulator system prompts.
 * ``trajectory.yaml`` does NOT carry the prompts (moved to ``prompts.yaml``).
+* ``trajectory.yaml.first_user_message_source`` is on disk as the enum's value.
 * ``tools_schemas.yaml`` equals ``capabilities.schema_sanitizer.sanitize(tools)``.
 """
 
@@ -53,6 +54,7 @@ from tolokaforge.core.conductor import _build_resolved_block
 from tolokaforge.core.llm import build_capabilities
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
+    FirstUserMessageSource,
     Grade,
     GradeComponents,
     Message,
@@ -316,6 +318,31 @@ def test_trajectory_yaml_does_not_carry_prompts(tmp_path: Path) -> None:
     # ``simulator_schema_version`` stays — it's metadata about the
     # message-trace shape, not a prompt itself.
     assert data["simulator_schema_version"] == 2
+
+
+def test_trajectory_yaml_carries_the_first_user_message_source_as_a_plain_string(
+    tmp_path: Path,
+) -> None:
+    """The key's on-disk form is the enum's value, not the member.
+
+    ``yaml.dump`` of a member emits ``!!python/object/apply:`` — which
+    ``yaml.safe_load`` refuses outright, so every reader of the bundle loses the
+    whole file, not just this key. Pairing the written scalar with the value it
+    reloads to is the only assertion that separates the two.
+    """
+    writer = FileArtifactWriter()
+    trial_dir = tmp_path / "trials" / "task_A" / "0"
+    pinned = _trajectory("task_A", 0).model_copy(
+        update={"first_user_message_source": FirstUserMessageSource.PINNED}
+    )
+    writer.write_trajectory(trial_dir, pinned)
+
+    raw = yaml.safe_load((trial_dir / "trajectory.yaml").read_text())
+
+    assert type(raw["first_user_message_source"]) is str
+    assert raw["first_user_message_source"] == "pinned"
+    reloaded = Trajectory.model_validate(raw)
+    assert reloaded.first_user_message_source is FirstUserMessageSource.PINNED
 
 
 def test_tools_schemas_yaml_matches_sanitizer_output(tmp_path: Path) -> None:

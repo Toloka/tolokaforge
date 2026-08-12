@@ -6,6 +6,7 @@ end_ts: '2026-01-01T12:00:00+00:00'
 status: completed
 termination_reason: null
 grading_error: null
+first_user_message_source: null
 messages:
 - role: user
   content: Hello

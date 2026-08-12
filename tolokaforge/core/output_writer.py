@@ -128,6 +128,11 @@ class OutputWriter:
                 trajectory.termination_reason.value if trajectory.termination_reason else None
             ),
             "grading_error": trajectory.grading_error,
+            "first_user_message_source": (
+                trajectory.first_user_message_source.value
+                if trajectory.first_user_message_source
+                else None
+            ),
             "messages": [msg.model_dump(mode="json") for msg in trajectory.messages],
         }
 

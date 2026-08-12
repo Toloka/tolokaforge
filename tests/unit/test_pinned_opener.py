@@ -17,7 +17,13 @@ import pytest
 from tolokaforge.core.llm import GenerationResult, UserSimulator
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import classify_loop_error
-from tolokaforge.core.models import Message, MessageRole, TaskConfig, Trajectory
+from tolokaforge.core.models import (
+    FirstUserMessageSource,
+    Message,
+    MessageRole,
+    TaskConfig,
+    Trajectory,
+)
 from tolokaforge.core.run_display_events import LLMCallObservation
 from tolokaforge.core.runner import TrialRunner
 
@@ -89,6 +95,7 @@ class TestPinnedOpener:
         assert trajectory.messages[0].role is MessageRole.USER
         assert trajectory.messages[0].content == PINNED_OPENER
         assert simulator.dispatches == 0
+        assert trajectory.first_user_message_source is FirstUserMessageSource.PINNED
 
     def test_unset_opener_is_generated_by_one_simulator_dispatch(self) -> None:
         task = TaskConfig(task_id="unset-opener-task", description="d")
@@ -99,6 +106,7 @@ class TestPinnedOpener:
         assert trajectory.messages[0].role is MessageRole.USER
         assert trajectory.messages[0].content == GENERATED_OPENER
         assert simulator.dispatches == 1
+        assert trajectory.first_user_message_source is FirstUserMessageSource.SIMULATOR
 
 
 class TestBlankOpenerRefused:
