@@ -9,6 +9,12 @@ did not write. When the attempt budget
 :class:`UserReplyGuard.enforce` raises :class:`UserReplyRefused` and the trial
 fails as a harness error rather than delivering a defective turn.
 
+Two detectors are registered.
+:class:`~tolokaforge.core.actors.scratchpad.ScratchpadDetector` covers a
+reasoning model's own delimiter surviving into the reply; that module carries
+its rule and the recall it gives up. The rest of this docstring is
+:class:`FourthWallDetector`'s.
+
 :class:`FourthWallDetector` covers the simulator stepping outside the customer
 it plays. Its governing rule, which every pattern obeys:
 
@@ -71,6 +77,7 @@ import re
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from tolokaforge.core.actors.scratchpad import ScratchpadDetector
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models.run_config import USER_REPLY_MAX_ATTEMPTS
 from tolokaforge.core.models.trajectory import ReplyDefect
@@ -238,12 +245,13 @@ def _reason_codes(rejected: Sequence[ReplyDefect]) -> list[str]:
     return [f"{defect.detector}:{defect.reason}" for defect in rejected]
 
 
-DEFAULT_REPLY_DETECTORS: tuple[ReplyDetector, ...] = (FourthWallDetector(),)
+DEFAULT_REPLY_DETECTORS: tuple[ReplyDetector, ...] = (FourthWallDetector(), ScratchpadDetector())
 """The detectors every :class:`UserReplyGuard` runs unless told otherwise.
 
-Tuple order is inspection order — the first detector to flag a reply owns it.
-The instances are built once at import and shared by every guard, so a detector
-registered here carries no per-trial state."""
+Tuple order is inspection order — the first detector to flag a reply owns it,
+so a detector's position decides which reason code a reply matching two of them
+is recorded under. The instances are built once at import and shared by every
+guard, so a detector registered here carries no per-trial state."""
 
 
 class UserReplyRefused(RuntimeError):
@@ -253,8 +261,8 @@ class UserReplyRefused(RuntimeError):
     **never quotes the rejected reply**. ``classify_loop_error`` has a prose
     tier keyed on provider names appearing in an exception's text, so a reply
     that happened to discuss one would re-attribute this harness defect to the
-    provider and move the trial out of the measured denominator. The rejected
-    text is evidence and lives in the ``WARNING`` log lines instead.
+    provider and move the trial out of the measured denominator. The matched
+    excerpt is evidence and lives in the ``WARNING`` log lines instead.
     """
 
     def __init__(self, rejected: tuple[ReplyDefect, ...]) -> None:
@@ -262,7 +270,7 @@ class UserReplyRefused(RuntimeError):
         codes = ", ".join(_reason_codes(rejected))
         super().__init__(
             f"User simulator broke frame on all {len(rejected)} generation attempts "
-            f"({codes}); the turn is refused rather than delivered. The rejected text "
+            f"({codes}); the turn is refused rather than delivered. The matched excerpt "
             "is in this trial's guard log lines, deliberately not in this message."
         )
 

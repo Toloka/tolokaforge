@@ -2357,7 +2357,7 @@ Rules:
 
         Every generation passes through
         :class:`~tolokaforge.core.actors.reply_guard.UserReplyGuard`, which
-        regenerates a frame-breaking reply rather than editing it and raises
+        regenerates a reply a detector flags rather than editing it and raises
         :class:`~tolokaforge.core.actors.reply_guard.UserReplyRefused` once the
         attempt budget is spent. The returned text is exactly what the accepted
         generation produced; the discarded attempts' defects ride back on

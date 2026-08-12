@@ -99,7 +99,7 @@ USER_REPLY_MAX_ATTEMPTS = 3
 """How many generations one user turn may cost before the trial is refused.
 
 The user-reply guard (:mod:`tolokaforge.core.actors.reply_guard`) discards a
-frame-breaking reply and regenerates it, so a single turn can issue up to this
+reply a detector flags and regenerates it, so a single turn can issue up to this
 many simulator calls. It is declared here, away from the guard that reads it,
 because ``reply_guard`` imports this package for
 :class:`~tolokaforge.core.models.trajectory.ReplyDefect` — declaring it beside
@@ -229,7 +229,7 @@ class RateLimitProbeConfig(BaseModel):
         them.
 
         The simulator term is multiplied by :data:`USER_REPLY_MAX_ATTEMPTS`:
-        the user-reply guard regenerates a frame-breaking reply, each
+        the user-reply guard regenerates a reply a detector flags, each
         regeneration is a fresh retry controller carrying the whole simulator
         budget, and a 429 does not consume a guard attempt — it propagates out
         of the generation the guard called — so the worst cases compound
@@ -285,7 +285,7 @@ def validate_rate_limit_probe_budget(
     A call already blocked in 429 backoff is not interrupted mid-flight — the
     episode timeout is only evaluated between turns — and one turn issues the
     agent's call plus up to :data:`USER_REPLY_MAX_ATTEMPTS` user-simulator
-    calls, because the user-reply guard regenerates a frame-breaking reply
+    calls, because the user-reply guard regenerates a reply a detector flags
     rather than editing it. The episode check can pass with elapsed time a hair
     under ``episode_timeout_s``, so the worst-case trial wall time is
     ``episode_timeout_s`` plus one whole turn of 429 handling::
@@ -342,7 +342,7 @@ def validate_rate_limit_probe_budget(
             f"{probe.jitter_fraction}) must be strictly below the effective "
             f"episode budget ({episode_timeout_s}s). One turn issues the agent's "
             f"call and up to {USER_REPLY_MAX_ATTEMPTS} user-simulator calls — the "
-            "reply guard regenerates a frame-breaking reply instead of editing it "
+            "reply guard regenerates a reply a detector flags instead of editing it "
             "— back to back, the episode timeout is only checked between turns, "
             "and stop is evaluated on an attempt's outcome — so a larger budget "
             "lets the trial outlive its queue lease and be re-run by another "

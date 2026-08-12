@@ -545,7 +545,7 @@ class Trajectory(BaseModel):
     first_user_message_source: FirstUserMessageSource | None = None
     messages: list[Message]
     # One entry per user turn that cost more than one generation, so a run's
-    # frame-breaking replies — and the trials refused because none was clean —
+    # flagged replies — and the trials refused because none was clean —
     # are diagnosable from the bundle. Empty on a trial where every user turn
     # passed the guard on its first attempt.
     user_reply_guard_events: list[UserReplyGuardEvent] = Field(default_factory=list)
