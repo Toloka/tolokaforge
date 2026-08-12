@@ -140,6 +140,13 @@ would forward the OpenRouter key to the gateway host):
 | `ARENA_AUTOMATION_LLM_PROXY_BASE_URL` | Gateway base URL, including the path its OpenAI-compatible route lives under (commonly `/v1`). A secret rather than a variable because the hostname is usually internal and this repo is public. |
 | `ARENA_AUTOMATION_LLM_PROXY_API_KEY` | Gateway credential. |
 
+A gateway that admits callers by an **attribution header** rather than by the key alone needs
+`LLM_PROXY_HEADERS` (a variable: a JSON map of header name to value, where a value may be a
+`${secret:NAME}` reference) plus a secret per name it references. Both the integration run and
+the Slack poller pass them, so the poll reads the catalog through the same admission a run uses;
+without them such a gateway answers 403 and every model reports as unknown. See
+[`docs/LLM_LAYER.md` § proxy](LLM_LAYER.md#proxy--routing-calls-through-an-llm-gateway).
+
 ## Labels (the state machine)
 
 `automation:integrate-model` (trigger) -> `automation:integrate-running` (observe) ->
@@ -206,18 +213,22 @@ advisory on purpose: a gateway route may be backed by a *different upstream* for
 name, which is a comparability decision for a human, not a transport detail the automaton should
 take on itself.
 
-The name looked up is the one that actually reaches the gateway: litellm strips exactly one
-provider prefix, so this run's `provider: openrouter` + `name: <slug>` config puts the **bare
-slug** on the wire. An `openrouter/<slug>` (or `openrouter/*`) catalog entry is therefore *not*
-evidence for this run — reaching a prefixed route needs the gateway-named config in
-[`docs/LLM_LAYER.md` § naming a gateway route explicitly](LLM_LAYER.md#naming-a-gateway-route-explicitly),
-which this workflow does not use.
+The names looked up are the ones that actually reach the gateway. The engine resolves a route
+from this same catalog, trying `openrouter/<slug>` and then the bare `<slug>`, and addresses the
+gateway by whichever it finds
+([`docs/LLM_LAYER.md` § speaking to the gateway](LLM_LAYER.md#speaking-to-the-gateway)), so this
+lookup checks both in that order and a prefixed-only entry *is* evidence.
+
+The two agree except on a catalog carrying **both** names for one model: this lookup reports the
+prefixed one, while the engine refuses to guess and requires `LLM_PROXY_PREFERRED_ROUTE`, because
+the two names can be backed by different upstreams. On such a catalog the reply promises a route
+the run will not take until that variable is set.
 
 The report distinguishes two strengths, because they are not equally trustworthy:
 
 | Reply says | Means |
 |---|---|
-| `also on the gateway as <route>` | an explicit catalog entry for the bare slug — someone configured this model |
+| `also on the gateway as <route>` | an explicit catalog entry for one of the two names, so someone configured this model |
 | `probably reachable … (matched a passthrough)` | only a wildcard over the slug's own namespace (`x-ai/*`, or a bare `*`) covers it; a live call is the real proof |
 | `not on the gateway` | the catalog was read and does not cover it |
 

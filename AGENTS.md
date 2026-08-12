@@ -182,6 +182,8 @@ make docker-status       # Show Docker service status
 | `ANTHROPIC_API_KEY` | `claude-review.yml` (the reviewer model) and any integration tests that use Claude. NOT used by `integrate-model.yml` (its resolve/finalize agent runs on OpenRouter via the LiteLLM gateway). |
 | `ARENA_AUTOMATION_OPENROUTER_API_KEY` | `integrate-model.yml` - candidate-model probes/reprobes AND the resolve/finalize agent (routed through the LiteLLM -> OpenRouter gateway) |
 | `ARENA_AUTOMATION_SLACK_BOT_TOKEN` | `integrate-model.yml` + `slack-integrate.yml` (thread notifications and the request poller; both degrade to a no-op without it) |
+| `ARENA_AUTOMATION_LLM_PROXY_BASE_URL` + `_API_KEY` | the optional LLM-gateway route in both workflows (both, or neither). Absent means every request runs over OpenRouter and gateway availability reports as unknown. |
+| whatever `vars.LLM_PROXY_HEADERS` references as `${secret:NAME}` | a gateway that admits callers by an attribution header. Both workflows pass the variable and the referenced secrets; see [`docs/AUTO_INTEGRATION.md`](docs/AUTO_INTEGRATION.md). |
 
 Optional secrets (integration tests auto-skip without them): `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, `NOVA_API_KEY`, `TYPESENSE_API_KEY`. CI passes provider keys to test jobs as env vars; runtime code reads them via `SecretManager` (never directly).
 
