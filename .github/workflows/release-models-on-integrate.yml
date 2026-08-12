@@ -26,6 +26,15 @@ on:
     paths:
       - "tolokaforge_models/**"
 
+# Deliberately `write`, not the `contents: read` a permissions linter suggests by
+# default. Permissions can only be maintained or reduced down a reusable-workflow
+# chain, never elevated, so a caller granting `read` would cap the called
+# workflow below the `contents: write` it declares for pushing the bump commit
+# and tag. This is the minimum that lets `release-models.yml` run, not a widening:
+# without a block at all the job would inherit whatever the repository default is.
+permissions:
+  contents: write
+
 # Share the release lane with the manual workflow. A second integration merging
 # while a release is in flight queues behind it rather than racing it to the tag
 # push (`cancel-in-progress: false` — a queued model release must still happen).
