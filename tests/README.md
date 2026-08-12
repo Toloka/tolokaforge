@@ -119,6 +119,7 @@ tests/
     ├── recorded_calls.py     # RecordedToolCall builders
     ├── runner_requests.py    # gRPC request + TaskDescription builders
     ├── servicer_runtime.py   # RuntimeBackend over the in-process servicer + the duplicate-call_id refusal
+    ├── conductor_phases.py   # Arguments for the conductor's _grade / _write_artifacts phases
     ├── timelines.py          # Coherent TrialTimeline fixtures (message view + records)
     ├── trace_constraints.py  # One trace constraint evaluated, for single-verdict assertions
     ├── trace_checks_configs.py  # One authored trace_checks block spanning the whole vocabulary

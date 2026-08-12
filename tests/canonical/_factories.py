@@ -29,6 +29,7 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
+from tolokaforge.core.models.task_config import InteractionMode
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 from tolokaforge.runner.models import TaskDescription
 
@@ -63,22 +64,40 @@ def make_env_endpoints(
     return EnvEndpoints(db_url=db_url, rag_url=rag_url, runner_url=runner_url)
 
 
+class _DefaultScriptedUser:
+    """Sentinel: the caller said nothing about ``actors``, so a scripted user
+    actor applies. Distinct from an explicit ``actors=None``, which declares a
+    task whose user actor resolves from the simulator defaults."""
+
+
+_DEFAULT_SCRIPTED_USER = _DefaultScriptedUser()
+
+
 def make_task_config(
-    *,
     task_id: str = "task-1",
-    name: str = "task-1",
+    *,
+    name: str | None = None,
     category: str = "test",
     description: str = "test task",
+    interaction_mode: InteractionMode = "conversational",
+    actors: dict[str, ActorSpec] | None | _DefaultScriptedUser = _DEFAULT_SCRIPTED_USER,
+    initial_user_message: str | None = None,
     grading: str = "grading.yaml",
 ) -> TaskConfig:
     return TaskConfig(
         task_id=task_id,
-        name=name,
+        name=name or task_id,
         category=category,
         description=description,
         initial_state=InitialStateConfig(),
         tools=ToolsConfig(),
-        actors={"user": ActorSpec(mode="scripted")},
+        interaction_mode=interaction_mode,
+        actors=(
+            {"user": ActorSpec(mode="scripted")}
+            if isinstance(actors, _DefaultScriptedUser)
+            else actors
+        ),
+        initial_user_message=initial_user_message,
         grading=grading,
     )
 

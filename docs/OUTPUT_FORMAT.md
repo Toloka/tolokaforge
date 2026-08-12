@@ -180,6 +180,13 @@ task_id: "051fa6cb-..."
 trial_index: 0
 category: "food_delivery"
 description: "Task description text"
+interaction_mode: "conversational"           # conversational | agent_only
+initial_user_message: "Hi, I need to replace my pass.  "  # verbatim, or null
+user_actor:                                  # resolved UserSimulatorConfig, or null
+  mode: "llm"                                # llm | scripted
+  persona: "frustrated commuter"
+  backstory: "I lost my season pass last week."
+  scripted_flow: null                        # full flow when mode is scripted
 grading_config:
   state_checks: {...}
   transcript_rules: {...}
@@ -227,6 +234,34 @@ model_config:
                                             # null when unconfigured, else a full
                                             # role block with its own resolved.*
 ```
+
+### `interaction_mode` / `initial_user_message` / `user_actor`
+
+Which user drove the trial, and what the authored opener was — answerable from
+the bundle alone, without re-reading the task pack at the commit the run used.
+
+| Key | Values | Meaning |
+|---|---|---|
+| `interaction_mode` | `conversational` \| `agent_only` | Turn-loop shape. `agent_only` never dispatches a user actor. |
+| `initial_user_message` | string \| `null` | The task's pinned opener, verbatim — leading and trailing whitespace included, since this is the text delivered as message index 0. `null` when the task pinned no opener. |
+| `user_actor` | mapping \| `null` | The `UserSimulatorConfig` the conductor resolved: `mode`, `persona`, `backstory`, `scripted_flow`. `null` under `agent_only`, which resolves no simulator at all. |
+
+`interaction_mode` is what makes a `null` actor readable: it is the only thing
+in the bundle that separates "no user actor by design" from a defect, since
+`trajectory.yaml`'s `first_user_message_source` reads `pinned` for an
+`agent_only` trial and for a conversational trial with a pinned opener alike.
+
+`user_actor` records the resolution the run used, not what the pack declared —
+a task declaring no `actors.user` records the defaults that applied
+(`mode: llm`, `persona: cooperative`), the same way `tools`, `policies` and
+`model_config.<role>.resolved.*` read. `scripted_flow` is recorded in full: it
+drove the conversation, and a trial whose user turns were scripted has no other
+record of what was said.
+
+`user_actor` does not survive a `TaskConfig` reload; it is the record, not the
+authoring. `TaskConfig` ignores unknown keys, so `TaskConfig(**task.yaml)` drops
+it and resolves the default simulator — while `interaction_mode` and
+`initial_user_message`, both `TaskConfig` fields, are picked back up.
 
 ### `model_config.<role>.resolved.*` (Stage 7, P6)
 
@@ -1411,6 +1446,7 @@ evidence about us, and our own defects stay counted. See
 | `aggregate.json` | `schema_version` | `3` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, or the `outcomes_by_reason` class vocabulary |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |
+| `task.yaml.user_actor` | — (struct-typed) | n/a | Mirrors `UserSimulatorConfig`; fields grow, removing one is a breaking change |
 | `prompts.yaml` | — | n/a | Two-key mapping; field names match the legacy `Trajectory.system_prompt` / `Trajectory.user_system_prompt` |
 | `tools_schemas.yaml` | — | n/a | Format is the litellm tool-schema dict list, post-`schema_sanitizer` |
 | `tool_log.yaml` | — (struct-typed) | n/a | Format is the `RecordedToolCall` list; its presence is stamped by `metrics.yaml`'s `schema_version` |

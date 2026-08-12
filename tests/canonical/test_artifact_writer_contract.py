@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.models import (
@@ -153,6 +154,33 @@ class TestPerTrialMethodParity:
                 env,
                 logger,  # type: ignore[arg-type]
             )
+
+
+class TestWriteTaskOutputParity:
+    """``write_task`` records the *same mapping* on both implementations, not
+    merely the same argument: the file's key list is the caller's key list, in
+    the caller's order, whatever those keys are.
+    """
+
+    def test_both_writers_record_the_callers_task_snapshot(self, tmp_path: Path) -> None:
+        snapshot: dict[str, Any] = {
+            "task_id": "airline_001",
+            "description": "book",
+            "interaction_mode": "conversational",
+            "initial_user_message": "Hi, I need to replace my pass.",
+            "user_actor": {"mode": "llm", "persona": "frustrated commuter"},
+        }
+        trial_dir = tmp_path / "trial"
+        in_memory = InMemoryArtifactWriter()
+        FileArtifactWriter().write_task(trial_dir, snapshot)
+        in_memory.write_task(trial_dir, snapshot)
+
+        recorded = in_memory.trials[trial_dir].task
+        loaded = yaml.safe_load((trial_dir / "task.yaml").read_text(encoding="utf-8"))
+
+        assert recorded is not None
+        assert loaded == recorded
+        assert list(loaded) == list(recorded)
 
 
 class TestInMemoryWriterBundleSemantics:
