@@ -2181,7 +2181,7 @@ def _check_safe_bind_mounts(services: dict[str, dict[str, Any]]) -> None:
                 f"compose service {name!r}: `volumes:` must be a list; got {type(volumes).__name__}"
             )
         for idx, entry in enumerate(volumes):
-            source = _bind_mount_source(entry)
+            source = bind_mount_source(entry)
             if source is None:
                 continue
             _check_safe_relative_path(source, f"compose service {name!r} volumes[{idx}].source")
@@ -2284,9 +2284,13 @@ def _check_depends_on_resolves(services: dict[str, dict[str, Any]]) -> None:
                 )
 
 
-def _bind_mount_source(entry: Any) -> str | None:
+def bind_mount_source(entry: Any) -> str | None:
     """Return the bind-mount source path from a compose volume entry, or
     ``None`` if the entry is a named volume / not a bind mount.
+
+    Public because materialisation reads it too: ``inject_runner_credentials``
+    refuses a service whose bind mount would reach the credentialled compose
+    file, and both call sites must agree on what counts as a bind mount.
     """
     if isinstance(entry, str):
         # Short form: "SOURCE:TARGET[:MODE]". Bind if SOURCE contains a path separator

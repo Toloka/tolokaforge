@@ -26,6 +26,7 @@ from tolokaforge.core.compose_materialisation import LogCaptureConfig
 from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest
+from tolokaforge.secrets import CONTAINER_SECRETS_ENV_VAR
 
 pytestmark = pytest.mark.unit
 
@@ -122,6 +123,10 @@ class TestConnectMaterialises:
                 lambda *a, **k: None,
             ),
             patch(
+                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
+                lambda *a, **k: None,
+            ),
+            patch(
                 "tolokaforge.core.shared_stack_runtime.resolve_runner_endpoint",
                 return_value=("localhost", 60051),
             ),
@@ -168,6 +173,10 @@ class TestConnectMaterialises:
                 lambda *a, **k: None,
             ),
             patch(
+                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
+                lambda *a, **k: None,
+            ),
+            patch(
                 "tolokaforge.core.shared_stack_runtime.resolve_runner_endpoint",
                 return_value=None,
             ),
@@ -207,6 +216,10 @@ class TestConnectMaterialises:
                 lambda *a, **k: None,
             ),
             patch(
+                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
+                lambda *a, **k: None,
+            ),
+            patch(
                 "tolokaforge.core.shared_stack_runtime.resolve_runner_endpoint",
                 return_value=("localhost", 60051),
             ),
@@ -238,6 +251,10 @@ class TestConnectMaterialises:
             ),
             patch(
                 "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
+                lambda *a, **k: None,
+            ),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
                 lambda *a, **k: None,
             ),
             patch(
@@ -284,6 +301,10 @@ class TestConnectMaterialises:
                 lambda *a, **k: None,
             ),
             patch(
+                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
+                lambda *a, **k: None,
+            ),
+            patch(
                 "tolokaforge.core.shared_stack_runtime.cleanup_partial_materialisation",
                 side_effect=assert_captured_first,
             ),
@@ -326,6 +347,10 @@ class TestConnectMaterialises:
                 "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
                 lambda *a, **k: None,
             ),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
+                lambda *a, **k: None,
+            ),
             patch("tolokaforge.core.shared_stack_runtime.cleanup_partial_materialisation"),
             patch(
                 "tolokaforge.core.shared_stack_runtime.capture_compose_service_logs",
@@ -352,6 +377,10 @@ class TestConnectMaterialises:
             ),
             patch(
                 "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
+                lambda *a, **k: None,
+            ),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
                 lambda *a, **k: None,
             ),
             patch(
@@ -390,6 +419,10 @@ class TestConnectMaterialises:
             ),
             patch(
                 "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
+                lambda *a, **k: None,
+            ),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
                 lambda *a, **k: None,
             ),
             patch(
@@ -505,3 +538,41 @@ class TestMaterialiseIdempotent:
 
         # State preserved — no clobber.
         assert backend._compose is fake_compose
+
+
+class TestConnectDeliversCredentials:
+    """Asserted on the artifact that reaches ``docker compose``, with every
+    materialisation transform left real — the stubs the rest of this file uses
+    would prove nothing about the file the daemon reads."""
+
+    def test_the_materialised_compose_file_gives_only_the_runner_the_payload(
+        self, tmp_path: Path, installed_fake_secrets
+    ) -> None:
+        manifest = _make_manifest(tmp_path)
+        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-creds")
+
+        with (
+            patch("tolokaforge.core.shared_stack_runtime.DockerCompose", return_value=MagicMock()),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.resolve_runner_endpoint",
+                return_value=("localhost", 60051),
+            ),
+            patch(
+                "tolokaforge.core.shared_stack_runtime.resolve_env_endpoints",
+                return_value=EnvEndpoints(db_url=None, rag_url=None, runner_url="http://x:1"),
+            ),
+            patch("tolokaforge.core.shared_stack_runtime.GrpcRunnerClient"),
+        ):
+            backend.connect()
+
+        assert backend._temp_dir is not None
+        materialised = backend._temp_dir / manifest.compose_file.name
+        services = yaml.safe_load(materialised.read_text())["services"]
+        try:
+            assert CONTAINER_SECRETS_ENV_VAR in services["runner"]["environment"]
+            for name, service in services.items():
+                if name == "runner":
+                    continue
+                assert CONTAINER_SECRETS_ENV_VAR not in yaml.safe_dump(service)
+        finally:
+            backend.close()
