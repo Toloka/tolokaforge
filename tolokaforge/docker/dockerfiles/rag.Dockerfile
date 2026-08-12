@@ -14,6 +14,23 @@ WORKDIR /app
 COPY tolokaforge/env/rag_service/requirements.txt ./service-requirements.txt
 RUN pip install --no-cache-dir -r service-requirements.txt
 
+# Bake the embedding model into the image by performing the load the service
+# performs, so the weights the runtime resolves are the ones tested here.
+#
+# This layer must stay above every layer carrying tolokaforge source: app.py
+# ships inside the wheel installed below, so a bake placed after that COPY
+# re-downloads 88MB on every edit to any tolokaforge file. Its cache key here
+# is {base image, service-requirements.txt, EMBEDDING_MODEL, this command}.
+ARG EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+ENV HF_HOME=/opt/hf-cache
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"
+
+# Offline only after the bake — set before it, the bake itself is refused and
+# the build fails. The runtime model name comes from the same ARG the bake
+# used, so the model the service loads is by construction the baked one.
+ENV HF_HUB_OFFLINE=1
+ENV EMBEDDING_MODEL=${EMBEDDING_MODEL}
+
 # Install the tolokaforge package from a pre-built wheel so service code
 # can ``import tolokaforge.secrets`` for the global log redactor.
 # The wheel is placed in the build context by the host-side wheel resolver;
@@ -36,13 +53,12 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8001
 
 # python-urllib probe avoids a curl dependency on the slim base.
-# start-period is long because the service eagerly loads the all-MiniLM-L6-v2
-# embedding model at startup (~45s standalone, longer under container
-# contention). Probe failures during start-period don't count toward retries,
-# so a healthy rag still flips to healthy the instant /health returns 200 — the
-# only effect of the wide grace is to stop `compose up --wait` from declaring a
-# still-loading container unhealthy before the model finishes.
-HEALTHCHECK --interval=10s --timeout=5s --retries=3 --start-period=120s \
+# The service loads the baked embedding model at startup with no network in the
+# path — measured 3.5s from container start to serving, of which the load is
+# 0.1s — and the grace covers that with headroom. Probe failures during
+# start-period don't count toward retries, so the container still flips to
+# healthy the instant /health returns 200.
+HEALTHCHECK --interval=10s --timeout=5s --retries=3 --start-period=30s \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')" || exit 1
 
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8001"]

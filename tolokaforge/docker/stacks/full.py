@@ -107,11 +107,6 @@ def full_stack(
         environment={
             "PYTHONUNBUFFERED": "1",
             "CORPUS_PATH": "/env/rag/corpus",
-            # Keep the HuggingFace cache on the rag_data volume: the default
-            # (~/.cache inside the container) is destroyed on every container
-            # recreation, so the sentence-transformers model was re-downloaded
-            # on each run and cold starts regularly blew the health timeout.
-            "HF_HOME": "/env/rag/hf_cache",
         },
         health_probe=HealthProbe.http(
             # "{port:8001}" is a deferred host-port placeholder resolved by
@@ -119,11 +114,10 @@ def full_stack(
             # known — this keeps the custom timeout below, which the generic
             # deferred-probe fallback (30s) would lose.
             url="http://localhost:{port:8001}/health",
-            # rag-service warmup loads sentence-transformers + tokenizer
-            # (downloads on first run, then cached on the rag_data volume).
-            # The first-ever download can exceed 120s on slow networks; warm
-            # starts still resolve within a few seconds.
-            timeout_s=300.0,
+            # rag-service warmup loads sentence-transformers + the baked
+            # embedding model, which is slower than the other services' start
+            # but contacts nothing.
+            timeout_s=60.0,
             interval_s=1.0,
         ),
         networks=["runner-net"],

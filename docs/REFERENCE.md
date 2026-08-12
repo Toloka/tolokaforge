@@ -533,9 +533,18 @@ Base URL: `http://rag-service:8001`
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/search` | POST | Search documents (body: `{query, top_k}`) |
-| `/index` | POST | Build index (body: `{corpus_dir}`) |
-| `/health` | GET | Health check |
+| `/trials/{trial_id}/index` | POST | Index a trial's documents (body: `{trial_id, domain_name, documents}`) |
+| `/trials/{trial_id}/search` | POST | Search a trial's index (body: `{query, top_k, alpha}`) |
+| `/trials/{trial_id}/index` | DELETE | Drop a trial's index |
+| `/search` | POST | Search the `global` trial's index (body: `{query, top_k, alpha}`) |
+| `/health` | GET | Health check — `503 "degraded"` when the embedding model failed to load |
+
+The image bakes `sentence-transformers/all-MiniLM-L6-v2` and runs with
+`HF_HUB_OFFLINE=1`, so startup loads it from disk and contacts nothing.
+`EMBEDDING_MODEL` selects the model at runtime; a value other than the baked one
+cannot be fetched under the offline pin, so the load fails and `/health` answers
+`503` naming that model. To run a different model, set `HF_HUB_OFFLINE=0` and
+accept a download at startup.
 
 ### Mock Web API
 

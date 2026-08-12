@@ -388,6 +388,25 @@ tags by content hash and does **not** move `:latest`, which is the tag the
 testcontainer fixtures pin, so retag after building:
 `docker tag <fresh-ref> tolokaforge-runner:latest` (#740).
 
+**No test run downloads the embedding model.** The rag-service image carries
+`all-MiniLM-L6-v2` and runs offline, so the 88MB download happens once, when the
+image is built or pulled — a test run costs a ~3.5s container start. The
+build-only-when-absent rule bites here the same way it does for the runner: a
+**stale** `tolokaforge-rag-service:latest` predating that bake is never rebuilt,
+and it downloads the model at container start, inside the fixture's 60s wait. On
+a fast link it succeeds and the suite merely runs slower; on a slow one the wait
+expires mid-download, and the log tail the fixture attaches shows exactly that.
+Rebuild and retag:
+
+```bash
+uv run tolokaforge docker build --service rag-service
+docker tag <fresh-ref> tolokaforge-rag-service:latest
+```
+
+When a container fixture's wait strategy does give up, the failure names the
+service and carries that container's last 40 log lines, so the reason is in the
+pytest output rather than in a `docker logs` command nobody ran.
+
 Some suites in this tier are the `enforcing_test` a grading-key manifest entry
 names — `test_docker_grading_hash_composition.py` for the `state_checks.hash`
 family and for `state_checks.numeric_string_fields`,
@@ -467,6 +486,7 @@ All markers are enforced via `--strict-markers`.
 | `canon_snapshot` | `canonical/conftest.py` | All canonical tests |
 | `food_delivery_2_*` | `canonical/conftest.py` | Canonical golden-set tests |
 | `json_db_container` | `utils/containers.py` | Integration security tests |
+| `rag_service_container` | `utils/containers.py` | Integration tests needing `search_kb` |
 | `runner_container` | `utils/containers.py` | Integration security tests |
 
 ## Writing New Tests
