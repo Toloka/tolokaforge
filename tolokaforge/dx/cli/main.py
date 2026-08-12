@@ -581,6 +581,21 @@ def _run_dry_run(
         "provider. See docs/CLI.md § Dry run."
     ),
 )
+@click.option(
+    "--image-source",
+    "image_source",
+    type=click.Choice(["auto", "pull", "build"]),
+    default=None,
+    help=(
+        "Where first-party service images come from. 'auto' (the default "
+        "when unset) pulls the published tolokasoft1/tolokaforge-<svc>:<version> "
+        "images from Docker Hub on wheel installs and builds locally from a "
+        "source checkout; 'pull' always pulls and hard-fails if the tag is "
+        "missing or unreachable; 'build' always builds locally. Overrides "
+        "docker.image_source in the run config. Env: TOLOKAFORGE_IMAGE_SOURCE. "
+        "Precedence: flag > env > config > default. See docs/RUNNER.md."
+    ),
+)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -597,6 +612,7 @@ def run(
     cost_limit: float | None,
     time_limit: str | None,
     dry_run: bool,
+    image_source: str | None,
 ):
     """Run benchmark with specified configuration"""
     if verbose:
@@ -677,6 +693,20 @@ def run(
             time_limit_seconds = parse_duration(time_limit)
         except ValueError as exc:
             raise click.BadParameter(f"--time-limit: {exc}") from exc
+
+    # --image-source / TOLOKAFORGE_IMAGE_SOURCE controls whether service
+    # images are pulled from Docker Hub or built locally. Precedence:
+    # flag > env > YAML config > default (auto). Same ad-hoc pattern as
+    # --user-model / --judge-model above.
+    image_source_override = image_source or os.environ.get("TOLOKAFORGE_IMAGE_SOURCE")
+    if image_source_override:
+        if image_source_override not in ("auto", "pull", "build"):
+            raise click.BadParameter(
+                f"TOLOKAFORGE_IMAGE_SOURCE={image_source_override!r} is not one of "
+                "'auto', 'pull', 'build'",
+                param_hint="TOLOKAFORGE_IMAGE_SOURCE",
+            )
+        config_data.setdefault("docker", {})["image_source"] = image_source_override
 
     run_config = construct_config(RunConfig, config_data, source=Path(config))
 
