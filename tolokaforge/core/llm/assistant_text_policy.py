@@ -33,10 +33,10 @@ ships in-engine:
   Every provider we ship a preset for today puts the response verbatim on
   ``message.content``.
 * A per-provider marker-stripping subclass — expressible via the seam
-  without engine edits. The Cohere ``<|START_TEXT|>…<|END_TEXT|>`` case is
-  the load-bearing example, covered by a fixture-scope subclass in the
-  unit test ``tests/unit/llm/test_assistant_text_policy_seam.py``. The
-  shipped Cohere policy lands with the follow-up preset PR (#929).
+  without engine edits. The Cohere ``<|START_TEXT|>…<|END_TEXT|>`` case
+  is covered by a fixture-scope subclass in the unit test
+  ``tests/unit/llm/test_assistant_text_policy_seam.py``; a shipped
+  Cohere policy ships alongside the Cohere preset when the family lands.
 """
 
 from __future__ import annotations

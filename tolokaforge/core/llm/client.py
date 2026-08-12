@@ -772,8 +772,8 @@ class LLMClient:
                     )
                     return keys
 
-        if binding.api_keys_env == "OPENROUTER_API_KEYS":
-            key_file = os.environ.get("OPENROUTER_KEY_FILE", "keys.txt")
+        if binding.key_file_env is not None:
+            key_file = os.environ.get(binding.key_file_env, "keys.txt")
             if os.path.exists(key_file):
                 keys = []
                 with open(key_file) as f:
@@ -1959,23 +1959,27 @@ class LLMClient:
 
         while True:
             try:
-                if binding.kwargs_pin_transport:
-                    from tolokaforge.secrets import get_default
-
-                    kwargs["api_base"] = binding.endpoint
-                    kwargs["api_key"] = get_default().get_secret(binding.api_key_env)
-                    if not kwargs["api_key"]:
-                        raise RuntimeError(
-                            f"{binding.api_key_env} is required for {self.provider} provider — "
-                            f"set it in .env or the environment so SecretManager can resolve it"
-                        )
-
-                # Not when routed: _build_kwargs already set the gateway's dialect
-                # (renamed via PR #942 so the gateway sees its own protocol) and
-                # overwriting either the custom_llm_provider or the model slug
-                # here reverts the name AND the body shape. Skip both provider-
-                # binding steps under a gateway route; the gateway owns them.
+                # Every binding-driven kwarg rewrite is skipped when the call
+                # is routed through the gateway: `_build_kwargs` already set
+                # the gateway's dialect + api_base, and overwriting them from
+                # the provider binding here reverts the name AND the body
+                # shape. `kwargs_pin_transport` pins api_base/api_key per
+                # attempt (Nova needs the key read fresh because rotation
+                # clears it), so it belongs under the same guard — a routable
+                # pin-transport provider (none today; hypothetical future
+                # binding) would otherwise fight the gateway.
                 if self._gateway_route is None:
+                    if binding.kwargs_pin_transport:
+                        from tolokaforge.secrets import get_default
+
+                        kwargs["api_base"] = binding.endpoint
+                        kwargs["api_key"] = get_default().get_secret(binding.api_key_env)
+                        if not kwargs["api_key"]:
+                            raise RuntimeError(
+                                f"{binding.api_key_env} is required for {self.provider} provider — "
+                                f"set it in .env or the environment so SecretManager can resolve it"
+                            )
+
                     if binding.custom_llm_provider is not None:
                         kwargs["custom_llm_provider"] = binding.custom_llm_provider
                     elif "/" in self.config.provider:

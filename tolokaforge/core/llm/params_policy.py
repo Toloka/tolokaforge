@@ -62,7 +62,7 @@ from tolokaforge.core.llm.reasoning import ReasoningConfig
 
 __all__ = [
     "ParamsPolicy",
-    "ParamPolicy",
+    "ParamPolicy",  # noqa: F822 — resolved via module-level __getattr__ shim
     "GenerationParams",
 ]
 
@@ -105,7 +105,31 @@ class ParamsPolicy(ABC):
     ) -> dict[str, Any]: ...
 
 
-ParamPolicy = ParamsPolicy
+#: Deprecated alias for :class:`ParamsPolicy`. Kept as a class-identity
+#: alias (``ParamPolicy is ParamsPolicy`` remains true) so
+#: ``isinstance()`` / ``issubclass()`` checks against either name continue
+#: to work. Module-level ``__getattr__`` below emits a one-off
+#: :class:`DeprecationWarning` on the old name; direct references to
+#: :class:`ParamsPolicy` are silent. Shim removed in v0.18.0.
+_LEGACY_PARAM_POLICY_WARNED: set[str] = set()
+
+
+def __getattr__(name: str) -> Any:
+    if name == "ParamPolicy":
+        if "ParamPolicy" not in _LEGACY_PARAM_POLICY_WARNED:
+            import warnings
+
+            warnings.warn(
+                "tolokaforge.core.llm.params_policy.ParamPolicy is "
+                "deprecated; import "
+                "tolokaforge.core.llm.params_policy.ParamsPolicy instead. "
+                "Shim removed in v0.18.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            _LEGACY_PARAM_POLICY_WARNED.add("ParamPolicy")
+        return ParamsPolicy
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class GenerationParams(ParamsPolicy):

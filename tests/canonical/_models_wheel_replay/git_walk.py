@@ -100,11 +100,11 @@ def enumerate_integration_commits(repo_root: Path) -> list[IntegrationCommit]:
                 "may have changed"
             )
         pr_match = _PR_RE.search(subject)
-        if pr_match is None and subject.rstrip() != f"integrate: {model_match.group(1)}":
-            raise RuntimeError(
-                f"commit {sha}: subject '{subject}' has neither a trailing "
-                "'(#N)' group nor terminates immediately after the model slug"
-            )
+        # The `(#N)` suffix is GitHub's default squash-merge subject
+        # decoration. Its absence means the repo's squash-title setting is
+        # off or the commit landed via a different flow; the replay only
+        # needs the model slug + touched files, so surface a warning-shape
+        # ``None`` PR rather than hard-failing the walk.
         pr = int(pr_match.group(1)) if pr_match is not None else None
         touched_output = _run_git(
             repo_root, ["diff-tree", "--no-commit-id", "--name-only", "-r", sha]

@@ -54,12 +54,28 @@ class TestSensitiveKeyRedaction:
         assert result[key] == _REDACTED
 
     @pytest.mark.parametrize(
-        "key", ["user_id", "trial_id", "model_name", "provider", "duration", "count"]
+        "key",
+        [
+            "user_id",
+            "trial_id",
+            "model_name",
+            "provider",
+            "duration",
+            "count",
+            # Telemetry keys ending in `_tokens` are NOT credentials — the
+            # `token`/`access_token` exact-form set redacts on word-boundary
+            # matches only. Regression guard: if the redactor widens back
+            # to substring `token`, these red.
+            "max_tokens",
+            "total_tokens",
+            "prompt_tokens",
+            "completion_tokens",
+        ],
     )
     def test_non_sensitive_key_value_is_kept(self, key: str) -> None:
-        result = StructuredLogger._sanitize_extra({key: "keep_me"})
+        result = StructuredLogger._sanitize_extra({key: 42})
 
-        assert result[key] == "keep_me"
+        assert result[key] == 42
 
     def test_reserved_and_sensitive_combine_correctly(self) -> None:
         """A reserved-key rename followed by a sensitive-key match — the

@@ -1,6 +1,6 @@
 """Per-capability probe registration for the certification seam.
 
-Out-of-tree consumers (notably the future ``tolokaforge-models`` wheel)
+Out-of-tree consumers (notably the ``tolokaforge-models`` wheel)
 register callable probe bodies for a
 :class:`~tolokaforge.testing.certify._capability.Capability` — optionally
 scoped to one ``model_id`` — via :func:`register_probe`. Lookups go

@@ -49,8 +49,7 @@ BUCKET_A_ALLOWED_FILES: frozenset[str] = frozenset(
 
 # Prefix allow-list — any file whose path starts with one of these
 # prefixes is treated as data / models-wheel content. Extend when a
-# milestone PR lands a new data category (see AGENTS.md § "Adding a new
-# model / provider" for the maintenance discipline).
+# milestone PR lands a new data category.
 BUCKET_A_ALLOWED_PREFIXES: tuple[str, ...] = (
     "tolokaforge_models/",
     "tolokaforge/core/data/",

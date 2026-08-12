@@ -30,7 +30,7 @@ from tolokaforge.core.llm.message_assembly_policy import (
     NovaMessageAssembly,
     NullMessageAssembly,
 )
-from tolokaforge.core.llm.params_policy import GenerationParams, ParamPolicy, ParamsPolicy
+from tolokaforge.core.llm.params_policy import GenerationParams, ParamsPolicy
 from tolokaforge.core.llm.prompt_policy import (
     DictMapHints,
     NoPromptEnrichment,
@@ -110,6 +110,21 @@ _WARNED: set[str] = set()
 
 
 def __getattr__(name: str) -> Any:  # pragma: no cover - simple delegator
+    # ``ParamPolicy`` is a class-identity alias for :class:`ParamsPolicy`
+    # kept for one release. Same shim shape as the eight moved subclasses:
+    # one warning per name per process, resolves to the current class.
+    if name == "ParamPolicy":
+        if name not in _WARNED:
+            import warnings
+
+            warnings.warn(
+                "tolokaforge.core.llm.ParamPolicy is deprecated; import "
+                "ParamsPolicy instead. Shim removed in v0.18.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            _WARNED.add(name)
+        return ParamsPolicy
     module_path = _MOVED_SUBCLASSES.get(name)
     if module_path is not None:
         if name not in _WARNED:

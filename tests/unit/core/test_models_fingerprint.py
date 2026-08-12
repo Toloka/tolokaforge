@@ -64,9 +64,15 @@ def test_field_shape_reflects_installed_models_wheel() -> None:
 def test_minimum_engine_version_parses_as_pep440_specifier() -> None:
     spec = SpecifierSet(tolokaforge_models.minimum_engine_version)
 
+    # The range accepts any engine >= 0.17 up to (but not including) 1.0.0 —
+    # the widening intent from Milestone 29's release-bookkeeping review is
+    # that a future engine minor bump shouldn't automatically become a
+    # coordinated two-wheel release.
     assert "0.17.0" in spec
     assert "0.17.5" in spec
-    assert "0.18.0" not in spec
+    assert "0.18.0" in spec
+    assert "0.99.0" in spec
+    assert "1.0.0" not in spec
     assert "0.16.9" not in spec
 
 

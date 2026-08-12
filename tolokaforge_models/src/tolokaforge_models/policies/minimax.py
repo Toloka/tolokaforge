@@ -158,7 +158,7 @@ class ItemRecursiveUnwrapResponse:
 
     Multi-key dicts (e.g. ``{"item": "a", "refund-requested": ""}``) are left
     unchanged — there is no safe way to guess which key is the value, so we
-    refuse rather than corrupt (AGENTS.md rule #1).
+    refuse rather than corrupt.
 
     Scoped to :data:`ARRAY_SITES` (``updates.tags`` / ``item.tags``) only.
     """

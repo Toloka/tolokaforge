@@ -153,7 +153,7 @@ class TestEngineRunStatePersistence:
             package_version="1.0.0",
             content_sha256="0" * 64,
             api_version=1,
-            minimum_engine_version=">=0.17,<0.18",
+            minimum_engine_version=">=0.17,<1.0",
         )
         write_engine_run_state(
             tmp_path,

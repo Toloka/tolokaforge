@@ -182,24 +182,64 @@ Dockerfiles and wheel still build.
 
 ## Typical order
 
-The engine + image release, and the `tolokaforge-models` release, are
-independent. Each has its own tag axis and its own workflow.
+The engine + image release and the `tolokaforge-models` release are
+independent axes, each with its own tag and workflow. But they are **not
+symmetric on first publish** — the engine wheel declares
+`tolokaforge-models>=1.0.0,<2.0.0` in `[project].dependencies`, so
+`pip install tolokaforge==<version>` fails to resolve until the models
+wheel exists on PyPI. **Publish `tolokaforge-models` first, then the
+engine.** After both have shipped once, subsequent releases on either
+axis are order-independent.
 
-For the engine + image axis:
+For the first-time cutover (this milestone) — models before engine:
 
-1. Run "Release (cz bump)" to cut `vX.Y.Z` — this sets the engine version,
-   publishes the `tolokaforge` package, and pushes `image-vX.Y.Z-rc.1` to
-   build the rc images.
-2. Verify the rc images.
-3. `git tag image-vX.Y.Z && git push origin image-vX.Y.Z` to publish the
-   stable images and move `:latest`.
+1. Run "Release tolokaforge-models (cz bump)" to cut `models-v1.0.0` and
+   publish `tolokaforge-models 1.0.0` to PyPI. Verify the wheel appears
+   at https://pypi.org/project/tolokaforge-models/.
+2. Then run "Release (cz bump)" to cut `vX.Y.Z` on the engine, publish
+   `tolokaforge`, and push `image-vX.Y.Z-rc.1`.
+3. Verify the rc images.
+4. `git tag image-vX.Y.Z && git push origin image-vX.Y.Z` to publish
+   stable images.
 
-For the `tolokaforge-models` axis:
+For any subsequent release once both wheels have shipped, either axis can
+go first:
 
-1. Run "Release tolokaforge-models (cz bump)" to cut `models-vX.Y.Z` — this
-   sets the models version, regenerates
-   `tolokaforge_models/CHANGELOG.md`, and publishes the `tolokaforge-models`
-   package to PyPI. No image tag is cut; the wheel ships data, not runtime.
+- **Engine + image axis** — same steps 2-4 above; `pip install tolokaforge`
+  resolves `tolokaforge-models` from PyPI (existing 1.x satisfies the pin).
+- **`tolokaforge-models` axis** — "Release tolokaforge-models (cz bump)"
+  cuts `models-vX.Y.Z`, regenerates `tolokaforge_models/CHANGELOG.md`,
+  publishes to PyPI. No image tag; the wheel ships data, not runtime.
+
+### `models-v1.0.0` is hand-tagged
+
+`release-models.yml`'s `cz bump` derives an *increment* from the
+Conventional Commits since the last `models-v*` tag. Before the first
+publish there is no such tag, so a bump would land the wheel *past* 1.0.0
+even with `models_v1.0.0`'s pyproject already at `1.0.0`. **The very
+first models release is created by hand**:
+
+```bash
+git tag models-v1.0.0
+git push origin models-v1.0.0
+```
+
+The tag push fires `publish-tolokaforge-models.yml`, which builds the
+wheel and uploads via OIDC. All *subsequent* models releases go through
+`release-models.yml`.
+
+### commitizen scope limitation
+
+`release-models.yml` runs `cz bump` with `working-directory:
+tolokaforge_models`. That controls which config commitizen reads and
+where it writes; it does NOT filter the *commits* commitizen scans.
+Every conventional commit reachable from `HEAD` since the last
+`models-v*` tag participates in the increment derivation. In practice
+this rarely matters — Milestone 29's split is why per-tree cadence
+exists — but if an engine-only PR lands a `feat!:` between two models
+releases, the next `models-v*` bump reads it as `major`. Override with
+`--increment=patch` / `minor` / `major` on `workflow_dispatch` when
+that mismatch shows up.
 
 ## Downstream data-resource consumers
 

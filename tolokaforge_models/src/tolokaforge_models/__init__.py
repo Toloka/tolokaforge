@@ -1,8 +1,8 @@
 """Model data and per-model policy subclasses for tolokaforge.
 
 This wheel ships the bundled ``pricing.json``, ``model_presets.yaml``,
-and ``providers.yaml`` tables, plus (populated by later stages) the
-per-model policy subclasses and the ``ModelCertificate`` registry that
+and ``providers.yaml`` tables, plus the per-model policy subclasses
+and the ``ModelCertificate`` registry that
 the engine consumes through its light seam in
 :mod:`tolokaforge.core.model_data`.
 
@@ -29,7 +29,7 @@ __api_version__: Final[int] = 1
 engine. Bumped whenever the engine-side loader must change to keep
 reading this wheel's registrations."""
 
-minimum_engine_version: Final[str] = ">=0.17,<0.18"
+minimum_engine_version: Final[str] = ">=0.17,<1.0"
 """PEP 440 specifier naming the engine range this wheel targets. The
 engine consults this string at import time to refuse to boot against
 an incompatible pair (see :mod:`tolokaforge.core.model_data`)."""

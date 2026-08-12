@@ -43,7 +43,7 @@ seam module at
   engine-side loader must change to keep reading this wheel's
   registrations.
 - **minimum-engine-version**:
-  `minimum_engine_version = ">=0.17,<0.18"`. The engine reads this PEP
+  `minimum_engine_version = ">=0.17,<1.0"`. The engine reads this PEP
   440 specifier at `tolokaforge.core.llm.presets` import via
   `_check_minimum_engine_version()` and refuses to boot on an installed
   engine that does not satisfy it — see

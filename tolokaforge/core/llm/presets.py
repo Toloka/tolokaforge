@@ -185,6 +185,11 @@ def _merge_out_of_tree_policy_registrations() -> None:
             _POLICY_REGISTRIES[slot_name][policy_name] = cls
 
 
+# Fire the install-time gate FIRST so a version-skewed models wheel dies with
+# the actionable ``pip install tolokaforge-models`` / "upgrade the engine"
+# message before ``ep.load()`` inside the merge-loader gets a chance to raise
+# a raw ``ImportError``.
+_check_minimum_engine_version()
 _merge_out_of_tree_policy_registrations()
 
 
@@ -262,7 +267,9 @@ def _models_declared_extra_params_keys() -> frozenset[str]:
     validation strict on typos while staying silent on legitimate models-wheel
     version skew.
     """
-    # TODO(#645): populate from tolokaforge.core.model_data.
+    # Placeholder for a future models-wheel-declared extra-params surface.
+    # No consumer today; the overlay validator's union with
+    # `_params_slot_known_keys` stays silent when this returns empty.
     return frozenset()
 
 
@@ -1182,12 +1189,39 @@ def _check_class_names_resolve() -> None:
                 policy_name: str | None = value
             elif isinstance(value, dict):
                 raw_name = value.get("name")
-                policy_name = raw_name if isinstance(raw_name, str) else None
+                if raw_name is None or not isinstance(raw_name, str):
+                    # Malformed shape — dict slot value without a string
+                    # ``name`` key. `_check_block`'s overlay validator
+                    # fails loud on the overlay path; the bundled file
+                    # goes through this walk instead, so surface the
+                    # same class of error here.
+                    unresolved.append(
+                        (
+                            where,
+                            slot,
+                            f"<malformed slot value: {value!r}>",
+                            [],
+                        )
+                    )
+                    continue
+                policy_name = raw_name
             else:
+                # Shape neither string nor dict — same as above, the
+                # bundled file's overlay validator does not run against
+                # the bundled path so this gate must catch it.
+                unresolved.append(
+                    (
+                        where,
+                        slot,
+                        f"<malformed slot value type {type(value).__name__}: {value!r}>",
+                        [],
+                    )
+                )
                 continue
-            if policy_name is None or policy_name in registry:
+            if policy_name in registry:
                 continue
-            close = difflib.get_close_matches(policy_name, sorted(registry), n=3, cutoff=0.6)
+            sorted_registry = sorted(registry)
+            close = difflib.get_close_matches(policy_name, sorted_registry, n=3, cutoff=0.6)
             unresolved.append((where, slot, policy_name, close))
 
     _walk_block(bundled.get("default"), "default")
@@ -1215,5 +1249,7 @@ def _check_class_names_resolve() -> None:
     )
 
 
-_check_minimum_engine_version()
+# ``_check_minimum_engine_version`` already fired before the merge-loader
+# (see top of module); ``_check_class_names_resolve`` runs after all
+# registrations are in place so the walk sees the merged registries.
 _check_class_names_resolve()

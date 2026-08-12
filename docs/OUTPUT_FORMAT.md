@@ -76,7 +76,7 @@ overlay and the exact tolokaforge-models resolution behind every score.
     "package_version": "1.0.0",
     "content_sha256": "9f0d…64-hex chars…",
     "api_version": 1,
-    "minimum_engine_version": ">=0.17,<0.18"
+    "minimum_engine_version": ">=0.17,<1.0"
   }
 }
 ```

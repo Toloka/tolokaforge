@@ -19,7 +19,7 @@ from collections.abc import Iterable
 from functools import cache
 
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from tolokaforge.core.model_data import bundled_providers_path
 
@@ -110,12 +110,30 @@ class ProviderBinding(BaseModel):
     api_base_env: str | None = None
     api_key_env: str | None = None
     api_keys_env: str | None = None
+    key_file_env: str | None = None
     unroutable: bool = False
     custom_llm_provider: str | None = None
     rate_limit_patterns: tuple[str, ...] = DEFAULT_RATE_LIMIT_PATTERNS
     format_model_name_bare: bool = False
     kwargs_pin_transport: bool = False
     slug_rewrite: SlugRewrite | None = None
+
+    @model_validator(mode="after")
+    def _kwargs_pin_transport_requires_endpoint_and_key_env(self) -> ProviderBinding:
+        """A binding that declares per-attempt transport pinning must name
+        both the endpoint to pin and the credential env var to read fresh.
+
+        Silence here — e.g. ``kwargs_pin_transport: true`` with no
+        ``endpoint`` — would land the pin path with
+        ``kwargs["api_base"] = None``, which litellm accepts and then
+        routes to the wrong upstream. Fail loud at binding-load time.
+        """
+        if self.kwargs_pin_transport and (self.endpoint is None or self.api_key_env is None):
+            raise ValueError(
+                "kwargs_pin_transport requires both endpoint and api_key_env; "
+                f"got endpoint={self.endpoint!r}, api_key_env={self.api_key_env!r}"
+            )
+        return self
 
 
 @cache

@@ -884,6 +884,26 @@ applies depends on **one** thing: is a gateway key pinned?
 The guard mirrors exactly the condition under which `_build_kwargs` pins the
 key, so the two can't drift.
 
+### Secrets surface of `_rotate_key`
+
+`_rotate_key` republishes the picked key into `os.environ` via
+`binding.api_key_env` (OpenRouter's `OPENROUTER_API_KEY`) so litellm's
+inner request builder — which reads that env var — sees the freshly
+rotated key on the next attempt. The `SecretManager` subprocess carve-out
+sanctions this specific pattern: rewrites of a small named set of env
+vars whose consumer is a downstream process that cannot read
+`SecretManager` directly.
+
+Post-cutover, `binding.api_key_env` is data — any provider whose YAML
+entry declares one now participates in the same republish path. Today
+only OpenRouter (rotation enabled) reaches this branch, but a future
+provider whose entry declares both `api_keys_env` and `api_key_env` will
+transitively acquire the same `os.environ` rewrite. The guarantee that
+`api_key_env` is a credential var the SecretManager subprocess carve-out
+accepts is `providers.yaml`-authored — the schema does not enforce it.
+If a future entry names a non-credential env var here, `_rotate_key` will
+still rewrite it. Reviewer note in the PR that widens the rotation set.
+
 ## Provider bindings
 
 Provider-specific transport knobs (endpoint URL, credential env-var names,
@@ -909,6 +929,7 @@ credential lookup, key rotation, slug rewrite, rate-limit text.
 | `endpoint` + `api_base_env` | `LLMClient.__init__` and `_call_with_key_rotation` | When both are set the client `os.environ.setdefault(api_base_env, endpoint)` at construction, publishing the default base URL a deployment may override. When `kwargs_pin_transport=true` the endpoint is also pinned into `kwargs["api_base"]` per attempt. Nova's `NOVA_API_BASE` covers both roles. |
 | `api_key_env` | `_call_with_key_rotation`; `_rotate_key`; `_load_api_keys` | Primary key env-var name. When `kwargs_pin_transport=true` the client reads it fresh per attempt via `SecretManager` and pins it into `kwargs["api_key"]`, failing loud (`RuntimeError`) if it resolves empty. Also the env var `_rotate_key` republishes into `os.environ` after picking the next key for the direct-provider path (OpenRouter's `OPENROUTER_API_KEY`). |
 | `api_keys_env` | `_load_api_keys` | Rotation-list env-var name (comma-separated). `None` disables rotation. OpenRouter's `OPENROUTER_API_KEYS`; a second provider needing rotation is one YAML edit. |
+| `key_file_env` | `_load_api_keys` | Env-var pointing at a fallback keys file (one key per line, `#` comments allowed, comma-separated fields taking the first). Populated only when `api_keys_env` is also set — the file is the second key source after the rotation env var. OpenRouter's `OPENROUTER_KEY_FILE` (defaulting to `keys.txt` in cwd). Older shape (`if binding.api_keys_env == "OPENROUTER_API_KEYS"`) was a model-name conditional in data-driven clothing; the field surfaces the same behaviour without a magic value. |
 | `unroutable` | `ProxyConfig.applies_to`, `_parse_providers` | The proxy rejects providers whose binding declares `unroutable: true` even when named in `LLM_PROXY_PROVIDERS`. `mock` and `nova` — see § proxy above. |
 | `custom_llm_provider` | `_call_with_key_rotation` | Value pinned into `kwargs["custom_llm_provider"]`. Nova: `"openai"`. OpenRouter: `"openrouter"`. When `None`, compound providers (`openrouter/google`) fall back to `provider.split("/")[0]`; simple providers let litellm default. |
 | `rate_limit_patterns` | `LLMClient._is_rate_limit_exception` (tier-3 text fallback), `LLMClient.classify_loop_error` | Regex strings compiled once at construction. `DEFAULT_RATE_LIMIT_PATTERNS` in [`providers.py`](../tolokaforge/core/llm/providers.py) is the shipped default every non-mock provider declares verbatim; each entry is a shape an *engine wrapper* produces (`Error code: 429`, `HTTP/1.1 429`, `too many requests`, rate-limit prose in an error construction), not provider quota prose. |

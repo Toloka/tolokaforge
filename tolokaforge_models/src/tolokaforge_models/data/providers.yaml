@@ -54,6 +54,7 @@ openrouter:
   api_base_env: null
   api_key_env: "OPENROUTER_API_KEY"
   api_keys_env: "OPENROUTER_API_KEYS"
+  key_file_env: "OPENROUTER_KEY_FILE"
   unroutable: false
   custom_llm_provider: "openrouter"
   rate_limit_patterns:
