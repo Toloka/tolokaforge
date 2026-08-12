@@ -48,11 +48,21 @@ often enough that the demonstrative head cannot separate them:
   simulation, I play the role of a customer."``). Two shapes are missed: a break
   phrased about a third party, ``"During the simulation the agent refused
   twice."``, and one claiming the role with a copula rather than a role verb,
-  ``"In this simulation, I am the customer, not a developer."``
+  ``"In this simulation, I am the customer, not a developer."`` ``represent``
+  counts as a role verb only under ``roleplay``: elsewhere it is what an
+  engineer does to a building or a portfolio (``"In the simulation I represent
+  each floor as a single zone."``), so a genuine ``"In this simulation I
+  represent the caller"`` is missed.
 * ``instructions`` in every position — ``"My instructions say to take two
   tablets daily."`` is a support turn far more often than a leaked persona.
 * ``"I'm an LLM-based assistant."`` — the hyphen makes the machine noun
   attributive, which is the anchor doing its job on a genuine break.
+
+One false positive is accepted rather than removed. ``"In the simulation I act
+as the admin but cannot reset passwords."`` is a hit, and no rule separates it
+from ``"In this roleplay, I act as an angry caller."`` — *act as* plus a noun is
+the same construction in both, and only the noun's meaning tells them apart.
+Narrowing it would cost the detect shape it is inseparable from.
 """
 
 from __future__ import annotations
@@ -142,12 +152,21 @@ _FOURTH_WALL_PATTERNS: tuple[tuple[str, str], ...] = (
     # this one — a comma satisfies it. A first-person subject is not enough
     # either ("in the simulation I get an error at step 4"); what separates the
     # break is the speaker claiming a ROLE inside the exercise.
+    #
+    # The role verbs are scoped by noun. Under `simulation` / `benchmark` /
+    # `evaluation run`, `represent` is what an engineer does to a building or a
+    # portfolio, not a role a speaker claims; only `roleplay` licenses it.
+    # `play back` is a playback complaint under every noun.
     (
         "named_the_exercise",
         r"\b(?:in|for|during)\s+(?:this|the)\s+"
-        r"(?:simulation|benchmark|roleplay|role[-\s]play|evaluation\s+run)\b"
-        r"\s*,?\s+(?:I|we)(?:'m|\s+(?:am|are))?\s+"
-        r"(?:play|playing|act|acting|pretend|pretending|represent|representing)\b",
+        r"(?:(?:simulation|benchmark|evaluation\s+run)\b\s*,?\s+"
+        r"(?:I|we)(?:'m|\s+(?:am|are))?\s+"
+        r"(?:play(?!\s+back\b)|playing|act|acting|pretend|pretending)\b"
+        r"|(?:roleplay|role[-\s]play)\b\s*,?\s+"
+        r"(?:I|we)(?:'m|\s+(?:am|are))?\s+"
+        r"(?:play(?!\s+back\b)|playing|act|acting|pretend|pretending"
+        r"|represent|representing)\b)",
     ),
     # Two ways the agent's prompt heads its phrase: the general anchor, or a
     # verb reciting what the prompt says — the latter is the family's least

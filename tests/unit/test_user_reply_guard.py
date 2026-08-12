@@ -114,6 +114,12 @@ MUST_PASS = [
     "For the simulation licence, do I need a dongle?",
     "In the simulation I get an error at step 4.",
     "In this simulation I lost my mesh.",
+    # `represent` is a modelling verb under every exercise noun but `roleplay`,
+    # and `play back` is a playback complaint under all of them.
+    "In the simulation I represent each floor as a single zone.",
+    "In the simulation I represent the building envelope with one surface.",
+    "In this benchmark I am representing the S&P allocation.",
+    "In this simulation, I play back the recorded run and it desyncs.",
     # `requires` reads as an API spec at least as often as it reads as a
     # recitation of the agent's prompt, so it is not one of the reciting verbs.
     "Your system prompt requires a role field, but the docs disagree.",
