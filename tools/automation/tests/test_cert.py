@@ -127,3 +127,54 @@ def test_core_capabilities_mirror_canon():
 
     canon = {c.value for c in _CORE_CAPABILITIES}
     assert canon == cert.CORE_CAPABILITIES, cert.CORE_CAPABILITIES ^ canon
+
+
+class TestTheCertificateGate:
+    """Which variable a curated certificate needs before its live probes will run.
+
+    Re-onboarding a model that already has a certificate reuses THAT certificate, so a
+    run inherits a gate no workflow sets, every probe skips, and the cleanliness gate
+    reads "capability suite did not run" - a transport fact wearing a capability mask.
+    """
+
+    def _registry(self, monkeypatch, certs):
+        import sys
+        import types
+
+        module = types.ModuleType("tests.integration.llm.registry")
+        module.ALL_MODELS = certs
+        monkeypatch.setitem(sys.modules, "tests.integration.llm.registry", module)
+
+    def test_it_names_the_gate_when_the_variable_is_unset(self, monkeypatch, capsys):
+        self._registry(monkeypatch, [_Cert("m", "TF_SOME_GATEWAY_LIVE")])
+        monkeypatch.delenv("TF_SOME_GATEWAY_LIVE", raising=False)
+        assert cert.env_gate("m") == 0
+        assert capsys.readouterr().out.strip() == "TF_SOME_GATEWAY_LIVE"
+
+    def test_a_satisfied_gate_needs_no_opening(self, monkeypatch, capsys):
+        """The provider-key case: the run already supplies it, so opening it with a
+        placeholder would replace a real credential with a lie."""
+        self._registry(monkeypatch, [_Cert("m", "OPENROUTER_API_KEY")])
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-real")
+        assert cert.env_gate("m") == 0
+        assert capsys.readouterr().out == ""
+
+    def test_an_unlisted_model_is_silent(self, monkeypatch, capsys):
+        """A first onboarding has no curated certificate; that is the normal case."""
+        self._registry(monkeypatch, [_Cert("other", "TF_X")])
+        assert cert.env_gate("m") == 0
+        assert capsys.readouterr().out == ""
+
+    def test_an_unimportable_registry_fails_loud(self, monkeypatch, capsys):
+        """Silence means "no gate", so a broken import must not look like one."""
+        import sys
+
+        monkeypatch.setitem(sys.modules, "tests.integration.llm.registry", None)
+        assert cert.env_gate("m") == 1
+        assert "::error::" in capsys.readouterr().out
+
+
+class _Cert:
+    def __init__(self, model_id: str, env_key: str) -> None:
+        self.model_id = model_id
+        self.env_key = env_key

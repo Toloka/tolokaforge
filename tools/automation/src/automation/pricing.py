@@ -90,11 +90,22 @@ def _insert(pricing_file: Path, name: str, entry: dict) -> None:
     pricing_file.write_text(json.dumps(data, indent=2) + "\n")
 
 
-def run(name: str, pricing_file: str = DEFAULT_PRICING_FILE, check: bool = False) -> int:
+def run(
+    name: str,
+    pricing_file: str = DEFAULT_PRICING_FILE,
+    check: bool = False,
+    declared: tuple[float, float] | None = None,
+) -> int:
     """Ensure ``name`` is priced in ``pricing_file``. Returns an exit code.
 
     Default mode is best-effort (always exit 0): fetch OpenRouter and insert the entry
     if found. ``--check`` mode does no fetch/write and exits 1 if the name is unpriced.
+
+    ``declared`` is an operator-supplied ``(input, output)`` price per million tokens,
+    for a model OpenRouter does not carry. It is the only way such a model can satisfy
+    ``cost_usd_populated``, which is a CORE capability and can never be declared
+    unsupported. Nothing here invents a price: absent a declaration the miss is
+    reported and left for a human.
     """
     pf = Path(pricing_file)
     priced = name in _models(pf)
@@ -104,6 +115,11 @@ def run(name: str, pricing_file: str = DEFAULT_PRICING_FILE, check: bool = False
         return 0 if priced else 1
     if priced:
         print(f"ensure_pricing: '{name}' already priced - no change")
+        return 0
+    if declared is not None:
+        entry = {"input": declared[0], "output": declared[1]}
+        _insert(pf, name, entry)
+        print(f"ensure_pricing: added '{name}' = {entry} (operator-declared)")
         return 0
     try:
         entry = entry_for(_fetch_openrouter(), name)
@@ -115,7 +131,8 @@ def run(name: str, pricing_file: str = DEFAULT_PRICING_FILE, check: bool = False
     if not entry:
         print(
             f"::warning::ensure_pricing: '{name}' not on OpenRouter with non-zero pricing; "
-            "finalize agent must fill it"
+            "pass --input-usd/--output-usd (the run's `pricing` input) for a model only a "
+            "gateway serves, or the finalize agent must fill it"
         )
         return 0
     _insert(pf, name, entry)
