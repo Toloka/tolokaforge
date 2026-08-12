@@ -21,7 +21,6 @@ lane and is not claimed here.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import count
 from pathlib import Path
@@ -34,6 +33,13 @@ import yaml
 pytestmark = pytest.mark.unit
 
 from tests.canonical._factories import make_trial_spec
+from tests.utils.conductor_phases import (
+    make_conductor,
+    make_run_config,
+    make_setup,
+    make_task_config,
+    runner_stub,
+)
 from tests.utils.runner_requests import simple_task_description as make_task_description_dict
 from tests.utils.servicer_runtime import (
     DUPLICATE_CALL_ID,
@@ -42,26 +48,18 @@ from tests.utils.servicer_runtime import (
     produce_grading_refusal,
     register_collided_trial,
 )
-from tolokaforge.core.conductor import ConductorContext, InProcessConductor, _TrialSetup
+from tolokaforge.core.conductor import ConductorContext, InProcessConductor
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
-    ActorSpec,
-    EvaluationConfig,
     Grade,
     GradeComponents,
-    InitialStateConfig,
     Metrics,
-    ModelConfig,
-    OrchestratorConfig,
-    RunConfig,
     TaskConfig,
     TerminationReason,
-    ToolsConfig,
     Trajectory,
     TrialStatus,
 )
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
-from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
 from tolokaforge.core.trial import TrialResult, TrialSpec
 from tolokaforge.core.trial_grader import GradingFailedError, RunnerRPCTrialGrader
@@ -73,15 +71,6 @@ _TASK_IDS = count()
 # ---------------------------------------------------------------------------
 # Doubles and builders
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class _RunnerStub:
-    """The three ``TrialRunner`` attributes the two phases under test read."""
-
-    effective_system_prompt: str
-    user_system_prompt: str
-    logger: StructuredLogger
 
 
 class _RecordingEvents:
@@ -125,35 +114,6 @@ class _RefuseOneTrialGrader:
         )
 
 
-def _make_run_config(output_dir: Path, *, repeats: int = 1) -> RunConfig:
-    return RunConfig(
-        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
-        orchestrator=OrchestratorConfig(
-            workers=1,
-            repeats=repeats,
-            auto_start_services=False,
-            shuffle_trials=False,
-            # A retry budget the run must decline to spend: with 0 the
-            # not-retried lock could not tell "declined" from "unavailable".
-            max_attempt_retries=1,
-        ),
-        evaluation=EvaluationConfig(output_dir=str(output_dir)),
-    )
-
-
-def _make_task_config(task_id: str) -> TaskConfig:
-    return TaskConfig(
-        task_id=task_id,
-        name=task_id,
-        category="tool_use",
-        description="d",
-        initial_state=InitialStateConfig(),
-        tools=ToolsConfig(),
-        actors={"user": ActorSpec(mode="scripted")},
-        grading="grading.yaml",
-    )
-
-
 def _make_task_description(task_id: str) -> TaskDescription:
     return TaskDescription(
         task_id=task_id,
@@ -163,45 +123,6 @@ def _make_task_description(task_id: str) -> TaskDescription:
         adapter_type="native",
         system_prompt="sys",
         grading=RunnerGradingConfig(llm_judge=None),
-    )
-
-
-def _make_conductor(config: RunConfig, output_dir: Path, grader: Any) -> InProcessConductor:
-    agent_client = MagicMock()
-    agent_client.config = ModelConfig(provider="openai", name="gpt-4")
-    agent_client.capabilities.schema_sanitizer.sanitize.return_value = []
-    adapter = MagicMock()
-    adapter.get_grading_config.return_value = None
-    return InProcessConductor(
-        adapter=adapter,
-        artifact_writer=FileArtifactWriter(),
-        config=config,
-        logger=StructuredLogger("test-ungradeable-conductor"),
-        agent_client=agent_client,
-        runtime_backend=MagicMock(),
-        trial_grader=grader,
-        output_dir=output_dir,
-    )
-
-
-def _make_setup(output_dir: Path, task_id: str, trial_idx: int) -> _TrialSetup:
-    return _TrialSetup(
-        trial_id=f"{task_id}:{trial_idx}",
-        trial_idx=trial_idx,
-        task_dir=output_dir,
-        trial_dir=output_dir / "trials" / task_id / str(trial_idx),
-        env_state=MagicMock(),
-        adapter_env=MagicMock(),
-        tool_schemas=[],
-        tool_executor=MagicMock(),
-    )
-
-
-def _runner_stub() -> _RunnerStub:
-    return _RunnerStub(
-        effective_system_prompt="You are a test assistant.",
-        user_system_prompt="You are a user.",
-        logger=StructuredLogger("test-ungradeable-trial"),
     )
 
 
@@ -245,18 +166,16 @@ class TestGradingRefusalIsRecordedNotRaised:
     def test_the_phase_returns_with_the_cause_and_no_verdict(
         self, refusing_grader, collided_task_id: str, tmp_path: Path
     ) -> None:
-        conductor = _make_conductor(
-            _make_run_config(tmp_path / "results"), tmp_path, refusing_grader
-        )
+        conductor = make_conductor(make_run_config(tmp_path / "results"), tmp_path, refusing_grader)
         conductor.events = events = _RecordingEvents()
         trajectory = collided_trajectory(task_id=collided_task_id)
 
         conductor._grade(
             make_trial_spec(trial_id=f"{collided_task_id}:0", task_id=collided_task_id),
-            _make_task_config(collided_task_id),
-            _make_setup(tmp_path, collided_task_id, 0),
+            make_task_config(collided_task_id),
+            make_setup(tmp_path, collided_task_id, 0),
             trajectory,
-            _runner_stub(),
+            runner_stub(),
             "You are a test assistant.",
         )
 
@@ -270,8 +189,8 @@ class TestGradingRefusalIsRecordedNotRaised:
 
     def test_a_verdict_still_reaches_the_same_recorder(self, tmp_path: Path) -> None:
         """The emptiness assertion above is not vacuous — this wiring does emit."""
-        conductor = _make_conductor(
-            _make_run_config(tmp_path / "results"),
+        conductor = make_conductor(
+            make_run_config(tmp_path / "results"),
             tmp_path,
             _RefuseOneTrialGrader("unused", refusing_index=99),
         )
@@ -279,10 +198,10 @@ class TestGradingRefusalIsRecordedNotRaised:
 
         conductor._grade(
             make_trial_spec(trial_id="graded:0", task_id="graded"),
-            _make_task_config("graded"),
-            _make_setup(tmp_path, "graded", 0),
+            make_task_config("graded"),
+            make_setup(tmp_path, "graded", 0),
             collided_trajectory(task_id="graded"),
-            _runner_stub(),
+            runner_stub(),
             "sys",
         )
 
@@ -291,14 +210,12 @@ class TestGradingRefusalIsRecordedNotRaised:
     def test_the_bundle_carries_the_cause_and_no_grade_file(
         self, refusing_grader, collided_task_id: str, tmp_path: Path
     ) -> None:
-        conductor = _make_conductor(
-            _make_run_config(tmp_path / "results"), tmp_path, refusing_grader
-        )
-        setup = _make_setup(tmp_path, collided_task_id, 0)
-        task_config = _make_task_config(collided_task_id)
+        conductor = make_conductor(make_run_config(tmp_path / "results"), tmp_path, refusing_grader)
+        setup = make_setup(tmp_path, collided_task_id, 0)
+        task_config = make_task_config(collided_task_id)
         trajectory = collided_trajectory(task_id=collided_task_id)
         spec = make_trial_spec(trial_id=f"{collided_task_id}:0", task_id=collided_task_id)
-        runner = _runner_stub()
+        runner = runner_stub()
 
         conductor._grade(spec, task_config, setup, trajectory, runner, "sys")
         conductor._write_artifacts(spec, task_config, setup, trajectory, runner)
@@ -343,8 +260,8 @@ class _GradingPhaseConductor:
             messages=[],
             metrics=Metrics(),
         )
-        setup = _make_setup(self._output_dir, task_config.task_id, trial_idx)
-        runner = _runner_stub()
+        setup = make_setup(self._output_dir, task_config.task_id, trial_idx)
+        runner = runner_stub()
         self._conductor._grade(spec, task_config, setup, trajectory, runner, "sys")
         self._conductor._write_artifacts(spec, task_config, setup, trajectory, runner)
         return TrialResult.from_trajectory(
@@ -365,14 +282,14 @@ def _run_with_one_refusal(
 
     grader = _RefuseOneTrialGrader(refusal, refusing_index=1)
     orch = Orchestrator(
-        _make_run_config(run_root, repeats=repeats),
+        make_run_config(run_root, repeats=repeats),
         deps=OrchestratorDeps(
             events=events or _RecordingEvents(),
             runtime_backend=InMemoryRuntimeBackend(),
             conductor_factory=lambda ctx: _GradingPhaseConductor(ctx, grader),
         ),
     )
-    orch.tasks = [_make_task_config("TASK-A")]
+    orch.tasks = [make_task_config("TASK-A")]
 
     adapter = MagicMock()
     adapter.to_task_description.side_effect = _make_task_description

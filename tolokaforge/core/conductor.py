@@ -922,11 +922,29 @@ class InProcessConductor:
             user_prompt=runner.user_system_prompt,
         )
 
+        # Same condition :meth:`_run_agent_loop` builds the simulator under: an
+        # ``agent_only`` trial resolves no simulator, so a configuration
+        # recorded here would assert a resolution the run never made.
+        user_actor = (
+            task.resolve_user_simulator().model_dump(mode="json")
+            if task.interaction_mode == "conversational"
+            else None
+        )
+
+        # ``interaction_mode`` and ``initial_user_message`` are ``TaskConfig``
+        # fields, so a ``TaskConfig(**task.yaml)`` reload picks them up again;
+        # ``user_actor`` is not, and ``extra="ignore"`` drops it — such a reload
+        # resolves the default simulator, contradicting the ``user_actor``
+        # recorded here. This file records which user ran; it is not an
+        # authoring surface.
         task_config_dict = {
             "task_id": task.task_id,
             "trial_index": setup.trial_idx,
             "category": task.category,
             "description": task.description,
+            "interaction_mode": task.interaction_mode,
+            "initial_user_message": task.initial_user_message,
+            "user_actor": user_actor,
             "grading_config": grading_config.model_dump(mode="json") if grading_config else {},
             "tools": task.tools.model_dump(mode="json"),
             "policies": task.policies,
