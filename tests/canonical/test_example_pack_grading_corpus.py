@@ -275,7 +275,7 @@ def _grading_config(task_yaml: Path) -> tuple[str, GradingConfig]:
 # Directories under ``tests/data`` holding recorded ``TaskDescription`` artifacts: a
 # bundle's own copy of the config the trial was graded under. They are not authored
 # packs, nothing may edit them, and a guard over authoring must not read them.
-_RECORDED_ARTIFACT_DIRS = ("output/trials", "migration_corpora")
+_RECORDED_ARTIFACT_DIRS = ("output/trials", "migration_corpora", "curation_runs")
 
 # The authored task files that load no grading config, so a pack losing its grading
 # block shows up as a guard failure rather than as a silent absence. The three
@@ -1671,6 +1671,14 @@ _CACHE_DEBUG_PATHS = (
     ),
 )
 
+# Each route's own grounded-claim check, by the route that carries it. No single read
+# is common to both routes, so the check is per route rather than shared — and a claim
+# over both is a claim no trial decides.
+_GROUNDED_CLAIM_CHECKS = {
+    "divergence_between_the_api_layers": "the_note_quotes_the_value_the_served_read_returned",
+    "divergence_against_the_cache": "the_note_quotes_the_value_the_cache_held",
+}
+
 # The two order views the pack's bug is the divergence between: the poisoned redis
 # blob (``assets/build_seed.py``) and the postgres row (``shared/app-db/init.sql``).
 _STALE_ORDER = {
@@ -1850,6 +1858,25 @@ def test_each_cache_debug_route_scores_in_full_and_records_itself_the_winner(
     assert result.score == pytest.approx(1.0)
     assert result.winning_path == winning_path
     assert _failed(result) == []
+
+
+@pytest.mark.parametrize(("calls", "winning_path"), _ROUTES_IN_FULL)
+def test_only_the_winning_routes_grounded_claim_check_reaches_a_trials_verdicts(
+    calls: Sequence[RecordedToolCall], winning_path: str
+) -> None:
+    """The two grounded-claim checks are never decided on one trial, which is why a
+    ``migration.yaml`` naming both is refused at load (``_route_span_rejection``).
+
+    ``tolokaforge reconcile`` recomputes a trial's constraint verdicts as
+    ``{constraint.id: constraint for constraint in result.constraints}`` — the scored decision
+    set, which is the shared constraints plus the winning route's — so a conjunction over one
+    id from each route has no verdict for one of them whichever route the trial took.
+    """
+    verdicts = {constraint.id: constraint for constraint in _cache_debug_result(calls).constraints}
+
+    assert [check for check in _GROUNDED_CLAIM_CHECKS.values() if check in verdicts] == [
+        _GROUNDED_CLAIM_CHECKS[winning_path]
+    ]
 
 
 def test_the_cache_debug_prompt_names_no_status_its_grounded_claim_binds() -> None:

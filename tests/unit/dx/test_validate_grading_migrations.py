@@ -71,6 +71,7 @@ import yaml
 from click.testing import CliRunner
 from pydantic import BaseModel, ValidationError
 
+from tests.utils.migration_packs import write_corpus_directory
 from tests.utils.trace_checks_configs import every_kind_block
 from tolokaforge.adapters._task_loader import (
     _GRADING_BLOCK_SHAPES,
@@ -1846,8 +1847,16 @@ _MIGRATED_GRADING = yaml.safe_dump(
 )
 
 
-def test_validate_cli_reports_a_mis_authored_migration_sidecar_as_invalid(tmp_path: Path):
-    """The entry names a criterion the rubric does not declare, which no other gate reads."""
+def test_validate_cli_reports_a_mis_authored_migration_sidecar_as_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The entry names a criterion the rubric does not declare, which no other gate reads.
+
+    The working directory is pinned because `validate` reads every `corpus` against it, and
+    the corpus below is written to resolve — the criterion is what is on trial here, and a
+    sidecar refused for two reasons at once would pass this test on the wrong one.
+    """
+    monkeypatch.chdir(tmp_path)
     task_dir = tmp_path / "mis_authored_migration"
     task_file = _write_task(task_dir, _MIGRATED_GRADING)
     (task_dir / "migration.yaml").write_text(
@@ -1858,6 +1867,11 @@ def test_validate_cli_reports_a_mis_authored_migration_sidecar_as_invalid(tmp_pa
                         "criterion": "never_declared",
                         "mode": "candidate",
                         "by": ["nothing_declares_this_either"],
+                        "corpus": str(
+                            write_corpus_directory(
+                                tmp_path / "corpus", criterion="checked_first"
+                            ).relative_to(tmp_path)
+                        ),
                         "was": {"description": "Something the rubric never said."},
                     }
                 ]
@@ -1870,6 +1884,7 @@ def test_validate_cli_reports_a_mis_authored_migration_sidecar_as_invalid(tmp_pa
     out = result.stderr
     assert "0 valid, 1 invalid" in out
     assert "names no criterion in the pack's rubric" in out
+    assert "is not a corpus directory" not in out
 
 
 def test_validate_cli_reports_a_task_carrying_no_sidecar_as_valid(tmp_path: Path):

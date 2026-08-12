@@ -1,7 +1,13 @@
-"""The committed corpus, and what the bar says about each half of it and about the union.
+"""The committed corpora, and what the bar says about each of them.
+
+Two corpora are locked here. ``notes_duplicate_check/`` carries a narrow whose evidence the
+bar accepts; ``lot_ops_names_lot/`` carries a candidacy the bar **refuses**, which is the same
+mechanism reaching the opposite verdict over trials nobody designed to agree with it.
 
 ``tests/data/migration_corpora/notes_duplicate_check/`` holds seventeen recorded trials in two
-halves, each carrying only the files the differential reads.
+halves, each written by its own ``tolokaforge curate`` invocation and carrying the manifest
+that names what it admitted and what it refused. A bundle holds the files the differential
+reads, plus the tool-call record wherever its source run had one.
 
 ``not_met/`` — five trials of ``notes_add_note_duplicate_check_gated``, whose prompt omits the
 check-first policy. The judge's ``checked_duplicates_first`` verdict is **not met** on every
@@ -41,6 +47,7 @@ import hashlib
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -49,13 +56,19 @@ import yaml
 from click.testing import CliRunner, Result
 from pydantic import BaseModel
 
+from tolokaforge.core.grading.corpus_curation import CorpusManifest
+from tolokaforge.core.grading.migration_declaration import MIGRATION_FILENAME
 from tolokaforge.core.grading.rubric_migration import (
     MigrationCounterfactual,
+    RecomputationGap,
     ReconciledEntry,
+    ReconcileError,
     ReconcileReport,
     ReconcileVerdict,
+    RefusalKind,
     TrialCounterfactual,
     reconcile_corpus,
+    reconcile_declared_corpora,
 )
 from tolokaforge.dx.cli.main import cli
 
@@ -77,11 +90,11 @@ _POLICY_ARM = _NOTES / "testcases/add_note_duplicate_check_policy"
 #: The bundle directories the not-met half holds, written out so a bundle added to or
 #: dropped from the corpus reds here rather than silently moving every number below.
 _NOT_MET_BUNDLES = {
-    "native_shared_domain_example_20260629_133126",
-    "native_shared_domain_example_20260702_140836",
-    "native_shared_domain_gate_demo_20260625_184817",
-    "native_shared_domain_gate_demo_20260626_101928",
-    "native_shared_domain_gate_demo_20260626_102829",
+    "native_shared_domain_example_20260629_133126_trial0",
+    "native_shared_domain_example_20260702_140836_trial0",
+    "native_shared_domain_gate_demo_20260625_184817_trial0",
+    "native_shared_domain_gate_demo_20260626_101928_trial0",
+    "native_shared_domain_gate_demo_20260626_102829_trial0",
 }
 
 #: The met half, bought under the policy arm's prompt. Written out for the same reason, and
@@ -112,9 +125,23 @@ _RETAINED_FILES = {
     "metrics.yaml",
 }
 
+#: Carried on top of those where the source run recorded one. ``TraceEvent.status``,
+#: ``executor`` and ``latency_seconds`` come from this file alone, so a half's bundles
+#: carrying it is what decides whether a constraint reading them can be recomputed here.
+_TOOL_LOG = "tool_log.yaml"
+
 
 def _reconcile_cli(*args: str) -> Result:
     return CliRunner().invoke(cli, ["reconcile", *args], env={"COLUMNS": "200"})
+
+
+def _bundles(half: Path) -> list[Path]:
+    """The trial bundles a half holds — every directory beside its manifest."""
+    return sorted(path for path in half.iterdir() if path.is_dir())
+
+
+def _manifest(half: Path) -> CorpusManifest:
+    return CorpusManifest.model_validate(yaml.safe_load((half / "corpus.yaml").read_text()))
 
 
 def _copied(root: Path, tmp_path: Path) -> Path:
@@ -136,7 +163,9 @@ def _copy(tmp_path: Path) -> Path:
 
 
 def _report_over_the_not_met_half(tmp_path: Path) -> ReconcileReport:
-    return reconcile_corpus(_copy(tmp_path), replay_id="canon", packs=[_PACKS], dry_run=True)
+    return reconcile_corpus(
+        _copy(tmp_path), replay_id="canon", packs=[_PACKS], dry_run=True, corpus_base=_REPO
+    )
 
 
 def _entry_over_the_not_met_half(tmp_path: Path) -> ReconciledEntry:
@@ -145,9 +174,14 @@ def _entry_over_the_not_met_half(tmp_path: Path) -> ReconciledEntry:
 
 
 def test_the_not_met_half_is_exactly_the_five_trimmed_bundles() -> None:
-    """Two sources for the corpus's membership and shape: the tree, and this literal."""
-    assert {bundle.name for bundle in _NOT_MET.iterdir()} == _NOT_MET_BUNDLES
-    for bundle in _NOT_MET.iterdir():
+    """Two sources for the corpus's membership and shape: the tree, and this literal.
+
+    None of the five carries a tool-call record: they are old runs recorded before the
+    harness persisted one, which is why a constraint reading ``status`` cannot be
+    recomputed over this half and why the manifest says so per bundle.
+    """
+    assert {bundle.name for bundle in _bundles(_NOT_MET)} == _NOT_MET_BUNDLES
+    for bundle in _bundles(_NOT_MET):
         assert {path.name for path in bundle.iterdir()} == _RETAINED_FILES
 
 
@@ -159,7 +193,7 @@ def test_no_bundle_in_either_half_declares_a_constraint_block() -> None:
     shipped constraint red the lock over this frozen corpus. A ``--constraints``-style flag
     would pin a fixture instead and make the guard decorative.
     """
-    bundles = sorted([*_NOT_MET.iterdir(), *_MET.iterdir()])
+    bundles = [*_bundles(_NOT_MET), *_bundles(_MET)]
     assert len(bundles) == len(_NOT_MET_BUNDLES) + len(_MET_BUNDLES)
     for bundle in bundles:
         task = yaml.safe_load((bundle / "task.yaml").read_text())
@@ -424,7 +458,11 @@ def test_the_counterfactual_reaches_the_reviewer_it_is_evidence_for(tmp_path: Pa
 
 def _report_over_the_union(tmp_path: Path) -> ReconcileReport:
     return reconcile_corpus(
-        _copied(_CORPUS, tmp_path), replay_id="canon", packs=[_PACKS], dry_run=True
+        _copied(_CORPUS, tmp_path),
+        replay_id="canon",
+        packs=[_PACKS],
+        dry_run=True,
+        corpus_base=_REPO,
     )
 
 
@@ -434,10 +472,15 @@ def _entry_over_the_union(tmp_path: Path) -> ReconciledEntry:
 
 
 def test_the_met_half_is_exactly_the_twelve_trimmed_bundles() -> None:
-    """Two sources for the bought half's membership and shape: the tree, and this literal."""
-    assert {bundle.name for bundle in _MET.iterdir()} == _MET_BUNDLES
-    for bundle in _MET.iterdir():
-        assert {path.name for path in bundle.iterdir()} == _RETAINED_FILES
+    """Two sources for the bought half's membership and shape: the tree, and this literal.
+
+    Every one of the twelve carries its tool-call record, because every source run did.
+    The asymmetry with the not-met half is the corpus's, not the curation's: a corpus is
+    record-carrying exactly where its sources were.
+    """
+    assert {bundle.name for bundle in _bundles(_MET)} == _MET_BUNDLES
+    for bundle in _bundles(_MET):
+        assert {path.name for path in bundle.iterdir()} == _RETAINED_FILES | {_TOOL_LOG}
 
 
 def test_the_policy_arm_ships_the_shared_prompt_verbatim_with_the_policy_appended() -> None:
@@ -570,16 +613,16 @@ def test_the_declared_evidence_is_the_measurement_over_the_corpus_it_names(
     measurement quoted twice rather than two claims the pooling rule would then refuse.
     """
     assert _DECLARATION.read_bytes() == _POLICY_DECLARATION.read_bytes()
-    declared = yaml.safe_load(_DECLARATION.read_text())["migrations"][0]["evidence"]
+    declared = yaml.safe_load(_DECLARATION.read_text())["migrations"][0]
     named = _REPO / declared["corpus"]
 
     assert named == _CORPUS
-    assert {bundle.name for half in named.iterdir() for bundle in half.iterdir()} == (
+    assert {bundle.name for half in named.iterdir() for bundle in _bundles(half)} == (
         _NOT_MET_BUNDLES | _MET_BUNDLES
     )
     entry = _entry_over_the_union(tmp_path)
-    assert declared["observations"] == entry.observations
-    assert declared["kappa"] == entry.kappa
+    assert declared["evidence"]["observations"] == entry.observations
+    assert declared["evidence"]["kappa"] == entry.kappa
 
 
 def test_the_command_exits_zero_over_the_union_and_says_what_that_means(
@@ -594,6 +637,92 @@ def test_the_command_exits_zero_over_the_union_and_says_what_that_means(
     assert "no_counter_evidence over 17 observations" in result.output
     assert "kappa 1.000" in result.output
     assert "pass rate 12/17 → 12/17" in result.output
+
+
+# ---------------------------------------------------------------------------
+# The manifests: the corpus's own account of what it admitted and what it refused
+# ---------------------------------------------------------------------------
+
+#: The trials ``tolokaforge curate`` refused, keyed by the path it read them from, with
+#: the observation behind each refusal. Their run directories are gitignored, so this
+#: claim is re-checkable only because the manifests carry it: the task's MCP server never
+#: started, every recorded call errored, and the judge scored a transcript of failures.
+_REFUSED_TRIALS = {
+    "results/native_shared_domain_policy_demo_20260803_062316/trials/"
+    "notes_add_note_duplicate_check_policy/0": "tool_calls: 6, succeeded: 0",
+    "results/native_shared_domain_policy_demo_20260803_062316/trials/"
+    "notes_add_note_duplicate_check_policy/1": "tool_calls: 6, succeeded: 0",
+    "results/native_shared_domain_policy_demo_20260803_062316/trials/"
+    "notes_add_note_duplicate_check_policy/2": "tool_calls: 5, succeeded: 0",
+    "results/native_shared_domain_gate_demo_20260804_122027/trials/"
+    "notes_add_note_duplicate_check_gated/0": "tool_calls: 4, succeeded: 0",
+}
+
+
+@pytest.mark.parametrize(
+    ("half", "expected"),
+    [(_NOT_MET, _NOT_MET_BUNDLES), (_MET, _MET_BUNDLES)],
+    ids=["not_met", "met"],
+)
+def test_each_manifest_names_exactly_the_bundles_its_half_holds(
+    half: Path, expected: set[str]
+) -> None:
+    """Both directions, because either one alone admits a corpus that lies about itself.
+
+    A bundle on disk the manifest does not name is a trial that entered the evidence
+    unrecorded; a manifest entry with no directory is a corpus claiming a trial it lost.
+    ``record_carried`` is asserted against the tree for the same reason — it is the
+    manifest's claim about what a constraint reading ``status`` could be recomputed over.
+    """
+    manifest = _manifest(half)
+
+    assert {entry.directory for entry in manifest.bundles} == expected
+    assert {bundle.name for bundle in _bundles(half)} == expected
+    for entry in manifest.bundles:
+        carried = (half / entry.directory / _TOOL_LOG).exists()
+        assert entry.record_carried is carried, entry.directory
+
+
+@pytest.mark.parametrize("half", [_NOT_MET, _MET], ids=["not_met", "met"])
+def test_every_manifest_label_is_the_one_its_own_bundle_recorded(half: Path) -> None:
+    """The manifest is a reading of the bundles, and each bundle is the second source.
+
+    ``met`` is the label the corpus exists to carry — the judge's verdict for the
+    criterion — and ``agent_model`` the attribution a reader needs to know what produced
+    the transcript that was labelled. Both are re-read here off the bundle's own files,
+    so a manifest transcribed from the invocation rather than from the trials reds.
+    """
+    manifest = _manifest(half)
+    criterion = yaml.safe_load(_DECLARATION.read_text())["migrations"][0]["criterion"]
+
+    assert manifest.criterion == criterion
+    for entry in manifest.bundles:
+        bundle = half / entry.directory
+        grade = yaml.safe_load((bundle / "grade.yaml").read_text())
+        (recorded,) = [result for result in grade["criterion_results"] if result["id"] == criterion]
+        task = yaml.safe_load((bundle / "task.yaml").read_text())
+        assert entry.met is recorded["met"], entry.directory
+        assert entry.task_id == task["task_id"], entry.directory
+        assert entry.agent_model == task["model_config"]["agent"]["name"], entry.directory
+
+
+def test_the_manifests_name_every_trial_the_curation_refused_and_what_it_observed() -> None:
+    """The composition's other half: the graded trials that did *not* enter, by rule.
+
+    Twenty-one graded ``checked_duplicates_first`` trials exist; seventeen are committed.
+    Which four were left out, and on what evidence, was a human judgment nobody recorded
+    until the manifests did — and the runs behind it are gitignored, so the observation
+    travels with the corpus or not at all.
+    """
+    refused = {
+        entry.source: entry
+        for half in (_NOT_MET, _MET)
+        for entry in _manifest(half).excluded
+        if entry.reason.value == "environment_dead"
+    }
+
+    assert {source: entry.observation for source, entry in refused.items()} == _REFUSED_TRIALS
+    assert {entry.by.value for entry in refused.values()} == {"rule"}
 
 
 # ---------------------------------------------------------------------------
@@ -653,7 +782,11 @@ def test_the_shipped_narrow_folds_under_the_map_its_own_declaration_carries(
     declared = yaml.safe_load(_SHIPPED_DECLARATION.read_text())["migrations"][0]
     current = yaml.safe_load((_GATED_ARM / "grading.yaml").read_text())["combine"]["weights"]
     (entry,) = reconcile_corpus(
-        _copied(_CORPUS, tmp_path), replay_id="canon", packs=[_SHIPPED_PACKS], dry_run=True
+        _copied(_CORPUS, tmp_path),
+        replay_id="canon",
+        packs=[_SHIPPED_PACKS],
+        dry_run=True,
+        corpus_base=_REPO,
     ).entries
 
     assert declared["combine_weights"] == _SHIPPED_WEIGHTS
@@ -691,7 +824,7 @@ def test_reconciling_writes_its_report_and_touches_no_bundle_file(tmp_path: Path
     shutil.copytree(_PACKS, packs)
     packs_before = _tree_digest(packs)
 
-    reconcile_corpus(corpus, replay_id="written", packs=[packs], dry_run=False)
+    reconcile_corpus(corpus, replay_id="written", packs=[packs], dry_run=False, corpus_base=_REPO)
 
     after = _tree_digest(corpus)
     assert {path: digest for path, digest in after.items() if path in before} == before
@@ -703,7 +836,9 @@ def test_a_dry_run_reaches_the_verdict_and_writes_nothing(tmp_path: Path) -> Non
     corpus = _copy(tmp_path)
     before = _tree_digest(corpus)
 
-    report = reconcile_corpus(corpus, replay_id="preview", packs=[_PACKS], dry_run=True)
+    report = reconcile_corpus(
+        corpus, replay_id="preview", packs=[_PACKS], dry_run=True, corpus_base=_REPO
+    )
 
     assert report.entries[0].verdict is ReconcileVerdict.INSUFFICIENT_EVIDENCE
     assert _tree_digest(corpus) == before
@@ -740,3 +875,518 @@ def test_the_differential_reaches_neither_an_llm_client_nor_the_judge() -> None:
     assert "tolokaforge.core.grading.trace_checks" in footprint
     assert "tolokaforge.core.llm.client" not in footprint
     assert "tolokaforge.core.grading.judge" not in footprint
+
+
+# ---------------------------------------------------------------------------
+# lot_ops_names_lot: a candidacy its own corpus refuses
+# ---------------------------------------------------------------------------
+
+_LOT_OPS_CORPUS = _REPO / "tests/data/migration_corpora/lot_ops_names_lot"
+_LOT_OPS_PACK = _REPO / "examples/native/multi_service_lot_ops"
+_LOT_OPS_DECLARATION = _LOT_OPS_PACK / "dataset/tasks/lot_ops_01/migration.yaml"
+
+#: The two committed run configs the corpus was generated from, and the agent each names.
+#: One file per arm because ``RunConfig.models`` holds one model per role, so an arm *is* a
+#: config; asserting the pair here is what keeps the corpus reproducible from what ships.
+_LOT_OPS_ARMS = {
+    "corpus_generation_haiku.yaml": "anthropic/claude-haiku-4-5",
+    "corpus_generation_gpt_4o_mini.yaml": "openai/gpt-4o-mini",
+}
+
+#: Five trials per arm, named so a bundle added to or dropped from the corpus reds here
+#: rather than silently moving the observation count below.
+_LOT_OPS_BUNDLES = {f"lot_ops_corpus_haiku_20260812_132740_trial{index}" for index in range(5)} | {
+    f"lot_ops_corpus_gpt_4o_mini_20260812_133234_trial{index}" for index in range(5)
+}
+
+#: The candidate constraint, and the criterion it claims to be able to replace.
+_LOT_OPS_CRITERION = "names_lot"
+_LOT_OPS_CONSTRAINT = "the_lot_was_read_before_the_action_was_opened"
+
+
+def _lot_ops_entry(tmp_path: Path) -> ReconciledEntry:
+    (entry,) = reconcile_corpus(
+        _copied(_LOT_OPS_CORPUS, tmp_path),
+        replay_id="canon",
+        packs=[_SHIPPED_PACKS],
+        dry_run=True,
+        corpus_base=_REPO,
+    ).entries
+    return entry
+
+
+def test_the_lot_ops_corpus_is_exactly_the_ten_record_carrying_bundles() -> None:
+    """Two sources for the corpus's membership and shape: the tree, and this literal.
+
+    Every bundle carries its tool-call record, because both source runs did — which is what
+    lets the constraint below be recomputed over ``args`` at all, and what makes the
+    all-failed column a reading of the transcripts rather than of a missing file.
+    """
+    assert {bundle.name for bundle in _bundles(_LOT_OPS_CORPUS)} == _LOT_OPS_BUNDLES
+    for bundle in _bundles(_LOT_OPS_CORPUS):
+        assert {path.name for path in bundle.iterdir()} == _RETAINED_FILES | {_TOOL_LOG}
+
+
+def test_the_corpus_carries_five_trials_of_each_committed_arm() -> None:
+    """The generation's independent variable, read back off the corpus.
+
+    The two arms differ in the agent model and in nothing else, so a corpus holding an
+    uneven split, or a model neither config names, would be measuring something other than
+    the experiment the committed configs describe. Both sources are read: each config's
+    declared agent, and each bundle's own recorded ``model_config``.
+    """
+    configs = {
+        name: yaml.safe_load((_LOT_OPS_PACK / "run_configs" / name).read_text())
+        for name in _LOT_OPS_ARMS
+    }
+    assert {name: config["models"]["agent"]["name"] for name, config in configs.items()} == (
+        _LOT_OPS_ARMS
+    )
+    for config in configs.values():
+        assert config["orchestrator"]["repeats"] == 5
+        assert config["models"]["judge"]["name"] == "anthropic/claude-sonnet-4-6"
+
+    recorded = [
+        yaml.safe_load((bundle / "task.yaml").read_text())["model_config"]["agent"]["name"]
+        for bundle in _bundles(_LOT_OPS_CORPUS)
+    ]
+    assert {model: recorded.count(model) for model in set(recorded)} == dict.fromkeys(
+        _LOT_OPS_ARMS.values(), 5
+    )
+
+
+def test_no_trial_in_the_corpus_ever_read_the_lot_it_opened_the_action_against() -> None:
+    """Why the constraint column is all-failed, measured from the transcripts.
+
+    The refusal below is only honest if the constraint failed because the behaviour never
+    happened rather than because the corpus is unreadable. Each trial issued exactly two HTTP
+    calls — the reason-code catalog and the POST — and never a ``GET`` of the lot URL the POST
+    names, on both models and all ten trials. The task hands the agent ``lot_id 7`` in the
+    user's own message and its guidance asks only for the catalog, so a compliant agent has
+    no reason to read the lot: the constraint measures a step this task never asks for.
+    """
+    for bundle in _bundles(_LOT_OPS_CORPUS):
+        calls = yaml.safe_load((bundle / _TOOL_LOG).read_text())
+        requests = [
+            (call["arguments"]["method"], call["arguments"]["url"])
+            for call in calls
+            if call["tool_name"] == "http_request"
+        ]
+        assert [method for method, _ in requests] == ["GET", "POST"], bundle.name
+        assert not [url for method, url in requests if method == "GET" and "/lots/" in url]
+
+
+def test_the_corpus_refuses_the_candidacy_in_the_strict_direction(tmp_path: Path) -> None:
+    """The measured verdict, cell by cell: ten observations, all in one cell, and refused.
+
+    Every trial is a **strict** disagreement — the judge found ``names_lot`` met where the
+    candidate constraint failed — which is the one direction no mode tolerates, because a
+    constraint that fails where the criterion holds is not even a necessary condition of it.
+    The table is asserted cell by cell rather than through the accuracy number, which is
+    ``0.0`` here and says nothing about *which* cell the mass sits in.
+
+    κ is reported beside the verdict, never thresholded: both labels are constant and in
+    opposite directions, so there is no agreement to measure and the value carries no
+    evidence either way.
+    """
+    entry = _lot_ops_entry(tmp_path)
+
+    assert entry.criterion == _LOT_OPS_CRITERION
+    assert entry.task_ids == ["lot_ops_01"]
+    assert entry.observations == 10
+    assert entry.accuracy == 0.0
+    assert entry.kappa == 0.0
+    assert entry.contingency.model_dump() == {
+        "judge_met_constraint_passed": 0,
+        "judge_met_constraint_failed": 10,
+        "judge_not_met_constraint_passed": 0,
+        "judge_not_met_constraint_failed": 0,
+    }
+    assert len(entry.strict_disagreements) == 10
+    assert entry.permissive_disagreements == []
+    assert entry.excluded_trials == []
+    assert entry.verdict is ReconcileVerdict.REFUSED
+    assert [refusal.kind for refusal in entry.refusals] == [RefusalKind.UNACKNOWLEDGED_DISAGREEMENT]
+
+
+def test_the_refused_candidacy_still_exits_zero_because_it_converts_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``candidate``'s verdict is reported and gates nothing, refused included.
+
+    This is the distinction the exit code exists to make: the entry is refused *and* the
+    command exits ``0``, because a candidate converts nothing, retires nothing and changes no
+    grade. A run that exited non-zero here would make every shipped candidacy a build break
+    the moment its evidence arrived, which is the opposite of what declaring one is for.
+    """
+    monkeypatch.chdir(_REPO)
+
+    result = _reconcile_cli("--source", str(_copied(_LOT_OPS_CORPUS, tmp_path)), "--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert "refused over 10 observations" in result.output
+    assert "a candidate converts nothing, so its verdict gates nothing" in result.output
+    assert "does not tolerate a strict disagreement" in result.output
+
+
+def test_the_counterfactual_reports_no_row_for_a_substrate_graded_pack(tmp_path: Path) -> None:
+    """Every trial is named as unrecomputed, and the projection is empty rather than guessed.
+
+    This pack's grade carries a ``state_checks`` component, which the runner folds from
+    several sources and no single recorded field holds, so the recomposition cannot reproduce
+    the verdict the runner already reached — and a projection built on a composition that
+    cannot do that would say nothing trustworthy about the migration. Every one of the ten
+    trials lands in ``unrecomputed_trials`` for that one reason, so **no** before/after row
+    exists here, and none of the veto or score columns the notes corpus locks is available
+    for a substrate-graded pack.
+    """
+    counterfactual = _lot_ops_entry(tmp_path).counterfactual
+
+    assert counterfactual.trials == []
+    assert {Path(row.trial).name for row in counterfactual.unrecomputed_trials} == _LOT_OPS_BUNDLES
+    assert {row.gap for row in counterfactual.unrecomputed_trials} == {
+        RecomputationGap.COMPOSED_COMPONENT_HAS_NO_RUNNER_FIELD
+    }
+
+
+def test_the_lot_ops_manifest_names_exactly_the_bundles_on_disk_and_their_labels() -> None:
+    """The corpus's own account of itself, checked against the tree in both directions.
+
+    A bundle on disk the manifest does not name entered the evidence unrecorded; a manifest
+    entry with no directory is a corpus claiming a trial it lost. Each ``met`` is re-read off
+    the bundle's own ``grade.yaml``, so a manifest transcribed from the invocation rather than
+    from the trials reds — and every label being ``True`` is what makes the judge's side of
+    the table one column.
+    """
+    manifest = _manifest(_LOT_OPS_CORPUS)
+
+    assert manifest.criterion == _LOT_OPS_CRITERION
+    assert {entry.directory for entry in manifest.bundles} == _LOT_OPS_BUNDLES
+    assert {bundle.name for bundle in _bundles(_LOT_OPS_CORPUS)} == _LOT_OPS_BUNDLES
+    assert manifest.excluded == []
+    for entry in manifest.bundles:
+        grade = yaml.safe_load((_LOT_OPS_CORPUS / entry.directory / "grade.yaml").read_text())
+        (recorded,) = [
+            result for result in grade["criterion_results"] if result["id"] == _LOT_OPS_CRITERION
+        ]
+        assert entry.met is recorded["met"] is True, entry.directory
+        assert entry.record_carried is True, entry.directory
+
+
+def test_the_declaration_names_the_constraint_the_corpus_measured() -> None:
+    """The corpus is evidence about *this* claim, so the claim is read from the pack.
+
+    ``by`` is what the differential recomputes, and ``required: true`` is why a strict
+    disagreement matters here at all — the criterion carries a trial-level veto, so a
+    constraint that fails where it holds would retire a veto the evidence says it cannot
+    stand in for. Both are read off the shipped declaration rather than restated.
+    """
+    declared = yaml.safe_load(_LOT_OPS_DECLARATION.read_text())["migrations"][0]
+
+    assert declared["criterion"] == _LOT_OPS_CRITERION
+    assert declared["mode"] == "candidate"
+    assert declared["by"] == [_LOT_OPS_CONSTRAINT]
+    assert declared["was"]["required"] is True
+
+
+# ---------------------------------------------------------------------------
+# The sweep: every declared migration, over the corpus its own declaration names
+# ---------------------------------------------------------------------------
+
+#: Every row the sweep over the shipped tree reports, in the order it reports them — by
+#: corpus, then by pool. Written out here rather than derived from the sweep, because the row
+#: set *is* the claim: a fourth sidecar, a declaration re-pointed at another corpus, or a
+#: verdict that moved reds against this literal instead of against a number.
+_SWEPT_ROWS = [
+    (_LOT_OPS_CORPUS, "names_lot", "candidate", ReconcileVerdict.REFUSED, 10, ["lot_ops_01"]),
+    (
+        _CORPUS,
+        "checked_duplicates_first",
+        "narrowed",
+        ReconcileVerdict.NO_COUNTER_EVIDENCE,
+        17,
+        ["notes_add_note_duplicate_check_gated", "notes_add_note_duplicate_check_policy"],
+    ),
+]
+
+
+def test_the_sweep_reports_one_row_per_surviving_declaration_over_the_corpus_it_names() -> None:
+    """Every migration the shipped tree declares, each measured over the corpus it names.
+
+    Three sidecars ship and they pool into **two** rows: both notes arms are byte-identical
+    and quote one measurement twice, so a sweep reporting one row per *file* would report
+    three. The sidecar count is read off the tree, which is what makes the pooling rule
+    load-bearing here rather than a number that happens to match.
+
+    The two verdicts are the two things the bar can say about a committed corpus, and both
+    ship: a narrow its evidence carries, and a candidacy its own corpus refuses. The refused
+    row is why the exit code is locked separately — a candidate converts nothing.
+    """
+    reports = reconcile_declared_corpora(packs=[_SHIPPED_PACKS], corpus_base=_REPO)
+
+    assert len(list(_SHIPPED_PACKS.rglob(MIGRATION_FILENAME))) == 3
+    assert [Path(report.source) for report in reports] == [_LOT_OPS_CORPUS, _CORPUS]
+    assert [
+        (
+            Path(report.source),
+            entry.criterion,
+            entry.mode.value,
+            entry.verdict,
+            entry.observations,
+            entry.task_ids,
+        )
+        for report in reports
+        for entry in report.entries
+    ] == _SWEPT_ROWS
+
+
+def test_the_sweep_exits_zero_over_the_shipped_tree_and_names_every_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The invocation CI runs: no ``--source``, the default pack root, and a verdict per row.
+
+    The working directory is pinned because both the default ``--packs`` root and the base
+    each declared corpus is read against come from it — "the sweep resolves the shipped packs
+    and their corpora" is a claim about running from the repository root, stated rather than
+    assumed.
+    """
+    monkeypatch.chdir(_REPO)
+
+    result = _reconcile_cli("--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert "no_counter_evidence over 17 observations" in result.output
+    assert "names_lot (lot_ops_01) — declared candidate, refused over 10 observations" in (
+        result.output
+    )
+    assert "a candidate converts nothing, so its verdict gates nothing" in result.output
+
+
+def _copied_tree(tmp_path: Path, *corpora: Path) -> tuple[Path, Path]:
+    """A repository-shaped copy: the fixture packs and the named corpora, each under the
+    relative path the declarations already write. Returns the base and the pack root.
+
+    The copy is what lets ``corpus_base`` point a whole resolution at ``tmp_path`` — the
+    committed tree is never read for write and never mutated by these tests.
+    """
+    root = tmp_path / "tree"
+    shutil.copytree(_PACKS, root / _PACKS.relative_to(_REPO))
+    for corpus in corpora:
+        shutil.copytree(corpus, root / corpus.relative_to(_REPO))
+    return root, root / _PACKS.relative_to(_REPO)
+
+
+@pytest.mark.parametrize(
+    ("dropped", "observations", "kinds", "names"),
+    [
+        (None, 17, [], ()),
+        (
+            "met",
+            16,
+            [RefusalKind.DECLARED_EVIDENCE_CONTRADICTS_MEASUREMENT],
+            ("declares 17", "measured 16", "no part of the corpus left out"),
+        ),
+    ],
+    ids=["the-corpus-the-declaration-names", "one-bundle-short-of-it"],
+)
+def test_a_corpus_short_of_its_declared_count_is_refused_where_the_source_is_that_corpus(
+    tmp_path: Path,
+    dropped: str | None,
+    observations: int,
+    kinds: list[RefusalKind],
+    names: tuple[str, ...],
+) -> None:
+    """The bound the sweep tightens into an equality, and the pair that shows it is the drop.
+
+    Over an arbitrary ``--source`` a count below the declared one says nothing, because the
+    source may deliberately be part of the corpus. Over the corpus a declaration itself names
+    there is no part left out, so bundles that went missing are missing — and the whole
+    corpus, one bundle richer, reconciles clean through the same fixture.
+
+    This is the **declared-evidence** refusal, the count a reviewer reads against the one the
+    command reaches. It is not the manifest set-equality assertion above, which compares a
+    corpus's own account of itself against the directories beside it; both hold over this
+    corpus, for different reasons and on different fixtures.
+
+    The pack and the corpus are copied into one tree, the corpus under the relative path the
+    declaration already names, and the declaration is copied byte-unchanged — so ``corpus_base``
+    points the whole resolution at the copy, and the fixture writes nothing anywhere else.
+    """
+    root, packs = _copied_tree(tmp_path, _CORPUS)
+    corpus = root / _CORPUS.relative_to(_REPO)
+    assert (packs / _DECLARATION.relative_to(_PACKS)).read_bytes() == _DECLARATION.read_bytes()
+    if dropped is not None:
+        shutil.rmtree(corpus / dropped / sorted(_MET_BUNDLES)[0])
+    before = _tree_digest(root)
+
+    (report,) = reconcile_declared_corpora(packs=[packs], corpus_base=root)
+
+    (entry,) = report.entries
+    assert entry.observations == observations
+    assert [refusal.kind for refusal in entry.refusals] == kinds
+    written = " ".join(refusal.message for refusal in entry.refusals)
+    for expected in names:
+        assert expected in written
+    assert _tree_digest(root) == before
+
+
+@pytest.mark.parametrize(
+    ("arguments", "names"),
+    [
+        (("--dry-run", "--replay-id", "swept"), "--replay-id"),
+        ((), "--dry-run"),
+    ],
+    ids=["a-name-for-a-report-it-writes-none-of", "keeping-a-report-it-writes-none-of"],
+)
+def test_the_sweep_refuses_an_invocation_that_asks_it_to_write(
+    arguments: tuple[str, ...], names: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A flag the mode cannot honour is refused, never quietly ignored.
+
+    The sweep reads committed corpora and a report lands under the corpus it read, so both
+    of these ask for an artifact inside the tree. Ignoring them would leave an operator
+    believing a named report exists somewhere.
+    """
+    monkeypatch.chdir(_REPO)
+
+    result = _reconcile_cli(*arguments)
+
+    assert result.exit_code != 0
+    assert names in result.output
+    assert "no_counter_evidence" not in result.output
+
+
+def test_each_entry_of_a_pack_is_measured_over_the_corpus_that_entry_names(
+    tmp_path: Path,
+) -> None:
+    """A pack may migrate two criteria on two bodies of evidence, and each row is its own.
+
+    The shipped tree declares one entry per pack, so "each entry over the corpus it names" and
+    "each pack over the corpus its first entry names" are the same sweep over it. Here they are
+    not: the policy fixture pack gains a second entry claiming ``note_saved`` over the ``met``
+    half alone, so the two rows must differ in the trials they read — seventeen for the narrow
+    pooled across both arms, twelve for the candidacy measured over one half.
+
+    ``was`` is read off the pack's own rubric rather than restated, because what this fixture
+    is about is which corpus each entry reaches, and a hand-copied criterion would only add a
+    second way for it to fail.
+    """
+    root, packs = _copied_tree(tmp_path, _CORPUS)
+    corpus = root / _CORPUS.relative_to(_REPO)
+    policy = packs / _POLICY_DECLARATION.relative_to(_PACKS)
+    grading = yaml.safe_load((policy.parent / "grading.yaml").read_text())
+    (saved,) = [
+        criterion
+        for criterion in grading["llm_judge"]["rubric"]["criteria"]
+        if criterion["id"] == "note_saved"
+    ]
+    declared = yaml.safe_load(policy.read_text())
+    declared["migrations"].append(
+        {
+            "criterion": saved["id"],
+            "mode": "candidate",
+            "by": ["the_notes_were_listed_before_the_note_was_added"],
+            "corpus": f"{_CORPUS.relative_to(_REPO)}/met",
+            "was": {
+                "kind": saved["kind"],
+                "required": saved.get("required", False),
+                "weight": saved["weight"],
+                "description": saved["description"],
+            },
+        }
+    )
+    policy.write_text(yaml.safe_dump(declared, sort_keys=False))
+
+    reports = reconcile_declared_corpora(packs=[packs], corpus_base=root)
+
+    assert [
+        (Path(report.source), entry.criterion, entry.observations, entry.task_ids)
+        for report in reports
+        for entry in report.entries
+    ] == [
+        (
+            corpus,
+            "checked_duplicates_first",
+            17,
+            ["notes_add_note_duplicate_check_gated", "notes_add_note_duplicate_check_policy"],
+        ),
+        (corpus / "met", saved["id"], 12, ["notes_add_note_duplicate_check_policy"]),
+    ]
+
+
+def _point_a_declaration_at_another_packs_corpus(root: Path, packs: Path) -> None:
+    """The gated arm's entry re-pointed at the ``lot_ops`` corpus — a real corpus, holding
+    no trial of the task whose criterion the entry is about."""
+    declaration = packs / _DECLARATION.relative_to(_PACKS)
+    declared = yaml.safe_load(declaration.read_text())
+    declared["migrations"][0]["corpus"] = str(_LOT_OPS_CORPUS.relative_to(_REPO))
+    declaration.write_text(yaml.safe_dump(declared, sort_keys=False))
+
+
+def _move_the_grading_file_out_from_under_the_sidecar(root: Path, packs: Path) -> None:
+    """The pack's ``grading:`` re-pointed into a subdirectory, leaving the sidecar beside a
+    file the loader no longer resolves — so nothing reads the declaration."""
+    pack = (packs / _DECLARATION.relative_to(_PACKS)).parent
+    (pack / "elsewhere").mkdir()
+    (pack / "grading.yaml").rename(pack / "elsewhere" / "grading.yaml")
+    task = yaml.safe_load((pack / "task.yaml").read_text())
+    (pack / "task.yaml").write_text(yaml.safe_dump(task | {"grading": "elsewhere/grading.yaml"}))
+
+
+def _remove_the_task_file_beside_a_sidecar(root: Path, packs: Path) -> None:
+    (packs / _DECLARATION.relative_to(_PACKS)).parent.joinpath("task.yaml").unlink()
+
+
+def _blank_the_task_id_beside_a_sidecar(root: Path, packs: Path) -> None:
+    task_file = (packs / _DECLARATION.relative_to(_PACKS)).parent / "task.yaml"
+    declared = yaml.safe_load(task_file.read_text())
+    task_file.write_text(yaml.safe_dump({k: v for k, v in declared.items() if k != "task_id"}))
+
+
+@pytest.mark.parametrize(
+    ("break_the_tree", "names"),
+    [
+        (_point_a_declaration_at_another_packs_corpus, "holds no trial of it"),
+        (_move_the_grading_file_out_from_under_the_sidecar, "is not beside the grading.yaml"),
+        (_remove_the_task_file_beside_a_sidecar, "no task.yaml sits beside it"),
+        (_blank_the_task_id_beside_a_sidecar, "declares no task_id"),
+    ],
+    ids=[
+        "a-corpus-holding-no-trial-of-the-task-that-names-it",
+        "a-sidecar-the-pack-it-sits-in-never-reads",
+        "a-sidecar-beside-no-task",
+        "a-task-naming-no-id",
+    ],
+)
+def test_the_sweep_refuses_a_tree_it_could_not_measure_a_declaration_over(
+    tmp_path: Path, break_the_tree: Callable[[Path, Path], None], names: str
+) -> None:
+    """Four ways a declaration reaches no evidence, each an error naming the tree rather than
+    a row reporting nothing.
+
+    All four are silent by default: a corpus with no trial of the declaring task, a sidecar
+    the loader never reaches, one beside no ``task.yaml`` and one whose ``task.yaml`` names no
+    id would each drop a declaration out of the sweep — and a sweep that skips a declaration
+    reports a clean pass over the ones it happened to read.
+
+    The same copied tree as the equality lock above, broken one way per case, so what is on
+    trial is the break and not the fixture.
+    """
+    root, packs = _copied_tree(tmp_path, _CORPUS, _LOT_OPS_CORPUS)
+    break_the_tree(root, packs)
+
+    with pytest.raises(ReconcileError, match=names):
+        reconcile_declared_corpora(packs=[packs], corpus_base=root)
+
+
+def test_the_sweep_refuses_a_pack_root_that_declares_no_migration(tmp_path: Path) -> None:
+    """Nothing to reconcile is an error naming the roots searched, not exit zero.
+
+    A `--packs` that has drifted off the packs it was written for otherwise reports a clean
+    sweep of nothing, which is the same failure `validate`'s empty-glob rule exists for.
+    """
+    empty = tmp_path / "packs"
+    empty.mkdir()
+
+    with pytest.raises(ReconcileError, match="declares a migration"):
+        reconcile_declared_corpora(packs=[empty], corpus_base=tmp_path)
