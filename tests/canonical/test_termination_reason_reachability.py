@@ -51,6 +51,7 @@ from tolokaforge.core.llm.client import (
     UserSimulator,
 )
 from tolokaforge.core.llm.usage import Usage
+from tolokaforge.core.loop import TerminationDecision, classify_loop_error
 from tolokaforge.core.models import Message, TerminationReason, Trajectory, TrialStatus
 from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 from tolokaforge.core.run_display_events import LLMCallObservation
@@ -135,6 +136,9 @@ class _ScriptedAgent:
         if isinstance(item, Exception):
             raise item
         return item
+
+    def classify_loop_error(self, exc: Exception) -> TerminationDecision:
+        return classify_loop_error(exc, ())
 
 
 def _text(body: str) -> GenerationResult:

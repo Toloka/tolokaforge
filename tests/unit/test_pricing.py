@@ -329,10 +329,10 @@ class TestPricingDataLoading:
         assert len(MODEL_PRICING) > 0
 
     def test_pricing_json_exists(self):
-        """The bundled pricing.json file should exist."""
-        pricing_path = (
-            Path(__file__).resolve().parents[2] / "tolokaforge" / "core" / "data" / "pricing.json"
-        )
+        """The bundled ``pricing.json`` must resolve through the model-data seam."""
+        from tolokaforge.core.model_data import bundled_pricing_path
+
+        pricing_path = bundled_pricing_path()
         assert pricing_path.exists(), f"pricing.json not found at {pricing_path}"
 
     def test_reload_from_custom_file(self):
@@ -356,13 +356,38 @@ class TestPricingDataLoading:
             reload_pricing()
             custom_path.unlink()
 
-    def test_reload_missing_file_returns_empty(self):
-        """reload_pricing with a missing file should result in empty table."""
-        reload_pricing(Path("/tmp/nonexistent_pricing.json"))
-        assert len(MODEL_PRICING) == 0
-        # Restore
+    def test_reload_missing_file_raises_file_not_found(self, tmp_path):
+        """A missing custom pricing path must raise :class:`FileNotFoundError`.
+
+        The bundled table survives; a subsequent ``reload_pricing()`` must
+        restore it, proving the loud-fail branch left ``MODEL_PRICING`` in
+        a coherent state.
+        """
+        missing = tmp_path / "does_not_exist.json"
+        with pytest.raises(FileNotFoundError, match="pricing table not found"):
+            reload_pricing(missing)
         reload_pricing()
         assert len(MODEL_PRICING) > 0
+
+    def test_reload_malformed_json_raises(self, tmp_path):
+        """Malformed JSON must raise :class:`ValueError` naming the resource."""
+        malformed = tmp_path / "malformed.json"
+        malformed.write_text("{not valid json")
+        try:
+            with pytest.raises(ValueError, match="invalid JSON in pricing table"):
+                reload_pricing(malformed)
+        finally:
+            reload_pricing()
+
+    def test_reload_non_mapping_payload_raises(self, tmp_path):
+        """A JSON list at the top level must raise :class:`ValueError`."""
+        payload = tmp_path / "list.json"
+        payload.write_text(json.dumps(["not", "a", "mapping"]))
+        try:
+            with pytest.raises(ValueError, match="must be a mapping"):
+                reload_pricing(payload)
+        finally:
+            reload_pricing()
 
 
 # ---------------------------------------------------------------------------

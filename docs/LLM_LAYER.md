@@ -8,6 +8,64 @@ appear — callers above it work with the curated Python types described below.
 See [`plans/llm_reasoning_and_observability_fix.md`](../plans/llm_reasoning_and_observability_fix.md)
 for the design rationale and the canonical litellm surface.
 
+## Two-wheel architecture
+
+Tolokaforge publishes two PyPI wheels from one monorepo — see
+[ADR-0030](adr/0030-tolokaforge-models-split.md):
+
+- **`tolokaforge`** (engine wheel) ships the base classes for every
+  policy slot (`StrictSchema`, `DictMapHints`, `ResponsePolicy`,
+  `ReasoningCodec`, `AssistantTextPolicy`, `ParamsPolicy`,
+  `MessageAssemblyPolicy`, `CachePolicy`, `ContentPolicy`), the nine
+  `_POLICY_REGISTRIES` slots, and the loader / overlay machinery on
+  [`presets.py`](../tolokaforge/core/llm/presets.py). It also ships the
+  `Capability` enum and the `ModelCertificate` dataclass at
+  [`tolokaforge.testing.certify`](../tolokaforge/testing/certify/).
+- **[`tolokaforge-models`](../tolokaforge_models/)** ships the per-model
+  policy subclasses at
+  [`tolokaforge_models/policies/`](../tolokaforge_models/src/tolokaforge_models/policies/)
+  (`gemini.py`, `minimax.py`, `deepseek.py`, `inkling.py`), the 39
+  `ModelCertificate` entries at
+  [`tolokaforge_models.certificates.ALL_MODELS`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py),
+  and the three data files (`pricing.json`, `model_presets.yaml`,
+  `providers.yaml`) at
+  [`tolokaforge_models/data/`](../tolokaforge_models/src/tolokaforge_models/data/).
+
+The models wheel registers its policy classes with the engine via the
+`tolokaforge.policies` entry-point group declared in
+[`tolokaforge_models/pyproject.toml`](../tolokaforge_models/pyproject.toml).
+[`load_policy_registrations()`](../tolokaforge/core/model_data.py)
+discovers the entry points at
+[`tolokaforge.core.llm.presets`](../tolokaforge/core/llm/presets.py)
+import and merges the registrations into `_POLICY_REGISTRIES`;
+duplicate keys or unknown slots fail loud. Two install-time gates
+follow the merge — see § Startup validation. Certificates reach the
+engine through [`bundled_certificates()`](../tolokaforge/core/model_data.py),
+consumed once at
+[`tolokaforge.testing.certify.__init__`](../tolokaforge/testing/certify/__init__.py)
+to populate the public `ALL_MODELS` symbol.
+
+`pip install tolokaforge` transitively pulls the models wheel via
+`Requires-Dist: tolokaforge-models >=1.0.0,<2.0.0` — the two wheels
+version and release independently (see
+[`docs/RELEASING.md`](RELEASING.md)) but a working engine install
+always carries a matching models wheel.
+
+### Deprecation shim for by-name imports (v0.17.x → v0.18.0)
+
+`from tolokaforge.core.llm import GeminiSchema` (and its seven
+siblings — `GeminiRecursiveSchema`, `ScalarArrayDictMapResponse`,
+`RefResolvingDictMapHints`, `JsonRecursiveCoerceResponse`,
+`ItemRecursiveUnwrapResponse`, `MinimaxM3TagRecoveryResponse`,
+`OpenAISummaryReplayReasoningCodec`) resolves via a lazy
+[`__getattr__`](../tolokaforge/core/llm/__init__.py) shim to the
+subclass in `tolokaforge_models.policies.<family>`. First access
+emits a `DeprecationWarning` naming the new import path; subsequent
+accesses per name resolve silently through a `_WARNED` cache. **The
+shim is removed in v0.18.0** — migrate to
+`from tolokaforge_models.policies.<family> import <Class>` before
+upgrading past v0.17.x.
+
 ## Module map
 
 | Module | Purpose |
@@ -20,7 +78,9 @@ for the design rationale and the canonical litellm surface.
 | [`prompt_policy.py`](../tolokaforge/core/llm/prompt_policy.py) | System-prompt enrichment (`DictMapHints`) |
 | [`params_policy.py`](../tolokaforge/core/llm/params_policy.py) | Generation parameter adaptation |
 | [`content_policy.py`](../tolokaforge/core/llm/content_policy.py) | Tool-result content format (OpenAI / Anthropic) |
+| [`message_assembly_policy.py`](../tolokaforge/core/llm/message_assembly_policy.py) | Empty-assistant-content filler injection (Nova-only) |
 | [`response_policy.py`](../tolokaforge/core/llm/response_policy.py) | Tool-call argument post-processing |
+| [`assistant_text_policy.py`](../tolokaforge/core/llm/assistant_text_policy.py) | Assistant-text reshaping between litellm parse and `GenerationResult.text` |
 | [`capabilities.py`](../tolokaforge/core/llm/capabilities.py) | `ModelCapabilities` frozen dataclass |
 | [`presets.py`](../tolokaforge/core/llm/presets.py) | YAML preset loader → `ModelCapabilities`. Also implements the **operator-overridable preset overlay** (`--presets-file`, `engine.presets_file`) so new model registrations don't require an engine release — see [ADR 0002](adr/0002-external-model-registry.md) and [`docs/CONFIG.md` § Preset overlay file](CONFIG.md#preset-overlay-file-no-engine-release-required). |
 | [`litellm_params.py`](../tolokaforge/core/llm/litellm_params.py) | Turns overlay-declared capabilities into litellm's `allowed_openai_params`, so a vendor-native provider does not refuse `tools` for a model its map lacks — see [§ When litellm has never heard of the model](#when-litellm-has-never-heard-of-the-model) |
@@ -159,7 +219,7 @@ reasoning on subsequent turns.
 ### Preset wiring
 
 ```yaml
-# tolokaforge/core/data/model_presets.yaml
+# tolokaforge_models/data/model_presets.yaml
 presets:
   anthropic:
     match: ["anthropic/*", "*claude*"]
@@ -288,15 +348,16 @@ Three concrete sanitizers ship today:
   keywords like `title` / `examples`) pass through unchanged. The `qwen`
   preset uses `passthrough` instead — see § `response_policy` for the
   rationale.
-* `GeminiSchema(StrictSchema)` — used by the `gemini` preset. Adds
-  `flatten_oneof_discriminator=True` on top of `StrictSchema`'s rewrites
-  because Gemini's tool spec is a JSON-Schema *subset* that does not
-  document `$defs`/`$ref`, `oneOf`/`anyOf` with object branches, or
-  `discriminator` — sending these constructs causes Gemini to silently
-  lose every property name inside them and emit description-derived
-  English keys instead (verified live 2026-05-20). The flattener
-  collapses `oneOf` discriminated unions into a single object schema
-  unioning every branch's `properties`; intersects `required` (so
+* `GeminiSchema(StrictSchema)` — shipped by
+  [`tolokaforge-models`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) and used
+  by the `gemini` preset. Adds `flatten_oneof_discriminator=True` on top of
+  `StrictSchema`'s rewrites because Gemini's tool spec is a JSON-Schema
+  *subset* that does not document `$defs`/`$ref`, `oneOf`/`anyOf` with
+  object branches, or `discriminator` — sending these constructs causes
+  Gemini to silently lose every property name inside them and emit
+  description-derived English keys instead (verified live 2026-05-20). The
+  flattener collapses `oneOf` discriminated unions into a single object
+  schema unioning every branch's `properties`; intersects `required` (so
   typically only the discriminator survives); special-cases the
   discriminator field by merging per-branch `const` values into a single
   `enum`. Paired with `response_policy: array_dict_map` to reverse the
@@ -710,12 +771,14 @@ is exactly `{openrouter, openai}`. Naming another provider in
 provider's native route" — true of a LiteLLM proxy's `/v1/messages`
 passthrough, false of a plain OpenAI-compatible gateway.
 
-`mock` and `nova` are in `UNROUTABLE_PROVIDERS` and are rejected even when
-named explicitly. `mock` never reaches the wire. `nova` depends on
-`_call_with_key_rotation` rewriting its bare model name into `openai/<name>`
-next to its own hardcoded base URL; a gateway replaces the base URL but not the
-rewrite, so litellm would get a provider-less model string and raise
-`BadRequestError` before sending anything.
+The `providers.yaml` entry for a provider carries `unroutable: bool`. `mock`
+and `nova` declare `unroutable: true` and are rejected even when named
+explicitly in `LLM_PROXY_PROVIDERS`. `mock` never reaches the wire. `nova`
+depends on `_call_with_key_rotation` rewriting its bare model name into
+`openai/<name>` next to the endpoint its `ProviderBinding` pins per attempt;
+a gateway replaces the base URL but not the rewrite, so litellm would get a
+provider-less model string and raise `BadRequestError` before sending
+anything.
 
 ### Naming a gateway route explicitly
 
@@ -821,16 +884,17 @@ testing nothing.
 
 ### Key rotation under a gateway
 
-Rotation stays bound to the provider key chain (`OPENROUTER_API_KEYS` and
-friends), and whether it still applies depends on **one** thing: is a gateway
-key pinned?
+Rotation binds to the provider record's `api_keys_env`
+(OpenRouter's is `OPENROUTER_API_KEYS`); the rotation logic republishes into
+`api_key_env` (OpenRouter's `OPENROUTER_API_KEY`). Whether rotation still
+applies depends on **one** thing: is a gateway key pinned?
 
 - **`LLM_PROXY_API_KEY` set** — rotation is skipped. `_rotate_key` republishes
-  `OPENROUTER_API_KEY` into the environment, but the pinned `api_key` kwarg
-  takes precedence in litellm, so rotating would resend byte-identical requests
-  and then report an exhausted key chain that was never in play. A gateway
-  quota or authorization rejection raises an error naming the gateway URL
-  instead.
+  the provider's `api_key_env` into the environment, but the pinned `api_key`
+  kwarg takes precedence in litellm, so rotating would resend byte-identical
+  requests and then report an exhausted key chain that was never in play. A
+  gateway quota or authorization rejection raises an error naming the gateway
+  URL instead.
 - **`LLM_PROXY_API_KEY` unset** (gateway authenticates by network position) —
   rotation works and is left alone, because litellm reads the provider env var
   that `_rotate_key` rewrites. Suppressing it here would abort a trial with
@@ -838,6 +902,102 @@ key pinned?
 
 The guard mirrors exactly the condition under which `_build_kwargs` pins the
 key, so the two can't drift.
+
+### Secrets surface of `_rotate_key`
+
+`_rotate_key` republishes the picked key into `os.environ` via
+`binding.api_key_env` (OpenRouter's `OPENROUTER_API_KEY`) so litellm's
+inner request builder — which reads that env var — sees the freshly
+rotated key on the next attempt. The `SecretManager` subprocess carve-out
+sanctions this specific pattern: rewrites of a small named set of env
+vars whose consumer is a downstream process that cannot read
+`SecretManager` directly.
+
+Post-cutover, `binding.api_key_env` is data — any provider whose YAML
+entry declares one now participates in the same republish path. Today
+only OpenRouter (rotation enabled) reaches this branch, but a future
+provider whose entry declares both `api_keys_env` and `api_key_env` will
+transitively acquire the same `os.environ` rewrite. The guarantee that
+`api_key_env` is a credential var the SecretManager subprocess carve-out
+accepts is `providers.yaml`-authored — the schema does not enforce it.
+If a future entry names a non-credential env var here, `_rotate_key` will
+still rewrite it. Reviewer note in the PR that widens the rotation set.
+
+## Provider bindings
+
+Provider-specific transport knobs (endpoint URL, credential env-var names,
+routability under a gateway, rotation env-var, `custom_llm_provider` litellm
+routing hint, per-provider rate-limit text patterns, and Nova-shaped slug /
+transport pinning) live in
+[`tolokaforge_models/data/providers.yaml`](../tolokaforge_models/src/tolokaforge_models/data/providers.yaml).
+The schema is
+[`tolokaforge.core.llm.providers.ProviderBinding`](../tolokaforge/core/llm/providers.py)
+— a frozen Pydantic model, `extra="forbid"`, one entry per shipped provider
+(`openrouter`, `openai`, `anthropic`, `gemini`, `nova`, `mock`). Lookup key is
+the first `/`-separated segment of `ModelConfig.provider`, lower-cased;
+unknown names resolve to a default `ProviderBinding()` with every field inert.
+
+`LLMClient.__init__` loads the binding into `self._provider_binding` once and
+consults it at every provider-specific transport branch — endpoint pinning,
+credential lookup, key rotation, slug rewrite, rate-limit text.
+
+### What is data-driven
+
+| Field | Consumer | Effect |
+|---|---|---|
+| `endpoint` + `api_base_env` | `LLMClient.__init__` and `_call_with_key_rotation` | When both are set the client `os.environ.setdefault(api_base_env, endpoint)` at construction, publishing the default base URL a deployment may override. When `kwargs_pin_transport=true` the endpoint is also pinned into `kwargs["api_base"]` per attempt. Nova's `NOVA_API_BASE` covers both roles. |
+| `api_key_env` | `_call_with_key_rotation`; `_rotate_key`; `_load_api_keys` | Primary key env-var name. When `kwargs_pin_transport=true` the client reads it fresh per attempt via `SecretManager` and pins it into `kwargs["api_key"]`, failing loud (`RuntimeError`) if it resolves empty. Also the env var `_rotate_key` republishes into `os.environ` after picking the next key for the direct-provider path (OpenRouter's `OPENROUTER_API_KEY`). |
+| `api_keys_env` | `_load_api_keys` | Rotation-list env-var name (comma-separated). `None` disables rotation. OpenRouter's `OPENROUTER_API_KEYS`; a second provider needing rotation is one YAML edit. |
+| `key_file_env` | `_load_api_keys` | Env-var pointing at a fallback keys file (one key per line, `#` comments allowed, comma-separated fields taking the first). Populated only when `api_keys_env` is also set — the file is the second key source after the rotation env var. OpenRouter's `OPENROUTER_KEY_FILE` (defaulting to `keys.txt` in cwd). Older shape (`if binding.api_keys_env == "OPENROUTER_API_KEYS"`) was a model-name conditional in data-driven clothing; the field surfaces the same behaviour without a magic value. |
+| `unroutable` | `ProxyConfig.applies_to`, `_parse_providers` | The proxy rejects providers whose binding declares `unroutable: true` even when named in `LLM_PROXY_PROVIDERS`. `mock` and `nova` — see § proxy above. |
+| `custom_llm_provider` | `_call_with_key_rotation` | Value pinned into `kwargs["custom_llm_provider"]`. Nova: `"openai"`. OpenRouter: `"openrouter"`. When `None`, compound providers (`openrouter/google`) fall back to `provider.split("/")[0]`; simple providers let litellm default. |
+| `rate_limit_patterns` | `LLMClient._is_rate_limit_exception` (tier-3 text fallback), `LLMClient.classify_loop_error` | Regex strings compiled once at construction. `DEFAULT_RATE_LIMIT_PATTERNS` in [`providers.py`](../tolokaforge/core/llm/providers.py) is the shipped default every non-mock provider declares verbatim; each entry is a shape an *engine wrapper* produces (`Error code: 429`, `HTTP/1.1 429`, `too many requests`, rate-limit prose in an error construction), not provider quota prose. |
+| `slug_rewrite` | `_call_with_key_rotation` | Two-step rewrite of `kwargs["model"]` per attempt: strip `strip_prefix`, then ensure `ensure_prefix`. Nova's binding declares `strip_prefix: "nova/"` and `ensure_prefix: "openai/"` — turning `nova/busan-v1` into `openai/busan-v1` on the wire without a Python conditional on provider name. |
+| `format_model_name_bare` | `LLMClient._format_model_name` | When `true`, `_format_model_name` returns `config.name` as-is (no `{provider}/` prefix). Nova only; preserves current log content. |
+| `kwargs_pin_transport` | `_call_with_key_rotation` | When `true`, the client reads `endpoint` and `api_key_env` fresh per attempt and pins them into `kwargs["api_base"]` / `kwargs["api_key"]`. Fires the `NOVA_API_KEY is required for nova provider` fail-loud when `api_key_env` resolves empty. Nova only. |
+
+Nova's three sites (init `NOVA_API_BASE` `os.environ.setdefault`,
+`_format_model_name` bare-name return, `_call_with_key_rotation` per-attempt
+`api_base` / `api_key` / `custom_llm_provider` / slug rewrite) are expressed
+entirely through the fields above — a provider whose transport matches Nova's
+shape is a `providers.yaml` entry, not a `client.py` edit.
+
+The `LLMClient.classify_loop_error(exc)` bound method closes over the
+compiled `binding.rate_limit_patterns` and is what
+[`tolokaforge.core.loop.ToolCallingLoop`](../tolokaforge/core/loop.py)
+and the grading judge loop consume — the public seam threads the per-provider
+patterns to `loop.py` without exposing the compiled tuple across the module
+boundary.
+
+### What stays engine code
+
+Not every provider knob is data-shaped, and the schema is deliberately narrow
+where the mechanism is genuinely per-provider:
+
+- **`_configure_openrouter_base_url`** reconciles *two* env-var names
+  (`OPENROUTER_BASE_URL` and `OPENROUTER_API_BASE`) into one pinned value. The
+  single-field `api_base_env` schema cannot express dual-env coordination; a
+  schema addition just for one provider is over-engineering.
+- **`_openrouter_headers`** (`HTTP-Referer` / `X-Title`) and
+  **`provider_order`** (upstream pinning) consume config off
+  `ModelConfig.openrouter`, not transport bindings. They stay engine code.
+- **Mock's `if self.provider == "mock": return self._mock_generate(...)`
+  early-return** — mock's binding declares `unroutable: true` (captures the
+  proxy behaviour), but the branch that never constructs kwargs stays
+  engine-side. Half of mock is data (routability), half is code (the
+  short-circuit); eliminating the last string would require a
+  `dispatch_stub: Callable | None` field whose only consumer is mock.
+
+### Fingerprint
+
+`providers.yaml` ships in the `tolokaforge-models` wheel at
+[`tolokaforge_models/data/providers.yaml`](../tolokaforge_models/src/tolokaforge_models/data/providers.yaml),
+so `engine_run_state.json`'s `models_fingerprint.content_sha256`
+covers `{presets, pricing, providers, certificates}` — a provider
+binding edit changes the digest. See
+[`docs/OUTPUT_FORMAT.md` § `engine_run_state.json`](OUTPUT_FORMAT.md#engine_run_statejson)
+and [ADR-0030](adr/0030-tolokaforge-models-split.md) § "Fingerprinting
+for auditability".
 
 ## `cache_policy`
 
@@ -941,7 +1101,7 @@ list-of-blocks back to text.
 
 `cache_policy` is preset-driven, not user-overridable via `ModelConfig.capabilities`
 in Stage 6. To disable caching for an ablation study, override the preset in
-[`tolokaforge/core/data/model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml:22)
+[`tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml:22)
 with `cache_policy: none`. The override path contract is documented in
 `docs/ADD_NEW_MODEL.md` (Stage 8).
 
@@ -953,10 +1113,20 @@ that silently drop `additionalProperties` parameters).
 
 ## `params_policy`
 
-Generation-parameter adaptation.
+Generation-parameter adaptation. `ParamsPolicy` is the abstract base class;
+every subclass declares `KNOWN_KEYS: ClassVar[frozenset[str]]` enumerating
+the construction kwargs it accepts. The overlay validator reads the union of
+every registered subclass's `KNOWN_KEYS` (`_params_slot_known_keys()` in
+[`presets.py`](../tolokaforge/core/llm/presets.py)) to decide which preset
+`params:` keys are legal — a subclass that forgets `KNOWN_KEYS` raises
+`TypeError` at class-body evaluation, so silent drift between the constructor
+and the validator is impossible.
 
 ```python
-class ParamPolicy(Protocol):
+class ParamsPolicy(ABC):
+    KNOWN_KEYS: ClassVar[frozenset[str]]
+
+    @abstractmethod
     def adapt(
         self,
         kwargs: dict,
@@ -969,7 +1139,7 @@ class ParamPolicy(Protocol):
     ) -> dict: ...
 ```
 
-`GenerationParams` reads six preset-driven flags:
+`GenerationParams` declares its `KNOWN_KEYS` — the preset-driven flags below:
 
 | Flag | Default | Effect |
 |---|---|---|
@@ -1028,32 +1198,54 @@ class ToolContentPolicy(Protocol):
     def format(self) -> str: ...               # "openai" | "anthropic"
     @property
     def supports_images(self) -> bool: ...
-    @property
-    def inject_empty_assistant_filler(self) -> bool: ...
 ```
 
 Three implementations, selected via preset:
 
-* `OpenAIContent` (default) — text-only tool result blocks; `supports_images=False`;
-  `inject_empty_assistant_filler=False`. Used by the `default`, `openai_gpt5`,
-  `xai_grok`, `qwen`, and `gemini` presets.
+* `OpenAIContent` (default) — text-only tool result blocks;
+  `supports_images=False`. Used by the `default`, `openai_gpt5`, `xai_grok`,
+  `qwen`, and `gemini` presets.
 * `AnthropicContent` — Anthropic native content with image block support;
-  `supports_images=True`; `inject_empty_assistant_filler=False`. Used by both
-  Anthropic presets.
+  `supports_images=True`. Used by both Anthropic presets.
 * `NovaContent` — OpenAI-shape wire format (no native image blocks on the
-  Bedrock OpenAI-passthrough path); `inject_empty_assistant_filler=True`.
-  The only preset that opts into the filler. Used by `aws_nova`.
+  Bedrock OpenAI-passthrough path). Used by `aws_nova`.
 
-`inject_empty_assistant_filler` gates a single substitution in
-`LLMClient._convert_messages`: when an assistant turn carries `tool_calls`
-but `content` is empty / whitespace, replace it with the literal string
-`"I'll help you with that."`. Bedrock/Nova rejects empty assistant content
-in that shape, so the filler is necessary there. Every other provider
-accepts empty content alongside `tool_calls`, so the filler stays off —
-injecting it elsewhere creates a few-shot pattern that some models
-(notably Gemini) echo back as their own response content (2026-04-30 OTS
-regression). Routing pinned by
-[`tests/canonical/test_content_policy_filler_routing.py`](../tests/canonical/test_content_policy_filler_routing.py).
+## `message_assembly_policy`
+
+```python
+class MessageAssemblyPolicy(Protocol):
+    @property
+    def inject_empty_assistant_filler(self) -> bool: ...
+    @property
+    def empty_assistant_filler(self) -> str: ...
+```
+
+Decides whether empty / whitespace-only assistant `content` on tool-call
+turns is substituted with a non-empty filler string, and what that string
+is. Wired into `LLMClient._convert_messages`: when
+`inject_empty_assistant_filler` is `True`, the assistant dict's `content`
+becomes `empty_assistant_filler`; otherwise it stays `""`.
+
+Two implementations ship:
+
+* `NullMessageAssembly` (default) — `inject_empty_assistant_filler=False`,
+  `empty_assistant_filler=""`. Every non-Nova preset carries this. The
+  provider APIs accept empty assistant content alongside `tool_calls`.
+* `NovaMessageAssembly(empty_assistant_filler="I'll help you with that.")`
+  — `inject_empty_assistant_filler=True`; the filler string is data on the
+  instance. Used by `aws_nova` and `aws_nova_openrouter`. Bedrock/Nova
+  rejects empty assistant content on tool-call turns ("The text field in
+  the ContentBlock ... is blank").
+
+The filler string is per-instance data rather than an engine constant
+because a universal filler caused the 2026-04-30 Gemini regression: Gemini
+Pro pattern-matched the substituted string in past assistant turns and
+echoed `"I'll help you with that."` back as its own response content
+(~26-38 % of trials on ots_19_airlines). A future provider that needs a
+different filler declares it at the preset overlay layer via
+`message_assembly_policy: {name: nova, params: {empty_assistant_filler: "..."}}`,
+without touching engine code. Routing pinned by
+[`tests/canonical/test_message_assembly_filler_routing.py`](../tests/canonical/test_message_assembly_filler_routing.py).
 
 ## `response_policy`
 
@@ -1082,19 +1274,21 @@ Implementations:
   pivot of `StrictSchema`'s dict-map → array conversion. Used by
   `openai_gpt5` and `xai_grok` presets.
 * `MinimaxM3TagRecoveryResponse` — composite for the MiniMax-M3 `tags`
-  corruption (`minimax` preset, registry name `minimax_m3_tags`). M3's
-  XML → JSON tool-call conversion mangles the `tags` array on every emission
-  (`{"item": X}` 76 %, JSON-encoded / empty string 23 %). The composite
-  chains `JsonRecursiveCoerceResponse` (stringified-list → list, `''` → `[]`)
-  then `ItemRecursiveUnwrapResponse` (`{"item": X}` → list, recursing into the
-  parent so `{"item": {"item": "a"}}` flattens to `["a"]`). Both recurse into
-  the `updates` / `item` parent but are scoped to the `ARRAY_SITES` allowlist
-  (`updates.tags`, `item.tags`) — the empty-string → `[]` coercion is tied to
-  those declared-array sites so it can never fire on a scalar field. Scalar
-  strings are never promoted, `None` is never touched, multi-key dicts are
-  left unchanged, and already-valid `list[str]` tags pass through unchanged
-  (zero false positives). M2.7 emits native `tags` lists and is not in this
-  preset. See AGENTS.md gotcha #25.
+  corruption (`minimax` preset, registry name `minimax_m3_tags`), shipped
+  by [`tolokaforge-models`](../tolokaforge_models/src/tolokaforge_models/policies/minimax.py).
+  M3's XML → JSON tool-call conversion mangles the `tags` array on every
+  emission (`{"item": X}` 76 %, JSON-encoded / empty string 23 %). The
+  composite chains `JsonRecursiveCoerceResponse` (stringified-list → list,
+  `''` → `[]`) then `ItemRecursiveUnwrapResponse` (`{"item": X}` → list,
+  recursing into the parent so `{"item": {"item": "a"}}` flattens to
+  `["a"]`). Both recurse into the `updates` / `item` parent but are scoped
+  to the `ARRAY_SITES` allowlist (`updates.tags`, `item.tags`) — the
+  empty-string → `[]` coercion is tied to those declared-array sites so
+  it can never fire on a scalar field. Scalar strings are never promoted,
+  `None` is never touched, multi-key dicts are left unchanged, and
+  already-valid `list[str]` tags pass through unchanged (zero false
+  positives). M2.7 emits native `tags` lists and is not in this preset.
+  See AGENTS.md gotcha #25.
 
 `param_types` is a `Mapping[str, str]` from root-level parameter name to
 its post-sanitised JSON-Schema `type`. `LLMClient._assemble_result` builds
@@ -1106,18 +1300,64 @@ JSON-encoded array of `{key,…}` objects for a dict-map), the response
 policy recovers the correct native shape before the tool implementation
 sees it.
 
+## `assistant_text_policy`
+
+```python
+class AssistantTextPolicy(Protocol):
+    def parse_assistant_text(
+        self, text: str, *, model_config: ModelConfig
+    ) -> str: ...
+```
+
+Reshapes the assistant's textual reply between litellm's parse and
+`GenerationResult.text` — the string that lands in `trajectory.yaml`,
+transcript graders, and LLM-judge input. Wired into
+[`LLMClient._assemble_result`](../tolokaforge/core/llm/client.py): after
+`text = message.content or ""` the client calls
+`self.capabilities.assistant_text_policy.parse_assistant_text(text, model_config=self.config)`
+and stores the return value. The full text is passed unmodified so a
+subclass can dispatch on structure (start/end markers, template tokens)
+rather than on a pre-digested slice; `ModelConfig` is threaded through so
+a single subclass can match by resolved model name, provider, or
+capability overrides.
+
+The mock-generator path at `_assemble_result`'s synthetic branch is
+deliberately excluded — offline tests inject deterministic strings and
+must stay policy-agnostic, otherwise every offline fixture couples to
+whatever preset the run resolves.
+
+One implementation ships:
+
+* `PassthroughAssistantText` (default) — returns the text unchanged.
+  Every shipped preset resolves to this class, so wire output is
+  byte-identical to a hookless client.
+
+**Load-bearing case — Cohere marker stripping ([#929](https://github.com/Toloka/tolokaforge/issues/929)).**
+Cohere Command-A+ wraps every reply in `<|START_TEXT|>…<|END_TEXT|>`
+delimiters on the wire; `ResponsePolicy` reshapes only tool-call
+arguments, so pre-slot the delimiters flowed into `trajectory.yaml` and
+depressed LLM-judge scores. Under this slot a `CohereMarkerAssistantText`
+subclass in `tolokaforge_models/policies/` strips the markers without any
+engine edit — proven by
+[`tests/unit/llm/test_assistant_text_policy_seam.py`](../tests/unit/llm/test_assistant_text_policy_seam.py),
+which threads a fixture-scope subclass through
+`build_capabilities` → `_assemble_result` and asserts the markers are
+gone.
+
 ## `capabilities`
 
 ```python
 @dataclass(frozen=True)
 class ModelCapabilities:
-    schema_sanitizer: ToolSchemaSanitizer = field(default_factory=PassthroughSchema)
-    prompt_policy:    SystemPromptPolicy  = field(default_factory=NoPromptEnrichment)
-    content_policy:   ToolContentPolicy   = field(default_factory=OpenAIContent)
-    params_policy:    GenerationParams    = field(default_factory=GenerationParams)
-    response_policy:  ResponsePolicy      = field(default_factory=StandardResponse)
-    reasoning_codec:  ReasoningCodec      = field(default_factory=NoReasoningCodec)
-    cache_policy:     CachePolicy         = field(default_factory=NoCache)
+    schema_sanitizer:        ToolSchemaSanitizer   = field(default_factory=PassthroughSchema)
+    prompt_policy:           SystemPromptPolicy    = field(default_factory=NoPromptEnrichment)
+    content_policy:          ToolContentPolicy     = field(default_factory=OpenAIContent)
+    params_policy:           GenerationParams      = field(default_factory=GenerationParams)
+    response_policy:         ResponsePolicy        = field(default_factory=StandardResponse)
+    reasoning_codec:         ReasoningCodec        = field(default_factory=NoReasoningCodec)
+    cache_policy:            CachePolicy           = field(default_factory=NoCache)
+    message_assembly_policy: MessageAssemblyPolicy = field(default_factory=NullMessageAssembly)
+    assistant_text_policy:   AssistantTextPolicy   = field(default_factory=PassthroughAssistantText)
 ```
 
 ## `presets`
@@ -1125,7 +1365,7 @@ class ModelCapabilities:
 `build_capabilities(model_name, provider, overrides)` walks the merge order
 `default → matched preset → provider overlay → overrides` and constructs a
 fresh `ModelCapabilities`. Presets live in
-[`tolokaforge/core/data/model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml).
+[`tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml).
 
 ### Preset coverage
 
@@ -1133,17 +1373,17 @@ Per-preset policy wiring as shipped today. The three `StrictSchema` presets
 all cover the same two failure surfaces — `Decimal` look-ahead regex (P1,
 Stage 1) and typed `Dict[str, T]` parameters (P2, Stage 2) — by combining
 the same three policies. Keep this table in sync with
-[`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml).
+[`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml).
 
-| Preset                  | Match globs                                                      | `schema_sanitizer` | `response_policy`   | `prompt_policy`   | `content_policy` | `reasoning_codec` |
-|-------------------------|------------------------------------------------------------------|--------------------|---------------------|-------------------|------------------|-------------------|
-| `default`               | *(fallthrough)*                                                  | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            |
-| `anthropic_claude_4_7`  | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*` | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       |
-| `anthropic`             | `anthropic/*`, `*claude*`                                        | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       |
-| `openai_gpt5`           | `openai/gpt-5*`, `*gpt-5*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          |
-| `xai_grok`              | `x-ai/*`, `xai/*`, `grok*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          |
-| `qwen`                  | `qwen/*`, `qwen3*`                                               | `strict`           | `array_dict_map`    | `dict_map_hints`  | `openai`         | `openai`          |
-| `aws_nova`              | `nova*` (+ provider `nova`)                                      | `passthrough`      | `unwrap_input`      | `none`            | `openai`         | `none`            |
+| Preset                  | Match globs                                                      | `schema_sanitizer` | `response_policy`   | `prompt_policy`   | `content_policy` | `reasoning_codec` | `message_assembly_policy` | `assistant_text_policy` |
+|-------------------------|------------------------------------------------------------------|--------------------|---------------------|-------------------|------------------|-------------------|---------------------------|-------------------------|
+| `default`               | *(fallthrough)*                                                  | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `null`                    | `passthrough`           |
+| `anthropic_claude_4_7`  | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*` | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
+| `anthropic`             | `anthropic/*`, `*claude*`                                        | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
+| `openai_gpt5`           | `openai/gpt-5*`, `*gpt-5*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `xai_grok`              | `x-ai/*`, `xai/*`, `grok*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `qwen`                  | `qwen/*`, `qwen3*`                                               | `strict`           | `array_dict_map`    | `dict_map_hints`  | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `aws_nova`              | `nova*` (+ provider `nova`)                                      | `passthrough`      | `unwrap_input`      | `none`            | `nova`           | `none`            | `nova`                    | `passthrough`           |
 
 Order matters — first match wins. `anthropic_claude_4_7` is declared
 *before* the generic `anthropic` preset so Claude 4.7 picks up its
@@ -1174,16 +1414,157 @@ produce the JSON-serialisable preset fingerprint landed on
 * `resolve_policy_names(capabilities) -> dict[str, str]` — reverse-lookup
   from policy instances on a `ModelCapabilities` to the registry names
   (`schema_sanitizer`, `prompt_policy`, `content_policy`,
-  `response_policy`, `reasoning_codec`, `cache_policy`). `params_policy`
+  `response_policy`, `reasoning_codec`, `cache_policy`,
+  `message_assembly_policy`, `assistant_text_policy`). `params_policy`
   is intentionally omitted — it is a stateful `GenerationParams`
-  dataclass, not a single-named policy.
+  dataclass whose constructor kwargs are already serialised alongside
+  the fingerprint via `model_config.<role>.capabilities`, not a
+  single-named policy.
 
 Both helpers raise `ValueError` on unknown inputs rather than returning
 placeholders — per AGENTS.md rule #1 we surface drift immediately. Unit
 guard: [`tests/unit/llm/test_preset_fingerprint.py`](../tests/unit/llm/test_preset_fingerprint.py)
 parametrises over every preset in
-[`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml) and
+[`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) and
 plants a rogue policy instance to confirm the raise path.
+
+### Startup validation
+
+Two install-time gates fire at
+[`tolokaforge.core.llm.presets`](../tolokaforge/core/llm/presets.py) import
+— before any `RunConfig` load, before the orchestrator or runner spawn any
+child — so a bad `tolokaforge-models` install pair fails the process at
+boot rather than at the first LLM call.
+
+1. **Minimum-engine-version gate.**
+   [`_check_minimum_engine_version()`](../tolokaforge/core/model_data.py)
+   imports `tolokaforge_models` and reads
+   `tolokaforge_models.minimum_engine_version`. Two failure branches:
+
+   * `tolokaforge_models` is not importable → `RuntimeError` naming the
+     `pip install tolokaforge-models` install instruction, chained from
+     the underlying `ImportError`.
+   * The installed engine version does not satisfy the specifier →
+     `RuntimeError` naming both the installed engine version and the
+     models-wheel floor (`>=0.17,<0.18`), with the actionable "upgrade
+     the engine or downgrade the models wheel" hint.
+
+   Engine version resolution goes through
+   [`_resolve_engine_version()`](../tolokaforge/core/model_data.py), which
+   tries the `tolokaforge` distribution first and falls back to
+   `tolokaforge-runner-subset`; the same gate fires unchanged inside the
+   runner subset image, whose distribution name differs from the base
+   wheel.
+
+2. **Class-name-existence gate.**
+   [`_check_class_names_resolve()`](../tolokaforge/core/llm/presets.py)
+   walks the bundled `model_presets.yaml` — every slot on the `default`
+   block, every entry under `presets`, every entry under `providers` —
+   and asserts that every referenced policy name (either a bare
+   `schema_sanitizer: gemini` string or the `name` key of a
+   `{name, params}` mapping) is a key of the merged `_POLICY_REGISTRIES`.
+   Unresolved names raise `RuntimeError` naming every offending
+   `(where, slot, policy)` triple with a
+   [`difflib.get_close_matches`](https://docs.python.org/3/library/difflib.html#difflib.get_close_matches)
+   suggestion drawn from the registry's live keyset. Runs after the
+   `tolokaforge-models` entry-point merge, so it covers both engine
+   defaults and out-of-tree registrations.
+
+Canonical locks:
+[`tests/canonical/test_models_wheel_absent.py`](../tests/canonical/test_models_wheel_absent.py),
+[`tests/canonical/test_minimum_engine_version_gate.py`](../tests/canonical/test_minimum_engine_version_gate.py),
+[`tests/canonical/test_class_name_existence_gate.py`](../tests/canonical/test_class_name_existence_gate.py).
+
+## Public helper API
+
+Every engine-general helper and base-class hook a per-model policy subclass
+composes with is documented public API. Each name below carries the compat
+guarantee **"stable within the v0.17.x minor series; removal or signature
+change requires a deprecation announcement."** — the same guarantee ADR-0030
+§ Requirements (4) makes the seam meet for out-of-tree per-model classes.
+The [ADR-0030](adr/0030-tolokaforge-models-split.md) cutover
+([#938](https://github.com/Toloka/tolokaforge/issues/938)) relocates the
+per-model subclasses on top of exactly this surface.
+
+### Engine-general helpers
+
+Free functions, re-exported from `tolokaforge.core.llm`:
+
+| Helper | Module | What it does |
+|---|---|---|
+| [`coerce_json_strings`](../tolokaforge/core/llm/response_policy.py) | `response_policy` | Decode stringified JSON arrays / objects in tool-call arguments back to native values. Heuristic: a `str` whose first non-whitespace character is `[` or `{` and whose `json.loads` returns a `list` / `dict`. Scalar JSON literals (`"42"` → `42`) are never promoted — string IDs would silently corrupt. |
+| [`coerce_empty_containers`](../tolokaforge/core/llm/response_policy.py) | `response_policy` | Schema-aware recovery: coerces `""` → `[]` / `""` → `{}` for declared `array` / `object` / `dict_map` parameters. No-op without `param_types`; `""` on a `string` parameter passes through. |
+| [`find_additional_properties`](../tolokaforge/core/llm/dict_maps.py) | `dict_maps` | Locate an `additionalProperties` declaration on a property schema or any of its `anyOf` / `oneOf` branches. Handles the Pydantic `Optional[Dict[str, T]]` shape (`anyOf=[{additionalProperties:T}, {null}]`). |
+
+All three are consumed by shipped per-model policies — `JsonCoerceResponse`
+and `ArrayDictMapResponse` compose `coerce_json_strings` / `coerce_empty_containers`
+(engine-side); the models-wheel `MinimaxM3TagRecoveryResponse` reuses
+`coerce_json_strings` for its tags-site recovery, and `RefResolvingDictMapHints`
+composes `find_additional_properties`. Both are the intended entry points for
+out-of-tree recovery classes.
+
+### `StrictSchema` public hooks
+
+`StrictSchema` is the extensible base for strict-validator sanitisers
+(`openai_gpt5`, `xai_grok`, `qwen`, `gemini` presets). Two hook shapes:
+
+**Overridable classmethod:**
+
+* [`inline_refs_in_tool(cls, tool)`](../tolokaforge/core/llm/schema_sanitizer.py) — resolves per-tool `$ref` against the tool's parameter-level `$defs` block and drops the now-stale `$defs`. Subclasses that need cycle tolerance override this hook rather than reaching into `_inline_refs` (see [`GeminiRecursiveSchema`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) — it substitutes a permissive open-object schema at any point of cyclic re-entry).
+
+**Class-attribute hooks** — six flags on the class body, declared with
+`ClassVar[…]` so a subclass method that mis-writes `self.<hook> = ...`
+surfaces as a type-checker error rather than a silent instance-attribute
+shadow:
+
+| Attribute | Type | Default | Effect when overridden |
+|---|---|---|---|
+| `KEY_FIELD` | `ClassVar[str]` | `"key"` | Name of the synthetic key field on dict-map → array conversion. |
+| `VALUE_FIELD` | `ClassVar[str]` | `"value"` | Name of the synthetic scalar-value field (only emitted when `carry_scalar_dict_map_value` is `True`). |
+| `carry_scalar_dict_map_value` | `ClassVar[bool]` | `False` | Emit a synthetic `value` field for scalar-valued dict-maps (pair with `ScalarArrayDictMapResponse` on the response side). |
+| `flatten_oneof_discriminator` | `ClassVar[bool]` | `False` | Flatten `oneOf` discriminated unions into a single object schema — Gemini needs this because its tool spec is a JSON-Schema subset that does not document `oneOf` / `discriminator`. |
+| `strip_parameters_root_description` | `ClassVar[bool]` | `True` | Strip Pydantic's class-docstring artefact at the parameters root (redundant with `function.description` for strict validators). Gemini sets `False` — evidence shows the strip hurts on some flat tool schemas. |
+| `strip_re2_incompatible_patterns` | `ClassVar[bool]` | `True` | Remove `pattern` values containing lookarounds / backreferences (OpenAI / xAI / Qwen-strict raise 500 on these). Gemini appears to pass RE2-incompatible patterns through unchanged and overrides to `False`. |
+
+The defaults preserve the shipped OpenAI / xAI Grok behaviour.
+[`GeminiSchema`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) subclasses
+`StrictSchema` and toggles the four booleans plus `VALUE_FIELD`;
+`GeminiRecursiveSchema` subclasses `GeminiSchema` and additionally overrides
+`inline_refs_in_tool`. Neither reaches into any `_`-prefixed symbol.
+
+### `DictMapHints` public hook
+
+`DictMapHints.build_hints(self, tools)` — public overridable instance method
+on [`prompt_policy.py`](../tolokaforge/core/llm/prompt_policy.py). Called
+by `enrich` when both `system` and `tools` are non-empty; returns the hint
+text to append to the system prompt. Subclasses that need to close over
+instance state (e.g. `RefResolvingDictMapHints` — the `$ref`-resolving +
+one-level-nested variant used by the `thinkingmachines/inkling` route)
+override the method directly (see
+[`RefResolvingDictMapHints`](../tolokaforge_models/src/tolokaforge_models/policies/inkling.py) for
+the shipped example); the shape is an instance method so the override needs
+no `# type: ignore[override]` marker.
+
+### Public-API boundary guardrail
+
+[`tests/unit/llm/test_public_api_boundary.py`](../tests/unit/llm/test_public_api_boundary.py)
+locks the invariant that every currently-shipped per-model subclass /
+composite class reaches the engine through public API only. Four static /
+runtime checks parse each entry's source via `ast` and walk
+`_POLICY_REGISTRIES`:
+
+* **`test_no_private_symbol_imports`** — rejects any `from tolokaforge.core.llm.<mod> import _<name>` in the subclass module.
+* **`test_no_private_base_method_override`** — rejects a subclass method starting with `_` that shadows a base-class method of the same name (via `inspect.getmembers` on the concrete base).
+* **`test_no_private_attribute_access_on_self_or_super`** — rejects `self._<attr>` / `cls._<attr>` / `super()._<attr>` reads whose `<attr>` is not defined locally in the subclass body.
+* **`test_per_model_subclasses_covers_registered_non_base_classes`** — walks `_POLICY_REGISTRIES` and asserts every registered class inheriting from another in-registry class appears in the guardrail's `PER_MODEL_SUBCLASSES` list. Composite classes that inherit only from `object` (e.g. `MinimaxM3TagRecoveryResponse`) carry no automatic audit and must be added manually to `PER_MODEL_SUBCLASSES` when a new composite lands.
+
+A per-model subclass added to a preset registry that regresses into a
+`_`-prefixed name fails one of the four checks at test-import time — before
+the [#938](https://github.com/Toloka/tolokaforge/issues/938) cutover can
+bake the violation into `tolokaforge_models/policies/`. When adding a new
+per-model subclass, list it in `PER_MODEL_SUBCLASSES` and either compose the
+public helpers above or promote the private you need to public API in the
+same PR (see [ADR-0030 § Follow-ups (8)](adr/0030-tolokaforge-models-split.md)).
 
 ## `client`
 
@@ -1236,34 +1617,43 @@ because `_call_with_key_rotation` re-raises provider errors as
    the walk and returns `False`, so the condition takes the ordinary
    five-attempt exponential branch instead. `_should_retry_exception` is
    deliberately unchanged, so a probe-off run retries it exactly as before.
-3. **Anchored text** (`_RATE_LIMIT_TEXT_PATTERNS`), last resort: a 429 must sit
-   in a status position (`Error code: 429`, `status_code=429`, `HTTP/1.1 429`),
-   or the message must carry the HTTP reason phrase or rate-limit prose in an
-   error construction. An unanchored `"429" in str(exc)` matched token counts
-   (`you requested 4429`), request ids (`req_8f429ab2`) and JSON bodies. This
-   tier runs **only when no link in the chain carried an HTTP status at all** —
-   i.e. for the shape it exists for, a wrapper that stringified the provider
-   error instead of chaining it. An authoritative non-429 status beats prose,
-   because the outermost message is `RuntimeError(f"LLM API call failed: {e}")`
-   and `e`'s message can embed a response body that echoes request content: a
-   task conversation about rate limiting would otherwise hand a deterministic 400
-   the multi-hour budget. Untyped chains still text-match — under-matching a real
-   429 is the more expensive direction, since the absorption is the whole feature.
+3. **Anchored text** (`binding.rate_limit_patterns` — see § Provider bindings),
+   last resort: a 429 must sit in a status position (`Error code: 429`,
+   `status_code=429`, `HTTP/1.1 429`), or the message must carry the HTTP reason
+   phrase or rate-limit prose in an error construction. An unanchored
+   `"429" in str(exc)` matched token counts (`you requested 4429`), request ids
+   (`req_8f429ab2`) and JSON bodies. This tier runs **only when no link in the
+   chain carried an HTTP status at all** — i.e. for the shape it exists for, a
+   wrapper that stringified the provider error instead of chaining it. An
+   authoritative non-429 status beats prose, because the outermost message is
+   `RuntimeError(f"LLM API call failed: {e}")` and `e`'s message can embed a
+   response body that echoes request content: a task conversation about rate
+   limiting would otherwise hand a deterministic 400 the multi-hour budget.
+   Untyped chains still text-match — under-matching a real 429 is the more
+   expensive direction, since the absorption is the whole feature. Every shipped
+   provider carries the same anchored default list (`DEFAULT_RATE_LIMIT_PATTERNS`
+   in [`providers.py`](../tolokaforge/core/llm/providers.py)); the field is
+   per-provider so onboarding a provider whose rate-limit prose differs is a
+   `providers.yaml` edit.
 
 The text tier is a catalogue of *engine-wrapper* shapes, not of provider quota
 prose. Vertex `RESOURCE_EXHAUSTED`, OpenAI `insufficient_quota`, `TPM limit
 reached` and Anthropic `overloaded_error` match nothing there on purpose: they
 arrive typed through litellm, so tier 1 catches them.
 
-`core/loop.py`'s `classify_loop_error` shares the type tiers through
-`is_typed_rate_limit_exception`, because `TerminationReason.RATE_LIMIT` excludes
-a trial from every benchmark rate and prose is not evidence strong enough to
-spend that (see [`docs/GRADING.md`](GRADING.md:1) § Infrastructure aborts produce
-no grade). It uses `matches_rate_limit_text` only as a diagnostic: a
-rate-limit-shaped message with no typed exception behind it terminates as a
-*counted* reason, not as an abort. The remaining text-matching classifiers
-(`core/runner.py`'s user-simulator retry, `core/resume.py`) are separate and
-unaffected — `AllApiKeysExhaustedError` subclasses `RuntimeError`.
+`core/loop.py`'s `classify_loop_error(exc, patterns)` shares the type tiers
+through `is_typed_rate_limit_exception`, because `TerminationReason.RATE_LIMIT`
+excludes a trial from every benchmark rate and prose is not evidence strong
+enough to spend that (see [`docs/GRADING.md`](GRADING.md:1) § Infrastructure
+aborts produce no grade). It uses `matches_rate_limit_text` only as a
+diagnostic: a rate-limit-shaped message with no typed exception behind it
+terminates as a *counted* reason, not as an abort. The public seam callers use
+is `LLMClient.classify_loop_error(exc)` — a bound method that closes over the
+compiled `binding.rate_limit_patterns` so the compiled tuple never crosses a
+module boundary. `ToolCallingLoop` receives it via
+`classify_error=llm_client.classify_loop_error`. The remaining text-matching
+classifiers (`core/runner.py`'s user-simulator retry, `core/resume.py`) are
+separate and unaffected — `AllApiKeysExhaustedError` subclasses `RuntimeError`.
 
 ### Probe telemetry recording sites
 

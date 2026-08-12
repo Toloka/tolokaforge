@@ -18,6 +18,7 @@ from rubric_calibrator.runner import run_calibration
 from tolokaforge.core.grading.agreement import decide_gate
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
+from tolokaforge.core.loop import TerminationDecision, classify_loop_error
 from tolokaforge.core.models import ToolCall
 
 pytestmark = pytest.mark.unit
@@ -186,3 +187,6 @@ class _RouterJudge:
                 marker = f"SCORE: {verdict}"
             args[f"{cid}_justification"] = f"scripted reasoning for {cid}\n{marker}"
         return _tool_call_result(args)
+
+    def classify_loop_error(self, exc: Exception) -> TerminationDecision:
+        return classify_loop_error(exc, ())

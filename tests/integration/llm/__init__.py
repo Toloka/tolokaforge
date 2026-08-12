@@ -1,14 +1,19 @@
-"""Integration tests for the :mod:`tolokaforge.core.llm` layer.
+"""Provider-scoped live integration tests for the :mod:`tolokaforge.core.llm` layer.
 
-Every file in this package is :mod:`pytest.mark.integration`-gated and runs
-manually / nightly only — **never in regular CI**. Per Stage 0's locked
-design decision, live-provider calls never block PRs.
+Every file here is :mod:`pytest.mark.integration`-gated and runs manually /
+nightly only — never in regular CI. Live-provider calls do not block PRs.
 
-Run with::
+This directory hosts the tests that live *outside* the capability-driven
+certification suite:
 
-    scripts/with_env.sh uv run pytest tests/integration/llm/ -v
+* :mod:`test_nova_api` — provider-scoped Amazon Nova probes; not
+  parametrised over :data:`tolokaforge.testing.certify.ALL_MODELS`.
+* :mod:`test_gemini_placeholder_signature_replay` — one-off Gemini
+  placeholder-block A/B experiment.
+* :mod:`test_gateway_live` — live LLM gateway transport check, isolated
+  from the certification credential set.
 
-Stage 8 will grow this directory into a per-capability suite
-(:class:`ModelCertificate` registry). Stage 1 seeds it with a single test
-for the Decimal-field tool-call P1 regression guard.
+The capability-driven suite parametrised over
+:data:`tolokaforge.testing.certify.ALL_MODELS` lives at
+:mod:`tolokaforge.testing.certify.suite`.
 """

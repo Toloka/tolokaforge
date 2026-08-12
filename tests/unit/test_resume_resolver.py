@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from tolokaforge.core.engine_run_state import write_engine_run_state
+from tolokaforge.core.model_data_fingerprint import compute_models_fingerprint
 from tolokaforge.core.resume import resolve_resume_run_directory
 
 pytestmark = pytest.mark.unit
@@ -21,7 +22,12 @@ class TestResolveResumeRunDirectory:
     def test_reads_run_id_from_engine_run_state(self, tmp_path: Path) -> None:
         run_dir = tmp_path / "custom_grading_20260714_120000"
         run_dir.mkdir()
-        write_engine_run_state(run_dir, run_id="canonical_run_id", presets_file=None)
+        write_engine_run_state(
+            run_dir,
+            run_id="canonical_run_id",
+            presets_file=None,
+            models_fingerprint=compute_models_fingerprint(),
+        )
         _write_run_state(run_dir, run_id="stale_id_in_run_state")
 
         run_id, resolved = resolve_resume_run_directory(run_dir)
@@ -66,7 +72,12 @@ class TestResolveResumeRunDirectory:
         """Parity with ``resolve_run_directory``: pass-through, no ``.resolve()``."""
         run_dir = tmp_path / "relative_style"
         run_dir.mkdir()
-        write_engine_run_state(run_dir, run_id="rid", presets_file=None)
+        write_engine_run_state(
+            run_dir,
+            run_id="rid",
+            presets_file=None,
+            models_fingerprint=compute_models_fingerprint(),
+        )
 
         _, resolved = resolve_resume_run_directory(run_dir)
 

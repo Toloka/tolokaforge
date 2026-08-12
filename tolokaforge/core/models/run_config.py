@@ -593,7 +593,7 @@ class EngineConfig(BaseModel):
         default=None,
         description=(
             "Path to an additional model-presets YAML overlay. Merged onto "
-            "the bundled tolokaforge/core/data/model_presets.yaml at startup "
+            "the bundled tolokaforge_models/data/model_presets.yaml at startup "
             "so operators can register or shadow presets without an engine "
             "release. The --presets-file CLI flag takes precedence over this "
             "field. See docs/CONFIG.md and ADR 0002."
@@ -805,7 +805,7 @@ class ObservabilityConfig(BaseModel):
     pricing_overlay_path: Path | str | None = None
     """Optional JSON or YAML overlay merged onto the shipped pricing
     table before the orchestrator is constructed. Same schema as
-    ``tolokaforge/core/data/pricing.json``. Applied globally for the
+    ``tolokaforge_models/data/pricing.json``. Applied globally for the
     run's lifetime; used when a model the shipped table does not price
     (or prices incorrectly) is in use."""
 

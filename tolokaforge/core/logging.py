@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -69,6 +70,41 @@ _LEVEL_ANSI: dict[str, str] = {
 }
 
 _TOLOKAFORGE_ROOT_HANDLER_SENTINEL = "_tolokaforge_root_handler"
+
+
+#: Substrings identifying context keys whose values must not appear in log
+#: output. Match is case-insensitive on a word-boundary basis so
+#: `password_hash` matches but `max_tokens` / `total_tokens` don't —
+#: telemetry keys carrying `_tokens` suffixes are not credentials.
+#: Extending the list is preferable to whitelisting individual redactions
+#: elsewhere — `_sanitize_extra` is the single choke point.
+_SENSITIVE_KEY_SUBSTRINGS: frozenset[str] = frozenset(
+    {"password", "secret", "api_key", "apikey", "authorization", "credential"}
+)
+
+#: Exact-form token names (word-boundary match) that redact regardless of
+#: surrounding word context. `token` on its own is a credential; `max_tokens`
+#: / `total_tokens` are telemetry. Kept separate from the substring set so a
+#: future ambiguous name is a discussion, not a silent regression.
+_SENSITIVE_KEY_EXACT_TOKENS: frozenset[str] = frozenset(
+    {"token", "access_token", "refresh_token", "bearer", "session_id"}
+)
+
+_REDACTED = "***REDACTED***"
+
+
+def _key_is_sensitive(key: str) -> bool:
+    """Return whether ``key`` names a value that must not appear in logs.
+
+    Substring markers match anywhere in the key (case-insensitive). Exact
+    tokens match on a word boundary (case-insensitive) — `token` matches
+    `bearer_token` and `token`, but not `max_tokens` / `prompt_tokens`.
+    """
+    lower = key.lower()
+    if any(marker in lower for marker in _SENSITIVE_KEY_SUBSTRINGS):
+        return True
+    parts = re.split(r"[^a-z0-9]+", lower)
+    return any(token in _SENSITIVE_KEY_EXACT_TOKENS for token in parts)
 
 
 def _render_scalar(key: str, value: Any) -> str:
@@ -259,18 +295,27 @@ class StructuredLogger:
 
     @staticmethod
     def _sanitize_extra(context: dict[str, Any]) -> dict[str, Any]:
-        """Rename keys that would collide with `LogRecord` attributes.
+        """Rename LogRecord-reserved keys and redact sensitive values.
 
-        `logging.Logger.log(..., extra=...)` copies each key straight onto
-        `LogRecord.__dict__`; a key like `module` or `name` would raise
-        `KeyError` at `LogRecord.__init__`. Prefix such collisions with
-        `ctx_` so the record survives — the `StructuredFormatter` reads the
-        renamed keys via the same scope-pair rule.
+        Two guarantees:
+
+        1. Keys colliding with `LogRecord` attributes (`module`, `name`, …)
+           are prefixed with `ctx_` so `logging.Logger.log(..., extra=...)`
+           doesn't raise `KeyError` at `LogRecord.__init__`. The
+           `StructuredFormatter` reads renamed keys via the same rule.
+        2. Values under keys that name a credential (`password`, `secret`,
+           `token`, `api_key`, …) are replaced with `***REDACTED***`.
+           Substring match on the sanitized (post-rename) key, case-
+           insensitive. `_sanitize_extra` is the single choke point for
+           this policy — callers cannot bypass it.
         """
         sanitized: dict[str, Any] = {}
         for key, value in context.items():
             safe_key = f"ctx_{key}" if key in _LOG_RECORD_RESERVED else key
-            sanitized[safe_key] = value
+            if _key_is_sensitive(safe_key):
+                sanitized[safe_key] = _REDACTED
+            else:
+                sanitized[safe_key] = value
         return sanitized
 
     def _log(self, level: str, message: str, context: dict[str, Any] | None = None, **kwargs):
@@ -290,7 +335,12 @@ class StructuredLogger:
         # Defensive handling for non-dict context (e.g., exception passed as positional arg)
         if context is not None and not isinstance(context, dict):
             context = {"context": str(context)}
-        full_context = {**(context or {}), **kwargs}
+        raw_context = {**(context or {}), **kwargs}
+        # Sanitize once and use the redacted view everywhere the values
+        # are surfaced: the in-memory log list, the stdlib LogRecord's
+        # ``extra=`` payload, and the strict-mode RuntimeError message.
+        # Any bypass reintroduces the CodeQL clear-text-logging surface.
+        full_context = self._sanitize_extra(raw_context)
 
         log_entry = {
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
@@ -301,7 +351,7 @@ class StructuredLogger:
         }
         self.logs.append(log_entry)
 
-        self.logger.log(log_level, message, extra=self._sanitize_extra(full_context))
+        self.logger.log(log_level, message, extra=full_context)
 
         if self.strict and level == "ERROR":
             error_msg = f"[STRICT MODE] {message}"

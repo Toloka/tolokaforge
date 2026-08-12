@@ -24,6 +24,7 @@ from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
 from tolokaforge.core.engine_run_state import write_engine_run_state
+from tolokaforge.core.model_data_fingerprint import compute_models_fingerprint
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.dx.cli.main import cli
 
@@ -66,7 +67,12 @@ def _seed_run_dir(
     """Materialise a resumable run directory with a persisted engine
     state and a ``run_state.json`` reflecting *completed*."""
     run_dir.mkdir(parents=True, exist_ok=True)
-    write_engine_run_state(run_dir, run_id=run_id, presets_file=None)
+    write_engine_run_state(
+        run_dir,
+        run_id=run_id,
+        presets_file=None,
+        models_fingerprint=compute_models_fingerprint(),
+    )
     manager = RunStateManager(run_dir)
     state = manager.initialize_run(
         run_id=run_id, config_path="run.yaml", task_ids=task_ids, repeats=repeats

@@ -15,14 +15,18 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from tolokaforge.core.engine_run_state import (
     read_engine_run_state,
+    read_persisted_models_fingerprint,
     read_persisted_presets_file,
     read_persisted_run_id,
     write_engine_run_state,
 )
 from tolokaforge.core.llm.presets import get_overlay_path
+from tolokaforge.core.model_data import ModelsFingerprint
+from tolokaforge.core.model_data_fingerprint import compute_models_fingerprint
 from tolokaforge.core.models import EngineConfig, RunConfig
 from tolokaforge.dx.cli.main import _activate_presets_overlay
 
@@ -41,37 +45,71 @@ def _minimal_run_config(presets_file: str | None = None) -> RunConfig:
 
 class TestEngineRunStatePersistence:
     def test_round_trip(self, tmp_path: Path) -> None:
-        write_engine_run_state(tmp_path, run_id="run-001", presets_file="/some/overlay.yaml")
+        fingerprint = compute_models_fingerprint()
+        write_engine_run_state(
+            tmp_path,
+            run_id="run-001",
+            presets_file="/some/overlay.yaml",
+            models_fingerprint=fingerprint,
+        )
         assert read_persisted_presets_file(tmp_path) == "/some/overlay.yaml"
         assert read_persisted_run_id(tmp_path) == "run-001"
+        assert read_persisted_models_fingerprint(tmp_path) == fingerprint
         assert read_engine_run_state(tmp_path) == {
             "run_id": "run-001",
             "presets_file": "/some/overlay.yaml",
+            "models_fingerprint": fingerprint.model_dump(mode="json"),
         }
 
     def test_writing_none_persists_as_none(self, tmp_path: Path) -> None:
-        write_engine_run_state(tmp_path, run_id="run-002", presets_file=None)
+        fingerprint = compute_models_fingerprint()
+        write_engine_run_state(
+            tmp_path,
+            run_id="run-002",
+            presets_file=None,
+            models_fingerprint=fingerprint,
+        )
         assert read_persisted_presets_file(tmp_path) is None
         assert read_persisted_run_id(tmp_path) == "run-002"
-        # File exists but the value is null — distinct from "no file at all".
+        # Bundled-only run: presets_file is null but the fingerprint is
+        # still recorded — the run's model-data snapshot is identifiable.
+        assert read_persisted_models_fingerprint(tmp_path) == fingerprint
         assert read_engine_run_state(tmp_path) == {
             "run_id": "run-002",
             "presets_file": None,
+            "models_fingerprint": fingerprint.model_dump(mode="json"),
         }
 
     def test_absent_file_returns_empty_state(self, tmp_path: Path) -> None:
         assert read_engine_run_state(tmp_path) == {}
         assert read_persisted_presets_file(tmp_path) is None
         assert read_persisted_run_id(tmp_path) is None
+        assert read_persisted_models_fingerprint(tmp_path) is None
 
     def test_overwrite_replaces_previous_value(self, tmp_path: Path) -> None:
-        write_engine_run_state(tmp_path, run_id="run-003", presets_file="/first.yaml")
-        write_engine_run_state(tmp_path, run_id="run-003", presets_file="/second.yaml")
+        fingerprint = compute_models_fingerprint()
+        write_engine_run_state(
+            tmp_path,
+            run_id="run-003",
+            presets_file="/first.yaml",
+            models_fingerprint=fingerprint,
+        )
+        write_engine_run_state(
+            tmp_path,
+            run_id="run-003",
+            presets_file="/second.yaml",
+            models_fingerprint=fingerprint,
+        )
         assert read_persisted_presets_file(tmp_path) == "/second.yaml"
 
     def test_empty_run_id_is_rejected(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="run_id must be a non-empty string"):
-            write_engine_run_state(tmp_path, run_id="", presets_file=None)
+            write_engine_run_state(
+                tmp_path,
+                run_id="",
+                presets_file=None,
+                models_fingerprint=compute_models_fingerprint(),
+            )
 
     def test_malformed_state_file_raises_loudly(self, tmp_path: Path) -> None:
         # Loud-fail discipline: silently ignoring malformed engine state
@@ -79,6 +117,51 @@ class TestEngineRunStatePersistence:
         (tmp_path / "engine_run_state.json").write_text("{not json")
         with pytest.raises(json.JSONDecodeError):
             read_engine_run_state(tmp_path)
+
+    def test_malformed_fingerprint_raises_loudly(self, tmp_path: Path) -> None:
+        # A partially-populated fingerprint field is a broken file, not an
+        # absent one: loud-fail via ``pydantic.ValidationError`` matches the
+        # existing malformed-JSON behaviour.
+        (tmp_path / "engine_run_state.json").write_text(
+            json.dumps(
+                {
+                    "run_id": "run-broken",
+                    "presets_file": None,
+                    "models_fingerprint": {"package_version": "x"},
+                }
+            )
+        )
+        with pytest.raises(ValidationError):
+            read_persisted_models_fingerprint(tmp_path)
+
+    def test_absent_fingerprint_field_returns_none(self, tmp_path: Path) -> None:
+        # A run prepared before the fingerprint field was introduced has
+        # the other fields but no ``models_fingerprint``. The reader must
+        # tolerate that shape.
+        (tmp_path / "engine_run_state.json").write_text(
+            json.dumps({"run_id": "run-legacy", "presets_file": None})
+        )
+        assert read_persisted_models_fingerprint(tmp_path) is None
+        assert read_persisted_run_id(tmp_path) == "run-legacy"
+
+    def test_written_fingerprint_matches_written_field(self, tmp_path: Path) -> None:
+        # Every write must produce a ``ModelsFingerprint`` value that
+        # round-trips through the reader. Locks the writer's
+        # ``model_dump(mode="json")`` shape against the reader's
+        # ``model_validate`` shape.
+        fingerprint = ModelsFingerprint(
+            package_version="1.0.0",
+            content_sha256="0" * 64,
+            api_version=1,
+            minimum_engine_version=">=0.17,<1.0",
+        )
+        write_engine_run_state(
+            tmp_path,
+            run_id="run-stub",
+            presets_file=None,
+            models_fingerprint=fingerprint,
+        )
+        assert read_persisted_models_fingerprint(tmp_path) == fingerprint
 
 
 class TestWorkerOverlayResolution:
@@ -94,7 +177,12 @@ class TestWorkerOverlayResolution:
     def test_queue_state_beats_engine_config(self, tmp_path: Path, write_overlay) -> None:
         queue_overlay = write_overlay({}, name="queue.yaml")
         config_overlay = write_overlay({}, name="config.yaml")
-        write_engine_run_state(tmp_path, run_id="run-resolver", presets_file=queue_overlay)
+        write_engine_run_state(
+            tmp_path,
+            run_id="run-resolver",
+            presets_file=queue_overlay,
+            models_fingerprint=compute_models_fingerprint(),
+        )
         run_config = _minimal_run_config(presets_file=config_overlay)
         resolved = _activate_presets_overlay(
             cli_presets_file=None, run_config=run_config, run_dir=tmp_path
@@ -105,7 +193,12 @@ class TestWorkerOverlayResolution:
     def test_cli_beats_queue_state(self, tmp_path: Path, write_overlay) -> None:
         queue_overlay = write_overlay({}, name="queue.yaml")
         cli_overlay = write_overlay({}, name="cli.yaml")
-        write_engine_run_state(tmp_path, run_id="run-resolver", presets_file=queue_overlay)
+        write_engine_run_state(
+            tmp_path,
+            run_id="run-resolver",
+            presets_file=queue_overlay,
+            models_fingerprint=compute_models_fingerprint(),
+        )
         resolved = _activate_presets_overlay(
             cli_presets_file=cli_overlay,
             run_config=_minimal_run_config(),
@@ -131,7 +224,12 @@ class TestWorkerOverlayResolution:
         # fall through to engine.presets_file rather than treating the file's
         # presence as "no overlay".
         config_overlay = write_overlay({}, name="config.yaml")
-        write_engine_run_state(tmp_path, run_id="run-resolver", presets_file=None)
+        write_engine_run_state(
+            tmp_path,
+            run_id="run-resolver",
+            presets_file=None,
+            models_fingerprint=compute_models_fingerprint(),
+        )
         run_config = _minimal_run_config(presets_file=config_overlay)
         resolved = _activate_presets_overlay(
             cli_presets_file=None, run_config=run_config, run_dir=tmp_path

@@ -1,7 +1,18 @@
 """Generation-parameter adaptation for a target model.
 
-:class:`GenerationParams` is the :class:`ParamPolicy` implementation shipped
+:class:`GenerationParams` is the :class:`ParamsPolicy` implementation shipped
 today — it composes temperature / seed / reasoning kwargs per-model.
+
+Extension contract
+------------------
+:class:`ParamsPolicy` is the base class for every generation-parameter
+policy the engine dispatches to via the ``params_policy`` preset slot.
+Every subclass **must** declare ``KNOWN_KEYS: ClassVar[frozenset[str]]``
+enumerating the construction kwargs it accepts — this is the authoritative
+source of truth for overlay preset-params validation (see
+:func:`tolokaforge.core.llm.presets._params_slot_known_keys`). A subclass
+that omits ``KNOWN_KEYS`` raises :class:`TypeError` at class-body
+evaluation.
 
 Reasoning routing
 -----------------
@@ -44,22 +55,44 @@ See [`docs/LLM_LAYER.md`](../../../docs/LLM_LAYER.md) § ``params_policy``.
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from abc import ABC, abstractmethod
+from typing import Any, ClassVar
 
 from tolokaforge.core.llm.reasoning import ReasoningConfig
 
 __all__ = [
-    "ParamPolicy",
+    "ParamsPolicy",
+    "ParamPolicy",  # noqa: F822 — resolved via module-level __getattr__ shim
     "GenerationParams",
 ]
 
 _SAMPLING_KEYS: tuple[str, ...] = ("temperature", "top_p", "top_k")
 
 
-@runtime_checkable
-class ParamPolicy(Protocol):
-    """Adapts generation parameters for the target model."""
+class ParamsPolicy(ABC):
+    """Adapts generation parameters for the target model.
 
+    Subclasses declare ``KNOWN_KEYS`` — a frozen set of the construction
+    kwargs they accept. The overlay validator reads the union of every
+    registered subclass's ``KNOWN_KEYS`` to decide which preset ``params:``
+    keys are legal, so adding a knob is a one-line declarative change on
+    the subclass rather than an engine-wide inspection point.
+    """
+
+    KNOWN_KEYS: ClassVar[frozenset[str]]
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        if "KNOWN_KEYS" not in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} must declare KNOWN_KEYS: ClassVar[frozenset[str]] "
+                f"listing the construction kwargs it accepts. KNOWN_KEYS is the "
+                f"authoritative source of truth for overlay preset-params "
+                f"validation; a silent omission would let unknown YAML keys "
+                f"reach __init__ and raise TypeError far from the operator."
+            )
+
+    @abstractmethod
     def adapt(
         self,
         kwargs: dict[str, Any],
@@ -72,12 +105,51 @@ class ParamPolicy(Protocol):
     ) -> dict[str, Any]: ...
 
 
-class GenerationParams:
+#: Deprecated alias for :class:`ParamsPolicy`. Kept as a class-identity
+#: alias (``ParamPolicy is ParamsPolicy`` remains true) so
+#: ``isinstance()`` / ``issubclass()`` checks against either name continue
+#: to work. Module-level ``__getattr__`` below emits a one-off
+#: :class:`DeprecationWarning` on the old name; direct references to
+#: :class:`ParamsPolicy` are silent. Shim removed in v0.18.0.
+_LEGACY_PARAM_POLICY_WARNED: set[str] = set()
+
+
+def __getattr__(name: str) -> Any:
+    if name == "ParamPolicy":
+        if "ParamPolicy" not in _LEGACY_PARAM_POLICY_WARNED:
+            import warnings
+
+            warnings.warn(
+                "tolokaforge.core.llm.params_policy.ParamPolicy is "
+                "deprecated; import "
+                "tolokaforge.core.llm.params_policy.ParamsPolicy instead. "
+                "Shim removed in v0.18.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            _LEGACY_PARAM_POLICY_WARNED.add("ParamPolicy")
+        return ParamsPolicy
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+class GenerationParams(ParamsPolicy):
     """Adapts generation kwargs based on model constraints.
 
     Configurable once at construction; ``adapt()`` applies the rules on every
     ``generate()`` call.
     """
+
+    KNOWN_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "fixed_temperature",
+            "supports_seed",
+            "reasoning_via_extra_body",
+            "reasoning_via_thinking_kwarg",
+            "drop_sampling_when_thinking",
+            "reasoning_budget_default",
+            "unsupported_effort_levels",
+        }
+    )
 
     def __init__(
         self,
@@ -228,7 +300,7 @@ class GenerationParams:
                 f"Use one of {list(supported)!r}, or route through a transport "
                 f"that supports this effort level (e.g. OpenRouter rather than "
                 f"the direct provider, when available). See "
-                f"tolokaforge/core/data/model_presets.yaml for the declarations."
+                f"tolokaforge_models/data/model_presets.yaml for the declarations."
             )
         if self._reasoning_via_extra_body:
             self._emit_extra_body_reasoning(kwargs, {"effort": effort})

@@ -5,8 +5,8 @@ These tests pin the dataclass's honesty invariants, enum roundtrip
 semantics, and per-certificate slug consistency with
 :func:`tolokaforge.core.output.artifacts.model_id_slug`. They run as
 plain unit tests (no live provider calls) so they catch contributor
-errors in ``tests/integration/llm/registry.py`` at PR time — before a
-live-provider sweep would even be attempted.
+errors in :mod:`tolokaforge_models.certificates.registry` at PR time —
+before a live-provider sweep would even be attempted.
 """
 
 from __future__ import annotations
@@ -15,9 +15,8 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from tests.integration.llm._capability import Capability, ModelCertificate
-from tests.integration.llm.registry import ALL_MODELS
 from tolokaforge.core.output.artifacts import model_id_slug
+from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 pytestmark = pytest.mark.unit
 

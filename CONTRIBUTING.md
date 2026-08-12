@@ -39,7 +39,13 @@ uv run pytest tests/unit/ -v
 
 ## Cutting a Release
 
-The PyPI package and the Docker images are released on separate tags locked to a
-single version number. The full procedure — the "Release (cz bump)" workflow,
-the `image-vX.Y.Z` rc-then-stable flow, and the version guard between them — is
-documented in [docs/RELEASING.md](docs/RELEASING.md).
+Tolokaforge ships on three independent tag axes: the `tolokaforge` PyPI
+package (`vX.Y.Z`), the `tolokaforge-models` PyPI package (`models-vX.Y.Z`),
+and the Docker images (`image-vX.Y.Z` after an `image-vX.Y.Z-rc.1` rc). The
+engine and image axes share a single version number and are cut together by
+the "Release (cz bump)" workflow; the `tolokaforge-models` axis versions
+independently and is cut by the "Release tolokaforge-models (cz bump)"
+workflow. The full procedure — both cz-bump workflows, the
+`image-vX.Y.Z` rc-then-stable flow, the version guard between engine and
+image tags, and the PyPI Trusted Publisher configuration — is documented in
+[docs/RELEASING.md](docs/RELEASING.md).

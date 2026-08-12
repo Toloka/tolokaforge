@@ -65,14 +65,17 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     # compose materialisation, engine run state, backend capabilities,
     # runtime / conductor / trial-grader protocol definitions, the
     # ``run_trial`` library entry, run queue, resume, project loader,
-    # plugin registry, metrics, budgets, and the remaining utility modules
-    # — is orchestrator-only.
+    # plugin registry, metrics, budgets, ``model_data_fingerprint``, and
+    # the remaining utility modules — is orchestrator-only. ``model_data``
+    # is included; its orchestrator-only compute sibling
+    # ``model_data_fingerprint`` is not.
     "tolokaforge/core/__init__.py",
     "tolokaforge/core/_runner_subset.py",
     "tolokaforge/core/deprecations.py",
     "tolokaforge/core/hash.py",
     "tolokaforge/core/logging.py",
     "tolokaforge/core/loop.py",
+    "tolokaforge/core/model_data.py",
     "tolokaforge/core/netpolicy_constants.py",
     "tolokaforge/core/pricing.py",
     "tolokaforge/core/run_display_events.py",
@@ -90,16 +93,6 @@ file at wheel-build time.
 """
 
 RUNNER_SUBSET_DATA_FILES: tuple[str, ...] = (
-    # Pricing table shipped with the subset. ``tolokaforge.core.pricing``
-    # reads this file via ``importlib.resources`` / a repo-relative path
-    # at import time; a subset image without it would silently misreport
-    # cost telemetry. GitHub #830.
-    "tolokaforge/core/data/pricing.json",
-    # Model preset registry — same story as pricing.json: read by
-    # ``tolokaforge.core.llm.presets`` at first use, and grading /
-    # judge model resolution needs it to be non-empty inside the runner
-    # image. GitHub #830.
-    "tolokaforge/core/data/model_presets.yaml",
     # Python version pin — the ``tolokaforge.docker.builder`` helper is
     # base-wheel only, but ``tolokaforge/_python_version.txt`` is included
     # here to keep the ``importlib.resources.files("tolokaforge")`` lookup
@@ -107,10 +100,13 @@ RUNNER_SUBSET_DATA_FILES: tuple[str, ...] = (
     "tolokaforge/_python_version.txt",
 )
 """Non-Python files shipped in the subset that runtime code reads via
-``importlib.resources`` or a repo-relative path. GitHub #830 folded these
-in when the runner-subset wheel was rebuilt around the subset-native CLI
-shim; before the fix, the subset shipped Python only and a runner image
-booted with an empty pricing table."""
+``importlib.resources`` at first use. Pricing, preset, and provider
+binding tables are supplied by the :mod:`tolokaforge_models` wheel — the
+subset wheel's ``Requires-Dist: tolokaforge-models`` pulls them into the
+runner container at ``pip install`` time. Only the
+``_python_version.txt`` build artefact ships directly here, discoverable
+via ``importlib.resources.files("tolokaforge")`` for parity with the
+base wheel."""
 
 RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/actors/turn_policy.py",

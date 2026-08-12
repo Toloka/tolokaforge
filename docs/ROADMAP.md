@@ -80,6 +80,18 @@ informs the rows above but hasn't crystallised into ADRs yet:
   an independently-usable component" row above and the
   open-agent-loop row after it.
 
+**Packaging note (Milestone 29 keystone).** Tolokaforge publishes two
+PyPI wheels from one monorepo. [`tolokaforge`](../pyproject.toml) is
+the engine wheel; [`tolokaforge-models`](../tolokaforge_models/) ships
+the model-data tables (`pricing.json`, `model_presets.yaml`,
+`providers.yaml`), the 39-cert registry, and the per-model policy
+subclasses. Model onboarding in a known-shape adaptation (new preset,
+new certificate, or a subclass of an existing base) ships on the
+`models-vX.Y.Z` tag axis independent of the engine's `vX.Y.Z` cadence.
+See [ADR-0030](adr/0030-tolokaforge-models-split.md) for the split's
+rationale and [`docs/RELEASING.md`](RELEASING.md) for the release
+workflow shape.
+
 ## How to follow progress
 
 - **Decisions:** ADRs in [`adr/`](adr/) — each architectural seam lands

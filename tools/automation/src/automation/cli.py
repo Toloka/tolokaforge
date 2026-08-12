@@ -6,10 +6,13 @@ the logic stays unit-testable and the GitHub Actions workflow is a thin caller.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 import typer
 
 from automation import (
+    bucket_classifier,
     cert,
     gateway_catalog,
     greencheck,
@@ -73,10 +76,14 @@ def run_probes(
     out: str = typer.Option(..., "--out", help="junit output dir (e.g. observation/capability)"),
     reps: int = typer.Option(15, "--reps", help="repeats per node (CAPABILITY_K)"),
     workers: int = typer.Option(10, "--workers", help="flat-pool width (node x rep)"),
-    path: str = typer.Option(probes.DEFAULT_PATH, "--path", help="test root to collect from"),
+    pyargs: str = typer.Option(
+        probes.DEFAULT_PYARGS,
+        "--pyargs",
+        help="pytest --pyargs target package for collection (e.g. tolokaforge.testing.certify.suite)",
+    ),
 ) -> None:
     """Flat (node x rep) parallel probe runner for the OBSERVE stage."""
-    raise typer.Exit(probes.run(k_expr, out, reps=reps, workers=workers, path=path))
+    raise typer.Exit(probes.run(k_expr, out, reps=reps, workers=workers, pyargs=pyargs))
 
 
 @app.command("reprobe")
@@ -140,6 +147,68 @@ def observe_findings(
 ) -> None:
     """Emit deterministic observe-stage findings.json (raw stats) from an obs dir."""
     raise typer.Exit(observe.run(obs_dir, out=out, summary_out=summary_out, run_url=run_url))
+
+
+def _classify_paths_format(cls: bucket_classifier.Classification, fmt: str) -> str:
+    if fmt == "json":
+        return json.dumps(
+            {
+                "bucket": cls.bucket.value,
+                "reason": cls.reason,
+                "engine_paths": list(cls.engine_paths),
+            }
+        )
+    if fmt == "plain":
+        return "\n".join(
+            [
+                f"bucket={cls.bucket.value}",
+                f"reason={cls.reason}",
+                f"engine_paths={','.join(cls.engine_paths)}",
+            ]
+        )
+    raise typer.BadParameter(f"unknown --format {fmt!r}; expected json|plain")
+
+
+def _classify_paths_source_paths(stdin: bool, diff: str | None, cached: bool) -> tuple[str, ...]:
+    selected = sum(1 for flag in (stdin, diff is not None, cached) if flag)
+    if selected != 1:
+        raise typer.BadParameter(
+            "exactly one of --paths-from-stdin | --paths-from-diff | --paths-from-cached required"
+        )
+    if stdin:
+        return tuple(line for line in sys.stdin.read().splitlines() if line)
+    argv = (
+        ["git", "diff", "--cached", "--name-only"]
+        if cached
+        else ["git", "diff", "--name-only", diff or ""]
+    )
+    # git's stderr passes straight through so the workflow log surfaces any git failure.
+    completed = subprocess.run(argv, check=True, stdout=subprocess.PIPE, text=True)
+    return tuple(line for line in completed.stdout.splitlines() if line)
+
+
+@app.command("classify-paths")
+def classify_paths_cmd(
+    paths_from_stdin: bool = typer.Option(
+        False, "--paths-from-stdin", help="read newline-separated paths from stdin"
+    ),
+    paths_from_diff: str | None = typer.Option(
+        None,
+        "--paths-from-diff",
+        help="run `git diff --name-only <ref>` and classify the touched paths",
+    ),
+    paths_from_cached: bool = typer.Option(
+        False,
+        "--paths-from-cached",
+        help="run `git diff --cached --name-only` and classify the staged paths",
+    ),
+    output_format: str = typer.Option(
+        "json", "--format", help="json (default) | plain (bucket=A/reason=.../engine_paths=...)"
+    ),
+) -> None:
+    """Classify touched paths as Bucket A (models-wheel only) or Bucket B (engine change)."""
+    touched = _classify_paths_source_paths(paths_from_stdin, paths_from_diff, paths_from_cached)
+    typer.echo(_classify_paths_format(bucket_classifier.classify_paths(touched), output_format))
 
 
 @app.command("resolve-models")

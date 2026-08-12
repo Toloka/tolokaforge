@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import os
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -425,7 +424,8 @@ class TestConvertMessages:
         """Bedrock compat: blank assistant content with tool_calls gets placeholder
         ONLY on the Nova preset. Every other preset leaves content empty —
         injecting the filler universally is what created the Gemini echo
-        regression (2026-04-30 OTS eval). See `ToolContentPolicy.inject_empty_assistant_filler`."""
+        regression (2026-04-30 OTS eval). See
+        `MessageAssemblyPolicy.inject_empty_assistant_filler`."""
         tc = ToolCall(id="tc1", name="fn", arguments={})
         msgs = [Message(role=MessageRole.ASSISTANT, content="  ", tool_calls=[tc])]
 
@@ -1574,7 +1574,7 @@ class TestModelCapabilities:
 
 
 # ===================================================================
-# DictMapHints._build_hints() — system prompt hint generation
+# DictMapHints.build_hints() — system prompt hint generation
 # ===================================================================
 
 
@@ -1583,7 +1583,7 @@ class TestBuildDictMapHints:
     """Tests for dict-map system prompt hint generation."""
 
     def test_no_tools_returns_empty(self) -> None:
-        assert DictMapHints._build_hints([]) == ""
+        assert DictMapHints().build_hints([]) == ""
 
     def test_simple_tool_no_hints(self) -> None:
         tools = [
@@ -1599,7 +1599,7 @@ class TestBuildDictMapHints:
                 },
             }
         ]
-        assert DictMapHints._build_hints(tools) == ""
+        assert DictMapHints().build_hints(tools) == ""
 
     def test_typed_dict_map_generates_hint(self) -> None:
         tools = [
@@ -1623,7 +1623,7 @@ class TestBuildDictMapHints:
                 },
             }
         ]
-        hint = DictMapHints._build_hints(tools)
+        hint = DictMapHints().build_hints(tools)
         assert "create_order" in hint
         assert "lines" in hint
         assert "MUST" in hint
@@ -1641,7 +1641,7 @@ class TestBuildDictMapHints:
                 },
             }
         ]
-        assert DictMapHints._build_hints(tools) == ""
+        assert DictMapHints().build_hints(tools) == ""
 
     def test_additional_properties_true_generates_hint(self) -> None:
         tools = [
@@ -1662,7 +1662,7 @@ class TestBuildDictMapHints:
                 },
             }
         ]
-        hint = DictMapHints._build_hints(tools)
+        hint = DictMapHints().build_hints(tools)
         assert "flex_tool" in hint
         assert "meta" in hint
 
@@ -1793,13 +1793,17 @@ class TestPresetLoading:
     """Tests for YAML preset loading and matching."""
 
     def test_preset_file_exists(self) -> None:
-        """model_presets.yaml must exist at the expected path."""
-        preset_path = Path("tolokaforge/core/data/model_presets.yaml")
+        """The bundled ``model_presets.yaml`` must resolve through the seam."""
+        from tolokaforge.core.model_data import bundled_presets_path
+
+        preset_path = bundled_presets_path()
         assert preset_path.exists(), f"Preset file not found: {preset_path}"
 
     def test_preset_file_valid_yaml(self) -> None:
-        """model_presets.yaml must parse as valid YAML with expected sections."""
-        with open(Path("tolokaforge/core/data/model_presets.yaml")) as f:
+        """The bundled ``model_presets.yaml`` must parse with expected sections."""
+        from tolokaforge.core.model_data import bundled_presets_path
+
+        with open(bundled_presets_path()) as f:
             data = yaml.safe_load(f)
         assert "default" in data
         assert "presets" in data

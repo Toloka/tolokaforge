@@ -1,11 +1,60 @@
 # Adding a New Model
 
 Six-step process. No PR merges a model change without all six passing.
+The non-negotiable rules live in
+[`AGENTS.md` § "Adding a new model / provider"](../AGENTS.md#adding-a-new-model--provider);
+this document walks a contributor through the six steps in the order they
+land in a PR.
+
+## Bucket A: the models-wheel is the default target
+
+Tolokaforge publishes two PyPI wheels from one monorepo — see
+[ADR-0030](adr/0030-tolokaforge-models-split.md) and
+[`docs/LLM_LAYER.md` § Two-wheel architecture](LLM_LAYER.md#two-wheel-architecture).
+Every step in this document lands in
+[`tolokaforge_models/`](../tolokaforge_models/), which ships on the
+`models-vX.Y.Z` tag axis independent of the engine's `vX.Y.Z` cadence:
+
+- a new pricing entry ([step 1](#1-add-pricing)),
+- a new preset composing shipped policy classes ([step 2](#2-add-a-preset-or-confirm-fallthrough-is-ok)),
+- a new `ModelCertificate` ([step 3](#3-add-a-modelcertificate)),
+- a per-model policy subclass of a stable engine base
+  ([step 5 for reasoning codecs](#5-for-new-reasoning-models)), and
+- a new provider binding ([step 6](#6-for-new-non-openrouter-providers)).
+
+The finalize agent behind [auto-integration](AUTO_INTEGRATION.md) writes
+directly into
+[`tolokaforge_models/src/tolokaforge_models/`](../tolokaforge_models/src/tolokaforge_models/),
+and the file-path classifier at
+[`tools/automation/src/automation/bucket_classifier.py`](../tools/automation/src/automation/bucket_classifier.py)
+tags the resulting commit `Bucket A: preset + cert (models-wheel only, no engine change)`
+so the taxonomy is visible on the PR without opening the run log.
+
+## Bucket B: escalate to the engine only when Bucket A cannot express your change
+
+An engine-side change ([`tolokaforge/`](../tolokaforge/)) is required when
+the models wheel's public API cannot host the addition:
+
+- a new abstract method on an existing base class in
+  [`tolokaforge/core/llm/`](../tolokaforge/core/llm/) — the models wheel
+  cannot ship a subclass of a method that does not exist upstream;
+- a new lifecycle stage (a new slot in `_POLICY_REGISTRIES`) — see
+  [`docs/LLM_LAYER.md` § Startup validation](LLM_LAYER.md#startup-validation);
+- a new `Capability` enum category whose probe pattern differs from every
+  shipped probe under
+  [`tolokaforge/testing/certify/suite/`](../tolokaforge/testing/certify/suite/); or
+- a change to an existing base class's *shape* (a new required kwarg, a
+  renamed hook, a widened return type).
+
+A Bucket B change ships on the engine's `vX.Y.Z` tag axis. Land the Bucket B
+PR first when the model needs a hook the engine does not yet expose, then land
+a follow-up Bucket A PR for the model itself.
 
 ## Pre-flight: 30-second checklist
 
-Before writing any code, verify the model exists and decide where each
-change belongs:
+Before writing any code, verify the model exists and decide which files
+to touch. Almost every file below is under `tolokaforge_models/`; the
+one engine-side row is the ESCALATE case:
 
 ```bash
 # 1. Confirm the OpenRouter slug actually exists.
@@ -13,18 +62,20 @@ curl -s https://openrouter.ai/api/v1/models | \
   python3 -c "import json, sys; print('\n'.join(m['id'] for m in json.load(sys.stdin)['data'] if '<vendor>' in m['id']))"
 ```
 
-| File / dir | Branch | Reason |
+| File / dir | Wheel / release cadence | Reason |
 |---|---|---|
-| `tolokaforge/core/data/pricing.json` | **main** | Shared cost catalog |
-| `tests/integration/llm/registry.py` | **main** | Capability certificate is shared |
-| `tolokaforge/core/data/model_presets.yaml` | **main** | Only if new preset needed |
+| [`tolokaforge_models/src/tolokaforge_models/data/pricing.json`](../tolokaforge_models/src/tolokaforge_models/data/pricing.json) | `tolokaforge-models` (independent tag) | Shared cost catalog. |
+| [`tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) | `tolokaforge-models` (independent tag) | Only if a new preset is needed. |
+| [`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py) | `tolokaforge-models` (independent tag) | Capability certificate. |
+| [`tolokaforge_models/src/tolokaforge_models/policies/<family>.py`](../tolokaforge_models/src/tolokaforge_models/policies/) | `tolokaforge-models` (independent tag) | Per-model policy subclass of a stable engine base. |
+| [`tolokaforge/core/llm/`](../tolokaforge/core/llm/) | `tolokaforge` (engine) | ESCALATE HERE only for a new base class, a new `_POLICY_REGISTRIES` slot, or a new `Capability` category. |
 
 Evaluation-specific configs **must not land on `main`** — see
 `AGENTS.md` § "No Project-Specific Content on main".
 
 ## 1. Add pricing
 
-Append an entry to [`tolokaforge/core/data/pricing.json`](../tolokaforge/core/data/pricing.json).
+Append an entry to [`tolokaforge_models/src/tolokaforge_models/data/pricing.json`](../tolokaforge_models/src/tolokaforge_models/data/pricing.json).
 Use current OpenRouter / Nova / direct-provider pricing; document the
 capture date in the adjacent comment. Schema: `{input, output}` per
 1M tokens, USD.
@@ -50,7 +101,7 @@ API response verbatim (it's per-token, scientific notation, e.g.
 `"0.0000015"`) and forget the ×1,000,000 conversion.
 ## 2. Add a preset (or confirm fallthrough is OK)
 
-[`tolokaforge/core/data/model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml)
+[`tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)
 owns every **non-default** policy combination. If the model needs
 specialised schema sanitisation / cache policy / reasoning codec /
 prompt hints, add a new entry with explicit `match:` globs. If the
@@ -66,13 +117,21 @@ Available policy slots (see
 
 | Slot | Default | Alternatives |
 |---|---|---|
-| `schema_sanitizer` | `passthrough` | `strict` |
-| `prompt_policy` | `none` | `dict_map_hints` |
-| `content_policy` | `openai` | `anthropic` |
-| `response_policy` | `standard` | `unwrap_input`, `array_dict_map` |
-| `reasoning_codec` | `none` | `anthropic`, `openai` |
+| `schema_sanitizer` | `passthrough` | `strict`, `gemini`, `gemini_recursive` |
+| `prompt_policy` | `none` | `dict_map_hints`, `dict_map_hints_ref` |
+| `content_policy` | `openai` | `anthropic`, `nova` |
+| `response_policy` | `standard` | `unwrap_input`, `json_coerce`, `array_dict_map`, `scalar_array_dict_map`, `minimax_m3_tags` |
+| `reasoning_codec` | `none` | `anthropic`, `openai`, `openai_summary_replay`, `gemini` |
 | `cache_policy` | `none` | `anthropic_ephemeral` |
-| `params` | — | arbitrary dict — see `GenerationParams` |
+| `params_policy` | `generation_params` | arbitrary `{name, params}` — see `GenerationParams.KNOWN_KEYS` |
+| `message_assembly_policy` | `null` | `nova` (only `aws_nova*` presets opt in — the filler string is data on the policy instance) |
+| `assistant_text_policy` | `passthrough` | out-of-tree via subclass (e.g. Cohere `<|START_TEXT|>…<|END_TEXT|>` marker stripper) |
+
+If a new provider needs a lifecycle stage not covered by the nine slots,
+that is Bucket B per [ADR-0030](adr/0030-tolokaforge-models-split.md) —
+extending the engine with a new slot type rather than a new policy class.
+Bucket A additions (new policy class for an existing slot) reuse the slot
+mechanism and require only a class definition plus a preset entry.
 
 > **Rate-limited model?** If OpenRouter's default provider 429s the eval
 > (`is_byok:false`, "rate-limited upstream"), pin the model to a provider that
@@ -111,8 +170,14 @@ and [ADR 0002 — External model registry](adr/0002-external-model-registry.md).
 A few rules the overlay enforces (loud-fail at engine startup, naming the
 overlay path and the offending key):
 
-- Policy-name strings must resolve to existing classes shipped in the engine.
-  Adding a brand-new policy class still requires an engine release.
+- Policy-name strings must resolve to a class registered in the merged
+  registry — either an engine-shipped class in `tolokaforge/core/llm/`
+  or a models-wheel class in `tolokaforge_models.policies.<family>`
+  registered via the `tolokaforge.policies` entry-point group. Adding a
+  brand-new policy class is Bucket A when the class extends an existing
+  slot base; the class lands in the models wheel alongside the preset,
+  no engine release. Only a new slot type or a new base-class shape
+  needs an engine release (Bucket B).
 - Overlay presets are prepended to the iteration order, so overlapping
   `match:` globs let you shadow a bundled preset.
 - Same-named overlay presets replace the bundled entry (logged at INFO so the
@@ -131,9 +196,9 @@ invocations pick it up automatically without re-specifying `--presets-file`.
 ## 3. Add a ModelCertificate
 
 Append to `ALL_MODELS` in
-[`tests/integration/llm/registry.py`](../tests/integration/llm/registry.py).
+[`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py).
 Pick `required` and `known_unsupported` from the
-[`Capability`](../tests/integration/llm/_capability.py) enum.
+[`Capability`](../tolokaforge/testing/certify/_capability.py) enum.
 
 **Rules (non-negotiable):**
 
@@ -168,7 +233,7 @@ The disciplined flow:
 
 1. Copy the sibling cert as a *starting hypothesis*.
 2. Tentatively flip every `known_unsupported` entry to `required`.
-3. Run `pytest tests/integration/llm/ -k <model_id> -v`.
+3. Run `pytest --pyargs tolokaforge.testing.certify.suite -k <model_id> -v`.
 4. Move back to `known_unsupported` only the capabilities that
    *actually* failed live. The PR diff records exactly which
    regressions persisted vs which were silently fixed.
@@ -202,10 +267,28 @@ MC(
 ),
 ```
 
+**Widened certificate fields.** `ModelCertificate` also carries four
+default-empty widening fields, populated only when a specific per-model
+quirk needs to travel as certificate data rather than test-body code:
+
+- `excluded_capabilities: frozenset[Capability]` — shared-body per-probe
+  opt-outs orthogonal to `known_unsupported` (e.g. the muse-spark-1.1
+  auto-cache ratchet exclusion — the counter is unreliable on cold
+  calls, so the ratchet consults `cert.excluded_capabilities` and skips
+  the cert).
+- `known_unsupported_reasons: Mapping[Capability, str]` — human-readable
+  rationale keyed by capability, surfaced by report generators and
+  dashboards.
+- `probe_params: Mapping[Capability, Mapping[str, Any]]` — per-model
+  probe-parameter overrides (e.g. `{Capability.PROMPT_CACHING: {"prompt_tokens": 12000}}`)
+  for shared bodies that consult the map.
+- `capability_extras: Mapping[str, str]` — opaque per-model quirks that
+  do not fit the `Capability` enum, consulted by adapter code paths.
+
 ## 4. Run the capability suite locally
 
 ```bash
-scripts/with_env.sh uv run pytest tests/integration/llm/ \
+scripts/with_env.sh uv run pytest --pyargs tolokaforge.testing.certify.suite \
     -k <your_model_id> -v --tb=short
 ```
 
@@ -252,9 +335,11 @@ REST endpoint directly with a hand-built schema: replace each
 suspect construct with explicit `properties` and watch for the
 property names to start round-tripping. The fix belongs in a new
 [`ToolSchemaSanitizer`](../tolokaforge/core/llm/schema_sanitizer.py)
-subclass (see `GeminiSchema` for the worked example) — never in
-prompt engineering or in renaming task-pack fields to match the
-model's preference.
+subclass shipped in
+[`tolokaforge_models/policies/`](../tolokaforge_models/src/tolokaforge_models/policies/) (see
+[`GeminiSchema`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) for the worked
+example) — never in prompt engineering or in renaming task-pack fields to
+match the model's preference.
 
 ## 4a. Run a smoke eval before declaring the model ready
 
@@ -283,52 +368,101 @@ domain available) and skim the trajectories for:
 If the model exposes reasoning in a new format (not OpenAI
 `reasoning_content` summary nor Anthropic `thinking_blocks`):
 
-1. Extend or introduce a
+1. Extend the engine's
    [`ReasoningCodec`](../tolokaforge/core/llm/reasoning_codec.py)
-   subclass.
-2. Register it on the preset via the `reasoning_codec:` YAML key.
+   base class from the models wheel: put the subclass at
+   [`tolokaforge_models/src/tolokaforge_models/policies/<family>.py`](../tolokaforge_models/src/tolokaforge_models/policies/)
+   (a new file per model family, or an existing one such as
+   `deepseek.py` for the DeepSeek V4 reasoning shape). This is
+   Bucket A — the models wheel owns per-model policy code.
+2. Register it via an entry point in
+   [`tolokaforge_models/pyproject.toml`](../tolokaforge_models/pyproject.toml)
+   under `[project.entry-points."tolokaforge.policies"]` keyed as
+   `reasoning_codec.<policy_name>`. The engine's merge-loader picks it
+   up at startup and it becomes referenceable from the `reasoning_codec:`
+   preset YAML key.
 3. Add a unit-test fixture under
-   [`tests/unit/llm/fixtures/`](../tests/unit/llm/fixtures/) capturing
-   a real response shape — so the codec round-trip is unit-testable
-   without burning provider spend.
+   [`tolokaforge_models/tests/unit/fixtures/`](../tolokaforge_models/tests/)
+   capturing a real response shape — so the codec round-trip is
+   unit-testable without burning provider spend. The test file lives
+   next to it under `tolokaforge_models/tests/unit/`.
+
+Only a *new base class* (`ReasoningCodec` itself doesn't have a hook
+you can override — you need a new abstract method or lifecycle stage)
+routes to the engine (Bucket B). If the existing base's `encode` /
+`decode` / `replay` surface covers your case with a subclass override,
+you stay in Bucket A.
 
 ## 6. For new non-OpenRouter providers
 
 If the model lives on a provider that isn't already routed through
 `LLMClient` (not OpenRouter, not Anthropic direct, not OpenAI direct):
 
-1. Add any extra routing branches in `LLMClient._prepare_request` (if
-   needed). **Never** branch on literal model-name substrings outside
-   the preset registry — per
+1. **Add a `providers.yaml` entry — no `client.py` / `proxy.py` edit
+   required.** Provider transport knobs (endpoint, credential env-var
+   names, routability under a gateway, rotation env-var, per-provider
+   rate-limit patterns, `custom_llm_provider` litellm hint, and
+   Nova-shaped slug rewrite / per-attempt transport pinning) are
+   declared in
+   [`tolokaforge_models/src/tolokaforge_models/data/providers.yaml`](../tolokaforge_models/src/tolokaforge_models/data/providers.yaml).
+   See [`docs/LLM_LAYER.md` § Provider bindings](LLM_LAYER.md#provider-bindings)
+   and [`docs/CONFIG.md` § Provider bindings](CONFIG.md#provider-bindings-providersyaml)
+   for the full `ProviderBinding` schema. A hypothetical new provider
+   is onboarded by adding a `providers.yaml` entry only — the ADR-0030
+   acceptance criterion.
+2. **Never** branch on literal model-name / provider-name substrings
+   outside the preset registry and `providers.yaml` — per
    [`AGENTS.md`](../AGENTS.md) § "Adding a new model / provider" rule #3.
-2. Declare the new `env_key` on the certificate (e.g.
+3. Declare the new `env_key` on the certificate (e.g.
    `env_key="NOVA_API_KEY"`). The shared `live_client` fixture reads
    this at test-collection time.
-3. Add a `@pytest.mark.<provider>` marker to the capability tests you
+4. Add a `@pytest.mark.<provider>` marker to the capability tests you
    expect to run against that provider only — optional.
-4. Consider whether the provider deserves its own bespoke test file
+5. Consider whether the provider deserves its own bespoke test file
    alongside the capability suite (see
-   [`tests/integration/llm/test_nova_api.py`](../tests/integration/llm/test_nova_api.py)
+   [`tests/canonical/test_nova_three_site_mapping.py`](../tests/canonical/test_nova_three_site_mapping.py)
    for the Nova precedent — provider-scoped, NOT capability-scoped).
+
+Example `providers.yaml` entry for a hypothetical `acme` provider that
+publishes an OpenAI-compatible endpoint, uses rotation, and needs no
+slug rewrite:
+
+```yaml
+acme:
+  endpoint: "https://api.acme.example.com/v1"
+  api_base_env: "ACME_API_BASE"
+  api_key_env: "ACME_API_KEY"
+  api_keys_env: "ACME_API_KEYS"       # comma-separated; enables rotation
+  unroutable: false                    # gateway may route it
+  custom_llm_provider: null            # let litellm default
+  rate_limit_patterns:                 # anchored shapes (see DEFAULT_RATE_LIMIT_PATTERNS)
+    - '\bRateLimitError\b'
+    - '(?i)(?:error\s+code|status(?:[\s_-]*code)?|http(?:/[\d.]+)?)\s*[:=]?\s*429(?!\d)'
+    - '(?i)\btoo\s+many\s+requests\b'
+    - '(?i)\brate[\s_-]?limit(?:s|ed|ing)?[\s:;,.-]*(?:error|exceeded|reached|hit)\b'
+  format_model_name_bare: false
+  kwargs_pin_transport: false
+  slug_rewrite: null
+```
 
 ## Capability definitions
 
 | Capability | Guards | Test file |
 |---|---|---|
-| `basic_completion` | Model returns non-empty text for a simple turn. | [`test_basic_completion.py`](../tests/integration/llm/test_basic_completion.py) |
-| `simple_tool_call` | Model emits a valid structured tool call when offered a calculator + distractor pair. | [`test_simple_tool_call.py`](../tests/integration/llm/test_simple_tool_call.py) |
-| `multi_turn_tool_use` | Two-turn flow: tool call → tool result → final answer OR chained tool call. | [`test_multi_turn_tool_use.py`](../tests/integration/llm/test_multi_turn_tool_use.py) |
-| `dict_map_tool_call` | Typed `Dict[str, T]` parameters round-trip as native dicts. | [`test_dict_map_tool_call.py`](../tests/integration/llm/test_dict_map_tool_call.py) |
-| `decimal_field_tool_call` | Pydantic `Decimal` fields don't trip the provider's regex validator. | [`test_decimal_field_tool_call.py`](../tests/integration/llm/test_decimal_field_tool_call.py) |
-| `thinking_emits_blocks` | Provider surfaces structured thinking blocks, not a concatenated summary. | [`test_thinking_emits_blocks.py`](../tests/integration/llm/test_thinking_emits_blocks.py) |
-| `thinking_replay_roundtrip` | Signed thinking blocks from turn 1 echo back verbatim on turn 2. | [`test_thinking_replay_roundtrip.py`](../tests/integration/llm/test_thinking_replay_roundtrip.py) |
-| `prompt_caching` | Second identical call hits the provider-side ephemeral cache. | [`test_prompt_caching.py`](../tests/integration/llm/test_prompt_caching.py) |
-| `usage_metrics_populated` | `result.usage.prompt_tokens`, `.completion_tokens`, and `.provider_raw` populated. | [`test_usage_metrics_populated.py`](../tests/integration/llm/test_usage_metrics_populated.py) |
-| `tool_name_discipline` | Model echoes the EXACT registered tool name even when it contains repeated `_`-segments (e.g. `workday_api_workday_api_get_employee`). Catches the Gemini 3.1 Pro `:` substitution regression. | [`test_tool_name_discipline.py`](../tests/integration/llm/test_tool_name_discipline.py) |
-| `lexical_tool_invention` | Model does NOT fabricate a plausible-but-nonexistent tool name from the system-prompt vocabulary (e.g. inventing `knowledge_base_search_policy` when the registered tool is `typesense_search_policy`). | [`test_lexical_tool_invention.py`](../tests/integration/llm/test_lexical_tool_invention.py) |
-| `required_fields_complete` | Single-turn baseline: when a tool's schema marks N fields as `required` and the user provides values for every one, the model emits all N. **Core capability** — every modern function-calling model passes. | [`test_required_fields_complete.py`](../tests/integration/llm/test_required_fields_complete.py) |
-| `unsigned_thinking_replay` | Reasoning *text* from turn 1 round-trips into turn 2's request payload via the codec's `encode_for_replay` path, even when blocks lack signatures. Gemini-Pro-applicable variant of `thinking_replay_roundtrip`. | [`test_unsigned_thinking_replay.py`](../tests/integration/llm/test_unsigned_thinking_replay.py) |
-| `progress_after_success` | Single-turn baseline: after a successful tool call + acknowledgment from the user, the model does NOT re-emit the same tool call with the same arguments. **Core capability** — every modern function-calling model passes the synthetic probe. Catches the grok-4.3 production loop pattern (re-calling `salesforce_create_case` 17× after success) at its single-turn surface. | [`test_progress_after_success.py`](../tests/integration/llm/test_progress_after_success.py) |
+| `basic_completion` | Model returns non-empty text for a simple turn. | [`test_basic_completion.py`](../tolokaforge/testing/certify/suite/test_basic_completion.py) |
+| `simple_tool_call` | Model emits a valid structured tool call when offered a calculator + distractor pair. | [`test_simple_tool_call.py`](../tolokaforge/testing/certify/suite/test_simple_tool_call.py) |
+| `multi_turn_tool_use` | Two-turn flow: tool call → tool result → final answer OR chained tool call. | [`test_multi_turn_tool_use.py`](../tolokaforge/testing/certify/suite/test_multi_turn_tool_use.py) |
+| `dict_map_tool_call` | Typed `Dict[str, T]` parameters round-trip as native dicts. | [`test_dict_map_tool_call.py`](../tolokaforge/testing/certify/suite/test_dict_map_tool_call.py) |
+| `decimal_field_tool_call` | Pydantic `Decimal` fields don't trip the provider's regex validator. | [`test_decimal_field_tool_call.py`](../tolokaforge/testing/certify/suite/test_decimal_field_tool_call.py) |
+| `thinking_emits_blocks` | Provider surfaces structured thinking blocks, not a concatenated summary. | [`test_thinking_emits_blocks.py`](../tolokaforge/testing/certify/suite/test_thinking_emits_blocks.py) |
+| `thinking_replay_roundtrip` | Signed thinking blocks from turn 1 echo back verbatim on turn 2. | [`test_thinking_replay_roundtrip.py`](../tolokaforge/testing/certify/suite/test_thinking_replay_roundtrip.py) |
+| `prompt_caching` | Second identical call hits the provider-side ephemeral cache. | [`test_prompt_caching.py`](../tolokaforge/testing/certify/suite/test_prompt_caching.py) |
+| `usage_metrics_populated` | `result.usage.prompt_tokens`, `.completion_tokens`, and `.provider_raw` populated. | [`test_usage_metrics_populated.py`](../tolokaforge/testing/certify/suite/test_usage_metrics_populated.py) |
+| `tool_name_discipline` | Model echoes the EXACT registered tool name even when it contains repeated `_`-segments (e.g. `workday_api_workday_api_get_employee`). Catches the Gemini 3.1 Pro `:` substitution regression. | [`test_tool_name_discipline.py`](../tolokaforge/testing/certify/suite/test_tool_name_discipline.py) |
+| `lexical_tool_invention` | Model does NOT fabricate a plausible-but-nonexistent tool name from the system-prompt vocabulary (e.g. inventing `knowledge_base_search_policy` when the registered tool is `typesense_search_policy`). | [`test_lexical_tool_invention.py`](../tolokaforge/testing/certify/suite/test_lexical_tool_invention.py) |
+| `required_fields_complete` | Single-turn baseline: when a tool's schema marks N fields as `required` and the user provides values for every one, the model emits all N. **Core capability** — every modern function-calling model passes. | [`test_required_fields_complete.py`](../tolokaforge/testing/certify/suite/test_required_fields_complete.py) |
+| `unsigned_thinking_replay` | Reasoning *text* from turn 1 round-trips into turn 2's request payload via the codec's `encode_for_replay` path, even when blocks lack signatures. Gemini-Pro-applicable variant of `thinking_replay_roundtrip`. | [`test_unsigned_thinking_replay.py`](../tolokaforge/testing/certify/suite/test_unsigned_thinking_replay.py) |
+| `progress_after_success` | Single-turn baseline: after a successful tool call + acknowledgment from the user, the model does NOT re-emit the same tool call with the same arguments. **Core capability** — every modern function-calling model passes the synthetic probe. Catches the grok-4.3 production loop pattern (re-calling `salesforce_create_case` 17× after success) at its single-turn surface. | [`test_progress_after_success.py`](../tolokaforge/testing/certify/suite/test_progress_after_success.py) |
 
 ## Related reading
 
@@ -337,7 +471,7 @@ If the model lives on a provider that isn't already routed through
 - [`docs/LLM_LAYER.md`](LLM_LAYER.md) — policy slot contracts +
   implementation notes.
 - The Gemini certificates in
-  [`tests/integration/llm/registry.py`](../tests/integration/llm/registry.py)
+  [`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py)
   are a worked example of an entire model family registered with
   asymmetric postures across variants (Flash `required` vs Pro
   `known_unsupported` for the same capability) — useful when a new
