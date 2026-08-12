@@ -131,8 +131,8 @@ def test_startup_ordering_on_service_healthy() -> None:
         ), f"{dependent} must wait for db-service to report healthy before it starts"
     assert "depends_on" not in services["db-service"]
     assert "depends_on" not in services["rag-service"], (
-        "rag-service has no dependents and no dependencies; the runner is not "
-        "gated on its cold start"
+        "rag-service has no dependents and no dependencies; nothing in the recipe "
+        "is gated on its startup"
     )
 
 
