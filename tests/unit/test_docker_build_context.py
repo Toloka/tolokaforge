@@ -548,6 +548,10 @@ def test_runner_build_context_resolves_from_installed_wheel(tmp_path: Path, monk
     for name in ("pyproject.toml", "README.md", "LICENSE"):
         (packaged / name).write_text(f"# {name}\n")
     (packaged / "scripts" / "hatch" / "hatch_runner_subset_builder.py").write_text("")
+    # The base wheel also ships tolokaforge_models sources for the
+    # in-container `hatchling build` step (Milestone 29 / ADR-0030).
+    (packaged / "tolokaforge_models" / "src" / "tolokaforge_models").mkdir(parents=True)
+    (packaged / "tolokaforge_models" / "pyproject.toml").write_text("# models pyproject\n")
     (pkg / "_python_version.txt").write_text("3.12\n")
     # The base wheel ships the Dockerfiles inside the package, so
     # ``assemble_build_context`` still finds the runner Dockerfile under
@@ -576,6 +580,8 @@ def test_runner_build_context_resolves_from_installed_wheel(tmp_path: Path, monk
             ".python-version",
             "scripts/hatch",
             "tolokaforge",
+            "tolokaforge_models/pyproject.toml",
+            "tolokaforge_models/src/tolokaforge_models",
         ):
             assert (build_dir / expected).exists(), (
                 f"assembled runner context is missing '{expected}', which the "
@@ -646,6 +652,10 @@ def test_core_stack_runner_context_assembles_on_a_wheel_install(
     for name in ("pyproject.toml", "README.md", "LICENSE"):
         (packaged / name).write_text(f"# {name}\n")
     (packaged / "scripts" / "hatch" / "hatch_runner_subset_builder.py").write_text("")
+    # The base wheel also ships tolokaforge_models sources for the
+    # in-container `hatchling build` step (Milestone 29 / ADR-0030).
+    (packaged / "tolokaforge_models" / "src" / "tolokaforge_models").mkdir(parents=True)
+    (packaged / "tolokaforge_models" / "pyproject.toml").write_text("# models pyproject\n")
     (pkg / "_python_version.txt").write_text("3.12\n")
     dockerfiles = pkg / "docker" / "dockerfiles"
     dockerfiles.mkdir(parents=True)
@@ -663,6 +673,8 @@ def test_core_stack_runner_context_assembles_on_a_wheel_install(
             ".python-version",
             "scripts/hatch",
             "tolokaforge",
+            "tolokaforge_models/pyproject.toml",
+            "tolokaforge_models/src/tolokaforge_models",
         ):
             assert (build_dir / expected).exists(), (
                 f"core_stack()'s runner context is missing '{expected}' on a wheel "
