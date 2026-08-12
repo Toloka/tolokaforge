@@ -122,7 +122,7 @@ def materialise_task_environment(
             floating tag (``latest``, ``main``, ``master``, ...); the
             manifest's floating-tag rule is applied here.
         agent_harness: Coding-harness CLI to layer onto the task image.
-            ``terminus-2`` leaves the image and the compose file untouched.
+            ``engine-loop`` leaves the image and the compose file untouched.
             Any other accepted harness splits the agent image in two: the
             task's own build becomes the ``-base`` image, and the agent
             service builds a thin layer on top of it that installs the CLI.

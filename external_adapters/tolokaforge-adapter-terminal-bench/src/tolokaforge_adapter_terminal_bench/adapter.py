@@ -45,6 +45,7 @@ from tolokaforge.runner.models import (
     ToolSchema,
     ToolSource,
 )
+from tolokaforge.secrets import expand_secret_refs, get_default
 from tolokaforge_adapter_terminal_bench.compose_synthesis import (
     PROJECT_PREFIX,
     MaterialisedEnvironment,
@@ -85,15 +86,13 @@ def _resolve_provider_env(declared: dict[str, str]) -> dict[str, str]:
 
     Values go through :func:`~tolokaforge.secrets.expand_secret_refs`, so a run
     config names a credential as ``${secret:NAME}`` instead of carrying it
-    literally. The ``SecretManager`` is only constructed when a run actually
-    declares provider env, which keeps adapter construction free of it on the
-    canonical and ``--dry-run`` paths.
+    literally. The empty-declaration early return is what keeps the canonical
+    and ``--dry-run`` paths from constructing a ``SecretManager`` at all —
+    ``get_default()`` would otherwise lazily build one just to resolve nothing.
     """
     if not declared:
         return {}
     validate_provider_env_keys(declared)
-    from tolokaforge.secrets import expand_secret_refs, get_default
-
     secrets = get_default()
     resolved = {
         key: expand_secret_refs(
