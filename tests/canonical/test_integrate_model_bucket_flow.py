@@ -238,9 +238,9 @@ def test_finalize_refuses_to_commit_bucket_b() -> None:
         "the Bucket B guard must send a needs-human Slack reply so the refusal "
         "reaches a person instead of only the run log"
     )
-    assert "slack_terminal_sent" in guard, (
-        "the Bucket B guard must set the dedup marker so the catch-all handler does not double-ping"
-    )
+    assert (
+        "slack_terminal_sent" in guard
+    ), "the Bucket B guard must set the dedup marker so the catch-all handler does not double-ping"
 
 
 def test_bucket_b_guard_precedes_the_commit() -> None:
@@ -269,9 +269,9 @@ def test_release_trigger_fires_only_on_integrate_commits_touching_the_models_whe
     # `on` is the YAML 1.1 boolean True, not the string "on".
     push = doc[True]["push"]
     assert push["branches"] == ["main"], "auto-release must fire on main only"
-    assert push["paths"] == ["tolokaforge_models/**"], (
-        "a push that does not touch the models wheel has nothing to release"
-    )
+    assert push["paths"] == [
+        "tolokaforge_models/**"
+    ], "a push that does not touch the models wheel has nothing to release"
     job = doc["jobs"]["release"]
     assert "startsWith(github.event.head_commit.message, 'integrate: ')" in job["if"], (
         "only an integration commit auto-releases; a hand edit to the models "
@@ -365,9 +365,9 @@ def test_generic_needs_human_defers_to_a_specific_handler() -> None:
                     "refusal) is followed by a generic one that is wrong about why "
                     "the run stopped"
                 )
-                assert run.index("slack_terminal_sent") < run.index("gh pr comment"), (
-                    "the dedup check must precede the PR comment, not only the Slack call"
-                )
+                assert run.index("slack_terminal_sent") < run.index(
+                    "gh pr comment"
+                ), "the dedup check must precede the PR comment, not only the Slack call"
                 return
     raise AssertionError("no `Flag needs-human` step found")
 
