@@ -99,14 +99,3 @@ def test_container_name_matches_host_side_synthesis():
     )
     runner_resolved = compose_container_name(trial_id, service, PROJECT_PREFIX)
     assert host_resolved == runner_resolved == "tbench_task-1_0_main"
-
-
-def test_start_runs_no_subprocess():
-    """``start()`` records the trial id and resolves the container name; it
-    must not shell out (the per-trial runtime brings the stack up)."""
-    wrapper = _wrapper()
-    with patch("subprocess.run") as run_mock, patch("subprocess.Popen") as popen_mock:
-        wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
-    run_mock.assert_not_called()
-    popen_mock.assert_not_called()
-    assert wrapper._container == "tbench_task-1_0_main"

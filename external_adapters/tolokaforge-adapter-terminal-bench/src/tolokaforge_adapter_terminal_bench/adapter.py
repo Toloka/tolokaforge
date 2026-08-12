@@ -150,13 +150,12 @@ class TerminalBenchAdapter(BaseAdapter):
         """
         if not self.prebuild_images:
             return DockerStackRequirements()
-        builds = [
-            ComposeImageBuild(
-                compose_file=self._environment(task_id).compose_file,
-                service=self._environment(task_id).agent_service,
+        builds = []
+        for task_id in self.get_task_ids():
+            env = self._environment(task_id)
+            builds.append(
+                ComposeImageBuild(compose_file=env.compose_file, service=env.agent_service)
             )
-            for task_id in self.get_task_ids()
-        ]
         return DockerStackRequirements(image_builds=builds)
 
     # -- task loading ---------------------------------------------------------

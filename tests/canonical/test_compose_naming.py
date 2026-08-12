@@ -41,13 +41,13 @@ class TestComposeTrialSlug:
 
 
 class TestComposeContainerName:
-    def test_pins_scheme_for_canonical_trial_id(self) -> None:
-        """One assertion pinning host/runner agreement: the container name the
-        runner-side exec resolver produces embeds the same slug the host-side
-        per-trial temp dir does. A future refactor that diverges the two
-        sanitisers has to break this line first."""
+    def test_pins_temp_dir_and_runner_slug_agreement(self) -> None:
+        """One assertion pinning host/runner agreement: the runner-side
+        exec resolver and the host-side per-trial temp dir embed the same
+        slug. A future refactor that diverges the two sanitisers has to
+        break this line first. (Argv-shape + host synthesis lock lives in
+        `test_terminal_bench_exec_dispatch.py`.)"""
         trial_id = "task-1:0"
-        assert compose_container_name(trial_id, "main", "tbench_") == "tbench_task-1_0_main"
         temp_dir = make_project_temp_dir(trial_id)
         try:
             assert compose_trial_slug(trial_id) in temp_dir.name
