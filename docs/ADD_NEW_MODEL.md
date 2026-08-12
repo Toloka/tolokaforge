@@ -50,6 +50,15 @@ A Bucket B change ships on the engine's `vX.Y.Z` tag axis. Land the Bucket B
 PR first when the model needs a hook the engine does not yet expose, then land
 a follow-up Bucket A PR for the model itself.
 
+**The auto-integration pipeline commits Bucket A only.** If the resolve agent
+writes anything under `tolokaforge/`,
+[`integrate-model.yml`](../.github/workflows/integrate-model.yml) classifies the
+staged tree as Bucket B and refuses to commit, routing the run to needs-human
+with the offending paths named in Slack. It does not commit the change under a
+different label and it does not partially commit the models-wheel half. A
+Bucket B candidate is a deliberate human decision about the engine's release
+axis, so the two-PR sequence above is driven by a person, not by the pipeline.
+
 ## Pre-flight: 30-second checklist
 
 Before writing any code, verify the model exists and decide which files
