@@ -270,8 +270,16 @@ def _parse_providers(raw: str | None) -> frozenset[str] | None:
     return frozenset(entries)
 
 
-def resolve_proxy_config() -> ProxyConfig | None:
+def resolve_proxy_config(secrets: SecretManager | None = None) -> ProxyConfig | None:
     """Resolve the gateway transport from the environment.
+
+    Parameters
+    ----------
+    secrets
+        Where the variables are read from. Defaults to the process-wide manager,
+        which is what the engine wants. A caller that must read the *deployment's*
+        gateway rather than the checkout's passes an env-only manager: see
+        ``docs/LLM_LAYER.md`` § "Speaking to the gateway".
 
     Returns
     -------
@@ -285,9 +293,10 @@ def resolve_proxy_config() -> ProxyConfig | None:
         When the gateway is enabled but a companion variable is malformed, or
         when companion variables are set while the base URL is missing.
     """
-    from tolokaforge.secrets import get_default
+    if secrets is None:
+        from tolokaforge.secrets import get_default
 
-    secrets = get_default()
+        secrets = get_default()
 
     base_url = (secrets.get_secret(ENV_BASE_URL) or "").strip()
     if not base_url:

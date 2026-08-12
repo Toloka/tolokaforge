@@ -672,6 +672,25 @@ board is calibrated on), not looser matching.
 Preset resolution and pricing are unaffected: both key off `ModelConfig.provider` /
 `.name`, not off the wire name.
 
+**Reading the catalog from outside a run.** `resolve_proxy_config()` takes an
+optional `SecretManager`, so a caller that must describe the *deployment's* gateway
+rather than the checkout's can pass an env-only one:
+
+```python
+proxy = resolve_proxy_config(SecretManager([EnvProvider()]))
+served = fetch_gateway_catalog(proxy)
+```
+
+The Slack integration poller does exactly this
+([`automation/gateway_catalog.py`](../tools/automation/src/automation/gateway_catalog.py)).
+Two properties come from it and neither is incidental: the catalog request carries
+the same attribution headers a run sends, so a gateway that admits callers by a
+shared-secret header answers the poll instead of rejecting it; and dropping
+`DotEnvProvider` keeps a developer's local `.env` from answering a production poll,
+which would report availability nobody else can reproduce. Because it is one
+implementation rather than two, an empty answer means "unreadable" on both sides,
+so one gateway state cannot produce two different routing decisions.
+
 ### Which providers can be routed
 
 **Setting `api_base` does not make litellm speak OpenAI to that URL — it makes
