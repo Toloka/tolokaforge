@@ -2,30 +2,252 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## v0.18.0 (2026-08-12)
 
 ### Feat
 
-- **models**: [`tolokaforge-models`](tolokaforge_models/) is now a separate PyPI wheel — data files ([`pricing.json`](tolokaforge_models/src/tolokaforge_models/data/pricing.json), [`model_presets.yaml`](tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml), [`providers.yaml`](tolokaforge_models/src/tolokaforge_models/data/providers.yaml)), the 39 model certificates in [`tolokaforge_models.certificates.ALL_MODELS`](tolokaforge_models/src/tolokaforge_models/certificates/registry.py), and eight per-model policy subclasses (`GeminiSchema`, `GeminiRecursiveSchema`, `ScalarArrayDictMapResponse`, `RefResolvingDictMapHints`, `JsonRecursiveCoerceResponse`, `ItemRecursiveUnwrapResponse`, `MinimaxM3TagRecoveryResponse`, `OpenAISummaryReplayReasoningCodec`) live under [`tolokaforge_models/policies/`](tolokaforge_models/src/tolokaforge_models/policies/) across `gemini.py` / `minimax.py` / `deepseek.py` / `inkling.py`. `pip install tolokaforge` transitively pulls the models wheel via a `Requires-Dist: tolokaforge-models >=1.0.0,<2.0.0` pin. Model onboarding in a known-shape adaptation (new preset, new certificate, or a subclass of an existing base) now ships without cutting an engine release — see [ADR-0030](docs/adr/0030-tolokaforge-models-split.md). (#938)
-- **core**: the engine reaches model data through a single seam module at [`tolokaforge.core.model_data`](tolokaforge/core/model_data.py) — `_DATA_ROOT` resolves via `importlib.resources.files("tolokaforge_models") / "data"`, and `bundled_pricing_path()` / `bundled_presets_path()` / `bundled_providers_path()` / `bundled_certificates()` are the public accessors. `load_policy_registrations()` discovers entry-point-declared policy classes from the installed models wheel and merges them into `_POLICY_REGISTRIES` at [`tolokaforge.core.llm.presets`](tolokaforge/core/llm/presets.py) import time — duplicate keys or unknown slots fail loud with the offending pair named. (#938)
-- **core**: install-time validation refuses to boot on a bad two-wheel install. [`_check_minimum_engine_version()`](tolokaforge/core/model_data.py) raises `RuntimeError` naming the `pip install tolokaforge-models` instruction when the models wheel is missing, and names both engine + models versions when the installed engine does not satisfy `tolokaforge_models.minimum_engine_version`; [`_check_class_names_resolve()`](tolokaforge/core/llm/presets.py) walks the bundled `model_presets.yaml` and rejects any preset that references an unregistered policy class, with a `difflib.get_close_matches` suggestion. Both fire at `presets` import — before any `RunConfig` load, before the orchestrator or runner spawn any child. See [`docs/LLM_LAYER.md` § Startup validation](docs/LLM_LAYER.md#startup-validation). (#938)
-- **observability**: `engine_run_state.json`'s `models_fingerprint.content_sha256` hashes `{presets, pricing, providers, certificates}` — `providers.yaml` joins the payload now that it ships in the models wheel. `package_version` reads `tolokaforge_models.__version__` at compute time; `minimum_engine_version` reflects the installed models wheel's declaration. See [`docs/OUTPUT_FORMAT.md` § `models_fingerprint`](docs/OUTPUT_FORMAT.md#engine_run_statejson). (#938)
-- **release**: a new [`.github/workflows/release-models.yml`](.github/workflows/release-models.yml) cuts `models-vX.Y.Z` tags via `cz bump` against `tolokaforge_models/pyproject.toml`; the tag-driven [`.github/workflows/publish-tolokaforge-models.yml`](.github/workflows/publish-tolokaforge-models.yml) builds and publishes the wheel to PyPI through OIDC trusted publishing (Owner `Toloka`, Repository `tolokaforge`, Workflow `publish-tolokaforge-models.yml`, Environment `release`). The engine's `release.yml` / `publish-tolokaforge.yml` tag axis is untouched. See [`docs/RELEASING.md` § PyPI package — tolokaforge-models](docs/RELEASING.md#pypi-package--tolokaforge-models-models-vxyz-automated). (#938)
+- **core**: Milestone 29 — tolokaforge-models split (ADR-0030 delivery) (#1058)
+- **automation**: let the Slack poller read a header-admission gateway (#1037)
+- **llm**: address the gateway in its own dialect and by its own route name (#942)
+- **ci**: auto-promote rc images to stable on green rc-smoke (#917) (#918)
 
 ### Fix
 
-- **models** — **Behaviour change**: entry-point discovery for `tolokaforge.policies` now uses an `ast`-walking import parser that respects `TYPE_CHECKING` guards, so a module whose typing-only imports would otherwise be pulled at registration time no longer surfaces spurious `ImportError`s at engine boot. (#938)
-- **runner-subset**: [`scripts/hatch/hatch_runner_subset_builder.py`](scripts/hatch/hatch_runner_subset_builder.py) injects `tolokaforge-models >=1.0.0,<2.0.0` into the subset wheel's `Requires-Dist`, so `pip install tolokaforge-runner-subset` inside the runner Docker image transitively resolves the models wheel — matching the base wheel's resolution shape. (#938)
+- **llm**: admit the parameters an operator declares, when litellm's map cannot (#1000)
 
-### Deprecated
+## v0.16.1 (2026-08-07)
 
-- **llm**: `from tolokaforge.core.llm import GeminiSchema` (and its seven siblings — `GeminiRecursiveSchema`, `ScalarArrayDictMapResponse`, `RefResolvingDictMapHints`, `MinimaxM3TagRecoveryResponse`, `JsonRecursiveCoerceResponse`, `ItemRecursiveUnwrapResponse`, `OpenAISummaryReplayReasoningCodec`) emit `DeprecationWarning` on first access and resolve via a lazy [`__getattr__`](tolokaforge/core/llm/__init__.py) shim to their canonical location under `tolokaforge_models.policies.<family>` (`gemini`, `minimax`, `deepseek`, `inkling`). **Deprecation: the shim is removed in v0.18.0** — external callers must migrate to `from tolokaforge_models.policies.<family> import <Class>` before upgrading past v0.17.x. (#938)
+### Feat
 
-### Breaking
+- **grading**: composite primary keys in state_checks.id_fields (#924)
 
-- **core**: the `tolokaforge/core/data/` directory is gone; `pricing.json`, `model_presets.yaml`, and `providers.yaml` ship from `tolokaforge_models/data/`. Downstream code that reached the files via `importlib.resources.files("tolokaforge").joinpath("core/data/pricing.json")` fails loud with `FileNotFoundError`. Migrate to the public accessors on [`tolokaforge.core.model_data`](tolokaforge/core/model_data.py) — see [`docs/RELEASING.md` § Downstream data-resource consumers](docs/RELEASING.md#downstream-data-resource-consumers). (#938)
-- **core**: module constants `tolokaforge.core.model_data.MODELS_PACKAGE_VERSION` and `.MODELS_MINIMUM_ENGINE_VERSION` are removed. `compute_models_fingerprint()` reads `tolokaforge_models.__version__` and `tolokaforge_models.minimum_engine_version` at runtime instead — the source of truth is the installed models wheel, not an engine constant. (#938)
-- **observability**: `models_fingerprint.content_sha256` recomputes because `providers.yaml` joined the hashed payload. Old snapshot files still parse (the field shape is unchanged), but their sha256 does not match a newly-computed value on the same inputs — the widened payload naturally distinguishes pre- and post-cutover runs. (#938)
+### Fix
+
+- **core**: the TypeSense Docker rewrite drops the description cache (#928)
+
+## v0.16.0 (2026-08-06)
+
+### Feat
+
+- **skills**: JSONL progress channel for orchestration subagents (#909)
+
+### Fix
+
+- **grading**: hash-source rule skips a pack whose adapter may supply the source (#911) (#914)
+- **llm**: user simulator restarts the conversation after the agent answers (CBT-021) (#905)
+
+## v0.15.0 (2026-08-05)
+
+### Feat
+
+- **grading**: deterministic trace checks, milestone 28 (#890)
+- **tools**: optional docker exec --user for compose-variant bash_session + str_replace_editor (#894)
+- **tools**: add build_check builtin — zero-arg peer-service HTTP probe (#892)
+- **core**: multi-actor architecture — interaction_mode + Actor Protocol + TurnPolicy seam (#868) (#872)
+
+### Fix
+
+- **actors**: AgentOnlyTurnPolicy signals AGENT_DONE on text-only turn (#876) (#877)
+
+## v0.14.2 (2026-08-04)
+
+### Fix
+
+- **docker**: take the runner build context from the builder in core_stack (v0.14.1 still broken) (#864)
+
+## v0.14.1 (2026-08-04)
+
+### Fix
+
+- **docker**: resolve the runner build context on a wheel install (#858)
+
+## v0.14.0 (2026-08-04)
+
+### Feat
+
+- **runtime**: runner wheel split — slim image via subset build target (M15) (#847)
+- **secrets**: resolve ${secret:NAME} references in config values (#798)
+- **runtime**: Service Readiness Contract — first-class host-invokability boundary (#803) (#817)
+
+### Fix
+
+- **orchestrator**: allow per-trial runs with heterogeneous compose files (#849)
+- **runner+orchestrator**: substrate-native support for adapters using compose-variant tools + no DB service (#843)
+- **runner-client**: accept degraded runner status + introduce HealthLevel/HealthReport pattern (#801) (#841)
+- **grading**: decode wire tool calls in run_custom_checks instead of … (#804)
+- **test**: add mkfir and write config before run orchestrator (#802)
+
+## v0.13.1 (2026-08-03)
+
+### Feat
+
+- **slack**: custom message icons, one override parameter per icon role (#724)
+- **automation**: report gateway availability and accept a route directive (#723)
+- **llm**: route LLM calls through a gateway (LiteLLM proxy), env-configured (#718)
+- **grading**: finish runner-side custom_checks as a Pattern-A extension (#704)
+
+### Fix
+
+- **grading**: make the two grading substrates agree — substrate parity, the trajectory record, hash composition, and the combine algebra (#748)
+- **automation**: resolve a request against both catalogs, and route every reply icon through the registry (#728)
+- **docker**: auto host ports for rag/mock-web; persist rag HF cache on volume (#703)
+
+## v0.13.0 (2026-07-30)
+
+### Feat
+
+- rate-limit probe mode (fixed-interval 429 retry, hours-long budgets) (#665)
+
+## v0.12.0 (2026-07-29)
+
+### Feat
+
+- **adapters**: make rag-service search_kb functional for native tasks (#107) (#666)
+- **runtime**: Runner as a distributable service (M14 consolidation) (#642)
+- **tools**: configurable working_root on str_replace_editor (#643)
+- **adapters**: adapter-declared trial-grader name on orchestrator (#631)
+
+### Fix
+
+- **docker**: widen rag healthcheck start-period to cover model load (#661)
+- **docker**: scope mock-web build context to its service files (#654)
+- **deploy**: pin linux/amd64 in standalone compose for arm64 hosts (#647)
+- **ci**: bind no environment for publish-images dry-run (#646)
+
+## v0.11.2 (2026-07-27)
+
+### Fix
+
+- **runner**: preserve simulator text glued to ###STOP### (closes #611) (#619)
+
+## v0.11.1 (2026-07-27)
+
+### Feat
+
+- **runtime**: runtime independence v1 — expose runner as an independently-usable component (#557)
+
+### Fix
+
+- **runtime**: repair two #557 regressions breaking unit + canonical tests (#615)
+- **automation**: resolve-agent prompt - code-shape discipline + code-grounded data-scope (#562)
+- **runner**: fail loud on id_fields typos + MCP diff-sync id resolution (#600 follow-ups) (#603)
+- **runner**: resolve DB primary-key field from config, not model source (#600)
+
+## v0.11.0 (2026-07-23)
+
+### Feat
+
+- **grading**: judge scoring integrity — verdict consistency, judge customization, offline replay (#528)
+
+## v0.10.0 (2026-07-23)
+
+### Feat
+
+- **cli**: Improved Terminal DX (#460)
+- **tools**: persistent agent shell + first-class editor tools (M25 consolidation) (#587)
+- **runtime**: per-service network_access opt-out on ServiceSpec (untrusted-sibling partitioning) (#588)
+
+## v0.9.3 (2026-07-22)
+
+## v0.9.2 (2026-07-21)
+
+### Feat
+
+- **project-layer**: Project-layer v1 finalization — canonical shape with warn-only compat (M9) (#531)
+- **runtime**: multi-container v1 completion (M8 consolidation) (#511)
+
+### Fix
+
+- **grading**: compare numerically-equal state values as equal (#532)
+- **adapter**: fail conversion on invalid output (#494)
+- **tools**: advertise PATCH requests (#463)
+
+## v0.9.1 (2026-07-17)
+
+## v0.9.0 (2026-07-17)
+
+### Feat
+
+- **examples,runtime,assets**: multi-container example depth (Milestone 18) (#469)
+- **core**: observability seam extension — llm_call trio + model identity (#389) (#450)
+- **automation**: model auto-integration pipeline (observe/resolve/finalize + Slack-triggered poller) (#154)
+- **project-layer**: make Project schema end-to-end runnable — task-schema relaxation, grading_defaults merge, dead-seam cleanup, docs residue (#375) (#390)
+- **skills**: milestone integration-branch workflow with rich consolidation PR (#372)
+- **examples**: swap example-microservices-pack backend-api from fictional to postgrest (real image) (#367)
+- **runtime**: per-service log capture on trial failure (#302) (#347)
+
+### Fix
+
+- **loader**: preserve storage discriminator tag under run_defaults merge (#312) (#365)
+
+### Refactor
+
+- **core**: extract RunDisplayEvents engine seam to main (#416) (#433)
+
+### Perf
+
+- **orchestration**: reclaim wall-clock in /implement-milestone via overlap, review sharding, and stack warmup (#426)
+
+## v0.8.4 (2026-07-15)
+
+### Feat
+
+- **llm**: configurable hard wall-clock timeout for upstream calls (#327)
+- **runtime**: enforce network_policy in docker provisioner + tests (#301) (#336)
+- **examples**: runnable reset-recipe pack + end-to-end integration test (#299) (#314)
+- **runtime**: Project layer runtime — isolation, reset recipes, capabilities, env identity (#298)
+- **dev**: add cbm-onboard / cbm-offboard for codebase-memory-mcp (#266)
+- **cli**: tolokaforge assets stamp verb (#263)
+- **loader**: ${VAR} interpolation in run configs + --workers CLI flag (#262)
+- **schema**: dual-home compute/storage.queue resolution (#241)
+- **schema**: actor/seed/capability reservations + task-schema relaxation (#240)
+- **schema**: EnvironmentPatch + resolve() + stack sub-object (#232)
+
+## v0.8.3 (2026-07-13)
+
+### Feat
+
+- **loader**: resolve project.yaml + run_configs base+delta merge (#219)
+- **schema**: add ProjectConfig, TaskDefaults, RunDefaults + compute/storage/observability blocks (#215)
+
+### Fix
+
+- **deps**: exclude litellm 1.92.0 due to fastapi import regression (#231)
+
+## v0.8.2 (2026-07-10)
+
+### Feat
+
+- **models**: add tencent/hy3 (Hunyuan 3 GA) (#204)
+- **models**: add openai/gpt-5.6-terra and openai/gpt-5.6-sol (#203)
+
+## v0.8.1 (2026-07-09)
+
+### Feat
+
+- **models**: add x-ai/grok-4.5 (pricing + capability certificate) (#196)
+
+## v0.8.0 (2026-07-06)
+
+### Feat
+
+- **runtime**: SharedStackRuntimeBackend consumes environment_manifest (#167)
+- **runtime**: :local engine-image alias + wire environment_manifest through TaskConfig (#163)
+- **core**: TrialExecutor Protocol + wire per-trial substrate bracket (#162)
+- **metrics**: roll up judge cost at task and run level (#159)
+
+### Fix
+
+- **docker**: materialize engine wheel via reinstall provider (closes #29, #13) (#176)
+
+### Refactor
+
+- **output**: pin schema_version + int/float wire invariants (closes #152, #153) (#174)
+- **output**: typed models for run-level aggregate payloads (stage 1) (#149)
+- **orchestrator**: collapse injection kwargs into OrchestratorDeps (#134)
+- **docker**: rename ServiceStack → EngineStack; document docker-only + non-Protocol (#169)
+- **core**: extract compose-materialisation primitives into shared module (#166)
+- **core**: decompose Conductor + extract TrialGrader Protocol (#161)
 
 ## v0.17.0 (2026-08-11)
 
