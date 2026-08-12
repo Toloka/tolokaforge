@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'tolokaforge/**'
+      - 'tolokaforge_models/**'
       - 'tests/**'
       - 'scripts/**'
       - 'tools/**'
@@ -17,6 +18,7 @@ on:
     types: [opened, synchronize, reopened, labeled]
     paths:
       - 'tolokaforge/**'
+      - 'tolokaforge_models/**'
       - 'tests/**'
       - 'scripts/**'
       - 'tools/**'

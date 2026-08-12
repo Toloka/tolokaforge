@@ -1,8 +1,23 @@
-"""Byte-identity lock for the certificate registry served by :mod:`tolokaforge_models`.
+"""Cutover-acceptance lock for the certificate registry.
 
-Locks three invariants of the tuple exposed at
+**This is a cutover-scope test.** It certifies that the wheel-split move
+of the certificate registry from ``tolokaforge/testing/certify/_registry.py``
+to ``tolokaforge_models/src/tolokaforge_models/certificates/registry.py``
+preserves the tuple byte-for-byte. Once the first ``v0.17.0`` engine tag
+and the first ``models-v1.0.0`` models-wheel tag ship, any Bucket-A model
+integration is *supposed* to change the registry — a new certificate is
+exactly the shape a Bucket-A PR ships — and the hardcoded count / sha256
+here would then red every legitimate integration.
+
+**Scheduled for deletion** in the same PR that lands the first post-cutover
+model integration (or, whichever comes first, the ``v0.17.0`` release
+commit). Tracked as a follow-up in ADR-0030 § Follow-ups. The invariants
+this test locks are the milestone's release-gate signal, not an ongoing
+ratchet.
+
+Locks four invariants of the tuple exposed at
 :data:`tolokaforge.testing.certify.ALL_MODELS` and its authoritative
-source :data:`tolokaforge_models.certificates.ALL_MODELS`:
+source :data:`tolokaforge_models.certificates.ALL_MODELS` at cutover time:
 
 * Count exactly 39 — matches the pre-flip registry cardinality.
 * The lowercase-hex sha256 over the newline-joined ``model_id`` list is
@@ -10,9 +25,7 @@ source :data:`tolokaforge_models.certificates.ALL_MODELS`:
   accidental reorder, a dropped certificate, a stray whitespace tweak
   in one entry's ``model_id`` — flips the digest and fails loud.
 * A handful of well-known certificates (Muse Spark, one OpenAI, one
-  Gemini) remain present at the merged registry — proves the family
-  coverage the sha256 already guards against never regresses to a
-  quiet subset.
+  Gemini) remain present at the merged registry.
 * Every element is a :class:`ModelCertificate` — proves the tuple is
   the engine-side dataclass, not a stringly-typed stand-in.
 

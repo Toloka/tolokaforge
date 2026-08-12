@@ -21,12 +21,11 @@ non-Anthropic certificates declare this capability in
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from tolokaforge.core.llm import LLMClient, ReasoningConfig
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
+from tolokaforge.secrets import get_default
 from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 
@@ -49,7 +48,7 @@ def test_thinking_emits_blocks(
     """
     skip_unless_capability_declared(cert, Capability.THINKING_EMITS_BLOCKS)
 
-    if not os.getenv(cert.env_key):
+    if not get_default().get_secret(cert.env_key):
         pytest.skip(f"{cert.env_key} not set — skipping live test for {cert.model_id}.")
 
     client = LLMClient(ModelConfig(provider=cert.provider, name=cert.name))

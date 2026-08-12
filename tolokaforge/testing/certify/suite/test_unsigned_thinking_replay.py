@@ -30,7 +30,6 @@ Mechanism (same as the signed-replay test):
 
 from __future__ import annotations
 
-import os
 from typing import Any
 from unittest.mock import patch
 
@@ -38,6 +37,7 @@ import pytest
 
 from tolokaforge.core.llm import LLMClient, ReasoningConfig
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
+from tolokaforge.secrets import get_default
 from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 
@@ -53,7 +53,7 @@ def test_unsigned_thinking_replay(
     """End-to-end: turn-1 reasoning text reappears verbatim in turn-2 request body."""
     skip_unless_capability_declared(cert, Capability.UNSIGNED_THINKING_REPLAY)
 
-    if not os.getenv(cert.env_key):
+    if not get_default().get_secret(cert.env_key):
         pytest.skip(f"{cert.env_key} not set — skipping live test for {cert.model_id}.")
 
     reasoning = ReasoningConfig(mode="adaptive", effort_hint="high")

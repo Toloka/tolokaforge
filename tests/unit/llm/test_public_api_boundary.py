@@ -54,10 +54,13 @@ pytestmark = pytest.mark.unit
 #:     instances internally (``JsonRecursiveCoerceResponse``,
 #:     ``ItemRecursiveUnwrapResponse``, ``MinimaxM3TagRecoveryResponse``).
 #:
-#: Test 4 below is the authoritative audit for shape (a): it walks
-#: ``_POLICY_REGISTRIES`` at runtime and asserts every registered class with an
-#: in-registry base appears here. Shape (b) entries carry no automatic audit
-#: from the registries and must be added manually when a new composite lands.
+#: Test 4 below is the authoritative audit for BOTH shapes: it walks
+#: ``_POLICY_REGISTRIES`` at runtime and asserts that every registered class
+#: NOT under ``tolokaforge.core.llm.*`` (i.e. every per-model class the models
+#: wheel contributes) appears here. Composites inheriting only from ``object``
+#: (shape b) are covered by the same walk — a registered class must be listed
+#: regardless of ancestor shape. The manual-add caveat applied to the older
+#: filter shape (ancestor-gated) and no longer stands.
 PER_MODEL_SUBCLASSES: Final[tuple[tuple[str, str], ...]] = (
     ("tolokaforge_models.policies.gemini", "GeminiSchema"),
     ("tolokaforge_models.policies.gemini", "GeminiRecursiveSchema"),

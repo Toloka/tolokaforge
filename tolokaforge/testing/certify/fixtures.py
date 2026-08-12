@@ -25,7 +25,6 @@ just these fixtures does not have their unrelated tests silently marked
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 
 import pytest
@@ -50,7 +49,13 @@ def live_client() -> Callable[[ModelCertificate], LLMClient]:
     """
 
     def _build(cert: ModelCertificate) -> LLMClient:
-        if not os.getenv(cert.env_key):
+        # Route credential presence through SecretManager rather than
+        # os.getenv so .env is honoured and the static-grep guard at
+        # tests/unit/secrets/test_no_raw_secret_access.py sees no raw
+        # credential env read on the shipped import path.
+        from tolokaforge.secrets import get_default
+
+        if not get_default().get_secret(cert.env_key):
             pytest.skip(
                 f"{cert.env_key} not set — skipping live capability test for "
                 f"{cert.model_id}. Set the env var in .env to enable."

@@ -27,7 +27,7 @@ def update(
         DEFAULT_PRICING_PATH,
         "--output",
         "-o",
-        help="Path to write pricing.json (default: tolokaforge/core/data/pricing.json)",
+        help="Path to write pricing.json (default: tolokaforge_models/src/tolokaforge_models/data/pricing.json)",
     ),
     no_merge: bool = typer.Option(
         False,

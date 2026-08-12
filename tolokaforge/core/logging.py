@@ -311,7 +311,12 @@ class StructuredLogger:
         # Defensive handling for non-dict context (e.g., exception passed as positional arg)
         if context is not None and not isinstance(context, dict):
             context = {"context": str(context)}
-        full_context = {**(context or {}), **kwargs}
+        raw_context = {**(context or {}), **kwargs}
+        # Sanitize once and use the redacted view everywhere the values
+        # are surfaced: the in-memory log list, the stdlib LogRecord's
+        # ``extra=`` payload, and the strict-mode RuntimeError message.
+        # Any bypass reintroduces the CodeQL clear-text-logging surface.
+        full_context = self._sanitize_extra(raw_context)
 
         log_entry = {
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
@@ -322,7 +327,7 @@ class StructuredLogger:
         }
         self.logs.append(log_entry)
 
-        self.logger.log(log_level, message, extra=self._sanitize_extra(full_context))
+        self.logger.log(log_level, message, extra=full_context)
 
         if self.strict and level == "ERROR":
             error_msg = f"[STRICT MODE] {message}"

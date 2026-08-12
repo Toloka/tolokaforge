@@ -66,9 +66,9 @@ def test_decimal_field_tool_call(
     """
     skip_unless_capability_declared(cert, Capability.DECIMAL_FIELD_TOOL_CALL)
 
-    import os
+    from tolokaforge.secrets import get_default
 
-    if not os.getenv(cert.env_key):
+    if not get_default().get_secret(cert.env_key):
         pytest.skip(f"{cert.env_key} not set — skipping live test for {cert.model_id}.")
 
     tools = [

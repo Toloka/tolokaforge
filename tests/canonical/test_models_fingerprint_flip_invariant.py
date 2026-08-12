@@ -1,10 +1,23 @@
-"""Byte-identity lock on the fingerprint sub-payload.
+"""Cutover-acceptance lock on the fingerprint sub-payload.
+
+**This is a cutover-scope test.** It certifies that the wheel-split flip
+of ``_DATA_ROOT`` from ``tolokaforge/core/data/`` to
+``tolokaforge_models/data/`` preserves the fingerprint sub-payload
+(``{presets, pricing, certificates}``) byte-for-byte. Once the first
+``v0.17.0`` / ``models-v1.0.0`` tags ship, any Bucket-A model change is
+*supposed* to shift the digest — new prices, new certificates, new preset
+entries all legitimately move it — and the hardcoded hex here would then
+red every legitimate integration.
+
+**Scheduled for deletion** in the same PR that lands the first
+post-cutover model integration (or, whichever comes first, the
+``v0.17.0`` release commit). Tracked as a follow-up in ADR-0030
+§ Follow-ups. The invariant this test locks is the milestone's
+release-gate signal, not an ongoing ratchet.
 
 Locks ``sha256({presets, pricing, certificates})`` — the models-fingerprint
 payload minus its ``providers`` slice — as byte-invariant against a
-hardcoded hex. Any drift (``ALL_MODELS`` reorder, dropped certificate,
-JSON canonicaliser tweak, byte-copy mismatch of a bundled data file) trips
-the assertion naming the sub-payload.
+hardcoded hex.
 """
 
 from __future__ import annotations
