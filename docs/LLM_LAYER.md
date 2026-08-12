@@ -441,7 +441,7 @@ corruption observed in the post-PR-#88 production run:
 See [`plans/eval_post_pr88_schema_sanitizer_diagnosis.md`](../plans/eval_post_pr88_schema_sanitizer_diagnosis.md)
 for the full evidence trail.
 
-## `UserSimulator` context construction
+## `UserSimulator` request and reply contract
 
 The LLM user simulator converses from the customer's seat: before each
 generation it role-flips the shared transcript (its own past USER turns
@@ -470,6 +470,53 @@ The greeting exists only in the simulator's private request; it never
 enters the shared transcript or `trajectory.yaml`. Context-shape revisions
 bump `Trajectory.simulator_schema_version` (see
 [`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § Schema Version Stamps).
+
+### The reply guard
+
+A generated user turn reaches the agent carrying exactly the words the model
+wrote, or it does not reach the agent at all. Every generation inside
+`_llm_reply` passes through `UserReplyGuard`
+([`reply_guard.py`](../tolokaforge/core/actors/reply_guard.py)), which runs a
+list of `ReplyDetector`s over the reply text:
+
+- A flagged reply is **discarded whole and regenerated**. No text is edited,
+  excised, truncated or substituted — the engine has no path that can put words
+  into a turn the model did not write.
+- Every discarded attempt logs at `WARNING` with the detector, the reason code
+  and the matched excerpt, and rides back on
+  `GenerationResult.guard_rejections`.
+- When `USER_REPLY_MAX_ATTEMPTS` generations have all been flagged, the guard
+  raises `UserReplyRefused`. The trial terminates `reason=error` and is counted
+  as a `harness_error` — our defect, in the denominator, never the agent's. The
+  exception names the detectors, the reason codes and the attempt count and
+  deliberately quotes none of the reply: `classify_loop_error` reads an
+  exception's prose, so a quoted reply mentioning a provider would re-attribute
+  the failure away from us.
+- Those extra generations are a term in the rate-limit-probe budget invariant,
+  not an unaccounted multiplier on it (see [`CONFIG.md`](CONFIG.md) §
+  `rate_limit_probe`).
+
+`FourthWallDetector` (`name = "fourth_wall"`) is the registered detector. It
+matches **attributed frames**, not vocabulary: a pattern fires only when the
+meta-concept is attributed to a conversational party or to the exercise itself
+*and* the noun carrying it heads its own phrase. Two families:
+
+| family | reason codes | example detection |
+|---|---|---|
+| the speaker identifies itself as a machine, or denies being human | `self_identified_as_model`, `denied_being_human` | `As an AI language model, I cannot do that.` |
+| the exercise is named as an exercise, or a party's prompt or persona is named | `named_the_exercise`, `named_a_party_prompt`, `named_own_instructions` | `This is a simulation of the task.` |
+
+Bare `ai`, `model`, `prompt`, `benchmark`, `simulation` and `llm` are ordinary
+support vocabulary and never trigger on their own, and neither does a machine
+noun used attributively (`I'm an AI engineer at a fintech startup`, `a benchmark
+index fund`, `not a real person of interest`). A false positive costs the whole
+attempt budget and then the trial, so precision outranks recall.
+
+The user describing the **agent** as a machine (`You are chatting with an
+internal AI agent, right?`) is in frame and passes by design; only the simulator
+describing **itself** is a defect. Scripted replies and a task's pinned
+`initial_user_message` are authored content delivered verbatim — neither is
+generated, so neither passes through the guard.
 
 ## litellm OpenRouter routing caveat
 
@@ -1576,7 +1623,10 @@ composes a `ModelCapabilities` and wraps litellm's `completion()`.
 See § `usage` above for the full Usage schema and accumulation contract.
 
 `UserSimulator` wraps `LLMClient` for tau-bench-style user simulation with
-`scripted` or `llm` modes.
+`scripted` or `llm` modes. An `llm`-mode reply is delivered only if it survives
+the guard described in § `UserSimulator` request and reply contract;
+`GenerationResult.guard_rejections` carries the defects of the attempts
+discarded before it, and is empty everywhere else.
 
 ### Outer retry controllers
 

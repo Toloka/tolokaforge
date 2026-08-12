@@ -4,8 +4,9 @@ Everything the runner produces as a per-trial record lives here: the
 message trace (:class:`Message`, :class:`ToolCall`), status/termination
 enums, the :class:`Metrics` accounting block, the rate-limit-probe
 census (:class:`RateLimitProbeRoleMetrics`,
-:class:`RateLimitProbeBucketMetrics`), and the composite
-:class:`Trajectory` that carries them.
+:class:`RateLimitProbeBucketMetrics`), the user-reply guard's findings
+(:class:`ReplyDefect`), and the composite :class:`Trajectory` that carries
+them.
 """
 
 import dataclasses
@@ -27,12 +28,14 @@ from tolokaforge.core.models.grade import Grade
 from tolokaforge.runner.models import RecordedToolCall
 
 __all__ = [
+    "REPLY_DEFECT_EXCERPT_MAX_CHARS",
     "FirstUserMessageSource",
     "Message",
     "MessageRole",
     "Metrics",
     "RateLimitProbeBucketMetrics",
     "RateLimitProbeRoleMetrics",
+    "ReplyDefect",
     "TerminationReason",
     "ToolCall",
     "ToolUsage",
@@ -439,6 +442,36 @@ class Metrics(BaseModel):
             "provider_raw": dict(value.provider_raw),
             "calls": [dataclasses.asdict(call) for call in value.calls],
         }
+
+
+REPLY_DEFECT_EXCERPT_MAX_CHARS = 200
+"""Longest matched span a :class:`ReplyDefect` may carry, in characters.
+
+The excerpt is model-authored text persisted into the trial bundle as the
+evidence for a discarded reply, so it is bounded rather than free-length."""
+
+
+class ReplyDefect(BaseModel):
+    """One detector's finding on one generated user reply.
+
+    Produced by the user-reply guard
+    (:mod:`tolokaforge.core.actors.reply_guard`) and carried on the
+    :class:`~tolokaforge.core.llm.client.GenerationResult` of the turn whose
+    earlier attempts it describes.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    detector: str
+    """``name`` of the detector that produced this finding."""
+
+    reason: str
+    """Stable machine code for the shape that was matched, e.g.
+    ``self_identified_as_model``. Consumers group on this, not on
+    :attr:`excerpt`."""
+
+    excerpt: str = Field(max_length=REPLY_DEFECT_EXCERPT_MAX_CHARS)
+    """The matched span of the discarded reply."""
 
 
 class Trajectory(BaseModel):

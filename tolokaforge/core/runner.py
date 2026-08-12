@@ -574,13 +574,14 @@ class TrialRunner:
         catches 429s (see the ``is_rate_limit`` guard below), and under probe
         mode the simulator's own client already polls 429s at a fixed interval
         for up to its per-call budget — strictly more tolerant than 4 attempts
-        of 2/4/8 s backoff — so the outer attempts are redundant. Dropping
-        them also keeps this step's worst case at one simulator budget instead
-        of ``init_attempts`` of them, which is what makes the budget invariant
-        alone sufficient to bound the trial under its
-        ``max(300, episode_s * 2)`` queue lease. Non-429 errors are unaffected:
-        they were never retried here, and the client's own five-attempt
-        exponential path still covers them under probe mode.
+        of 2/4/8 s backoff — so the outer attempts are redundant. Dropping them
+        also keeps this step's worst case at the simulator budgets one guarded
+        reply can spend (``USER_REPLY_MAX_ATTEMPTS`` of them, the term
+        ``turn_budget_s`` already carries) instead of ``init_attempts`` times as
+        many, which is what makes the budget invariant alone sufficient to bound
+        the trial under its ``max(300, episode_s * 2)`` queue lease. Non-429
+        errors are unaffected: they were never retried here, and the client's own
+        five-attempt exponential path still covers them under probe mode.
         """
         if self.user_simulator is None:
             raise RuntimeError(

@@ -958,46 +958,6 @@ class TestUserSimulator:
 
 
 # ===================================================================
-# UserSimulator._sanitize_user_text
-# ===================================================================
-
-
-@pytest.mark.unit
-class TestSanitizeUserText:
-    """Stripping banned simulation/AI meta-commentary from user text."""
-
-    def test_removes_simulation_mention(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
-
-        result = UserSimulator._sanitize_user_text("This is a simulation of the task.")
-        assert "simulation" not in result.lower()
-
-    def test_removes_benchmark_mention(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
-
-        result = UserSimulator._sanitize_user_text("This benchmark tests performance.")
-        assert "benchmark" not in result.lower()
-
-    def test_preserves_clean_text(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
-
-        text = "I need to book a flight to NYC."
-        assert UserSimulator._sanitize_user_text(text) == text
-
-    def test_empty_text_stays_empty(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
-
-        assert UserSimulator._sanitize_user_text("") == ""
-
-    def test_all_sentences_banned_returns_okay(self) -> None:
-        from tolokaforge.core.llm import UserSimulator
-
-        # When all sentences are stripped and nothing remains, returns fallback "Okay."
-        result = UserSimulator._sanitize_user_text("AI model.")
-        assert result == "Okay." or len(result) > 0
-
-
-# ===================================================================
 # _litellm_response_cost — priority-ladder branch coverage
 # ===================================================================
 
