@@ -90,6 +90,7 @@
   },
   "initialization_actions": [],
   "metadata": {
+    "agent_harness": "terminus-2",
     "difficulty": "easy",
     "tags": [
       "shell",

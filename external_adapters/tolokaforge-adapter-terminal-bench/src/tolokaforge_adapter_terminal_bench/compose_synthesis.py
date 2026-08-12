@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -94,6 +95,7 @@ def materialise_task_environment(
     image_registry: str | None = None,
     image_tag: str = "local",
     agent_harness: str = NO_OP_HARNESS,
+    provider_env_keys: Sequence[str] = (),
     runner_image: str = "tolokaforge-runner:local",
     db_service_image: str = "tolokaforge-db-service:local",
 ) -> MaterialisedEnvironment:
@@ -124,6 +126,11 @@ def materialise_task_environment(
             service builds a thin layer on top of it that installs the CLI.
             The layered image carries the harness in its tag, so switching
             harnesses can never reuse a stale cached image.
+        provider_env_keys: Environment-variable names the agent service
+            declares as pass-through, so ``docker compose up`` resolves each
+            from the per-trial ``.env`` the runtime writes. Names only — the
+            values never enter the compose file, the staging digest, or the
+            image.
         runner_image: Pinned image for the injected ``runner`` service.
         db_service_image: Pinned image for the injected ``db-service``.
 
@@ -160,6 +167,7 @@ def materialise_task_environment(
             "image_registry": image_registry or "",
             "image_tag": image_tag,
             "agent_harness": agent_harness,
+            "provider_env_keys": ",".join(sorted(provider_env_keys)),
             "runner_image": runner_image,
             "db_service_image": db_service_image,
             "cpus": str(meta.cpus),
@@ -178,6 +186,7 @@ def materialise_task_environment(
         image_registry=image_registry,
         image_tag=image_tag,
         agent_harness=agent_harness,
+        provider_env_keys=provider_env_keys,
         runner_image=runner_image,
         db_service_image=db_service_image,
     )
@@ -316,6 +325,7 @@ def _build_synthesised_compose(
     image_registry: str | None,
     image_tag: str,
     agent_harness: str,
+    provider_env_keys: Sequence[str],
     runner_image: str,
     db_service_image: str,
 ) -> tuple[dict[str, Any], str | None]:
@@ -351,6 +361,9 @@ def _build_synthesised_compose(
     agent_body["container_name"] = agent_container_name
     agent_body["volumes"] = ["./tests:/tests", "./_logs:/logs"]
     agent_body["environment"] = _set_env_key(agent_body.get("environment"), "TEST_DIR", "/tests")
+    agent_body["environment"] = _add_env_passthrough(
+        agent_body["environment"], sorted(provider_env_keys)
+    )
 
     base_build_service: str | None = None
     if agent_harness != NO_OP_HARNESS:
@@ -406,6 +419,22 @@ def _set_env_key(existing: Any, key: str, value: str) -> Any:
         filtered.append(f"{key}={value}")
         return filtered
     return {key: value}
+
+
+def _add_env_passthrough(existing: Any, keys: Sequence[str]) -> Any:
+    """Declare *keys* as pass-through on a service's ``environment:``.
+
+    A pass-through entry names a variable without a value, so compose resolves
+    it from the per-trial ``.env`` at up-time rather than from the compose file
+    — which is what keeps provider credentials out of the synthesised YAML and
+    out of the image. Preserves the declared shape (bare ``KEY`` in a list, a
+    ``null`` value in a mapping) and never overwrites a key the task already
+    bound to a value.
+    """
+    if isinstance(existing, dict):
+        return {**existing, **{k: None for k in keys if k not in existing}}
+    bound = {entry.split("=", 1)[0] for entry in existing if isinstance(entry, str)}
+    return [*existing, *(k for k in keys if k not in bound)]
 
 
 def _harness_base_service_body(base_image: str, task_build: Any) -> dict[str, Any]:

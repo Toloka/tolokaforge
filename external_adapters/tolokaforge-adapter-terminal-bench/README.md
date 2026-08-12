@@ -131,3 +131,44 @@ digest, so each harness gets its own staging directory.
 
 When `image_registry` is set the base image is pulled rather than built, so
 no base service is declared and only the layer is built locally.
+
+### Provider credentials
+
+A harness CLI authenticates against its vendor's API from inside the task
+container, so it needs credentials the engine's own LLM layer never puts
+there. `agent_provider_env` declares them:
+
+```yaml
+evaluation:
+  adapter_params:
+    agent_harness: claude-code
+    agent_provider_env:
+      ANTHROPIC_API_KEY: "${secret:ANTHROPIC_API_KEY}"
+      ANTHROPIC_BASE_URL: "${secret:ANTHROPIC_BASE_URL}"
+```
+
+Values resolve through `expand_secret_refs`, so a run config names a
+credential rather than carrying it. Keys are checked against an allow-list —
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
+`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `GOOGLE_API_KEY` — and anything else is
+refused naming the accepted set.
+
+The path from config to container:
+
+`adapter_params.agent_provider_env` → `StackPatch.inputs` →
+`project_loader.resolve` → `EnvironmentManifest.stack_inputs` →
+`PerTrialRuntimeBackend.provision` → the per-trial `.env` → compose
+interpolation at up-time.
+
+The synthesised compose file declares each key on the agent service as
+*pass-through* (a bare name in a list, a `null` value in a mapping), so
+values live only in the per-trial `.env` — never in the compose file, the
+staging digest, or the image. A key the task already binds to a value is left
+alone.
+
+### Trial-level timeout
+
+Under harness mode the whole trial runs inside a single `docker exec`, so the
+`bash` tool's `timeout_s` carries the task's `[agent] timeout_sec` rather than
+the 120 s per-call default. That field is what the runner-side compose-exec
+wrapper reads for its subprocess timeout.

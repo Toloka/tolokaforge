@@ -17,6 +17,7 @@ whatever command it finds there.
 from __future__ import annotations
 
 import shlex
+from collections.abc import Iterable
 from pathlib import Path
 
 __all__ = [
@@ -24,8 +25,10 @@ __all__ = [
     "HARNESS_COMMANDS",
     "INSTALL_SCRIPT",
     "NO_OP_HARNESS",
+    "PROVIDER_ENV_KEYS",
     "harness_command",
     "validate_harness",
+    "validate_provider_env_keys",
 ]
 
 NO_OP_HARNESS = "terminus-2"
@@ -44,6 +47,33 @@ HARNESS_COMMANDS: dict[str, tuple[str, ...]] = {
 trailing argument. An empty prefix means the harness runs no CLI."""
 
 ACCEPTED_HARNESSES: tuple[str, ...] = tuple(HARNESS_COMMANDS)
+
+PROVIDER_ENV_KEYS: frozenset[str] = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "GOOGLE_API_KEY",
+    }
+)
+"""Environment variables a harness CLI may be given inside the task container.
+
+An allow-list rather than a pass-through: everything named here lands in the
+per-trial compose ``.env``, so an open surface would let a run config push
+arbitrary values — including ones shadowing the task's own environment —
+into the container the agent works in."""
+
+
+def validate_provider_env_keys(keys: Iterable[str]) -> None:
+    """Raise unless every key is one a harness CLI is allowed to receive."""
+    rejected = sorted(k for k in keys if k not in PROVIDER_ENV_KEYS)
+    if rejected:
+        raise ValueError(
+            f"terminal-bench adapter: agent_provider_env key(s) {rejected!r} are not "
+            f"forwardable; accepted: {sorted(PROVIDER_ENV_KEYS)!r}."
+        )
 
 
 def validate_harness(agent_harness: str) -> str:

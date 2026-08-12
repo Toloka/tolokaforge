@@ -52,12 +52,16 @@ from tolokaforge_adapter_terminal_bench.compose_synthesis import (
 )
 from tolokaforge_adapter_terminal_bench.harness import (
     NO_OP_HARNESS,
+    harness_command,
     validate_harness,
+    validate_provider_env_keys,
 )
 from tolokaforge_adapter_terminal_bench.task_parser import (
     TerminalBenchTask,
     discover_tasks,
 )
+
+_AGENT_TOOL_TIMEOUT_S = 120.0
 
 _REMOVED_PARAMS: dict[str, str] = {
     "runner_task_dir": (
@@ -72,6 +76,29 @@ _REMOVED_PARAMS: dict[str, str] = {
         "agent service via relative volumes; no host-daemon path is required"
     ),
 }
+
+
+def _resolve_provider_env(declared: dict[str, str]) -> dict[str, str]:
+    """Validate the declared provider-env keys and resolve their values.
+
+    Values go through :func:`~tolokaforge.secrets.expand_secret_refs`, so a run
+    config names a credential as ``${secret:NAME}`` instead of carrying it
+    literally. The ``SecretManager`` is only constructed when a run actually
+    declares provider env, which keeps adapter construction free of it on the
+    canonical and ``--dry-run`` paths.
+    """
+    if not declared:
+        return {}
+    validate_provider_env_keys(declared)
+    from tolokaforge.secrets import expand_secret_refs, get_default
+
+    secrets = get_default()
+    return {
+        key: expand_secret_refs(
+            value, secrets, where=f"terminal-bench adapter_params.agent_provider_env[{key!r}]"
+        )
+        for key, value in declared.items()
+    }
 
 
 class TerminalBenchAdapter(BaseAdapter):
@@ -98,6 +125,9 @@ class TerminalBenchAdapter(BaseAdapter):
         )
         self.prebuild_images: bool = params.get("prebuild_images", True)
         self.agent_harness: str = validate_harness(params.get("agent_harness", NO_OP_HARNESS))
+        self.agent_provider_env: dict[str, str] = _resolve_provider_env(
+            params.get("agent_provider_env") or {}
+        )
         staging_root = params.get("staging_root")
         self.staging_root: Path = (
             Path(staging_root).expanduser().resolve()
@@ -142,6 +172,7 @@ class TerminalBenchAdapter(BaseAdapter):
             image_registry=self.image_registry,
             image_tag=self.image_tag,
             agent_harness=self.agent_harness,
+            provider_env_keys=sorted(self.agent_provider_env),
         )
         self._environments[task_id] = env
         return env
@@ -201,7 +232,11 @@ class TerminalBenchAdapter(BaseAdapter):
     def _environment_patch(self, task_id: str) -> EnvironmentPatch:
         env = self._environment(task_id)
         return EnvironmentPatch(
-            stack=StackPatch(compose_file=env.compose_file, runner_service="runner"),
+            stack=StackPatch(
+                compose_file=env.compose_file,
+                runner_service="runner",
+                inputs=dict(self.agent_provider_env),
+            ),
             network_policy=self.network_policy,
         )
 
@@ -275,7 +310,15 @@ class TerminalBenchAdapter(BaseAdapter):
                         "required": ["command"],
                     },
                     category="compute",
-                    timeout_s=120.0,
+                    # The runner-side compose-exec wrapper reads its subprocess
+                    # timeout off this field, so under harness mode it has to
+                    # carry the whole trial's agent budget: the CLI runs to
+                    # completion inside a single exec.
+                    timeout_s=(
+                        _AGENT_TOOL_TIMEOUT_S
+                        if self.agent_harness == NO_OP_HARNESS
+                        else meta.agent_timeout_sec
+                    ),
                     source=ToolSource(
                         toolset="terminal_bench",
                         module_path="",
@@ -299,12 +342,28 @@ class TerminalBenchAdapter(BaseAdapter):
                 # The runner dispatches on this method, not on the adapter name.
                 grading_method="test_execution",
             ),
-            metadata={
-                "difficulty": meta.difficulty,
-                "tags": meta.tags,
-                "verifier_timeout_sec": meta.verifier_timeout_sec,
-            },
+            metadata=self._metadata(meta),
         )
+
+    def _metadata(self, meta: TerminalBenchTask) -> dict[str, Any]:
+        """Adapter extras on the runner-side task projection.
+
+        ``agent_harness_command`` is the whole of what the engine core needs to
+        know about a coding-harness CLI: present means run this command once in
+        place of the LLM turn loop, absent means run the loop. The CLI's name
+        and argv stay inside this adapter.
+        """
+        metadata: dict[str, Any] = {
+            "difficulty": meta.difficulty,
+            "tags": meta.tags,
+            "verifier_timeout_sec": meta.verifier_timeout_sec,
+            "agent_harness": self.agent_harness,
+        }
+        if self.agent_harness != NO_OP_HARNESS:
+            metadata["agent_harness_command"] = harness_command(
+                self.agent_harness, meta.instruction
+            )
+        return metadata
 
     # -- lifecycle helpers ----------------------------------------------------
 

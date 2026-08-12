@@ -1226,3 +1226,232 @@ class TestTerminalBenchAdapterHarnessImageBuilds:
                     "agent_harness": "terminus-3",
                 }
             )
+
+
+class TestProviderEnvWire:
+    """Provider credentials reach the container through the per-trial ``.env``."""
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    def _adapter(self, fixture_dir, tmp_path, **extra):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        return TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                "agent_harness": "claude-code",
+                **extra,
+            }
+        )
+
+    def test_keys_land_in_stack_inputs(self, fixture_dir, tmp_path):
+        adapter = self._adapter(
+            fixture_dir,
+            tmp_path,
+            agent_provider_env={
+                "ANTHROPIC_API_KEY": "sk-test",
+                "ANTHROPIC_BASE_URL": "https://proxy.example",
+            },
+        )
+        patch_ = adapter.get_task("echo-hello").environment_manifest
+        assert patch_.stack.inputs == {
+            "ANTHROPIC_API_KEY": "sk-test",
+            "ANTHROPIC_BASE_URL": "https://proxy.example",
+        }
+
+    def test_keys_survive_into_the_resolved_manifest(self, fixture_dir, tmp_path):
+        adapter = self._adapter(
+            fixture_dir, tmp_path, agent_provider_env={"OPENAI_API_KEY": "sk-openai"}
+        )
+        manifest = adapter.to_task_description("echo-hello").environment_manifest
+        assert manifest is not None
+        assert manifest.stack_inputs["OPENAI_API_KEY"] == "sk-openai"
+
+    def test_agent_service_declares_them_as_passthrough(self, fixture_dir, tmp_path):
+        """Names only in the compose file — the value comes from the ``.env``."""
+        adapter = self._adapter(
+            fixture_dir, tmp_path, agent_provider_env={"GOOGLE_API_KEY": "sk-google"}
+        )
+        env = adapter._environment("echo-hello")
+        compose = _load_synthesised(env)
+        environment = compose["services"]["main"]["environment"]
+        assert "GOOGLE_API_KEY" in environment
+        assert "TEST_DIR=/tests" in environment
+        assert "sk-google" not in env.compose_file.read_text()
+
+    def test_task_bound_key_is_not_overwritten(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "bound",
+            {
+                "services": {
+                    "main": {"image": "python:3.11-slim", "environment": ["OPENAI_API_KEY=task"]}
+                }
+            },
+        )
+        env = materialise_task_environment(
+            meta,
+            staging_root=tmp_path / "staging",
+            agent_harness="codex",
+            provider_env_keys=["OPENAI_API_KEY"],
+        )
+        environment = _load_synthesised(env)["services"]["main"]["environment"]
+        assert environment.count("OPENAI_API_KEY") == 0
+        assert "OPENAI_API_KEY=task" in environment
+
+    def test_mapping_shaped_environment_gets_a_null_value(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "mapping",
+            {"services": {"main": {"image": "python:3.11-slim", "environment": {"FOO": "bar"}}}},
+        )
+        env = materialise_task_environment(
+            meta,
+            staging_root=tmp_path / "staging",
+            agent_harness="codex",
+            provider_env_keys=["ANTHROPIC_API_KEY"],
+        )
+        environment = _load_synthesised(env)["services"]["main"]["environment"]
+        assert environment["ANTHROPIC_API_KEY"] is None
+        assert environment["FOO"] == "bar"
+
+    def test_non_forwardable_key_rejected(self, fixture_dir, tmp_path):
+        with pytest.raises(ValueError, match="AWS_SECRET_ACCESS_KEY"):
+            self._adapter(
+                fixture_dir, tmp_path, agent_provider_env={"AWS_SECRET_ACCESS_KEY": "nope"}
+            )
+
+    def test_rejection_names_the_accepted_set(self, fixture_dir, tmp_path):
+        with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+            self._adapter(fixture_dir, tmp_path, agent_provider_env={"PATH": "/usr/bin"})
+
+    @pytest.fixture
+    def env_backed_secrets(self, monkeypatch):
+        """Install an ``os.environ``-only ``SecretManager`` as the process default.
+
+        Patches the module global rather than calling ``init_default_from`` so
+        the singleton is restored when the test ends — a leaked manager would
+        make every later test's secret reads depend on test ordering.
+        """
+        from tolokaforge.secrets import SecretManager
+        from tolokaforge.secrets.providers import EnvProvider
+
+        monkeypatch.setattr(
+            "tolokaforge.secrets.manager._default_manager", SecretManager([EnvProvider()])
+        )
+
+    def test_secret_reference_is_expanded(
+        self, fixture_dir, tmp_path, monkeypatch, env_backed_secrets
+    ):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-from-secret-manager")
+        adapter = self._adapter(
+            fixture_dir,
+            tmp_path,
+            agent_provider_env={"ANTHROPIC_API_KEY": "${secret:ANTHROPIC_API_KEY}"},
+        )
+        assert adapter.agent_provider_env == {"ANTHROPIC_API_KEY": "sk-from-secret-manager"}
+
+    def test_unresolvable_secret_reference_fails_loud(
+        self, fixture_dir, tmp_path, monkeypatch, env_backed_secrets
+    ):
+        from tolokaforge.secrets import UnresolvedReferenceError
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        with pytest.raises(UnresolvedReferenceError):
+            self._adapter(
+                fixture_dir,
+                tmp_path,
+                agent_provider_env={"ANTHROPIC_API_KEY": "${secret:ANTHROPIC_API_KEY}"},
+            )
+
+    def test_no_provider_env_leaves_stack_inputs_empty(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path)
+        assert adapter.agent_provider_env == {}
+        assert adapter.get_task("echo-hello").environment_manifest.stack.inputs == {}
+
+    def test_switching_keys_changes_the_staging_digest(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _harness_task(tmp_path, "keydigest", with_build=True)
+        a = materialise_task_environment(
+            meta, staging_root=tmp_path / "s", agent_harness="codex", provider_env_keys=[]
+        )
+        b = materialise_task_environment(
+            meta,
+            staging_root=tmp_path / "s",
+            agent_harness="codex",
+            provider_env_keys=["OPENAI_API_KEY"],
+        )
+        assert a.staging_dir != b.staging_dir
+
+
+class TestHarnessTaskDescriptionMetadata:
+    """What the engine core reads to decide a trial runs a harness CLI."""
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    def test_harness_command_carries_the_instruction(self, fixture_dir, tmp_path):
+        import shlex
+
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                "agent_harness": "claude-code",
+            }
+        )
+        td = adapter.to_task_description("echo-hello")
+        assert td.metadata["agent_harness"] == "claude-code"
+        argv = shlex.split(td.metadata["agent_harness_command"])
+        assert argv[:2] == ["claude", "--print"]
+        assert argv[2] == adapter.get_task("echo-hello").initial_user_message
+
+    def test_default_harness_publishes_no_command(self, fixture_dir, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
+        )
+        td = adapter.to_task_description("echo-hello")
+        assert td.metadata["agent_harness"] == "terminus-2"
+        assert "agent_harness_command" not in td.metadata
+
+    def test_harness_mode_gives_bash_the_whole_agent_budget(self, fixture_dir, tmp_path):
+        """One exec runs the entire trial, so the per-call timeout is the trial's."""
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+        from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                "agent_harness": "codex",
+            }
+        )
+        expected = discover_tasks(fixture_dir)["echo-hello"].agent_timeout_sec
+        assert adapter.to_task_description("echo-hello").agent_tools[0].timeout_s == expected
+
+    def test_default_harness_keeps_the_per_call_timeout(self, fixture_dir, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
+        )
+        assert adapter.to_task_description("echo-hello").agent_tools[0].timeout_s == 120.0
