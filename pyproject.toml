@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge"
-version = "0.16.1"
+version = "0.18.0"
 description = "Tolokaforge - LLM Tool-Use Benchmarking Harness"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,12 +30,23 @@ classifiers = [
 ]
 
 dependencies = [
+    # Model data + per-model policy subclasses (see ADR-0030). Ships the
+    # bundled ``pricing.json``, ``model_presets.yaml``, ``providers.yaml``,
+    # the ``ModelCertificate`` registry, and the per-model policy subclasses
+    # the engine reaches through its entry-point registry at
+    # :mod:`tolokaforge.core.model_data`.
+    "tolokaforge-models>=1.0.0,<2.0.0",
     # Core LLM integration
     "litellm>=1.83.14,!=1.92.0,<2.0.0",
     # Data validation and schemas
     "pydantic>=2.0.0",
     "pydantic[email]>=2.0.0",
     "jsonschema>=4.20.0",
+    # PEP 440 specifier parsing — used by ``tolokaforge.core.model_data`` to
+    # validate ``minimum_engine_version`` on the resolved models fingerprint.
+    # Kept as a direct dep so a downstream prune of ``black`` / ``build`` cannot
+    # quietly remove ``packaging`` from the resolved set.
+    "packaging>=24.0",
     # Configuration
     "pyyaml>=6.0.1",
     "python-dotenv>=1.0.0",
@@ -255,17 +266,11 @@ only-include = [
     "tolokaforge/core/hash.py",
     "tolokaforge/core/logging.py",
     "tolokaforge/core/loop.py",
+    "tolokaforge/core/model_data.py",
     "tolokaforge/core/netpolicy_constants.py",
     "tolokaforge/core/pricing.py",
     "tolokaforge/core/run_display_events.py",
     "tolokaforge/core/trial.py",
-    # RUNNER_SUBSET_DATA_FILES — non-Python assets runtime code reads at
-    # import time. Ship them into the subset wheel so the runner image's
-    # pricing / preset tables are non-empty (GitHub #830). The
-    # ``.python-version`` dotfile lands via the ``force-include`` table
-    # below (source path differs from destination path).
-    "tolokaforge/core/data/pricing.json",
-    "tolokaforge/core/data/model_presets.yaml",
 ]
 exclude = [
     # RUNNER_SUBSET_EXCLUDED_FILES — orchestrator-only files inside an
@@ -345,7 +350,7 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "tolokaforge_models/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -521,6 +526,7 @@ required-version = ">=0.9.5,<0.10"
 
 [tool.uv.workspace]
 members = [
+    "tolokaforge_models",
     "tools/automation",
     "tools/dev-mcp",
     "tools/pricing-updater",
@@ -534,6 +540,7 @@ dev-mcp = { workspace = true }
 rubric-calibrator = { workspace = true }
 tolokaforge = { workspace = true }
 tolokaforge-adapter-terminal-bench = { workspace = true }
+tolokaforge-models = { workspace = true }
 
 # PyPI as primary index for cross-platform compatibility
 [[tool.uv.index]]

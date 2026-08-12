@@ -21,8 +21,8 @@ import pytest
 
 from tolokaforge.core.llm import client as client_module
 from tolokaforge.core.llm.client import LLMClient
+from tolokaforge.core.llm.providers import get_provider_binding
 from tolokaforge.core.llm.proxy import (
-    UNROUTABLE_PROVIDERS,
     ProxyConfig,
     ProxyConfigError,
     resolve_proxy_config,
@@ -32,6 +32,11 @@ from tolokaforge.secrets import DictProvider, SecretManager
 from tolokaforge.secrets import manager as secrets_manager
 
 pytestmark = pytest.mark.unit
+
+
+_UNROUTABLE_PROVIDERS = frozenset(
+    name for name in ("mock", "nova") if get_provider_binding(name).unroutable
+)
 
 
 @pytest.fixture
@@ -236,11 +241,12 @@ class TestProviderScoping:
 
     def test_unroutable_providers_never_match(self) -> None:
         """Even an explicit allow-list cannot route these."""
+        assert frozenset({"mock", "nova"}) == _UNROUTABLE_PROVIDERS
         proxy = ProxyConfig(
             base_url="https://gateway.example.com",
-            providers=frozenset(UNROUTABLE_PROVIDERS),
+            providers=frozenset(_UNROUTABLE_PROVIDERS),
         )
-        for provider in UNROUTABLE_PROVIDERS:
+        for provider in _UNROUTABLE_PROVIDERS:
             assert not proxy.applies_to(provider), provider
 
     def test_empty_provider_string_never_matches(self) -> None:

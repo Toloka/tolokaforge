@@ -42,7 +42,9 @@ def _run(cmd: list[str], *, timeout: int = 180) -> subprocess.CompletedProcess[s
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv CLI not available")
-def test_entry_point_adapter_convert_smoke(built_wheel: Path, tmp_path: Path) -> None:
+def test_entry_point_adapter_convert_smoke(
+    built_wheel: Path, built_wheels_dir: Path, tmp_path: Path
+) -> None:
     sources = tmp_path / "sources"
     sources.mkdir()
     task_ids = ["alpha", "beta"]
@@ -53,7 +55,20 @@ def test_entry_point_adapter_convert_smoke(built_wheel: Path, tmp_path: Path) ->
 
     venv_dir = tmp_path / "venv"
     _run(["uv", "venv", str(venv_dir)])
-    _run(["uv", "pip", "install", "--python", str(venv_dir), str(built_wheel)])
+    # ``--find-links`` points at the shared wheel dir so the engine wheel's
+    # ``tolokaforge-models`` dep resolves against the sibling wheel there.
+    _run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(venv_dir),
+            "--find-links",
+            str(built_wheels_dir),
+            str(built_wheel),
+        ]
+    )
     _run(["uv", "pip", "install", "--python", str(venv_dir), "--no-deps", str(_FIXTURE_PKG)])
 
     tolokaforge_bin = venv_dir / "bin" / "tolokaforge"

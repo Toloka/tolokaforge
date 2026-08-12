@@ -52,6 +52,7 @@ from tolokaforge.core.metrics import (
     calculate_latency_percentiles,
     calculate_task_metrics,
 )
+from tolokaforge.core.model_data_fingerprint import compute_models_fingerprint
 from tolokaforge.core.models import (
     ComputeConfig,
     GradingFindingSeverity,
@@ -1664,7 +1665,12 @@ class Orchestrator:
                 repeats=self.config.orchestrator.repeats,
                 total_trials=run_state.total_trials,
             )
-        write_engine_run_state(output_dir, run_id=run_id, presets_file=get_overlay_path())
+        write_engine_run_state(
+            output_dir,
+            run_id=run_id,
+            presets_file=get_overlay_path(),
+            models_fingerprint=compute_models_fingerprint(),
+        )
 
         # Create agent and user clients
         agent_config = self.config.models.get("agent")
@@ -2510,7 +2516,12 @@ class Orchestrator:
         # overlay path is the only field today). Worker CLIs read this so the
         # overlay set at ``prepare`` time propagates without the operator
         # threading --presets-file through every ``worker`` invocation.
-        write_engine_run_state(output_dir, run_id=run_id, presets_file=get_overlay_path())
+        write_engine_run_state(
+            output_dir,
+            run_id=run_id,
+            presets_file=get_overlay_path(),
+            models_fingerprint=compute_models_fingerprint(),
+        )
 
         summary = {
             "queued_attempts": queued_attempts,

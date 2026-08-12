@@ -911,7 +911,12 @@ class _ObservationCapturingClient:
 def _run_agent_loop_with(events: _RecordingEvents, *, call_observation: Any) -> Any:
     """Drive one ``ToolCallingLoop`` iteration and return the LLM client."""
     from tolokaforge.core.logging import get_logger
-    from tolokaforge.core.loop import LoopConfig, ToolCallingLoop
+    from tolokaforge.core.loop import (
+        LoopConfig,
+        TerminationDecision,
+        ToolCallingLoop,
+        classify_loop_error,
+    )
     from tolokaforge.core.models import Message
     from tolokaforge.core.runner import _AgentMetricsSink
     from tolokaforge.tools.registry import ToolResult
@@ -928,10 +933,12 @@ def _run_agent_loop_with(events: _RecordingEvents, *, call_observation: Any) -> 
             return []
 
     def _stop_first_turn(result: Any, turn: int, messages: list[Message]) -> Any:
-        from tolokaforge.core.loop import TerminationDecision
         from tolokaforge.core.models import TerminationReason
 
         return TerminationDecision(reason=TerminationReason.AGENT_DONE, system_message="done")
+
+    def _classify(exc: Exception) -> TerminationDecision:
+        return classify_loop_error(exc, ())
 
     import time as _time
 
@@ -942,6 +949,7 @@ def _run_agent_loop_with(events: _RecordingEvents, *, call_observation: Any) -> 
         config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
         metrics=_AgentMetricsSink(Metrics(), events=events, trial_id="taskA:0"),
         should_terminate=_stop_first_turn,
+        classify_error=_classify,
         logger=get_logger("test-wiring", strict=False),
         call_observation=call_observation,
     ).run("sys", [], _time.time())

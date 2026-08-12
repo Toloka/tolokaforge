@@ -567,7 +567,7 @@ Fallback is scoped to the **agent** client only. The user simulator and rubric j
 
 ## Custom pricing overlay
 
-The pricing overlay lives on the run config as `observability.pricing_overlay_path: <path>` — a JSON or YAML file merged onto the shipped pricing table (`tolokaforge/core/data/pricing.json`, refreshed from the OpenRouter API by `tools/pricing-updater`). Format is detected by file suffix — `.json` → JSON; `.yaml` / `.yml` → YAML. Both must match the shipped schema: a top-level `models` mapping keyed by `<provider>/<name>` with per-model `{input, output, cache_read?, cache_write?}` in USD per 1 M tokens.
+The pricing overlay lives on the run config as `observability.pricing_overlay_path: <path>` — a JSON or YAML file merged onto the shipped pricing table (`tolokaforge_models/data/pricing.json`, refreshed from the OpenRouter API by `tools/pricing-updater`). Format is detected by file suffix — `.json` → JSON; `.yaml` / `.yml` → YAML. Both must match the shipped schema: a top-level `models` mapping keyed by `<provider>/<name>` with per-model `{input, output, cache_read?, cache_write?}` in USD per 1 M tokens.
 
 Merge semantics are field-level:
 

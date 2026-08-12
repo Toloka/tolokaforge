@@ -60,6 +60,44 @@ rolled up run-wide in `aggregate.json` → `captured_service_logs` (see
   audit the trial lives inside a single `trials/{task_id}/{trial_index}/`
   directory. There is no results-root sidecar tree.
 
+## `engine_run_state.json`
+
+Written under `{output_dir}/` at run start by both `tolokaforge run` and
+`tolokaforge prepare`. Carries the engine-level inputs a worker subprocess
+needs to join a run and the resolved model-data snapshot the run was
+scored against, so a completed run identifies both the effective preset
+overlay and the exact tolokaforge-models resolution behind every score.
+
+```json
+{
+  "run_id": "results/coding_example_20260629_154233",
+  "presets_file": "/path/to/overlay.yaml",
+  "models_fingerprint": {
+    "package_version": "1.0.0",
+    "content_sha256": "9f0d…64-hex chars…",
+    "api_version": 1,
+    "minimum_engine_version": ">=0.17,<1.0"
+  }
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `run_id` | string | Canonical run identifier — the `{output_dir}` basename. Stamped on every `TrialSpec.run_id` so workers reuse it across the queue. |
+| `presets_file` | string \| null | Absolute path to the preset overlay active when `prepare` / `run` executed, or `null` when no overlay was in effect. Workers launched later from the same `--run-dir` read this to reinstall the same overlay without an explicit `--presets-file` on every invocation. |
+| `models_fingerprint` | object | Resolved model-data snapshot — see the sub-table below. Absent on runs prepared before this field was introduced; consumers that read this file with the `read_persisted_models_fingerprint` helper get `None` in that case. |
+
+`models_fingerprint` sub-fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `package_version` | string | The `tolokaforge-models` PEP 440 version whose bundle resolved this run — sourced from `tolokaforge_models.__version__` at compute time. |
+| `content_sha256` | string | Lowercase 64-hex-char sha256 over the canonicalised `{presets, pricing, providers, certificates}` payload after all overlays have been folded in. Same inputs produce a byte-identical digest; any overlay tweak (a new preset entry, a pricing rate change, a provider binding edit, a certificate field) changes the digest. |
+| `api_version` | integer | Contract version of the hashed payload — `1` today. A future change to the payload shape bumps this so readers know to reject an older client's output rather than mis-compare it. |
+| `minimum_engine_version` | string | PEP 440 specifier the model-data snapshot requires the engine to satisfy — sourced from `tolokaforge_models.minimum_engine_version` at compute time. Parsed via `packaging.specifiers.SpecifierSet`. |
+
+Written via [`tolokaforge.core.engine_run_state.write_engine_run_state`](../tolokaforge/core/engine_run_state.py) with the fingerprint computed by [`tolokaforge.core.model_data_fingerprint.compute_models_fingerprint`](../tolokaforge/core/model_data_fingerprint.py); the on-disk shape is locked by the `ModelsFingerprint` Pydantic model (`extra="forbid"`). See [`docs/adr/0030-tolokaforge-models-split.md`](adr/0030-tolokaforge-models-split.md) § "Fingerprinting for auditability" for the wheel-split context.
+
 ## `LIMIT_HIT.json`
 
 Written under `{output_dir}/` on the first budget crossing during a
@@ -161,7 +199,7 @@ model_config:
       effort_hint: null
       display: null
     capabilities: {...}
-    resolved:                               # Stage 7 — preset fingerprint
+    resolved:                               # preset fingerprint
       effective_preset: "anthropic_claude_4_7"
       schema_sanitizer: "passthrough"
       prompt_policy: "none"
@@ -169,6 +207,8 @@ model_config:
       response_policy: "standard"
       reasoning_codec: "anthropic"
       cache_policy: "anthropic_ephemeral"
+      message_assembly_policy: "null"
+      assistant_text_policy: "passthrough"
   user:
     provider: "openai"
     name: "gpt-4o-mini"
@@ -181,6 +221,8 @@ model_config:
       response_policy: "standard"
       reasoning_codec: "none"
       cache_policy: "none"
+      message_assembly_policy: "null"
+      assistant_text_policy: "passthrough"
   judge: null                               # run-level rubric judge (models.judge);
                                             # null when unconfigured, else a full
                                             # role block with its own resolved.*
@@ -194,18 +236,21 @@ Computed by the orchestrator at trial-start via
 
 | Field | Values | Source |
 |---|---|---|
-| `effective_preset` | preset name from [`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml) (e.g. `anthropic_claude_4_7`) or `"default"` on fallthrough | `resolve_effective_preset` |
+| `effective_preset` | preset name from [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) (e.g. `anthropic_claude_4_7`) or `"default"` on fallthrough | `resolve_effective_preset` |
 | `schema_sanitizer` | `passthrough` \| `strict` | policy registry |
 | `prompt_policy` | `none` \| `dict_map_hints` | policy registry |
 | `content_policy` | `openai` \| `anthropic` | policy registry |
 | `response_policy` | `standard` \| `unwrap_input` \| `array_dict_map` | policy registry |
 | `reasoning_codec` | `none` \| `anthropic` \| `openai` | policy registry |
 | `cache_policy` | `none` \| `anthropic_ephemeral` | policy registry |
+| `message_assembly_policy` | `null` \| `nova` (only `aws_nova` / `aws_nova_openrouter` carry `nova`; every other preset resolves to `null`) | policy registry |
+| `assistant_text_policy` | `passthrough` (every shipped preset today; out-of-tree subclasses land via the `--presets-file` overlay) | policy registry |
 
 `params_policy` is intentionally omitted from `resolved.*` — it is a
 stateful [`GenerationParams`](../tolokaforge/core/llm/params_policy.py)
-dataclass, not a single-named policy. Callers needing the full parameter
-block read the `agent.capabilities` block directly.
+dataclass whose constructor kwargs already serialise alongside the
+fingerprint via `agent.capabilities`, not a single-named policy.
+Callers needing the full parameter block read that block directly.
 
 The `judge` role (the run-level read-only rubric judge, `models.judge`) is
 recorded symmetrically with `agent` / `user` — its own role block plus a

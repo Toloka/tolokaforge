@@ -286,7 +286,7 @@ see [`docs/LLM_LAYER.md`](LLM_LAYER.md) for the full translation table.
 
 ### Model Capability Presets
 
-Model capabilities are auto-detected from model name/provider using preset definitions in `tolokaforge/core/data/model_presets.yaml`. Override auto-detected capabilities via the `capabilities` field in model config:
+Model capabilities are auto-detected from model name/provider using preset definitions in `tolokaforge_models/data/model_presets.yaml`. Override auto-detected capabilities via the `capabilities` field in model config:
 
 ```yaml
 models:
@@ -297,7 +297,7 @@ models:
 ```
 
 Available overrides:
-- `dict_map_prompt_hints` (bool) — enables the `DictMapHints` prompt policy which appends explicit hints to the system prompt about dict-map parameters (`additionalProperties: {schema}`). When enabled together with `StrictSchema` (auto-enabled for GPT-5 models), both schema-level enriched descriptions AND system prompt hints are applied. Dict-map detection uses the shared `detect_dict_maps()` utility in `model_policies.py`.
+- `dict_map_prompt_hints` (bool) — enables the `DictMapHints` prompt policy which appends explicit hints to the system prompt about dict-map parameters (`additionalProperties: {schema}`). When enabled together with `StrictSchema` (auto-enabled for GPT-5 models), both schema-level enriched descriptions AND system prompt hints are applied. Dict-map detection uses the shared `detect_dict_maps()` utility in [`tolokaforge/core/llm/dict_maps.py`](../tolokaforge/core/llm/dict_maps.py).
 - `supports_typed_dict_maps` (bool) — whether model handles typed dict-map schemas natively (without `StrictSchema` rewriting)
 - `supports_schema_extras` (bool) — whether model accepts `title`, `examples`, `minProperties`
 - `fixed_temperature` (float | null) — force specific temperature
@@ -312,21 +312,108 @@ a `capabilities:` override in Stage 6. Anthropic-family presets
 (`anthropic`, `anthropic_claude_4_7`) default to
 `cache_policy: anthropic_ephemeral`; every other preset carries `cache_policy: none`.
 To disable caching for an ablation study, edit
-[`tolokaforge/core/data/model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml:22)
+[`tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml:22)
 and set `cache_policy: none` on the preset. Observe cache-hit rates via
 `Metrics.usage.cache_read_input_tokens` + `cache_creation_input_tokens` in
 `metrics.yaml`.
 
-To add support for a new model, add an entry to `tolokaforge/core/data/model_presets.yaml`:
+To add support for a new model, add an entry to
+`tolokaforge_models/data/model_presets.yaml`. Nine slots exist today —
+`schema_sanitizer`, `prompt_policy`, `content_policy`, `response_policy`,
+`reasoning_codec`, `cache_policy`, `params_policy`,
+`message_assembly_policy`, `assistant_text_policy` — each mapping 1:1 to
+a class registry in
+[`tolokaforge/core/llm/presets.py`](../tolokaforge/core/llm/presets.py).
+The overlay validator rejects unknown slot names (`ValueError` with a
+`difflib.get_close_matches` suggestion) and unknown nested `params:`
+keys inside a slot block. See
+[ADR-0030 § Extension-point surface](adr/0030-tolokaforge-models-split.md#extension-point-surface-new--widening).
+
+Each slot value takes one of two shapes:
+
+1. **Bare `name` (legacy).** Deprecated since v0.17.0; removed in
+   v0.18.0. Works for slots whose class takes no constructor kwargs.
+2. **`{name, params}` mapping (recommended).** The `params` dict is
+   forwarded to the class constructor, so a policy configurable at YAML
+   level (e.g. Gemini's placeholder-signature filter, Nova's alternate
+   filler string) needs no engine code change.
 
 ```yaml
 presets:
   my_new_model:
     match: ["my-provider/my-model*"]
-    schema_sanitizer: strict       # passthrough | strict
-    prompt_policy: dict_map_hints  # none | dict_map_hints
-    cache_policy: none             # none | anthropic_ephemeral (Anthropic only)
+    schema_sanitizer: strict                     # bare name — no ctor kwargs needed
+    prompt_policy: dict_map_hints
+    cache_policy: none
+    reasoning_codec: {name: gemini, params: {drop_placeholder_signature: true}}
+    message_assembly_policy: {name: nova, params: {empty_assistant_filler: "Sure."}}
+    # Top-level `params:` is the `GenerationParams` shorthand — its keys must
+    # match `GenerationParams.KNOWN_KEYS`:
+    params:
+      supports_seed: true
+      reasoning_via_extra_body: true
 ```
+
+**Deprecation window.** `_RECOGNISED_OVERRIDE_KEYS` (the
+`capabilities:` bespoke override keys landing on
+`ModelConfig.capabilities`) follows the same v0.17.x → v0.18.0 window
+as bare `name` slot values and is removed together in v0.18.0 — see
+[#1017](https://github.com/Toloka/tolokaforge/issues/1017).
+
+**Mutex on the `params_policy` slot.** A preset may declare **either** a
+top-level `params: {…}` shorthand (the historical form; treated as
+`params_policy: {name: generation_params, params: {…}}`) **or** a
+slot-nested `params_policy: {name: …, params: {…}}` — never both.
+Overlay load raises `ValueError` naming both source keys and the preset;
+merging or picking one silently would produce a fingerprint that
+disagrees with the actual constructor kwargs.
+
+**Legacy `capabilities:` overrides — modern equivalents.** The
+per-`ModelConfig` `capabilities:` block still accepts the historical
+bespoke keys (`gemini_drop_placeholder_signature`,
+`dict_map_prompt_hints`, `supports_typed_dict_maps`, …). The modern
+equivalent lives in the preset overlay under the appropriate slot: e.g.
+`capabilities: {gemini_drop_placeholder_signature: true}` is equivalent
+to a preset overlay that declares
+`reasoning_codec: {name: gemini, params: {drop_placeholder_signature: true}}`.
+The legacy keys stay accepted through v0.17.x and go away in v0.18.0
+alongside `_RECOGNISED_OVERRIDE_KEYS`.
+
+### Provider bindings (`providers.yaml`)
+
+Provider transport knobs — endpoint URL, credential env-var names, routability
+under an `LLM_PROXY_BASE_URL` gateway, rotation env-var, rate-limit text
+patterns, and Nova-shaped slug rewrite / per-attempt transport pinning —
+ship as data in
+[`tolokaforge_models/data/providers.yaml`](../tolokaforge_models/src/tolokaforge_models/data/providers.yaml).
+Six entries today: `openrouter`, `openai`, `anthropic`, `gemini`, `nova`,
+`mock`. Loaded once at `LLMClient` construction via
+[`get_provider_binding`](../tolokaforge/core/llm/providers.py). Onboarding a
+new provider or adjusting a shipped provider's transport is one YAML edit —
+no `client.py` / `proxy.py` change.
+
+Schema fields (see
+[`ProviderBinding`](../tolokaforge/core/llm/providers.py) and
+[`docs/LLM_LAYER.md`](LLM_LAYER.md#provider-bindings) for the full contract):
+
+| Field | Meaning |
+|---|---|
+| `endpoint` | Provider base URL (informational; may be pinned per-attempt when `kwargs_pin_transport=true`). |
+| `api_base_env` | Env-var name a deployment may set to override `endpoint` — the client `os.environ.setdefault(api_base_env, endpoint)` at init. Nova's `NOVA_API_BASE`. |
+| `api_key_env` | Primary credential env-var name; read via `SecretManager`. The env var `_rotate_key` republishes into `os.environ` after picking the next key on the direct-provider path (OpenRouter's `OPENROUTER_API_KEY`). |
+| `api_keys_env` | Rotation-list env-var name (comma-separated). `None` disables rotation. OpenRouter's `OPENROUTER_API_KEYS`. |
+| `unroutable` | The `LLM_PROXY_*` gateway rejects the provider at config time even when named explicitly in `LLM_PROXY_PROVIDERS`. `mock` and `nova`. |
+| `custom_llm_provider` | Value pinned into `kwargs["custom_llm_provider"]` — Nova: `"openai"`; OpenRouter: `"openrouter"`. When `None`, compound providers (`openrouter/google`) fall back to `provider.split("/")[0]`. |
+| `rate_limit_patterns` | Regex strings compiled once at construction and consulted by `LLMClient._is_rate_limit_exception`'s tier-3 text fallback and by `LLMClient.classify_loop_error`. Every shipped non-mock provider carries the same `DEFAULT_RATE_LIMIT_PATTERNS` list; onboarding a provider whose rate-limit prose differs is a YAML edit. |
+| `slug_rewrite` | Two-step per-attempt rewrite of `kwargs["model"]`: `strip_prefix` then `ensure_prefix`. Nova: `nova/` → `openai/`. |
+| `format_model_name_bare` | When `true`, `LLMClient._format_model_name` returns `config.name` as-is. Nova only. |
+| `kwargs_pin_transport` | When `true`, `endpoint` and `api_key_env` are read fresh per attempt and pinned into `kwargs["api_base"]` / `kwargs["api_key"]` (fails loud when `api_key_env` resolves empty). Nova only. |
+
+`providers.yaml` ships inside the `tolokaforge-models` wheel at
+`tolokaforge_models/data/providers.yaml`. Its bytes contribute to
+`engine_run_state.json`'s `models_fingerprint.content_sha256` alongside
+`pricing.json` and `model_presets.yaml` — see [`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md)
+and [ADR-0030 § "Fingerprinting for auditability"](adr/0030-tolokaforge-models-split.md#fingerprinting-for-auditability).
 
 ### Preset overlay file (no engine release required)
 
@@ -379,11 +466,17 @@ both the overlay file and the offending key.
 #### Distributed-worker propagation
 
 `tolokaforge prepare --presets-file overlay.yaml ...` persists the resolved
-overlay path into `engine_run_state.json` alongside the run queue. Worker
-subprocesses launched later from the same `--run-dir` pick it up
-automatically — you don't have to thread the flag through every
-`tolokaforge worker` invocation. A worker-side `--presets-file` flag still
-wins over the persisted value when both are set.
+overlay path into `engine_run_state.json` alongside the run queue, together
+with the `models_fingerprint` of the fully-resolved preset + pricing +
+certificate state (see [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md#engine_run_statejson)
+for the on-disk schema). The overlay is folded into the fingerprint's
+`content_sha256`, so two runs that resolve to different preset tables record
+different digests — a completed run identifies both the overlay path and the
+exact model-data snapshot it was scored against. Worker subprocesses launched
+later from the same `--run-dir` pick up the overlay path automatically — you
+don't have to thread the flag through every `tolokaforge worker` invocation.
+A worker-side `--presets-file` flag still wins over the persisted value when
+both are set.
 
 ## Task Specification (`task.yaml`)
 

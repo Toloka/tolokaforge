@@ -185,9 +185,11 @@ Otherwise, before the user sees the plan, pressure-test it:
 When the critique loop settles:
 
 1. **Read the plan file yourself.** You're about to execute it — don't relay blind. Look for obvious gaps: a vague contract, a missing behaviour-locking test, an unplanned break of a compatibility surface, a stage that mixes interface and implementation, doc updates not named per stage. If you spot a gap the critic missed, push back via `SendMessage` to the architect *before* showing the plan to the user.
-2. **Surface to the user:** plan file path, stage count, one-paragraph summary, critic verdict + round count (plus any unresolved findings or accepted rebuttals worth knowing), discovery surprises, "Discovered issues" filed, risks. Ask: "Approve, or revise?"
-3. **Revise** → `SendMessage` the architect with the user's feedback. Re-run the critic (one round) only if the revision materially changes contracts or stages. Loop until approved.
-4. **Approve** → continue.
+2. **Surface to the user:** plan file path, stage count, one-paragraph summary, critic verdict + round count (plus any unresolved findings or accepted rebuttals worth knowing), discovery surprises, "Discovered issues" filed, risks.
+3. **Relay the architect's "Decisions needed before implementation" block verbatim.** If the block reads "None — mechanical change." skip this sub-step. Otherwise, present each decision to the user with its default, and ask them to answer or accept-by-silence. Every answered decision becomes an in-band directive the subagents inherit — record the answers in the plan file (append a `## Approved decisions` section) so persistent-mode implementers and fresh-context reviewers see the same authoritative record. **This is the whole point of surfacing decisions up-front: an overnight run that would otherwise stall on the third stage now has the answer bundled in.**
+4. Ask: "Approve, or revise?"
+5. **Revise** → `SendMessage` the architect with the user's feedback (or a decision change). Re-run the critic (one round) only if the revision materially changes contracts or stages. Loop until approved.
+6. **Approve** → continue.
 
 ### Step 6 — Create the branch
 

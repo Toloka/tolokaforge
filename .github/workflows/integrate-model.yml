@@ -681,15 +681,48 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref || inputs.head_ref }}
         run: |
           set -euo pipefail
-          # Deterministic commit + report (the agent only wrote files). Stage the WHOLE engine
-          # LLM package, not a fixed file list: a code-CREATE can write a new adapter class in ANY
-          # module (reasoning_codec / schema_sanitizer / prompt_policy / content_policy /
-          # cache_policy), and a narrow list silently drops the new file while committing its
-          # wiring -> a build-breaking dangling import. Plus the cert + preset.
-          git add tolokaforge/core/llm tolokaforge/core/data/model_presets.yaml \
-            tolokaforge/core/data/pricing.json tests/integration/llm/ 2>/dev/null || true
+          # Deterministic commit + report (the agent only wrote files). Stage the entire engine
+          # LLM package + every models-wheel surface the resolve/finalize agent is allowed to
+          # write: preset routing, pricing catalog, cert registry, per-model policy subclasses
+          # under policies/, and the two files that wire a new subclass in (models-wheel
+          # `__init__.py` re-exports + `pyproject.toml` `[project.entry-points."tolokaforge.
+          # policies"]`). A code-CREATE may add a new adapter class in ANY engine module
+          # (reasoning_codec / schema_sanitizer / prompt_policy / content_policy / cache_policy)
+          # or a new policy subclass under policies/<family>.py -- a narrower list would silently
+          # drop the new file while committing its wiring -> a build-breaking dangling import.
+          # `git add -A` is refused deliberately: the workflow runs after a `git stash pop` that
+          # restored `observation/` (tracked resolve evidence); the whitelist matches exactly the
+          # surfaces the compose/finalize prompts are told to write. Every whitelisted path is
+          # a permanent fixture of the current tree, so `git add` runs unguarded -- a missing
+          # path signals a workflow bug in the retarget and must fail the step loudly.
+          git add \
+            tolokaforge/core/llm \
+            tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml \
+            tolokaforge_models/src/tolokaforge_models/data/pricing.json \
+            tolokaforge_models/src/tolokaforge_models/certificates/registry.py \
+            tolokaforge_models/src/tolokaforge_models/policies \
+            tolokaforge_models/src/tolokaforge_models/__init__.py \
+            tolokaforge_models/pyproject.toml \
+            tolokaforge_models/tests
           if git diff --cached --quiet; then
             echo "::error::finalize produced no file changes"; exit 1
+          fi
+          # Classify the staged tree BEFORE the verify-time `stash --keep-index` (the stash drops
+          # every non-staged file so the worktree matches the future commit; classification must
+          # read `git diff --cached` while the staged set is intact). Bucket A = models-wheel
+          # only; Bucket B = any engine-side path touched. The classifier is a taxonomy, not a
+          # policy check -- both buckets flow through the SAME commit + push code path; only the
+          # commit subject and the Slack surface differ. `--format plain` yields
+          # `bucket=A|B\nreason=...\nengine_paths=<csv>` (greppable from bash without jq). Fail
+          # loud if the bucket parse returns anything other than A or B -- neither an empty
+          # bucket nor an unrecognised value is a scenario the workflow should silently continue.
+          CLASSIFICATION="$(uv run automation classify-paths --paths-from-cached --format plain)"
+          BUCKET="$(printf '%s\n' "$CLASSIFICATION" | grep '^bucket=' | cut -d= -f2)"
+          REASON="$(printf '%s\n' "$CLASSIFICATION" | grep '^reason=' | cut -d= -f2-)"
+          ENGINE_PATHS="$(printf '%s\n' "$CLASSIFICATION" | grep '^engine_paths=' | cut -d= -f2-)"
+          if [ "$BUCKET" != "A" ] && [ "$BUCKET" != "B" ]; then
+            echo "::error::classify-paths returned an unknown bucket: '$BUCKET' (raw output: $CLASSIFICATION)"
+            exit 1
           fi
           # Cert-vs-baseline reconciliation - run BEFORE the stash so observation/findings.json is
           # still present (the `stash --include-untracked` below would hide the untracked artifact).
@@ -727,8 +760,18 @@ jobs:
             echo "::error::staged integration failed verification (import / over-reach no-regression / recovery-oracle gate) - refusing to commit"
             exit 1
           fi
-          git commit -m "integrate: ${TF_NAME} via auto-resolve (preset + cert)" \
-            -m "Auto-resolve landed the proven policy. See the PR comment for the reprobe evidence and known_unsupported ceilings. Do not merge if this is a disposable test branch."
+          # Commit subject tags the ADR-0030 bucket AFTER the model slug so the replay walker's
+          # `_MODEL_RE = ^integrate: (\S+?)(?:\s|$)` still parses the slug identically. Body
+          # names the bucket + the classifier reason so a reviewer sees why the taxonomy fired
+          # this way without opening the run log.
+          if [ "$BUCKET" = "A" ]; then
+            COMMIT_SUBJECT="integrate: ${TF_NAME} via auto-resolve (Bucket A: preset + cert)"
+            COMMIT_BODY="Bucket A per ADR-0030 (models-wheel only, no engine change). Reason: ${REASON}. See the PR comment for the reprobe evidence and known_unsupported ceilings. Do not merge if this is a disposable test branch."
+          else
+            COMMIT_SUBJECT="integrate: ${TF_NAME} via auto-resolve (Bucket B: engine + models-wheel)"
+            COMMIT_BODY="Bucket B per ADR-0030 (engine change alongside models-wheel). Engine paths touched: ${ENGINE_PATHS}. See the PR comment for the reprobe evidence and known_unsupported ceilings. Do not merge if this is a disposable test branch."
+          fi
+          git commit -m "$COMMIT_SUBJECT" -m "$COMMIT_BODY"
           # persist-credentials:false on checkout left no ambient token; supply one explicitly for
           # this push only (github.token is masked in logs; git redacts it from URL errors).
           git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:${HEAD_REF}"
@@ -791,15 +834,23 @@ jobs:
             # the word "here" is the link) on every auto-merge outcome. Derived from env +
             # defaulted so it is set -u safe.
             SETTINGS_URL="${GITHUB_SERVER_URL:-https://github.com}/$REPO/settings/variables/actions"
+            # Every non-data-scope Slack surface carries the ADR-0030 bucket -- merged /
+            # auto-merge-attempted-failed / auto-merge-off. A reader must be able to see the
+            # taxonomy without opening the PR or the run log.
+            if [ "$BUCKET" = "A" ]; then
+              BUCKET_LABEL="Bucket A: preset + cert (models-wheel only, no engine change)"
+            else
+              BUCKET_LABEL="Bucket B: engine + models-wheel (engine paths touched: ${ENGINE_PATHS})"
+            fi
             if [ "$MERGED" = "yes" ]; then
               ICON_ROLE=integrated_merged
-              MSG="$(printf '%s\n%s' 'Integrated + auto-merged (squash): preset + cert landed on the base branch.' "Auto-merge is on - squash-merged automatically on success (configure <$SETTINGS_URL|here>).")"
+              MSG="$(printf '%s\n%s' "Integrated + auto-merged (squash) - ${BUCKET_LABEL} landed on the base branch." "Auto-merge is on - squash-merged automatically on success (configure <$SETTINGS_URL|here>).")"
             elif [ "$AUTO_MERGE" = "true" ]; then
               ICON_ROLE=integrated
-              MSG="$(printf '%s\n%s' 'Integrated: preset + cert committed to the PR branch.' "Auto-merge is on but did NOT complete (disposable test branch, missing pricing, branch protection, draft, or a merge error) - PR left open (configure <$SETTINGS_URL|here>).")"
+              MSG="$(printf '%s\n%s' "Integrated - ${BUCKET_LABEL} committed to the PR branch." "Auto-merge is on but did NOT complete (disposable test branch, missing pricing, branch protection, draft, or a merge error) - PR left open (configure <$SETTINGS_URL|here>).")"
             else
               ICON_ROLE=integrated
-              MSG="$(printf '%s\n%s' 'Integrated: preset + cert committed to the PR branch.' "Human review gate - auto-merge off (configure <$SETTINGS_URL|here>).")"
+              MSG="$(printf '%s\n%s' "Integrated - ${BUCKET_LABEL} committed to the PR branch." "Human review gate - auto-merge off (configure <$SETTINGS_URL|here>).")"
             fi
             uv run automation slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention \

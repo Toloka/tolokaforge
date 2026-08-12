@@ -67,17 +67,21 @@ def terminal_bench_tasks_dir(test_data_dir):
 
 
 @pytest.fixture(scope="session")
-def built_wheel(tmp_path_factory) -> Path:
-    """Build the tolokaforge wheel once per session and return its path.
+def built_wheels_dir(tmp_path_factory) -> Path:
+    """Build the ``tolokaforge`` engine + ``tolokaforge-models`` wheels
+    into one directory and return that directory.
 
-    Skips loud if the ``uv`` CLI is unavailable; hard-fails with captured
-    build output if the build itself fails (fail-fast, no fallback).
+    The engine's ``[project].dependencies`` names ``tolokaforge-models``, so
+    a scratch-venv install of the engine wheel resolves that dep against
+    this same directory (via ``uv pip install --find-links``). Skips loud
+    if the ``uv`` CLI is unavailable; hard-fails with captured build output
+    if either build fails.
     """
     if shutil.which("uv") is None:
         pytest.skip("uv CLI not available")
 
-    out_dir = tmp_path_factory.mktemp("built_wheel")
-    build_result = subprocess.run(
+    out_dir = tmp_path_factory.mktemp("built_wheels")
+    engine_build = subprocess.run(
         ["uv", "build", "--wheel", "--out-dir", str(out_dir)],
         cwd=_REPO_ROOT,
         capture_output=True,
@@ -85,11 +89,28 @@ def built_wheel(tmp_path_factory) -> Path:
         timeout=180,
         check=False,
     )
-    assert build_result.returncode == 0, (
-        f"uv build failed (rc={build_result.returncode}):\n"
-        f"stdout:\n{build_result.stdout}\nstderr:\n{build_result.stderr}"
+    assert engine_build.returncode == 0, (
+        f"uv build (engine) failed (rc={engine_build.returncode}):\n"
+        f"stdout:\n{engine_build.stdout}\nstderr:\n{engine_build.stderr}"
     )
+    models_build = subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(out_dir)],
+        cwd=_REPO_ROOT / "tolokaforge_models",
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert models_build.returncode == 0, (
+        f"uv build (models) failed (rc={models_build.returncode}):\n"
+        f"stdout:\n{models_build.stdout}\nstderr:\n{models_build.stderr}"
+    )
+    return out_dir
 
-    wheels = sorted(out_dir.glob("tolokaforge-*.whl"))
-    assert wheels, f"No tolokaforge wheel produced under {out_dir}"
+
+@pytest.fixture(scope="session")
+def built_wheel(built_wheels_dir: Path) -> Path:
+    """Path to the engine ``tolokaforge-*.whl`` produced by :func:`built_wheels_dir`."""
+    wheels = sorted(built_wheels_dir.glob("tolokaforge-*.whl"))
+    assert wheels, f"No tolokaforge wheel produced under {built_wheels_dir}"
     return wheels[-1]

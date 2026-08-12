@@ -48,10 +48,22 @@ RUN pip install --no-cache-dir "hatchling>=1.24,<2.0"
 COPY pyproject.toml README.md LICENSE .python-version /src/
 COPY scripts/hatch/ /src/scripts/hatch/
 COPY tolokaforge/ /src/tolokaforge/
+# The models wheel is a separate PEP 621 project (workspace sibling). Its
+# source ships in the same context so we can build it here rather than
+# pulling from PyPI — which is essential before the first
+# ``models-vX.Y.Z`` publish, and remains preferable after (Docker installs
+# the freshly-built wheel from the checked-out tree, not whatever PyPI
+# currently ships).
+COPY tolokaforge_models/ /src/tolokaforge_models/
 
 # Build the subset wheel. Output lands in ``/src/dist/`` as
 # ``tolokaforge_runner_subset-<version>-py3-none-any.whl``.
 RUN python -m hatchling build --target custom
+
+# Build the models wheel in-place. Output lands under
+# ``/src/tolokaforge_models/dist/`` as
+# ``tolokaforge_models-<version>-py3-none-any.whl``.
+RUN cd /src/tolokaforge_models && python -m hatchling build
 
 # ---------------------------------------------------------------------------
 # builder — install the subset wheel into /opt/venv
@@ -68,15 +80,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=wheel-builder /src/dist/tolokaforge_runner_subset-*.whl /tmp/
+COPY --from=wheel-builder /src/tolokaforge_models/dist/tolokaforge_models-*.whl /tmp/
 
 # Install into an isolated venv. The subset wheel's METADATA carries every
 # runtime dep (the base wheel deps the runner reaches + the former
-# ``[runner]`` extra), so no extras selector is needed. --no-compile keeps
-# *.pyc bytecode out of site-packages; PYTHONDONTWRITEBYTECODE in the
-# runtime stage keeps it that way.
+# ``[runner]`` extra) plus ``tolokaforge-models>=1.0.0,<2.0.0``; the
+# freshly-built models wheel from the wheel-builder stage satisfies that pin
+# without touching PyPI. --no-compile keeps *.pyc bytecode out of
+# site-packages; PYTHONDONTWRITEBYTECODE in the runtime stage keeps it that
+# way.
 RUN python -m venv /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir --no-compile /tmp/tolokaforge_runner_subset-*.whl \
-    && rm -f /tmp/tolokaforge_runner_subset-*.whl
+    && /opt/venv/bin/pip install --no-cache-dir --no-compile \
+        /tmp/tolokaforge_models-*.whl \
+        /tmp/tolokaforge_runner_subset-*.whl \
+    && rm -f /tmp/tolokaforge_runner_subset-*.whl /tmp/tolokaforge_models-*.whl
 
 # ---------------------------------------------------------------------------
 # runtime — copy only the venv; no build toolchain

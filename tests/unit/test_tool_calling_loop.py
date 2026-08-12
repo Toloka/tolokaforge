@@ -26,6 +26,7 @@ from tolokaforge.core.loop import (
     MetricsSink,
     TerminationDecision,
     ToolCallingLoop,
+    classify_loop_error,
 )
 from tolokaforge.core.models import Message, MessageRole, TerminationReason, ToolCall, TrialStatus
 from tolokaforge.tools.registry import ToolResult
@@ -78,6 +79,10 @@ def _never_terminate(result, turn, messages):
     return None
 
 
+def _classify_no_patterns(exc: Exception) -> TerminationDecision:
+    return classify_loop_error(exc, ())
+
+
 def _loop(client, *, should_terminate, user_turn=None, max_turns=5, executor=None, sink=None):
     return ToolCallingLoop(
         llm_client=client,
@@ -87,6 +92,7 @@ def _loop(client, *, should_terminate, user_turn=None, max_turns=5, executor=Non
         metrics=sink or _CountingSink(),
         should_terminate=should_terminate,
         user_turn=user_turn,
+        classify_error=_classify_no_patterns,
         logger=_logger(),
     )
 
@@ -215,6 +221,7 @@ def test_episode_timeout_terminates_before_first_generation():
         config=LoopConfig(max_turns=5, episode_timeout_s=0),
         metrics=_CountingSink(),
         should_terminate=_never_terminate,
+        classify_error=_classify_no_patterns,
         logger=_logger(),
     )
     messages: list[Message] = []

@@ -2,7 +2,7 @@
 
 OpenRouter exposes ``GET /api/v1/models`` which returns pricing per-token as
 string values.  This module fetches the data and converts to *USD per 1 M
-tokens* which is the format used by ``tolokaforge/core/data/pricing.json``.
+tokens* which is the format used by ``tolokaforge_models/src/tolokaforge_models/data/pricing.json``.
 """
 
 from __future__ import annotations
@@ -15,9 +15,16 @@ import httpx
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
-# Default output path — the bundled pricing data file inside the tolokaforge package.
+# Default output path — the bundled pricing data file inside the tolokaforge-models
+# workspace member. Post-cutover the file lives under the src-layout package;
+# the pre-cutover path (`tolokaforge/core/data/pricing.json`) is gone.
 DEFAULT_PRICING_PATH = (
-    Path(__file__).resolve().parents[4] / "tolokaforge" / "core" / "data" / "pricing.json"
+    Path(__file__).resolve().parents[4]
+    / "tolokaforge_models"
+    / "src"
+    / "tolokaforge_models"
+    / "data"
+    / "pricing.json"
 )
 
 

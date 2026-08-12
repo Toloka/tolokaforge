@@ -115,7 +115,8 @@ def run_capability_flat(
             env["TF_RUN_VARIANTS"] = "1"
         cmd = [
             *PYTEST_CMD,
-            "tests/integration/llm/",
+            "--pyargs",
+            "tolokaforge.testing.certify.suite",
             "-k",
             k_group(probe),
             f"--junitxml={junit}",

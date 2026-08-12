@@ -18,7 +18,7 @@ and pushes the whole integration to needs-human.
   iteration 1). On a later iteration, read it to see which fix-targets are STILL red and adjust.
 - Candidate: provider=`{{PROVIDER}}`, name=`{{NAME}}`, model_id=`{{MODEL_ID}}`.
   Iteration `{{ITER}}` of `{{MAX_ITER}}`.
-- Engine: presets in `tolokaforge/core/data/model_presets.yaml`; adapter classes registered in
+- Engine: presets in `tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml`; adapter classes registered in
   `_POLICY_REGISTRIES` (`tolokaforge/core/llm/presets.py`).
 
 ## Your task this iteration
@@ -60,10 +60,23 @@ and pushes the whole integration to needs-human.
    composite when several axes are needed. Validate it:
    `uv run python -c "from tolokaforge.core.llm.presets import validate_overlay_file as v; v('{{OBS_DIR}}/resolve/overlay.yaml')"`
 3. If NO shipped class covers a fix-target, write a NEW small reusable adapter class in the
-   right module (e.g. a response policy in `response_policy.py`), register it in the matching
-   `_POLICY_REGISTRIES` slot AND export it in `tolokaforge/core/llm/__init__.py`, then reference
-   it from the overlay. Keep it minimal and reusable (a composite of shipped classes is a preset
-   entry, not a mega-class). Re-run the validate command above so the overlay accepts the name.
+   models-wheel policies module for that family: `tolokaforge_models/src/tolokaforge_models/policies/<family>.py`
+   (e.g. a response policy for a new deepseek variant goes in `deepseek.py`; a new gemini schema
+   sanitizer subclass goes in `gemini.py`; a brand-new family gets a new file). The class is
+   registered via an entry point in `tolokaforge_models/pyproject.toml` under
+   `[project.entry-points."tolokaforge.policies"]` keyed as `<slot_name>.<policy_name>` (e.g.
+   `response_policy.deepseek_new_recovery`); the engine's merge-loader picks it up at startup.
+   Do NOT edit `tolokaforge/core/llm/*.py`, `_POLICY_REGISTRIES`, or `tolokaforge/core/llm/__init__.py`
+   for the new class — those stay engine-owned. Then reference the new policy name from the
+   overlay and re-run the validate command above so the overlay accepts it.
+
+   **Which bucket am I in?** If the change is preset overlay + certificate + pricing only (no new
+   class), it is Bucket A and lands on `tolokaforge_models/`. If the change ALSO adds a new class
+   in the models-wheel policies dir (the case this bullet covers), it is still Bucket A — new
+   classes land alongside the data because the models wheel owns per-model policy code.
+   Bucket B (touches `tolokaforge/core/llm/` engine code — new base class, new lifecycle stage,
+   new `_POLICY_REGISTRIES` slot) requires human review and MUST route via
+   `needs_human=true` — do not commit engine-side changes from this automation path.
 
    CODE-SHAPE DISCIPLINE (applies to ANY new or changed class):
    - EXTEND, do not re-implement. If the quirk is a VARIANT of behavior a shipped class already
@@ -84,10 +97,12 @@ and pushes the whole integration to needs-human.
      An unbounded tree-walk forces `data_scope_review: true`. The docstring MUST state the exact
      firing condition and depth; it is reviewed against the code, so an understated scope is a
      defect, not politeness.
-   - Before creating a class or registry key, grep `response_policy.py` + `schema_sanitizer.py`
-     (this branch AND main) for an existing class/key covering the same quirk - a sibling
-     integration may have just landed one. NEVER rebind an existing registry key to different
-     semantics; if your mechanism differs, use a new, model-line-specific name.
+   - Before creating a class or registry key, grep `tolokaforge_models/src/tolokaforge_models/policies/`
+     AND the engine base modules `tolokaforge/core/llm/response_policy.py` +
+     `tolokaforge/core/llm/schema_sanitizer.py` (this branch AND main) for an existing class/key
+     covering the same quirk — a sibling integration may have just landed one. NEVER rebind an
+     existing entry-point key to different semantics; if your mechanism differs, use a new,
+     model-line-specific name.
 4. Write `{{OBS_DIR}}/resolve/decision.json`:
    ```
    {"fix_targets": ["<exact junit probe names from findings.json that the overlay should turn green>"],

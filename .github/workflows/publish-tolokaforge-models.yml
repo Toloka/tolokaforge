@@ -36,19 +36,17 @@ jobs:
         run: uv python install "$(cat .python-version)"
 
       - name: Build package
-        working-directory: tolokaforge_models
-        run: uv build
+        run: uv build --package tolokaforge-models
 
       - name: Verify package contents
-        working-directory: tolokaforge_models
         run: |
           echo "=== Built artifacts ==="
           ls -lh dist/
           echo ""
           echo "=== Wheel contents ==="
           uv run python -c "
-          import zipfile, sys
-          for f in __import__('pathlib').Path('dist').glob('*.whl'):
+          import zipfile
+          for f in sorted(__import__('pathlib').Path('dist').glob('*.whl')):
               print(f'--- {f.name} ---')
               with zipfile.ZipFile(f) as zf:
                   for name in sorted(zf.namelist()):
@@ -59,7 +57,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tolokaforge-models-dist
-          path: tolokaforge_models/dist/
+          path: dist/
           if-no-files-found: error
 
   publish-testpypi:

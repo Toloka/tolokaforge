@@ -13,17 +13,21 @@ normal synchronous Claude Code run; nothing to await.
 - Candidate: provider=`{{PROVIDER}}`, name=`{{NAME}}`, model_id=`{{MODEL_ID}}`, PR #`{{PR}}`.
 
 ## Tasks (write/edit files only)
-1. Fold the overlay preset into `tolokaforge/core/data/model_presets.yaml`: add ONE new entry
+1. Fold the overlay preset into `tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml`: add ONE new entry
    under `presets:` with the overlay's `match` + axes. Leave every other preset untouched (do
-   NOT broaden a shared glob). If the compose step wrote a new adapter class, it is already in
-   the engine + `_POLICY_REGISTRIES` + `__init__.py`; leave it.
-2. Add the candidate cert to `tests/integration/llm/registry.py`: an `MC(...)` entry in `_ALL`
+   NOT broaden a shared glob). If the compose step wrote a new adapter class, it lives at
+   `tolokaforge_models/src/tolokaforge_models/policies/<family>.py` and is registered via an
+   entry point in `tolokaforge_models/pyproject.toml` under
+   `[project.entry-points."tolokaforge.policies"]` — leave both. If the compose step touched any
+   file under `tolokaforge/core/llm/` (engine-side base classes / registries / `__init__.py`),
+   the decision should have set `needs_human=true` — bail out here and route to human review.
+2. Add the candidate cert to `tolokaforge_models/src/tolokaforge_models/certificates/registry.py`: an `MC(...)` entry in `_ALL`
    with `model_id="{{MODEL_ID}}"`, provider/name, `env_key="OPENROUTER_API_KEY"`,
    `required=frozenset({...})` from decision.json `required`, and
    `known_unsupported=frozenset({...})` from decision.json `ceilings`. Match the surrounding
    style and keep model_ids unique (the canonical registry test enforces this).
 3. ENSURE PRICING. Verify the candidate's litellm name (`{{NAME}}`) has an entry under `models`
-   in `tolokaforge/core/data/pricing.json`. The pre-observe step normally adds it, but ALWAYS
+   in `tolokaforge_models/src/tolokaforge_models/data/pricing.json`. The pre-observe step normally adds it, but ALWAYS
    check and fill it if missing: fetch OpenRouter pricing
    (`curl -s https://openrouter.ai/api/v1/models`, find the object whose `id == "{{NAME}}"`),
    convert per-token `prompt` / `completion` to USD-per-1M (multiply by 1e6), and add

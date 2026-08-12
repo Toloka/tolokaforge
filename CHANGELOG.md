@@ -22,6 +22,277 @@ All notable changes to this project are documented in this file.
 
 - **core**: `EnvironmentManifest.stack_inputs` now reaches `docker compose` at up-time. `PerTrialRuntimeBackend.provision` writes a per-trial `.env` alongside the copied compose file — task-authored `.env` content first, then `stack_inputs`, then the engine-reserved block. The reserved compose variable `TOLOKAFORGE_TRIAL_SLUG` is exposed so a task compose file can pin a per-trial-unique `container_name: <prefix>${TOLOKAFORGE_TRIAL_SLUG}_<service>`. Task keys under the reserved `TOLOKAFORGE_` prefix are rejected at provision time with a manifest-error message (not `docker compose up failed`). (#1045)
 
+## v0.18.0 (2026-08-12)
+
+### Feat
+
+- **core**: Milestone 29 — tolokaforge-models split (ADR-0030 delivery) (#1058)
+- **automation**: let the Slack poller read a header-admission gateway (#1037)
+- **llm**: address the gateway in its own dialect and by its own route name (#942)
+- **ci**: auto-promote rc images to stable on green rc-smoke (#917) (#918)
+
+### Fix
+
+- **llm**: admit the parameters an operator declares, when litellm's map cannot (#1000)
+
+## v0.16.1 (2026-08-07)
+
+### Feat
+
+- **grading**: composite primary keys in state_checks.id_fields (#924)
+
+### Fix
+
+- **core**: the TypeSense Docker rewrite drops the description cache (#928)
+
+## v0.16.0 (2026-08-06)
+
+### Feat
+
+- **skills**: JSONL progress channel for orchestration subagents (#909)
+
+### Fix
+
+- **grading**: hash-source rule skips a pack whose adapter may supply the source (#911) (#914)
+- **llm**: user simulator restarts the conversation after the agent answers (CBT-021) (#905)
+
+## v0.15.0 (2026-08-05)
+
+### Feat
+
+- **grading**: deterministic trace checks, milestone 28 (#890)
+- **tools**: optional docker exec --user for compose-variant bash_session + str_replace_editor (#894)
+- **tools**: add build_check builtin — zero-arg peer-service HTTP probe (#892)
+- **core**: multi-actor architecture — interaction_mode + Actor Protocol + TurnPolicy seam (#868) (#872)
+
+### Fix
+
+- **actors**: AgentOnlyTurnPolicy signals AGENT_DONE on text-only turn (#876) (#877)
+
+## v0.14.2 (2026-08-04)
+
+### Fix
+
+- **docker**: take the runner build context from the builder in core_stack (v0.14.1 still broken) (#864)
+
+## v0.14.1 (2026-08-04)
+
+### Fix
+
+- **docker**: resolve the runner build context on a wheel install (#858)
+
+## v0.14.0 (2026-08-04)
+
+### Feat
+
+- **runtime**: runner wheel split — slim image via subset build target (M15) (#847)
+- **secrets**: resolve ${secret:NAME} references in config values (#798)
+- **runtime**: Service Readiness Contract — first-class host-invokability boundary (#803) (#817)
+
+### Fix
+
+- **orchestrator**: allow per-trial runs with heterogeneous compose files (#849)
+- **runner+orchestrator**: substrate-native support for adapters using compose-variant tools + no DB service (#843)
+- **runner-client**: accept degraded runner status + introduce HealthLevel/HealthReport pattern (#801) (#841)
+- **grading**: decode wire tool calls in run_custom_checks instead of … (#804)
+- **test**: add mkfir and write config before run orchestrator (#802)
+
+## v0.13.1 (2026-08-03)
+
+### Feat
+
+- **slack**: custom message icons, one override parameter per icon role (#724)
+- **automation**: report gateway availability and accept a route directive (#723)
+- **llm**: route LLM calls through a gateway (LiteLLM proxy), env-configured (#718)
+- **grading**: finish runner-side custom_checks as a Pattern-A extension (#704)
+
+### Fix
+
+- **grading**: make the two grading substrates agree — substrate parity, the trajectory record, hash composition, and the combine algebra (#748)
+- **automation**: resolve a request against both catalogs, and route every reply icon through the registry (#728)
+- **docker**: auto host ports for rag/mock-web; persist rag HF cache on volume (#703)
+
+## v0.13.0 (2026-07-30)
+
+### Feat
+
+- rate-limit probe mode (fixed-interval 429 retry, hours-long budgets) (#665)
+
+## v0.12.0 (2026-07-29)
+
+### Feat
+
+- **adapters**: make rag-service search_kb functional for native tasks (#107) (#666)
+- **runtime**: Runner as a distributable service (M14 consolidation) (#642)
+- **tools**: configurable working_root on str_replace_editor (#643)
+- **adapters**: adapter-declared trial-grader name on orchestrator (#631)
+
+### Fix
+
+- **docker**: widen rag healthcheck start-period to cover model load (#661)
+- **docker**: scope mock-web build context to its service files (#654)
+- **deploy**: pin linux/amd64 in standalone compose for arm64 hosts (#647)
+- **ci**: bind no environment for publish-images dry-run (#646)
+
+## v0.11.2 (2026-07-27)
+
+### Fix
+
+- **runner**: preserve simulator text glued to ###STOP### (closes #611) (#619)
+
+## v0.11.1 (2026-07-27)
+
+### Feat
+
+- **runtime**: runtime independence v1 — expose runner as an independently-usable component (#557)
+
+### Fix
+
+- **runtime**: repair two #557 regressions breaking unit + canonical tests (#615)
+- **automation**: resolve-agent prompt - code-shape discipline + code-grounded data-scope (#562)
+- **runner**: fail loud on id_fields typos + MCP diff-sync id resolution (#600 follow-ups) (#603)
+- **runner**: resolve DB primary-key field from config, not model source (#600)
+
+## v0.11.0 (2026-07-23)
+
+### Feat
+
+- **grading**: judge scoring integrity — verdict consistency, judge customization, offline replay (#528)
+
+## v0.10.0 (2026-07-23)
+
+### Feat
+
+- **cli**: Improved Terminal DX (#460)
+- **tools**: persistent agent shell + first-class editor tools (M25 consolidation) (#587)
+- **runtime**: per-service network_access opt-out on ServiceSpec (untrusted-sibling partitioning) (#588)
+
+## v0.9.3 (2026-07-22)
+
+## v0.9.2 (2026-07-21)
+
+### Feat
+
+- **project-layer**: Project-layer v1 finalization — canonical shape with warn-only compat (M9) (#531)
+- **runtime**: multi-container v1 completion (M8 consolidation) (#511)
+
+### Fix
+
+- **grading**: compare numerically-equal state values as equal (#532)
+- **adapter**: fail conversion on invalid output (#494)
+- **tools**: advertise PATCH requests (#463)
+
+## v0.9.1 (2026-07-17)
+
+## v0.9.0 (2026-07-17)
+
+### Feat
+
+- **examples,runtime,assets**: multi-container example depth (Milestone 18) (#469)
+- **core**: observability seam extension — llm_call trio + model identity (#389) (#450)
+- **automation**: model auto-integration pipeline (observe/resolve/finalize + Slack-triggered poller) (#154)
+- **project-layer**: make Project schema end-to-end runnable — task-schema relaxation, grading_defaults merge, dead-seam cleanup, docs residue (#375) (#390)
+- **skills**: milestone integration-branch workflow with rich consolidation PR (#372)
+- **examples**: swap example-microservices-pack backend-api from fictional to postgrest (real image) (#367)
+- **runtime**: per-service log capture on trial failure (#302) (#347)
+
+### Fix
+
+- **loader**: preserve storage discriminator tag under run_defaults merge (#312) (#365)
+
+### Refactor
+
+- **core**: extract RunDisplayEvents engine seam to main (#416) (#433)
+
+### Perf
+
+- **orchestration**: reclaim wall-clock in /implement-milestone via overlap, review sharding, and stack warmup (#426)
+
+## v0.8.4 (2026-07-15)
+
+### Feat
+
+- **llm**: configurable hard wall-clock timeout for upstream calls (#327)
+- **runtime**: enforce network_policy in docker provisioner + tests (#301) (#336)
+- **examples**: runnable reset-recipe pack + end-to-end integration test (#299) (#314)
+- **runtime**: Project layer runtime — isolation, reset recipes, capabilities, env identity (#298)
+- **dev**: add cbm-onboard / cbm-offboard for codebase-memory-mcp (#266)
+- **cli**: tolokaforge assets stamp verb (#263)
+- **loader**: ${VAR} interpolation in run configs + --workers CLI flag (#262)
+- **schema**: dual-home compute/storage.queue resolution (#241)
+- **schema**: actor/seed/capability reservations + task-schema relaxation (#240)
+- **schema**: EnvironmentPatch + resolve() + stack sub-object (#232)
+
+## v0.8.3 (2026-07-13)
+
+### Feat
+
+- **loader**: resolve project.yaml + run_configs base+delta merge (#219)
+- **schema**: add ProjectConfig, TaskDefaults, RunDefaults + compute/storage/observability blocks (#215)
+
+### Fix
+
+- **deps**: exclude litellm 1.92.0 due to fastapi import regression (#231)
+
+## v0.8.2 (2026-07-10)
+
+### Feat
+
+- **models**: add tencent/hy3 (Hunyuan 3 GA) (#204)
+- **models**: add openai/gpt-5.6-terra and openai/gpt-5.6-sol (#203)
+
+## v0.8.1 (2026-07-09)
+
+### Feat
+
+- **models**: add x-ai/grok-4.5 (pricing + capability certificate) (#196)
+
+## v0.8.0 (2026-07-06)
+
+### Feat
+
+- **runtime**: SharedStackRuntimeBackend consumes environment_manifest (#167)
+- **runtime**: :local engine-image alias + wire environment_manifest through TaskConfig (#163)
+- **core**: TrialExecutor Protocol + wire per-trial substrate bracket (#162)
+- **metrics**: roll up judge cost at task and run level (#159)
+
+### Fix
+
+- **docker**: materialize engine wheel via reinstall provider (closes #29, #13) (#176)
+
+### Refactor
+
+- **output**: pin schema_version + int/float wire invariants (closes #152, #153) (#174)
+- **output**: typed models for run-level aggregate payloads (stage 1) (#149)
+- **orchestrator**: collapse injection kwargs into OrchestratorDeps (#134)
+- **docker**: rename ServiceStack → EngineStack; document docker-only + non-Protocol (#169)
+- **core**: extract compose-materialisation primitives into shared module (#166)
+- **core**: decompose Conductor + extract TrialGrader Protocol (#161)
+
+## v0.17.0 (2026-08-11)
+
+### Feat
+
+- **core**: new public path accessors on [`tolokaforge.core.model_data`](tolokaforge/core/model_data.py) — `bundled_pricing_path()`, `bundled_presets_path()`, `bundled_providers_path()`. Each returns a `pathlib.Path` when the resource exists and raises `FileNotFoundError` when it does not. Stable within v0.17.x; removal or signature change requires a deprecation announcement. Downstream consumers should reach for these instead of raw `importlib.resources` — see [`docs/RELEASING.md § Downstream data-resource consumers`](docs/RELEASING.md#downstream-data-resource-consumers). The pre-cutover `_DATA_ROOT` constant points at `tolokaforge/core/data/`; the models-wheel cutover ([#938](https://github.com/Toloka/tolokaforge/issues/938)) will flip that one line to `tolokaforge_models/data/` with no consumer-side edits. `tolokaforge/core/model_data.py` split into a light seam module + orchestrator-only `model_data_fingerprint.py` sibling so the seam is safe to include in the runner subset. Runner-subset registration for `tolokaforge/core/data/providers.yaml` — a #935 bycatch fix so LLM-judge grading inside a runner-subset image resolves the provider bindings at first use. (#937)
+- **llm**: engine-general helpers reached by per-model policy subclasses are now public API — [`coerce_json_strings`](tolokaforge/core/llm/response_policy.py), [`coerce_empty_containers`](tolokaforge/core/llm/response_policy.py), and [`find_additional_properties`](tolokaforge/core/llm/dict_maps.py) (re-exported from [`tolokaforge.core.llm`](tolokaforge/core/llm/__init__.py)). Enables per-model recovery classes to compose the shipped coercion helpers without importing `_`-prefixed engine internals. Stable within v0.17.x; removal or signature change requires a deprecation announcement. Ships alongside `StrictSchema.inline_refs_in_tool` (public overridable classmethod hook for per-tool `$ref` resolution — subclasses that need cycle tolerance override the hook rather than a private method) and six `ClassVar[…]` annotations on the pre-existing `StrictSchema` class-attribute hooks (`KEY_FIELD`, `VALUE_FIELD`, `carry_scalar_dict_map_value`, `flatten_oneof_discriminator`, `strip_parameters_root_description`, `strip_re2_incompatible_patterns`) — a subclass method that mis-writes `self.<hook> = ...` now surfaces as a type-checker error rather than a silent instance-attribute shadow. A canonical import-boundary test at [`tests/unit/llm/test_public_api_boundary.py`](tests/unit/llm/test_public_api_boundary.py) enumerates the eight currently-shipped per-model subclasses / composite classes and rejects any private-symbol reach into `tolokaforge.core.llm.*` — a regression that adds a `_`-prefixed import or a private-method override fires immediately at test-import time. (#936)
+- **llm** (Bucket B per ADR-0030 § Docs flip taxonomy): `DictMapHints.build_hints` is now a public instance-method hook on [`tolokaforge/core/llm/prompt_policy.py`](tolokaforge/core/llm/prompt_policy.py) — signature widened from `@staticmethod _build_hints(tools)` to `build_hints(self, tools)`. Enables `RefResolvingDictMapHints` (and future subclasses that want to close over instance state) to override without `# type: ignore[override]`, and clears the base-class shape mismatch flagged in [ADR-0030 § Colleague review focus points, item 9](docs/adr/0030-tolokaforge-models-split.md). Stable within v0.17.x; removal or signature change requires a deprecation announcement. (#936)
+- **llm**: provider transport bindings now live in `tolokaforge/core/data/providers.yaml` — Nova's three-site mapping (init `NOVA_API_BASE` `os.environ.setdefault`, `_format_model_name` bare-name return, `_call_with_key_rotation` per-attempt `api_base` / `api_key` / `custom_llm_provider` / slug rewrite), `UNROUTABLE_PROVIDERS` routability, OpenRouter rotation env vars (`OPENROUTER_API_KEYS` / `OPENROUTER_API_KEY`), `custom_llm_provider` litellm hints, and per-provider `rate_limit_patterns` are data-driven. Adding a new provider becomes a `providers.yaml` entry. New public seam: `LLMClient.classify_loop_error(exc)` — bound method that closes over compiled `binding.rate_limit_patterns` so the per-provider patterns thread to `ToolCallingLoop` without crossing the compiled tuple across module boundaries. Schema is [`tolokaforge.core.llm.providers.ProviderBinding`](tolokaforge/core/llm/providers.py) (frozen, `extra="forbid"`); the pre-cutover data file lives at `tolokaforge/core/data/providers.yaml`, and the models-wheel cutover ([#938](https://github.com/Toloka/tolokaforge/issues/938)) will move it to `tolokaforge_models/data/providers.yaml` while widening the `models_fingerprint` payload. (#935)
+- **testing**: new public engine seam `tolokaforge.testing.certify` — `Capability`, `ModelCertificate` (widened with `excluded_capabilities` / `known_unsupported_reasons` / `probe_params` / `capability_extras`), `ALL_MODELS`, and the `@register_probe` / `get_probe` dispatch API for out-of-tree probe bodies (#931).
+- **observability**: `engine_run_state.json` records the resolved model-data fingerprint — the `models_fingerprint` field carries `{package_version, content_sha256, api_version, minimum_engine_version}` computed from the post-overlay preset table, pricing table, and certificate registry, so a completed run identifies exactly which model-data snapshot it was scored against (#933).
+- **llm**: three new policy slots (`assistant_text_policy`, `params_policy`, `message_assembly_policy`) bring `_POLICY_REGISTRIES` to nine. `assistant_text_policy` reshapes `message.content` between litellm parse and `GenerationResult.text` — unblocks the Cohere `<|START_TEXT|>…<|END_TEXT|>` marker case (#929) via an out-of-tree subclass. `params_policy` promotes `ParamsPolicy` to a public base class with a class-body `KNOWN_KEYS` declaration; the overlay validator reads the union across every registered subclass instead of introspecting `GenerationParams.__init__`. `message_assembly_policy` extracts the Nova filler string from `client.py` into a per-instance data field on `NovaMessageAssembly` — the string is now configurable at YAML level via `{name: nova, params: {empty_assistant_filler: "…"}}`. Preset slot values accept both bare `name` (legacy) and `{name, params}` (new — passed to the class constructor); the overlay validator rejects nested-key typos with a `difflib.get_close_matches` suggestion. Additive fields on the `resolve_policy_names` fingerprint: `message_assembly_policy` and `assistant_text_policy` land in `task.yaml.model_config.<role>.resolved.*`; `params_policy` stays intentionally omitted (`GenerationParams` constructor kwargs are already serialised via `model_config.<role>.capabilities`). (#934)
+
+### Fix
+
+- **core** — **Behaviour change**: `reload_pricing(path=<missing>)` and `_load_bundled_presets` now raise `FileNotFoundError` / `ValueError` instead of silently returning `{}` or falling back to defaults. Non-mapping JSON payloads in a pricing file now raise `ValueError` naming the observed type instead of surfacing as an `AttributeError` at the first `.get()` call. Consequence: a downstream caller passing `reload_pricing(path=<maybe-missing>)` will now surface an exception at engine startup — the previous shape silently produced a zero-cost pricing table, which read as `{}` in leaderboards. If the "maybe-missing" behaviour is genuinely wanted, callers must catch the raise themselves. See [ADR-0030 § "Downstream data-resource consumers"](docs/adr/0030-tolokaforge-models-split.md#downstream-data-resource-consumers-new--widening-revised-2026-08-07) for the rationale. (#937)
+- **llm**: kill the Nova model-name conditional in `_format_model_name` (Blocker rule 3 antidote follow-up to #934's Gemini removal). Nova's `format_model_name_bare: true` binding field now drives the bare-name return path; no `self.config.provider.lower() == "nova"` string comparison remains in the client. (#935)
+- **automation**: `run-probes` renamed the `--path <dir>` flag to `--pyargs <module>` for the moved certification suite (defaulting to `tolokaforge.testing.certify.suite`); `integrate-model.yml` uses the default so no operator-side changes are needed (#931).
+- **testing**: `tolokaforge.testing.certify` no longer eagerly imports the pytest fixtures at the package level — runtime callers of the certify seam (e.g. `tolokaforge.core.model_data`) no longer need `pytest` installed. Suite authors continue to reach the fixtures via `pytest_plugins = ["tolokaforge.testing.certify.fixtures"]` or by importing the submodule directly (#931, exposed and fixed via #933).
+- **llm**: kill the `if reasoning_name == "gemini"` model-name conditional in `build_capabilities` (AGENTS.md Blocker rule 3 antidote). Gemini's `drop_placeholder_signature` knob now flows through ordinary `{name, params}` dispatch on the `reasoning_codec` slot; the `capabilities: {gemini_drop_placeholder_signature: true}` wire-compat override is rerouted internally in `_apply_config_overrides` — modern preset overlays should declare `reasoning_codec: {name: gemini, params: {drop_placeholder_signature: true}}` instead. (#934)
+
+### Deprecated
+
+- **llm**: bare `name` slot values in preset YAML are deprecated in favour of the `{name, params}` shape. Both are accepted through the v0.17.x cycle and removed in v0.18.0. `_RECOGNISED_OVERRIDE_KEYS` (and the `capabilities:` bespoke override keys it backs — `gemini_drop_placeholder_signature`, `dict_map_prompt_hints`, `supports_typed_dict_maps`, `supports_schema_extras`, `fixed_temperature`, `supports_seed`, `unwrap_input_key`, `reasoning_via_extra_body`) follow the same window and are removed in v0.18.0 (#1017). (#934)
+
 ## v0.16.1 (2026-08-07)
 
 ### Feat

@@ -6,9 +6,10 @@ grading, no oracle). One merged shared domain; each testcase enables only the
 tools it needs.
 
 - `dataset/testcases/record_*` - atomic behavioural probes (the wire-shape
-  classes that are NOT convertible to a deterministic `tests/integration/llm`
-  capability test: id-threading, fan-in, enum/format/validation discipline,
-  parallel calls, deep nesting, free-form objects).
+  classes that are NOT convertible to a deterministic
+  `tolokaforge.testing.certify.suite` capability probe: id-threading, fan-in,
+  enum/format/validation discipline, parallel calls, deep nesting, free-form
+  objects).
 - `dataset/testcases/cascade_*` - complex multi-turn cascades derived (shape +
   flow only, policy stripped, entities renamed) from public benchmarks
   (tau2-bench telecom, API-Bank tool-registry). See `NOTICE`.
@@ -20,5 +21,5 @@ How to run:
 - A per-model pytest driver is a planned follow-up: `tests/integration/test_wire_probe_smoke.py`.
 
 The convertible atomic probes are separate capability tests under
-`tests/integration/llm/` (dict-map, decimal, discriminated-union, recursive,
-heterogeneous-array, allOf, …).
+`tolokaforge/testing/certify/suite/` (dict-map, decimal,
+discriminated-union, recursive, heterogeneous-array, allOf, …).

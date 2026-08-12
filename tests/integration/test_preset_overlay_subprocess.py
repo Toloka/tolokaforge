@@ -26,6 +26,7 @@ import pytest
 from tolokaforge.core.engine_run_state import (
     write_engine_run_state,
 )
+from tolokaforge.core.model_data_fingerprint import compute_models_fingerprint
 
 pytestmark = pytest.mark.integration
 
@@ -111,7 +112,10 @@ class TestSubprocessInheritance:
     def test_subprocess_reads_queue_state_overlay(self, tmp_path: Path) -> None:
         queue_overlay = _write_empty_overlay(tmp_path, "queue.yaml")
         write_engine_run_state(
-            tmp_path, run_id="overlay_subprocess_e2e", presets_file=queue_overlay
+            tmp_path,
+            run_id="overlay_subprocess_e2e",
+            presets_file=queue_overlay,
+            models_fingerprint=compute_models_fingerprint(),
         )
         result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value=None)
         assert result["resolved"] == queue_overlay
@@ -121,7 +125,10 @@ class TestSubprocessInheritance:
         queue_overlay = _write_empty_overlay(tmp_path, "queue.yaml")
         cli_overlay = _write_empty_overlay(tmp_path, "cli.yaml")
         write_engine_run_state(
-            tmp_path, run_id="overlay_subprocess_e2e", presets_file=queue_overlay
+            tmp_path,
+            run_id="overlay_subprocess_e2e",
+            presets_file=queue_overlay,
+            models_fingerprint=compute_models_fingerprint(),
         )
         result = _run_resolver(run_dir=tmp_path, cli_value=cli_overlay, config_value=None)
         assert result["resolved"] == cli_overlay
@@ -130,7 +137,10 @@ class TestSubprocessInheritance:
         queue_overlay = _write_empty_overlay(tmp_path, "queue.yaml")
         config_overlay = _write_empty_overlay(tmp_path, "config.yaml")
         write_engine_run_state(
-            tmp_path, run_id="overlay_subprocess_e2e", presets_file=queue_overlay
+            tmp_path,
+            run_id="overlay_subprocess_e2e",
+            presets_file=queue_overlay,
+            models_fingerprint=compute_models_fingerprint(),
         )
         result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value=config_overlay)
         assert result["resolved"] == queue_overlay
@@ -145,7 +155,12 @@ class TestSubprocessInheritance:
         # ``prepare`` ran without an overlay → persisted as null →
         # subprocess falls through to engine.presets_file.
         config_overlay = _write_empty_overlay(tmp_path, "config.yaml")
-        write_engine_run_state(tmp_path, run_id="overlay_subprocess_e2e", presets_file=None)
+        write_engine_run_state(
+            tmp_path,
+            run_id="overlay_subprocess_e2e",
+            presets_file=None,
+            models_fingerprint=compute_models_fingerprint(),
+        )
         result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value=config_overlay)
         assert result["resolved"] == config_overlay
 

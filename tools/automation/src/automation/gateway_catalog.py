@@ -28,15 +28,22 @@ it. Nothing here calls the model — availability is a catalog lookup.
 
 Requires no credentials to be useful: with no gateway configured, every lookup
 returns ``unknown`` and the flow is unchanged.
+
+The catalog itself is fetched by the engine (:mod:`tolokaforge.core.llm.gateway_route`)
+through a :class:`~tolokaforge.core.llm.proxy.ProxyConfig`, so the poller and the
+integration run read the same gateway the same way. See ``docs/LLM_LAYER.md``
+§ "Speaking to the gateway" for why this module owns no transport of its own.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import json
 import os
-import urllib.error
-import urllib.request
+import sys
+
+from tolokaforge.core.llm.gateway_route import fetch_gateway_catalog
+from tolokaforge.core.llm.proxy import ProxyConfigError, resolve_proxy_config
+from tolokaforge.secrets import EnvProvider, SecretManager
 
 #: Route identifiers accepted in a request and threaded into the integration run.
 ROUTE_OPENROUTER = "openrouter"
@@ -72,44 +79,6 @@ class Availability:
         return self.status in (STATUS_EXACT, STATUS_WILDCARD)
 
 
-def fetch_gateway_catalog(
-    base_url: str | None, api_key: str | None, timeout: int = 15
-) -> list[str] | None:
-    """Route ids the gateway serves, or ``None`` when it cannot be read.
-
-    ``None`` is not an error to propagate: an unconfigured or unreachable gateway
-    must leave the integration flow exactly as it was, so callers treat it as
-    "no information" rather than failing the poll.
-    """
-    if not base_url or not base_url.strip():
-        return None
-    url = base_url.strip().rstrip("/") + "/models"
-    headers = {"Accept": "application/json"}
-    if api_key and api_key.strip():
-        headers["Authorization"] = f"Bearer {api_key.strip()}"
-    try:
-        request = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
-        return None
-    entries = data.get("data")
-    if not isinstance(entries, list):
-        return None
-    return sorted(
-        str(entry["id"]) for entry in entries if isinstance(entry, dict) and entry.get("id")
-    )
-
-
-#: Env names carrying the gateway contract. Read from ``os.environ`` rather than through
-#: ``SecretManager`` (AGENTS.md § Secrets) for one reason that applies to every caller here: this
-#: package is a standalone workspace member without the engine's secrets stack, and the entry
-#: points are CI-only, where the credential arrives through the workflow's ``env:``. Going through
-#: ``DotEnvProvider`` would additionally give a developer's local ``.env`` precedence, which is
-#: how a dev gateway would end up answering a real poll.
-ENV_BASE_URL = "LLM_PROXY_BASE_URL"
-ENV_API_KEY = "LLM_PROXY_API_KEY"
-
 #: The user simulator the wire probes run, from ``integrate-model.yml``. On the gateway route that
 #: workflow's ``.env`` is JOB-WIDE, so the simulator is proxied too and the gateway must serve it
 #: as well - otherwise observe goes infra-dirty in the simulator rather than in the candidate.
@@ -117,13 +86,38 @@ ENV_API_KEY = "LLM_PROXY_API_KEY"
 USER_SIMULATOR_SLUG = "anthropic/claude-sonnet-4.6"
 
 
+def _warn(message: str) -> None:
+    """Surface an operator error without failing the poll.
+
+    A misconfigured gateway is not a model problem, but the reply a requester sees says
+    the route could not be confirmed, which points at the model. The annotation is what
+    connects the two.
+    """
+    print(f"[gateway_catalog] {message}", file=sys.stderr)
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::warning title=Gateway configuration unusable::{message}")
+
+
 def fetch_configured_catalog(timeout: int = 15) -> list[str] | None:
     """The gateway catalog for THIS deployment, or ``None`` when there is no readable gateway.
 
     The single owner of the environment read, so every caller sees the same catalog the poll
     does; a hand-run diagnostic that disagreed with the poll would be worse than no diagnostic.
+
+    ``None`` is "no information", never an error to propagate: a notification path must not
+    fail a poll because a gateway is down or misconfigured.
     """
-    return fetch_gateway_catalog(os.environ.get(ENV_BASE_URL), os.environ.get(ENV_API_KEY), timeout)
+    # Env-only: dotenv precedence would let a developer's local .env answer a real poll.
+    try:
+        proxy = resolve_proxy_config(SecretManager([EnvProvider()]))
+    except ProxyConfigError as exc:
+        _warn(f"gateway unusable, availability is unknown: {exc}")
+        return None
+    if proxy is None:
+        return None
+    served = fetch_gateway_catalog(proxy, timeout)
+    # Sorted so the same gateway yields the same resolution and the same log twice over.
+    return None if served is None else sorted(served)
 
 
 def lookup(slug: str, catalog: list[str] | None) -> Availability:

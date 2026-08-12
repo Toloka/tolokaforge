@@ -22,6 +22,7 @@ members = [
     "rubric-calibrator",
     "tolokaforge",
     "tolokaforge-adapter-terminal-bench",
+    "tolokaforge-models",
 ]
 
 [[package]]
@@ -4547,7 +4548,7 @@ wheels = [
 
 [[package]]
 name = "tolokaforge"
-version = "0.16.1"
+version = "0.18.0"
 source = { editable = "." }
 dependencies = [
     { name = "addict" },
@@ -4564,6 +4565,7 @@ dependencies = [
     { name = "litellm" },
     { name = "loguru" },
     { name = "mcp" },
+    { name = "packaging" },
     { name = "protobuf" },
     { name = "pydantic", extra = ["email"] },
     { name = "python-dotenv" },
@@ -4572,6 +4574,7 @@ dependencies = [
     { name = "structlog" },
     { name = "tenacity" },
     { name = "testcontainers" },
+    { name = "tolokaforge-models" },
     { name = "toml" },
     { name = "typesense" },
 ]
@@ -4692,6 +4695,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.0,<2" },
     { name = "odata-query", marker = "extra == 'runner'", specifier = ">=0.10.0" },
     { name = "openpyxl", marker = "extra == 'office'", specifier = ">=3.1.0" },
+    { name = "packaging", specifier = ">=24.0" },
     { name = "pillow", marker = "extra == 'browser'", specifier = ">=12.1.0" },
     { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.40.0" },
     { name = "prompt-toolkit", marker = "extra == 'dx'", specifier = ">=3.0.51" },
@@ -4714,6 +4718,7 @@ requires-dist = [
     { name = "tolokaforge", extras = ["dx", "browser", "server", "rag", "office", "adapters", "runner"], marker = "extra == 'all'", editable = "." },
     { name = "tolokaforge", extras = ["terminal-bench"], marker = "extra == 'adapters'", editable = "." },
     { name = "tolokaforge-adapter-terminal-bench", marker = "extra == 'terminal-bench'", editable = "external_adapters/tolokaforge-adapter-terminal-bench" },
+    { name = "tolokaforge-models", editable = "tolokaforge_models" },
     { name = "toml", specifier = ">=0.10.0" },
     { name = "typesense", specifier = ">=2.0.0" },
     { name = "uvicorn", marker = "extra == 'runner'", specifier = ">=0.25.0" },
@@ -4769,6 +4774,11 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.1" },
     { name = "tolokaforge", editable = "." },
 ]
+
+[[package]]
+name = "tolokaforge-models"
+version = "1.0.0"
+source = { editable = "tolokaforge_models" }
 
 [[package]]
 name = "toml"

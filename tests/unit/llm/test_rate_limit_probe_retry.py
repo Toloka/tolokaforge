@@ -54,9 +54,12 @@ from tolokaforge.core.llm.client import (
     AllApiKeysExhaustedError,
     LLMClient,
     _build_rate_limit_wait,
-    _is_rate_limit_exception,
     _should_retry_exception,
     matches_rate_limit_text,
+)
+from tolokaforge.core.llm.providers import (
+    DEFAULT_RATE_LIMIT_PATTERNS,
+    compile_rate_limit_patterns,
 )
 from tolokaforge.core.models import (
     RATE_LIMIT_PROBE_ATTEMPT_CEILING_S,
@@ -102,6 +105,19 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> _FakeClock:
     fake = _FakeClock()
     monkeypatch.setattr(tenacity, "time", fake)
     return fake
+
+
+@pytest.fixture
+def classifier_client(monkeypatch: pytest.MonkeyPatch) -> LLMClient:
+    """A vanilla OpenRouter client used to invoke the instance-method classifier.
+
+    The provider binding supplies the shipped default rate-limit patterns; the
+    predicate cases here assert exactly those defaults' behaviour, so any
+    provider whose binding carries them works. OpenRouter matches the rest of
+    the suite's default and keeps set-up minimal.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-sk-classifier")
+    return LLMClient(ModelConfig(provider="openrouter", name="anthropic/claude-3-haiku"))
 
 
 def _probe(
@@ -431,7 +447,8 @@ class TestNonRateLimitErrorsKeepTheirBound:
 
 
 class TestRateLimitClassification:
-    """``_is_rate_limit_exception`` decides which budget an error inherits.
+    """``LLMClient._is_rate_limit_exception`` decides which budget an error
+    inherits.
 
     A false positive is the expensive direction: a *deterministic* failure would
     be retried at the fixed interval for the whole multi-hour budget and would
@@ -460,9 +477,9 @@ class TestRateLimitClassification:
         ],
     )
     def test_incidental_digits_and_unrelated_phrasing_are_not_rate_limits(
-        self, exc: BaseException
+        self, exc: BaseException, classifier_client: LLMClient
     ) -> None:
-        assert _is_rate_limit_exception(exc) is False
+        assert classifier_client._is_rate_limit_exception(exc) is False
 
     @pytest.mark.parametrize(
         "exc",
@@ -479,29 +496,35 @@ class TestRateLimitClassification:
             pytest.param(ValueError("Rate limit exceeded for requests"), id="provider-prose"),
         ],
     )
-    def test_anchored_status_and_prose_shapes_are_rate_limits(self, exc: BaseException) -> None:
-        assert _is_rate_limit_exception(exc) is True
+    def test_anchored_status_and_prose_shapes_are_rate_limits(
+        self, exc: BaseException, classifier_client: LLMClient
+    ) -> None:
+        assert classifier_client._is_rate_limit_exception(exc) is True
 
-    def test_typed_429_with_innocuous_text_classifies_on_the_type_not_the_text(self) -> None:
+    def test_typed_429_with_innocuous_text_classifies_on_the_type_not_the_text(
+        self, classifier_client: LLMClient
+    ) -> None:
         """Pins the type-first claim: delete the ``isinstance`` check and this
         fails, because nothing in the message looks like a rate limit."""
         exc = _rate_limit_error("quota for tier 2 is used up")
-        assert _is_rate_limit_exception(exc) is True
+        assert classifier_client._is_rate_limit_exception(exc) is True
 
-    def test_status_code_429_alone_classifies(self) -> None:
+    def test_status_code_429_alone_classifies(self, classifier_client: LLMClient) -> None:
         class _Opaque(Exception):
             status_code = 429
 
-        assert _is_rate_limit_exception(_Opaque("opaque upstream payload")) is True
+        assert (
+            classifier_client._is_rate_limit_exception(_Opaque("opaque upstream payload")) is True
+        )
 
-    def test_typed_429_reached_through_the_cause_chain(self) -> None:
+    def test_typed_429_reached_through_the_cause_chain(self, classifier_client: LLMClient) -> None:
         """The production shape: the outer controller only ever sees the wrap."""
         try:
             raise _rate_limit_error("quota for tier 2 is used up")
         except RateLimitError as inner:
             wrapped = RuntimeError(f"LLM API call failed: {inner}")
             wrapped.__cause__ = inner
-        assert _is_rate_limit_exception(wrapped) is True
+        assert classifier_client._is_rate_limit_exception(wrapped) is True
 
     def test_a_deterministic_non_429_never_inherits_the_probe_budget(
         self, monkeypatch: pytest.MonkeyPatch, clock: _FakeClock
@@ -553,10 +576,10 @@ class TestTerminalKeyExhaustionIsNotARateLimit:
             exhausted.__cause__ = inner
         return exhausted
 
-    def test_the_terminal_wrapper_is_not_a_rate_limit(self) -> None:
-        assert _is_rate_limit_exception(self._exhausted()) is False
+    def test_the_terminal_wrapper_is_not_a_rate_limit(self, classifier_client: LLMClient) -> None:
+        assert classifier_client._is_rate_limit_exception(self._exhausted()) is False
 
-    def test_a_real_wrapped_429_is_still_a_rate_limit(self) -> None:
+    def test_a_real_wrapped_429_is_still_a_rate_limit(self, classifier_client: LLMClient) -> None:
         """The negative case above must not cost the absorption the mode exists
         for: the same wrap shape with a non-terminal outer type still classifies.
         """
@@ -565,7 +588,7 @@ class TestTerminalKeyExhaustionIsNotARateLimit:
         except RateLimitError as inner:
             wrapped = RuntimeError(f"LLM API call failed: {inner}")
             wrapped.__cause__ = inner
-        assert _is_rate_limit_exception(wrapped) is True
+        assert classifier_client._is_rate_limit_exception(wrapped) is True
 
     def test_the_default_retry_predicate_is_unchanged(self) -> None:
         """The fix lives in the 429 classifier only. ``_should_retry_exception``
@@ -689,7 +712,9 @@ class TestAnAuthoritativeStatusBeatsProse:
     the more expensive direction, because the whole feature is the absorption.
     """
 
-    def test_a_typed_400_echoing_rate_limit_prose_is_not_a_rate_limit(self) -> None:
+    def test_a_typed_400_echoing_rate_limit_prose_is_not_a_rate_limit(
+        self, classifier_client: LLMClient
+    ) -> None:
         inner = _bad_request_error(
             "Error code: 400 - {'error': {'message': 'Invalid tool call', 'metadata': "
             "{'raw': 'user: our gateway logged rate limit exceeded on the vendor "
@@ -698,27 +723,36 @@ class TestAnAuthoritativeStatusBeatsProse:
         wrapped = RuntimeError(f"LLM API call failed: {inner}")
         wrapped.__cause__ = inner
 
-        assert matches_rate_limit_text(str(wrapped)) is True
-        assert _is_rate_limit_exception(wrapped) is False
+        assert (
+            matches_rate_limit_text(
+                str(wrapped), compile_rate_limit_patterns(DEFAULT_RATE_LIMIT_PATTERNS)
+            )
+            is True
+        )
+        assert classifier_client._is_rate_limit_exception(wrapped) is False
 
-    def test_an_untyped_chain_still_text_matches(self) -> None:
+    def test_an_untyped_chain_still_text_matches(self, classifier_client: LLMClient) -> None:
         """The shape the tier exists for. No link carries a status, so prose is
         the only evidence available and it is still honoured."""
         inner = ValueError("Error code: 429 - {'error': 'slow down'}")
         wrapped = RuntimeError(f"LLM API call failed: {inner}")
         wrapped.__cause__ = inner
 
-        assert _is_rate_limit_exception(wrapped) is True
+        assert classifier_client._is_rate_limit_exception(wrapped) is True
 
-    def test_a_bare_stringified_429_with_no_cause_still_text_matches(self) -> None:
+    def test_a_bare_stringified_429_with_no_cause_still_text_matches(
+        self, classifier_client: LLMClient
+    ) -> None:
         assert (
-            _is_rate_limit_exception(
+            classifier_client._is_rate_limit_exception(
                 RuntimeError("LLM API call failed: HTTP/1.1 429 Too Many Requests")
             )
             is True
         )
 
-    def test_a_429_deeper_in_the_chain_beats_a_non_429_status_above_it(self) -> None:
+    def test_a_429_deeper_in_the_chain_beats_a_non_429_status_above_it(
+        self, classifier_client: LLMClient
+    ) -> None:
         """The status tier is evaluated per link, so a genuine 429 under a
         wrapper that happens to carry its own status is still absorbed."""
         deepest = _rate_limit_error("slow down")
@@ -727,7 +761,7 @@ class TestAnAuthoritativeStatusBeatsProse:
         outer = RuntimeError(f"LLM API call failed: {middle}")
         outer.__cause__ = middle
 
-        assert _is_rate_limit_exception(outer) is True
+        assert classifier_client._is_rate_limit_exception(outer) is True
 
 
 class TestJitter:

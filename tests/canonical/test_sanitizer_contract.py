@@ -2,7 +2,7 @@
 
 Feeds a deterministic sample of Pydantic-generated tool schemas through
 :func:`tolokaforge.core.llm.presets.build_capabilities` for every preset
-registered in [`model_presets.yaml`](../../tolokaforge/core/data/model_presets.yaml)
+registered in [`model_presets.yaml`](../../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)
 and snapshots the sanitised output. Guards against silent drift in:
 
 * the YAML preset routing (name glob → policy mapping);
@@ -150,7 +150,7 @@ def _build_tool_list() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Preset routing — one representative (model_name, provider) pair per preset
 #
-# Routing rules live in ``tolokaforge/core/data/model_presets.yaml``; these
+# Routing rules live in ``tolokaforge_models/data/model_presets.yaml``; these
 # picks exercise the glob patterns for each preset block.
 # ---------------------------------------------------------------------------
 

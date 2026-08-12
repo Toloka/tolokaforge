@@ -78,35 +78,46 @@ _EXPECTED_CONTEXT_ENTRIES: tuple[str, ...] = (
 
 
 @pytest.fixture(scope="module")
-def built_base_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Build the base tolokaforge wheel once per module via ``hatchling build -t wheel``.
+def built_wheels_dist(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Build the base tolokaforge wheel + the tolokaforge-models sibling wheel
+    into one directory (returned).
 
     Uses ``python -m hatchling`` rather than ``hatch build`` to avoid the
     ``hatch`` CLI dep — matches ``test_runner_subset_install_smoke.py``'s
     invocation for the same reason (compat with the ``uv`` version pin).
+    ``uv pip install --find-links <dist_dir>`` resolves the engine's dep on
+    ``tolokaforge-models`` against the sibling wheel in this dir.
     """
     dist_dir = tmp_path_factory.mktemp("dist")
-    result = subprocess.run(
-        [sys.executable, "-m", "hatchling", "build", "-t", "wheel", "-d", str(dist_dir)],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        pytest.fail(
-            f"base wheel build failed (exit {result.returncode}):\n"
-            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    for project_dir, label in ((REPO_ROOT, "engine"), (REPO_ROOT / "tolokaforge_models", "models")):
+        result = subprocess.run(
+            [sys.executable, "-m", "hatchling", "build", "-t", "wheel", "-d", str(dist_dir)],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
         )
-    wheels = list(dist_dir.glob("*.whl"))
+        if result.returncode != 0:
+            pytest.fail(
+                f"{label} wheel build failed (exit {result.returncode}):\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+    return dist_dir
+
+
+@pytest.fixture(scope="module")
+def built_base_wheel(built_wheels_dist: Path) -> Path:
+    """Path to the engine ``tolokaforge-*.whl`` produced by :func:`built_wheels_dist`."""
+    wheels = list(built_wheels_dist.glob("*.whl"))
     # Positive match on the base distribution name — ``tolokaforge-<version>``.
     # A negative filter against one known sibling (e.g. ``tolokaforge_runner_
     # subset``) would silently include a hypothetical third target with a
     # different name; matching ``tolokaforge-`` (dash after the package name,
     # not underscore) unambiguously picks the base wheel.
     base_wheels = [w for w in wheels if w.name.startswith("tolokaforge-")]
-    assert (
-        len(base_wheels) == 1
-    ), f"expected exactly one base tolokaforge wheel in {dist_dir}, got: {[w.name for w in wheels]}"
+    assert len(base_wheels) == 1, (
+        f"expected exactly one base tolokaforge wheel in {built_wheels_dist}, "
+        f"got: {[w.name for w in wheels]}"
+    )
     return base_wheels[0]
 
 
@@ -133,7 +144,7 @@ def test_base_wheel_ships_runner_context_via_force_include(built_base_wheel: Pat
 
 
 def test_core_stack_runner_context_assembles_from_wheel_install(
-    built_base_wheel: Path, tmp_path_factory: pytest.TempPathFactory
+    built_base_wheel: Path, built_wheels_dist: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
     """Install the base wheel into a scratch venv and drive the PRODUCTION
     path — ``core_stack().services['runner'].context_files`` +
@@ -181,10 +192,21 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
             "--python",
             str(venv_python),
             "--quiet",
+            "--find-links",
+            str(built_wheels_dist),
             str(built_base_wheel),
         ]
     else:
-        install_cmd = [str(venv_python), "-m", "pip", "install", "--quiet", str(built_base_wheel)]
+        install_cmd = [
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--find-links",
+            str(built_wheels_dist),
+            str(built_base_wheel),
+        ]
 
     install_result = subprocess.run(install_cmd, capture_output=True, text=True)
     if install_result.returncode != 0:

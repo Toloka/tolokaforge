@@ -234,6 +234,11 @@ def test_runner_build_context_ships_source_tree_for_multi_stage_hatch_build() ->
         ".python-version",
         "scripts/hatch/",
         "tolokaforge/",
+        # The runner-subset wheel declares tolokaforge-models as a
+        # Requires-Dist. The Dockerfile's wheel-builder stage builds the
+        # models wheel in-place from source (rather than pulling from
+        # PyPI) so the runner image installs the branch's exact bytes.
+        "tolokaforge_models/",
     }
     assert set(context_files) == expected, (
         "runner image context_files drifted from the ADR-0025 multi-stage "

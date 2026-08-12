@@ -19,7 +19,7 @@ class TestMessageConversion:
     """Test message conversion for provider compatibility.
 
     Empty-content handling is gated by
-    :attr:`~tolokaforge.core.llm.content_policy.ToolContentPolicy.inject_empty_assistant_filler`.
+    :attr:`~tolokaforge.core.llm.message_assembly_policy.MessageAssemblyPolicy.inject_empty_assistant_filler`.
     Nova/Bedrock keeps the substitution on (the original reason the filler
     exists — Bedrock rejects empty assistant content alongside ``tool_calls``);
     every other preset is off (the universal substitution caused Gemini to
@@ -54,9 +54,9 @@ class TestMessageConversion:
     def test_empty_assistant_content_stays_empty_off_nova(self):
         """Every non-Nova preset leaves empty content empty. Injecting the
         filler universally is what created the Gemini echo regression — see
-        :class:`~tolokaforge.core.llm.content_policy.ToolContentPolicy`."""
+        :class:`~tolokaforge.core.llm.message_assembly_policy.MessageAssemblyPolicy`."""
         # ``openai/gpt-4o`` falls through to the ``default`` preset →
-        # ``OpenAIContent`` with ``inject_empty_assistant_filler=False``.
+        # ``NullMessageAssembly`` (inject_empty_assistant_filler=False).
         config = ModelConfig(provider="openrouter", name="openai/gpt-4o")
         client = LLMClient(config)
 
