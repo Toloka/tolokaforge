@@ -1,5 +1,7 @@
 services:
   main:
+    build:
+      context: ./environment
     image: ${T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME}
     container_name: ${T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME}
     command:

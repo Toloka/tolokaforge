@@ -911,3 +911,318 @@ class TestComposeSynthesisNoSubprocess:
         with patch("subprocess.Popen") as popen_mock:
             materialise_task_environment(meta, staging_root=tmp_path / "staging")
         popen_mock.assert_not_called()
+
+
+# =============================================================================
+# Harness mode: install script, command construction, image layering
+# =============================================================================
+
+
+class TestInstallHarnessScript:
+    """The install script is the only place a harness's install steps live."""
+
+    def test_every_accepted_harness_has_a_dispatch_branch(self):
+        from tolokaforge_adapter_terminal_bench.harness import (
+            ACCEPTED_HARNESSES,
+            INSTALL_SCRIPT,
+        )
+
+        text = INSTALL_SCRIPT.read_text()
+        for name in ACCEPTED_HARNESSES:
+            assert f"\n    {name})" in text, f"no case branch for {name!r}"
+
+    def test_no_op_harness_exits_clean_without_network(self):
+        from tolokaforge_adapter_terminal_bench.harness import (
+            INSTALL_SCRIPT,
+            NO_OP_HARNESS,
+        )
+
+        proc = subprocess.run(
+            ["sh", str(INSTALL_SCRIPT), NO_OP_HARNESS],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert proc.returncode == 0, proc.stderr
+
+    def test_unknown_harness_aborts_naming_accepted_set(self):
+        from tolokaforge_adapter_terminal_bench.harness import (
+            ACCEPTED_HARNESSES,
+            INSTALL_SCRIPT,
+        )
+
+        proc = subprocess.run(
+            ["sh", str(INSTALL_SCRIPT), "not-a-harness"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert proc.returncode != 0
+        for name in ACCEPTED_HARNESSES:
+            assert name in proc.stderr
+
+    def test_missing_argument_aborts(self):
+        from tolokaforge_adapter_terminal_bench.harness import INSTALL_SCRIPT
+
+        proc = subprocess.run(
+            ["sh", str(INSTALL_SCRIPT)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert proc.returncode != 0
+        assert "unknown harness" in proc.stderr
+
+
+class TestHarnessCommand:
+    def test_claude_code_argv(self):
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        assert harness_command("claude-code", "fix the bug") == "claude --print 'fix the bug'"
+
+    def test_instruction_is_one_shell_argument(self):
+        import shlex
+
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        instruction = "don't $EXPAND `me`;\nsecond line"
+        argv = shlex.split(harness_command("codex", instruction))
+        assert argv == ["codex", "exec", instruction]
+
+    def test_no_op_harness_has_no_command(self):
+        from tolokaforge_adapter_terminal_bench.harness import (
+            NO_OP_HARNESS,
+            harness_command,
+        )
+
+        with pytest.raises(ValueError, match="runs no CLI"):
+            harness_command(NO_OP_HARNESS, "anything")
+
+    def test_unknown_harness_names_accepted_set(self):
+        from tolokaforge_adapter_terminal_bench.harness import validate_harness
+
+        with pytest.raises(ValueError, match="claude-code"):
+            validate_harness("bogus")
+
+
+def _harness_task(tmp_path: Path, task_id: str, *, with_build: bool):
+    main: dict = {"image": "${T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME}"}
+    if with_build:
+        main["build"] = {"context": "./environment"}
+    return _write_task(
+        tmp_path,
+        task_id,
+        {"services": {"main": main}},
+        extras={"environment/Dockerfile": "FROM python:3.11-slim\n"},
+    )
+
+
+class TestComposeSynthesisHarnessLayer:
+    """Harness mode splits the agent image into base + CLI layer."""
+
+    def test_default_harness_leaves_compose_and_staging_untouched(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _harness_task(tmp_path, "plain", with_build=True)
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        compose = _load_synthesised(env)
+        assert set(compose["services"]) == {"main", "runner", "db-service"}
+        assert compose["services"]["main"]["image"] == "tbench-plain:local"
+        assert env.base_build_service is None
+        assert not (env.staging_dir / "_harness").exists()
+
+    def test_layered_compose_declares_base_and_layer(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _harness_task(tmp_path, "layered", with_build=True)
+        env = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
+        )
+
+        compose = _load_synthesised(env)
+        assert set(compose["services"]) == {"main", "main-base", "runner", "db-service"}
+
+        base = compose["services"]["main-base"]
+        assert base["image"] == "tbench-layered:local"
+        assert base["build"] == {"context": "./environment"}
+        assert base["profiles"] == ["tolokaforge-build"]
+
+        main = compose["services"]["main"]
+        assert main["image"] == "tbench-layered:local-claude-code"
+        assert main["build"] == {
+            "context": ".",
+            "dockerfile": "_harness/harness.Dockerfile",
+        }
+        assert env.base_build_service == "main-base"
+
+    def test_base_service_never_starts_with_the_stack(self, tmp_path):
+        """A compose profile is what keeps the build-only service out of ``up``."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _harness_task(tmp_path, "profiled", with_build=True)
+        env = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="codex"
+        )
+        compose = _load_synthesised(env)
+        assert compose["services"]["main-base"]["profiles"]
+        assert "profiles" not in compose["services"]["main"]
+
+    def test_harness_dockerfile_layers_on_the_base_image(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _harness_task(tmp_path, "dockerfile", with_build=True)
+        env = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="gemini-cli"
+        )
+
+        dockerfile = (env.staging_dir / "_harness" / "harness.Dockerfile").read_text()
+        assert dockerfile.splitlines()[0] == "FROM tbench-dockerfile:local"
+        assert "install-harness.sh gemini-cli" in dockerfile
+        assert (env.staging_dir / "_harness" / "install-harness.sh").exists()
+
+    def test_task_without_build_context_declares_no_base_service(self, tmp_path):
+        """A pre-built task image has nothing for the orchestrator to build first."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _harness_task(tmp_path, "prebuilt", with_build=False)
+        env = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
+        )
+
+        compose = _load_synthesised(env)
+        assert "main-base" not in compose["services"]
+        assert env.base_build_service is None
+        assert compose["services"]["main"]["image"] == "tbench-prebuilt:local-claude-code"
+
+    def test_registry_base_is_pulled_not_built(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _harness_task(tmp_path, "registry", with_build=True)
+        env = materialise_task_environment(
+            meta,
+            staging_root=tmp_path / "staging",
+            image_registry="reg.example/tbench",
+            image_tag="v1",
+            agent_harness="codex",
+        )
+
+        compose = _load_synthesised(env)
+        assert "main-base" not in compose["services"]
+        assert env.base_build_service is None
+        assert compose["services"]["main"]["image"] == "reg.example/tbench/registry:v1-codex"
+        dockerfile = (env.staging_dir / "_harness" / "harness.Dockerfile").read_text()
+        assert dockerfile.startswith("FROM reg.example/tbench/registry:v1\n")
+
+    def test_switching_harness_changes_the_staging_digest(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _harness_task(tmp_path, "digest", with_build=True)
+        a = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
+        )
+        b = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="codex"
+        )
+        assert a.staging_dir != b.staging_dir
+
+    def test_unknown_harness_rejected(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _harness_task(tmp_path, "bad", with_build=True)
+        with pytest.raises(ValueError, match="agent_harness"):
+            materialise_task_environment(
+                meta, staging_root=tmp_path / "staging", agent_harness="nope"
+            )
+
+    def test_task_declaring_base_service_name_raises(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "collide",
+            {
+                "services": {
+                    "main": {"image": "python:3.11-slim"},
+                    "main-base": {"image": "busybox"},
+                }
+            },
+        )
+        with pytest.raises(ValueError, match="main-base"):
+            materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+    def test_layered_manifest_still_validates(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _harness_task(tmp_path, "manifest", with_build=True)
+        env = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
+        )
+        manifest = EnvironmentManifest(compose_file=env.compose_file, runner_service="runner")
+        assert "main-base" in manifest.load_compose()["services"]
+
+
+class TestTerminalBenchAdapterHarnessImageBuilds:
+    """Harness mode declares two builds, base before layer."""
+
+    def test_base_precedes_layer(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        examples_dir = Path(__file__).parent.parent.parent / "examples" / "terminal_bench"
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(examples_dir),
+                "task_ids": ["fix-billing-holds"],
+                "staging_root": str(tmp_path),
+                "agent_harness": "claude-code",
+            }
+        )
+        reqs = adapter.docker_stack_requirements()
+        assert [b.service for b in reqs.image_builds] == ["main-base", "main"]
+
+    def test_default_harness_declares_one_build(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        examples_dir = Path(__file__).parent.parent.parent / "examples" / "terminal_bench"
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(examples_dir),
+                "task_ids": ["fix-billing-holds"],
+                "staging_root": str(tmp_path),
+            }
+        )
+        reqs = adapter.docker_stack_requirements()
+        assert [b.service for b in reqs.image_builds] == ["main"]
+
+    def test_unknown_harness_rejected_at_construction(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        fixture_dir = Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+        with pytest.raises(ValueError, match="agent_harness"):
+            TerminalBenchAdapter(
+                {
+                    "terminal_bench_dir": str(fixture_dir),
+                    "staging_root": str(tmp_path),
+                    "agent_harness": "terminus-3",
+                }
+            )

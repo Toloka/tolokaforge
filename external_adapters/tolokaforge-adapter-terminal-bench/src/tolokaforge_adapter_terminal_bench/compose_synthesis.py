@@ -11,6 +11,11 @@ relative mounts against the staging directory, and injects the engine's
 emitted compose file is a self-contained trial substrate the engine's
 per-trial runtime can bring up unchanged.
 
+Under harness mode the agent image is split in two: the task's own build
+becomes a build-only ``-base`` service, and the agent service builds a thin
+layer on top that installs the requested coding-harness CLI. Both images are
+declared to the orchestrator's pre-build seam, base first.
+
 The module runs no subprocess. Both adapter surfaces that call it
 (``get_task`` and ``to_task_description``) stay daemon-free, which the
 canonical adapter lane and ``--dry-run`` both require. The agent image is
@@ -34,6 +39,11 @@ import yaml
 # fails in the adapter with the adapter's own message rather than deep inside
 # a Pydantic validator on the synthesised compose file.
 from tolokaforge.runner.models import _FLOATING_IMAGE_TAGS
+from tolokaforge_adapter_terminal_bench.harness import (
+    INSTALL_SCRIPT,
+    NO_OP_HARNESS,
+    validate_harness,
+)
 from tolokaforge_adapter_terminal_bench.task_parser import TerminalBenchTask
 
 AGENT_SERVICE_DEFAULT = "main"
@@ -42,6 +52,12 @@ PROJECT_PREFIX = "tbench_"
 _SYNTHESISED_COMPOSE_FILENAME = "docker-compose.tolokaforge.yaml"
 _INJECTED_SERVICE_NAMES = ("runner", "db-service")
 _TOLOKAFORGE_TRIAL_SLUG_PLACEHOLDER = "${TOLOKAFORGE_TRIAL_SLUG}"
+
+_HARNESS_STAGING_DIR = "_harness"
+_HARNESS_DOCKERFILE_NAME = "harness.Dockerfile"
+_HARNESS_BASE_SERVICE_SUFFIX = "-base"
+_HARNESS_BUILD_PROFILE = "tolokaforge-build"
+_HARNESS_INSTALL_PATH = "/opt/tolokaforge/install-harness.sh"
 
 # Matches ``${VAR}`` and ``${VAR:-default}``. Docker compose's own
 # variable-substitution surface is a superset (``${VAR-default}``, ``${VAR:?err}``,
@@ -63,6 +79,13 @@ class MaterialisedEnvironment:
     staging_dir: Path
     """Absolute path to the staging directory the compose file lives in."""
 
+    base_build_service: str | None = None
+    """Compose service that builds the un-layered task image, when the
+    environment is harness-layered and the base is built rather than pulled.
+    The orchestrator must build this service before the agent service, whose
+    Dockerfile is ``FROM`` the base image. ``None`` when there is a single
+    image to build (or pull)."""
+
 
 def materialise_task_environment(
     meta: TerminalBenchTask,
@@ -70,6 +93,7 @@ def materialise_task_environment(
     staging_root: Path,
     image_registry: str | None = None,
     image_tag: str = "local",
+    agent_harness: str = NO_OP_HARNESS,
     runner_image: str = "tolokaforge-runner:local",
     db_service_image: str = "tolokaforge-db-service:local",
 ) -> MaterialisedEnvironment:
@@ -93,22 +117,31 @@ def materialise_task_environment(
         image_tag: Tag applied to the agent-service image. Must not be a
             floating tag (``latest``, ``main``, ``master``, ...); the
             manifest's floating-tag rule is applied here.
+        agent_harness: Coding-harness CLI to layer onto the task image.
+            ``terminus-2`` leaves the image and the compose file untouched.
+            Any other accepted harness splits the agent image in two: the
+            task's own build becomes the ``-base`` image, and the agent
+            service builds a thin layer on top of it that installs the CLI.
+            The layered image carries the harness in its tag, so switching
+            harnesses can never reuse a stale cached image.
         runner_image: Pinned image for the injected ``runner`` service.
         db_service_image: Pinned image for the injected ``db-service``.
 
     Raises:
-        ValueError: If ``image_tag`` is a floating tag; if the task's
-            compose file is not a YAML mapping with a non-empty ``services:``
-            block; if the task declares a service named ``runner`` or
-            ``db-service`` (collision with the injected engine services);
-            if the task's ``services:`` mapping declares more than one
-            service and none is named ``main``.
+        ValueError: If ``image_tag`` is a floating tag; if ``agent_harness``
+            is not an accepted harness; if the task's compose file is not a
+            YAML mapping with a non-empty ``services:`` block; if the task
+            declares a service named ``runner`` or ``db-service`` (collision
+            with the injected engine services) or one colliding with the
+            harness base service; if the task's ``services:`` mapping
+            declares more than one service and none is named ``main``.
     """
     if image_tag.lower() in _FLOATING_IMAGE_TAGS:
         raise ValueError(
             f"terminal-bench adapter: image_tag {image_tag!r} is a floating tag; "
             "pin to an immutable tag (e.g. 'local' for local builds, or a digest)."
         )
+    validate_harness(agent_harness)
 
     original = _load_compose(meta.compose_file)
     task_services = original.get("services")
@@ -117,14 +150,16 @@ def materialise_task_environment(
             f"terminal-bench task {meta.task_id!r} compose file "
             f"{meta.compose_file} must declare a non-empty `services:` mapping."
         )
-    _check_no_reserved_service_collisions(meta.task_id, task_services)
     agent_service = _resolve_agent_service(meta.task_id, task_services)
+    base_service = f"{agent_service}{_HARNESS_BASE_SERVICE_SUFFIX}"
+    _check_no_reserved_service_collisions(meta.task_id, task_services, base_service)
 
     digest = _compute_digest(
         meta.task_dir,
         {
             "image_registry": image_registry or "",
             "image_tag": image_tag,
+            "agent_harness": agent_harness,
             "runner_image": runner_image,
             "db_service_image": db_service_image,
             "cpus": str(meta.cpus),
@@ -135,15 +170,23 @@ def materialise_task_environment(
     staging_dir = (staging_root / f"{meta.task_id}-{digest}").resolve()
     _write_staging(meta.task_dir, staging_dir)
 
-    synthesised = _build_synthesised_compose(
+    synthesised, base_build_service = _build_synthesised_compose(
         original=original,
         meta=meta,
         agent_service=agent_service,
+        base_service=base_service,
         image_registry=image_registry,
         image_tag=image_tag,
+        agent_harness=agent_harness,
         runner_image=runner_image,
         db_service_image=db_service_image,
     )
+    if agent_harness != NO_OP_HARNESS:
+        _write_harness_build_context(
+            staging_dir,
+            base_image=_agent_image(meta.task_id, image_registry, image_tag),
+            agent_harness=agent_harness,
+        )
     compose_file = staging_dir / _SYNTHESISED_COMPOSE_FILENAME
     compose_file.write_text(yaml.safe_dump(synthesised, sort_keys=False))
 
@@ -151,6 +194,7 @@ def materialise_task_environment(
         compose_file=compose_file.resolve(),
         agent_service=agent_service,
         staging_dir=staging_dir,
+        base_build_service=base_build_service,
     )
 
 
@@ -178,13 +222,16 @@ def _resolve_agent_service(task_id: str, services: dict[str, Any]) -> str:
     )
 
 
-def _check_no_reserved_service_collisions(task_id: str, services: dict[str, Any]) -> None:
-    for reserved in _INJECTED_SERVICE_NAMES:
+def _check_no_reserved_service_collisions(
+    task_id: str, services: dict[str, Any], base_service: str
+) -> None:
+    reserved_names = (*_INJECTED_SERVICE_NAMES, base_service)
+    for reserved in reserved_names:
         if reserved in services:
             raise ValueError(
                 f"terminal-bench task {task_id!r} compose file declares a service "
                 f"named {reserved!r}; the adapter injects services named "
-                f"{list(_INJECTED_SERVICE_NAMES)!r}, which would silently replace "
+                f"{list(reserved_names)!r}, which would silently replace "
                 f"the task's own {reserved!r}. Rename it."
             )
 
@@ -236,20 +283,50 @@ def _write_staging(task_dir: Path, staging_dir: Path) -> None:
     (staging_dir / "_logs" / "agent").mkdir(parents=True, exist_ok=True)
 
 
+def _write_harness_build_context(staging_dir: Path, *, base_image: str, agent_harness: str) -> None:
+    """Materialise the harness image layer's build context in the staging dir.
+
+    The layer is one ``COPY`` of the install script plus one ``RUN`` of it
+    against *base_image*. Both live under ``_harness/`` so a task pack that
+    ships its own ``install-harness.sh`` or ``harness.Dockerfile`` at its root
+    cannot collide with them.
+    """
+    harness_dir = staging_dir / _HARNESS_STAGING_DIR
+    harness_dir.mkdir(exist_ok=True)
+    shutil.copy2(INSTALL_SCRIPT, harness_dir / INSTALL_SCRIPT.name)
+    (harness_dir / _HARNESS_DOCKERFILE_NAME).write_text(
+        f"FROM {base_image}\n"
+        f"COPY {_HARNESS_STAGING_DIR}/{INSTALL_SCRIPT.name} {_HARNESS_INSTALL_PATH}\n"
+        f"RUN sh {_HARNESS_INSTALL_PATH} {agent_harness}\n"
+    )
+
+
+def _agent_image(task_id: str, image_registry: str | None, image_tag: str) -> str:
+    if image_registry:
+        return f"{image_registry}/{task_id}:{image_tag}"
+    return f"tbench-{task_id}:{image_tag}"
+
+
 def _build_synthesised_compose(
     *,
     original: dict[str, Any],
     meta: TerminalBenchTask,
     agent_service: str,
+    base_service: str,
     image_registry: str | None,
     image_tag: str,
+    agent_harness: str,
     runner_image: str,
     db_service_image: str,
-) -> dict[str, Any]:
-    if image_registry:
-        agent_image = f"{image_registry}/{meta.task_id}:{image_tag}"
-    else:
-        agent_image = f"tbench-{meta.task_id}:{image_tag}"
+) -> tuple[dict[str, Any], str | None]:
+    """Synthesised compose document, plus the base-build service name.
+
+    The second element is the service the orchestrator must build *before*
+    the agent service — non-``None`` only when a harness layer sits on top of
+    a locally-built task image.
+    """
+    base_image = _agent_image(meta.task_id, image_registry, image_tag)
+    agent_image = base_image if agent_harness == NO_OP_HARNESS else f"{base_image}-{agent_harness}"
     agent_container_name = f"{PROJECT_PREFIX}{_TOLOKAFORGE_TRIAL_SLUG_PLACEHOLDER}_{agent_service}"
 
     resolved_vars = {
@@ -267,6 +344,7 @@ def _build_synthesised_compose(
 
     services: dict[str, Any] = doc["services"]
     agent_body: dict[str, Any] = services[agent_service]
+    task_build = agent_body.get("build")
     agent_body["image"] = agent_image
     if image_registry:
         agent_body.pop("build", None)
@@ -274,9 +352,19 @@ def _build_synthesised_compose(
     agent_body["volumes"] = ["./tests:/tests", "./_logs:/logs"]
     agent_body["environment"] = _set_env_key(agent_body.get("environment"), "TEST_DIR", "/tests")
 
+    base_build_service: str | None = None
+    if agent_harness != NO_OP_HARNESS:
+        agent_body["build"] = {
+            "context": ".",
+            "dockerfile": f"{_HARNESS_STAGING_DIR}/{_HARNESS_DOCKERFILE_NAME}",
+        }
+        if task_build is not None and not image_registry:
+            services[base_service] = _harness_base_service_body(base_image, task_build)
+            base_build_service = base_service
+
     services["runner"] = _runner_service_body(runner_image, agent_service)
     services["db-service"] = _db_service_body(db_service_image)
-    return doc
+    return doc, base_build_service
 
 
 def _substitute_tree(node: Any, values: dict[str, str]) -> Any:
@@ -318,6 +406,22 @@ def _set_env_key(existing: Any, key: str, value: str) -> Any:
         filtered.append(f"{key}={value}")
         return filtered
     return {key: value}
+
+
+def _harness_base_service_body(base_image: str, task_build: Any) -> dict[str, Any]:
+    """Build-only service carrying the task's own image build.
+
+    The harness layer is ``FROM`` this service's image, so the two builds must
+    be separately addressable — ``docker compose build`` takes a service name,
+    not an image tag. The compose profile keeps it out of ``docker compose up``:
+    nothing runs in this container, it exists so the base image has a name the
+    orchestrator can build.
+    """
+    return {
+        "image": base_image,
+        "build": deepcopy(task_build),
+        "profiles": [_HARNESS_BUILD_PROFILE],
+    }
 
 
 def _runner_service_body(runner_image: str, agent_service: str) -> dict[str, Any]:

@@ -50,6 +50,10 @@ from tolokaforge_adapter_terminal_bench.compose_synthesis import (
     MaterialisedEnvironment,
     materialise_task_environment,
 )
+from tolokaforge_adapter_terminal_bench.harness import (
+    NO_OP_HARNESS,
+    validate_harness,
+)
 from tolokaforge_adapter_terminal_bench.task_parser import (
     TerminalBenchTask,
     discover_tasks,
@@ -93,6 +97,7 @@ class TerminalBenchAdapter(BaseAdapter):
             params.get("network_policy", NetworkPolicy.FULL_INTERNET.value)
         )
         self.prebuild_images: bool = params.get("prebuild_images", True)
+        self.agent_harness: str = validate_harness(params.get("agent_harness", NO_OP_HARNESS))
         staging_root = params.get("staging_root")
         self.staging_root: Path = (
             Path(staging_root).expanduser().resolve()
@@ -136,6 +141,7 @@ class TerminalBenchAdapter(BaseAdapter):
             staging_root=self.staging_root,
             image_registry=self.image_registry,
             image_tag=self.image_tag,
+            agent_harness=self.agent_harness,
         )
         self._environments[task_id] = env
         return env
@@ -145,6 +151,10 @@ class TerminalBenchAdapter(BaseAdapter):
     def docker_stack_requirements(self) -> DockerStackRequirements:
         """Declare the per-task agent images the orchestrator builds once per run.
 
+        A harness-layered task contributes two entries, base before layer —
+        the layer's Dockerfile is ``FROM`` the base image, and the orchestrator
+        builds the list in order.
+
         Skipped under ``prebuild_images: false``, for callers pre-warming
         images themselves.
         """
@@ -153,6 +163,10 @@ class TerminalBenchAdapter(BaseAdapter):
         builds = []
         for task_id in self.get_task_ids():
             env = self._environment(task_id)
+            if env.base_build_service is not None:
+                builds.append(
+                    ComposeImageBuild(compose_file=env.compose_file, service=env.base_build_service)
+                )
             builds.append(
                 ComposeImageBuild(compose_file=env.compose_file, service=env.agent_service)
             )

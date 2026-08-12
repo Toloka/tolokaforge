@@ -48,6 +48,19 @@ def tbench_adapter(test_data_dir, tmp_path) -> TerminalBenchAdapter:
     )
 
 
+@pytest.fixture
+def tbench_harness_adapter(test_data_dir, tmp_path) -> TerminalBenchAdapter:
+    """The same adapter under harness mode — Claude Code layered onto the task image."""
+    tbench_tasks_dir = test_data_dir / "terminal_bench_tasks"
+    return TerminalBenchAdapter(
+        {
+            "terminal_bench_dir": str(tbench_tasks_dir),
+            "staging_root": str(tmp_path / "staging"),
+            "agent_harness": "claude-code",
+        }
+    )
+
+
 class TestTerminalBenchAdapterCanon:
     """Canonical tests for TerminalBenchAdapter task loading and serialisation."""
 
@@ -87,6 +100,40 @@ class TestTerminalBenchAdapterCanon:
 
         actual = grading.model_dump(mode="json")
         snap.assert_match(actual, "grading_config.json")
+
+
+class TestTerminalBenchHarnessModeCanon:
+    """Harness mode's synthesised substrate — layered image + two declared builds."""
+
+    def test_synthesised_compose(self, tbench_harness_adapter, canon_snapshot):
+        """The layered compose file carries a build-only base service and a CLI layer."""
+        import yaml
+
+        env = tbench_harness_adapter._environment("echo-hello")
+        snap = canon_snapshot("tbench_echo_hello_harness")
+
+        with env.compose_file.open() as f:
+            actual = yaml.safe_load(f)
+        snap.assert_match(actual, "synthesised_compose.json")
+
+    def test_harness_dockerfile(self, tbench_harness_adapter, canon_snapshot):
+        """The generated image layer is one FROM + one COPY + one RUN."""
+        env = tbench_harness_adapter._environment("echo-hello")
+        snap = canon_snapshot("tbench_echo_hello_harness")
+
+        dockerfile = (env.staging_dir / "_harness" / "harness.Dockerfile").read_text()
+        snap.assert_match({"dockerfile": dockerfile}, "harness_dockerfile.json")
+
+    def test_two_image_builds_base_first(self, tbench_harness_adapter):
+        """The layer's Dockerfile is FROM the base, so the base must build first."""
+        requirements = tbench_harness_adapter.docker_stack_requirements()
+        assert [b.service for b in requirements.image_builds] == ["main-base", "main"]
+        compose_files = {b.compose_file for b in requirements.image_builds}
+        assert compose_files == {tbench_harness_adapter._environment("echo-hello").compose_file}
+
+    def test_default_harness_declares_one_build(self, tbench_adapter):
+        requirements = tbench_adapter.docker_stack_requirements()
+        assert [b.service for b in requirements.image_builds] == ["main"]
 
 
 class TestTerminalBenchAdapterIntegrity:

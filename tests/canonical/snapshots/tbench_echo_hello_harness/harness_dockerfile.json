@@ -1,0 +1,3 @@
+{
+  "dockerfile": "FROM tbench-echo-hello:local\nCOPY _harness/install-harness.sh /opt/tolokaforge/install-harness.sh\nRUN sh /opt/tolokaforge/install-harness.sh claude-code\n"
+}

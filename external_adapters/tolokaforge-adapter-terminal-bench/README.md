@@ -95,3 +95,39 @@ The adapter declares the build via
 orchestrator's image-preparation step runs `docker compose build` once per
 run before any trial provisions. Synthesis itself never shells out —
 `materialise_task_environment` only reads and writes files.
+
+## Harness mode — coding-harness CLIs
+
+`agent_harness` selects which agent drives the trial. The default,
+`terminus-2`, keeps the engine's LLM turn loop and leaves the task image
+untouched. Any other accepted value (`claude-code`, `codex`, `gemini-cli`)
+installs that vendor's CLI into the task image.
+
+### Image layering
+
+The task's image and the CLI install are separate layers, so a task rebuild
+and a harness switch don't invalidate each other:
+
+| Compose service    | Image                                    | Role                                              |
+| ------------------ | ---------------------------------------- | ------------------------------------------------- |
+| `{agent}-base`     | `tbench-{task_id}:{image_tag}`           | The task's own build. Build-only — never started. |
+| `{agent}`          | `tbench-{task_id}:{image_tag}-{harness}` | `FROM` the base, plus the CLI.                    |
+
+The base service carries `profiles: [tolokaforge-build]`, which is what keeps
+it out of `docker compose up`: it exists so the base image has a service name
+`docker compose build` can address. `docker_stack_requirements()` declares
+both builds, base first.
+
+The layer's Dockerfile is generated into the staging directory as
+`_harness/harness.Dockerfile` and runs `_harness/install-harness.sh`, a copy
+of the adapter's own [`harness/install-harness.sh`](src/tolokaforge_adapter_terminal_bench/harness/install-harness.sh).
+That script is the single place a harness's install steps live; an
+unrecognised harness name aborts the image build rather than producing an
+image whose missing CLI would surface as a trial-time "command not found".
+
+Because the layered image tag carries the harness name, switching harnesses
+can never reuse a stale cached image — and the harness is part of the staging
+digest, so each harness gets its own staging directory.
+
+When `image_registry` is set the base image is pulled rather than built, so
+no base service is declared and only the layer is built locally.
