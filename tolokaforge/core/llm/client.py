@@ -2440,6 +2440,12 @@ Rules:
                 result.text = "Let me check that."
             return result
 
-        result, rejected = self._reply_guard.enforce(generate)
+        # The guard logs under its own logger name, so the trial identity has to
+        # travel as record context; ``observation`` is where the trial already
+        # hands this call site its identity.
+        result, rejected = self._reply_guard.enforce(
+            generate,
+            log_extra=None if observation is None else {"trial_id": observation.trial_id},
+        )
         result.guard_rejections = rejected
         return result

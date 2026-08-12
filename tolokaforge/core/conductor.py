@@ -658,7 +658,8 @@ class InProcessConductor:
             # run has to cover it too — otherwise a simulator 429 kills the trial
             # the agent-side probe was keeping alive. It gets the shorter
             # simulator-scoped per-call budget: its throughput is not what the probe
-            # measures, and both budgets are spent inside one uninterruptible turn.
+            # measures, and one turn can spend the simulator's budget once per
+            # reply-guard attempt, all inside one uninterruptible turn.
             user_simulator = UserSimulator(
                 mode=sim.mode,
                 llm_config=user_llm_config,

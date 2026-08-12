@@ -19,15 +19,32 @@ it plays. Its governing rule, which every pattern obeys:
     when possessed by the agent, or by the speaker with an instruction verb.
 
 The bare noun never matches, and neither does a noun used attributively (``an
-AI engineer``, ``a benchmark index fund``, ``a real person of interest``) — the
-second clause is what makes the first one safe. ``ai``, ``model``, ``prompt``,
-``benchmark``, ``simulation`` and ``llm`` are ordinary support vocabulary and
-are not triggers on their own: a false positive costs a whole turn's attempt
-budget and then the trial, so precision outranks recall here.
+AI engineer``, ``a benchmark index fund``, ``a real person of interest``, ``your
+system prompt caching feature``) — the second clause is what makes the first one
+safe. ``ai``, ``model``, ``prompt``, ``benchmark``, ``simulation`` and ``llm``
+are ordinary support vocabulary and are not triggers on their own: a false
+positive costs a whole turn's attempt budget and then the trial, so precision
+outranks recall here.
 
 The user describing the *agent* as a machine (``"You are chatting with an
 internal AI agent"``) is in frame and passes by design; only the simulator
 describing *itself* is a defect.
+
+Recall deliberately given up, because the same words carry a support meaning
+often enough that the demonstrative head cannot separate them:
+
+* ``exercise``, ``evaluation``, ``benchmark`` and ``test scenario/case/run/
+  conversation`` as bare exercise nouns — ``"This exercise is not showing up in
+  my activity ring."``, ``"This evaluation is taking too long."``, ``"This
+  benchmark is up 4% this year."``, ``"This test case is failing after your last
+  release."`` are ordinary support turns. Only the compounds (``roleplay
+  exercise``, ``training exercise``, ``evaluation exercise``) and the
+  prepositional frame (``in this benchmark``) survive, so a bare ``"This
+  benchmark tests performance."`` is missed.
+* ``instructions`` in every position — ``"My instructions say to take two
+  tablets daily."`` is a support turn far more often than a leaked persona.
+* ``"I'm an LLM-based assistant."`` — the hyphen makes the machine noun
+  attributive, which is the anchor doing its job on a genuine break.
 """
 
 from __future__ import annotations
@@ -44,6 +61,7 @@ if TYPE_CHECKING:
     from tolokaforge.core.llm.client import GenerationResult
 
 __all__ = [
+    "DEFAULT_REPLY_DETECTORS",
     "FourthWallDetector",
     "ReplyDetector",
     "UserReplyGuard",
@@ -53,68 +71,70 @@ __all__ = [
 _logger = get_logger("user_reply_guard")
 
 
-MACHINE_NOUN = (
+_MACHINE_NOUN = (
     r"(?:large\s+language\s+model|language\s+model|virtual\s+assistant"
     r"|AI\s+assistant|AI\s+agent|chatbot|A\.I\.|AI\s+(?:model|system|bot|program)|AI(?!-)|LLM)"
 )
-EXERCISE_NOUN = (
-    r"(?:simulation|simulated\s+\w+|benchmark|roleplay|role[-\s]play|evaluation|exercise"
-    r"|test\s+(?:scenario|case|run|conversation))"
+_EXERCISE_NOUN = (
+    r"(?:simulation|simulated\s+\w+|roleplay|role[-\s]play"
+    r"|(?:roleplay|role[-\s]play|training|evaluation)\s+exercise)"
 )
 _CLOSE = r"[.,;:!?)\"']"
 
 # Every family needs the same guarantee — the noun must HEAD its phrase, not
 # modify a following noun — but the legal continuations differ, so there are
 # three anchors rather than one.
-#   EXERCISE_END allows `of`: "this is a simulation OF the task" is a hit.
-EXERCISE_END = (
+#   _EXERCISE_END allows `of`: "this is a simulation OF the task" is a hit.
+_EXERCISE_END = (
     rf"(?=\s*(?:{_CLOSE}|$)|\s+(?:so|and|but|then|right|okay|ok|of|for|where|which"
     r"|that|to|I|we|you|is|was|isn't)\b)"
 )
-#   MACHINE_END forbids a following bare noun ("I'm an AI engineer") but allows
-#   participles, which modify the machine noun ("a chatbot following a script").
-MACHINE_END = (
+#   _MACHINE_END forbids a following bare noun ("I'm an AI engineer", "your
+#   system prompt caching feature") but allows participles, which modify the
+#   noun rather than replace it ("a chatbot following a script"). The system
+#   prompt family shares it: both are nouns a support turn uses attributively.
+_MACHINE_END = (
     rf"(?=\s*(?:{_CLOSE}|$)|\s+(?:and|but|so|then|too|here|now|really|honestly|unfortunately"
     r"|I|my|you|your|it|its|this|that|who|which|we|they|am|are|is|was|were|can|cannot|can't"
     r"|don't|do|does|doesn't|have|has|had|will|would|following|designed|trained|built"
     r"|programmed|created|running|responding|talking|speaking)\b)"
 )
-#   HUMAN_END excludes `of`/`for`: "not a real person OF interest" is a fraud ticket.
-HUMAN_END = rf"(?=\s*(?:{_CLOSE}|$)|\s+(?:and|but|so|then|here|I|it|this|that|you|we|they)\b)"
+#   _HUMAN_END excludes `of`/`for`: "not a real person OF interest" is a fraud ticket.
+_HUMAN_END = rf"(?=\s*(?:{_CLOSE}|$)|\s+(?:and|but|so|then|here|I|it|this|that|you|we|they)\b)"
 
 _FOURTH_WALL_PATTERNS: tuple[tuple[str, str], ...] = (
     # family 1 — the speaker identifies itself as a machine
     (
         "self_identified_as_model",
         rf"\bI(?:'m| am| was)\s+(?:just\s+|only\s+|merely\s+)?(?:an?\s+)?"
-        rf"(?:\w+[\s-]+){{0,2}}?{MACHINE_NOUN}\b{MACHINE_END}",
+        rf"(?:\w+[\s-]+){{0,2}}?{_MACHINE_NOUN}\b{_MACHINE_END}",
     ),
     (
         "self_identified_as_model",
-        rf"\bas\s+an?\s+(?:\w+[\s-]+){{0,2}}?{MACHINE_NOUN}\b\s*,?\s+(?:I\b|my\b)",
+        rf"\bas\s+an?\s+(?:\w+[\s-]+){{0,2}}?{_MACHINE_NOUN}\b\s*,?\s+(?:I\b|my\b)",
     ),
     (
         "denied_being_human",
         rf"\bI(?:'m| am)\s+not\s+(?:a\s+)?(?:real|actual|human|genuine)\s+"
-        rf"(?:person|customer|user|human|caller)\b{HUMAN_END}",
+        rf"(?:person|customer|user|human|caller)\b{_HUMAN_END}",
     ),
     # family 2 — the exercise named as an exercise, or a party's prompt named
     (
         "named_the_exercise",
         rf"\bthis\s+(?:conversation\s+|chat\s+|call\s+)?(?:is|was)\s+"
         rf"(?:just\s+|only\s+|merely\s+)?an?\s+"
-        rf"{EXERCISE_NOUN}(?:\s+{EXERCISE_NOUN})?\b{EXERCISE_END}",
+        rf"{_EXERCISE_NOUN}(?:\s+{_EXERCISE_NOUN})?\b{_EXERCISE_END}",
     ),
     (
         "named_the_exercise",
-        rf"\bthis\s+{EXERCISE_NOUN}\s+(?:is|was|tests|measures|scores|ends|starts|matters)\b",
+        rf"\bthis\s+{_EXERCISE_NOUN}\s+(?:is|was|tests|measures|scores|ends|starts|matters)\b",
     ),
     (
         "named_the_exercise",
         r"\b(?:in|for|during)\s+(?:this|the)\s+"
         r"(?:simulation|benchmark|roleplay|role[-\s]play|evaluation\s+run)\b",
     ),
-    ("named_a_party_prompt", r"\b(?:your|its|the\s+agent's)\s+system\s+prompt\b"),
+    ("named_a_party_prompt", rf"\b(?:your|its|the\s+agent's)\s+system\s+prompt\b{_MACHINE_END}"),
     (
         "named_a_party_prompt",
         r"\bmy\s+system\s+prompt\s+(?:say|says|said|tells?|instructs?|states?)\b",
@@ -141,7 +161,14 @@ class ReplyDetector(Protocol):
     name: str
 
     def inspect(self, text: str) -> ReplyDefect | None:
-        """Return the defect found in *text*, or ``None`` when it is clean."""
+        """Return the defect found in *text*, or ``None`` when it is clean.
+
+        The defect's ``excerpt`` must be truncated to
+        :data:`~tolokaforge.core.models.trajectory.REPLY_DEFECT_EXCERPT_MAX_CHARS`.
+        A longer span fails :class:`ReplyDefect` validation inside this call, so
+        the reply escapes the guard as an unclassified crash instead of costing
+        one attempt and being regenerated.
+        """
         ...
 
 
@@ -162,6 +189,24 @@ class FourthWallDetector:
         return None
 
 
+def _reason_codes(rejected: Sequence[ReplyDefect]) -> list[str]:
+    """The discarded attempts as ``detector:reason`` codes, never their text.
+
+    Everything the guard surfaces outside its own ``WARNING`` lines — the
+    refusal message, an exception note, the refusal log's ``reasons`` — is built
+    from this, so no rejected reply can reach a consumer that reads prose.
+    """
+    return [f"{defect.detector}:{defect.reason}" for defect in rejected]
+
+
+DEFAULT_REPLY_DETECTORS: tuple[ReplyDetector, ...] = (FourthWallDetector(),)
+"""The detectors every :class:`UserReplyGuard` runs unless told otherwise.
+
+Tuple order is inspection order — the first detector to flag a reply owns it.
+The instances are built once at import and shared by every guard, so a detector
+registered here carries no per-trial state."""
+
+
 class UserReplyRefused(RuntimeError):
     """Every generation of one user turn broke frame.
 
@@ -175,7 +220,7 @@ class UserReplyRefused(RuntimeError):
 
     def __init__(self, rejected: tuple[ReplyDefect, ...]) -> None:
         self.rejected = rejected
-        codes = ", ".join(f"{defect.detector}:{defect.reason}" for defect in rejected)
+        codes = ", ".join(_reason_codes(rejected))
         super().__init__(
             f"User simulator broke frame on all {len(rejected)} generation attempts "
             f"({codes}); the turn is refused rather than delivered. The rejected text "
@@ -188,7 +233,7 @@ class UserReplyGuard:
 
     def __init__(
         self,
-        detectors: Sequence[ReplyDetector] = (FourthWallDetector(),),
+        detectors: Sequence[ReplyDetector] = DEFAULT_REPLY_DETECTORS,
         *,
         max_attempts: int = USER_REPLY_MAX_ATTEMPTS,
     ) -> None:
@@ -201,7 +246,10 @@ class UserReplyGuard:
         self.max_attempts = max_attempts
 
     def enforce(
-        self, generate: Callable[[], GenerationResult]
+        self,
+        generate: Callable[[], GenerationResult],
+        *,
+        log_extra: dict[str, str] | None = None,
     ) -> tuple[GenerationResult, tuple[ReplyDefect, ...]]:
         """Return the first clean generation, paired with the defects discarded before it.
 
@@ -209,16 +257,34 @@ class UserReplyGuard:
         in registration order and taking the first hit, so one discarded attempt
         yields exactly one defect. Raises :class:`UserReplyRefused` when the
         budget is spent.
+
+        *log_extra* is stamped on every log line this call emits. The guard logs
+        under its own logger name, so without it the caller's trial identity —
+        the only thing that ties a discarded reply to the trial that paid for it
+        — is absent from the record.
+
+        A *generate* failure after one or more discards re-raises with the
+        discarded reason codes attached as a note: the exception is what the
+        trial reports, and those attempts are otherwise lost with the call.
         """
         rejected: list[ReplyDefect] = []
         for attempt in range(1, self.max_attempts + 1):
-            result = generate()
+            try:
+                result = generate()
+            except Exception as exc:
+                if rejected:
+                    exc.add_note(
+                        f"{len(rejected)} user reply/replies were discarded for broken "
+                        f"frame before this error: {', '.join(_reason_codes(rejected))}"
+                    )
+                raise
             defect = self._inspect(result.text)
             if defect is None:
                 return result, tuple(rejected)
             rejected.append(defect)
             _logger.warning(
                 "User simulator broke frame; discarding the reply and regenerating",
+                context=log_extra,
                 detector=defect.detector,
                 reason=defect.reason,
                 excerpt=defect.excerpt,
@@ -227,7 +293,8 @@ class UserReplyGuard:
             )
         _logger.error(
             "User simulator broke frame on every attempt; refusing the turn",
-            reasons=[f"{defect.detector}:{defect.reason}" for defect in rejected],
+            context=log_extra,
+            reasons=_reason_codes(rejected),
             attempts=self.max_attempts,
         )
         raise UserReplyRefused(tuple(rejected))

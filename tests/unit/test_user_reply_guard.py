@@ -13,13 +13,17 @@ describing the speaker) cannot drift apart across two tests.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 from tolokaforge.core.actors.reply_guard import (
+    DEFAULT_REPLY_DETECTORS,
     FourthWallDetector,
     ReplyDetector,
     UserReplyGuard,
@@ -30,6 +34,7 @@ from tolokaforge.core.llm import GenerationResult, UserSimulator
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
 from tolokaforge.core.models import (
+    REPLY_DEFECT_EXCERPT_MAX_CHARS,
     USER_REPLY_MAX_ATTEMPTS,
     Message,
     MessageRole,
@@ -37,6 +42,7 @@ from tolokaforge.core.models import (
     TerminationReason,
     Trajectory,
     TrialStatus,
+    UserReplyGuardEvent,
     UserReplyOutcome,
 )
 from tolokaforge.core.run_display_events import LLMCallObservation
@@ -79,6 +85,22 @@ MUST_PASS = [
     "They sent me an evaluation copy of the software.",
     "This is a test drive booking, not a purchase.",
     "The evaluation report is attached.",
+    # A demonstrative head is not enough on its own: `exercise`, `evaluation`,
+    # `benchmark` and `test scenario/case` all carry a support meaning under one,
+    # so only their compounds are exercise nouns. The cost is stated in the
+    # detector module's residual-recall list — a bare "This benchmark tests
+    # performance." is now missed.
+    "This is an exercise for my knee, and it hurts after.",
+    "This exercise is not showing up in my activity ring.",
+    "This evaluation is taking too long, when will I hear back?",
+    "This is an evaluation, so how long does it usually take?",
+    "This benchmark is up 4% this year but my fund is flat.",
+    "This is a test scenario I ran in staging and it failed.",
+    "This test case is failing after your last release.",
+    # `system prompt` heads its phrase in "your system prompt is confusing" and
+    # modifies the following noun in these two.
+    "Your system prompt caching feature returns a 400.",
+    "Its system prompt handling broke after the upgrade.",
 ]
 
 MUST_DETECT = [
@@ -91,9 +113,11 @@ MUST_DETECT = [
     ("I'm not a real customer, this is a benchmark.", "denied_being_human"),
     ("This is a simulation, so the details don't matter.", "named_the_exercise"),
     ("This is a simulation of the task.", "named_the_exercise"),
-    ("This benchmark tests performance.", "named_the_exercise"),
     ("This conversation is a roleplay exercise.", "named_the_exercise"),
+    ("This is a training exercise, so the account details are fake.", "named_the_exercise"),
+    ("This was an evaluation exercise for the support team.", "named_the_exercise"),
     ("In this simulation, I play the role of a customer.", "named_the_exercise"),
+    ("In this benchmark, I am playing a frustrated customer.", "named_the_exercise"),
     ("Your system prompt is confusing.", "named_a_party_prompt"),
     ("My system prompt says to keep answers short.", "named_a_party_prompt"),
     ("The backstory says I should be annoyed.", "named_own_instructions"),
@@ -167,11 +191,25 @@ class TestTheDetectorCorpus:
 
     @pytest.mark.parametrize(("text", "reason"), MUST_DETECT)
     def test_a_broken_frame_is_detected_with_its_reason(self, text: str, reason: str) -> None:
-        defect = FourthWallDetector().inspect(text)
+        detector = FourthWallDetector()
+
+        defect = detector.inspect(text)
+
         assert defect is not None
         assert defect.reason == reason
-        assert defect.detector == "fourth_wall"
+        assert defect.detector == detector.name
         assert defect.excerpt in text
+
+    def test_an_overlong_match_is_bounded_before_it_reaches_the_model(self) -> None:
+        """A span longer than the excerpt bound fails :class:`ReplyDefect`
+        validation inside ``inspect``, which would take the reply out of the
+        guard as an unclassified crash instead of one discarded attempt."""
+        text = "I am an" + " " * 500 + "AI"
+
+        defect = FourthWallDetector().inspect(text)
+
+        assert defect is not None
+        assert len(defect.excerpt) == REPLY_DEFECT_EXCERPT_MAX_CHARS
 
 
 class TestTheDeliveredReplyIsTheGeneratedReply:
@@ -235,6 +273,40 @@ class TestTheBudgetIsBoundedAndTheRefusalIsLoud:
         assert "As an AI language model" not in message
 
 
+class TestDiscardsSurviveAFailureOnALaterAttempt:
+    """A generation that raises ends the turn through the provider's exception,
+    not through :class:`UserReplyRefused` — the attempts already discarded are
+    the reason the budget was short, so they travel on that exception."""
+
+    @staticmethod
+    def _raises_after(replies: list[str]) -> Callable[[], GenerationResult]:
+        pending = iter(replies)
+
+        def generate() -> GenerationResult:
+            text = next(pending, None)
+            if text is None:
+                raise RuntimeError("provider connection reset")
+            return GenerationResult(text=text)
+
+        return generate
+
+    def test_the_discarded_reason_codes_ride_on_the_later_error(self) -> None:
+        with pytest.raises(RuntimeError, match="provider connection reset") as excinfo:
+            UserReplyGuard().enforce(self._raises_after([FOURTH_WALL_REPLY]))
+
+        (note,) = excinfo.value.__notes__
+        assert "1 user reply" in note
+        assert "fourth_wall:self_identified_as_model" in note
+        assert "AX3000" not in note
+        assert "As an AI language model" not in note
+
+    def test_a_failure_with_nothing_discarded_carries_no_note(self) -> None:
+        with pytest.raises(RuntimeError, match="provider connection reset") as excinfo:
+            UserReplyGuard().enforce(self._raises_after([]))
+
+        assert not hasattr(excinfo.value, "__notes__")
+
+
 class TestARefusedTurnCountsAsOurDefect:
     """The reply names a provider interface, so quoting it in the exception
     would move the trial out of the harness-error class."""
@@ -264,35 +336,42 @@ class TestARefusedTurnCountsAsOurDefect:
 
 
 class _AlwaysHits:
-    """Test-local detector standing in for a future registration."""
+    """Test-local detector standing in for a future registration.
 
-    name = "always_hits"
+    Named at construction, so a recorded name that came from anywhere but the
+    registered instance shows up as a mismatch rather than as a coincidence.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
 
     def inspect(self, text: str) -> ReplyDefect | None:
         return ReplyDefect(detector=self.name, reason="test_local", excerpt=text[:20])
 
 
 class TestDetectorsAreAPluggableList:
-    def test_the_registered_detector_is_conformant(self) -> None:
-        assert isinstance(_AlwaysHits(), ReplyDetector)
-        assert isinstance(FourthWallDetector(), ReplyDetector)
+    def test_the_default_registration_is_the_fourth_wall_detector(self) -> None:
+        assert [d.name for d in DEFAULT_REPLY_DETECTORS] == [FourthWallDetector().name]
+        assert UserReplyGuard().detectors == DEFAULT_REPLY_DETECTORS
 
     def test_registration_order_decides_and_the_first_hit_wins(self) -> None:
-        guard = UserReplyGuard(detectors=(FourthWallDetector(), _AlwaysHits()))
+        detectors: tuple[ReplyDetector, ...] = (FourthWallDetector(), _AlwaysHits("second"))
+        guard = UserReplyGuard(detectors=detectors)
 
         with pytest.raises(UserReplyRefused) as excinfo:
             guard.enforce(lambda: GenerationResult(text=FOURTH_WALL_REPLY))
 
-        assert {d.detector for d in excinfo.value.rejected} == {"fourth_wall"}
+        assert {d.detector for d in excinfo.value.rejected} == {FourthWallDetector().name}
 
-    def test_a_reply_only_the_second_detector_flags_carries_its_name(self) -> None:
-        guard = UserReplyGuard(detectors=(FourthWallDetector(), _AlwaysHits()))
+    def test_a_reply_only_the_second_detector_flags_carries_its_registered_name(self) -> None:
+        detectors: tuple[ReplyDetector, ...] = (FourthWallDetector(), _AlwaysHits("scratchpad"))
+        guard = UserReplyGuard(detectors=detectors)
 
         with pytest.raises(UserReplyRefused) as excinfo:
             guard.enforce(lambda: GenerationResult(text=CLEAN_REPLY))
 
         assert [(d.detector, d.reason) for d in excinfo.value.rejected] == [
-            ("always_hits", "test_local")
+            ("scratchpad", "test_local")
         ] * USER_REPLY_MAX_ATTEMPTS
 
 
@@ -456,3 +535,28 @@ class TestTheBundleRecordsWhatAUserTurnCost:
 
         assert trajectory.user_reply_guard_events == []
         assert any(m.content == CLEAN_REPLY for m in trajectory.messages)
+
+    def test_an_event_that_discarded_nothing_cannot_be_constructed(self) -> None:
+        """The empty list is what "this turn was clean" would look like, and a
+        clean turn is recorded by the absence of an event."""
+        with pytest.raises(ValidationError):
+            UserReplyGuardEvent(
+                message_index=0,
+                outcome=UserReplyOutcome.DELIVERED,
+                rejected=[],
+            )
+
+    def test_every_guard_log_line_names_the_trial_that_paid_for_it(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The guard logs under its own logger name, so the trial identity has
+        to arrive as record context or the discarded reply cannot be tied to the
+        trial whose budget it spent."""
+        with caplog.at_level(logging.WARNING, logger="user_reply_guard"):
+            _run_trial(
+                user_replies=[FOURTH_WALL_REPLY, CLEAN_REPLY],
+                agent_texts=[AGENT_TURN_TEXT, AGENT_STOP],
+            )
+
+        guard_lines = [record for record in caplog.records if record.name == "user_reply_guard"]
+        assert [record.trial_id for record in guard_lines] == ["guard:0"]

@@ -504,8 +504,10 @@ class UserReplyGuardEvent(BaseModel):
     outcome: UserReplyOutcome
     """The guard's verdict, not the runner's subsequent disposition of the reply."""
 
-    rejected: list[ReplyDefect]
-    """One entry per discarded attempt, in the order they were generated."""
+    rejected: list[ReplyDefect] = Field(min_length=1)
+    """One entry per discarded attempt, in the order they were generated.
+
+    Never empty: a turn that discarded nothing records no event at all."""
 
 
 class Trajectory(BaseModel):

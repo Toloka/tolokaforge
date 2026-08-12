@@ -289,7 +289,7 @@ class TestTheOvershootIsPartOfTheInvariant:
         """The per-task re-check reads the same ceiling, so a pack's
         ``trial_seconds`` clamp cannot smuggle an unfittable overshoot through."""
         probe = RateLimitProbeConfig(enabled=True, retry_interval_s=1200.0)
-        # Legal at the run level: 4200 + 2 x (1440 + 737) = 8554 < 14400.
+        # Legal at the run level: 5400 + 4 x (1440 + 737) = 14108 < 14400.
         config = _run_config(probe=probe)
         assert config.orchestrator.rate_limit_probe.turn_wall_ceiling_s < 14400
 
@@ -435,7 +435,8 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
 class TestUserSimulatorCarriesTheMode:
     """The simulator shares the agent's provider quota, so it has to probe too —
     but with the shorter per-call budget, because its throughput is not what the
-    probe measures and both budgets are spent inside one uninterruptible turn."""
+    probe measures and one turn can spend the simulator's budget once per
+    reply-guard attempt, all inside one uninterruptible turn."""
 
     def test_llm_simulator_client_uses_the_probe_controller(
         self, monkeypatch: pytest.MonkeyPatch

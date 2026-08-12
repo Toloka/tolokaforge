@@ -482,9 +482,14 @@ list of `ReplyDetector`s over the reply text:
 - A flagged reply is **discarded whole and regenerated**. No text is edited,
   excised, truncated or substituted — the engine has no path that can put words
   into a turn the model did not write.
-- Every discarded attempt logs at `WARNING` with the detector, the reason code
-  and the matched excerpt, and rides back on
-  `GenerationResult.guard_rejections`.
+- Every discarded attempt logs at `WARNING` with the detector, the reason code,
+  the matched excerpt and the `trial_id` that paid for it, and rides back on
+  `GenerationResult.guard_rejections`. The guard logs under its own logger name,
+  so `_llm_reply` hands it the trial identity the call's `LLMCallObservation`
+  carries.
+- A generation that *fails* after one or more discards re-raises with the
+  discarded reason codes attached as an exception note — the provider's error is
+  what the trial reports, and those attempts are otherwise lost with the call.
 - When `USER_REPLY_MAX_ATTEMPTS` generations have all been flagged, the guard
   raises `UserReplyRefused`. The trial terminates `reason=error` and is counted
   as a `harness_error` — our defect, in the denominator, never the agent's. The
@@ -506,8 +511,10 @@ trial that died on the guard still carries the evidence for why. A trial whose
 every turn was clean carries `[]`. Field reference in
 [`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § `trajectory.yaml`.
 
-`FourthWallDetector` (`name = "fourth_wall"`) is the registered detector. It
-matches **attributed frames**, not vocabulary: a pattern fires only when the
+`DEFAULT_REPLY_DETECTORS` is the registration list every guard runs unless
+constructed with another; `FourthWallDetector` (`name = "fourth_wall"`) is its
+one member, and the name a defect is recorded under is the registered detector's.
+It matches **attributed frames**, not vocabulary: a pattern fires only when the
 meta-concept is attributed to a conversational party or to the exercise itself
 *and* the noun carrying it heads its own phrase. Two families:
 
@@ -517,10 +524,18 @@ meta-concept is attributed to a conversational party or to the exercise itself
 | the exercise is named as an exercise, or a party's prompt or persona is named | `named_the_exercise`, `named_a_party_prompt`, `named_own_instructions` | `This is a simulation of the task.` |
 
 Bare `ai`, `model`, `prompt`, `benchmark`, `simulation` and `llm` are ordinary
-support vocabulary and never trigger on their own, and neither does a machine
-noun used attributively (`I'm an AI engineer at a fintech startup`, `a benchmark
-index fund`, `not a real person of interest`). A false positive costs the whole
-attempt budget and then the trial, so precision outranks recall.
+support vocabulary and never trigger on their own, and neither does a noun used
+attributively (`I'm an AI engineer at a fintech startup`, `a benchmark index
+fund`, `not a real person of interest`, `your system prompt caching feature`). A
+false positive costs the whole attempt budget and then the trial, so precision
+outranks recall — and where a demonstrative head cannot separate the two senses,
+the frame is given up rather than the support turn. `exercise`, `evaluation`,
+`benchmark` and `test scenario` / `test case` are exercise nouns only in their
+compounds (`roleplay exercise`, `training exercise`, `evaluation exercise`) and
+under the prepositional frame (`in this benchmark`), so `This exercise is not
+showing up in my activity ring.` passes and a bare `This benchmark tests
+performance.` is missed. The module's docstring carries the full list of the
+recall given up and why.
 
 The user describing the **agent** as a machine (`You are chatting with an
 internal AI agent, right?`) is in frame and passes by design; only the simulator
