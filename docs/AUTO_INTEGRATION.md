@@ -83,7 +83,8 @@ DID produce and routes it for a post-hoc human scope-check.)
   [`tolokaforge_models/src/tolokaforge_models/policies/`](../tolokaforge_models/src/tolokaforge_models/policies/)
   (plus the `[project.entry-points."tolokaforge.policies"]` line in
   [`tolokaforge_models/pyproject.toml`](../tolokaforge_models/pyproject.toml)). A Bucket B fix
-  additionally writes into [`tolokaforge/core/llm/`](../tolokaforge/core/llm/). Before committing,
+  additionally writes into [`tolokaforge/core/llm/`](../tolokaforge/core/llm/), which this pipeline
+  refuses to commit (see the classification bullet below). Before committing,
   the workflow VERIFIES the staged tree (what it is about to commit, via `git stash --keep-index`):
   it must import, must not turn any already-valid tool-call arg invalid
   (`test_policy_no_regression`, the anti-over-reach gate), and must recover the array-corruption
@@ -94,15 +95,18 @@ DID produce and routes it for a post-hoc human scope-check.)
   passing (>= 0.9) may be `known_unsupported` - catching the free-form cert's under-declaration and
   false-pessimism.
 - The workflow then classifies the staged tree via `automation classify-paths --paths-from-cached`
-  (see [`tools/automation/src/automation/bucket_classifier.py`](../tools/automation/src/automation/bucket_classifier.py))
-  and tags the commit accordingly: a Bucket A result (models-wheel only) commits with
+  (see [`tools/automation/src/automation/bucket_classifier.py`](../tools/automation/src/automation/bucket_classifier.py)).
+  The classification is a **gate**, not a label. A Bucket A result (models-wheel only) commits with
   `(Bucket A: preset + cert)` after the model slug and the Slack notification names
-  `Bucket A: preset + cert (models-wheel only, no engine change)`; a Bucket B result (engine
-  change touched) commits with `(Bucket B: engine + models-wheel)` and the Slack notification
-  names `Bucket B: engine + models-wheel (engine paths touched: <csv>)`. Both buckets flow through
-  the same commit + push code path — the taxonomy is informational, not gating. See
-  [ADR-0030](adr/0030-tolokaforge-models-split.md) for the release-cadence implication (Bucket A
-  ships on the `tolokaforge-models` tag axis; Bucket B forces an engine release).
+  `Bucket A: preset + cert (models-wheel only, no engine change)`. A Bucket B result (any engine
+  path touched) is **refused**: nothing is committed, the run exits non-zero, and a needs-human
+  Slack reply names the offending paths. A Bucket B candidate needs a new base hook, policy slot,
+  or capability category, which is a human decision on the engine's own release axis — see
+  [ADR-0030](adr/0030-tolokaforge-models-split.md) and
+  [`docs/ADD_NEW_MODEL.md`](ADD_NEW_MODEL.md) § Bucket B.
+- `tolokaforge/core/llm` stays in the `git add` whitelist deliberately, even though the workflow
+  will never commit it. Staging is how the classifier *sees* an engine-side write; leaving it
+  unstaged would hide it and the run would commit a models-wheel half with a dangling reference.
 - Only then does it commit to the PR branch, comment the record, and label
   `automation:integrate-done`. A broken / over-reaching / divergent fix (or a cert that does not
   reconcile) fails verification here and goes to `automation:integrate-needs-human`. NEVER merges.

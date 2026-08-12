@@ -304,3 +304,81 @@ def test_release_workflow_is_callable_and_validates_the_increment() -> None:
         "workflow_call passes `bump` as a free string (choice is dispatch-only), "
         "so an unrecognised value must fail loud instead of silently meaning auto"
     )
+
+
+# ---------------------------------------------------------------------------
+# The auto-merge path has to dispatch its own release.
+#
+# `gh pr merge` pushes with GITHUB_TOKEN, and a GITHUB_TOKEN push does not
+# trigger `push`-event workflows (the Actions recursion guard this workflow
+# already documents for the label path). So on the auto-merge path the push
+# trigger never fires and the release must be dispatched explicitly.
+# ---------------------------------------------------------------------------
+
+
+def _report_step_body() -> str:
+    doc = yaml.safe_load(_WORKFLOW_PATH.read_text())
+    for job in doc["jobs"].values():
+        for step in job.get("steps", []):
+            run = step.get("run")
+            if isinstance(run, str) and "gh pr merge" in run:
+                return run
+    raise AssertionError("no step invoking `gh pr merge` found")
+
+
+def test_auto_merge_dispatches_the_models_release() -> None:
+    body = _report_step_body()
+    assert "gh workflow run release-models.yml" in body, (
+        "a GITHUB_TOKEN squash-push cannot trigger the push-event release "
+        "workflow, so the auto-merge path must dispatch the release itself"
+    )
+    assert "-f bump=minor" in body, "the dispatched release must request the minor increment"
+    guard = re.search(r'if \[ "\$MERGED" = "yes" \]; then(.*?)\n *fi\n', body, re.DOTALL)
+    assert guard is not None, "the dispatch must be gated on the merge having succeeded"
+    assert "gh workflow run" in guard.group(1), (
+        "the dispatch belongs inside the MERGED guard — dispatching when we did not "
+        "merge would release a model that is not on main, and a human merge is "
+        "already covered by the push trigger"
+    )
+
+
+def test_workflow_can_dispatch_workflows() -> None:
+    doc = yaml.safe_load(_WORKFLOW_PATH.read_text())
+    assert doc["permissions"].get("actions") == "write", (
+        "`gh workflow run` needs `actions: write`; without it the release "
+        "dispatch fails at the end of an otherwise successful integration"
+    )
+
+
+def test_generic_needs_human_defers_to_a_specific_handler() -> None:
+    doc = yaml.safe_load(_WORKFLOW_PATH.read_text())
+    for job in doc["jobs"].values():
+        for step in job.get("steps", []):
+            name = step.get("name", "")
+            run = step.get("run")
+            if not isinstance(name, str) or not name.startswith("Flag needs-human"):
+                continue
+            if isinstance(run, str):
+                assert "slack_terminal_sent" in run, (
+                    "the generic needs-human notifier must skip when a specific "
+                    "handler already spoke, or a precise message (e.g. the Bucket B "
+                    "refusal) is followed by a generic one that is wrong about why "
+                    "the run stopped"
+                )
+                assert run.index("slack_terminal_sent") < run.index("gh pr comment"), (
+                    "the dedup check must precede the PR comment, not only the Slack call"
+                )
+                return
+    raise AssertionError("no `Flag needs-human` step found")
+
+
+def test_release_trigger_does_not_share_the_callee_concurrency_group() -> None:
+    doc = yaml.safe_load(_RELEASE_TRIGGER_PATH.read_text())
+    callee = yaml.safe_load(_RELEASE_WORKFLOW_PATH.read_text())
+    caller_group = (doc.get("concurrency") or {}).get("group")
+    callee_group = (callee.get("concurrency") or {}).get("group")
+    assert callee_group == "release-models", "the callee is the one that serializes the lane"
+    assert caller_group != callee_group, (
+        "a caller sharing its callee's concurrency group contends with the job it "
+        "is waiting on; the callee's group already serializes every entry point"
+    )

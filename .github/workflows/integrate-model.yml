@@ -65,6 +65,10 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  # `gh workflow run release-models.yml` after a successful auto-merge. Needed
+  # because a GITHUB_TOKEN squash-push cannot trigger the push-event release
+  # workflow (Actions recursion guard); dispatching is the documented exception.
+  actions: write
 
 concurrency:
   # One run per PR at a time. A re-label while a run is in flight queues a second run that
@@ -841,6 +845,20 @@ jobs:
                   fi ;;
               esac
             fi
+            # Cut the models release ourselves when WE merged. The squash above pushes with
+            # GITHUB_TOKEN, and a GITHUB_TOKEN push does not trigger `push`-event workflows (the
+            # same Actions recursion guard this file documents at the top for the label path), so
+            # `release-models-on-integrate.yml` would never see it. `workflow_dispatch` is one of
+            # the two exceptions to that guard, so dispatch the release directly. A HUMAN merge
+            # is not affected by the guard and is picked up by the push trigger instead - hence
+            # this fires only on MERGED=yes, and the two paths cannot double-release.
+            if [ "$MERGED" = "yes" ]; then
+              if gh workflow run release-models.yml -R "$REPO" --ref main -f bump=minor -f dry_run=false; then
+                echo "dispatched models release (minor) for the merged integration"
+              else
+                echo "::warning::models release dispatch failed - cut it by hand from the Actions tab (Release tolokaforge-models, bump=minor)"
+              fi
+            fi
             # One settings deep-link (the Actions variables page where
             # ARENA_AUTOMATION_AUTO_MERGE_ENABLED lives) rendered as "configure <here>" (only
             # the word "here" is the link) on every auto-merge outcome. Derived from env +
@@ -881,6 +899,15 @@ jobs:
         run: |
           gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
             --add-label 'automation:integrate-needs-human' || true
+          # The labelling above always runs - a needs-human PR must carry the label whatever
+          # sent the notification. The NOTIFICATION below is skipped when a more specific
+          # handler already spoke (e.g. the Bucket B refusal in finalize, which names the
+          # engine paths). Without this the reader gets the precise message followed by a
+          # generic "did not converge" that is simply wrong about why the run stopped.
+          if [ -f "$RUNNER_TEMP/slack_terminal_sent" ]; then
+            echo "terminal notification already sent by a specific handler -> label only"
+            exit 0
+          fi
           if [ "${NEEDS_HUMAN:-}" = "yes" ]; then
             # The agent itself requested a human: it lacked the data for a correct policy.
             BODY="The resolve agent requested human review: ${NEEDS_HUMAN_REASON}. It judged it cannot produce a correct policy from the observe data alone (a data-bound quirk) and did not fabricate a fix. Marked \`automation:integrate-needs-human\`. Latest artifacts are on the run. Run: ${RUN_URL}"

@@ -59,7 +59,7 @@ cleanly without cutting a release.
 ## PyPI package — tolokaforge-models `models-vX.Y.Z` (automated)
 
 The `tolokaforge-models` wheel — model data files, the 39 `ModelCertificate`
-registry, and the eight per-model policy subclasses — ships on its own release
+registry, and the per-model policy subclasses — ships on its own release
 cadence. The release is driven entirely by
 [`.github/workflows/release-models.yml`](../.github/workflows/release-models.yml)
 ("Release tolokaforge-models (cz bump)").

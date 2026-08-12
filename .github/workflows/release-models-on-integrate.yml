@@ -35,12 +35,17 @@ on:
 permissions:
   contents: write
 
-# Share the release lane with the manual workflow. A second integration merging
-# while a release is in flight queues behind it rather than racing it to the tag
-# push (`cancel-in-progress: false` — a queued model release must still happen).
-concurrency:
-  group: release-models
-  cancel-in-progress: false
+# No `concurrency` here on purpose. `release-models.yml` already declares
+# `group: release-models`, which serializes the lane for every entry point.
+# Repeating the same group on a caller of a reusable workflow makes the caller
+# and the job it is waiting on contend for one slot, which GitHub warns against
+# and which can wedge the run rather than queue it.
+#
+# Note the callee's `cancel-in-progress: false` bounds the lane at one running
+# plus one pending: a third arrival cancels the pending one. Model releases are
+# additive and the next integration re-cuts anyway, so a dropped middle release
+# costs a version number, not a model. If that stops being true, the callee
+# wants `queue: max`, not a second group here.
 
 jobs:
   release:
