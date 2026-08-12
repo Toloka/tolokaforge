@@ -160,11 +160,19 @@ The path from config to container:
 `PerTrialRuntimeBackend.provision` → the per-trial `.env` → compose
 interpolation at up-time.
 
-The synthesised compose file declares each key on the agent service as
-*pass-through* (a bare name in a list, a `null` value in a mapping), so
-values live only in the per-trial `.env` — never in the compose file, the
-staging digest, or the image. A key the task already binds to a value is left
-alone.
+Values live only in the per-trial `.env` — never in the compose file, the
+staging digest, or the image.
+
+**The compose variable is namespaced, and that is load-bearing.** The agent
+service gets `ANTHROPIC_API_KEY=${TBENCH_PROVIDER_ANTHROPIC_API_KEY}`, and
+`TBENCH_PROVIDER_ANTHROPIC_API_KEY` is what the `.env` supplies. Compose
+resolves `${VAR}` from the invoking shell's environment *before* the per-trial
+`.env`, so naming the provider variable on both sides — or declaring it as a
+bare pass-through — would let whatever `ANTHROPIC_API_KEY` the operator's shell
+happens to hold silently replace the declared value. That puts a real
+production key inside a benchmark container and into its trial artifacts.
+Nothing sets the prefixed name by accident, so the container's environment is
+exactly what the run config declared.
 
 ### Trial-level timeout
 

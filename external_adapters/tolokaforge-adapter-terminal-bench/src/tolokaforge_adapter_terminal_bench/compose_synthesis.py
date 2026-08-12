@@ -43,6 +43,7 @@ from tolokaforge.runner.models import _FLOATING_IMAGE_TAGS
 from tolokaforge_adapter_terminal_bench.harness import (
     INSTALL_SCRIPT,
     NO_OP_HARNESS,
+    provider_env_input,
     validate_harness,
 )
 from tolokaforge_adapter_terminal_bench.task_parser import TerminalBenchTask
@@ -127,10 +128,10 @@ def materialise_task_environment(
             The layered image carries the harness in its tag, so switching
             harnesses can never reuse a stale cached image.
         provider_env_keys: Environment-variable names the agent service
-            declares as pass-through, so ``docker compose up`` resolves each
-            from the per-trial ``.env`` the runtime writes. Names only — the
-            values never enter the compose file, the staging digest, or the
-            image.
+            receives. Each is bound to an adapter-namespaced compose input
+            (``KEY=${TBENCH_PROVIDER_KEY}``) that the per-trial ``.env``
+            supplies at up-time. Names only — the values never enter the
+            compose file, the staging digest, or the image.
         runner_image: Pinned image for the injected ``runner`` service.
         db_service_image: Pinned image for the injected ``db-service``.
 
@@ -361,9 +362,10 @@ def _build_synthesised_compose(
     agent_body["container_name"] = agent_container_name
     agent_body["volumes"] = ["./tests:/tests", "./_logs:/logs"]
     agent_body["environment"] = _set_env_key(agent_body.get("environment"), "TEST_DIR", "/tests")
-    agent_body["environment"] = _add_env_passthrough(
-        agent_body["environment"], sorted(provider_env_keys)
-    )
+    for key in sorted(provider_env_keys):
+        agent_body["environment"] = _set_env_key(
+            agent_body["environment"], key, f"${{{provider_env_input(key)}}}"
+        )
 
     base_build_service: str | None = None
     if agent_harness != NO_OP_HARNESS:
@@ -419,22 +421,6 @@ def _set_env_key(existing: Any, key: str, value: str) -> Any:
         filtered.append(f"{key}={value}")
         return filtered
     return {key: value}
-
-
-def _add_env_passthrough(existing: Any, keys: Sequence[str]) -> Any:
-    """Declare *keys* as pass-through on a service's ``environment:``.
-
-    A pass-through entry names a variable without a value, so compose resolves
-    it from the per-trial ``.env`` at up-time rather than from the compose file
-    — which is what keeps provider credentials out of the synthesised YAML and
-    out of the image. Preserves the declared shape (bare ``KEY`` in a list, a
-    ``null`` value in a mapping) and never overwrites a key the task already
-    bound to a value.
-    """
-    if isinstance(existing, dict):
-        return {**existing, **{k: None for k in keys if k not in existing}}
-    bound = {entry.split("=", 1)[0] for entry in existing if isinstance(entry, str)}
-    return [*existing, *(k for k in keys if k not in bound)]
 
 
 def _harness_base_service_body(base_image: str, task_build: Any) -> dict[str, Any]:

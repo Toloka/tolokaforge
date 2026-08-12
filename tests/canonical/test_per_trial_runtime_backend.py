@@ -683,8 +683,8 @@ class TestComposeEnvFile:
         handle = patched_backend.provision(spec)
         assert isinstance(handle, _LocalEnvHandle)
         lines = [line for line in (handle.temp_dir / ".env").read_text().splitlines() if line]
-        assert "ANTHROPIC_API_KEY=sk-canon" in lines
-        assert "ANTHROPIC_BASE_URL=https://proxy.example" in lines
+        assert "TBENCH_PROVIDER_ANTHROPIC_API_KEY=sk-canon" in lines
+        assert "TBENCH_PROVIDER_ANTHROPIC_BASE_URL=https://proxy.example" in lines
         assert lines[-1] == "TOLOKAFORGE_TRIAL_SLUG=echo-hello_0"
 
 

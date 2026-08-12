@@ -25,8 +25,10 @@ __all__ = [
     "HARNESS_COMMANDS",
     "INSTALL_SCRIPT",
     "NO_OP_HARNESS",
+    "PROVIDER_ENV_INPUT_PREFIX",
     "PROVIDER_ENV_KEYS",
     "harness_command",
+    "provider_env_input",
     "validate_harness",
     "validate_provider_env_keys",
 ]
@@ -64,6 +66,24 @@ An allow-list rather than a pass-through: everything named here lands in the
 per-trial compose ``.env``, so an open surface would let a run config push
 arbitrary values — including ones shadowing the task's own environment —
 into the container the agent works in."""
+
+
+PROVIDER_ENV_INPUT_PREFIX = "TBENCH_PROVIDER_"
+"""Prefix for the compose variable that carries a provider value.
+
+The synthesised compose file writes ``ANTHROPIC_API_KEY=${TBENCH_PROVIDER_ANTHROPIC_API_KEY}``
+rather than naming the provider variable on both sides. Compose resolves
+``${VAR}`` from the invoking shell's environment before the per-trial ``.env``,
+so an un-prefixed name would let whatever ``ANTHROPIC_API_KEY`` the operator's
+shell happens to hold silently replace the value the run config declared —
+putting a real key inside a benchmark container and into its trial artifacts.
+Nothing sets the prefixed name by accident.
+"""
+
+
+def provider_env_input(key: str) -> str:
+    """Compose-input name carrying *key*'s value into the agent service."""
+    return f"{PROVIDER_ENV_INPUT_PREFIX}{key}"
 
 
 def validate_provider_env_keys(keys: Iterable[str]) -> None:

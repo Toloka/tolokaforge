@@ -1258,8 +1258,8 @@ class TestProviderEnvWire:
         )
         patch_ = adapter.get_task("echo-hello").environment_manifest
         assert patch_.stack.inputs == {
-            "ANTHROPIC_API_KEY": "sk-test",
-            "ANTHROPIC_BASE_URL": "https://proxy.example",
+            "TBENCH_PROVIDER_ANTHROPIC_API_KEY": "sk-test",
+            "TBENCH_PROVIDER_ANTHROPIC_BASE_URL": "https://proxy.example",
         }
 
     def test_keys_survive_into_the_resolved_manifest(self, fixture_dir, tmp_path):
@@ -1268,19 +1268,38 @@ class TestProviderEnvWire:
         )
         manifest = adapter.to_task_description("echo-hello").environment_manifest
         assert manifest is not None
-        assert manifest.stack_inputs["OPENAI_API_KEY"] == "sk-openai"
+        assert manifest.stack_inputs["TBENCH_PROVIDER_OPENAI_API_KEY"] == "sk-openai"
 
-    def test_agent_service_declares_them_as_passthrough(self, fixture_dir, tmp_path):
+    def test_agent_service_binds_them_to_a_namespaced_compose_input(self, fixture_dir, tmp_path):
         """Names only in the compose file — the value comes from the ``.env``."""
         adapter = self._adapter(
             fixture_dir, tmp_path, agent_provider_env={"GOOGLE_API_KEY": "sk-google"}
         )
         env = adapter._environment("echo-hello")
-        compose = _load_synthesised(env)
-        environment = compose["services"]["main"]["environment"]
-        assert "GOOGLE_API_KEY" in environment
+        environment = _load_synthesised(env)["services"]["main"]["environment"]
+        assert "GOOGLE_API_KEY=${TBENCH_PROVIDER_GOOGLE_API_KEY}" in environment
         assert "TEST_DIR=/tests" in environment
         assert "sk-google" not in env.compose_file.read_text()
+
+    def test_the_compose_input_is_namespaced_away_from_the_provider_name(
+        self, fixture_dir, tmp_path
+    ):
+        """Compose reads ``${VAR}`` from the invoking shell before the per-trial
+        ``.env``. Interpolating the bare provider name would let whatever
+        ``ANTHROPIC_API_KEY`` the operator's shell holds silently replace the
+        declared value — a real key inside a benchmark container, and in its
+        trial artifacts. Nothing sets the prefixed name by accident."""
+        adapter = self._adapter(
+            fixture_dir, tmp_path, agent_provider_env={"ANTHROPIC_API_KEY": "sk-declared"}
+        )
+        text = adapter._environment("echo-hello").compose_file.read_text()
+        assert "${TBENCH_PROVIDER_ANTHROPIC_API_KEY}" in text
+        assert "${ANTHROPIC_API_KEY}" not in text
+        # A bare name would be a pass-through, which resolves the same unsafe way.
+        environment = _load_synthesised(adapter._environment("echo-hello"))["services"]["main"][
+            "environment"
+        ]
+        assert "ANTHROPIC_API_KEY" not in environment
 
     def test_task_bound_key_is_not_overwritten(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
@@ -1303,10 +1322,10 @@ class TestProviderEnvWire:
             provider_env_keys=["OPENAI_API_KEY"],
         )
         environment = _load_synthesised(env)["services"]["main"]["environment"]
-        assert environment.count("OPENAI_API_KEY") == 0
-        assert "OPENAI_API_KEY=task" in environment
+        assert "OPENAI_API_KEY=${TBENCH_PROVIDER_OPENAI_API_KEY}" in environment
+        assert "OPENAI_API_KEY=task" not in environment
 
-    def test_mapping_shaped_environment_gets_a_null_value(self, tmp_path):
+    def test_mapping_shaped_environment_keeps_its_shape(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
             materialise_task_environment,
         )
@@ -1323,7 +1342,7 @@ class TestProviderEnvWire:
             provider_env_keys=["ANTHROPIC_API_KEY"],
         )
         environment = _load_synthesised(env)["services"]["main"]["environment"]
-        assert environment["ANTHROPIC_API_KEY"] is None
+        assert environment["ANTHROPIC_API_KEY"] == "${TBENCH_PROVIDER_ANTHROPIC_API_KEY}"
         assert environment["FOO"] == "bar"
 
     def test_non_forwardable_key_rejected(self, fixture_dir, tmp_path):

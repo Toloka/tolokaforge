@@ -53,6 +53,7 @@ from tolokaforge_adapter_terminal_bench.compose_synthesis import (
 from tolokaforge_adapter_terminal_bench.harness import (
     NO_OP_HARNESS,
     harness_command,
+    provider_env_input,
     validate_harness,
     validate_provider_env_keys,
 )
@@ -235,7 +236,9 @@ class TerminalBenchAdapter(BaseAdapter):
             stack=StackPatch(
                 compose_file=env.compose_file,
                 runner_service="runner",
-                inputs=dict(self.agent_provider_env),
+                inputs={
+                    provider_env_input(key): value for key, value in self.agent_provider_env.items()
+                },
             ),
             network_policy=self.network_policy,
         )
