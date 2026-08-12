@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import anyio
 import docker
@@ -32,6 +33,41 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+PullFailureKind = Literal["tag_missing", "rate_limited", "unreachable"]
+"""Why an ``Image.pull()`` call failed. See :class:`ImagePullError`."""
+
+
+def _extract_status_code(exc: APIError) -> int | None:
+    """Best-effort HTTP status extraction from a Docker SDK ``APIError``.
+
+    docker-py exposes it as either ``exc.status_code`` (attribute) or
+    ``exc.response.status_code`` (attribute on the underlying HTTPX/requests
+    response), depending on how the error was constructed. Consult both.
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    response = getattr(exc, "response", None)
+    inner = getattr(response, "status_code", None)
+    return inner if isinstance(inner, int) else None
+
+
+def _extract_response_headers(exc: APIError) -> Mapping[str, str] | None:
+    """Best-effort response-header extraction from an ``APIError``.
+
+    Used by :class:`ImagePullError` to carry ``Retry-After`` on 429
+    responses so the caller can surface it to the operator.
+    """
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    try:
+        return {str(k): str(v) for k, v in headers.items()}
+    except AttributeError:
+        return None
+
+
 class ImageError(Exception):
     """Raised when an image operation fails."""
 
@@ -39,6 +75,38 @@ class ImageError(Exception):
         self.operation = operation
         self.image_name = image_name
         super().__init__(f"Image {operation} failed for '{image_name}': {message}")
+
+
+class ImagePullError(ImageError):
+    """Raised when ``Image.pull()`` cannot resolve the requested tag.
+
+    Sub-classifies the failure so callers can pick a policy: fall back to a
+    local build (``auto`` mode), surface a specific hint (rate-limit →
+    "configure Docker Hub auth"), or hard-fail (``pull`` mode).
+
+    Attributes:
+        kind: One of ``tag_missing`` (404 — the requested tag is not
+            published), ``rate_limited`` (429 — Docker Hub throttled the
+            request; anonymous limit is 100 pulls per 6 h per IP), or
+            ``unreachable`` (network error, 5xx, or any other Docker SDK
+            failure).
+        full_tag: The ``repository:tag`` reference the pull attempted.
+        response_headers: Response headers from the failed API call, if
+            available. On ``rate_limited`` this carries ``Retry-After``
+            when Docker Hub provides it.
+    """
+
+    def __init__(
+        self,
+        kind: PullFailureKind,
+        full_tag: str,
+        message: str,
+        response_headers: Mapping[str, str] | None = None,
+    ) -> None:
+        self.kind: PullFailureKind = kind
+        self.full_tag = full_tag
+        self.response_headers = dict(response_headers) if response_headers else {}
+        super().__init__("pull", full_tag, f"[{kind}] {message}")
 
 
 class Image(BaseModel):
@@ -403,6 +471,159 @@ class Image(BaseModel):
             Path(dockerfile), Path(context), build_args or {}
         )
         return f"{name}:{tag}"
+
+    @classmethod
+    def pull(
+        cls,
+        name: str,
+        tag: str,
+        client: DockerClient | None = None,
+    ) -> Image:
+        """Pull an image reference from a Docker registry.
+
+        Mirror of :meth:`build` for the pull path. Short-circuits on a
+        daemon cache hit via :meth:`_find_existing_image` (same shape as
+        the build path's skip-if-cached logic). Retries transient
+        registry errors with the same tenacity envelope as
+        :meth:`build`, but does NOT retry ``404`` (tag genuinely
+        missing) or ``429`` (rate limit is a caller-actionable
+        condition — retrying without changing anything only wastes the
+        remaining budget).
+
+        Returns an :class:`Image` with ``context_hash="pulled"`` as a
+        sentinel (mirrors ``"prebuilt"`` used elsewhere in the stack for
+        images not owned by content-hash caching) and
+        ``dockerfile="pulled"`` / ``context="pulled"`` so the model's
+        non-empty validators pass without pretending the image came
+        from a Dockerfile the caller could inspect.
+
+        Args:
+            name: The repository, e.g. ``"tolokasoft1/tolokaforge-runner"``.
+            tag: The tag, e.g. ``"0.18.0"``.
+            client: Optional Docker client (for testing / mocking).
+
+        Returns:
+            An :class:`Image` whose ``full_tag`` equals ``f"{name}:{tag}"``
+            and whose ``image_id`` is set to the pulled image's daemon id.
+
+        Raises:
+            ImagePullError: With ``kind="tag_missing"`` on 404,
+                ``kind="rate_limited"`` on 429, or ``kind="unreachable"``
+                on any other Docker SDK / network failure.
+        """
+        if client is None:
+            try:
+                client = docker.from_env()
+            except DockerException as e:
+                raise ImagePullError(
+                    "unreachable", f"{name}:{tag}", f"Failed to connect to Docker: {e}"
+                ) from e
+
+        full_tag = f"{name}:{tag}"
+
+        # Cache hit — same shape as the build path's skip-if-cached
+        # short-circuit. Do not spend a pull round-trip if the exact
+        # reference already resolves in the local daemon.
+        existing = cls._find_existing_image(client, full_tag)
+        if existing is not None:
+            logger.info("Image '%s' already present in daemon, skipping pull", full_tag)
+            image = cls(
+                name=name,
+                tag=tag,
+                image_id=existing.id,
+                dockerfile="pulled",
+                context="pulled",
+                context_hash="pulled",
+            )
+            object.__setattr__(image, "_client", client)
+            return image
+
+        from tenacity import (
+            retry,
+            retry_if_exception,
+            stop_after_attempt,
+            wait_exponential,
+        )
+
+        def _is_transient(exc: BaseException) -> bool:
+            # 404 and 429 are terminal — don't burn the retry budget on them.
+            if isinstance(exc, ImageNotFound):
+                return False
+            if isinstance(exc, APIError):
+                status = _extract_status_code(exc)
+                if status in (404, 429):
+                    return False
+            # Any other APIError / network exception is a candidate for retry.
+            return isinstance(exc, APIError | DockerException)
+
+        @retry(
+            stop=stop_after_attempt(5),
+            wait=wait_exponential(multiplier=10, min=10, max=60),
+            retry=retry_if_exception(_is_transient),
+            reraise=True,
+            before_sleep=lambda rs: logger.warning(
+                "Docker pull attempt %d for '%s' failed, retrying in %ds...",
+                rs.attempt_number,
+                full_tag,
+                rs.next_action.sleep,
+            ),
+        )
+        def _pull_with_retry() -> DockerImage:
+            logger.info("Pulling image '%s'...", full_tag)
+            # docker-py returns a single Image when tag is specified.
+            return cast("DockerImage", client.images.pull(name, tag=tag))
+
+        try:
+            pulled = _pull_with_retry()
+        except ImageNotFound as e:
+            raise ImagePullError(
+                "tag_missing",
+                full_tag,
+                f"Registry has no such tag: {full_tag}",
+            ) from e
+        except APIError as e:
+            status = _extract_status_code(e)
+            headers = _extract_response_headers(e)
+            if status == 404:
+                raise ImagePullError(
+                    "tag_missing",
+                    full_tag,
+                    f"Registry has no such tag: {full_tag}",
+                    response_headers=headers,
+                ) from e
+            if status == 429:
+                raise ImagePullError(
+                    "rate_limited",
+                    full_tag,
+                    "Docker Hub rate limit hit. Configure authenticated pulls "
+                    "via ~/.docker/config.json (docker login) to raise the "
+                    "limit above the 100-per-6h anonymous ceiling.",
+                    response_headers=headers,
+                ) from e
+            raise ImagePullError(
+                "unreachable",
+                full_tag,
+                f"Docker registry unreachable: {e}",
+                response_headers=headers,
+            ) from e
+        except DockerException as e:
+            raise ImagePullError(
+                "unreachable",
+                full_tag,
+                f"Docker SDK error while pulling: {e}",
+            ) from e
+
+        logger.info("Successfully pulled image '%s' (ID: %s)", full_tag, pulled.id)
+        image = cls(
+            name=name,
+            tag=tag,
+            image_id=pulled.id,
+            dockerfile="pulled",
+            context="pulled",
+            context_hash="pulled",
+        )
+        object.__setattr__(image, "_client", client)
+        return image
 
     @classmethod
     def _compute_content_hash(
