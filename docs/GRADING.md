@@ -2668,11 +2668,12 @@ migrations:
   - criterion: checked_duplicates_first        # the rubric criterion id
     mode: candidate | narrowed | retired
     by: [the_notes_were_listed_before_the_note_was_added]   # trace_checks ids in this pack
+    corpus: tests/data/migration_corpora/notes_duplicate_check   # required in every mode
     was: { kind: binary, required: true, weight: 1.0, description: "<the text measured against>" }
     residual: { kind: none | text, reason: "<why nothing remains / what remains>" }
     combine_weights: { llm_judge: 0.7, trace_checks: 0.3 }  # post-migration combine.weights
-    evidence: { corpus: tests/data/migration_corpora/notes_duplicate_check, observations: 17, kappa: 1.0 }
-    acknowledged: [ { trial: <bundle path under evidence.corpus>, reason: "<why the judge was wrong>" } ]
+    evidence: { observations: 17, kappa: 1.0 }   # narrowed/retired only
+    acknowledged: [ { trial: <bundle path under corpus>, reason: "<why the judge was wrong>" } ]
 ```
 
 `residual` is a model rather than a string because no one scalar carries both a sentinel and
@@ -2696,7 +2697,8 @@ grade, so a run must not abort on authoring metadata.
 | **one-route rule** — the route-scoped ids in one `by` all sit in the **same** route; shared ids accompany any route's | a trial is scored on the route it took, so a reconciliation recomputes the shared constraints and the winning route's alone. `by` is a conjunction, so an entry spanning two routes has no verdict for one of its ids on every trial and reaches no observation on any corpus. The refusal names both ids with the route each sits in; what a claim about two routes would need instead is **#1057** |
 | **veto rule** — a `narrowed` / `retired` entry whose `was.required` is true may only name **shared** constraints carrying `severity: gate` | a required criterion is a trial-level veto with no score share, so retiring one moves the judge score not at all; a route-scoped gate is [escapable inside `alternatives`](#shared-gates-and-path-gates-when-each-is-appropriate) and a scored constraint is a fraction of a component where a veto was |
 | **freed-share rule** — a `narrowed` / `retired` entry on a criterion that is *not* required must declare `combine_weights` | a scored criterion's weight is in the judge component's denominator, so removing one the agent failed makes the judge *more generous* — `+0.667` on `cache_debug`'s `explains_mechanism`, on a trial that scored it `0.0`. The declaration is **unconditional** for a scored conversion: an author who shifts nothing declares the **identity map**, which a reviewer reads in the diff where an implied claim is invisible. It is a claim rather than a proof, and `tolokaforge reconcile`'s report shows per trial what the declared map does to the judge component and the trial verdict |
-| every `acknowledged.trial` is a bundle under `evidence.corpus` | a waiver addresses a disagreement the verdict measured |
+| every entry names a `corpus`, in every mode, and it resolves | the corpus is what the claim is measured over, and a pointer nothing checks rots — the value is read against a base the caller supplies (the CLI passes the working directory) and must name a directory carrying `tolokaforge curate`'s `corpus.yaml`, or one whose immediate subdirectories all do |
+| every `acknowledged.trial` is a bundle under the entry's `corpus` | a waiver addresses a disagreement the verdict measured |
 
 A `candidate` entry is charged neither the veto rule nor the freed-share rule: it replaces
 nothing, so the criterion keeps its veto and its score share whatever it names. The shipped

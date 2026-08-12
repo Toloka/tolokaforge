@@ -26,7 +26,7 @@ from typing import Any
 import pytest
 import yaml
 
-from tests.utils.migration_packs import write_migration_pack
+from tests.utils.migration_packs import write_corpus_directory, write_migration_pack
 from tests.utils.provision_failure import write_provision_failure_bundle
 from tolokaforge.core.grading.migration_declaration import (
     MIGRATION_FILENAME,
@@ -59,6 +59,10 @@ _COMMITTED_CORPUS = _REPO / "tests/data/migration_corpora/notes_duplicate_check/
 _CORPUS_TASK_ID = "notes_add_note_duplicate_check_gated"
 _CRITERION = "checked_duplicates_first"
 _CONSTRAINT = "the_notes_were_listed_before_the_note_was_added"
+
+#: What every fixture declaration names, written beside its pack so the pointer resolves
+#: against the declaration's own directory — the default base, which no caller here overrides.
+_CORPUS_DIRNAME = "corpus"
 
 #: The pre-migration criterion text the committed bundles recorded, written out here so a
 #: corpus refreshed against a different rubric reds these tests rather than re-basing them.
@@ -135,12 +139,13 @@ def _entry(
         criterion=criterion,
         mode=mode,
         by=[_CONSTRAINT],
+        corpus=_CORPUS_DIRNAME,
         was=was or _was(),
         residual=residual,
         evidence=(
             None
             if mode is MigrationMode.CANDIDATE
-            else MigrationEvidence(corpus="corpus", observations=7, kappa=0.72)
+            else MigrationEvidence(observations=7, kappa=0.72)
         ),
         acknowledged=[
             MigrationAcknowledgement(trial=trial, reason="the judge misread the transcript")
@@ -536,8 +541,8 @@ def test_a_candidate_is_not_charged_the_recorded_rubric_check() -> None:
 @pytest.mark.parametrize(
     ("declared", "names"),
     [
-        (MigrationEvidence(corpus="corpus", observations=5, kappa=0.72), "measured 7"),
-        (MigrationEvidence(corpus="corpus", observations=7, kappa=0.5), "declares 0.5"),
+        (MigrationEvidence(observations=5, kappa=0.72), "measured 7"),
+        (MigrationEvidence(observations=7, kappa=0.5), "declares 0.5"),
     ],
     ids=["more-observations-than-the-declaration-counted", "a-kappa-the-run-does-not-reach"],
 )
@@ -579,7 +584,7 @@ def test_a_reconciliation_over_part_of_the_declared_corpus_charges_the_declarati
     is the residue the docs state rather than a case this tier can close.
     """
     entry = _entry(MigrationMode.NARROWED).model_copy(
-        update={"evidence": MigrationEvidence(corpus="corpus", observations=100, kappa=0.5)}
+        update={"evidence": MigrationEvidence(observations=100, kappa=0.5)}
     )
 
     reconciled = reconcile_entry(
@@ -712,6 +717,7 @@ def _identity_map_retirement() -> MigrationEntry:
         criterion=_SCORED_CRITERION,
         mode=MigrationMode.RETIRED,
         by=[_CONSTRAINT],
+        corpus=_CORPUS_DIRNAME,
         was=MigratedCriterion(
             description="explains that the write does not invalidate the cached key",
             kind="graded",
@@ -720,7 +726,7 @@ def _identity_map_retirement() -> MigrationEntry:
         ),
         residual=MigrationResidual(kind=ResidualKind.NONE, reason="the check reads it whole"),
         combine_weights=dict(_RECORDED_WEIGHTS),
-        evidence=MigrationEvidence(corpus="corpus", observations=1, kappa=0.72),
+        evidence=MigrationEvidence(observations=1, kappa=0.72),
     )
 
 
@@ -1073,10 +1079,20 @@ def _trial_bundles(corpus: Path) -> list[Path]:
     return sorted(path for path in corpus.iterdir() if path.is_dir())
 
 
+def _write_pack(directory: Path, *, grading_text: str, task_id: str, migration: Any) -> None:
+    """A fixture pack, with the corpus its declaration names written beside it.
+
+    Every declaration here names ``corpus`` and the load resolves it against the pack's own
+    directory, so a pack written without one is refused before any bundle is read.
+    """
+    write_corpus_directory(directory / _CORPUS_DIRNAME, criterion=_CRITERION)
+    write_migration_pack(directory, grading_text=grading_text, task_id=task_id, migration=migration)
+
+
 def _packs(tmp_path: Path, *, name: str = "packs", **pack: Any) -> Path:
     """A search root holding one fixture pack for the corpus's task id."""
     root = tmp_path / name
-    write_migration_pack(
+    _write_pack(
         root / "notes",
         grading_text=_GRADING,
         task_id=pack.pop("task_id", _CORPUS_TASK_ID),
@@ -1096,8 +1112,9 @@ def _declared(**overrides: Any) -> dict[str, Any]:
             "weight": 1.0,
             "description": _PRE_MIGRATION_TEXT,
         },
+        "corpus": _CORPUS_DIRNAME,
         "residual": {"kind": "text", "reason": "the warning still reaches the judge"},
-        "evidence": {"corpus": "corpus", "observations": 5, "kappa": None},
+        "evidence": {"observations": 5, "kappa": None},
     }
     declared.update(overrides)
     return declared
@@ -1259,7 +1276,7 @@ def _second_task(
         (twin / "task.yaml").write_text(yaml.safe_dump(task))
         shutil.move(str(twin), str(corpus / twin.name))
     root = tmp_path / "packs"
-    write_migration_pack(
+    _write_pack(
         root / task_id,
         grading_text=grading_text,
         task_id=task_id,
@@ -1344,7 +1361,7 @@ def test_two_tasks_claiming_one_criterion_under_different_modes_cannot_be_pooled
 
 
 def _the_veto_rule_refuses_it(root: Path) -> None:
-    write_migration_pack(
+    _write_pack(
         root / "notes",
         grading_text=_GRADING.replace("severity: gate", "severity: scored"),
         task_id=_CORPUS_TASK_ID,
@@ -1353,7 +1370,7 @@ def _the_veto_rule_refuses_it(root: Path) -> None:
 
 
 def _the_sidecar_is_a_list(root: Path) -> None:
-    write_migration_pack(
+    _write_pack(
         root / "notes",
         grading_text=_GRADING,
         task_id=_CORPUS_TASK_ID,
@@ -1362,7 +1379,7 @@ def _the_sidecar_is_a_list(root: Path) -> None:
 
 
 def _the_sidecar_is_not_yaml(root: Path) -> None:
-    write_migration_pack(
+    _write_pack(
         root / "notes",
         grading_text=_GRADING,
         task_id=_CORPUS_TASK_ID,
@@ -1572,7 +1589,7 @@ def test_a_block_the_corpus_cannot_be_graded_against_stops_the_run(tmp_path: Pat
     against the tool set each bundle *recorded*, before any trial is re-checked.
     """
     root = tmp_path / "packs"
-    write_migration_pack(
+    _write_pack(
         root / "notes",
         grading_text=_GRADING.replace("equals: list_notes", "equals: list_notez"),
         task_id=_CORPUS_TASK_ID,

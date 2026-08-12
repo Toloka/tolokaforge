@@ -819,7 +819,7 @@ def _declared_evidence_refusal(
                 f"evidence.observations declares {declared.observations} and this "
                 f"reconciliation measured {observations}, so the corpus carries more evidence "
                 "than the declaration was written against and the numbers a reviewer reads are "
-                f"not the ones the command reaches. Re-run reconcile over {declared.corpus} and "
+                f"not the ones the command reaches. Re-run reconcile over {entry.corpus} and "
                 "write what it reports"
             ),
         )
@@ -831,7 +831,7 @@ def _declared_evidence_refusal(
             f"evidence.kappa declares {declared.kappa} and this reconciliation measured "
             f"{kappa} over the {declared.observations} observations the declaration claims. A "
             "reviewer reads the declared evidence instead of re-running the command, so it is "
-            f"the measurement or it is nothing. Re-run reconcile over {declared.corpus} and "
+            f"the measurement or it is nothing. Re-run reconcile over {entry.corpus} and "
             "write the kappa it reports"
         ),
     )
@@ -1331,17 +1331,20 @@ def _grading_path_of(task_id: str, roots: Sequence[Path]) -> Path:
     return source.path
 
 
-def _resolve_pack(task_id: str, roots: Sequence[Path]) -> _ResolvedPack | None:
+def _resolve_pack(
+    task_id: str, roots: Sequence[Path], *, corpus_base: Path | None
+) -> _ResolvedPack | None:
     """The pack ``task_id`` names, or ``None`` where it declares no migration.
 
     The declaration goes through the same ``inspect_migration_declaration`` gate
     ``tolokaforge validate`` applies, so a pack the bar reads is a pack that already loads:
     every rule the sidecar is refused for at authoring time is refused here too, before any
-    evidence is weighed against it.
+    evidence is weighed against it — the corpus each entry names among them, read against
+    ``corpus_base``.
     """
     grading_path = _grading_path_of(task_id, roots)
     try:
-        declaration = inspect_migration_declaration(grading_path)
+        declaration = inspect_migration_declaration(grading_path, corpus_base=corpus_base)
     except (ValueError, ValidationError, RuntimeError, yaml.YAMLError) as exc:
         raise ReconcileError(
             f"the migration declared beside {grading_path} does not load, so there is no "
@@ -1763,6 +1766,7 @@ def reconcile_corpus(
     replay_id: str,
     packs: Sequence[Path] | None = None,
     dry_run: bool = False,
+    corpus_base: Path | None = None,
 ) -> ReconcileReport:
     """Reconcile every migration the packs behind ``source``'s trials declare.
 
@@ -1770,6 +1774,10 @@ def reconcile_corpus(
     pack is edited, whatever the verdict. ``dry_run`` withholds the report artifact; the
     reconciliation itself is performed either way, because the verdict is the thing worth
     having for free.
+
+    ``corpus_base`` is the directory each declaration's ``corpus`` is read against, defaulting
+    to the declaration's own directory. It is a parameter rather than an ambient read so this
+    module resolves nothing off the working directory; the CLI supplies one.
 
     Raises:
         ReconcileError: If ``source`` holds no bundle, if every bundle it holds is
@@ -1812,7 +1820,7 @@ def reconcile_corpus(
     declaring = {
         task_id: pack
         for task_id in sorted(by_task)
-        if (pack := _resolve_pack(task_id, roots)) is not None
+        if (pack := _resolve_pack(task_id, roots, corpus_base=corpus_base)) is not None
     }
     if not declaring:
         raise ReconcileError(

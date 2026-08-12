@@ -5,7 +5,10 @@ through ``inspect_migration_declaration`` against the ``grading.yaml`` beside it
 shipped declaration the pack contradicts — a renamed criterion, a dropped constraint id, a
 mode the pack's rules refuse — reds here rather than reaching whoever reads the migration
 report. The enumeration is pinned, because a guard over a subset says nothing about the
-declarations it skipped.
+declarations it skipped. The corpus each entry names is swept the same way and over the
+fixture packs under ``tests/data/migration_packs`` too, against the repository root: the
+value is read against a base the caller supplies, and the root is what the shipped values
+are written from.
 
 The shipped candidacy is then compared entry by entry against the entry written out here:
 the file on disk is one source, this module is the other, so drift on either side reds
@@ -30,7 +33,7 @@ from typing import Any, get_args
 
 import pytest
 
-from tests.utils.migration_packs import write_migration_pack
+from tests.utils.migration_packs import write_corpus_directory, write_migration_pack
 from tolokaforge.core.grading.migration_declaration import (
     EVERY_DECLARED_FIELD,
     MIGRATION_FILENAME,
@@ -61,12 +64,30 @@ _SHIPPED_CRITERIA = {
     _NOTES_TESTCASES / "add_note_duplicate_check_policy": ("checked_duplicates_first",),
 }
 
+_FIXTURE_PACKS = _REPO / "tests/data/migration_packs"
+_NOTES_CORPUS = "tests/data/migration_corpora/notes_duplicate_check"
+_LOT_OPS_CORPUS = "tests/data/migration_corpora/lot_ops_names_lot"
+
+# The corpus every declaration in the tree names, by the task directory declaring it. Written
+# from the repository root, which is what the sweep below reads them against — and written out
+# here because a re-pointed corpus is a claim measured over other trials.
+_DECLARED_CORPORA = {
+    _LOT_OPS.parent: (_LOT_OPS_CORPUS,),
+    _NOTES_TESTCASES / "add_note_duplicate_check_gated": (_NOTES_CORPUS,),
+    _NOTES_TESTCASES / "add_note_duplicate_check_policy": (_NOTES_CORPUS,),
+    _FIXTURE_PACKS / "notes_duplicate_check_narrowed": (_NOTES_CORPUS,),
+    _FIXTURE_PACKS / "notes_duplicate_check_policy_narrowed": (_NOTES_CORPUS,),
+}
+
 _NAMES_LOT = "The report identifies the affected lot (LOT-1007 or lot 7)."
 _EXPLAINS_MECHANISM = (
     "Explains that the write updates the database but does not invalidate the cached order "
     "key, so cache-first reads serve the stale value."
 )
 _IDENTIFIES_BUG_ID = "identifies_bug"
+
+_CORPUS = "corpus"
+"""What a hand-built entry names, written beside the copied pack so the pointer resolves."""
 
 
 _SHARED_CRITERION_FIELDS = ("kind", "required", "weight")
@@ -108,9 +129,16 @@ def test_the_compared_field_set_is_every_field_was_declares_and_no_other() -> No
 
 
 def _inspect(tmp_path: Path, pack: Path, *entries: dict[str, Any]):
+    """The pack copied into ``tmp_path``, with the corpus its entry names written beside it.
+
+    The corpus is written rather than nominal because the load resolves it: against the
+    declaration's own directory, which is where a copied pack's is.
+    """
+    directory = tmp_path / "case"
+    write_corpus_directory(directory / _CORPUS, criterion=entries[0]["criterion"])
     return inspect_migration_declaration(
         write_migration_pack(
-            tmp_path / "case",
+            directory,
             grading_text=pack.read_text(),
             migration={"migrations": list(entries)},
         )
@@ -126,6 +154,7 @@ def _lot_ops_candidacy(**overrides: Any) -> dict[str, Any]:
         # about the reason code — a different proposition, which a trial could get wrong while
         # grounding the lot correctly, so naming it would count that against the lot's claim.
         "by": ["the_lot_was_read_before_the_action_was_opened"],
+        "corpus": _LOT_OPS_CORPUS,
         "was": {
             "description": _NAMES_LOT,
             "kind": "binary",
@@ -146,6 +175,7 @@ def _cache_debug_candidacy(**overrides: Any) -> dict[str, Any]:
             "the_note_quotes_the_value_the_served_read_returned",
             "the_note_quotes_the_value_the_cache_held",
         ],
+        "corpus": _CORPUS,
         "was": {
             "description": _EXPLAINS_MECHANISM,
             "kind": "graded",
@@ -169,11 +199,32 @@ def test_every_shipped_declaration_is_one_the_pack_beside_it_honours() -> None:
 
     declared = {}
     for task_dir in sorted(declaring):
-        declaration = inspect_migration_declaration(task_dir / "grading.yaml")
+        declaration = inspect_migration_declaration(task_dir / "grading.yaml", corpus_base=_REPO)
         assert declaration is not None, task_dir
         declared[task_dir] = tuple(entry.criterion for entry in declaration.migrations)
 
     assert declared == _SHIPPED_CRITERIA
+
+
+def test_every_declaration_in_the_tree_names_a_corpus_that_resolves() -> None:
+    """The load *is* the check: an entry whose corpus resolves to no corpus directory is
+    refused, so a sidecar that loads here is one whose evidence a reader can go and read.
+
+    Both roots, with no exceptions list — the fixture packs under ``tests/data`` declare the
+    same criterion under their own weight map and are as capable of pointing at a corpus
+    nobody wrote. The base is the repository root because that is where the shipped values
+    are written from, and it is passed rather than inherited from the working directory.
+    """
+    named = {}
+    for root in (_EXAMPLES, _FIXTURE_PACKS):
+        for sidecar in sorted(root.rglob(MIGRATION_FILENAME)):
+            declaration = inspect_migration_declaration(
+                sidecar.parent / "grading.yaml", corpus_base=_REPO
+            )
+            assert declaration is not None, sidecar
+            named[sidecar.parent] = tuple(entry.corpus for entry in declaration.migrations)
+
+    assert named == _DECLARED_CORPORA
 
 
 @pytest.mark.parametrize(
@@ -193,7 +244,7 @@ def test_a_shipped_candidacy_declares_the_entry_its_header_points_at(
     ``was.description`` is compared through the same normalisation the load rule uses, the
     YAML block folding a newline onto the text the rubric declares.
     """
-    declaration = inspect_migration_declaration(task_dir / "grading.yaml")
+    declaration = inspect_migration_declaration(task_dir / "grading.yaml", corpus_base=_REPO)
     assert declaration is not None, f"{task_dir} ships no {MIGRATION_FILENAME}"
     (entry,) = declaration.migrations
     expected = MigrationEntry(**written)
@@ -258,6 +309,7 @@ def _narrowing_a_veto(**overrides: Any) -> dict[str, Any]:
         "criterion": _IDENTIFIES_BUG_ID,
         "mode": "narrowed",
         "by": ["no_status_was_written"],
+        "corpus": _CORPUS,
         "was": {
             "description": "Identifies the stale cached order status as the bug, and why.",
             "kind": "binary",
@@ -265,7 +317,7 @@ def _narrowing_a_veto(**overrides: Any) -> dict[str, Any]:
             "weight": 1.0,
         },
         "residual": {"kind": "text", "reason": "the causal account is still judged"},
-        "evidence": {"corpus": "tests/data/corpora/cache", "observations": 9, "kappa": 0.8},
+        "evidence": {"observations": 9, "kappa": 0.8},
     } | overrides
 
 

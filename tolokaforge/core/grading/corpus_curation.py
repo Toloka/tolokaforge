@@ -74,6 +74,7 @@ __all__ = [
     "RejectedTrial",
     "RejectionAuthority",
     "curate_corpus",
+    "is_corpus_directory",
 ]
 
 #: The manifest a corpus directory carries, and what makes a directory one.
@@ -175,6 +176,22 @@ class CurationOutcome:
     sources: tuple[Path, ...]
     manifest: CorpusManifest
     written: bool
+
+
+def is_corpus_directory(path: Path) -> bool:
+    """Whether ``path`` is a corpus this command writes.
+
+    One directory carrying a manifest, or one whose immediate subdirectories all do — the
+    multi-part shape above, and exactly one level of it. "A manifest anywhere beneath"
+    would call ``tests/data/migration_corpora`` a corpus while it is every corpus in the
+    tree at once.
+    """
+    if not path.is_dir():
+        return False
+    if (path / CORPUS_MANIFEST_FILENAME).exists():
+        return True
+    parts = [child for child in path.iterdir() if child.is_dir()]
+    return bool(parts) and all((part / CORPUS_MANIFEST_FILENAME).exists() for part in parts)
 
 
 def curate_corpus(

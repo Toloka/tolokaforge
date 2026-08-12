@@ -71,6 +71,7 @@ import yaml
 from click.testing import CliRunner
 from pydantic import BaseModel, ValidationError
 
+from tests.utils.migration_packs import write_corpus_directory
 from tests.utils.trace_checks_configs import every_kind_block
 from tolokaforge.adapters._task_loader import (
     _GRADING_BLOCK_SHAPES,
@@ -1858,6 +1859,11 @@ def test_validate_cli_reports_a_mis_authored_migration_sidecar_as_invalid(tmp_pa
                         "criterion": "never_declared",
                         "mode": "candidate",
                         "by": ["nothing_declares_this_either"],
+                        # Absolute, so the corpus resolves whatever directory the command
+                        # reads relative values against — the criterion is what is on trial.
+                        "corpus": str(
+                            write_corpus_directory(tmp_path / "corpus", criterion="checked_first")
+                        ),
                         "was": {"description": "Something the rubric never said."},
                     }
                 ]

@@ -88,11 +88,22 @@ its load-time refusals are in [GRADING.md § Trace Checks](GRADING.md#trace-chec
 |---|---|
 | `criterion` | Which recorded judge verdict is the reference label. |
 | `by` | The constraints recomputed as the candidate label — a **conjunction**: all of them must pass. Its route-scoped ids all sit in **one** route, since a trial is scored on the route it took; shared ids accompany any route's. |
+| `corpus` | The committed corpus the claim is measured over. **Required in every mode**, and it must resolve — see below. |
 | `was` | The pre-migration criterion shape, verified against the rubric each bundle recorded. |
 | `mode` | `candidate` / `narrowed` / `retired`. Decides which disagreement directions are tolerated. |
 | `residual` | The author's claim about what remains. Rendered, never graded. |
-| `evidence` | Where the verdicts live, and what they measured. `observations` and `kappa` are checked against what this run measures — [refusal 5](#what-an-entry-is-refused-for). |
-| `acknowledged` | Waivers, each naming its trial and why the judge's verdict is the one to discount. |
+| `evidence` | What the recorded verdicts measured. `observations` and `kappa` are checked against what this run measures — [refusal 5](#what-an-entry-is-refused-for). Required for `narrowed` / `retired`, forbidden on a `candidate`: it is the measurement a *decision* rests on, and a candidate has decided nothing. |
+| `acknowledged` | Waivers, each naming its trial and why the judge's verdict is the one to discount. The trial is a bundle under the entry's `corpus`, in every mode. |
+
+**The corpus resolves, or the declaration is refused at load.** A value names a directory
+carrying the `corpus.yaml` [`tolokaforge curate`](#building-a-corpus) writes, or one whose
+immediate subdirectories all do — exactly one level, which is the multi-part shape that
+command can write. It is read against a **base the caller supplies**: unset, the
+declaration's own directory, so a corpus travels with an external pack;
+`tolokaforge validate` and `tolokaforge reconcile` pass the working directory, which is what
+the shipped repository-root-relative values are written from. The refusal names the resolved
+path and the base separately, so a run from the wrong directory says so rather than reporting
+a corpus nobody wrote.
 
 ## The bar
 

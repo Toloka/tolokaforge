@@ -1336,6 +1336,7 @@ def reconcile(source: str, packs: tuple[str, ...], replay_id: str | None, dry_ru
             replay_id=replay_id,
             packs=[Path(root) for root in packs] or None,
             dry_run=dry_run,
+            corpus_base=Path.cwd(),
         )
     except ReconcileError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -1686,7 +1687,9 @@ def validate(tasks: str):
                 )
                 # Only here, and deliberately not in the pre-run gate: a migration
                 # declaration cannot affect a grade, so a run must not abort on it.
-                inspect_migration_declaration(source.path)
+                # The base each entry's corpus resolves against is this layer's to
+                # supply: the loader takes it as a parameter and reads no ambient state.
+                inspect_migration_declaration(source.path, corpus_base=Path.cwd())
             console.print(f"[green]✓ {task_file}[/green]")
             for skip in report.unchecked:
                 console.print(f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]")

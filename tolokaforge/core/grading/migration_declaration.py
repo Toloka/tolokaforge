@@ -29,6 +29,9 @@ The hazards, each measured:
   declare ``combine_weights``, the post-migration map the freed share lands in —
   unconditionally, since an author who shifts nothing declares the **identity map**, and an
   explicit identity map is read in the diff where an implied claim is invisible.
+* **A corpus nobody can read.** Every entry names the committed corpus its claim is measured
+  over, and the name is checked against the disk: an unchecked pointer rots silently, and a
+  command handed some other corpus reports a clean verdict over it.
 * **A claim no corpus can decide.** ``by`` is a conjunction over constraints recomputed per
   trial, and a trial is scored on the route it took, so ids from two different ``alternatives``
   routes are never both decided on one trial. Such an entry reaches no observation on any
@@ -47,6 +50,10 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from tolokaforge.core.grading.corpus_curation import (
+    CORPUS_MANIFEST_FILENAME,
+    is_corpus_directory,
+)
 from tolokaforge.core.models import (
     Criterion,
     Rubric,
@@ -143,14 +150,17 @@ class MigratedCriterion(BaseModel):
 
 
 class MigrationEvidence(BaseModel):
-    """Where the recorded verdicts behind a migration live, and what they measured.
+    """What the recorded verdicts behind a decision measured.
+
+    Which corpus they were read from is the entry's ``corpus``, in every mode: evidence is
+    the measurement a *decision* rests on, and a candidate that has decided nothing is still
+    measured over a corpus.
 
     ``kappa`` is nullable and required: Cohen's κ is undefined on a corpus with no label
     variation, so an unwritten field would read as that measurement rather than as an
     unwritten one.
     """
 
-    corpus: str
     observations: int
     kappa: float | None
 
@@ -211,7 +221,8 @@ _WRONG_RESIDUAL_KIND: Mapping[MigrationMode, str] = MappingProxyType(
 class MigrationEntry(BaseModel):
     """One rubric criterion a pack's trace constraints are a candidate for, or have taken.
 
-    ``was`` is the pre-migration criterion, ``by`` the constraint ids that claim it, and
+    ``was`` is the pre-migration criterion, ``by`` the constraint ids that claim it,
+    ``corpus`` the committed corpus whose recorded verdicts the claim is measured over, and
     ``combine_weights`` the post-migration ``combine.weights`` map the freed score share
     lands in.
     """
@@ -219,6 +230,7 @@ class MigrationEntry(BaseModel):
     criterion: str
     mode: MigrationMode
     by: list[str] = Field(min_length=1)
+    corpus: str
     was: MigratedCriterion
     residual: MigrationResidual | None = None
     combine_weights: dict[str, float] | None = None
@@ -260,17 +272,18 @@ class MigrationEntry(BaseModel):
             if self.evidence is None:
                 return self
             raise ValueError(
-                "mode: candidate declares evidence. A candidate names a criterion a "
-                "constraint could replace and has measured nothing against it, so there is "
-                "no corpus to point at. Drop the evidence block, or declare the mode the "
+                "mode: candidate declares evidence. Evidence is the measurement a decision "
+                "rests on, and a candidate names a criterion a constraint could replace "
+                "without having decided anything — the corpus it is measured over is the "
+                "entry's own corpus field. Drop the evidence block, or declare the mode the "
                 "measurement supports"
             )
         if self.evidence is not None:
             return self
         raise ValueError(
             f"mode: {self.mode.value} declares no evidence, so nothing records what the "
-            "migration was measured against. Write evidence: { corpus: <dir>, "
-            "observations: <n>, kappa: <value or null> }, or declare mode: candidate"
+            "migration measured over the corpus it names. Write evidence: { observations: "
+            "<n>, kappa: <value or null> }, or declare mode: candidate"
         )
 
     @model_validator(mode="after")
@@ -302,15 +315,15 @@ class MigrationEntry(BaseModel):
     @model_validator(mode="after")
     def _require_every_acknowledgement_to_address_the_corpus(self) -> MigrationEntry:
         """A waiver names the trial it waives, and a trial outside the corpus the verdict
-        was measured over waives no disagreement that verdict saw."""
+        was measured over waives no disagreement that verdict saw.
+
+        Every mode, including ``candidate``: a candidate's verdict gates nothing, so a waiver
+        on one changes no outcome and records the author's judgment about a disagreement the
+        report prints — worth keeping checkable rather than unstatable.
+        """
         if not self.acknowledged:
             return self
-        if self.evidence is None:
-            raise ValueError(
-                "acknowledged waives a disagreement without evidence to have disagreed "
-                "with. Declare the evidence the acknowledgement addresses, or drop it"
-            )
-        corpus = Path(self.evidence.corpus)
+        corpus = Path(self.corpus)
         stray = [
             waiver.trial
             for waiver in self.acknowledged
@@ -319,10 +332,10 @@ class MigrationEntry(BaseModel):
         if not stray:
             return self
         raise ValueError(
-            f"acknowledged names {stray}, which are not bundles under evidence.corpus "
-            f"({self.evidence.corpus}). A waiver addresses a disagreement the verdict "
-            "measured, so its trial is a bundle in the corpus that verdict read. Write the "
-            "trial's path from the repository root, as evidence.corpus is written"
+            f"acknowledged names {stray}, which are not bundles under the corpus this entry "
+            f"names ({self.corpus}). A waiver addresses a disagreement the verdict measured, "
+            "so its trial is a bundle in the corpus that verdict read. Write the trial's path "
+            "as corpus is written, from the same base"
         )
 
 
@@ -346,7 +359,9 @@ class _DeclaredConstraint:
         return self.route is None and self.severity is TraceConstraintSeverity.GATE
 
 
-def inspect_migration_declaration(grading_path: Path) -> MigrationDeclaration | None:
+def inspect_migration_declaration(
+    grading_path: Path, *, corpus_base: Path | None = None
+) -> MigrationDeclaration | None:
     """The migration sidecar beside ``grading_path``, checked against the pack it names.
 
     Reached by ``tolokaforge validate``, and deliberately not by the pre-run gate: the
@@ -355,14 +370,19 @@ def inspect_migration_declaration(grading_path: Path) -> MigrationDeclaration | 
     Args:
         grading_path: The task's ``grading.yaml`` — the file whose rubric is migrated, and
             whose ``trace_checks`` block the declaration's ``by`` ids address.
+        corpus_base: The directory each entry's ``corpus`` is read against. Defaults to the
+            declaration's own directory, which is what makes a corpus travel with an
+            external pack; a caller holding repository-root knowledge — the CLI — passes it
+            explicitly. This module reads no ambient state, so a run from the wrong
+            directory is a refusal naming the base rather than a missing corpus.
 
     Returns:
         The declaration, or ``None`` when the directory carries no sidecar: a pack that
         declares no migration is unchanged.
 
     Raises:
-        ValueError: If the declaration is invalid, or names a criterion or a constraint
-            the pack does not have as declared.
+        ValueError: If the declaration is invalid, names a criterion or a constraint the
+            pack does not have as declared, or names a corpus that does not resolve.
         RuntimeError: If either file is not a YAML mapping.
         pydantic.ValidationError: If an entry's own shape is invalid.
     """
@@ -398,10 +418,13 @@ def inspect_migration_declaration(grading_path: Path) -> MigrationDeclaration | 
 
     criteria = _rubric_criteria(grading_data)
     constraints = _declared_constraints(grading_data)
+    base = grading_path.parent if corpus_base is None else corpus_base
     rejected = [
         message
         for entry in declaration.migrations
-        for message in _pack_rejections(entry, criteria=criteria, constraints=constraints)
+        for message in _entry_rejections(
+            entry, criteria=criteria, constraints=constraints, corpus_base=base
+        )
     ]
     if rejected:
         written = "\n".join(f"  - {message}" for message in rejected)
@@ -450,13 +473,15 @@ def _declared_constraints(grading_data: Mapping[str, Any]) -> dict[str, _Declare
     return declared
 
 
-def _pack_rejections(
+def _entry_rejections(
     entry: MigrationEntry,
     *,
     criteria: Mapping[str, Criterion],
     constraints: Mapping[str, _DeclaredConstraint],
+    corpus_base: Path,
 ) -> list[str]:
-    """Everything the pack contradicts about one entry, because an author wants the list."""
+    """Everything one entry is refused for — what the pack contradicts about it and what the
+    corpus it names does not resolve to — because an author wants the list."""
     return [
         f"{entry.criterion}: {message}"
         for message in (
@@ -466,9 +491,29 @@ def _pack_rejections(
             _unknown_constraint_rejection(entry, constraints),
             _route_span_rejection(entry, constraints),
             _veto_rejection(entry, constraints),
+            _unresolved_corpus_rejection(entry, corpus_base),
         )
         if message is not None
     ]
+
+
+def _unresolved_corpus_rejection(entry: MigrationEntry, corpus_base: Path) -> str | None:
+    """The corpus an entry is measured over has to be one somebody can read.
+
+    A pointer nothing checks is a pointer that rots: the shipped value went to a directory
+    that never existed and every command reported a clean verdict over the corpus it was
+    handed instead.
+    """
+    resolved = corpus_base / entry.corpus
+    if is_corpus_directory(resolved):
+        return None
+    return (
+        f"corpus: {entry.corpus} resolves to {resolved}, which is not a corpus directory. A "
+        f"corpus holds the {CORPUS_MANIFEST_FILENAME} `tolokaforge curate` writes, or its "
+        "immediate subdirectories all do — one level, because a multi-part corpus is a "
+        f"directory whose subdirectories are corpora. The path is read against {corpus_base}, "
+        "so a value written from the repository root needs the command run from there"
+    )
 
 
 def _criterion_presence_rejection(

@@ -159,7 +159,9 @@ def _copy(tmp_path: Path) -> Path:
 
 
 def _report_over_the_not_met_half(tmp_path: Path) -> ReconcileReport:
-    return reconcile_corpus(_copy(tmp_path), replay_id="canon", packs=[_PACKS], dry_run=True)
+    return reconcile_corpus(
+        _copy(tmp_path), replay_id="canon", packs=[_PACKS], dry_run=True, corpus_base=_REPO
+    )
 
 
 def _entry_over_the_not_met_half(tmp_path: Path) -> ReconciledEntry:
@@ -452,7 +454,11 @@ def test_the_counterfactual_reaches_the_reviewer_it_is_evidence_for(tmp_path: Pa
 
 def _report_over_the_union(tmp_path: Path) -> ReconcileReport:
     return reconcile_corpus(
-        _copied(_CORPUS, tmp_path), replay_id="canon", packs=[_PACKS], dry_run=True
+        _copied(_CORPUS, tmp_path),
+        replay_id="canon",
+        packs=[_PACKS],
+        dry_run=True,
+        corpus_base=_REPO,
     )
 
 
@@ -603,7 +609,7 @@ def test_the_declared_evidence_is_the_measurement_over_the_corpus_it_names(
     measurement quoted twice rather than two claims the pooling rule would then refuse.
     """
     assert _DECLARATION.read_bytes() == _POLICY_DECLARATION.read_bytes()
-    declared = yaml.safe_load(_DECLARATION.read_text())["migrations"][0]["evidence"]
+    declared = yaml.safe_load(_DECLARATION.read_text())["migrations"][0]
     named = _REPO / declared["corpus"]
 
     assert named == _CORPUS
@@ -611,8 +617,8 @@ def test_the_declared_evidence_is_the_measurement_over_the_corpus_it_names(
         _NOT_MET_BUNDLES | _MET_BUNDLES
     )
     entry = _entry_over_the_union(tmp_path)
-    assert declared["observations"] == entry.observations
-    assert declared["kappa"] == entry.kappa
+    assert declared["evidence"]["observations"] == entry.observations
+    assert declared["evidence"]["kappa"] == entry.kappa
 
 
 def test_the_command_exits_zero_over_the_union_and_says_what_that_means(
@@ -772,7 +778,11 @@ def test_the_shipped_narrow_folds_under_the_map_its_own_declaration_carries(
     declared = yaml.safe_load(_SHIPPED_DECLARATION.read_text())["migrations"][0]
     current = yaml.safe_load((_GATED_ARM / "grading.yaml").read_text())["combine"]["weights"]
     (entry,) = reconcile_corpus(
-        _copied(_CORPUS, tmp_path), replay_id="canon", packs=[_SHIPPED_PACKS], dry_run=True
+        _copied(_CORPUS, tmp_path),
+        replay_id="canon",
+        packs=[_SHIPPED_PACKS],
+        dry_run=True,
+        corpus_base=_REPO,
     ).entries
 
     assert declared["combine_weights"] == _SHIPPED_WEIGHTS
@@ -810,7 +820,7 @@ def test_reconciling_writes_its_report_and_touches_no_bundle_file(tmp_path: Path
     shutil.copytree(_PACKS, packs)
     packs_before = _tree_digest(packs)
 
-    reconcile_corpus(corpus, replay_id="written", packs=[packs], dry_run=False)
+    reconcile_corpus(corpus, replay_id="written", packs=[packs], dry_run=False, corpus_base=_REPO)
 
     after = _tree_digest(corpus)
     assert {path: digest for path, digest in after.items() if path in before} == before
@@ -822,7 +832,9 @@ def test_a_dry_run_reaches_the_verdict_and_writes_nothing(tmp_path: Path) -> Non
     corpus = _copy(tmp_path)
     before = _tree_digest(corpus)
 
-    report = reconcile_corpus(corpus, replay_id="preview", packs=[_PACKS], dry_run=True)
+    report = reconcile_corpus(
+        corpus, replay_id="preview", packs=[_PACKS], dry_run=True, corpus_base=_REPO
+    )
 
     assert report.entries[0].verdict is ReconcileVerdict.INSUFFICIENT_EVIDENCE
     assert _tree_digest(corpus) == before
@@ -894,6 +906,7 @@ def _lot_ops_entry(tmp_path: Path) -> ReconciledEntry:
         replay_id="canon",
         packs=[_SHIPPED_PACKS],
         dry_run=True,
+        corpus_base=_REPO,
     ).entries
     return entry
 

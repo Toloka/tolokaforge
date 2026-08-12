@@ -31,6 +31,7 @@ migrations:
     mode: candidate
     by:
       - the_lot_was_read_before_the_action_was_opened
+    corpus: tests/data/migration_corpora/lot_ops_names_lot
     was:
       kind: binary
       required: true
