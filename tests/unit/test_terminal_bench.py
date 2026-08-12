@@ -1151,7 +1151,7 @@ class TestComposeSynthesisHarnessLayer:
                 meta, staging_root=tmp_path / "staging", agent_harness="nope"
             )
 
-    def test_task_declaring_base_service_name_raises(self, tmp_path):
+    def test_task_declaring_base_service_name_raises_under_harness_mode(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
             materialise_task_environment,
         )
@@ -1167,7 +1167,28 @@ class TestComposeSynthesisHarnessLayer:
             },
         )
         with pytest.raises(ValueError, match="main-base"):
-            materialise_task_environment(meta, staging_root=tmp_path / "staging")
+            materialise_task_environment(
+                meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
+            )
+
+    def test_the_same_task_is_fine_without_a_harness(self, tmp_path):
+        """No harness, no injected base service — so nothing to collide with."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "collide-ok",
+            {
+                "services": {
+                    "main": {"image": "python:3.11-slim"},
+                    "main-base": {"image": "busybox"},
+                }
+            },
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+        assert _load_synthesised(env)["services"]["main-base"] == {"image": "busybox"}
 
     def test_layered_manifest_still_validates(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (

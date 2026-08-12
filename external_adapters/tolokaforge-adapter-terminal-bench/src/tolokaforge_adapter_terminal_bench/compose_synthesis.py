@@ -160,7 +160,13 @@ def materialise_task_environment(
         )
     agent_service = _resolve_agent_service(meta.task_id, task_services)
     base_service = f"{agent_service}{_HARNESS_BASE_SERVICE_SUFFIX}"
-    _check_no_reserved_service_collisions(meta.task_id, task_services, base_service)
+    # The base service exists only under harness mode, so only harness mode can
+    # collide with a task that happens to declare that name.
+    _check_no_reserved_service_collisions(
+        meta.task_id,
+        task_services,
+        base_service if agent_harness != NO_OP_HARNESS else None,
+    )
 
     digest = _compute_digest(
         meta.task_dir,
@@ -233,9 +239,9 @@ def _resolve_agent_service(task_id: str, services: dict[str, Any]) -> str:
 
 
 def _check_no_reserved_service_collisions(
-    task_id: str, services: dict[str, Any], base_service: str
+    task_id: str, services: dict[str, Any], base_service: str | None
 ) -> None:
-    reserved_names = (*_INJECTED_SERVICE_NAMES, base_service)
+    reserved_names = _INJECTED_SERVICE_NAMES + ((base_service,) if base_service else ())
     for reserved in reserved_names:
         if reserved in services:
             raise ValueError(
