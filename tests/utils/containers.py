@@ -21,6 +21,41 @@ from testcontainers.core.wait_strategies import (
 
 logger = logging.getLogger(__name__)
 
+_LOG_TAIL_LINES = 40
+
+
+class ContainerStartupError(RuntimeError):
+    """A container's wait strategy gave up before the service was ready."""
+
+
+def _log_tail(container: DockerContainer) -> str:
+    try:
+        stdout, stderr = container.get_logs()
+    except Exception as exc:  # noqa: BLE001 - a diagnostic must not mask the failure it reports
+        return f"(container logs unavailable: {exc})"
+
+    lines = (stdout + stderr).decode(errors="replace").splitlines()
+    return "\n".join(lines[-_LOG_TAIL_LINES:]) or "(container produced no logs)"
+
+
+def start_container(container: DockerContainer, service: str) -> None:
+    """Start ``container``, attaching its own logs when it never becomes ready.
+
+    testcontainers' wait strategies report only the URL or log pattern they gave
+    up on, so a timeout names neither the service nor the reason — and the reason
+    is in the container's log (a rag-service 503 naming a model that would not
+    load, a runner dying on a bad volume). Raises ``ContainerStartupError``
+    carrying both.
+    """
+    try:
+        container.start()
+    except Exception as exc:
+        raise ContainerStartupError(
+            f"{service} never became ready: {exc}\n"
+            f"--- {service} logs (last {_LOG_TAIL_LINES} lines) ---\n"
+            f"{_log_tail(container)}"
+        ) from exc
+
 
 def _check_image_available(image_name: str) -> None:
     """Ensure a Docker image is available locally, building it if necessary.
@@ -102,7 +137,7 @@ def json_db_container(env_network):
         .with_startup_timeout(timedelta(seconds=30))
     )
 
-    container.start()
+    start_container(container, "db-service")
 
     yield container
 
@@ -135,10 +170,10 @@ def rag_service_container(env_network, rag_data_volume):
     container.waiting_for(
         HttpWaitStrategy(8001, path="/health")
         .for_status_code(200)
-        .with_startup_timeout(timedelta(seconds=120))
+        .with_startup_timeout(timedelta(seconds=60))
     )
 
-    container.start()
+    start_container(container, "rag-service")
 
     yield container
 
@@ -183,7 +218,7 @@ def runner_container(
         LogMessageWaitStrategy("Starting Runner server").with_startup_timeout(timedelta(seconds=60))
     )
 
-    container.start()
+    start_container(container, "runner")
 
     yield container
 

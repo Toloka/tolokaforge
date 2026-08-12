@@ -3,8 +3,9 @@
 Services created with auto-allocated host ports cannot know the port at
 definition time. ``{port:<container_port>}`` placeholders let them keep a
 rich probe (custom timeout/path) instead of losing it to the generic
-port-8000 fallback — e.g. rag-service's long cold-start timeout, which a
-30s default probe would break on first-run model downloads.
+port-8000 fallback — e.g. rag-service, whose probe carries a timeout of its
+own because loading sentence-transformers takes longer than the 30s default
+allows.
 """
 
 import pytest
