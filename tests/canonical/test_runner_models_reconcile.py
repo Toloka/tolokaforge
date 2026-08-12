@@ -42,7 +42,7 @@ import json
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
@@ -187,7 +187,6 @@ def test_reconciled_wire_types_forbid_extras():
     Locks each renamed class independently (``TaskDescription``'s own
     forbid rule doesn't reach nested siblings by construction).
     """
-    from pydantic import ValidationError
 
     def _requires_forbid(model_cls: type, payload: dict[str, object]) -> None:
         with pytest.raises(ValidationError):
@@ -217,8 +216,6 @@ def test_retired_user_simulator_keys_are_undeclared_and_refused_with_directions(
     from an adapter populating it, so the refusal has to carry both remedies —
     ``extra_forbidden`` alone names the key and neither fix.
     """
-    from pydantic import ValidationError
-
     assert retired not in RunnerUserSimulatorConfig.model_fields
 
     payload = json.loads(_sample_task_description().model_dump_json())

@@ -569,6 +569,8 @@ Version 2 is the first that omits `user_simulator.first_message` and `user_simul
 
 The gate is a lower bound, not an equality: a *newer* engine still sends `call_id`, so this runner registers it.
 
+#### Trial spec payload
+
 The `trial_spec_json` field contains a serialised [`TrialSpec`](../tolokaforge/core/trial.py), which embeds the full [`TaskDescription`](TASK_DESCRIPTION_SCHEMA.md) schema at `spec.task` (shown below) alongside the per-trial execution context (`run_id`, `attempt_id`, model configs, `env_endpoints`, `runtime_context`):
 
 ```json

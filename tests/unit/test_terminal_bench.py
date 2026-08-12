@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from tolokaforge.docker.policy import Capability
 from tolokaforge.docker.stacks.core import core_stack
@@ -466,20 +467,32 @@ class TestTerminalBenchAdapterEnvironmentManifest:
 
 
 class TestTerminalBenchAdapterInstructionlessTask:
-    """A pack with no instruction pins no opener, so the simulator writes turn 1.
+    """A pack whose instruction carries no text pins no opener, so the simulator
+    writes turn 1.
 
-    ``discover_tasks`` reports such a task with an empty instruction, and an
-    empty ``initial_user_message`` is a task-contract error — the adapter must
-    leave the field unset rather than forward the blank.
+    ``discover_tasks`` reports such a task with a blank instruction, and a blank
+    ``initial_user_message`` is a task-contract error whose remedies — omit the
+    key in ``task.yaml``, return ``None`` from ``get_task()`` — a terminal-bench
+    pack cannot carry out for itself. The adapter must leave the field unset
+    rather than forward the blank.
     """
 
-    def test_get_task_leaves_initial_user_message_unset(self, tmp_path) -> None:
+    @pytest.mark.parametrize(
+        "task_yaml",
+        [
+            pytest.param({"difficulty": "easy"}, id="instruction_absent"),
+            pytest.param(
+                {"difficulty": "easy", "instruction": "   \n  "}, id="instruction_whitespace"
+            ),
+        ],
+    )
+    def test_get_task_leaves_initial_user_message_unset(self, tmp_path, task_yaml) -> None:
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
         fixture_dir = Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
         tbench_dir = tmp_path / "tasks"
         shutil.copytree(fixture_dir, tbench_dir)
-        (tbench_dir / "echo-hello" / "task.yaml").write_text("difficulty: easy\n")
+        (tbench_dir / "echo-hello" / "task.yaml").write_text(yaml.safe_dump(task_yaml))
 
         adapter = TerminalBenchAdapter(
             {"terminal_bench_dir": str(tbench_dir), "staging_root": str(tmp_path / "staging")}

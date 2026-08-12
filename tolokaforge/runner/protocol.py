@@ -7,12 +7,9 @@ registration, before any tokens are spent — a per-call rejection would reach t
 agent as an ordinary tool failure, and it would retry until the turn budget was
 gone while the trial still reported ``status=completed``.
 
-Version 1 is the first that sends ``ExecuteToolRequest.call_id``. Without it a
-tool call cannot be joined to the result it produced, so a runner built from
-this tree cannot grade a trial driven by an older engine. Version 2 is the first
-that omits ``user_simulator.first_message`` and ``user_simulator.user_context``
-from the trial spec, which this runner's ``extra="forbid"`` models no longer
-declare — an engine below it emits keys this image cannot parse.
+What each version is the first to change is the ledger in
+``docs/GRPC_PROTOCOL.md`` § Version lock, which a canonical test holds level
+with this constant.
 
 :data:`RECORDED_STATUS_BY_PROTO` translates the wire's ``ExecutionStatus`` into
 the recorded vocabulary. It lives here because both ends of the wire read it:

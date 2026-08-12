@@ -5,7 +5,7 @@ every in-tree caller reads the constant — so a bump nobody documented reds
 nothing, while ``docs/GRPC_PROTOCOL.md`` keeps telling an operator that the
 newest version is the previous one and never names what the new one changed.
 The doc's § Version lock is that second source: it carries one sentence per
-version, and the highest it names is what this pins.
+version, and the set of versions it names is what this pins.
 """
 
 from __future__ import annotations
@@ -38,26 +38,14 @@ def _documented_versions() -> list[int]:
     return [int(match) for match in _VERSION_SENTENCE.findall("\n".join(span))]
 
 
-def test_the_version_lock_section_documents_the_current_protocol_version() -> None:
-    documented = _documented_versions()
-
-    assert documented, (
-        f"{_DOC.name} § Version lock names no version — the section documents each "
-        "version in a sentence opening 'Version N is the first', and the sweep read none"
-    )
-    assert max(documented) == ENGINE_PROTOCOL_VERSION, (
-        f"{_DOC.name} § Version lock documents up to version {max(documented)}, the "
-        f"gate requires {ENGINE_PROTOCOL_VERSION}; the constant is authoritative, so "
-        "the bump needs the sentence saying what version "
-        f"{ENGINE_PROTOCOL_VERSION} is the first to change"
-    )
-
-
-def test_every_documented_version_is_reachable() -> None:
-    """A sentence for a version above the constant describes a gate nothing enforces."""
+def test_the_version_lock_section_names_exactly_the_versions_that_exist() -> None:
+    """A version the section skips leaves a bump nobody documented; one above the
+    constant describes a gate nothing enforces."""
     documented = _documented_versions()
 
     assert sorted(documented) == list(range(1, ENGINE_PROTOCOL_VERSION + 1)), (
         f"{_DOC.name} § Version lock names {sorted(documented)}; the versions that "
-        f"exist are 1..{ENGINE_PROTOCOL_VERSION}"
+        f"exist are 1..{ENGINE_PROTOCOL_VERSION}. The section documents each in a "
+        "sentence opening 'Version N is the first', so an empty list means the sweep "
+        "read none of them"
     )

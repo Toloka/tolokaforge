@@ -485,6 +485,7 @@ task_id: "browser_simple_navigation"
 name: "Simple Browser Navigation"
 category: "browser"
 description: "Navigate to the mock Example Domain page"
+initial_user_message: "Open example.com and tell me the page title."   # optional — pinned opener, delivered verbatim as turn 1
 
 initial_state:
   json_db: "initial_state.json"          # optional

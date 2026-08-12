@@ -187,6 +187,18 @@ class TestFirstMessageSpellingRefused:
                 project_task_defaults={"actors": {"user": {"first_message": "Hi."}}},
             )
 
+    def test_direct_python_user_simulator_object_spelling_is_refused(self) -> None:
+        """The kwarg shim's object form is refused too — the model refuses the key
+        before ``TaskConfig`` model-dumps the instance into ``actors.user``."""
+        from tolokaforge.core.models import TaskConfig, UserSimulatorConfig
+
+        with pytest.raises(ValueError, match="initial_user_message"):
+            TaskConfig(
+                task_id="t1",
+                description="d",
+                user_simulator=UserSimulatorConfig(mode="llm", first_message="Hi, I need help."),
+            )
+
 
 class TestDirectPythonUserSimulatorKwargShim:
     """External Python callers doing ``TaskConfig(user_simulator=…)`` continue

@@ -66,6 +66,8 @@ category: "terminal"                # e.g. terminal, web, airline, retail
 description: |
   Detailed task description.
 
+initial_user_message: "Hi, I need help with ..."   # optional — pinned opener, delivered verbatim as turn 1
+
 initial_state:
   json_db: "initial_state.json"     # JSON database seed
   filesystem:

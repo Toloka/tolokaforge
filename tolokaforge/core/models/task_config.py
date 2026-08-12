@@ -112,6 +112,27 @@ class ToolsConfig(BaseModel):
     user: dict[str, Any] = Field(default_factory=lambda: {"enabled": []})
 
 
+def _refuse_first_message(data: Any) -> Any:
+    """Reject an opener declared on the user actor instead of on the task.
+
+    ``extra="ignore"`` would drop the key, and the nested position keeps it
+    out of :func:`construct_config`'s unknown-key warning — so an author would
+    see neither their opener delivered nor any complaint. Both declared mirrors
+    of the user actor run this, so every spelling reaches it: ``actors.user``,
+    the legacy top-level ``user_simulator`` block, a project's
+    ``task_defaults`` actors map, and a direct-Python
+    ``UserSimulatorConfig(...)``.
+    """
+    if isinstance(data, dict) and "first_message" in data:
+        raise ValueError(
+            "first_message is not an actor field, under actors.user or under the "
+            "legacy top-level user_simulator block. A task's opening turn is declared "
+            "task-level as initial_user_message, whose text is delivered verbatim as "
+            "the first user message — move the value there."
+        )
+    return data
+
+
 class UserSimulatorConfig(BaseModel):
     """User simulator configuration"""
 
@@ -121,6 +142,11 @@ class UserSimulatorConfig(BaseModel):
     persona: str = "cooperative"
     backstory: str | None = None  # User instruction for tau-bench parity
     scripted_flow: list[dict[str, str]] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_first_message(cls, data: Any) -> Any:
+        return _refuse_first_message(data)
 
 
 _RESERVED_ACTOR_NAMES = frozenset({"agent", "judge"})
@@ -152,23 +178,8 @@ class ActorSpec(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _refuse_first_message(cls, data: Any) -> Any:
-        """Reject an opener declared on the actor instead of on the task.
-
-        ``extra="ignore"`` would drop the key, and the nested position keeps it
-        out of :func:`construct_config`'s unknown-key warning — so an author
-        would see neither their opener delivered nor any complaint. Reached by
-        every spelling: ``actors.user``, the legacy top-level
-        ``user_simulator`` block, and a project's ``task_defaults`` actors map.
-        """
-        if not isinstance(data, dict) or "first_message" not in data:
-            return data
-        raise ValueError(
-            "first_message is not an actor field, under actors.user or under the "
-            "legacy top-level user_simulator block. A task's opening turn is declared "
-            "task-level as initial_user_message, whose text is delivered verbatim as "
-            "the first user message — move the value there."
-        )
+    def _reject_first_message(cls, data: Any) -> Any:
+        return _refuse_first_message(data)
 
 
 def _validate_actors_map(

@@ -509,24 +509,6 @@ class TestTrialRunnerRun:
         assert len(delivered.tool_calls) == 1
         assert delivered.tool_calls[0].id == "uc1"
 
-    def test_initial_user_message_used_directly(self) -> None:
-        """When initial_user_message is provided, it's used directly."""
-        agent = _make_agent_client(
-            [
-                GenerationResult(
-                    text="Done. ###STOP###",
-                    tool_calls=[],
-                    usage=Usage(prompt_tokens=10, completion_tokens=5),
-                ),
-            ]
-        )
-        runner = _make_runner(agent_client=agent)
-        traj = runner.run("System prompt", "My specific request")
-
-        # First message should be the provided initial user message
-        assert traj.messages[0].role == MessageRole.USER
-        assert traj.messages[0].content == "My specific request"
-
     def test_metrics_tracking(self) -> None:
         """Verify metrics are accumulated correctly."""
         agent = _make_agent_client(
