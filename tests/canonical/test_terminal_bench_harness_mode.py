@@ -304,3 +304,41 @@ class TestHarnessModeSelection:
     def test_multiple_agent_tools_are_refused(self, harness_trial):
         with pytest.raises(RuntimeError, match="runs through exactly one"):
             harness_trial(tools=[_bash_tool(), _bash_tool(name="bash2")])
+
+
+class TestTheMetadataTheConductorReadsIsAlwaysAMapping:
+    """Why the branch may read ``spec.task.metadata`` without guarding its type.
+
+    The conductor decides harness mode with a single ``metadata.get(...)``. That
+    is safe because ``TaskDescription.metadata`` is a ``dict`` field with a
+    ``{}`` default, so every real spec carries a mapping — and it means a test
+    standing in for a spec with a bare ``MagicMock`` is not modelling the
+    contract: ``metadata.get(...)`` would answer with another mock, which reads
+    as neither "absent" nor a usable command. Pinned here so the fix for that is
+    a truthful stand-in rather than a type check bolted onto the engine.
+    """
+
+    def test_a_default_task_description_carries_an_empty_dict(self) -> None:
+        task = TaskDescription(
+            task_id="t",
+            name="t",
+            category="terminal",
+            description="d",
+            adapter_type="terminal_bench",
+            system_prompt="",
+        )
+        assert task.metadata == {}
+        assert task.metadata.get("agent_harness_command") is None
+
+    def test_the_absent_key_is_indistinguishable_from_an_empty_mapping(self) -> None:
+        """Both mean "no harness" — the turn loop runs, nothing is refused."""
+        task = TaskDescription(
+            task_id="t",
+            name="t",
+            category="terminal",
+            description="d",
+            adapter_type="terminal_bench",
+            system_prompt="",
+            metadata={"difficulty": "easy"},
+        )
+        assert task.metadata.get("agent_harness_command") is None
