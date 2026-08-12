@@ -48,6 +48,7 @@ from tolokaforge.core.compose_materialisation import (
     compose_container_to_snapshot,
     copy_compose_context,
     first_published_port,
+    inject_runner_credentials,
     make_project_temp_dir,
     mount_docker_socket_into_runner,
     resolve_env_endpoints,
@@ -261,6 +262,9 @@ class PerTrialRuntimeBackend:
                 manifest.runner_service,
                 manifest.limited_internet_allowlist,
                 restricted_services=manifest.restricted_services,
+            )
+            inject_runner_credentials(
+                temp_dir / manifest.compose_file.name, manifest.runner_service
             )
             if self.mount_docker_socket:
                 mount_docker_socket_into_runner(

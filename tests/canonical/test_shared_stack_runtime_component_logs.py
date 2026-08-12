@@ -114,6 +114,7 @@ def _patch_materialise(
     monkeypatch.setattr(module, "DockerCompose", lambda **_: compose)
     monkeypatch.setattr(module, "copy_compose_context", lambda src, dst: None)
     monkeypatch.setattr(module, "apply_network_policy_to_compose_file", lambda *a, **k: None)
+    monkeypatch.setattr(module, "inject_runner_credentials", lambda *a, **k: None)
     monkeypatch.setattr(module, "resolve_runner_endpoint", lambda *a, **k: runner_endpoint)
     monkeypatch.setattr(module, "resolve_env_endpoints", lambda *a, **k: endpoints)
     monkeypatch.setattr(module, "GrpcRunnerClient", lambda **_: MagicMock())

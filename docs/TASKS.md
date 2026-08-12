@@ -163,9 +163,18 @@ Field reference:
   else is refused with HTTP 403. HTTPS goes through the proxy via CONNECT with
   no TLS interception, so pinned certificates keep working and no CA plumbing is
   needed. The `runner_service` joins the edge network directly (not proxied),
-  keeping its grading egress, exactly as under `no_internet`. Entries are DNS
+  keeping its grading egress exactly as under `no_internet` — so the allowlist
+  constrains application services rather than the judge's provider call.
+  Entries are DNS
   hostnames only — schemes, ports, paths, IP literals, and duplicates are
   rejected at manifest load.
+
+Credential delivery is independent of `network_policy`. Under every policy,
+materialisation writes the engine's `TOLOKAFORGE_SECRETS_JSON` payload onto
+`runner_service` — and onto no other service — so the runner's in-container
+`llm_judge` grading can authenticate. Do not declare that variable yourself,
+and do not bind-mount the project context root or the compose file: both are
+refused (see below).
 
 Fields declared on the model but **not yet enforced by the provisioner** —
 declaring them is accepted for forward-compatibility but has no runtime
@@ -187,6 +196,17 @@ load:
   `image: nginx:1.27-alpine` is accepted.
 - `depends_on` targets must reference declared services.
 - `runner_service` must be declared in the compose file.
+
+Two further invariants are enforced at **materialisation** rather than at load,
+because both concern the credential payload the engine writes into the copied
+compose file rather than anything authored in the pack:
+
+- No service may declare `TOLOKAFORGE_SECRETS_JSON` — as a mapping key, a
+  `KEY=value` entry, or a bare pass-through name. The variable is engine-owned;
+  delete the entry.
+- No service may bind-mount the project context root (`.`, `./`) or the compose
+  file itself. Both read the credentialled compose file back out of the context
+  dir. Mount the specific paths a service needs from a subdirectory instead.
 
 For a full walkthrough anchored to a working example, see the
 [multi-container tasks guide](MULTI_CONTAINER_GUIDE.md). For the

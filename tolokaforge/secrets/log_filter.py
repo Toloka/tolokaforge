@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from tolokaforge.secrets.manager import SecretManager, get_default_or_none
+from tolokaforge.secrets.manager import SecretManager, compose_escaped, get_default_or_none
 
 PLACEHOLDER = "***REDACTED***"
 
@@ -50,7 +50,13 @@ def _current_redaction_values() -> frozenset[str]:
         return frozenset()
     if manager is not _cached_manager:
         _cached_manager = manager
-        _cached_values = manager.known_values()
+        resolved = manager.known_values()
+        # A credential also travels in its compose-escaped form, written into a
+        # materialised compose file. That form is not the value the manager
+        # holds, so without it a compose error quoting the file back scrubs to
+        # nothing. Escaping a value with no ``$`` is the identity, so the union
+        # only grows for the values that need it.
+        _cached_values = resolved | {compose_escaped(value) for value in resolved}
     return _cached_values
 
 

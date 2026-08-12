@@ -327,9 +327,13 @@ materialise a task-declared stack (Case B and Case C). It is a closed enum
 with three values; the default is `no_internet`.
 
 Both backends materialise the same way: `copy_compose_context` copies the
-task's compose file into an isolated project directory, the copy is rewritten
-in place by `enforce_network_policy` (`compose_materialisation.py`), then
-`DockerCompose` brings the rewritten file up.
+task's compose file into an isolated project directory, then the copy is
+rewritten in place by a series of transforms in `compose_materialisation.py` —
+`enforce_network_policy` (the topology rewrite this section is about),
+`inject_runner_credentials` (the engine's `TOLOKAFORGE_SECRETS_JSON` payload
+onto `runner_service` alone), and, on the compose-variant tool paths,
+`mount_docker_socket_into_runner` — before `DockerCompose` brings the rewritten
+file up.
 
 | Value | Enforcement |
 |---|---|

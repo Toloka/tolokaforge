@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
 
 from tolokaforge.secrets import (
+    CONTAINER_SECRETS_ENV_VAR,
     DictProvider,
     SecretConfig,
     SecretManager,
     SecretSource,
+    container_secrets_env,
     get_default,
     init_default,
     init_default_from,
@@ -64,6 +67,26 @@ def test_serialize_round_trip_through_dict_provider():
     sm_b = SecretManager.from_dict(payload)
     assert sm_b.get_secret("OPENROUTER_API_KEY") == "sk-1"
     assert sm_b.get_secret("TYPESENSE_API_KEY") == "ts-1"
+
+
+def test_container_secrets_env_carries_the_serialized_payload(installed_fake_secrets):
+    """The host→container entry is the manager's own ``serialize()`` output
+    under the one engine-owned variable name. Both injection sites — the
+    engine-built core stack and the materialised task-declared compose stack —
+    read this function, so the payload has a single definition."""
+    entry = container_secrets_env()
+
+    assert list(entry) == [CONTAINER_SECRETS_ENV_VAR]
+    assert json.loads(entry[CONTAINER_SECRETS_ENV_VAR]) == get_default().serialize()
+    assert json.loads(entry[CONTAINER_SECRETS_ENV_VAR]) == installed_fake_secrets
+
+
+@pytest.mark.parametrize("installed_fake_secrets", [{}], indirect=True)
+def test_container_secrets_env_is_empty_when_no_secrets_resolve(installed_fake_secrets):
+    """No secrets means no variable, not an empty payload: an unset variable
+    makes the runner lazy-init its own manager, while an empty payload would
+    bootstrap an empty one and suppress that."""
+    assert container_secrets_env() == {}
 
 
 def test_export_to_environ_uses_setdefault(monkeypatch: pytest.MonkeyPatch):
