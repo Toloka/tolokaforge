@@ -261,8 +261,8 @@ class UserReplyRefused(RuntimeError):
     **never quotes the rejected reply**. ``classify_loop_error`` has a prose
     tier keyed on provider names appearing in an exception's text, so a reply
     that happened to discuss one would re-attribute this harness defect to the
-    provider and move the trial out of the measured denominator. The rejected
-    text is evidence and lives in the ``WARNING`` log lines instead.
+    provider and move the trial out of the measured denominator. The matched
+    excerpt is evidence and lives in the ``WARNING`` log lines instead.
     """
 
     def __init__(self, rejected: tuple[ReplyDefect, ...]) -> None:
@@ -270,7 +270,7 @@ class UserReplyRefused(RuntimeError):
         codes = ", ".join(_reason_codes(rejected))
         super().__init__(
             f"User simulator broke frame on all {len(rejected)} generation attempts "
-            f"({codes}); the turn is refused rather than delivered. The rejected text "
+            f"({codes}); the turn is refused rather than delivered. The matched excerpt "
             "is in this trial's guard log lines, deliberately not in this message."
         )
 

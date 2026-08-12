@@ -302,11 +302,14 @@ def _verdict_of_the_registration(text: str) -> ReplyDefect | None:
 
 class TestRegisteringASecondDetectorMovedNoVerdict:
     """The corpus above is `FourthWallDetector`'s, and every row reads the same
-    through the full registration as it does through that detector alone."""
+    through the full registration as it does through that detector alone.
 
-    @pytest.mark.parametrize("text", MUST_PASS)
-    def test_an_ordinary_support_sentence_still_passes(self, text: str) -> None:
-        assert _verdict_of_the_registration(text) is None
+    The `MUST_PASS` half of that claim is the conjunction of two tests that
+    already carry it — `test_an_ordinary_support_sentence_passes` above, and
+    `test_no_fourth_wall_pass_row_is_read_as_a_scratchpad` in
+    `test_scratchpad_detector.py` — since a row neither detector flags is a row
+    the registration delivers.
+    """
 
     @pytest.mark.parametrize(("text", "reason"), MUST_DETECT)
     def test_a_broken_frame_keeps_its_fourth_wall_reason(self, text: str, reason: str) -> None:
@@ -479,10 +482,13 @@ class TestASimulatorThatOnlyEverLeaksIsRefusedLoudly:
 
 
 class _AlwaysHits:
-    """Test-local detector standing in for a future registration.
+    """Test-local detector standing in for any registration.
 
     Stamps ``stamped_by_the_detector`` on every finding, never its own
-    ``name``, so a recorded name can only have come from the registration.
+    ``name``, so a recorded name can only have come from the registration. The
+    names it is given here are ones no real detector is registered under, so a
+    verdict a real detector could also have produced cannot satisfy the
+    assertion.
     """
 
     def __init__(self, name: str) -> None:
@@ -517,14 +523,17 @@ class TestDetectorsAreAPluggableList:
         """The recorded name is the registration, not the string the detector
         stamped on its own finding — the bundle groups on a name a run can be
         read back from."""
-        detectors: tuple[ReplyDetector, ...] = (FourthWallDetector(), _AlwaysHits("scratchpad"))
+        detectors: tuple[ReplyDetector, ...] = (
+            FourthWallDetector(),
+            _AlwaysHits("the_registered_name"),
+        )
         guard = UserReplyGuard(detectors=detectors)
 
         with pytest.raises(UserReplyRefused) as excinfo:
             guard.enforce(lambda: GenerationResult(text=CLEAN_REPLY))
 
         assert [(d.detector, d.reason) for d in excinfo.value.rejected] == [
-            ("scratchpad", "test_local")
+            ("the_registered_name", "test_local")
         ] * USER_REPLY_MAX_ATTEMPTS
 
 

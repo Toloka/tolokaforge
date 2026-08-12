@@ -73,11 +73,20 @@ def _declared(document: dict[str, Any], dotted_key: str) -> Any:
 
 
 def _committed_user_turns() -> list[str]:
-    """Every USER turn in the committed trajectory bundles."""
+    """Every USER turn in the committed trajectory bundles that are hydrated.
+
+    A bundle left as an LFS pointer costs the turns in its own file and nothing
+    else — the hydrated bundles are still swept — so only a set with no
+    hydrated bundle in it has nothing left to inspect. A glob that matches
+    nothing at all is not that case, and reaches the caller's emptiness assert.
+    """
+    bundles = sorted(REPO_ROOT.glob("tests/**/trajectory.yaml"))
+    hydrated = [path for path in bundles if not is_lfs_pointer(path)]
+    if bundles and not hydrated:
+        pytest.skip("Every committed trajectory is an LFS pointer — run 'git lfs pull' first")
+
     turns: list[str] = []
-    for path in sorted(REPO_ROOT.glob("tests/**/trajectory.yaml")):
-        if is_lfs_pointer(path):
-            pytest.skip(f"Trajectory data is LFS pointer — run 'git lfs pull' first: {path}")
+    for path in hydrated:
         messages = yaml.safe_load(path.read_text(encoding="utf-8"))["messages"]
         turns.extend(m["content"] for m in messages if m["role"] == "user" and m["content"].strip())
     return turns
@@ -108,6 +117,18 @@ class TestTheScratchpadCorpus:
     @pytest.mark.parametrize("text", MUST_PASS)
     def test_a_customer_writing_about_a_tag_passes(self, text: str) -> None:
         assert ScratchpadDetector().inspect(text) is None
+
+    def test_the_excerpt_carries_the_text_that_followed_the_tag(self) -> None:
+        """A bare tag is the same handful of characters in a leak and in a
+        pasted log, so the excerpt runs from the tag to the bound
+        ``ReplyDefect`` holds — that trailing text is what a reader of the
+        ``WARNING`` line has to tell the two apart with."""
+        text = "The user wants me to act as a passenger.\n</think>\nHi, my flight was cancelled."
+
+        defect = ScratchpadDetector().inspect(text)
+
+        assert defect is not None
+        assert defect.excerpt == "</think>\nHi, my flight was cancelled."
 
 
 class TestTheTwoDetectorsAreDisjointOnTheCorpus:

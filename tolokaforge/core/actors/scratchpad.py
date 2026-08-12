@@ -32,6 +32,11 @@ What this does not cover:
   assigned business role, the message they are composing, or their persona
   field. Measured and filed as #1095; the backstop is the simulator's own
   prompt rule.
+* **Every other spelling of the tag.** ``<think>`` is the only one covered: a
+  provider emitting ``<thinking>``, ``<reasoning>`` or a pipe-delimited
+  ``<|think|>`` leaks past this detector untouched. The corpus carries a
+  line-leading ``<thinking>`` support ticket as a *passing* row, so widening
+  the spelling is a change that has to move that row deliberately.
 * **A tag mentioned mid-line, by design.** ``"My parser chokes on </think>
   tags in the streamed output"`` is a support ticket, and it is the anchor that
   keeps those clean.
@@ -40,8 +45,11 @@ What this does not cover:
   and ``"The output file starts with\n</think>\nwhich breaks my parser."`` both
   fire. It is rare (this text is simulator-generated, not arbitrary human
   input), it costs a turn's attempt budget and then the trial, and it fails
-  *loudly*, carrying the matched excerpt, rather than silently. The alternative
-  anchor would miss the dominant leak shape, so the trade is taken knowingly.
+  *loudly*, carrying the matched line and what follows it, rather than silently
+  — the tag alone is the same handful of characters in a leak and in a pasted
+  log, so it is the text after it that tells a reader of the log line which one
+  they are holding. The alternative anchor would miss the dominant leak shape,
+  so the trade is taken knowingly.
 * **The agent path**, which carries the identical leak into ``trajectory.yaml``
   and the judge's evidence with no defense and cannot regenerate — re-rolling
   an agent turn re-rolls the thing being measured. Stripping belongs there,
@@ -52,7 +60,7 @@ from __future__ import annotations
 
 import re
 
-from tolokaforge.core.models.trajectory import ReplyDefect
+from tolokaforge.core.models.trajectory import REPLY_DEFECT_EXCERPT_MAX_CHARS, ReplyDefect
 
 __all__ = ["ScratchpadDetector"]
 
@@ -68,4 +76,5 @@ class ScratchpadDetector:
         match = _THINK_TAG.search(text)
         if match is None:
             return None
-        return ReplyDefect(detector=self.name, reason="think_tag", excerpt=match.group(0))
+        excerpt = text[match.start() : match.start() + REPLY_DEFECT_EXCERPT_MAX_CHARS]
+        return ReplyDefect(detector=self.name, reason="think_tag", excerpt=excerpt)

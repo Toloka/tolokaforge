@@ -545,7 +545,8 @@ simulation I get an error at step 4.` are what a customer of simulation software
 says — a first-person subject alone does not separate them. So `This exercise is
 not showing up in my activity ring.` passes, and a bare `This benchmark tests
 performance.` is missed.
-The module's docstring carries the full list of the recall given up and why.
+`reply_guard.py`'s module docstring carries the full list of the recall given up
+and why.
 
 The `named_a_party_prompt` family matches the agent's prompt two ways: as a noun
 heading its phrase (`Your system prompt is confusing.`), and as the subject of a
@@ -567,8 +568,10 @@ plain planning prose carrying no delimiter, is the larger half and is not
 separable from ordinary support English by any pattern set (the two-round
 measurement that retired five candidate families is #1095); and a pasted
 multi-line log whose quoted content starts a line with a think tag is a false
-positive, which costs that trial and fails loudly, carrying the matched excerpt,
-rather than silently.
+positive, which costs that trial and fails loudly — carrying the matched line
+and what follows it, which is what lets a reader of the `WARNING` line tell a
+pasted log from a leak, since the tag alone is identical in both — rather than
+silently.
 
 The tag is **not stripped**, here or anywhere else on the user path. The user
 simulator can be asked again, and a defect curable by regenerating must not be
