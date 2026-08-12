@@ -470,11 +470,11 @@ class TestTerminalBenchAdapterInstructionlessTask:
     """A pack whose instruction carries no text pins no opener, so the simulator
     writes turn 1.
 
-    ``discover_tasks`` reports such a task with a blank instruction, and a blank
-    ``initial_user_message`` is a task-contract error whose remedies — omit the
-    key in ``task.yaml``, return ``None`` from ``get_task()`` — a terminal-bench
-    pack cannot carry out for itself. The adapter must leave the field unset
-    rather than forward the blank.
+    The key can be absent, null, or whitespace, and ``discover_tasks`` reports
+    all three as a blank instruction. A blank ``initial_user_message`` is a
+    task-contract error whose remedies — omit the key in ``task.yaml``, return
+    ``None`` from ``get_task()`` — a terminal-bench pack cannot carry out for
+    itself. The adapter must leave the field unset rather than forward the blank.
     """
 
     @pytest.mark.parametrize(
@@ -484,6 +484,7 @@ class TestTerminalBenchAdapterInstructionlessTask:
             pytest.param(
                 {"difficulty": "easy", "instruction": "   \n  "}, id="instruction_whitespace"
             ),
+            pytest.param({"difficulty": "easy", "instruction": None}, id="instruction_null"),
         ],
     )
     def test_get_task_leaves_initial_user_message_unset(self, tmp_path, task_yaml) -> None:

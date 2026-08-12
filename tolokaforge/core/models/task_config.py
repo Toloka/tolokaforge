@@ -125,8 +125,7 @@ def _refuse_first_message(data: Any) -> Any:
     """
     if isinstance(data, dict) and "first_message" in data:
         raise ValueError(
-            "first_message is not an actor field, under actors.user or under the "
-            "legacy top-level user_simulator block. A task's opening turn is declared "
+            "first_message is not a field on the user actor. A task's opening turn is declared "
             "task-level as initial_user_message, whose text is delivered verbatim as "
             "the first user message — move the value there."
         )
