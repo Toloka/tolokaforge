@@ -702,7 +702,8 @@ jobs:
             tolokaforge_models/src/tolokaforge_models/certificates/registry.py \
             tolokaforge_models/src/tolokaforge_models/policies \
             tolokaforge_models/src/tolokaforge_models/__init__.py \
-            tolokaforge_models/pyproject.toml
+            tolokaforge_models/pyproject.toml \
+            tolokaforge_models/tests
           if git diff --cached --quiet; then
             echo "::error::finalize produced no file changes"; exit 1
           fi

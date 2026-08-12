@@ -48,6 +48,7 @@ _EXPECTED_STAGED_PATHS = frozenset(
         "tolokaforge_models/src/tolokaforge_models/policies",
         "tolokaforge_models/src/tolokaforge_models/__init__.py",
         "tolokaforge_models/pyproject.toml",
+        "tolokaforge_models/tests",
     }
 )
 

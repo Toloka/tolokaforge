@@ -170,8 +170,14 @@ and [ADR 0002 — External model registry](adr/0002-external-model-registry.md).
 A few rules the overlay enforces (loud-fail at engine startup, naming the
 overlay path and the offending key):
 
-- Policy-name strings must resolve to existing classes shipped in the engine.
-  Adding a brand-new policy class still requires an engine release.
+- Policy-name strings must resolve to a class registered in the merged
+  registry — either an engine-shipped class in `tolokaforge/core/llm/`
+  or a models-wheel class in `tolokaforge_models.policies.<family>`
+  registered via the `tolokaforge.policies` entry-point group. Adding a
+  brand-new policy class is Bucket A when the class extends an existing
+  slot base; the class lands in the models wheel alongside the preset,
+  no engine release. Only a new slot type or a new base-class shape
+  needs an engine release (Bucket B).
 - Overlay presets are prepended to the iteration order, so overlapping
   `match:` globs let you shadow a bundled preset.
 - Same-named overlay presets replace the bundled entry (logged at INFO so the
@@ -362,14 +368,30 @@ domain available) and skim the trajectories for:
 If the model exposes reasoning in a new format (not OpenAI
 `reasoning_content` summary nor Anthropic `thinking_blocks`):
 
-1. Extend or introduce a
+1. Extend the engine's
    [`ReasoningCodec`](../tolokaforge/core/llm/reasoning_codec.py)
-   subclass.
-2. Register it on the preset via the `reasoning_codec:` YAML key.
+   base class from the models wheel: put the subclass at
+   [`tolokaforge_models/src/tolokaforge_models/policies/<family>.py`](../tolokaforge_models/src/tolokaforge_models/policies/)
+   (a new file per model family, or an existing one such as
+   `deepseek.py` for the DeepSeek V4 reasoning shape). This is
+   Bucket A — the models wheel owns per-model policy code.
+2. Register it via an entry point in
+   [`tolokaforge_models/pyproject.toml`](../tolokaforge_models/pyproject.toml)
+   under `[project.entry-points."tolokaforge.policies"]` keyed as
+   `reasoning_codec.<policy_name>`. The engine's merge-loader picks it
+   up at startup and it becomes referenceable from the `reasoning_codec:`
+   preset YAML key.
 3. Add a unit-test fixture under
-   [`tests/unit/llm/fixtures/`](../tests/unit/llm/fixtures/) capturing
-   a real response shape — so the codec round-trip is unit-testable
-   without burning provider spend.
+   [`tolokaforge_models/tests/unit/fixtures/`](../tolokaforge_models/tests/)
+   capturing a real response shape — so the codec round-trip is
+   unit-testable without burning provider spend. The test file lives
+   next to it under `tolokaforge_models/tests/unit/`.
+
+Only a *new base class* (`ReasoningCodec` itself doesn't have a hook
+you can override — you need a new abstract method or lifecycle stage)
+routes to the engine (Bucket B). If the existing base's `encode` /
+`decode` / `replay` surface covers your case with a subclass override,
+you stay in Bucket A.
 
 ## 6. For new non-OpenRouter providers
 

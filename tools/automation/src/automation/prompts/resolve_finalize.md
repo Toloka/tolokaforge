@@ -15,8 +15,12 @@ normal synchronous Claude Code run; nothing to await.
 ## Tasks (write/edit files only)
 1. Fold the overlay preset into `tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml`: add ONE new entry
    under `presets:` with the overlay's `match` + axes. Leave every other preset untouched (do
-   NOT broaden a shared glob). If the compose step wrote a new adapter class, it is already in
-   the engine + `_POLICY_REGISTRIES` + `__init__.py`; leave it.
+   NOT broaden a shared glob). If the compose step wrote a new adapter class, it lives at
+   `tolokaforge_models/src/tolokaforge_models/policies/<family>.py` and is registered via an
+   entry point in `tolokaforge_models/pyproject.toml` under
+   `[project.entry-points."tolokaforge.policies"]` — leave both. If the compose step touched any
+   file under `tolokaforge/core/llm/` (engine-side base classes / registries / `__init__.py`),
+   the decision should have set `needs_human=true` — bail out here and route to human review.
 2. Add the candidate cert to `tolokaforge_models/src/tolokaforge_models/certificates/registry.py`: an `MC(...)` entry in `_ALL`
    with `model_id="{{MODEL_ID}}"`, provider/name, `env_key="OPENROUTER_API_KEY"`,
    `required=frozenset({...})` from decision.json `required`, and

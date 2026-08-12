@@ -575,8 +575,9 @@ def _validate_overlay(data: dict[str, Any], path: str) -> None:
                 raise ValueError(
                     f"Preset overlay {path!r} at {where}: unknown "
                     f"{slot} {name!r}. Available: {sorted(registry.keys())}. "
-                    f"New policy classes require an engine release; "
-                    f"overlays can only reference existing ones."
+                    f"Overlays reference existing policy classes; new classes "
+                    f"land in `tolokaforge_models.policies.<family>` and register "
+                    f"themselves via the `tolokaforge.policies` entry-point group."
                 )
             if nested_params:
                 allowed = _extract_known_keys(registry[name])

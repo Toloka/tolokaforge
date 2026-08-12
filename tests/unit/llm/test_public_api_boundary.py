@@ -299,28 +299,52 @@ def _classify_receiver(node: ast.expr) -> str | None:
 
 
 def test_per_model_subclasses_covers_registered_non_base_classes() -> None:
+    """Every registered per-model class that lives outside the engine base
+    modules must appear in :data:`PER_MODEL_SUBCLASSES`, whether it inherits
+    from an in-registry slot base or is a composite inheriting only from
+    ``object``.
+
+    Filter shape: engine-owned base classes and slot Protocols
+    (``StrictSchema``, ``DictMapHints``, ``ArrayDictMapResponse``, …) live
+    under ``tolokaforge.core.llm.*`` and stay engine-side; the AST audit
+    does not run against them because they define the abstract surface,
+    not implement it. Every OTHER registered class — the per-model
+    subclasses and composites the models wheel ships — must be enumerated
+    here so tests 1-3 audit each one.
+
+    Composite classes (shape (b) in the module docstring) inherit only
+    from ``object`` and wire up sibling policy instances internally. They
+    have no in-registry ancestor, so the older "must inherit from a
+    registered base" filter would silently exempt them. This walk requires
+    every non-engine class to be listed regardless of ancestor shape.
+    """
     presets = importlib.import_module("tolokaforge.core.llm.presets")
     listed = set(PER_MODEL_SUBCLASSES)
     missing: list[str] = []
     for slot, registry in presets._POLICY_REGISTRIES.items():
         registered = set(registry.values())
         for cls in registry.values():
-            if not cls.__module__.startswith("tolokaforge.core.llm."):
+            # Engine-owned base classes and slot Protocols are the abstract
+            # surface — skip them. Everything else must be enumerated.
+            if cls.__module__.startswith("tolokaforge.core.llm."):
                 continue
             if cls.__name__ in _SLOT_PROTOCOLS:
                 continue
-            in_slot_ancestors = [
-                base for base in cls.__mro__[1:] if base is not object and base in registered
-            ]
-            if not in_slot_ancestors:
-                continue
             key = (cls.__module__, cls.__name__)
             if key not in listed:
+                in_slot_ancestors = [
+                    base for base in cls.__mro__[1:] if base is not object and base in registered
+                ]
+                shape = (
+                    f"inherits from registered slot base(s) "
+                    f"{[b.__name__ for b in in_slot_ancestors]!r}"
+                    if in_slot_ancestors
+                    else "is a composite (inherits only from object)"
+                )
                 missing.append(
-                    f"{slot}: {cls.__module__}.{cls.__name__} inherits from "
-                    f"registered slot base(s) "
-                    f"{[b.__name__ for b in in_slot_ancestors]!r} but is not in "
-                    f"PER_MODEL_SUBCLASSES. Add it to the list or promote its "
-                    f"private-helper usage to public API."
+                    f"{slot}: {cls.__module__}.{cls.__name__} {shape} "
+                    f"but is not in PER_MODEL_SUBCLASSES. Add it to the "
+                    f"list so tests 1-3 audit it against the engine's "
+                    f"public API boundary."
                 )
     assert not missing, "\n".join(missing)
