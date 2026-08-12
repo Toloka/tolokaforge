@@ -88,6 +88,7 @@ class GenerationParams:
         drop_sampling_when_thinking: bool = False,
         reasoning_budget_default: int | None = None,
         unsupported_effort_levels: frozenset[str] | list[str] | tuple[str, ...] | None = None,
+        supports_tool_choice_auto: bool = True,
     ):
         self._fixed_temperature = fixed_temperature
         self._supports_seed = supports_seed
@@ -109,6 +110,34 @@ class GenerationParams:
         self._unsupported_effort_levels: frozenset[str] = frozenset(
             e.lower() for e in (unsupported_effort_levels or ())
         )
+        # Whether the provider's ``tool_choice`` enum contains ``"auto"``, NOT whether
+        # it supports ``tool_choice`` at all. Cohere's Chat API, for one, supports the
+        # parameter with ``REQUIRED`` and ``NONE`` but has no ``AUTO``
+        # (https://docs.cohere.com/reference/chat); omitting it is its documented way to
+        # say "the model is free to choose whether to use the specified tools or not".
+        #
+        # So only ``"auto"`` is suppressed, and only when this is False. ``REQUIRED`` /
+        # ``NONE`` still go through, because a provider in this position DOES honour
+        # them and silently dropping a caller's explicit forcing would change what the
+        # model was asked to do.
+        #
+        # Suppressing ``auto`` is semantically free: omission yields exactly the
+        # behaviour ``auto`` names, so a model measured under this flag stays comparable
+        # with one measured without it. The symptom that leads here is a transport
+        # refusing the parameter up front (litellm 400s with ``UnsupportedParamsError:
+        # azure_ai does not support parameters: ['tool_choice']``), which reads as a
+        # missing capability when it is really a missing enum value.
+        self._supports_tool_choice_auto = supports_tool_choice_auto
+
+    @property
+    def supports_tool_choice_auto(self) -> bool:
+        """Whether the provider's ``tool_choice`` enum contains ``"auto"``.
+
+        Read by :meth:`LLMClient._build_kwargs`, which is where ``tool_choice`` is
+        attached, since it is set alongside ``tools`` and therefore after :meth:`adapt`
+        has run, so this cannot be a rewrite inside ``adapt``.
+        """
+        return self._supports_tool_choice_auto
 
     def adapt(
         self,
