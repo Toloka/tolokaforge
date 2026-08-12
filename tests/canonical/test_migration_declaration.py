@@ -5,16 +5,20 @@ through ``inspect_migration_declaration`` against the ``grading.yaml`` beside it
 shipped declaration the pack contradicts — a renamed criterion, a dropped constraint id, a
 mode the pack's rules refuse — reds here rather than reaching whoever reads the migration
 report. The enumeration is pinned, because a guard over a subset says nothing about the
-declarations it skipped.
+declarations it skipped. The corpus each entry names is swept the same way and over the
+fixture packs under ``tests/data/migration_packs`` too, against the repository root: the
+value is read against a base the caller supplies, and the root is what the shipped values
+are written from.
 
-The two candidacies are then compared entry by entry against the entry written out here:
+The shipped candidacy is then compared entry by entry against the entry written out here:
 the file on disk is one source, this module is the other, so drift on either side reds
 instead of the two agreeing on a criterion the rubric no longer holds.
 
 ``cache_debug`` carries a ``required`` criterion beside a shared gate, a shared scored
 constraint and two routes' worth of route-scoped ones, so the veto rule's refusals are
-stated against a real block rather than a fixture. What a hand-built pack adds — the
-route-scoped *gate*, which no shipped pack declares — is in
+stated against a real block rather than a fixture — and so is the one-route rule's, over
+the pack whose two grounded-claim checks sit one per route. What a hand-built pack adds —
+the route-scoped *gate*, which no shipped pack declares — is in
 ``tests/unit/grading/test_migration_declaration.py``, which also owns every rule stated over
 the entry alone: the residual-kind directions and the freed-share rule need no real rubric to
 be about, so re-stating them here would lock one rule twice and neither more firmly. The
@@ -29,7 +33,7 @@ from typing import Any, get_args
 
 import pytest
 
-from tests.utils.migration_packs import write_migration_pack
+from tests.utils.migration_packs import write_corpus_directory, write_migration_pack
 from tolokaforge.core.grading.migration_declaration import (
     EVERY_DECLARED_FIELD,
     MIGRATION_FILENAME,
@@ -56,9 +60,23 @@ _NOTES_TESTCASES = _EXAMPLES / "native/native_shared_domain/dataset/notes/testca
 # re-pointed at another criterion the pack happens to hold reds here and nowhere else.
 _SHIPPED_CRITERIA = {
     _LOT_OPS.parent: ("names_lot",),
-    _CACHE_DEBUG.parent: ("explains_mechanism",),
     _NOTES_TESTCASES / "add_note_duplicate_check_gated": ("checked_duplicates_first",),
     _NOTES_TESTCASES / "add_note_duplicate_check_policy": ("checked_duplicates_first",),
+}
+
+_FIXTURE_PACKS = _REPO / "tests/data/migration_packs"
+_NOTES_CORPUS = "tests/data/migration_corpora/notes_duplicate_check"
+_LOT_OPS_CORPUS = "tests/data/migration_corpora/lot_ops_names_lot"
+
+# The corpus every declaration in the tree names, by the task directory declaring it. Written
+# from the repository root, which is what the sweep below reads them against — and written out
+# here because a re-pointed corpus is a claim measured over other trials.
+_DECLARED_CORPORA = {
+    _LOT_OPS.parent: (_LOT_OPS_CORPUS,),
+    _NOTES_TESTCASES / "add_note_duplicate_check_gated": (_NOTES_CORPUS,),
+    _NOTES_TESTCASES / "add_note_duplicate_check_policy": (_NOTES_CORPUS,),
+    _FIXTURE_PACKS / "notes_duplicate_check_narrowed": (_NOTES_CORPUS,),
+    _FIXTURE_PACKS / "notes_duplicate_check_policy_narrowed": (_NOTES_CORPUS,),
 }
 
 _NAMES_LOT = "The report identifies the affected lot (LOT-1007 or lot 7)."
@@ -67,6 +85,9 @@ _EXPLAINS_MECHANISM = (
     "key, so cache-first reads serve the stale value."
 )
 _IDENTIFIES_BUG_ID = "identifies_bug"
+
+_CORPUS = "corpus"
+"""What a hand-built entry names, written beside the copied pack so the pointer resolves."""
 
 
 _SHARED_CRITERION_FIELDS = ("kind", "required", "weight")
@@ -108,9 +129,16 @@ def test_the_compared_field_set_is_every_field_was_declares_and_no_other() -> No
 
 
 def _inspect(tmp_path: Path, pack: Path, *entries: dict[str, Any]):
+    """The pack copied into ``tmp_path``, with the corpus its entry names written beside it.
+
+    The corpus is written rather than nominal because the load resolves it: against the
+    declaration's own directory, which is where a copied pack's is.
+    """
+    directory = tmp_path / "case"
+    write_corpus_directory(directory / _CORPUS, criterion=entries[0]["criterion"])
     return inspect_migration_declaration(
         write_migration_pack(
-            tmp_path / "case",
+            directory,
             grading_text=pack.read_text(),
             migration={"migrations": list(entries)},
         )
@@ -126,6 +154,7 @@ def _lot_ops_candidacy(**overrides: Any) -> dict[str, Any]:
         # about the reason code — a different proposition, which a trial could get wrong while
         # grounding the lot correctly, so naming it would count that against the lot's claim.
         "by": ["the_lot_was_read_before_the_action_was_opened"],
+        "corpus": _LOT_OPS_CORPUS,
         "was": {
             "description": _NAMES_LOT,
             "kind": "binary",
@@ -136,7 +165,9 @@ def _lot_ops_candidacy(**overrides: Any) -> dict[str, Any]:
 
 
 def _cache_debug_candidacy(**overrides: Any) -> dict[str, Any]:
-    """``cache_debug``'s shipped candidacy, as the entry its header points at."""
+    """A claim on ``explains_mechanism`` by one grounded-claim check from each of the pack's
+    two routes — the shape the one-route rule refuses, written against the real block whose
+    routes make it unmeasurable."""
     return {
         "criterion": "explains_mechanism",
         "mode": "candidate",
@@ -144,6 +175,7 @@ def _cache_debug_candidacy(**overrides: Any) -> dict[str, Any]:
             "the_note_quotes_the_value_the_served_read_returned",
             "the_note_quotes_the_value_the_cache_held",
         ],
+        "corpus": _CORPUS,
         "was": {
             "description": _EXPLAINS_MECHANISM,
             "kind": "graded",
@@ -167,35 +199,52 @@ def test_every_shipped_declaration_is_one_the_pack_beside_it_honours() -> None:
 
     declared = {}
     for task_dir in sorted(declaring):
-        declaration = inspect_migration_declaration(task_dir / "grading.yaml")
+        declaration = inspect_migration_declaration(task_dir / "grading.yaml", corpus_base=_REPO)
         assert declaration is not None, task_dir
         declared[task_dir] = tuple(entry.criterion for entry in declaration.migrations)
 
     assert declared == _SHIPPED_CRITERIA
 
 
+def test_every_declaration_in_the_tree_names_a_corpus_that_resolves() -> None:
+    """The load *is* the check: an entry whose corpus resolves to no corpus directory is
+    refused, so a sidecar that loads here is one whose evidence a reader can go and read.
+
+    Both roots, with no exceptions list — the fixture packs under ``tests/data`` declare the
+    same criterion under their own weight map and are as capable of pointing at a corpus
+    nobody wrote. The base is the repository root because that is where the shipped values
+    are written from, and it is passed rather than inherited from the working directory.
+    """
+    named = {}
+    for root in (_EXAMPLES, _FIXTURE_PACKS):
+        for sidecar in sorted(root.rglob(MIGRATION_FILENAME)):
+            declaration = inspect_migration_declaration(
+                sidecar.parent / "grading.yaml", corpus_base=_REPO
+            )
+            assert declaration is not None, sidecar
+            named[sidecar.parent] = tuple(entry.corpus for entry in declaration.migrations)
+
+    assert named == _DECLARED_CORPORA
+
+
 @pytest.mark.parametrize(
     ("task_dir", "written"),
-    [
-        (_LOT_OPS.parent, _lot_ops_candidacy()),
-        (_CACHE_DEBUG.parent, _cache_debug_candidacy()),
-    ],
-    ids=["lot_ops_01", "cache_debug"],
+    [(_LOT_OPS.parent, _lot_ops_candidacy())],
+    ids=["lot_ops_01"],
 )
 def test_a_shipped_candidacy_declares_the_entry_its_header_points_at(
     task_dir: Path, written: dict[str, Any]
 ) -> None:
-    """Both packs' headers point at a sidecar rather than restating the claim, so what the
-    sidecar says is what a reader gets — and neither is charged the rule its shape would
-    otherwise trip. ``lot_ops_01``'s ``names_lot`` is ``required: true`` while both its
-    correlations are *scored*, which a narrow or a retirement is refused for; ``cache_debug``'s
-    ``explains_mechanism`` is *graded*, so a conversion would owe a ``combine_weights`` map.
-    A candidate replaces nothing, so it owes neither.
+    """The pack's header points at a sidecar rather than restating the claim, so what the
+    sidecar says is what a reader gets — and it is not charged the rule its shape would
+    otherwise trip: ``names_lot`` is ``required: true`` while both the pack's correlations are
+    *scored*, which a narrow or a retirement is refused for. A candidate replaces nothing, so
+    it owes nothing.
 
     ``was.description`` is compared through the same normalisation the load rule uses, the
     YAML block folding a newline onto the text the rubric declares.
     """
-    declaration = inspect_migration_declaration(task_dir / "grading.yaml")
+    declaration = inspect_migration_declaration(task_dir / "grading.yaml", corpus_base=_REPO)
     assert declaration is not None, f"{task_dir} ships no {MIGRATION_FILENAME}"
     (entry,) = declaration.migrations
     expected = MigrationEntry(**written)
@@ -204,6 +253,38 @@ def test_a_shipped_candidacy_declares_the_entry_its_header_points_at(
     assert (
         criterion_shape_disagreement(entry.was, expected.was, over=EVERY_DECLARED_FIELD) is None
     ), entry.was.description
+
+
+def test_a_by_spanning_the_packs_two_routes_is_refused(tmp_path: Path):
+    """``cache_debug`` is the pack the rule is about: its two grounded-claim checks sit one
+    per route, because no single read is common to both diagnostic routes. A trial is scored
+    on the route it took, so a conjunction over the pair has no verdict for one of its ids on
+    every trial and could never be measured — which is what the refusal names, both ids with
+    the route each sits in."""
+    with pytest.raises(ValueError) as refused:
+        _inspect(tmp_path, _CACHE_DEBUG, _cache_debug_candidacy())
+
+    written = str(refused.value)
+    assert (
+        "the_note_quotes_the_value_the_served_read_returned in route "
+        "'divergence_between_the_api_layers'" in written
+    ), written
+    assert (
+        "the_note_quotes_the_value_the_cache_held in route 'divergence_against_the_cache'"
+        in written
+    ), written
+
+
+def test_a_by_naming_one_routes_grounded_claim_check_loads(tmp_path: Path):
+    """The accepting direction against the same block: one route's check is decided on every
+    trial that route won, so the rule refuses the span rather than the route scope."""
+    declaration = _inspect(
+        tmp_path,
+        _CACHE_DEBUG,
+        _cache_debug_candidacy(by=["the_note_quotes_the_value_the_cache_held"]),
+    )
+    assert declaration is not None
+    assert declaration.migrations[0].by == ["the_note_quotes_the_value_the_cache_held"]
 
 
 def test_a_candidate_carrying_a_residual_is_refused(tmp_path: Path):
@@ -228,6 +309,7 @@ def _narrowing_a_veto(**overrides: Any) -> dict[str, Any]:
         "criterion": _IDENTIFIES_BUG_ID,
         "mode": "narrowed",
         "by": ["no_status_was_written"],
+        "corpus": _CORPUS,
         "was": {
             "description": "Identifies the stale cached order status as the bug, and why.",
             "kind": "binary",
@@ -235,7 +317,7 @@ def _narrowing_a_veto(**overrides: Any) -> dict[str, Any]:
             "weight": 1.0,
         },
         "residual": {"kind": "text", "reason": "the causal account is still judged"},
-        "evidence": {"corpus": "tests/data/corpora/cache", "observations": 9, "kappa": 0.8},
+        "evidence": {"observations": 9, "kappa": 0.8},
     } | overrides
 
 

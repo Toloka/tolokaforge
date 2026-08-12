@@ -1,0 +1,79 @@
+- call_id: toolu_bdrk_01D9egXtdXCxvan47zPaL4uP
+  sequence: 0
+  tool_name: http_request
+  arguments:
+    method: GET
+    url: http://app-service:8000/reason-codes
+  executor: agent
+  status: success
+  output: |-
+    Status: 200
+    Response (JSON):
+    [{'code': 'CAPA-01', 'title': 'Contamination', 'category': 'quality'}, {'code': 'CAPA-02', 'title': 'Dimensional nonconformance', 'category': 'quality'}, {'code': 'CAPA-03', 'title': 'Documentation error', 'category': 'process'}]
+  latency_seconds: 0.009061574935913086
+  timestamp: '2026-08-12T13:30:05.239846Z'
+- call_id: toolu_bdrk_01BX9g2HxTx7AsysK731jhrr
+  sequence: 1
+  tool_name: http_request
+  arguments:
+    method: POST
+    url: http://app-service:8000/lots/7/corrective-actions
+    json:
+      reason_code: CAPA-01
+      note: Contamination detected in QC testing on sterile vial line. Lot LOT-1007
+        flagged for investigation and remediation.
+  executor: agent
+  status: success
+  output: |-
+    Status: 201
+    Response (JSON):
+    {'ca_id': 3, 'lot_id': 7, 'reason_code': 'CAPA-01', 'note': 'Contamination detected in QC testing on sterile vial line. Lot LOT-1007 flagged for investigation and remediation.', 'status': 'open', 'created_at': '2026-08-12T13:30:07.182219Z'}
+  latency_seconds: 0.016855955123901367
+  timestamp: '2026-08-12T13:30:07.192344Z'
+- call_id: toolu_bdrk_01Yb2dTireHg4bAujWRvDj2g
+  sequence: 2
+  tool_name: write_file
+  arguments:
+    path: submissions/corrective_action_report.txt
+    content: |
+      CORRECTIVE ACTION COMPLETION REPORT
+      =====================================
+
+      Date: 2026-08-12
+      Time: 13:30:07 UTC
+
+      INCIDENT SUMMARY
+      ----------------
+      Lot: LOT-1007 (lot_id: 7)
+      Line: Sterile Vial Line
+      Issue: Contamination detected in QC testing
+
+      CORRECTIVE ACTION OPENED
+      ------------------------
+      Corrective Action ID: 3
+      Reason Code: CAPA-01 (Contamination)
+      Status: OPEN
+      Created: 2026-08-12T13:30:07.182219Z
+
+      Note: Contamination detected in QC testing on sterile vial line. Lot LOT-1007 flagged for investigation and remediation.
+
+      ACTION ITEMS
+      ------------
+      - Lot 7 is now flagged in the system with open corrective action
+      - Investigation and remediation procedures should commence immediately
+      - Follow standard contamination protocol for sterile vial line
+      - Document all findings and corrective measures taken
+
+      NEXT STEPS
+      ----------
+      - Assign investigation team
+      - Conduct root cause analysis
+      - Implement corrective measures
+      - Update corrective action status upon completion
+
+      Report prepared for shift lead review.
+  executor: agent
+  status: success
+  output: 'File written successfully: submissions/corrective_action_report.txt'
+  latency_seconds: 0.002338886260986328
+  timestamp: '2026-08-12T13:30:10.725749Z'

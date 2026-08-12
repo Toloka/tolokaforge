@@ -1,5 +1,5 @@
 # The narrow this pack has taken, declared machine-readably so `tolokaforge reconcile`
-# can check it against the recorded judge verdicts under evidence.corpus at zero cost.
+# can check it against the recorded judge verdicts under the corpus it names, at zero cost.
 # Nothing about grading reads this file.
 #
 # Both arms of the experiment — `add_note_duplicate_check_gated` and
@@ -10,6 +10,7 @@ migrations:
   - criterion: checked_duplicates_first
     mode: narrowed
     by: [the_notes_were_listed_before_the_note_was_added]
+    corpus: tests/data/migration_corpora/notes_duplicate_check
     was:
       kind: binary
       required: true
@@ -27,7 +28,6 @@ migrations:
         which no trace constraint can check from the tool record alone.
     combine_weights: { llm_judge: 0.7, trace_checks: 0.3 }
     evidence:
-      corpus: tests/data/migration_corpora/notes_duplicate_check
       observations: 17
       # kappa 1.0 is a property of the corpus's design as much as of the criterion: the met half
       # was bought with a prompt stating exactly what the constraint measures. See

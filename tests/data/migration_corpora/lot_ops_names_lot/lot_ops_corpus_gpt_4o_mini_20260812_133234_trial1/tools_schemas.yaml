@@ -1,0 +1,49 @@
+- function:
+    description: Make HTTP requests to web services
+    name: http_request
+    parameters:
+      additionalProperties: false
+      properties:
+        data:
+          description: Optional form data for POST/PUT
+          type: object
+        headers:
+          description: Optional HTTP headers
+          type: object
+        json:
+          description: Optional JSON body for POST/PUT
+          type: object
+        method:
+          description: HTTP method
+          enum:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          type: string
+        url:
+          description: URL to request (must be to allowed hosts)
+          type: string
+      required:
+      - method
+      - url
+      type: object
+  type: function
+- function:
+    description: Write content to a file
+    name: write_file
+    parameters:
+      additionalProperties: false
+      properties:
+        content:
+          description: Content to write to the file
+          type: string
+        path:
+          description: Path to the file to write
+          type: string
+      required:
+      - path
+      - content
+      type: object
+  type: function

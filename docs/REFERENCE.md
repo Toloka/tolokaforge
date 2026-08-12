@@ -246,6 +246,7 @@ migrations:                                  # at least one entry
     mode: narrowed                           # candidate | narrowed | retired
     by:                                      # trace_checks ids in this pack; a CONJUNCTION
       - the_notes_were_listed_before_the_note_was_added
+    corpus: tests/data/migration_corpora/notes_duplicate_check   # REQUIRED in every mode
     was:                                     # the criterion's PRE-migration shape
       kind: binary                           # binary | graded; default binary
       required: true                         # default false
@@ -258,13 +259,19 @@ migrations:                                  # at least one entry
       llm_judge: 0.7                         # required for a narrowed/retired SCORED criterion
       trace_checks: 0.3
     evidence:                                # required for narrowed/retired, forbidden on candidate
-      corpus: tests/data/migration_corpora/notes_duplicate_check
       observations: 17                       # checked against what reconcile measures
       kappa: 1.0                             # nullable and required; null means undefined
     acknowledged:                            # optional waivers, default []
-      - trial: <bundle path under evidence.corpus>
+      - trial: <bundle path under corpus>
         reason: "<why the judge's verdict on that trial is the one to discount>"
 ```
+
+`corpus` names the committed corpus the claim is measured over, and it has to resolve: the
+value is read against a base the caller supplies — `tolokaforge validate` and `tolokaforge
+reconcile` pass the working directory, so the shipped values are written from the repository
+root — and it must name a directory carrying the `corpus.yaml` [`tolokaforge
+curate`](RUBRIC_MIGRATION.md#building-a-corpus) writes, or one whose immediate subdirectories
+all do.
 
 The file is `extra="forbid"` at every level, so a misspelled key is an error rather than a
 claim nothing reads. `residual`'s presence and kind are a **total function of `mode`** —
