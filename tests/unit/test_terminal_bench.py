@@ -1004,6 +1004,8 @@ class TestHarnessCommand:
             "gpt-5-codex",
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            "-c",
+            "model_reasoning_effort=high",
             "do it",
         ]
 

@@ -101,16 +101,22 @@ HARNESSES: dict[str, HarnessSpec] = {
         npm_package="@openai/codex",
         version="0.147.0",
         argv_prefix=("codex", "exec"),
-        # Two mandatory bypasses. ``--dangerously-bypass-approvals-and-sandbox``
+        # Three mandatory flags. ``--dangerously-bypass-approvals-and-sandbox``
         # skips the approval prompt that ``codex exec`` otherwise blocks on when
         # it wants to write or run a command — the harness has no interactive
         # stdin to answer it. ``--skip-git-repo-check`` disables the "trusted
         # directory" gate that refuses to operate anywhere without a ``.git`` —
-        # tbench task containers work under ``/app`` and are not git repos, so
-        # without the flag the CLI aborts before the model is called.
+        # tbench task containers work under ``/app`` and are not git repos.
+        # ``-c model_reasoning_effort=high`` is the OpenRouter-compat mandatory
+        # config: gpt-5-mini via the Responses API rejects requests that omit
+        # reasoning ("Reasoning is mandatory for this endpoint and cannot be
+        # disabled"). Harbor's own invocation carries the same override
+        # (``harbor/agents/installed/codex.py`` — its default codex command).
         argv_suffix=(
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            "-c",
+            "model_reasoning_effort=high",
         ),
         # Two on-disk files, one shell chain — codex reads both and honours
         # neither the env var they mirror:
