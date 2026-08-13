@@ -1,6 +1,8 @@
-"""Stage 7 (P5) — UserSimulator.last_system_prompt capture + runner threading.
+"""``UserSimulator.last_system_prompt`` is the prompt the reply was generated from.
 
-Two assertions per the plan:
+``TrialRunner`` reads that attribute after the first user turn and writes it to
+the trial bundle's ``prompts.yaml``, so a capture that drifted from the builder
+would publish a prompt no generation ever used. Two assertions:
 
 1. After ``UserSimulator._llm_reply`` fires once, ``last_system_prompt`` is a
    non-empty string and exactly equals the output of ``_build_system_prompt``.

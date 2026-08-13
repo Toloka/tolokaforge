@@ -409,8 +409,8 @@ class TrialRunner:
                 latency_s=self.metrics.latency_total_s,
             )
 
-            # Stage 7 (P5) — pull simulator prompt from the (possibly None)
-            # attribute exposed by UserSimulator. LLM mode populates it on every
+            # Pull the simulator prompt from the (possibly None) attribute
+            # exposed by UserSimulator. LLM mode populates it on every
             # reply; scripted mode leaves it None. Overwrite our cached copy on
             # every trial-end so that if a follow-up reply revised the prompt,
             # we land the latest version. Guard against non-string values

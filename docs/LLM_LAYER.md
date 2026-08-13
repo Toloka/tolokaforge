@@ -473,6 +473,39 @@ body or to this context shape bumps `Trajectory.simulator_schema_version`
 [`tests/canonical/test_simulator_prompt_generation.py`](../tests/canonical/test_simulator_prompt_generation.py)
 holds the prompt body to the generation it is stamped with.
 
+### The prompt body
+
+The system prompt is a fixed opening line, the task's `Instruction` when the
+task supplied a backstory, a twelve-rule `Rules:` block, and the tool-guidance
+block when the simulator holds tool schemas. Four properties of that block are
+contract rather than wording, and
+[`tests/unit/test_user_simulator_prompt_rules.py`](../tests/unit/test_user_simulator_prompt_rules.py)
+asserts each:
+
+- **The Instruction outranks the rules.** The first rule says so, and its
+  position is load-bearing — a precedence clause has to be read before the
+  rules it governs. Everything the rules say about disclosure, wording and
+  sequencing defers to what the task authored.
+- **The simulator does not correct the agent.** It does not restate a
+  requirement the agent got wrong, reject an alternative the agent offered, or
+  otherwise supervise the work. Pushback is a per-task authored property, not a
+  global default: a task that wants it writes it into its backstory. Rescuing
+  the agent's mistakes would hide exactly the failures the tasks exist to
+  detect.
+- **Termination is outcome-based.** `###STOP###` is sent once every part of the
+  request has reached an outcome — carried out, or turned down by the agent.
+  An outcome the user did not want still counts, so a scenario the agent
+  correctly refuses ends with a gradeable transcript instead of running to
+  `max_user_turns`.
+- **The simulator never mentions the frame.** No rule may be added that lets it
+  refer to a simulation, test, benchmark, prompt, or to itself as a model. The
+  delivered export harness runs the simulator without the reply guard, so this
+  rule is the only protection on that path.
+
+With no backstory the `Instruction:` label is absent entirely rather than
+rendered empty: `UserSimulatorConfig.backstory` defaults to `None` while `mode`
+defaults to `llm`, and a bundled project ships that shape.
+
 ### The reply guard
 
 A generated user turn reaches the agent carrying exactly the words the model

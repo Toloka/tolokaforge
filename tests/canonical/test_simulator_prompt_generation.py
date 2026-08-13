@@ -37,6 +37,11 @@ _PROMPT_DIGESTS: dict[int, dict[str, str]] = {
         "with_tools": "38506901e12c14cc8ab9b152ad7a9129c2c2d70ed3c9432eb2bdbd79e5cb4ea1",
         "with_backstory": "1911fd104903dc7699680d8de534caaf7c501564d24432caae7c84f188e46dd4",
     },
+    3: {
+        "without_tools": "1d362493cb6f5d18d9dd156f082f3e2454eaaaf20c2533b09aafb0083d18b9d5",
+        "with_tools": "793f035428ea659b40836f2ab068192034dfc362722929f0f66a6a7ae311552d",
+        "with_backstory": "db4863aed49129ebb429e7b14066f78de275e8138a4c6bd2724a50457943f8b6",
+    },
 }
 
 

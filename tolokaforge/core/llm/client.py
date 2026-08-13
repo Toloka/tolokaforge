@@ -2234,9 +2234,8 @@ class UserSimulator(Actor):
             if llm_config and mode == "llm"
             else None
         )
-        # Stage 7 (P5) — the last system prompt emitted on an LLM reply. Scripted
-        # simulators stay ``None`` forever. Callers (``TrialRunner``) capture
-        # this after the first user turn and thread it onto ``Trajectory``.
+        # The last system prompt emitted on an LLM reply; scripted simulators
+        # stay ``None`` forever.
         self.last_system_prompt: str | None = None
         self._reply_guard = UserReplyGuard()
 
@@ -2306,13 +2305,18 @@ class UserSimulator(Actor):
         return "Okay."
 
     def _build_system_prompt(self) -> str:
-        """Assemble the simulator system prompt from backstory + tool schemas.
+        """The task's Instruction outranks every rule the block below states.
 
-        Stage 7 (P5): pure helper so that the prompt is observable without
-        firing a generation. ``TrialRunner`` uses the post-``_llm_reply``
-        ``last_system_prompt`` capture to land this value on
-        ``Trajectory.user_system_prompt``. If the simulator prompt shape is
-        revised, bump ``Trajectory.simulator_schema_version``.
+        Pure, so the prompt is observable without firing a generation:
+        ``TrialRunner`` captures ``last_system_prompt`` after the first user
+        turn and writes it to the trial bundle's ``prompts.yaml``.
+
+        The body is fixed apart from two conditional segments — the
+        ``Instruction:`` block, absent entirely when the task supplied no
+        backstory, and the tool-guidance block, appended only when the
+        simulator holds tool schemas.
+        ``tests/canonical/test_simulator_prompt_generation.py`` holds what this
+        renders to ``Trajectory.simulator_schema_version``.
         """
         instruction_display = (
             ("\n\nInstruction: " + self.backstory + "\n") if self.backstory else ""
@@ -2328,23 +2332,17 @@ class UserSimulator(Actor):
 
         return f"""You are a user interacting with an agent.{instruction_display}
 Rules:
-- Just generate one line at a time to simulate the user's message.
-- In your first message, clearly state the full request including ALL required steps, even if they must be done sequentially.
-- After the first message, only provide information that is necessary for the current step unless the agent asks for details.
-- Do not hallucinate information that is not provided in the instruction. For example, if the agent asks for the order id but it is not mentioned in the instruction, do not make up an order id, just say you do not remember or have it.
-- If your instruction contains multiple numbered steps (Step 1, Step 2, etc.), you MUST complete ALL steps before ending the conversation. Track which steps you have completed.
-- If the instruction includes sequential requirements using words like "after", "then", or "once", treat them as required steps and proactively mention the next step once the previous one is complete.
-- If your instruction mentions specific apps or websites to use, you MUST explicitly mention those apps/websites in your first message.
-- If your instruction includes verbs like save, shortlist, reserve, order, add to calendar, or take a note, you MUST explicitly include those actions in your first message.
-- If the agent uses a different app or website than specified, correct them and restate the required app/website.
-- If the agent performs the wrong task, selects the wrong restaurant/item/time/party size, or claims there are no results, correct them and restate the exact requirement. Do not accept alternative goals.
-- When the agent asks "anything else?" or "Is there anything else I can help you with?", check if you have remaining steps. If yes, continue with the next step.
-- Do not claim that you completed a required step yourself. Wait for the agent to complete steps, and only acknowledge completion after the agent explicitly confirms it.
-- Only generate '###STOP###' when you have completed EVERY step in your instruction and the entire goal is satisfied, not partway through.
+- Your Instruction above is authoritative. Where any rule below conflicts with it, follow the Instruction.
+- Reply with one short message per turn — a single turn of dialogue in your own voice, never a multi-turn script and never a monologue.
+- Where your Instruction gives you an exact line to say, say it verbatim. Otherwise use your own words rather than quoting the Instruction back.
+- Reveal only what the current step needs, and answer the agent's questions directly. Give information your Instruction withholds only when your Instruction says to.
+- Never invent details your Instruction does not give you. If the agent asks for something you were not told — an order id, a reference number — say you do not have it rather than making one up.
+- Raise your remaining requests yourself: when your Instruction sequences work with words like "after", "then", or "once", bring up the next part once the previous one is done, and when the agent asks whether there is anything else, continue with what is left.
+- Do not claim to have done a step yourself, and do not credit the agent with work it has not reported.
+- '###STOP###' ends the conversation. Send it once every part of your request has reached an outcome — carried out, or turned down by the agent. An outcome you did not want still counts. Do not send it while part of your request is still unaddressed.
 - If your Instruction still specifies an unsent mandatory reply (e.g. a verbal decline, confirmation, or acknowledgement you MUST say to the agent), send that reply first. A terminal-looking message from the agent — case reference, summary, apology, goodbye — does NOT release you from that reply. '###STOP###' may only accompany or follow the reply, never precede or replace it.
 - Once the agent has substantively addressed your request, do not re-state or restart the original opening as if it had not been answered. Send at most one short acknowledgement and end with '###STOP###'; do not introduce new goals or remediation steps.
-- Do not repeat the exact instruction in the conversation. Instead, use your own words to convey the same information.
-- Try to make the conversation as natural as possible, and stick to the personalities in the instruction.
+- Keep the conversation natural and stay in the personality your Instruction describes.
 - Never mention that this is a simulation, test, benchmark, prompt, or that you are an AI/model.{tool_guidance}"""
 
     def _llm_reply(
