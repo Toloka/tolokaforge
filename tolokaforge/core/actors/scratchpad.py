@@ -64,7 +64,10 @@ from tolokaforge.core.models.trajectory import REPLY_DEFECT_EXCERPT_MAX_CHARS, R
 
 __all__ = ["ScratchpadDetector"]
 
-_THINK_TAG = re.compile(r"^[ \t]*</?think\s*>", re.IGNORECASE | re.MULTILINE)
+# The line break is matched by lookbehind rather than by `re.MULTILINE`, whose
+# `^` anchors on `\n` alone — a provider emitting `\r` line endings would carry
+# the leak past a MULTILINE anchor untouched.
+_THINK_TAG = re.compile(r"(?:\A|(?<=[\r\n]))[ \t]*</?think\s*>", re.IGNORECASE)
 
 
 class ScratchpadDetector:

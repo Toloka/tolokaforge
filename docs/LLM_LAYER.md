@@ -582,7 +582,13 @@ the exercise itself *and* the noun carrying it heads its own phrase.
 Bare `ai`, `model`, `prompt`, `benchmark`, `simulation` and `llm` are ordinary
 support vocabulary and never trigger on their own, and neither does a noun used
 attributively (`I'm an AI engineer at a fintech startup`, `a benchmark index
-fund`, `not a real person of interest`, `your system prompt caching feature`). A
+fund`, `not a real person of interest`, `your system prompt caching feature`) or
+in the possessive (`I'm an AI's owner and my system is down.`, `I was the LLM's
+user last week.` — the speaker's machine, not the speaker). A machine noun is
+read as a self-identification only as the complement of a first-person copula,
+entered through the noun phrase's own determiner; that ordering is what keeps a
+report verb from bridging into a third party's machine (`I was told an AI would
+help me.`, `I'm hoping an AI can call me back.`). A
 false positive costs the whole attempt budget and then the trial, so precision
 outranks recall — and where a demonstrative head cannot separate the two senses,
 the frame is given up rather than the support turn. `exercise` and `evaluation`
@@ -611,6 +617,14 @@ being the attribution a bare exercise noun cannot carry alone. `I'm not a real
 customer, I just want a quote before I book.` is a prospective buyer, and it is
 the naming rather than the punctuation before it that separates the two, so a
 bare `I'm not a real customer.` is missed.
+The largest residual is the vocabulary itself. No sanitizer stands anywhere in
+this path and the bare nouns are deliberately unmatched, so a sentence carrying
+an AI-adjacent token in a frame no rule names — `Sorry, the AI is thinking about
+this.`, `Just check the prompt I sent earlier.` — reaches the agent transcript
+verbatim. That is the recall trade the module is built on, backstopped only by
+the simulator's own prompt rule, and it sits outside the two deltas the
+`simulator_schema_version` 2 → 3 difficulty re-baseline measures, so it is not
+one of the movements that comparison is reading.
 `reply_guard.py`'s module docstring carries the full list of the recall given up
 and why.
 

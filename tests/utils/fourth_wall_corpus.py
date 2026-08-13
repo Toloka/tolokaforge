@@ -24,6 +24,22 @@ MUST_PASS = [
     "I was a chatbot developer before I moved to sales.",
     "I am a virtual assistant for a real estate firm.",
     "I'm an AI agent recruiter, so I get a lot of spam.",
+    # A machine noun in the possessive is the speaker's own machine. The
+    # apostrophe is the closing quote a match may end on, so these two rows and
+    # the comma-continued detect rows they pair with ("I am an AI, so I cannot
+    # help you") are what keeps the two readings of it apart.
+    "I'm an AI's owner and my system is down.",
+    "I was the LLM's user last week.",
+    "The chatbot's transcript is missing from my export.",
+    # `I am` reads as a copula only while the noun phrase is entered through its
+    # own determiner. Every row here reaches a machine noun across a report or
+    # perception verb, which makes the noun what the speaker was told about.
+    "I was told an AI would help me.",
+    "I was hoping an AI assistant would answer.",
+    "I was told your AI system was designed for that.",
+    "I was told AI is unreliable, is that true?",
+    "I'm hoping an AI can call me back today.",
+    "I was promised a chatbot would handle it.",
     "I'm not a real person of interest, why was I flagged?",
     "Please run a simulation of my portfolio for next year.",
     "Can you simulate what my payment would be at 5%?",
@@ -110,6 +126,11 @@ MUST_DETECT = [
     ("I'm just a chatbot following a script.", "self_identified_as_model"),
     ("I am an LLM, so I have no billing account.", "self_identified_as_model"),
     ("I am an AI model created by a company.", "self_identified_as_model"),
+    # The determiner the copula reading requires is not only `a`/`an`, and the
+    # adverb that may precede it is not only the three that downplay a role.
+    ("I'm your AI assistant, how can I help?", "self_identified_as_model"),
+    ("I am the AI you are talking to.", "self_identified_as_model"),
+    ("I am basically an AI, so I cannot call anyone.", "self_identified_as_model"),
     # Denying personhood stands alone; denying a role has to name the exercise,
     # and it is the naming rather than the punctuation before it that licenses
     # the bare exercise nouns these three rows use.
@@ -129,6 +150,10 @@ MUST_DETECT = [
     ("In this simulation, I play the role of a customer.", "named_the_exercise"),
     ("In this benchmark, I am playing a frustrated customer.", "named_the_exercise"),
     ("In this simulation, we play two different customers.", "named_the_exercise"),
+    # The copula alternation is spelled once per noun branch, so `we're` needs a
+    # row under each — one row would leave the other branch's copy unmeasured.
+    ("In this simulation, we're playing the role of a customer.", "named_the_exercise"),
+    ("In this roleplay, we're pretending to be two callers.", "named_the_exercise"),
     ("In this roleplay, I act as an angry caller.", "named_the_exercise"),
     ("During the simulation, I am acting as the account holder.", "named_the_exercise"),
     ("In this evaluation run, I pretend to be a new customer.", "named_the_exercise"),
