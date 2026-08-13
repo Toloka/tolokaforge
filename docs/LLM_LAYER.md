@@ -1134,6 +1134,12 @@ params:
       #   with: low
 ```
 
+- **`reject`** refuses to build the request and names the remaining choices plus
+  the evidence. This is the right answer when there is no equivalent, e.g. a
+  transport defect: the caller picks the workaround (another value, another
+  route, or waiting for the upstream fix).
+- **`override`** sends a different value in place of the requested one, named
+  by a required `with:` key.
 - **`drop`** omits the parameter and lets the provider's default apply.
   Whether that is free depends on the parameter: omitting `tool_choice` is how
   the OpenAI-shaped envelope says "the model decides", which is exactly what
@@ -1159,18 +1165,12 @@ calls unusable.
 Rules merge per parameter and per value across `default:` → preset →
 `providers:` → operator overlay. A shallow merge would let an overlay declaring
 one rule delete every other rule, disarming a guard nobody touched.
-- **`reject`** refuses to build the request and names the remaining choices plus
-  the evidence. This is the right answer when there is no equivalent, e.g. a
-  transport defect: the caller picks the workaround (another value, another
-  route, or waiting for the upstream fix).
-- **`override`** sends a different value in place of the requested one, named
-  by a required `with:` key.
 
 > [!WARNING]
-> `override` is the only action that changes what the request means. `reject`
-> sends nothing; `drop` is permitted only where omission is the provider's own
-> spelling of the same value. An override, by contrast, silently satisfies a
-> call the provider would have refused — and nothing in the response says so.
+> `override` silently satisfies a call the provider would have refused, and
+> nothing in the response says so. `drop` can change the request too — omitting
+> `reasoning_effort` is not free — but an override is the only action that sends
+> a value the caller never asked for.
 >
 > Anything derived from a call that was overridden is **not directly comparable**
 > with a call that sent the requested value. If you compare results across
@@ -1198,9 +1198,9 @@ about.
 `unsupported_effort_levels` was the older shorthand for a `reasoning_effort`
 rejection. It is **removed**: it carried no evidence, covered one parameter, and
 had no way to say anything but "refuse". The shipped Gemini declaration is
-migrated. An operator overlay still using the old key now fails loud at
-construction with an unknown-kwarg `TypeError`, which is the intended way to
-find it.
+migrated. An operator overlay still using the old key fails loud at overlay *load*, with
+a `ValueError` naming the file, the block, and the keys that are legal — before
+any model resolves.
 
 ### Base class
 

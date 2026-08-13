@@ -29,7 +29,7 @@ not checked in).
 | Empty assistant content with tool_calls gets echoed by Gemini | All Gemini | **Fixed** via [`NullMessageAssembly`](../tolokaforge/core/llm/message_assembly_policy.py) (only `aws_nova*` opts into the filler) |
 | `oneOf`+`discriminator` Pydantic unions → invented arg names | All Gemini | **Fixed** in [`GeminiSchema`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) |
 | OpenRouter's 48-char placeholder UUID on no-thinking turns | All Gemini | **Fixed** — codec drops it on replay (togglable) |
-| `litellm` direct `gemini/*` + `reasoning_effort=medium` → empty response | All Gemini, direct provider only | **Guarded** via `unsupported_effort_levels` in [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) |
+| `litellm` direct `gemini/*` + `reasoning_effort=medium` → empty response | All Gemini, direct provider only | **Guarded** via `param_value_rules` in [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) |
 | Nullable + optional Pydantic fields treated as opt-in | All Gemini, **most strict in Pro 3.1** | Intrinsic — measured by eval |
 | Doubled-prefix tool name mangling (`a_a_foo` → `a:a_foo`) | Pro 3.1 | Known_unsupported `TOOL_NAME_DISCIPLINE` |
 | Lexical tool invention (`knowledge_base_search_policy`) | Pro 3.1 | Known_unsupported `LEXICAL_TOOL_INVENTION` |
@@ -148,14 +148,31 @@ whenever `reasoning_effort=medium` is combined with `tool_choice`.
 because it sends `extra_body.reasoning.effort=medium`, which OpenRouter
 translates upstream into Google's `thinking_level=medium`.
 
-**Harness mitigation**: [`unsupported_effort_levels: ["medium"]`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)
-on the `providers.gemini` overlay. Per AGENTS.md rule #1, the harness
-**fails loud** rather than silently mapping to `high`:
+**Harness mitigation**: a [`param_value_rules`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)
+entry on the `providers.gemini` overlay — provider-scoped, so the OpenRouter
+route is untouched:
+
+```yaml
+providers:
+  gemini:
+    params:
+      param_value_rules:
+        reasoning_effort:
+          medium:
+            action: reject
+            evidence: "2026-05-21, litellm 1.83.14: ..."
+```
+
+Per AGENTS.md rule #1 the harness **fails loud** rather than silently mapping
+to `high`. `action: override` with `with: low` is available if an answer
+matters more than a like-for-like comparison, but see the warning in
+[`docs/LLM_LAYER.md`](LLM_LAYER.md) before reaching for it:
 
 ```
 ValueError: ReasoningConfig(effort_hint='medium') is declared unsupported
 for this provider+model combination (refused: ['medium']). Evidence:
-declared via the unsupported_effort_levels shorthand. Use one of
+2026-05-21, litellm 1.83.14: reasoning_effort='medium' alongside tool calls
+returns an empty response on the direct gemini route ... Use one of
 ['low', 'high', 'xhigh'], or route through a transport that supports this
 effort level (e.g. OpenRouter rather than the direct provider).
 ```

@@ -1766,13 +1766,12 @@ class LLMClient:
 
         if tools:
             kwargs["tools"] = tools
-            # A preset or provider may declare that this route has no word for
-            # the value we are about to send. `drop` is only ever legal where
-            # omission is the provider's documented spelling of that same value
-            # (see params_policy.OMISSION_EQUIVALENT_VALUE), so suppressing it
-            # changes nothing about what the model was asked to do — while
-            # sending it would fail the call outright on a route that refuses
-            # the parameter.
+            # A preset or provider may declare that this route will not take
+            # the value we are about to send. Omitting `tool_choice` is how the
+            # OpenAI-shaped envelope says "the model decides", which is what
+            # `auto` names, so a drop here costs nothing — but the declaration
+            # is the operator's, not ours, so it is logged like any other
+            # change to the request.
             policy = self.capabilities.params_policy
             action = policy.rule_for("tool_choice", tool_choice)
             if action == "reject" and tool_choice:
@@ -1788,6 +1787,8 @@ class LLMClient:
                 if substitute:
                     policy.warn_substituted("tool_choice", tool_choice, substitute)
                     tool_choice = substitute
+            if action == "drop" and tool_choice:
+                policy.warn_substituted("tool_choice", tool_choice, "<omitted>")
             if tool_choice and action != "drop":
                 kwargs["tool_choice"] = tool_choice
 

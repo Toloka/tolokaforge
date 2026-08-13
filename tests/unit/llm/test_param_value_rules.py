@@ -142,44 +142,6 @@ class TestShippedData:
         assert policy.rule_for("reasoning_effort", "low") is None
 
 
-class TestClientWiring:
-    """`rule_for` returning "drop" is worth nothing unless the client acts on it.
-
-    The gap these cover is how `tool_choice: reject` survived review as a cell
-    that constructed cleanly and then did nothing on the wire.
-    """
-
-    @staticmethod
-    def _kwargs_for(rules: dict | None) -> dict:
-        from tolokaforge.core.llm.capabilities import ModelCapabilities
-
-        caps = ModelCapabilities(params_policy=GenerationParams(param_value_rules=rules))
-        kwargs: dict = {}
-        tools = [{"type": "function", "function": {"name": "noop", "parameters": {}}}]
-        # Mirror the client's attach rule rather than standing up a client:
-        # tool_choice is only ever set inside `if tools:`.
-        if tools:
-            kwargs["tools"] = tools
-            dropped = caps.params_policy.rule_for("tool_choice", "auto") == "drop"
-            if not dropped:
-                kwargs["tool_choice"] = "auto"
-        return kwargs
-
-    def test_without_a_rule_tool_choice_is_sent(self) -> None:
-        assert self._kwargs_for(None)["tool_choice"] == "auto"
-
-    def test_a_drop_rule_removes_it_from_the_request(self) -> None:
-        assert "tool_choice" not in self._kwargs_for(_COHERE_RULES)
-
-    def test_the_client_reads_the_policy_rather_than_a_bespoke_flag(self) -> None:
-        # Locks the wiring itself: a refactor that reintroduces a per-model
-        # boolean here would pass every other test in this file.
-        from pathlib import Path
-
-        source = Path("tolokaforge/core/llm/client.py").read_text(encoding="utf-8")
-        assert 'rule_for("tool_choice", tool_choice)' in source
-
-
 class TestLayering:
     """Rules merge per parameter and per value across layers.
 
@@ -339,87 +301,82 @@ class TestOverride:
             )
 
 
-class TestEveryActionReachesEveryParameter:
-    """All three actions are implemented at both consult sites.
+class TestThroughTheRealClient:
+    """Drive ``LLMClient._build_kwargs`` itself.
 
-    The engine does not restrict which action a parameter may carry — that is
-    the operator's decision, documented rather than gated. What it must not do
-    is accept a declaration and then ignore it, so each cell is exercised here.
+    An earlier revision re-implemented the client's branch logic inside the
+    test and asserted on the copy. That cannot prove the block sits inside
+    ``if tools:``, runs before the attach, or is reached at all — which is the
+    exact failure mode this file exists to catch.
     """
 
     @staticmethod
-    def _effort(rules: dict, hint: str = "medium") -> dict:
-        kwargs: dict = {}
-        GenerationParams(param_value_rules=rules).adapt(
-            kwargs,
-            config_temperature=None,
-            config_seed=None,
-            config_reasoning=ReasoningConfig(mode="adaptive", effort_hint=hint),
-            temperature=None,
-            seed=None,
-            reasoning=None,
-        )
-        return kwargs
-
-    def test_reasoning_effort_drop_omits_the_parameter(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        # Not a free omission like tool_choice: the provider falls back to its
-        # own default budget, so this changes the request and is logged.
-        with caplog.at_level("WARNING"):
-            kwargs = self._effort(_rules("reasoning_effort", "medium", "drop"))
-        assert "reasoning_effort" not in kwargs
-        assert "not directly comparable" in caplog.text
-
-    def test_reasoning_effort_reject_raises(self) -> None:
-        with pytest.raises(ValueError, match="declared\nunsupported|declared unsupported"):
-            self._effort(_rules("reasoning_effort", "medium", "reject"))
-
-    def test_tool_choice_reject_raises_with_the_evidence(self) -> None:
-        from tolokaforge.core.llm.capabilities import ModelCapabilities
-
-        policy = GenerationParams(
-            param_value_rules=_rules("tool_choice", "auto", "reject", "vendor says no")
-        )
-        caps = ModelCapabilities(params_policy=policy)
-        action = caps.params_policy.rule_for("tool_choice", "auto")
-        assert action == "reject"
-        # The client raises on this action; assert the message it will build
-        # carries the evidence rather than only the value.
-        assert caps.params_policy.rule_evidence("tool_choice", "auto") == "vendor says no"
-
-    def test_the_client_acts_on_every_action(self) -> None:
-        # Semantics, not string matching: build the kwargs the way the client
-        # does for each declared action and assert the outcomes differ.
-        def attach(rules: dict | None) -> dict | str:
-            policy = GenerationParams(param_value_rules=rules)
-            kwargs: dict = {"tools": [{"type": "function"}]}
-            tool_choice = "auto"
-            action = policy.rule_for("tool_choice", tool_choice)
-            if action == "reject":
-                return "raised"
-            if action == "override":
-                substitute = policy.rule_substitute("tool_choice", tool_choice)
-                if substitute:
-                    tool_choice = substitute
-            if tool_choice and action != "drop":
-                kwargs["tool_choice"] = tool_choice
-            return kwargs
-
-        assert attach(None)["tool_choice"] == "auto"
-        assert attach(_rules("tool_choice", "auto", "reject", "e")) == "raised"
-        assert "tool_choice" not in attach(_rules("tool_choice", "auto", "drop", "e"))
-        overridden = attach(
-            {"tool_choice": {"auto": {"action": "override", "with": "required", "evidence": "e"}}}
-        )
-        assert overridden["tool_choice"] == "required"
-
-    def test_the_client_source_branches_on_each_action(self) -> None:
-        # The helper above mirrors the client; this pins that the client really
-        # does consult all three, so the mirror cannot drift into fiction.
+    def _kwargs(rules: dict | None, tool_choice: str | None = "auto", tools: bool = True) -> dict:
+        import tempfile
         from pathlib import Path
 
-        source = Path("tolokaforge/core/llm/client.py").read_text(encoding="utf-8")
-        assert 'action == "reject"' in source
-        assert 'action == "override"' in source
-        assert 'action != "drop"' in source
+        import yaml
+
+        from tolokaforge.core.llm import presets
+        from tolokaforge.core.llm.client import LLMClient
+        from tolokaforge.core.models import ModelConfig
+
+        overlay = {"providers": {"mock": {"params": {"param_value_rules": rules or {}}}}}
+        path = Path(tempfile.mkdtemp()) / "overlay.yaml"
+        path.write_text(yaml.dump(overlay), encoding="utf-8")
+        presets.set_overlay_path(str(path))
+        try:
+            client = LLMClient(ModelConfig(provider="mock", name="mock-model"))
+            return client._build_kwargs(
+                system=None,
+                messages=[],
+                tools=(
+                    [{"type": "function", "function": {"name": "n", "parameters": {}}}]
+                    if tools
+                    else None
+                ),
+                tool_choice=tool_choice,
+                temperature=None,
+                seed=None,
+                reasoning=None,
+                top_p=None,
+                max_tokens=None,
+            )
+        finally:
+            presets.set_overlay_path(None)
+
+    def test_no_rule_sends_tool_choice(self) -> None:
+        assert self._kwargs(None)["tool_choice"] == "auto"
+
+    def test_drop_removes_it_and_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("WARNING"):
+            kwargs = self._kwargs(_rules("tool_choice", "auto", "drop", "vendor has no AUTO"))
+        assert "tool_choice" not in kwargs
+        assert "vendor has no AUTO" in caplog.text
+
+    def test_override_substitutes_and_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("WARNING"):
+            kwargs = self._kwargs(
+                {
+                    "tool_choice": {
+                        "auto": {"action": "override", "with": "required", "evidence": "e"}
+                    }
+                }
+            )
+        assert kwargs["tool_choice"] == "required"
+        assert "not directly comparable" in caplog.text
+
+    def test_reject_raises_naming_the_evidence(self) -> None:
+        with pytest.raises(ValueError, match="declared unusable"):
+            self._kwargs(_rules("tool_choice", "auto", "reject", "the reason"))
+
+    def test_an_unruled_value_is_untouched(self) -> None:
+        # Only the declared value is affected; `required` passes through.
+        kwargs = self._kwargs(_rules("tool_choice", "auto", "drop", "e"), tool_choice="required")
+        assert kwargs["tool_choice"] == "required"
+
+    def test_rules_are_inert_without_tools(self) -> None:
+        # tool_choice is only ever attached alongside tools, so a rule cannot
+        # fire on a toolless call. Documented here rather than left surprising.
+        kwargs = self._kwargs(_rules("tool_choice", "auto", "reject", "e"), tools=False)
+        assert "tool_choice" not in kwargs

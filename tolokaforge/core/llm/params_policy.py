@@ -303,17 +303,10 @@ class GenerationParams(ParamsPolicy):
         self._reasoning_via_thinking_kwarg = reasoning_via_thinking_kwarg
         self._drop_sampling_when_thinking = drop_sampling_when_thinking
         self._reasoning_budget_default = reasoning_budget_default
-        # Per-provider known-broken effort levels (AGENTS.md rule #1: surface
-        # failures explicitly rather than silently mapping). Populated by
-        # presets / provider overlays when an effort level is known to break
-        # upstream — e.g. litellm's direct ``gemini/*`` path silently returns
-        # empty responses for Gemini 3.1 Pro when ``reasoning_effort='medium'``
-        # is combined with tool_calls (verified 2026-05-21,
-        # BerriAI/litellm#19403-class). ``_emit_effort_kwargs`` raises
-        # ``ValueError`` rather than mapping to a working level — the caller
-        # picks the workaround.
-        # Normalise YAML lists into a frozenset so equality + membership are
-        # cheap and ``GenerationParams`` is still hashable-friendly.
+        # Declared value gaps, flattened to (param, value) -> rule. Populated
+        # from a preset or a provider overlay; see ``docs/LLM_LAYER.md``
+        # § param_value_rules for what each action means and when to reach for
+        # which.
         self._param_value_rules: dict[tuple[str, str], _ValueRule] = _normalise_value_rules(
             param_value_rules
         )
@@ -468,7 +461,14 @@ class GenerationParams(ParamsPolicy):
         if self.rule_for("reasoning_effort", effort) == "reject":
             # Both the refused set and the remaining choices come from the
             # rules, so a rejection reports what actually caused it.
-            refused = {v for (param, v) in self._param_value_rules if param == "reasoning_effort"}
+            # Only `reject` rules are refusals. A `drop` or `override` rule on
+            # another level is still usable, so listing it here would tell the
+            # operator a level is unavailable when it is not.
+            refused = {
+                v
+                for (param, v), rule in self._param_value_rules.items()
+                if param == "reasoning_effort" and rule.action == "reject"
+            }
             supported = tuple(e for e in ("low", "medium", "high", "xhigh") if e not in refused)
             evidence = self.rule_evidence("reasoning_effort", effort)
             raise ValueError(
