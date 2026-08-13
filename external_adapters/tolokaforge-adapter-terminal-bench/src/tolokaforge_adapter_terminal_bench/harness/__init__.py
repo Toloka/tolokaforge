@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Iterable
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
     "ACCEPTED_HARNESSES",
@@ -47,13 +48,16 @@ trial recorded as ``terminus-2`` would be claiming a comparison it did not run.
 """
 
 
-@dataclass(frozen=True)
-class HarnessSpec:
+class HarnessSpec(BaseModel):
     """One coding-harness CLI: how to install it, how to drive it.
 
-    Every per-harness parity knob lives on this dataclass so the answer to
-    "how do I add / fix a harness" has one address. TECHDEL-569 tracks the
-    consolidation follow-up (Pydantic + YAML overlay per ADR 0002)."""
+    Every per-harness parity knob lives on this model so the answer to "how
+    do I add / fix a harness" has one address. Pydantic + ``extra="forbid"``
+    + ``frozen=True`` per ADR 0011 Pattern B: adding a field requires an ADR
+    update and a snapshot regen, and mutation on an instance is refused at
+    runtime (the registry is data, not state)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     npm_package: str
     """Global npm package providing the CLI."""
@@ -69,9 +73,7 @@ class HarnessSpec:
     ``"latest"`` is available for exploration runs; when used, ``install-harness.sh``
     records the resolved version to a file the adapter reads back at
     trial-registration time and stamps on ``TaskDescription.metadata`` — so
-    reproducibility is preserved by the *artifact*, not by the pin. An
-    operator can also override per-run via
-    :attr:`TerminalBenchAdapter.agent_harness_version_override`."""
+    reproducibility is preserved by the *artifact*, not by the pin."""
 
     argv_prefix: tuple[str, ...]
     """Words before the flags block. The CLI executable (and its sub-command,
@@ -126,13 +128,37 @@ class HarnessSpec:
     ``_DEFAULT_SONNET_MODEL`` / ``_OPUS_MODEL`` / ``_HAIKU_MODEL`` /
     ``CLAUDE_CODE_SUBAGENT_MODEL`` siblings — a five-var quartet."""
 
-    container_env: dict[str, str] = field(default_factory=dict)
+    container_env: dict[str, str] = Field(default_factory=dict)
     """Static env pairs the compose ``environment:`` block writes for the
     agent service. Zero-model, one-key-per-behaviour hardening — claude-code
     reads ``IS_SANDBOX=1`` (root-user override) and
     ``CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1``. Values must be strings
     (compose interpolation is stringly typed) and must not overlap
     :data:`PROVIDER_ENV_KEYS` (a run-config would then shadow this)."""
+
+    strip_vendor_namespace: bool = False
+    """Whether ``harness_model`` should strip a leading ``vendor/`` namespace
+    from the model name before handing it to the CLI. Non-``False`` for CLIs
+    whose model catalog uses bare names (``gpt-5-mini``, not
+    ``openai/gpt-5-mini``) — a namespaced string prints "Model metadata for
+    <name> not found" and the CLI silently drops OpenRouter routing to hit
+    the vendor's default endpoint. Harbor sidesteps the same trap by taking
+    the last path segment (``harbor/agents/installed/codex.py:1341``)."""
+
+    provider_env: dict[str, str] = Field(default_factory=dict)
+    """Default provider-env envelope for this harness — the shape the CLI
+    needs to reach its provider through OpenRouter (or wherever). Populated
+    once per harness (``ANTHROPIC_API_KEY`` + ``ANTHROPIC_BASE_URL`` for
+    claude-code, ``OPENAI_*`` for codex, ``GOOGLE_API_KEY`` for gemini-cli).
+    Values may be literal (URLs pointing at OpenRouter) or reference
+    :data:`SecretManager`-resolvable ``${secret:NAME}`` refs.
+
+    The adapter's ``agent_provider_env`` run-config param overlays this
+    map key-by-key (union with run-config keys winning on conflict), so a
+    caller declaring nothing gets the shipped defaults, a caller
+    declaring a different endpoint gets that, and one caller can add a
+    key the harness didn't ship (e.g. ``ANTHROPIC_AUTH_TOKEN``) without
+    losing the URL. Keys must be a subset of :data:`PROVIDER_ENV_KEYS`."""
 
 
 HARNESSES: dict[str, HarnessSpec] = {
@@ -185,6 +211,14 @@ HARNESSES: dict[str, HarnessSpec] = {
             "IS_SANDBOX": "1",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         },
+        # Anthropic-shaped OpenRouter endpoint. ``ANTHROPIC_BASE_URL`` is a
+        # literal URL (not a secret); the key value comes from the operator
+        # via the ``OPENROUTER_API_KEY`` secret. A run-config's
+        # ``agent_provider_env`` overlays this map key-by-key.
+        provider_env={
+            "ANTHROPIC_API_KEY": "${secret:OPENROUTER_API_KEY}",
+            "ANTHROPIC_BASE_URL": "https://openrouter.ai/api",
+        },
     ),
     "codex": HarnessSpec(
         npm_package="@openai/codex",
@@ -228,6 +262,14 @@ HARNESSES: dict[str, HarnessSpec] = {
             'printf \'{"OPENAI_API_KEY": "%s"}\\n\' "$OPENAI_API_KEY" '
             '> "$CODEX_HOME_DIR/auth.json"'
         ),
+        # codex 0.147's model catalog refuses the OpenRouter namespaced form.
+        strip_vendor_namespace=True,
+        # OpenRouter's OpenAI-compat endpoint. The literal URL means an
+        # operator doesn't need to plumb OPENAI_BASE_URL through .env.
+        provider_env={
+            "OPENAI_API_KEY": "${secret:OPENROUTER_API_KEY}",
+            "OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
+        },
     ),
     "gemini-cli": HarnessSpec(
         npm_package="@google/gemini-cli",
@@ -239,6 +281,16 @@ HARNESSES: dict[str, HarnessSpec] = {
             "--yolo",
             "--prompt",
         ),
+        # gemini-cli's model catalog uses bare names.
+        strip_vendor_namespace=True,
+        # gemini-cli reads ``GEMINI_API_KEY`` natively; OpenRouter's OpenAI-
+        # compat surface doesn't proxy Google's generative-AI endpoints, so
+        # this default only makes the CLI *reach* the endpoint — it will still
+        # 401 without a real Google AI Studio key. Documented in the README's
+        # parity-policy section.
+        provider_env={
+            "GOOGLE_API_KEY": "${secret:OPENROUTER_API_KEY}",
+        },
     ),
 }
 
@@ -256,17 +308,6 @@ deliberately blank vendor key, and fails with a 401. So a vendor harness gets
 the prefix stripped, while the engine loop keeps it (litellm needs it).
 """
 
-_HARNESSES_STRIPPING_VENDOR_NAMESPACE: frozenset[str] = frozenset({"codex", "gemini-cli"})
-"""Harnesses whose CLI wants a bare model name (``gpt-5-mini``) rather than an
-OpenRouter-style ``vendor/model`` (``openai/gpt-5-mini``).
-
-Claude Code stays out of this set: with ``ANTHROPIC_BASE_URL`` pointing at
-OpenRouter, its OpenRouter catalog entry IS ``anthropic/claude-sonnet-4-6``
-and harbor forwards that whole string in ``ANTHROPIC_MODEL``. Codex asked
-for ``openai/gpt-5-mini`` prints ``Model metadata for openai/gpt-5-mini not
-found`` and drops OPENAI_BASE_URL, hitting hard-coded ``api.openai.com``
-— harbor's fix is ``model.split('/')[-1]`` (``harbor/agents/installed/codex.py:1341``)."""
-
 _VENDOR_NAMESPACE_PREFIXES: tuple[str, ...] = (
     "anthropic/",
     "openai/",
@@ -277,9 +318,10 @@ _VENDOR_NAMESPACE_PREFIXES: tuple[str, ...] = (
     "qwen/",
     "deepseek/",
 )
-"""OpenRouter ``vendor/`` namespaces harnesses in
-:data:`_HARNESSES_STRIPPING_VENDOR_NAMESPACE` drop from the model name. A new
-namespace would surface as the same "metadata not found" warning."""
+"""OpenRouter ``vendor/`` namespaces that :func:`harness_model` drops from the
+model name for harnesses declaring ``strip_vendor_namespace=True``. A new
+OpenRouter namespace would surface as the same "metadata not found" warning
+the field's docstring cites."""
 
 PROVIDER_ENV_KEYS: frozenset[str] = frozenset(
     {
@@ -343,22 +385,22 @@ def harness_model(model: str, agent_harness: str | None = None) -> str:
     :data:`OPENROUTER_PREFIX`); a vendor CLI does not go through litellm and
     would otherwise select its own direct-vendor handler and fail with 401.
 
-    For harnesses in :data:`_HARNESSES_STRIPPING_VENDOR_NAMESPACE` (codex,
-    gemini-cli), also strips a leading ``vendor/`` namespace so the model
-    name is the CLI-catalog bare form (``gpt-5-mini`` from
-    ``openrouter/openai/gpt-5-mini``). Claude Code stays out of this set;
-    with ``ANTHROPIC_BASE_URL`` pointing at OpenRouter its catalog entry
-    IS ``anthropic/claude-sonnet-4-6``.
+    When *agent_harness* names a harness whose spec declares
+    :attr:`HarnessSpec.strip_vendor_namespace`, also strips a leading
+    ``vendor/`` namespace so the model name is the CLI-catalog bare form
+    (``gpt-5-mini`` from ``openrouter/openai/gpt-5-mini``).
 
-    *agent_harness* defaults to ``None`` for older callers that only need the
-    ``openrouter/`` strip; when unknown, no vendor-namespace stripping happens.
+    *agent_harness* defaults to ``None`` for callers that only need the
+    ``openrouter/`` strip (or for the engine loop, which keeps everything).
     """
     if model.startswith(OPENROUTER_PREFIX):
         model = model[len(OPENROUTER_PREFIX) :]
-    if agent_harness in _HARNESSES_STRIPPING_VENDOR_NAMESPACE:
-        for prefix in _VENDOR_NAMESPACE_PREFIXES:
-            if model.startswith(prefix):
-                return model[len(prefix) :]
+    if agent_harness is not None:
+        spec = HARNESSES.get(agent_harness)
+        if spec is not None and spec.strip_vendor_namespace:
+            for prefix in _VENDOR_NAMESPACE_PREFIXES:
+                if model.startswith(prefix):
+                    return model[len(prefix) :]
     return model
 
 
