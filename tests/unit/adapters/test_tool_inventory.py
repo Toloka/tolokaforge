@@ -20,10 +20,11 @@ from typing import Any
 import pytest
 
 from tolokaforge.adapters._task_loader import (
+    ToolActor,
     build_tool_inventory,
     load_task_yaml,
     replay_world_under_adapter,
-    resolve_agent_tool_schemas,
+    resolve_tool_schemas,
 )
 from tolokaforge.core.grading.config_validation import ArgumentSchema, ReplayWorld, ToolInventory
 from tolokaforge.core.grading.golden_replay import InitialStateSource
@@ -116,7 +117,7 @@ def test_the_same_task_does_spawn_a_server_when_a_subprocess_is_allowed(
     assert not fixture.exists()
 
     with pytest.raises(RuntimeError, match="returned no tools"):
-        resolve_agent_tool_schemas(task, task_dir, allow_subprocess=True)
+        resolve_tool_schemas(task, task_dir, ToolActor.AGENT, allow_subprocess=True)
 
     assert mcp_constructions == [str(task_dir / task.tools.agent["mcp_server"])]
     assert not fixture.exists()
@@ -184,7 +185,7 @@ def test_a_schema_the_task_never_declared_is_not_in_the_inventory() -> None:
     argument verdict off a schema the agent is never handed.
     """
     task, task_dir = load_task_yaml(_NOTES_TASK)
-    resolved = resolve_agent_tool_schemas(task, task_dir, allow_subprocess=False)
+    resolved = resolve_tool_schemas(task, task_dir, ToolActor.AGENT, allow_subprocess=False)
     inventory = build_tool_inventory(task, task_dir)
 
     assert set(resolved) - inventory.declared, (
@@ -193,6 +194,30 @@ def test_a_schema_the_task_never_declared_is_not_in_the_inventory() -> None:
     )
     assert set(inventory.parameters) <= inventory.declared
     assert inventory.strictness("_tolokaforge_set_state_") is ArgumentSchema.UNKNOWN
+
+
+def test_the_inventory_reports_each_actor_and_resolves_both_their_schemas(tmp_path: Path) -> None:
+    """A tool only the user declares is a tool the gate can check the arguments of.
+
+    Resolving the agent's block alone lands a user-declared name in ``declared``
+    with no schema behind it, so every argument path on it classifies ``UNKNOWN``
+    and is silently skipped — a rule naming the user's tool reads as clean whatever
+    it asserts. Written in memory because every pack in the tree declares an empty
+    user block.
+    """
+    task = TaskConfig(
+        task_id="two_actor_probe",
+        description="one builtin declared per actor",
+        tools={"agent": {"enabled": ["read_file"]}, "user": {"enabled": ["calculator"]}},
+    )
+
+    inventory = build_tool_inventory(task, tmp_path)
+
+    assert inventory.agent_declared == frozenset({"read_file"})
+    assert inventory.user_declared == frozenset({"calculator"})
+    assert inventory.declared == frozenset({"read_file", "calculator"})
+    assert inventory.strictness("calculator") is ArgumentSchema.CLOSED
+    assert inventory.properties("calculator") == frozenset({"expression"})
 
 
 def test_a_task_that_declares_no_tools_is_known_and_empty() -> None:

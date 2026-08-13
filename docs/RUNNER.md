@@ -265,10 +265,11 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
 |---|---|
 | `tolokaforge/runner/` | The runner service, gRPC glue, DB / RAG clients, tool factory, runner-side grading. |
 | `tolokaforge/secrets/` | Single-abstraction secret manager reconstructed from `TOLOKAFORGE_SECRETS_JSON`. |
-| `tolokaforge/tools/` | Tool registry + built-in tool drivers the tool factory dispatches by name at `RegisterTrial`. (One file excluded — see below.) |
+| `tolokaforge/tools/` | Tool registry + built-in tool drivers the tool factory dispatches by name at `RegisterTrial`. |
+| `tolokaforge/core/actors/` | Actor seams the turn loop dispatches on. (One file excluded — see below.) |
 | `tolokaforge/core/models/` | Wire types the gRPC surface serialises. |
 | `tolokaforge/core/llm/` | LLM client + policies; the runner runs LLM-as-judge in-container. (One file excluded — see below.) |
-| `tolokaforge/core/grading/` | Grading substrate — check runner, checks helpers, judge, key manifest, state composition, state diff, trace timeline, transcript wire. (Four files excluded — see below.) |
+| `tolokaforge/core/grading/` | Grading substrate — check runner, checks helpers, judge, key manifest, state composition, state diff, trace timeline, transcript wire. (Eleven files excluded — see below.) |
 
 **Loose files in the subset:**
 
@@ -310,13 +311,24 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
 
 **Excluded — orchestrator-only files under a subpackage otherwise in the subset:**
 
+The enumeration below is the one in `RUNNER_SUBSET_EXCLUDED_FILES`; the
+canonical test rejects drift between them and the pyproject mirror.
+
 | Path | Excluded because |
 |---|---|
+| `tolokaforge/core/actors/turn_policy.py` | Reaches `core.plugin_registry` (orchestrator-only) for `TurnPolicyContext`. |
+| `tolokaforge/core/grading/agreement.py` | Shared-spine imports only; consumed by the offline rubric-migration commands. |
 | `tolokaforge/core/grading/combine.py` | Imports `core.grading.state_checks`, itself orchestrator-only. |
+| `tolokaforge/core/grading/config_validation.py` | Shared-spine imports only; consumed by the pre-run authoring gate. |
+| `tolokaforge/core/grading/corpus_curation.py` | Imports `core.output.artifacts` and `core.output_writer` (orchestrator-only). |
+| `tolokaforge/core/grading/migration_declaration.py` | Reaches the same two through its `corpus_curation` import. |
 | `tolokaforge/core/grading/replay.py` | Imports `core.output.artifacts` (orchestrator-only). |
+| `tolokaforge/core/grading/replay_layout.py` | Standard library only; consumed by the offline replay commands. |
+| `tolokaforge/core/grading/rubric_migration.py` | Imports the adapters' private task loader (orchestrator-only). |
 | `tolokaforge/core/grading/state_checks.py` | Imports `core.utils.diff` (orchestrator-only). |
+| `tolokaforge/core/grading/trace_replay.py` | Imports `core.output.artifacts` (orchestrator-only). |
+| `tolokaforge/core/grading/unknown_keys.py` | Shared-spine imports only; consumed by the pre-run authoring gate. |
 | `tolokaforge/core/llm/fallback_client.py` | Consumed only by `dx/cli/main.py`. |
-| `tolokaforge/tools/user_tools.py` | Imports `core.env_state` (orchestrator-only). |
 
 **Not in the subset:** everything at the `tolokaforge/core/` root not listed above
 (the `Orchestrator` class, dry-run, output writer, config validator, compose

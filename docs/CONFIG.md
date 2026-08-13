@@ -563,6 +563,16 @@ run-start. `conversational` treats it as optional: unset, the user simulator
 writes turn 1. Under either mode, declaring the key with an empty or
 whitespace-only value is refused at load.
 
+**A non-empty `tools.user.enabled` needs a user turn that can call it.** The
+declaration reaches the runner like the agent's — the tools are registered for
+the trial — so a pack whose user turn can never make a call fails nothing at run
+time and grades a `requestor: user` action, or an `executor: user` matcher,
+against a call that could not have happened. Two shapes reach that state and each
+is refused at load naming which one it is and the fix: `interaction_mode:
+agent_only`, which dispatches no user turn at all, and a user simulator resolving
+to `mode: scripted`, whose reply is text and never a tool call. `tools.user.enabled: []`
+loads under both — the declaration is what is refused, not the key.
+
 ## Grading Specification (`grading.yaml`)
 
 ```yaml

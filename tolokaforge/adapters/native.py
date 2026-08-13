@@ -9,12 +9,15 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from tolokaforge.adapters._task_loader import (
+    ToolActor,
     _detect_task_root,
-    agent_tool_configs,
+    actor_tool_block,
+    declared_tool_names,
     load_task_yaml,
     refuse_malformed_grading_shapes,
-    resolve_agent_tool_schemas,
+    resolve_tool_schemas,
     seeded_tables_from_task,
+    tool_configs,
 )
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
@@ -37,9 +40,69 @@ from tolokaforge.core.project_loader import resolve as resolve_environment
 from tolokaforge.runner.id_resolution import check_id_fields_against_seeded_tables
 
 if TYPE_CHECKING:
-    from tolokaforge.runner.models import SearchConfig, TaskDescription
+    from tolokaforge.runner.models import SearchConfig, TaskDescription, ToolSchema
 
 logger = get_logger(__name__)
+
+
+def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> list["ToolSchema"]:
+    """The wire tool set ``tools.<actor>`` declares, with every schema resolved.
+
+    A builtin carries no :class:`ToolSource` — the runner's source-less dispatch
+    arm routes it by name via the unified builtin registry, and ``tool_config``
+    carries any per-task init kwargs. A block naming an ``mcp_server`` carries the
+    script relative to the task dir, which the runner resolves against its
+    extracted artifacts dir.
+
+    Raises:
+        RuntimeError: If the block names an ``mcp_server`` script that is absent.
+        ValueError: If a ``tools.<actor>.<name>`` block is not a mapping.
+    """
+    from tolokaforge.runner.models import InvocationStyle, ToolSchema, ToolSource
+    from tolokaforge.runner.tool_factory import create_search_kb_schema
+
+    block = actor_tool_block(task, actor)
+    mcp_server_ref: str | None = block.get("mcp_server")
+    if mcp_server_ref and not (task_dir / mcp_server_ref).exists():
+        raise RuntimeError(f"MCP server script not found: {task_dir / mcp_server_ref}")
+
+    configs = tool_configs(task, actor)
+    rich_schemas = resolve_tool_schemas(task, task_dir, actor, allow_subprocess=True)
+
+    schemas: list[ToolSchema] = []
+    for tool_name in block.get("enabled", []):
+        if tool_name == "search_kb":
+            # The runner reconstructs search_kb as a RAGSearchToolWrapper
+            # (source-less, RAG dispatch). Carry the canonical schema so
+            # the LLM sees the real {query, top_k, alpha} parameters.
+            schemas.append(create_search_kb_schema())
+            continue
+        rich = rich_schemas.get(tool_name, {})
+        source = (
+            ToolSource(
+                toolset=task.category or "native",
+                module_path="mcp_server",
+                class_name=tool_name,
+                invocation_style=InvocationStyle.MCP_SERVER,
+                mcp_server_script=mcp_server_ref,
+            )
+            if mcp_server_ref
+            else None
+        )
+        schemas.append(
+            ToolSchema(
+                name=tool_name,
+                description=rich.get(
+                    "description", f"{actor.value.capitalize()} tool: {tool_name}"
+                ),
+                parameters=rich.get("parameters", {"type": "object", "properties": {}}),
+                category="compute",
+                timeout_s=30.0,
+                source=source,
+                tool_config=configs.get(tool_name, {}),
+            )
+        )
+    return schemas
 
 
 class NativeAdapter(BaseAdapter):
@@ -429,19 +492,15 @@ class NativeAdapter(BaseAdapter):
             AdapterType,
             DbProbe,
             GoldenAction,
-            InvocationStyle,
             RunnerGradingConfig,
             RunnerInitializationAction,
             RunnerInitialStateConfig,
             RunnerStateChecksConfig,
             RunnerUserSimulatorConfig,
             TaskDescription,
-            ToolSchema,
-            ToolSource,
             TraceChecksConfig,
             TranscriptRulesConfig,
         )
-        from tolokaforge.runner.tool_factory import create_search_kb_schema
 
         logger.info(
             "Building TaskDescription", task_id=task_id, adapter_type=AdapterType.NATIVE.value
@@ -465,59 +524,9 @@ class NativeAdapter(BaseAdapter):
             else:
                 raise RuntimeError(f"System prompt file not found: {system_prompt_path}")
 
-        # Build agent tools from MCP server
-        agent_tools: list[ToolSchema] = []
-        user_tools: list[ToolSchema] = []  # always empty: user.enabled is [] in all native tasks
-
-        enabled_agent_tools: list[str] = task.tools.agent.get("enabled", [])
-
-        # Get MCP server path for agent tools
-        mcp_server_ref: str | None = None
-        if task.tools and task.tools.agent:
-            mcp_server_ref = task.tools.agent.get("mcp_server")
-            if mcp_server_ref:
-                mcp_server_path = task_dir / mcp_server_ref
-                if not mcp_server_path.exists():
-                    raise RuntimeError(f"MCP server script not found: {mcp_server_path}")
-
-            tool_configs = agent_tool_configs(task)
-            rich_schemas = resolve_agent_tool_schemas(task, task_dir, allow_subprocess=True)
-
-            for tool_name in enabled_agent_tools:
-                if tool_name == "search_kb":
-                    # The runner reconstructs search_kb as a RAGSearchToolWrapper
-                    # (source-less, RAG dispatch). Carry the canonical schema so
-                    # the LLM sees the real {query, top_k, alpha} parameters.
-                    agent_tools.append(create_search_kb_schema())
-                    continue
-                rich = rich_schemas.get(tool_name, {})
-                # Only wire up MCP_SERVER source when the task provides an mcp_server
-                # script. Builtin tools (read_file, write_file, bash, …) have no
-                # script and no ToolSource — the runner's source-less dispatch
-                # arm routes them by name via the unified builtin registry, and
-                # ``tool_config`` carries any per-task init kwargs.
-                source = (
-                    ToolSource(
-                        toolset=task.category or "native",
-                        module_path="mcp_server",
-                        class_name=tool_name,
-                        invocation_style=InvocationStyle.MCP_SERVER,
-                        # Relative path — Runner resolves it against the extracted artifacts dir.
-                        mcp_server_script=mcp_server_ref,
-                    )
-                    if mcp_server_ref
-                    else None
-                )
-                tool_schema = ToolSchema(
-                    name=tool_name,
-                    description=rich.get("description", f"Agent tool: {tool_name}"),
-                    parameters=rich.get("parameters", {"type": "object", "properties": {}}),
-                    category="compute",
-                    timeout_s=30.0,
-                    source=source,
-                    tool_config=tool_configs.get(tool_name, {}),
-                )
-                agent_tools.append(tool_schema)
+        agent_tools = _actor_tool_schemas(task, task_dir, ToolActor.AGENT)
+        user_tools = _actor_tool_schemas(task, task_dir, ToolActor.USER)
+        mcp_server_ref: str | None = actor_tool_block(task, ToolActor.AGENT).get("mcp_server")
 
         initial_tables = seeded_tables_from_task(task, task_dir)
 
@@ -709,8 +718,14 @@ class NativeAdapter(BaseAdapter):
         # filesystem, so we transfer all necessary files via gRPC/TaskDescription.
         # Custom checks packs (with or without an MCP server) also need the
         # bundle so the runner can resolve ``custom_checks.file`` and every
-        # ``relative_imports`` path under the trial's ``artifacts_dir``.
-        needs_bundle = mcp_server_ref or custom_checks_enabled(custom_checks_data)
+        # ``relative_imports`` path under the trial's ``artifacts_dir``. Either
+        # actor's server counts: a user tool is reconstructed from the same
+        # script path the agent's is.
+        needs_bundle = (
+            mcp_server_ref
+            or actor_tool_block(task, ToolActor.USER).get("mcp_server")
+            or custom_checks_enabled(custom_checks_data)
+        )
         tool_artifacts = self._bundle_task_artifacts(task_dir) if needs_bundle else {}
 
         # mcp_server.py loads its initial state from ``initial_state.json``
@@ -736,7 +751,7 @@ class NativeAdapter(BaseAdapter):
         # Resolve per-trial RAG search from ``initial_state.rag``. When a
         # corpus is declared, its files travel in ``tool_artifacts`` (keyed
         # under the declared ``corpus_dir``) so the runner can index them.
-        search_config = self._resolve_search_config(task, task_dir, task_id, enabled_agent_tools)
+        search_config = self._resolve_search_config(task, task_dir, task_id)
         if search_config.documents_path:
             tool_artifacts.update(
                 self._bundle_corpus_artifacts(task_dir, search_config.documents_path)
@@ -797,7 +812,6 @@ class NativeAdapter(BaseAdapter):
         task: TaskConfig,
         task_dir: Path,
         task_id: str,
-        enabled_agent_tools: list[str],
     ) -> "SearchConfig":
         """Build the trial's ``SearchConfig`` from ``initial_state.rag``.
 
@@ -811,8 +825,8 @@ class NativeAdapter(BaseAdapter):
         declare no corpus keep search disabled.
 
         Raises:
-            ValueError: if a corpus is declared without ``search_kb`` in the
-                agent tools (the corpus could never be searched), or the
+            ValueError: if a corpus is declared without ``search_kb`` in either
+                actor's tools (the corpus could never be searched), or the
                 declared ``corpus_dir`` does not resolve to a directory.
         """
         from tolokaforge.runner.models import SearchConfig, SearchPlane
@@ -827,12 +841,12 @@ class NativeAdapter(BaseAdapter):
                 f"got {type(corpus_dir).__name__}={corpus_dir!r}"
             )
 
-        if "search_kb" not in enabled_agent_tools:
+        if "search_kb" not in declared_tool_names(task):
             raise ValueError(
                 f"Task {task_id!r} declares initial_state.rag.corpus_dir "
-                f"{corpus_dir!r} but does not enable the 'search_kb' agent tool; "
+                f"{corpus_dir!r} but no actor enables the 'search_kb' tool; "
                 f"the corpus would never be searchable. Add 'search_kb' to "
-                f"tools.agent.enabled or drop the rag corpus."
+                f"tools.agent.enabled or tools.user.enabled, or drop the rag corpus."
             )
 
         corpus_path = task_dir / corpus_dir

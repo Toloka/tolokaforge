@@ -25,7 +25,6 @@ class TestBuildCheckToolConstructor:
         assert tool.name == "build_check"
         assert tool.endpoint_url == "http://grader:8001/build_check"
         assert tool.policy.category == ToolCategory.COMPUTE
-        assert tool.policy.visibility == ["agent"]
 
     def test_constructor_overrides(self) -> None:
         tool = BuildCheckTool(

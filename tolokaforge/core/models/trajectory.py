@@ -565,7 +565,7 @@ class Trajectory(BaseModel):
     # is revised so that downstream analytics can gate comparisons across
     # runs. Stays on Trajectory because it's metadata about the
     # message-trace shape, not the prompt itself.
-    simulator_schema_version: int = 3
+    simulator_schema_version: int = 4
 
     @model_validator(mode="after")
     def _reject_graded_and_ungradeable(self) -> Self:

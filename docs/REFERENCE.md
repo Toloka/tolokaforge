@@ -399,7 +399,6 @@ class MyTool(Tool):
             timeout_s=30.0,
             rate_limit=100,           # Max calls per trial
             category=ToolCategory.COMPUTE,
-            visibility=["agent"],     # "agent", "user", or both
         )
         super().__init__(name="my_tool", description="...", policy=policy)
 

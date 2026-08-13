@@ -92,11 +92,13 @@ from tolokaforge.core.grading.state_composition import (
     StateHashConfig,
     hash_block_is_a_state_source,
 )
+from tolokaforge.core.grading.trace_replay import tool_inventory_from_bundle
 from tolokaforge.core.grading.trace_timeline import TraceEvent
 from tolokaforge.core.models import (
     GradingCombineConfig,
     GradingConfig,
     GradingFindingSeverity,
+    ToolExecutorIdentity,
     ToolExpectations,
     TranscriptRulesConfig,
 )
@@ -155,6 +157,17 @@ def _tool_call(tool: str, **args: dict[str, Any]) -> dict[str, Any]:
     if args:
         match["args"] = args
     return match
+
+
+def _required_action(name: str, requestor: str) -> dict[str, Any]:
+    """One ``required_actions`` entry, in the shape an author writes it."""
+    return {
+        "transcript_rules": {
+            "required_actions": [
+                {"action_id": "the_declared_call", "requestor": requestor, "name": name}
+            ]
+        }
+    }
 
 
 def _bound_block(
@@ -333,6 +346,27 @@ _RULES: tuple[_Rule, ...] = (
         checker="_check_tool_expectation_names",
         channel="errors",
         message="short a required tool on every trial",
+    ),
+    _Rule(
+        label="required_action_naming_an_undeclared_tool",
+        task=_HELPDESK,
+        grading=_required_action("http_reqest", "assistant"),
+        checker="_check_required_action_names",
+        channel="errors",
+        # The tool, the set the task does declare, and what the action costs: an
+        # author shown only the hazard has nothing to correct the name against.
+        message="tool 'http_reqest' is not declared by this task, which gives its actors "
+        "['http_request', 'write_file']: no actor can call it, so the transcript component "
+        "is short a required action on every trial",
+    ),
+    _Rule(
+        label="required_action_whose_requestor_declares_no_such_tool",
+        task=_HELPDESK,
+        grading=_required_action("http_request", "user"),
+        checker="_check_required_action_names",
+        channel="errors",
+        message="tools.user.enabled declares []: ['tools.agent.enabled'] declares the tool "
+        "instead, so the executor filter never matches",
     ),
     _Rule(
         label="argument_outside_a_closed_schema",
@@ -2436,12 +2470,226 @@ def test_an_unresolvable_inventory_may_not_carry_tools() -> None:
     resolved and then ignored — a name checked against nothing, reading as clean.
     """
     with pytest.raises(ValueError, match="unresolvable inventory carries tools"):
-        ToolInventory(declared=frozenset({"http_request"}), parameters={}, known=False)
+        ToolInventory(
+            declared=frozenset({"http_request"}),
+            agent_declared=frozenset({"http_request"}),
+            user_declared=frozenset(),
+            actor_split_known=False,
+            parameters={},
+            known=False,
+        )
 
     with pytest.raises(ValueError, match="unresolvable inventory carries tools"):
-        ToolInventory(declared=frozenset(), parameters={"http_request": {}}, known=False)
+        ToolInventory(
+            declared=frozenset(),
+            agent_declared=frozenset(),
+            user_declared=frozenset(),
+            actor_split_known=False,
+            parameters={"http_request": {}},
+            known=False,
+        )
 
     assert ToolInventory.unresolvable().known is False
+
+
+def test_the_declared_set_is_the_union_of_the_two_actors() -> None:
+    """Three sets that can disagree are three sets a rule can read differently.
+
+    ``declared`` answers "does the task give anyone this tool"; the two actor sets
+    answer "may *this* actor call it". A producer reporting a union that is not one
+    would make an undeclared-tool rule and an actor rule contradict each other over
+    the same name, each reading as clean.
+    """
+    with pytest.raises(ValueError, match="not the union of the actors"):
+        ToolInventory(
+            declared=frozenset({"calculator"}),
+            agent_declared=frozenset(),
+            user_declared=frozenset(),
+            actor_split_known=True,
+            parameters={},
+            known=True,
+        )
+
+    with pytest.raises(ValueError, match="not the union of the actors"):
+        ToolInventory(
+            declared=frozenset({"read_file"}),
+            agent_declared=frozenset({"read_file"}),
+            user_declared=frozenset({"calculator"}),
+            actor_split_known=True,
+            parameters={},
+            known=True,
+        )
+
+    assert ToolInventory(
+        declared=frozenset({"read_file", "calculator"}),
+        agent_declared=frozenset({"read_file"}),
+        user_declared=frozenset({"calculator"}),
+        actor_split_known=True,
+        parameters={},
+        known=True,
+    ).declared == frozenset({"read_file", "calculator"})
+
+
+# ---------------------------------------------------------------------------
+# A required action names an actor, and that actor has to have the tool
+# ---------------------------------------------------------------------------
+
+
+def _two_actor_pack(tmp_path: Path, *, agent: list[str], user: list[str]) -> ToolInventory:
+    """The inventory of a pack giving each actor its own builtin tools.
+
+    Written to disk and read back through the loader and the inventory producer,
+    rather than constructed, so what separates the two actors here is what the
+    adapter separates them by at run time.
+    """
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        yaml.safe_dump(
+            {
+                "task_id": "two_actors",
+                "description": "a task whose two actors each declare a tool",
+                "tools": {"agent": {"enabled": agent}, "user": {"enabled": user}},
+            }
+        )
+    )
+    task, task_dir = load_task_yaml(task_path)
+    return build_tool_inventory(task, task_dir)
+
+
+_THE_REQUESTORS_ADDRESS = "transcript_rules.required_actions[0].requestor"
+
+_AN_ACTION_PER_ACTOR = (
+    pytest.param("calculator", "user", None, id="the_users_tool_asked_of_the_user"),
+    pytest.param("write_file", "assistant", None, id="the_agents_tool_asked_of_the_agent"),
+    pytest.param(
+        "calculator", "assistant", _THE_REQUESTORS_ADDRESS, id="the_users_tool_asked_of_the_agent"
+    ),
+    pytest.param(
+        "write_file", "user", _THE_REQUESTORS_ADDRESS, id="the_agents_tool_asked_of_the_user"
+    ),
+)
+
+
+@pytest.mark.parametrize(("name", "requestor", "address"), _AN_ACTION_PER_ACTOR)
+def test_a_required_action_is_read_against_the_actor_its_requestor_names(
+    tmp_path: Path, name: str, requestor: str, address: str | None
+) -> None:
+    """Both columns of the same pack, because either half alone reads as clean.
+
+    ``requestor`` is matched against the recorded executor at grade time, so an
+    action naming the other actor's tool selects nothing however the trial went —
+    the cost a misspelling carries, from a name that is spelled right. A rule
+    reading only the union would pass both offending rows; one reading only the
+    user's tools would refuse the agent's own action.
+    """
+    inventory = _two_actor_pack(tmp_path, agent=["write_file"], user=["calculator"])
+
+    report = inspect_grading_authoring(_required_action(name, requestor), inventory)
+
+    if address is None:
+        assert report.errors == (), _texts(report, "errors")
+        return
+    assert [finding.where for finding in report.errors] == [address]
+    message = report.errors[0].message
+    assert name in message, message
+    assert "tools.agent.enabled" in message and "tools.user.enabled" in message, message
+
+
+def test_a_requestor_is_unchecked_where_the_tool_set_came_off_a_recorded_trial(
+    tmp_path: Path,
+) -> None:
+    """A replayed trial's tool list says *what* was offered, never *to whom*.
+
+    ``tools_schemas.yaml`` is one list, so the inventory built from it files every
+    tool under the agent because a set has to go somewhere. Reading that placement
+    as a fact would refuse every ``requestor: user`` action a replay re-checks — an
+    authoring that may well be right, failed on evidence the bundle does not hold.
+    The half the bundle *can* answer keeps its teeth: a name no recorded tool
+    carries is still an error.
+    """
+    bundle = tmp_path / "trial0"
+    bundle.mkdir()
+    (bundle / "tools_schemas.yaml").write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "calculator",
+                        "description": "Perform safe arithmetic calculations",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"expression": {"type": "string"}},
+                            "additionalProperties": False,
+                        },
+                    },
+                }
+            ]
+        )
+    )
+    inventory = tool_inventory_from_bundle(bundle)
+
+    on_the_recorded_tool = inspect_grading_authoring(
+        _required_action("calculator", "user"), inventory
+    )
+    assert on_the_recorded_tool.errors == (), _texts(on_the_recorded_tool, "errors")
+    assert [skip.where for skip in on_the_recorded_tool.unchecked] == [_THE_REQUESTORS_ADDRESS]
+
+    on_a_tool_it_never_recorded = inspect_grading_authoring(
+        _required_action("totally_absent", "user"), inventory
+    )
+    assert [finding.where for finding in on_a_tool_it_never_recorded.errors] == [
+        "transcript_rules.required_actions[0].name"
+    ]
+
+
+def test_an_actor_blind_inventory_refuses_to_say_what_an_actor_may_call() -> None:
+    """The method behind the routing above, asked directly.
+
+    ``declared_by`` answers off two sets that exist whatever the producer knew, so
+    an inventory that cannot tell the actors apart has to refuse rather than hand
+    back the agent's whole set as the agent's own.
+    """
+    inventory = ToolInventory(
+        declared=frozenset({"calculator"}),
+        agent_declared=frozenset({"calculator"}),
+        user_declared=frozenset(),
+        actor_split_known=False,
+        parameters={},
+        known=True,
+    )
+
+    with pytest.raises(ValueError, match="does not know which actor declared what"):
+        inventory.declared_by(ToolExecutorIdentity.USER)
+
+
+def test_an_absent_user_side_call_is_no_finding_on_a_pack_with_no_user_tools() -> None:
+    """A ``trace_checks`` matcher may name an actor the task gives no tools.
+
+    ``absent`` over ``executor: user`` asserts that no user-side call happened,
+    which a pack declaring no user tools satisfies — and is true of. Extending the
+    actor rule to trace matchers would refuse packs that grade correctly, so it
+    stops at ``required_actions``, where the declaration is a positive claim.
+
+    The typo beside it is the positive control: the same matcher, one letter wrong
+    in the tool, is an error — so this rule reading nothing is a decision about the
+    executor rather than a site the gate never walked.
+    """
+    user_side = {
+        "kind": "tool_call",
+        "tool": {"equals": "http_request"},
+        "executor": {"equals": "user"},
+    }
+
+    clean = inspect_grading_authoring(_trace_block(user_side, kind="absent"), _inventory(_HELPDESK))
+    assert clean.errors == (), _texts(clean, "errors")
+    assert clean.advisories == (), _texts(clean, "advisories")
+
+    typo = inspect_grading_authoring(
+        _trace_block({**user_side, "tool": {"equals": "http_reqest"}}, kind="absent"),
+        _inventory(_HELPDESK),
+    )
+    assert [finding.where for finding in typo.errors] == ["trace_checks.probe.absent.match.tool"]
 
 
 # ---------------------------------------------------------------------------
@@ -3025,6 +3273,9 @@ def _one_task_worth_of_tools(*tasks: Path) -> ToolInventory:
     resolved = [_inventory(task) for task in tasks]
     return ToolInventory(
         declared=frozenset(name for one in resolved for name in one.declared),
+        agent_declared=frozenset(name for one in resolved for name in one.agent_declared),
+        user_declared=frozenset(name for one in resolved for name in one.user_declared),
+        actor_split_known=True,
         parameters={name: schema for one in resolved for name, schema in one.parameters.items()},
         known=True,
     )
@@ -3408,6 +3659,9 @@ def test_an_argument_typed_outside_the_json_type_names_leaves_it_unchecked() -> 
     """
     inventory = ToolInventory(
         declared=frozenset({"read_file"}),
+        agent_declared=frozenset({"read_file"}),
+        user_declared=frozenset(),
+        actor_split_known=True,
         parameters={
             "read_file": {
                 "additionalProperties": False,
@@ -3514,6 +3768,9 @@ def test_an_argument_typed_outside_the_json_type_names_is_not_flagged() -> None:
     """
     inventory = ToolInventory(
         declared=frozenset({"read_file"}),
+        agent_declared=frozenset({"read_file"}),
+        user_declared=frozenset(),
+        actor_split_known=True,
         parameters={
             "read_file": {
                 "additionalProperties": False,

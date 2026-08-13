@@ -166,7 +166,7 @@ Compare output against committed golden snapshots in `snapshots/`.
 - Authoring-gate corpus (`test_example_pack_grading_corpus.py`) — every pack under
   `examples/` and `tests/data/tasks/` faces the whole gate against its own tool
   inventory and effective combine, and
-  `test_the_packs_outside_the_gate_walk_are_held_to_the_whole_gate` holds the 48
+  `test_the_packs_outside_the_gate_walk_are_held_to_the_whole_gate` holds the 49
   authored packs outside those roots — `grading_parity`, `transcript_parity`,
   `tests/data/projects` and `tests/data/migration_packs` — to the same gate. A new
   parity fixture whose grading names a tool its `task.yaml` never declares fails
@@ -329,24 +329,40 @@ A pack whose key reads DB state declares its rows in `task.yaml`'s `initial_stat
 not only in the case's `state:` — the runner provisions a trial's DB service from
 `initial_state`, and lock 15 grades every pack through `RegisterTrial`.
 
-A parity pack's `tools.agent.enabled` names every tool its grading block and its
-trials do: the authoring gate refuses a matcher or a `tool_expectations` entry
-naming a tool no actor can call, and a declaration short of the timeline describes
-a trial the task could not have run. The schemas come from the pack's own
-`mcp_server.py` through the `fixtures/tools.json` it commits beside it — a JSON
-list of `{name, description, parameters}` covering *every* enabled tool, including
-`write_file`, because one server sources all of an MCP-bearing task's tools. Each
-`parameters` object declares as `properties`, under `additionalProperties: false`,
-every argument name that pack's matchers address and its timeline sends, which is
-what puts the gate's argument checks at error tier rather than leaving them
-unchecked. Nothing starts these servers — both parity suites substitute a call's
-recorded result before any `ExecuteTool` — so a script's bodies echo their
-arguments: the script exists to define the tools whose schemas the pack ships.
+A parity pack declares every tool its grading block and its trials name, in the
+block matching the actor the grading names: `tools.agent.enabled` for a rule about
+the agent's calls, `tools.user.enabled` for one about the simulator's. The
+authoring gate refuses a matcher, a `tool_expectations` entry or a
+`required_actions[i].name` naming a tool no actor can call, and refuses a
+`required_actions[i].requestor` whose own actor does not declare the tool — so a
+pack that puts a `requestor: user` action's tool in the agent's block fails the
+gate, and a declaration short of the timeline describes a trial the task could not
+have run.
+
+Where the tools are **builtins**, that is the whole of it: the schemas come from
+the builtin registry, and the pack ships no `mcp_server.py` and no
+`fixtures/tools.json` — `user_executed_action` declares `calculator` and carries
+neither. An **MCP-backed** pack sources its schemas from its own `mcp_server.py`
+through the `fixtures/tools.json` it commits beside it — a JSON list of
+`{name, description, parameters}` covering *every* enabled tool, including
+`write_file`, because one server sources all of an MCP-bearing task's tools (a task
+naming a second server in its user block is refused at load). Each `parameters`
+object declares as `properties`, under `additionalProperties: false`, every
+argument name that pack's matchers address and its timeline sends, which is what
+puts the gate's argument checks at error tier rather than leaving them unchecked.
+Nothing starts these servers — both parity suites substitute a call's recorded
+result before any `ExecuteTool` — so a script's bodies echo their arguments: the
+script exists to define the tools whose schemas the pack ships.
 
 The pack directory is the author key with its dots replaced by underscores, so a
 leaf key inside a list field gets its own pack:
 `trace_checks.constraints.absent_before` is
-`tests/data/grading_parity/trace_checks_constraints_absent_before/`. A pack under
+`tests/data/grading_parity/trace_checks_constraints_absent_before/`. Two packs are
+named for what they are instead, because no author key names them: `all_keys`,
+which declares the whole manifest at once, and `user_executed_action`, whose
+subject is a `requestor: user` action being reachable at all rather than a key of
+its own. A suite reaching a pack by key gets it by that rule; these two are named
+by the suites that read them. A pack under
 test for one constraint kind authors **that kind alone** at the top level — a
 second constraint beside it is a second check the violating trial could be
 discriminated by — while the sub-terms of a composite kind belong inside its own

@@ -1,17 +1,22 @@
 """Unit tests for ``tolokaforge.core.conductor``.
 
 Covers the in-memory conductor's own shape, the call log dataclass,
-and the default trajectory factory. Cross-implementation parity lives
-in ``tests/canonical/test_conductor_contract.py``.
+the default trajectory factory, and the in-process conductor's split of the
+register response into the agent's and the user actor's tool surfaces.
+Cross-implementation parity lives in ``tests/canonical/test_conductor_contract.py``.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from tolokaforge.core.conductor import (
     DEFAULT_MAX_TURNS,
@@ -19,14 +24,23 @@ from tolokaforge.core.conductor import (
     InMemoryConductor,
     InProcessConductor,
     _default_success_trajectory,
+    _TrialSetup,
     resolve_max_turns,
 )
+from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
+    EvaluationConfig,
+    Metrics,
     ModelConfig,
     OrchestratorConfig,
     ResetSpec,
+    RunConfig,
     ServiceSpec,
+    TaskConfig,
+    Trajectory,
+    TrialStatus,
 )
+from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 from tolokaforge.runner.models import TaskDescription
 
@@ -324,3 +338,211 @@ class TestResolveMaxTurns:
 
     def test_tighter_of_two_set_values_wins(self) -> None:
         assert resolve_max_turns(100, 200) == 100
+
+
+# ---------------------------------------------------------------------------
+# The trial's two tool surfaces
+# ---------------------------------------------------------------------------
+
+
+def _wire_schema(name: str) -> dict[str, Any]:
+    """One entry as ``register_trial`` returns it, pre-sanitisation."""
+    return {
+        "name": name,
+        "description": f"tool {name}",
+        "parameters": {"type": "object", "properties": {}},
+    }
+
+
+def _register_result(agent: list[str], user: list[str]) -> dict[str, Any]:
+    """The register response's shape: one concatenated list, agent slice first,
+    partitioned at ``num_agent_tools`` (``runner.proto``)."""
+    return {
+        "success": True,
+        "error": None,
+        "tool_schemas": [_wire_schema(n) for n in agent + user],
+        "num_agent_tools": len(agent),
+        "num_user_tools": len(user),
+    }
+
+
+@dataclass
+class _RunnerStub:
+    """The three ``TrialRunner`` attributes ``_write_artifacts`` reads."""
+
+    effective_system_prompt: str
+    user_system_prompt: str
+    logger: StructuredLogger
+
+
+def _names(schemas: list[dict[str, Any]]) -> list[str]:
+    return [schema["function"]["name"] for schema in schemas]
+
+
+class TestTrialToolSurfacePartition:
+    """``RegisterTrialResponse`` carries both actors' tools in one list. The
+    conductor slices it at ``num_agent_tools`` and offers each actor only its
+    own half — the runner's registries are split the same way, so a tool
+    offered to the wrong actor is refused ``TOOL_NOT_FOUND`` when called.
+    """
+
+    def _conductor(self, tmp_path: Path, register_result: dict[str, Any]) -> InProcessConductor:
+        adapter = MagicMock()
+        adapter.get_task_dir.return_value = tmp_path / "task"
+        adapter.create_environment.return_value = MagicMock(data={})
+        adapter.get_grading_config.return_value = None
+
+        runtime_backend = MagicMock()
+        runtime_backend.register_trial.return_value = register_result
+
+        agent_client = MagicMock()
+        agent_client.config = ModelConfig(provider="openai", name="gpt-4")
+        agent_client.capabilities.schema_sanitizer.sanitize.side_effect = lambda s: s
+
+        return InProcessConductor(
+            adapter=adapter,
+            artifact_writer=FileArtifactWriter(),
+            config=RunConfig(
+                models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+                orchestrator=OrchestratorConfig(auto_start_services=False),
+                evaluation=EvaluationConfig(output_dir=str(tmp_path)),
+            ),
+            logger=StructuredLogger("test-tool-surface"),
+            agent_client=agent_client,
+            runtime_backend=runtime_backend,
+            trial_grader=MagicMock(),
+            output_dir=tmp_path,
+        )
+
+    def _setup(self, tmp_path: Path, agent: list[str], user: list[str]) -> _TrialSetup:
+        conductor = self._conductor(tmp_path, _register_result(agent, user))
+        return conductor._setup_trial(_make_spec(), TaskConfig(task_id="t1", description="d"))
+
+    def test_setup_partitions_the_register_response_at_num_agent_tools(
+        self, tmp_path: Path
+    ) -> None:
+        setup = self._setup(tmp_path, agent=["agent_read", "agent_write"], user=["user_probe"])
+
+        assert _names(setup.tool_schemas) == ["agent_read", "agent_write"]
+        assert _names(setup.user_tool_schemas) == ["user_probe"]
+
+    def test_the_user_side_executor_is_built_under_the_user_identity(self, tmp_path: Path) -> None:
+        setup = self._setup(tmp_path, agent=["agent_read"], user=["user_probe"])
+
+        assert setup.tool_executor.executor == "agent"
+        assert setup.user_tool_executor is not None
+        assert setup.user_tool_executor.executor == "user"
+        assert setup.user_tool_executor.trial_id == setup.tool_executor.trial_id
+
+    def test_a_task_declaring_no_user_tools_builds_no_user_side_executor(
+        self, tmp_path: Path
+    ) -> None:
+        """Every pack in the tree is this one: it must construct exactly what it
+        constructed before the user actor could hold tools at all."""
+        setup = self._setup(tmp_path, agent=["agent_read"], user=[])
+
+        assert _names(setup.tool_schemas) == ["agent_read"]
+        assert setup.user_tool_schemas == []
+        assert setup.user_tool_executor is None
+
+    def test_the_agent_and_the_simulator_are_offered_disjoint_surfaces(
+        self, tmp_path: Path
+    ) -> None:
+        """Neither list leaks into the other: the agent is offered the agent
+        slice and the simulator the user slice, and no tool appears in both."""
+        conductor = self._conductor(tmp_path, _register_result([], []))
+        setup = _TrialSetup(
+            trial_id="t1:0",
+            trial_idx=0,
+            task_dir=tmp_path,
+            trial_dir=tmp_path / "trials" / "t1" / "0",
+            env_state=MagicMock(),
+            adapter_env=MagicMock(),
+            tool_schemas=[{"type": "function", "function": _wire_schema("agent_read")}],
+            tool_executor=MagicMock(),
+            user_tool_schemas=[{"type": "function", "function": _wire_schema("user_probe")}],
+            user_tool_executor=MagicMock(),
+        )
+
+        with (
+            patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
+            patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
+        ):
+            conductor._run_agent_loop(
+                _make_spec(), TaskConfig(task_id="t1", description="d"), setup
+            )
+
+        kwargs = runner_cls.call_args.kwargs
+        assert _names(kwargs["tool_schemas"]) == ["agent_read"]
+        assert _names(kwargs["user_simulator"].tool_schemas) == ["user_probe"]
+        assert kwargs["user_tool_executor"] is setup.user_tool_executor
+
+    def test_a_simulator_with_no_user_tools_is_offered_none(self, tmp_path: Path) -> None:
+        """The negative half of the disjointness lock: an empty user slice must
+        reach the simulator as ``None``, not as the agent's list."""
+        conductor = self._conductor(tmp_path, _register_result([], []))
+        setup = _TrialSetup(
+            trial_id="t1:0",
+            trial_idx=0,
+            task_dir=tmp_path,
+            trial_dir=tmp_path / "trials" / "t1" / "0",
+            env_state=MagicMock(),
+            adapter_env=MagicMock(),
+            tool_schemas=[{"type": "function", "function": _wire_schema("agent_read")}],
+            tool_executor=MagicMock(),
+            user_tool_schemas=[],
+            user_tool_executor=None,
+        )
+
+        with (
+            patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
+            patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
+        ):
+            conductor._run_agent_loop(
+                _make_spec(), TaskConfig(task_id="t1", description="d"), setup
+            )
+
+        kwargs = runner_cls.call_args.kwargs
+        assert kwargs["user_simulator"].tool_schemas == []
+        assert kwargs["user_tool_executor"] is None
+
+    def test_the_bundle_records_both_slices_in_order(self, tmp_path: Path) -> None:
+        """``tools_schemas.yaml`` is the trial's whole declared tool surface.
+        ``grading.trace_replay.tool_inventory_from_bundle`` rebuilds the replay
+        authoring gate's ``ToolInventory`` from this one file, so an agent-only
+        record would make a matcher naming a user tool unblessable.
+        """
+        conductor = self._conductor(tmp_path, _register_result([], []))
+        trial_dir = tmp_path / "trials" / "t1" / "0"
+        setup = _TrialSetup(
+            trial_id="t1:0",
+            trial_idx=0,
+            task_dir=tmp_path,
+            trial_dir=trial_dir,
+            env_state=MagicMock(),
+            adapter_env=MagicMock(),
+            tool_schemas=[{"type": "function", "function": _wire_schema("agent_read")}],
+            tool_executor=MagicMock(),
+            user_tool_schemas=[{"type": "function", "function": _wire_schema("user_probe")}],
+            user_tool_executor=MagicMock(),
+        )
+        trajectory = Trajectory(
+            task_id="t1",
+            trial_index=0,
+            start_ts=datetime.now(UTC),
+            end_ts=datetime.now(UTC),
+            status=TrialStatus.COMPLETED,
+            messages=[],
+            metrics=Metrics(),
+        )
+
+        conductor._write_artifacts(
+            _make_spec(),
+            TaskConfig(task_id="t1", description="d"),
+            setup,
+            trajectory,
+            _RunnerStub("agent sys", "user sys", StructuredLogger("test-bundle")),
+        )
+
+        written = yaml.safe_load((trial_dir / "tools_schemas.yaml").read_text())
+        assert _names(written) == ["agent_read", "user_probe"]

@@ -200,7 +200,7 @@ class _OfflineReadTool(Tool):
         super().__init__(
             name=name,
             description=f"[replay] {name}: {_unavailable(backend)}",
-            policy=ToolPolicy(timeout_s=15.0, category=ToolCategory.READ, visibility=["agent"]),
+            policy=ToolPolicy(timeout_s=15.0, category=ToolCategory.READ),
         )
         self._backend = backend
         self.is_knowledge_search = is_knowledge_search

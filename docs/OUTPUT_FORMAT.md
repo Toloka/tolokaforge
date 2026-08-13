@@ -302,7 +302,7 @@ agent and user-simulator system prompts live in
 ```yaml
 task_id: "051fa6cb-..."
 trial_index: 0
-simulator_schema_version: 3
+simulator_schema_version: 4
 start_ts: "2026-01-01T12:00:00+00:00"
 end_ts: "2026-01-01T12:05:00+00:00"
 status: "completed"                                   # TrialStatus enum
@@ -585,6 +585,14 @@ time measured around each call, failures included.
 `tool_usage` is a roll-up, not the record: the per-call `output`, `status`,
 `executor` and `latency_seconds` it aggregates live in
 [`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml).
+
+`tool_calls` and `tool_success_rate` count the **agent's** calls — the same
+scoping stuck detection and `transcript_rules.tool_expectations` apply, so a
+trial whose user actor called a tool of its own does not read as the agent having
+used one. `tool_usage` and `tool_log.yaml` carry every executor's calls, so on a
+task declaring `tools.user.enabled` the roll-up's call counts sum to more than
+`tool_calls`; `tool_log.yaml` is the only one of the three that says which
+executor made each call.
 
 Semantics per `usage` field (see
 [`docs/LLM_LAYER.md`](LLM_LAYER.md:1) § `usage` for the provider-routing
@@ -1457,7 +1465,7 @@ evidence about us, and our own defects stay counted. See
 
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
-| `trajectory.yaml` | `simulator_schema_version` | `3` | Any revision to the LLM user-simulator prompt body or the conversation context it sees |
+| `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator prompt body or the conversation context it sees |
 | `metrics.yaml` | `schema_version` | `4` | The per-trial bundle's file set or field semantics change |
 | `aggregate.json` | `schema_version` | `3` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, or the `outcomes_by_reason` class vocabulary |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |

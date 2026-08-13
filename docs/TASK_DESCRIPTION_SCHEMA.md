@@ -149,7 +149,8 @@ class InitializationAction(BaseModel):
     """
     Action to execute before trial starts.
     
-    Used by Native adapter for user device setup (toggle_airplane_mode, etc.)
+    Used by the Native adapter to put the world in its starting shape — a user-side
+    tool run before the agent's first turn.
 
     The tool is spelled `tool_name` here and `name` on RequiredAction below:
     this is a harness setup instruction, not a grading assertion about the
@@ -345,7 +346,7 @@ class TaskDescription(BaseModel):
     
     # --- Tools ---
     agent_tools: List[ToolSchema] = Field(default_factory=list)
-    user_tools: List[ToolSchema] = Field(default_factory=list)  # User-side device tools
+    user_tools: List[ToolSchema] = Field(default_factory=list)  # Offered to the user simulator
     
     # --- State ---
     initial_state: InitialStateConfig = Field(default_factory=InitialStateConfig)
@@ -609,10 +610,27 @@ class TaskDescription(BaseModel):
       "description": "Toggle airplane mode on/off",
       "parameters": {"type": "object", "properties": {}},
       "source": {
-        "toolset": "example_user",
-        "module_path": "user_device",
+        "toolset": "example_support",
+        "module_path": "mcp_server",
         "class_name": "toggle_airplane_mode",
-        "invocation_style": "tau_sync"
+        "invocation_style": "mcp_server",
+        "mcp_server_script": "mcp_server.py"
+      }
+    },
+    {
+      "name": "toggle_data",
+      "description": "Turn mobile data on or off",
+      "parameters": {
+        "type": "object",
+        "properties": {"enabled": {"type": "boolean"}},
+        "required": ["enabled"]
+      },
+      "source": {
+        "toolset": "example_support",
+        "module_path": "mcp_server",
+        "class_name": "toggle_data",
+        "invocation_style": "mcp_server",
+        "mcp_server_script": "mcp_server.py"
       }
     }
   ],

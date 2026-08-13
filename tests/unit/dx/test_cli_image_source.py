@@ -17,6 +17,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
+from tolokaforge.core.orchestrator import GradingCompleteness
 from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
@@ -60,6 +61,9 @@ def _make_capturing_orchestrator(captured: dict[str, Any], *, run_return: Path) 
             return None
 
         def run(self, **_: object) -> Path:
+            self.grading_completeness = GradingCompleteness(
+                total_attempts=1, ungradeable_trial_ids=()
+            )
             return run_return
 
     return _CapturingOrchestrator

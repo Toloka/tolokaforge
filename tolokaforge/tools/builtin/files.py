@@ -16,7 +16,6 @@ class ReadFileTool(Tool):
         policy = ToolPolicy(
             timeout_s=10.0,
             category=ToolCategory.READ,
-            visibility=["agent"],
         )
         super().__init__(
             name="read_file",
@@ -148,7 +147,6 @@ class WriteFileTool(Tool):
         policy = ToolPolicy(
             timeout_s=10.0,
             category=ToolCategory.WRITE,
-            visibility=["agent"],
         )
         super().__init__(
             name="write_file",
@@ -233,7 +231,6 @@ class ListDirTool(Tool):
         policy = ToolPolicy(
             timeout_s=10.0,
             category=ToolCategory.READ,
-            visibility=["agent"],
         )
         super().__init__(
             name="list_dir",
@@ -360,7 +357,6 @@ class ReplaceLinesTool(Tool):
         policy = ToolPolicy(
             timeout_s=10.0,
             category=ToolCategory.WRITE,
-            visibility=["agent"],
         )
         super().__init__(
             name="replace_lines",
@@ -445,7 +441,7 @@ class AppendFileTool(Tool):
     """Append content to a file (creates if missing)."""
 
     def __init__(self, base_path: str = "/env/fs/agent-visible"):
-        policy = ToolPolicy(timeout_s=10.0, category=ToolCategory.WRITE, visibility=["agent"])
+        policy = ToolPolicy(timeout_s=10.0, category=ToolCategory.WRITE)
         super().__init__(name="append_file", description="Append text to a file", policy=policy)
         self.base_path = Path(base_path)
 
@@ -484,7 +480,7 @@ class MoveFileTool(Tool):
     """Move / rename a file or directory."""
 
     def __init__(self, base_path: str = "/env/fs/agent-visible"):
-        policy = ToolPolicy(timeout_s=10.0, category=ToolCategory.WRITE, visibility=["agent"])
+        policy = ToolPolicy(timeout_s=10.0, category=ToolCategory.WRITE)
         super().__init__(name="move_file", description="Move or rename a file", policy=policy)
         self.base_path = Path(base_path)
 
@@ -525,7 +521,7 @@ class CopyFileTool(Tool):
     """Copy a file or directory."""
 
     def __init__(self, base_path: str = "/env/fs/agent-visible"):
-        policy = ToolPolicy(timeout_s=10.0, category=ToolCategory.WRITE, visibility=["agent"])
+        policy = ToolPolicy(timeout_s=10.0, category=ToolCategory.WRITE)
         super().__init__(name="copy_file", description="Copy a file or directory", policy=policy)
         self.base_path = Path(base_path)
 
@@ -569,7 +565,7 @@ class DeleteFileTool(Tool):
     """Delete a file or empty directory."""
 
     def __init__(self, base_path: str = "/env/fs/agent-visible"):
-        policy = ToolPolicy(timeout_s=10.0, category=ToolCategory.WRITE, visibility=["agent"])
+        policy = ToolPolicy(timeout_s=10.0, category=ToolCategory.WRITE)
         super().__init__(name="delete_file", description="Delete a file", policy=policy)
         self.base_path = Path(base_path)
 
@@ -617,7 +613,7 @@ class GrepWorkspaceTool(Tool):
     MAX_MATCHES = 200
 
     def __init__(self, base_path: str = "/env/fs/agent-visible"):
-        policy = ToolPolicy(timeout_s=15.0, category=ToolCategory.READ, visibility=["agent"])
+        policy = ToolPolicy(timeout_s=15.0, category=ToolCategory.READ)
         super().__init__(
             name="grep_workspace",
             description=(

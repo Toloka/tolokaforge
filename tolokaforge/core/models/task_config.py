@@ -194,6 +194,47 @@ def _validate_actors_map(
     return value
 
 
+_A_USER_TOOL_NOTHING_CAN_CALL = (
+    "tools.user.enabled declares {tools}, and {because}, so the declared tools are "
+    "registered for every trial and no turn can ever call one. {remedy}, or drop "
+    "tools.user.enabled."
+)
+
+_AGENT_ONLY_DISPATCHES_NO_USER_TURN = (
+    "interaction_mode is agent_only, which dispatches no user turn at all"
+)
+_TO_DISPATCH_A_USER_TURN = "Write interaction_mode: conversational"
+
+_A_SCRIPTED_SIMULATOR_EMITS_NO_TOOL_CALL = (
+    "the user simulator resolves to mode scripted, whose reply is text and never a tool call"
+)
+_TO_LET_THE_SIMULATOR_CALL = "Write actors.user.mode: llm"
+
+_A_SECOND_MCP_SERVER = (
+    "tools.user.mcp_server is {user_server} and tools.agent.mcp_server is {agent_server}. "
+    "A task ships one MCP server: every block's schemas are read from the one "
+    "fixtures/tools.json beside the task, so the second server's tools would be "
+    "resolved from the first server's fixture — the simulator would be offered tools "
+    "that do not exist, and grading rules naming them would be checked against "
+    "arguments that are not theirs. Point both blocks at one server, or declare the "
+    "user's tools as builtins."
+)
+
+
+def _why_no_user_turn_can_call_a_tool(task: "TaskConfig") -> tuple[str, str] | None:
+    """Why no turn of *task* can make a user-side call, and the fix, or ``None``.
+
+    Ordered outward-in: the interaction mode decides whether a user turn is
+    dispatched at all, and only then does the simulator's own mode decide what a
+    dispatched turn can emit.
+    """
+    if task.interaction_mode == "agent_only":
+        return _AGENT_ONLY_DISPATCHES_NO_USER_TURN, _TO_DISPATCH_A_USER_TURN
+    if task.resolve_user_simulator().mode == "scripted":
+        return _A_SCRIPTED_SIMULATOR_EMITS_NO_TOOL_CALL, _TO_LET_THE_SIMULATOR_CALL
+    return None
+
+
 class TaskMetadata(BaseModel):
     """Optional metadata used for analytics slicing."""
 
@@ -368,6 +409,47 @@ class TaskConfig(BaseModel):
             "text, or leave it unset — omit the key in task.yaml, or pass None from an "
             "adapter's get_task() — to have the user simulator open the conversation."
         )
+
+    @model_validator(mode="after")
+    def _refuse_user_tools_no_turn_can_call(self) -> Self:
+        """Refuse a ``tools.user.enabled`` no user turn of this task can ever call.
+
+        Nothing downstream fails on such a pack: the tools are registered for the
+        trial like any other, so a ``requestor: user`` action or an ``executor: user``
+        matcher grades against a call that could not have happened, on every trial.
+        The refusal is here because the three keys that decide it — the tool block,
+        the interaction mode and the simulator's mode — are all in ``task.yaml``.
+        """
+        declared = self.tools.user.get("enabled")
+        if not declared:
+            return self
+        reason = _why_no_user_turn_can_call_a_tool(self)
+        if reason is None:
+            return self
+        because, remedy = reason
+        raise ValueError(
+            _A_USER_TOOL_NOTHING_CAN_CALL.format(
+                tools=sorted(declared), because=because, remedy=remedy
+            )
+        )
+
+    @model_validator(mode="after")
+    def _refuse_a_second_mcp_server(self) -> Self:
+        """One task, one MCP server: the fixture that answers for it is per-task.
+
+        Schemas for an ``mcp_server`` block come from ``<task_dir>/fixtures/tools.json``,
+        which is keyed on the task and not on the server, so a second server resolves
+        against the first one's fixture rather than its own. A user block naming the
+        agent's server is fine, and so is a user-only server: the ambiguity needs two
+        different names.
+        """
+        user_server = self.tools.user.get("mcp_server")
+        agent_server = self.tools.agent.get("mcp_server")
+        if user_server and agent_server and user_server != agent_server:
+            raise ValueError(
+                _A_SECOND_MCP_SERVER.format(user_server=user_server, agent_server=agent_server)
+            )
+        return self
 
     def resolve_user_simulator(self) -> UserSimulatorConfig:
         """Return the effective user-simulator config from ``actors.user``.
