@@ -87,10 +87,17 @@ HARNESSES: dict[str, HarnessSpec] = {
         npm_package="@openai/codex",
         version="0.147.0",
         argv_prefix=("codex", "exec"),
-        # ``--dangerously-bypass-approvals-and-sandbox`` skips the approval prompt
-        # that ``codex exec`` otherwise blocks on when it wants to write or run a
-        # command — the harness has no interactive stdin to answer it.
-        argv_suffix=("--dangerously-bypass-approvals-and-sandbox",),
+        # Two mandatory bypasses. ``--dangerously-bypass-approvals-and-sandbox``
+        # skips the approval prompt that ``codex exec`` otherwise blocks on when
+        # it wants to write or run a command — the harness has no interactive
+        # stdin to answer it. ``--skip-git-repo-check`` disables the "trusted
+        # directory" gate that refuses to operate anywhere without a ``.git`` —
+        # tbench task containers work under ``/app`` and are not git repos, so
+        # without the flag the CLI aborts before the model is called.
+        argv_suffix=(
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--skip-git-repo-check",
+        ),
     ),
     "gemini-cli": HarnessSpec(
         npm_package="@google/gemini-cli",

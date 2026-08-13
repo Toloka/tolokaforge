@@ -998,6 +998,7 @@ class TestHarnessCommand:
             "--model",
             "openai/gpt-5-codex",
             "--dangerously-bypass-approvals-and-sandbox",
+            "--skip-git-repo-check",
             "do it",
         ]
         assert shlex.split(harness_command("gemini-cli", "do it", "google/gemini-2.5-flash")) == [
