@@ -10,7 +10,7 @@ from tolokaforge.core.models import Message, MessageRole, RecordedToolCall
 class StuckDetector:
     """Detect when agent is stuck in a loop"""
 
-    def __init__(self, max_repeated_tool_calls: int = 10):
+    def __init__(self, max_repeated_tool_calls: int):
         self.max_repeated_tool_calls = max_repeated_tool_calls
         self.logger = get_logger("stuck_detector")
 
