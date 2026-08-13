@@ -208,6 +208,49 @@ production key inside a benchmark container and into its trial artifacts.
 Nothing sets the prefixed name by accident, so the container's environment is
 exactly what the run config declared.
 
+### Harness parity policy
+
+A harness trial's job is to produce a reward comparable to the one the same
+CLI would produce when driven by its out-of-tree host (the Harbor CLI is the
+reference). Reproducibility across pipelines depends on how the CLI is
+invoked, not just which model it calls — a stable divergence surfaced
+during matrix validation traced to invocation-shape differences alone
+(0.133 delta on `fix-billing-holds × claude-code`; closed to 0.033 once
+the shape aligned).
+
+`HarnessSpec` carries a small set of *parity knobs* — five fields, each
+one covering one dimension of the alignment. Every knob is data on the
+spec, not code somewhere else, so a per-harness policy is one entry to
+read.
+
+| Aspect | The alignment | Field |
+|---|---|---|
+| CLI version | Pinned to a specific release. The pin rides the layered image tag and `metadata["agent_harness_version"]`. | `HarnessSpec.version` |
+| Reasoning-mode flags | Flags between the CLI name and `--permission-mode` — for claude-code, `--verbose --output-format=stream-json` (the mode Harbor drives). | `HarnessSpec.flags_pre_permission` |
+| Instruction path | `"argv"` (positional argument) or `"stdin"` (`printf "%s" '<instr>' \| cli …`). `"stdin"` sidesteps every shell-escape edge case a positional-arg prompt would have to survive. Claude Code uses stdin. | `HarnessSpec.instruction_channel` |
+| Model routing | Env variables the resolved model exports into. Non-empty for CLIs whose sub-agents route model independently of the top-level `--model` flag: without the export, Task/Explore sub-agents fall back to the CLI's own sonnet-default and may pick a different provider mid-trial. Claude Code declares the quartet `ANTHROPIC_MODEL` + `_DEFAULT_SONNET_MODEL` / `_OPUS_MODEL` / `_HAIKU_MODEL` + `CLAUDE_CODE_SUBAGENT_MODEL`. When set, the redundant `--model` CLI flag is dropped. | `HarnessSpec.env_model_vars` |
+| Static hardening env | Env pairs the compose `environment:` block writes for the agent service. Claude Code declares `IS_SANDBOX=1` (root-user bypass, without which the CLI refuses `--permission-mode=bypassPermissions` under UID 0) and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (opt-in telemetry off). | `HarnessSpec.container_env` |
+
+**Skills are deliberately not aligned.** Harbor copies the operator's
+`~/.claude/skills/` into the container, so its Claude sees whatever
+personal skills the person running the eval has installed on their
+laptop. That is not reproducible across operators and it is not a
+property a benchmark reward should quietly depend on, so the TF adapter
+installs no skills. The delta this creates is the *right* delta — it
+shows up as "the container has zero skills", stable across machines and
+dates.
+
+Some CLIs need file-based configuration that no env var (compose or
+otherwise) can supply. `HarnessSpec.pre_exec_shell` is a shell fragment
+chained before the CLI with `&&`: codex reads `openai_base_url` from
+`$CODEX_HOME/config.toml` and the API key from `$CODEX_HOME/auth.json`,
+so its `pre_exec_shell` writes both files from the compose-forwarded
+env vars before invoking `codex exec`.
+
+Consolidation of these fields into a Pydantic model with an
+operator-overridable YAML overlay (following the ADR-0002 model-registry
+pattern) is tracked separately.
+
 ### Trial-level timeout
 
 Under harness mode the whole trial runs inside a single `docker exec`, so the
