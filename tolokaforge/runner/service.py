@@ -1379,6 +1379,59 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error=f"Grading error: {type(e).__name__}: {str(e)}",
             )
 
+    async def _assemble_jsonpath_state(self, trial_id: str) -> dict[str, Any]:
+        # Feeds path: jsonpath state_checks. Two roots: "db"/"tables" carry
+        # the DB service's stable state (empty when the trial has no DB —
+        # filesystem-only tasks); "filesystem" mirrors /work/ back out under
+        # the logical /env/fs/agent-visible/ layout the task YAML asserts
+        # against, so ``$.filesystem['/env/fs/agent-visible/foo.py']`` can
+        # match the file the agent actually edited.
+        try:
+            stable = await self.db_client.get_stable_state(trial_id)
+            db_state: dict[str, Any] = stable.data
+        except DBTrialNotFoundError:
+            # Filesystem-only tasks never call db_client.init_trial(), so an
+            # absent DB is the expected shape. For tasks that DID declare a
+            # DB this same branch fires and downstream ``$.db.*`` assertions
+            # surface as "Path not found" — log at warn so ops see the real
+            # cause rather than debugging per-assertion failures.
+            logger.warning(
+                f"GradeTrial: {trial_id} - DB trial not found; grading with empty DB state"
+            )
+            db_state = {}
+        return {
+            "db": db_state,
+            "tables": db_state,
+            "filesystem": self._read_agent_visible_filesystem(),
+        }
+
+    def _read_agent_visible_filesystem(self) -> dict[str, str]:
+        # Inverse of the RegisterTrial provisioner's
+        # ``/env/fs/agent-visible/<rel>`` → ``/work/<rel>`` block: expose each
+        # file back at its logical path so
+        # ``$.filesystem['/env/fs/agent-visible/<rel>']`` resolves. Binary
+        # files are skipped — ``contains:``/``equals:`` operators can only
+        # match text. Symlinks are skipped too: the assertion vocabulary was
+        # not designed to expose arbitrary container-readable paths reachable
+        # via a link the agent dropped in ``/work/``.
+        root = Path(AGENT_WORK_DIR)
+        fs: dict[str, str] = {}
+        if not root.is_dir():
+            return fs
+        for path in root.rglob("*"):
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            except OSError as exc:
+                logger.warning(f"GradeTrial: could not read {path} for jsonpath state: {exc}")
+                continue
+            rel = path.relative_to(root)
+            fs[f"/env/fs/agent-visible/{rel.as_posix()}"] = content
+        return fs
+
     async def _grade_trial_async(self, request: pb2.GradeTrialRequest) -> pb2.GradeTrialResponse:
         """
         Async implementation of GradeTrial.
@@ -1494,18 +1547,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 f"GradeTrial: {trial_id} - Evaluating "
                 f"{len(state_checks_config.jsonpath_checks)} jsonpath checks"
             )
-            # Only fetch DB state when at least one assertion targets it via
-            # ``path:``. File-only (``path_glob:``) checks never needed the DB,
-            # so fetching unconditionally would add a round-trip and a new
-            # failure mode for tasks that previously graded without it.
+            # Only assemble a state dict when at least one assertion targets
+            # it via ``path:``. File-only (``path_glob:``) checks never needed
+            # a state dict; they read files off disk directly via
+            # ``evaluate_jsonpath_file_checks``.
             jsonpath_checks = state_checks_config.jsonpath_checks
             jsonpath_state = None
             if any(check.get("path") is not None for check in jsonpath_checks):
-                stable_state_response = await self.db_client.get_stable_state(trial_id)
-                jsonpath_state = {
-                    "db": stable_state_response.data,
-                    "tables": stable_state_response.data,
-                }
+                jsonpath_state = await self._assemble_jsonpath_state(trial_id)
             jsonpath_score, jsonpath_reasons = evaluate_jsonpath_checks(
                 jsonpath_checks,
                 state=jsonpath_state,
