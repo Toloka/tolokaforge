@@ -48,8 +48,6 @@ from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
 from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
 
-_AGENT_DONE_MARKERS: tuple[str, ...] = ("###STOP###",)
-
 
 def _as_utc(ts: float | None) -> datetime | None:
     """``time.time()`` epoch seconds as an aware UTC datetime, ``None`` passthrough."""
@@ -525,15 +523,6 @@ class TrialRunner:
                 },
             )
 
-    def _is_done(self, text: str) -> bool:
-        """Whether the agent's text carries a completion marker.
-
-        Both operands are folded by the same call at the point of comparison,
-        so the match cannot be made case-blind on one side only.
-        """
-        folded = text.casefold()
-        return any(marker.casefold() in folded for marker in _AGENT_DONE_MARKERS)
-
     def _seed_first_user_message(
         self,
         task_config: TaskConfig,
@@ -697,12 +686,14 @@ class TrialRunner:
     def _agent_termination(
         self, result: GenerationResult, turn: int, messages: list[Message]
     ) -> TerminationDecision | None:
-        """Agent termination policy: stuck detection then ``###STOP###``/_is_done.
+        """Agent termination policy: stuck detection, and nothing else.
 
-        Mirrors the historical order — stuck is checked before the done marker.
-        Stuck sets ``metrics.stuck_detected`` as a side effect, matching the
-        original loop.
+        The agent's prose is never read for a completion signal — who speaks
+        next, and whether anyone can, is the :class:`TurnPolicy`'s decision.
+        Stuck sets ``metrics.stuck_detected`` as a side effect, which is why it
+        lives here rather than in the policy.
         """
+        del result, turn
         if self.stuck_detector and self.stuck_detector.is_stuck(
             messages, self.tool_call_recorder.recorded_for(ToolExecutorIdentity.AGENT)
         ):
@@ -711,13 +702,6 @@ class TrialRunner:
             return TerminationDecision(
                 reason=TerminationReason.STUCK_DETECTED,
                 system_message="Stuck condition detected. Dialogue terminated.",
-            )
-
-        if self._is_done(result.text):
-            self.logger.info("Agent signaled completion")
-            return TerminationDecision(
-                reason=TerminationReason.AGENT_DONE,
-                system_message="Agent signaled task completion. Dialogue ended.",
             )
 
         return None

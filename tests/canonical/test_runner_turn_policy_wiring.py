@@ -11,13 +11,13 @@ The runner today constructs a :class:`ToolCallingLoop` whose optional
   dispatches the user actor after every tool-call-free agent turn —
   byte-for-byte the historical two-party shape.
 * Under ``"agent_only"`` the runner resolves
-  :class:`~tolokaforge.core.actors.turn_policy.AgentOnlyTurnPolicy`, and
-  its :meth:`next_actor` returns ``None`` every turn: no user turn is
-  ever dispatched, agent-emitted ``###STOP###`` routes to
-  :attr:`~tolokaforge.core.models.TerminationReason.AGENT_DONE`, and the
-  simulator (if the caller happens to pass one) is never consulted. The
-  conductor passes ``user_simulator=None`` under this mode, so the
-  never-called invariant is the design guarantee agent-monologue tasks
+  :class:`~tolokaforge.core.actors.turn_policy.AgentOnlyTurnPolicy`, whose
+  :meth:`next_actor` terminates the trial as
+  :attr:`~tolokaforge.core.models.TerminationReason.AGENT_DONE` the first
+  time the agent takes a turn without calling a tool: no user turn is ever
+  dispatched, and the simulator (if the caller happens to pass one) is never
+  consulted. The conductor passes ``user_simulator=None`` under this mode, so
+  the never-called invariant is the design guarantee agent-monologue tasks
   rely on.
 """
 
@@ -80,20 +80,19 @@ def _spy_simulator() -> MagicMock:
 
 
 def test_agent_only_mode_never_invokes_user_simulator() -> None:
-    """The whole trial completes on agent-emitted ``###STOP###`` without a
-    single simulator invocation.
+    """The whole trial completes without a single simulator invocation.
 
-    The scripted agent produces three no-tool-call turns before its
-    ``###STOP###``. Under the conversational shape the loop's
-    ``user_turn`` seam would fire after every one of those turns (three
-    simulator calls) and the seed-turn simulator dispatch would add a
-    fourth; under agent-only the seam is neutralised at every point.
+    The scripted agent has three no-tool-call turns queued and only the first is
+    ever consumed: the policy terminates on it, so turns two and three never
+    generate. Under the conversational shape that same first turn would fire the
+    loop's ``user_turn`` seam, and the seed turn would already have dispatched
+    the simulator once before it.
     """
     simulator = _spy_simulator()
     agent = _ScriptedAgent(
         _agent("Reading the workdir."),
         _agent("Running the tests."),
-        _agent("All green. ###STOP###"),
+        _agent("All green."),
     )
 
     trajectory = TrialRunner(
@@ -113,8 +112,8 @@ def test_agent_only_mode_never_invokes_user_simulator() -> None:
         "of the mode is that the seam is neutralised for agent-monologue tasks."
     )
     assert trajectory.termination_reason is TerminationReason.AGENT_DONE, (
-        "agent-only trial with a ###STOP###-emitting agent must terminate as "
-        f"AGENT_DONE; got {trajectory.termination_reason!r}"
+        "an agent-only trial whose agent takes a turn without calling a tool must "
+        f"terminate as AGENT_DONE; got {trajectory.termination_reason!r}"
     )
 
 
@@ -129,7 +128,7 @@ def test_agent_only_mode_accepts_none_user_simulator() -> None:
     trajectory = TrialRunner(
         task_id="agent-only-no-sim",
         trial_index=0,
-        agent_client=_ScriptedAgent(_agent("Done. ###STOP###")),
+        agent_client=_ScriptedAgent(_agent("Done.")),
         user_simulator=None,
         tool_executor=ToolExecutor(ToolRegistry()),
         tool_schemas=[],
@@ -146,29 +145,23 @@ def test_agent_only_mode_text_only_completion_terminates_as_agent_done() -> None
 
     The real-MB smoke that surfaced #876 died on this exact shape: the
     agent finished the migration and emitted a text-only completion
-    summary (no ``###STOP###``, no tool calls). Under the pre-fix
-    implementation the runner shim returned an empty ``UserTurnResult``
-    and the loop retried the agent — sending a request ending in
-    ``role: assistant`` which Anthropic's ``opus-4-6`` rejects as
-    unsupported prefill, so the trial went to ``status=error`` and
-    ``/grade`` was skipped entirely.
+    summary, no tool calls. Under the pre-fix implementation the runner
+    shim returned an empty ``UserTurnResult`` and the loop retried the
+    agent — sending a request ending in ``role: assistant`` which
+    Anthropic's ``opus-4-6`` rejects as unsupported prefill, so the trial
+    went to ``status=error`` and ``/grade`` was skipped entirely.
 
     Post-fix, ``AgentOnlyTurnPolicy.next_actor`` returns a
     :class:`TerminationDecision` with ``reason=AGENT_DONE``. The runner
     shim propagates it via ``UserTurnResult(termination=...)`` and the
-    loop honors it. The trial completes with ``AGENT_DONE`` and the
-    downstream grading path fires as it would for an explicit
-    ``###STOP###``. This test locks that end-to-end wiring, not just
-    the policy's return value (which is unit-tested separately in
-    ``test_turn_policy_contract.py``).
+    loop honors it: the trial completes with ``AGENT_DONE`` and the
+    downstream grading path fires. This test locks that end-to-end
+    wiring, not just the policy's return value (which is unit-tested
+    separately in ``test_turn_policy_contract.py``).
     """
     simulator = _spy_simulator()  # never invoked
     agent = _ScriptedAgent(
-        _agent(
-            "The migration is complete. All tests pass. "
-            "Migrated 20 subcommands to Go."
-            # Deliberately no ``###STOP###`` — matches the real-MB failure shape.
-        )
+        _agent("The migration is complete. All tests pass. Migrated 20 subcommands to Go.")
     )
 
     trajectory = TrialRunner(

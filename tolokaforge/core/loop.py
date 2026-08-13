@@ -14,11 +14,10 @@ optional user turn, error classification, max-turns), and delegates every
   :class:`~tolokaforge.core.llm.client.LLMClient` already satisfies it).
 * :class:`TerminationPolicy` — a callback ``(result, turn, messages) ->
   TerminationDecision | None`` checked after the assistant message is appended
-  and before tool execution. The agent terminates on stuck-detection and its
-  ``###STOP###``/``_is_done`` marker; the judge will terminate when
-  ``submit_report`` is called.
+  and before tool execution. The agent terminates on stuck-detection; the judge
+  terminates when ``submit_report`` is called. Neither reads assistant prose.
 * :class:`UserTurn` — OPTIONAL. When absent, the loop never references
-  user-simulator concepts (no ``###STOP###`` handling, no user reply turn). The
+  user-simulator concepts (no exit-token handling, no user reply turn). The
   judge runs without one.
 * :class:`MetricsSink` — accumulates per-call usage/cost/tool counts. The agent
   threads its trial :class:`~tolokaforge.core.models.Metrics`; the judge will

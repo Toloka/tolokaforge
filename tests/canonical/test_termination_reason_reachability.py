@@ -53,6 +53,7 @@ from tolokaforge.core.llm.client import (
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
 from tolokaforge.core.models import Message, TerminationReason, Trajectory, TrialStatus
+from tolokaforge.core.models.task_config import InteractionMode
 from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 from tolokaforge.core.run_display_events import LLMCallObservation
 from tolokaforge.core.runner import TrialRunner
@@ -65,9 +66,10 @@ from tolokaforge.tools.registry import ToolExecutor, ToolRegistry
 pytestmark = pytest.mark.canonical
 
 # The reasons a trial can end with and still be graded by the runner. Each names
-# a trial the agent drove to an end the harness planned for: it signalled
-# completion, the simulated user closed the dialogue, or the turn budget ran
-# out. Task grading is meaningful for exactly these.
+# a trial the agent drove to an end the harness planned for: it had no further
+# action to take and no counterparty could ask for one, the simulated user closed
+# the dialogue, or the turn budget ran out. Task grading is meaningful for
+# exactly these.
 GRADED_REASONS = frozenset(
     {
         TerminationReason.AGENT_DONE,
@@ -153,6 +155,7 @@ def _run_trial(
     max_turns: int = 2,
     episode_timeout_s: int = 1200,
     stuck_detector: StuckDetector | None = None,
+    interaction_mode: InteractionMode = "conversational",
 ) -> Trajectory:
     """Drive one whole trial through :class:`TrialRunner` and return its trajectory."""
     return TrialRunner(
@@ -165,6 +168,7 @@ def _run_trial(
         max_turns=max_turns,
         episode_timeout_s=episode_timeout_s,
         stuck_detector=stuck_detector,
+        interaction_mode=interaction_mode,
     ).run("You are an agent.", "Do the task.")
 
 
@@ -184,7 +188,7 @@ def _provision_failure_trajectory() -> Trajectory:
 def observed_outcomes() -> frozenset[tuple[TrialStatus, TerminationReason]]:
     """The ``(status, reason)`` pairs the real termination paths produce."""
     trajectories = [
-        _run_trial(_text("All set. ###STOP###")),
+        _run_trial(_text("All set."), interaction_mode="agent_only"),
         _run_trial(_text("Anything else?"), user_reply="###STOP###"),
         _run_trial(_text("Thinking."), stuck_detector=StuckDetector(max_idle_turns=1)),
         _run_trial(_text("Still working."), max_turns=1),

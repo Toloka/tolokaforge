@@ -18,10 +18,18 @@ from tolokaforge.core.grading.judge import (
     LLMJudge,
     _build_opening_message,
     _compose_judge_system_prompt,
+    _SubmitReportTermination,
 )
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
-from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
+from tolokaforge.core.models import (
+    Message,
+    MessageRole,
+    ModelConfig,
+    TerminationReason,
+    ToolCall,
+    TrialStatus,
+)
 from tolokaforge.runner.models import Rubric
 
 pytestmark = pytest.mark.unit
@@ -243,6 +251,29 @@ def test_terminates_on_submit_report_and_scores():
     assert "user" in roles and "assistant" in roles
     names = [tc["name"] for m in result.transcript for tc in m.get("tool_calls", [])]
     assert "submit_report" in names
+
+
+def test_submit_report_is_the_judges_agent_done_producer():
+    """``AGENT_DONE`` names a turn after which nobody could ask for more, and the
+    judge produces it from an explicit ``submit_report`` call.
+
+    The end-to-end wiring is locked by the test above; the reason the decision
+    carries needs its own assertion because the judge's success path reads only
+    the captured arguments and never surfaces how the loop ended.
+    """
+    submitted = GenerationResult(
+        text="",
+        tool_calls=[
+            ToolCall(id="call_1", name="submit_report", arguments=_submit_args(refund_done=True))
+        ],
+        usage=Usage(),
+    )
+
+    decision = _SubmitReportTermination()(submitted, 0, [])
+
+    assert decision is not None
+    assert decision.reason is TerminationReason.AGENT_DONE
+    assert decision.status is TrialStatus.COMPLETED
 
 
 def test_inspects_db_then_submits():

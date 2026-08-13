@@ -24,8 +24,9 @@ message when the caller does not, and the user is dispatched after each
 agent turn that emits no tool calls. The sibling
 :class:`AgentOnlyTurnPolicy` covers the agent-monologue shape used by
 migration-bench-style tasks: the caller must supply ``initial_user_message``
-(fail-loud otherwise), and no user turn is ever dispatched — the agent
-runs to ``###STOP###``, ``max_turns``, or ``episode_timeout_s``. Both are
+(fail-loud otherwise), and no user turn is ever dispatched — the agent runs
+until it takes a turn without calling a tool, or to ``max_turns`` or
+``episode_timeout_s``. Both are
 registered via the ``tolokaforge.turn_policies`` entry-point group and
 looked up by ``TaskConfig.interaction_mode``.
 """
@@ -107,7 +108,7 @@ class TurnPolicy(Protocol):
       the resulting message. The historical two-party path.
     * :class:`TerminationDecision` — end the trial with the given reason.
       Used by the agent-monologue shape when the agent falls silent
-      (no tool calls, no explicit ``###STOP###``): the API-level
+      (a turn with no tool calls): the API-level
       constraint that a conversation must end with a ``user`` message
       makes a follow-up agent turn illegal on some providers
       (Anthropic ``opus-4-6`` rejects the prefill), and — as importantly
@@ -201,10 +202,8 @@ class AgentOnlyTurnPolicy:
     constraint that a conversation must end with a ``user`` message —
     letting the loop retry the agent would produce a request ending in
     ``role: assistant`` which the ``opus-4-6`` model rejects as prefill.
-    Agent-``###STOP###``, ``max_turns``, and ``episode_timeout_s``
-    remain as complementary termination paths that also route to
-    :attr:`TerminationReason.AGENT_DONE` (``###STOP###``) or their own
-    reasons.
+    ``max_turns`` and ``episode_timeout_s`` remain as complementary
+    termination paths, each under its own reason.
 
     The optional ``user_simulator`` keyword keeps the constructor signature
     parallel with :class:`ConversationalTurnPolicy` so the runner can hand
@@ -232,9 +231,9 @@ class AgentOnlyTurnPolicy:
         return TerminationDecision(
             reason=TerminationReason.AGENT_DONE,
             system_message=(
-                "Agent emitted a text-only turn (no tool calls, no ###STOP###) "
-                "under interaction_mode=agent_only. Treating as implicit completion; "
-                "the agent_only policy dispatches no user actor."
+                "Agent emitted a turn with no tool calls under "
+                "interaction_mode=agent_only. Treating as completion; the "
+                "agent_only policy dispatches no user actor."
             ),
             status=TrialStatus.COMPLETED,
         )

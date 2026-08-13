@@ -51,10 +51,10 @@ class _CountingSimulator(UserSimulator):
 
 
 def _make_agent_client() -> MagicMock:
-    """Agent client that stops immediately, so only turn 0 is interesting."""
+    """Agent client whose every turn is plain text, so only turn 0 is interesting."""
     client = MagicMock()
     client.generate.return_value = GenerationResult(
-        text="###STOP###",
+        text="Let me look into that.",
         tool_calls=[],
         usage=Usage(prompt_tokens=10, completion_tokens=5),
     )
@@ -63,7 +63,12 @@ def _make_agent_client() -> MagicMock:
 
 
 def _run_task(task: TaskConfig, simulator: _CountingSimulator) -> Trajectory:
-    """Run one trial for *task*, seeding the runner the way the conductor does."""
+    """Run one trial for *task*, seeding the runner the way the conductor does.
+
+    One agent turn is all the budget allows, so the dispatch count is the
+    bootstrap's — one under a generated opener, none under a pinned one — plus
+    the single reply that turn earns.
+    """
     runner = TrialRunner(
         task_id=task.task_id,
         trial_index=0,
@@ -71,7 +76,7 @@ def _run_task(task: TaskConfig, simulator: _CountingSimulator) -> Trajectory:
         user_simulator=simulator,
         tool_executor=MagicMock(),
         tool_schemas=[],
-        max_turns=2,
+        max_turns=1,
         turn_timeout_s=30,
         episode_timeout_s=600,
         interaction_mode=task.interaction_mode,
@@ -94,7 +99,7 @@ class TestPinnedOpener:
 
         assert trajectory.messages[0].role is MessageRole.USER
         assert trajectory.messages[0].content == PINNED_OPENER
-        assert simulator.dispatches == 0
+        assert simulator.dispatches == 1
         assert trajectory.first_user_message_source is FirstUserMessageSource.PINNED
 
     def test_unset_opener_is_generated_by_one_simulator_dispatch(self) -> None:
@@ -105,7 +110,7 @@ class TestPinnedOpener:
 
         assert trajectory.messages[0].role is MessageRole.USER
         assert trajectory.messages[0].content == GENERATED_OPENER
-        assert simulator.dispatches == 1
+        assert simulator.dispatches == 2
         assert trajectory.first_user_message_source is FirstUserMessageSource.SIMULATOR
 
 

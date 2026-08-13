@@ -549,8 +549,9 @@ entry-point group. See [ADR-0028](adr/0028-multi-actor-turn-policy.md).
   τ-bench and every existing pack expects this shape; leaving the field
   unset keeps that behavior byte-for-byte.
 - **`agent_only`** — no user turn dispatched after the initial message.
-  The agent runs to `###STOP###` (routed to `TerminationReason.AGENT_DONE`),
-  `max_turns`, or `episode_timeout_s`. The user simulator is never
+  The agent runs until it takes a turn without calling a tool (routed to
+  `TerminationReason.AGENT_DONE`), or to `max_turns` or
+  `episode_timeout_s`. The user simulator is never
   constructed. Matches agent-driven eval shapes (code migration,
   autonomous tool-use) where the task lives entirely in the system prompt.
 
