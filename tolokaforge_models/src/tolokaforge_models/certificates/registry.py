@@ -2652,7 +2652,7 @@ _ALL: list[MC] = [
     # ``cohere_command_a_plus_05_2026`` preset (see model_presets.yaml),
     # declared ahead of the shared ``cohere_command_a_plus`` preset and a
     # strict superset of it: ``schema_sanitizer: cohere_recursive``,
-    # ``response_policy: cohere_root_key_repair``,
+    # ``response_policy: scalar_array_dict_map``,
     # ``reasoning_codec: openai_summary_replay``, and the shared preset's
     # ``tool_choice``/``auto`` drop rule carried over verbatim.
     #
@@ -2714,7 +2714,11 @@ _ALL: list[MC] = [
         model_id="openrouter__azure_ai_cohere-command-a-plus-05-2026",
         provider="openrouter",
         name="azure_ai/cohere-command-a-plus-05-2026",
-        env_key="OPENROUTER_API_KEY",
+        # NOT ``OPENROUTER_API_KEY``: OpenRouter does not serve this model at all, so
+        # that key is not what makes these probes runnable, and gating on it fires the
+        # whole live suite at a route OpenRouter cannot reach - every failure then reads
+        # as a model problem. This names the deployment that actually serves the route.
+        env_key="TF_COHERE_A_PLUS_GATEWAY_LIVE",
         required=frozenset(
             {
                 C.BASIC_COMPLETION,
@@ -2727,7 +2731,6 @@ _ALL: list[MC] = [
                 C.DECIMAL_FIELD_TOOL_CALL,
                 C.HETEROGENEOUS_ARRAY_TOOL_CALL,
                 C.ALLOF_MERGE_TOOL_CALL,
-                C.RECURSIVE_REF_TOOL_CALL,
                 C.REQUIRED_FIELDS_COMPLETE,
                 C.TOOL_NAME_DISCIPLINE,
                 C.LEXICAL_TOOL_INVENTION,
@@ -2743,6 +2746,13 @@ _ALL: list[MC] = [
                 C.PROMPT_CACHING,
                 C.IMPLICIT_PROMPT_CACHING,
                 C.RE2_PATTERN_TOLERANCE,
+                # Demoted on review with the root-key rename that carried it. This route
+                # emits the single root argument key with the tool's own name glued on
+                # (``submit_treeroot`` for ``root``); the tree underneath is correct, so
+                # the recursion itself is fine, but the argument set does not validate.
+                # Recovering it needs the tool name, which ``parse_arguments`` does not
+                # receive - so this is a real ceiling here rather than a fixable shape.
+                C.RECURSIVE_REF_TOOL_CALL,
                 C.THINKING_REPLAY_ROUNDTRIP,
             }
         ),

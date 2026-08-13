@@ -19,7 +19,8 @@ Locks four invariants of the tuple exposed at
 :data:`tolokaforge.testing.certify.ALL_MODELS` and its authoritative
 source :data:`tolokaforge_models.certificates.ALL_MODELS` at cutover time:
 
-* Count exactly 39 — matches the pre-flip registry cardinality.
+* Count exactly 40. The pin started at the pre-flip cardinality (39) and moves
+  with every model added since; see the note below on who updates it.
 * The lowercase-hex sha256 over the newline-joined ``model_id`` list is
   the hardcoded :data:`EXPECTED_MODEL_ID_LIST_SHA256`. Any drift — an
   accidental reorder, a dropped certificate, a stray whitespace tweak
@@ -58,7 +59,7 @@ reorder.
 """
 
 
-EXPECTED_MODEL_COUNT: Final[int] = 39
+EXPECTED_MODEL_COUNT: Final[int] = 40
 
 
 def _model_id_list_sha256(certificates: tuple[ModelCertificate, ...]) -> str:
@@ -67,7 +68,7 @@ def _model_id_list_sha256(certificates: tuple[ModelCertificate, ...]) -> str:
 
 
 class TestCertificateRegistryShape:
-    def test_count_is_thirty_nine(self) -> None:
+    def test_count_matches_the_pin(self) -> None:
         assert len(ALL_MODELS) == EXPECTED_MODEL_COUNT
 
     def test_every_entry_is_a_model_certificate(self) -> None:

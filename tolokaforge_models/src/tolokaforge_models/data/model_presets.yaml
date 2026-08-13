@@ -64,13 +64,15 @@ presets:
   #     keeps ``strip_re2_incompatible_patterns`` — load-bearing here, since
   #     this route compiles lookaround patterns and returns HTTP 500
   #     ("regex_converter.cc:75: Lookahead is not supported yet").
-  #   * ``response_policy: cohere_root_key_repair``
-  #     (``CohereRootKeyRepairResponse``) — reverses the sanitiser's
-  #     ``{key, value}`` carriage (as ``array_dict_map`` did), and adds a
-  #     schema-gated depth-0 root-key rename: on a single-``object``-root tool
-  #     this route sometimes emits the parameter key with the tool's own name
-  #     glued on (``{"submit_treeroot": {...}}`` for ``submit_tree({"root": …})``)
-  #     with a fully correct tree underneath.
+  #   * ``response_policy: scalar_array_dict_map`` — reverses the sanitiser's
+  #     ``{key, value}`` carriage (as ``array_dict_map`` did). A root-key rename
+  #     sat here too and was removed on review: this route does sometimes emit the
+  #     parameter key with the tool's own name glued on (``{"submit_treeroot": …}``
+  #     for ``submit_tree({"root": …})``), but ``parse_arguments`` never receives
+  #     the tool name, so the gate degraded to "ends with the declared parameter
+  #     name" and would also rename ``line_items`` to ``items``. Crediting a wrong
+  #     parameter name is a scoring change, so ``recursive_ref_tool_call`` is
+  #     recorded as a genuine ceiling instead.
   #   * ``reasoning_codec: openai_summary_replay``
   #     (``OpenAISummaryReplayReasoningCodec``) — ``openai`` extracts the flat
   #     reasoning summary but emits nothing on replay, so the outgoing assistant
@@ -83,7 +85,7 @@ presets:
       - "azure_ai/cohere-command-a-plus-05-2026"
       - "*cohere-command-a-plus-05-2026*"
     schema_sanitizer: cohere_recursive
-    response_policy: cohere_root_key_repair
+    response_policy: scalar_array_dict_map
     reasoning_codec: openai_summary_replay
     params:
       param_value_rules:

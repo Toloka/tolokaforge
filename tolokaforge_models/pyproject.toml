@@ -44,7 +44,6 @@ dependencies = []
 "schema_sanitizer.gemini" = "tolokaforge_models.policies.gemini:GeminiSchema"
 "schema_sanitizer.gemini_recursive" = "tolokaforge_models.policies.gemini:GeminiRecursiveSchema"
 "prompt_policy.dict_map_hints_ref" = "tolokaforge_models.policies.inkling:RefResolvingDictMapHints"
-"response_policy.cohere_root_key_repair" = "tolokaforge_models.policies.cohere:CohereRootKeyRepairResponse"
 "response_policy.scalar_array_dict_map" = "tolokaforge_models.policies.gemini:ScalarArrayDictMapResponse"
 "response_policy.minimax_m3_tags" = "tolokaforge_models.policies.minimax:MinimaxM3TagRecoveryResponse"
 "reasoning_codec.openai_summary_replay" = "tolokaforge_models.policies.deepseek:OpenAISummaryReplayReasoningCodec"
