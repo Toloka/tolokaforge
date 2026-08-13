@@ -33,6 +33,17 @@ All notable changes to this project are documented in this file.
 
 - **core**: `EnvironmentManifest.stack_inputs` now reaches `docker compose` at up-time. `PerTrialRuntimeBackend.provision` writes a per-trial `.env` alongside the copied compose file — task-authored `.env` content first, then `stack_inputs`, then the engine-reserved block. The reserved compose variable `TOLOKAFORGE_TRIAL_SLUG` is exposed so a task compose file can pin a per-trial-unique `container_name: <prefix>${TOLOKAFORGE_TRIAL_SLUG}_<service>`. Task keys under the reserved `TOLOKAFORGE_` prefix are rejected at provision time with a manifest-error message (not `docker compose up failed`). (#1045)
 
+## v0.18.1 (2026-08-12)
+
+### Feat
+
+- **tbench-adapter**: synthesise EnvironmentManifest from task compose; migrate compose lifecycle to PerTrialRuntimeBackend (#1060)
+- **skills**: pre-flight decision extraction + educative PR/umbrella templates (#1034)
+
+### Fix
+
+- **docker**: ship tolokaforge_models sources in the base wheel for wheel-install Docker builds (#1073)
+
 ## v0.18.0 (2026-08-12)
 
 ### Feat
