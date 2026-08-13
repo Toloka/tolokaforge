@@ -46,6 +46,7 @@ from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.gateway_route import fetch_gateway_catalog, resolve_gateway_route
 from tolokaforge.core.llm.litellm_params import allowed_openai_params
+from tolokaforge.core.llm.params_policy import RuleAction
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.prompt_policy import detect_dict_maps
 from tolokaforge.core.llm.providers import compile_rate_limit_patterns, get_provider_binding
@@ -1766,7 +1767,30 @@ class LLMClient:
 
         if tools:
             kwargs["tools"] = tools
-            if tool_choice:
+            # A preset or provider may declare that this route will not take
+            # the value we are about to send. Omitting `tool_choice` is how the
+            # OpenAI-shaped envelope says "the model decides", which is what
+            # `auto` names, so a drop here costs nothing — but the declaration
+            # is the operator's, not ours, so it is logged like any other
+            # change to the request.
+            policy = self.capabilities.params_policy
+            action = policy.rule_for("tool_choice", tool_choice)
+            if action == RuleAction.REJECT and tool_choice:
+                raise ValueError(
+                    f"tool_choice={tool_choice!r} is declared unusable for this "
+                    f"provider+model combination. Evidence: "
+                    f"{policy.rule_evidence('tool_choice', tool_choice)}. Pass a "
+                    f"different tool_choice, or declare 'drop' / 'override' if "
+                    f"the call should proceed anyway."
+                )
+            if action == RuleAction.OVERRIDE and tool_choice:
+                substitute = policy.rule_substitute("tool_choice", tool_choice)
+                if substitute:
+                    policy.warn_substituted("tool_choice", tool_choice, substitute)
+                    tool_choice = substitute
+            if action == RuleAction.DROP and tool_choice:
+                policy.warn_substituted("tool_choice", tool_choice, "<omitted>")
+            if tool_choice and action != RuleAction.DROP:
                 kwargs["tool_choice"] = tool_choice
 
         kwargs["messages"] = self._convert_messages(system, messages)

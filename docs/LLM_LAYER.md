@@ -1113,6 +1113,104 @@ that silently drop `additionalProperties` parameters).
 
 ## `params_policy`
 
+### Declaring a value a route will not take: `param_value_rules`
+
+Providers refuse individual *values* of parameters we send, for two unrelated
+reasons, and the response differs by reason:
+
+```yaml
+params:
+  param_value_rules:
+    tool_choice:
+      auto:
+        action: drop
+        evidence: "2026-08-12, Cohere Chat API: no AUTO; omission is its documented equal"
+    reasoning_effort:
+      medium:
+        action: reject
+        evidence: "2026-05-21, litellm 1.83.14: empty response with tool calls, BerriAI/litellm#19403"
+      # or, when an answer matters more than a like-for-like comparison:
+      #   action: override
+      #   with: low
+```
+
+- **`reject`** refuses to build the request and names the remaining choices plus
+  the evidence. This is the right answer when there is no equivalent, e.g. a
+  transport defect: the caller picks the workaround (another value, another
+  route, or waiting for the upstream fix).
+- **`override`** sends a different value in place of the requested one, named
+  by a required `with:` key.
+- **`drop`** omits the parameter and lets the provider's default apply.
+  Whether that is free depends on the parameter: omitting `tool_choice` is how
+  the OpenAI-shaped envelope says "the model decides", which is exactly what
+  `auto` names, so dropping it costs nothing. Omitting `reasoning_effort`, by
+  contrast, yields the provider's default budget rather than the level asked
+  for — the same warning as `override` applies.
+
+**All three actions work on every rulable parameter.** The engine does not
+decide which combination is sensible — that is a configuration choice, and the
+operator making it knows their own tolerance for a changed request. What the
+engine guarantees is that a declaration is never accepted and then ignored:
+each action has a consult site for each parameter.
+
+`RULABLE_PARAMS` lists the parameters a rule can reach. A rule on anything else
+is refused, because nothing would ever read it — that is a typo, not a choice.
+Adding a parameter means adding the site that consults it, which is an engine
+change.
+
+An `override` whose `with:` value is itself ruled in the same block is refused:
+substituting into another declared gap would send a value the block already
+calls unusable.
+
+Rules merge per parameter and per value across `default:` → preset →
+`providers:` → operator overlay. A shallow merge would let an overlay declaring
+one rule delete every other rule, disarming a guard nobody touched.
+
+One pre-existing exception, inherited from how overlays work generally: an
+overlay `presets:` entry with the **same name** as a bundled preset replaces
+that preset wholesale, rules included. Shadowing by name is a replacement, not
+a merge. Only `providers.gemini` carries rules today, so nothing is affected in
+practice, but declare rules on a differently-named preset if you mean to add
+rather than replace.
+
+`tool_choice` rules are inert on a call that sends no tools, because the
+parameter is only ever attached alongside `tools`.
+
+> [!WARNING]
+> `override` silently satisfies a call the provider would have refused, and
+> nothing in the response says so. `drop` can change the request too — omitting
+> `reasoning_effort` is not free — but an override is the only action that sends
+> a value the caller never asked for.
+>
+> Anything derived from a call that was overridden is **not directly comparable**
+> with a call that sent the requested value. If you compare results across
+> models, across providers, or across time, an override breaks that comparison
+> for the affected calls, and it does so invisibly unless you look.
+>
+> The engine therefore logs a `WARNING` on every substitution, naming the
+> requested value, the value actually sent, and the declared evidence. Callers
+> that care about comparability should surface or record that, and should treat
+> an overridden call as carrying a caveat rather than as a like-for-like result.
+> Prefer `reject` when you can act on the failure; reach for `override` when
+> getting an answer at all is worth more than comparing it.
+
+`evidence` is required. A value gap is a claim about a provider on a date; the
+Gemini entry above is already conditional on an upstream bug being open, and
+without the date nobody can tell when to re-check it.
+
+The block is legal wherever a `params:` block is, which is what makes it
+reusable across layers: under `providers:` it describes a **route** (the Gemini
+entry — the OpenRouter route is unaffected and carries no rule), under a preset
+it describes a **model** (the Cohere entry — true on every route because it is
+the vendor's API contract). Choosing the layer is choosing what the claim is
+about.
+
+`unsupported_effort_levels` is not a `params:` key. An operator overlay
+carrying it fails loud at overlay *load*, with a `ValueError` naming the
+file, the block, and the keys that are legal — before any model resolves.
+
+### Base class
+
 Generation-parameter adaptation. `ParamsPolicy` is the abstract base class;
 every subclass declares `KNOWN_KEYS: ClassVar[frozenset[str]]` enumerating
 the construction kwargs it accepts. The overlay validator reads the union of

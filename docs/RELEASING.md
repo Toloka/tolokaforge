@@ -92,6 +92,33 @@ creates a GitHub Release. The engine's `Release Gate` workflow does not run
 against a `models-v*` tag — engine and models test lanes are separately
 sequenced.
 
+### When the models wheel starts needing a newer engine
+
+`minimum_engine_version` in
+[`tolokaforge_models/src/tolokaforge_models/__init__.py`](../tolokaforge_models/src/tolokaforge_models/__init__.py)
+is the models wheel's declared engine floor, and it is **not** maintained by
+`cz bump` — it is a hand-set claim about what the data needs.
+
+Raise it in the engine release PR whenever the bundled data starts using a key
+the previous engine cannot construct. The floor can only name a version that
+exists, so it cannot be raised in the feature PR that introduces the key: the
+engine version has not been cut yet, and setting a future floor would fail the
+import gate on every developer tree.
+
+The failure this prevents is quiet. `_check_minimum_engine_version` passes
+whenever the declared floor is satisfied, so an engine below the *real*
+requirement boots normally and then raises `TypeError` from the policy
+constructor at the first capability build — mid-run, not at startup. A
+`pip install -U tolokaforge-models` against an engine that predates the key is
+enough to trigger it, and only for the models that use it, so it reads as a
+provider-specific bug rather than a version mismatch.
+
+Checklist when cutting an engine release that carries a new data-facing key:
+
+1. Cut the engine release first, so the version exists.
+2. Raise `minimum_engine_version` to that version.
+3. Then cut the models release.
+
 The version and changelog are owned by commitizen. **Do not hand-edit
 `tolokaforge_models/pyproject.toml` `[project].version` or
 `tolokaforge_models/CHANGELOG.md`** — the bump derives both, and manual edits
