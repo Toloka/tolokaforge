@@ -10,6 +10,8 @@ Per-concern submodules hold the actual definitions:
   ``RunConfig`` carries
 - :mod:`.model_config` — :class:`ModelConfig` +
   :class:`OpenRouterConfig`
+- :mod:`.docker_config` — :class:`DockerConfig`, the ``docker:`` block
+  of ``run_config.yaml``
 - :mod:`.run_config` — :class:`RunConfig` and every orchestrator /
   compute / storage / observability sub-block
 - :mod:`.task_config` — :class:`TaskConfig`, :class:`ProjectConfig`,

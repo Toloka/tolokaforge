@@ -28,7 +28,6 @@ from tolokaforge.core.run_display_events import (
 __all__ = [
     "ComputeConfig",
     "DOCKER_RUNTIME_ALIAS_TARGET",
-    "DockerConfig",
     "EngineConfig",
     "EvaluationConfig",
     "HarnessAdapterConfig",
