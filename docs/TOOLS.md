@@ -70,6 +70,20 @@ the trial. `restart` discards that state and yields a clean shell.
 `tool_config.timeout_s`. On timeout the command is terminated and a
 `[timed out after <n>s; command terminated]` note is appended to the output.
 
+That budget is the control. The runner keeps a second band around every call —
+`ToolWrapper.effective_timeout_s`, which this tool reports as its own budget
+plus a fixed 5 s grace — but it is a backstop, not a competing limit: it only
+abandons the worker thread, while the tool's own timeout terminates the command
+and leaves the session usable. The grace clears the ~0.7 s the tool spends
+signalling and draining, so under normal operation the backstop never fires.
+When it does, the runner rebuilds the session before the next call (see
+**Provider variants** below).
+
+An engine older than the runner image it talks to still sends a per-call budget
+of its own, which overrides this resolution. The version gate is a lower bound,
+so such a pairing is possible; it degrades to a fixed 30 s band plus the
+session rebuild, never to a corrupted session.
+
 **Output.** Middle-truncated at 16384 characters (an elision marker names the
 elided character count and hints to re-run a narrower command or `grep` for the
 pattern). Non-zero

@@ -16,9 +16,26 @@ from typing import Any
 import pytest
 
 from tolokaforge.runner.models import ToolSchema
-from tolokaforge.runner.tool_factory import ToolCallOutcome, ToolWrapper
+from tolokaforge.runner.service import _backstop_seconds
+from tolokaforge.runner.tool_factory import (
+    DockerComposeExecToolWrapper,
+    PersistentShellToolWrapper,
+    ToolCallOutcome,
+    ToolWrapper,
+)
+from tolokaforge.tools.persistent_shell import CommandResult
 
 pytestmark = pytest.mark.unit
+
+TRIAL_DEFAULT_S = 30.0
+"""The trial-level fallback, distinct from every budget below so a resolution
+that reached for it instead of the tool would be visible."""
+
+DECLARED_SCHEMA_BUDGET_S = 7.0
+"""What a native pack's adapter pins on the tool's ``ToolSchema``."""
+
+OWN_BUDGET_S = 45.0
+"""What a shell wrapper enforces per command — deliberately above both."""
 
 
 def _schema(name: str) -> ToolSchema:
@@ -63,3 +80,84 @@ async def test_inherited_execute_call_lets_a_raising_tool_raise() -> None:
         await wrapper.execute_call({"customer_id": "C-101"})
 
     assert excinfo.value is boom
+
+
+def test_a_wrapper_enforcing_nothing_is_backstopped_at_its_declared_budget() -> None:
+    """Nothing to sit above: the band the runner applies is the declaration itself."""
+    schema = _schema("get_customer")
+    schema.timeout_s = 12.5
+    wrapper = _AnsweringWrapper(schema, "{}")
+
+    assert wrapper.effective_timeout_s == 12.5
+    assert _backstop_seconds(wrapper, TRIAL_DEFAULT_S) == 12.5
+
+
+def _record_persistent_shell_budget(wrapper: PersistentShellToolWrapper) -> list[float]:
+    """Stand a recorder in for the session ``execute`` hands its budget to."""
+    recorded: list[float] = []
+
+    class _RecordingSession:
+        def run(self, command: str, timeout_s: float) -> CommandResult:
+            recorded.append(timeout_s)
+            return CommandResult(output="", exit_code=0, timed_out=False)
+
+    wrapper._session = _RecordingSession()
+    return recorded
+
+
+def _record_compose_exec_budget(wrapper: DockerComposeExecToolWrapper) -> list[float]:
+    """Stand a recorder in for the ``docker exec`` ``execute`` hands its budget to."""
+    recorded: list[float] = []
+
+    def _exec_sync(command: str, timeout: float) -> str:
+        recorded.append(timeout)
+        return ""
+
+    wrapper._exec_sync = _exec_sync
+    return recorded
+
+
+def _persistent_shell(own_budget_s: float) -> PersistentShellToolWrapper:
+    schema = _schema("bash_session")
+    schema.timeout_s = DECLARED_SCHEMA_BUDGET_S
+    schema.tool_config = {"timeout_s": own_budget_s}
+    return PersistentShellToolWrapper(schema)
+
+
+def _compose_exec(own_budget_s: float) -> DockerComposeExecToolWrapper:
+    schema = _schema("run_command")
+    schema.timeout_s = own_budget_s
+    return DockerComposeExecToolWrapper(schema, service="app", compose_project_prefix="p")
+
+
+@pytest.mark.parametrize(
+    ("build", "record"),
+    [
+        (_persistent_shell, _record_persistent_shell_budget),
+        (_compose_exec, _record_compose_exec_budget),
+    ],
+    ids=["bash_session", "docker_compose_exec"],
+)
+async def test_a_wrapper_enforcing_its_own_budget_is_backstopped_strictly_above_it(
+    build, record
+) -> None:
+    """The two budgets are read from the two paths that use them, never asserted
+    to be some literal: the one ``execute`` hands its own timeout mechanism, and
+    the one the runner resolves for its backstop. The backstop must sit strictly
+    above, because the tool's timeout terminates the command and keeps the
+    session usable while the backstop only abandons the worker thread.
+    """
+    wrapper = build(OWN_BUDGET_S)
+    recorded = record(wrapper)
+
+    await wrapper.execute({"command": "true"})
+
+    assert recorded == [OWN_BUDGET_S], (
+        "the wrapper did not hand its own per-command budget to the mechanism that "
+        f"enforces it: {recorded}"
+    )
+    backstop = _backstop_seconds(wrapper, TRIAL_DEFAULT_S)
+    assert backstop > recorded[0], (
+        f"the runner's {backstop}s backstop does not clear the {recorded[0]}s budget "
+        "the tool enforces itself — the two controls race"
+    )

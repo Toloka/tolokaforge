@@ -177,6 +177,7 @@ from tolokaforge.runner.tool_factory import (
     ToolFactory,
     ToolLifecycleContext,
     ToolReconstructionError,
+    ToolWrapper,
 )
 from tolokaforge.tools.registry import ToolExecutionStatus, raised_tool_failure_text
 
@@ -465,6 +466,19 @@ def _unreachable_state_checks_refusal(
             f"assertion can never match there. {remedy}"
         )
     return None
+
+
+def _backstop_seconds(tool: Any, trial_default: float) -> float:
+    """The band the runner applies around a call on *tool*.
+
+    A :class:`ToolWrapper` names its own band, which for a tool enforcing a
+    per-call budget of its own sits above that budget. Anything else — a bare
+    callable injected onto a trial — has no band to name, so the trial's
+    default stands.
+    """
+    if isinstance(tool, ToolWrapper):
+        return tool.effective_timeout_s
+    return trial_default
 
 
 # =============================================================================
@@ -1300,11 +1314,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error_message=f"Tool '{tool_name}' not found",
             )
 
-        # Determine timeout
         timeout_seconds = request.timeout_seconds
         if timeout_seconds <= 0:
-            # Use tool-specific timeout or default
-            timeout_seconds = getattr(tool, "timeout_s", trial_context.default_timeout)
+            timeout_seconds = _backstop_seconds(tool, trial_context.default_timeout)
 
         # Run async execution on dedicated event loop thread
         try:

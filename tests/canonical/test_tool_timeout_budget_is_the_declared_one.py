@@ -34,7 +34,11 @@ from tests.utils.servicer_runtime import ServicerBackend
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import ToolSchema
-from tolokaforge.runner.tool_factory import ToolWrapper
+from tolokaforge.runner.tool_factory import (
+    PersistentShellToolWrapper,
+    ToolLifecycleContext,
+    ToolWrapper,
+)
 from tolokaforge.tools.registry import ToolExecutionStatus
 
 pytestmark = pytest.mark.canonical
@@ -114,6 +118,76 @@ def test_the_budget_a_tool_declares_bounds_the_call_the_host_makes(
     assert elapsed < SLEEP_S, (
         f"the call took {elapsed:.2f}s — it ran to completion rather than being "
         f"bounded by the {DECLARED_BUDGET_S}s the tool declares"
+    )
+
+
+SESSION_SCHEMA_BUDGET_S = 0.5
+"""What the adapter pins on a ``bash_session``'s ``ToolSchema`` — standing in
+for the 30.0 every native pack gets (#1147)."""
+
+SESSION_OWN_BUDGET_S = 2.0
+"""What the same session declares as its own per-command budget via
+``tool_config.timeout_s`` — standing in for the ADR-0017 default of 120 s."""
+
+
+def test_a_session_is_bounded_by_its_own_budget_and_not_by_its_schemas(
+    runner_service, mock_grpc_context, request
+) -> None:
+    """The runner's band is a backstop above the control the tool applies itself.
+
+    A ``bash_session`` enforcing its own budget terminates the command and keeps
+    the session usable; the runner's band only abandons the worker thread. So
+    the tool's own budget has to be the one that fires, even though it is longer
+    than what its ``ToolSchema`` declares.
+    """
+    trial_id = f"{request.node.name}:0"
+    registered = runner_service.RegisterTrial(
+        register_request(
+            trial_spec_json(simple_task_description(), trial_id=trial_id), trial_id=trial_id
+        ),
+        mock_grpc_context,
+    )
+    assert registered.success is True, registered.error
+
+    wrapper = PersistentShellToolWrapper(
+        ToolSchema(
+            name="bash_session",
+            description="session-lifetime shell",
+            parameters={"type": "object", "properties": {"command": {"type": "string"}}},
+            timeout_s=SESSION_SCHEMA_BUDGET_S,
+            tool_config={"timeout_s": SESSION_OWN_BUDGET_S},
+        )
+    )
+    wrapper.start(ToolLifecycleContext(trial_id=trial_id, work_dir=None))
+    runner_service.trials[trial_id].agent_tools["bash_session"] = wrapper
+
+    adapter = DockerRunnerAdapter(
+        runtime=ServicerBackend(runner_service, mock_grpc_context),
+        trial_id=trial_id,
+        executor="agent",
+    )
+    try:
+        started = time.monotonic()
+        result = adapter.execute("bash_session", {"command": "sleep 30"}, call_id="toolu_session")
+        elapsed = time.monotonic() - started
+    finally:
+        wrapper.stop()
+
+    assert result.status is ToolExecutionStatus.SUCCESS, (
+        "the runner's backstop fired instead of the session's own timeout, so the "
+        f"command was abandoned rather than terminated: {result.error}"
+    )
+    assert f"[timed out after {SESSION_OWN_BUDGET_S:g}s; command terminated]" in result.output, (
+        "the command did not come back with the session's own timeout note, so it was "
+        f"not the session that bounded it: {result.output!r}"
+    )
+    assert elapsed >= SESSION_OWN_BUDGET_S, (
+        f"the call returned in {elapsed:.2f}s — sooner than the session's own "
+        f"{SESSION_OWN_BUDGET_S}s budget, so something tighter bounded it"
+    )
+    assert elapsed < wrapper.effective_timeout_s, (
+        f"the call took {elapsed:.2f}s, at or past the runner's "
+        f"{wrapper.effective_timeout_s}s backstop — the two controls are racing"
     )
 
 

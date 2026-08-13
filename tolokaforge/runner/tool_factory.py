@@ -156,6 +156,15 @@ class ToolCallOutcome:
     declared_failure: bool
 
 
+BACKSTOP_GRACE_S = 5.0
+"""Slack between a shell wrapper's own per-command budget and the runner's backstop.
+
+Terminating a timed-out command and draining its pipe costs the tool up to
+0.7 s (measured: SIGINT, then SIGKILL after 0.2 s, then a 0.3 s drain, on top of
+a 0.2 s poll interval). The backstop must clear that by a wide margin or it
+fires first on a command the tool was already cleaning up."""
+
+
 class ToolWrapper(ABC):
     """
     Base class for tool wrappers.
@@ -176,6 +185,18 @@ class ToolWrapper(ABC):
         self.tool_schema = tool_schema
         self.name = tool_schema.name
         self.timeout_s = tool_schema.timeout_s
+
+    @property
+    def effective_timeout_s(self) -> float:
+        """The band the runner's backstop applies to a call on this tool.
+
+        A wrapper that enforces its own per-call budget must report a strictly
+        greater value here. The backstop abandons the worker thread rather than
+        killing it, while a tool's own timeout terminates the command and
+        leaves its session usable — so the tool's control must be the one that
+        fires, and equality between the two is a race.
+        """
+        return self.timeout_s
 
     @abstractmethod
     async def execute(self, arguments: dict[str, Any]) -> str:
@@ -1018,6 +1039,9 @@ def create_search_kb_schema() -> ToolSchemaModel:
 # =============================================================================
 
 
+_COMPOSE_EXEC_DEFAULT_TIMEOUT_S = 120.0
+
+
 class DockerComposeExecToolWrapper(ToolWrapper):
     """Execute a command inside an already-running compose service via ``docker exec``.
 
@@ -1052,11 +1076,18 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         self._trial_id = ctx.trial_id
         self._container = compose_container_name(ctx.trial_id, self._service, self._project_prefix)
 
+    @property
+    def _own_budget_s(self) -> float:
+        return self.timeout_s or _COMPOSE_EXEC_DEFAULT_TIMEOUT_S
+
+    @property
+    def effective_timeout_s(self) -> float:
+        return self._own_budget_s + BACKSTOP_GRACE_S
+
     async def execute(self, arguments: dict[str, Any]) -> str:
         command = arguments.get("command", "")
-        timeout = self.timeout_s or 120.0
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._exec_sync, command, timeout)
+        return await loop.run_in_executor(None, self._exec_sync, command, self._own_budget_s)
 
     def _exec_sync(self, command: str, timeout: float) -> str:
         if self._container is None:
@@ -1121,6 +1152,10 @@ class PersistentShellToolWrapper(ToolWrapper):
         self._trial_id: str | None = None
         self._session: BashSession | None = None
         self._cwd: str | None = None
+
+    @property
+    def effective_timeout_s(self) -> float:
+        return self._timeout_s + BACKSTOP_GRACE_S
 
     def start(self, ctx: "ToolLifecycleContext") -> None:
         self._trial_id = ctx.trial_id
