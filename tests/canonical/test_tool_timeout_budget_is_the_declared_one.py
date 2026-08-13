@@ -8,9 +8,8 @@ budget. Both assert elapsed wall time and the status the trial recorded, never
 a field value — a declared number nothing enforces is exactly the defect these
 lock against.
 
-Together they localise, and today they disagree: the runner's resolution is
-correct and unreachable, because the host names a budget of its own on every
-call and the runner only resolves when the request names none. #691.
+Together they localise: if the pair ever disagrees, the runner's resolution is
+correct and something above it is overriding the budget the tool declares.
 
 Timing assertions are one-sided and bounded *above* by a wide multiple of the
 budget. CI contention can stretch a 0.2 s sleep; it cannot make a 1.5 s sleep
@@ -104,18 +103,17 @@ def test_the_budget_a_tool_declares_bounds_the_call_the_host_makes(
     elapsed = time.monotonic() - started
 
     recorded = runner_service.trials[slow_trial].tool_call_history[-1]
-    assert result.status is ToolExecutionStatus.SUCCESS, (
-        "DEFECT #691: the host sends its own hardcoded budget on every call, so the "
-        f"tool's declared {DECLARED_BUDGET_S}s never bounds anything and a call that "
-        f"outlives it is recorded {result.status}"
+    assert result.status is ToolExecutionStatus.TIMEOUT, (
+        "a tool ran past the budget it declares: the host path recorded "
+        f"{result.status}, so something above the runner named a budget of its own"
     )
-    assert recorded.status is ToolExecutionStatus.SUCCESS, (
-        f"DEFECT #691: the trial recorded {recorded.status} for a call that outlived "
-        "its declared budget"
+    assert recorded.status is ToolExecutionStatus.TIMEOUT, (
+        f"the trial recorded {recorded.status} for a call that outlived the "
+        f"{DECLARED_BUDGET_S}s its tool declares"
     )
-    assert elapsed >= SLEEP_S, (
-        f"DEFECT #691: the call took {elapsed:.2f}s — it ran to completion rather "
-        f"than being bounded by the {DECLARED_BUDGET_S}s the tool declares"
+    assert elapsed < SLEEP_S, (
+        f"the call took {elapsed:.2f}s — it ran to completion rather than being "
+        f"bounded by the {DECLARED_BUDGET_S}s the tool declares"
     )
 
 

@@ -16,6 +16,7 @@ for real, credential injection included, so the package-level
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pytest
@@ -119,6 +120,33 @@ class TestLifecycleMethodParity:
             assert callable(
                 getattr(impl, method_name, None)
             ), f"{type(impl).__name__} is missing RuntimeBackend.{method_name}"
+
+    def test_no_execute_tool_along_the_seam_names_a_per_call_budget(self) -> None:
+        """The per-call budget is resolved by the runner, which is the only
+        layer that knows which tool is about to run.
+
+        Asserted by signature over the whole seam rather than by presence:
+        a re-added parameter with a default satisfies both ``isinstance``
+        against the ``runtime_checkable`` Protocols and the presence checks
+        above, so nothing else here would see the drift.
+        """
+        from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
+        from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
+
+        seam = [
+            RuntimeBackend.execute_tool,
+            RunnerClient.execute_tool,
+            SharedStackRuntimeBackend.execute_tool,
+            PerTrialRuntimeBackend.execute_tool,
+            InMemoryRuntimeBackend.execute_tool,
+            GrpcRunnerClient.execute_tool,
+        ]
+        offenders = {
+            surface.__qualname__: sorted(inspect.signature(surface).parameters)
+            for surface in seam
+            if "timeout_seconds" in inspect.signature(surface).parameters
+        }
+        assert not offenders, f"a caller-supplied budget is back on the seam: {offenders}"
 
 
 class TestInMemoryBackendSemantics:

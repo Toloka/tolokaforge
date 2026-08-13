@@ -23,6 +23,8 @@ from tolokaforge.tools.registry import ToolExecuting, ToolExecutor, ToolRegistry
 
 pytestmark = pytest.mark.canonical
 
+_BUDGET_PARAMETER_NAMES = {"timeout_seconds", "timeout_s", "timeout"}
+
 
 class TestProtocolRuntimeCheck:
     """The Protocol is ``@runtime_checkable``; both implementations satisfy it
@@ -79,3 +81,21 @@ class TestExecuteSignature:
             if param.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
         ]
         assert positional[:3] == ["self", "tool_name", "arguments"]
+
+    @pytest.mark.parametrize(
+        "surface",
+        [ToolExecuting.execute, ToolExecutor.execute, DockerRunnerAdapter.execute],
+        ids=["protocol", "tool_executor", "docker_runner_adapter"],
+    )
+    def test_no_implementation_takes_a_per_call_budget(self, surface) -> None:
+        """The budget a call is given is the one the tool declares, resolved by
+        the layer that knows which tool is about to run. An executor that took
+        one would let a caller override that resolution — and
+        :class:`DockerRunnerAdapter` folds unrecognised keyword arguments into
+        the tool's own arguments, so a reintroduced name would reach the tool
+        as a parameter rather than fail."""
+        named = set(inspect.signature(surface).parameters)
+        assert not named & _BUDGET_PARAMETER_NAMES, (
+            f"{surface.__qualname__} names a per-call budget among its parameters, so a "
+            f"caller can override the budget the runner resolves: {sorted(named)}"
+        )
