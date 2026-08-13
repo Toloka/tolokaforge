@@ -1,7 +1,9 @@
 # 0028. Multi-actor turn policy — `interaction_mode` + `Actor` Protocol + `TurnPolicy` seam
 
-- **Status:** Accepted
+- **Status:** Accepted (amended)
 - **Date:** 2026-08-04
+- **Amended:** 2026-08-13 — the agent-side `###STOP###` completion marker was removed;
+  conversational endings belong to the user simulator (ADR-0032, #708).
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
 - **Superseded by:** —

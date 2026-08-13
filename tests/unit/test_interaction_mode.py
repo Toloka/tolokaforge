@@ -5,9 +5,9 @@ The field selects the trial's turn-loop shape:
 
 - ``conversational`` (default) — user simulator dispatched every turn;
   the historical / τ-bench shape every existing pack was written for.
-- ``agent_only`` — no user turn after the first message; agent runs to
-  ``###STOP###`` / ``max_turns`` / ``episode_timeout_s``. Backwards-
-  compatible via the default.
+- ``agent_only`` — no user turn after the first message; the agent runs to
+  its first tool-call-free turn, ``max_turns`` or ``episode_timeout_s``.
+  Backwards-compatible via the default.
 
 These tests pin the schema contract at the model layer. Layer 3 tests
 (``test_turn_policy_contract.py``) exercise the dispatch behavior; Layer

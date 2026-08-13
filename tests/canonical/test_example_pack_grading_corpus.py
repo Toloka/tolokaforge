@@ -105,6 +105,13 @@ from click.testing import CliRunner
 from pydantic import ValidationError
 
 from tests.canonical._factories import make_trajectory, make_trial_messages
+from tests.utils.example_packs import (
+    EXAMPLES_ROOT,
+    REPO_ROOT,
+    TEST_DATA_ROOT,
+    enclosing_project,
+    project_layer,
+)
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import Turn, build_turn_timeline
 from tests.utils.trace_overrides import override_file
@@ -184,9 +191,9 @@ from tolokaforge.runner.models import (
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
-_REPO = Path(__file__).resolve().parents[2]
-_EXAMPLES = _REPO / "examples"
-_TEST_DATA = _REPO / "tests" / "data"
+_REPO = REPO_ROOT
+_EXAMPLES = EXAMPLES_ROOT
+_TEST_DATA = TEST_DATA_ROOT
 
 # Every task under ``examples/`` the corpus grades, so a guard that enumerated nothing
 # fails instead of passing over the empty set. The two files outside it are the
@@ -202,35 +209,6 @@ _TASKS_WITHOUT_A_PROJECT = (
 )
 
 
-def _enclosing_project(task_yaml: Path) -> Path | None:
-    """The ``project.yaml`` whose layer this task loads under, or ``None``.
-
-    The walk is bounded by the two corpus roots: every pack under ``tests/data``
-    ships without a project, and an unbounded walk would go on to ask the repository
-    root and the filesystem above it.
-    """
-    for directory in task_yaml.parents:
-        candidate = directory / "project.yaml"
-        if candidate.exists():
-            return candidate
-        if directory in (_EXAMPLES, _TEST_DATA):
-            return None
-    return None
-
-
-def _project_layer(task_yaml: Path) -> dict[str, Any] | None:
-    """The ``task_defaults`` layer beneath this task, or ``None`` for no project at all.
-
-    ``None`` is the honest answer for a project-less pack rather than an empty
-    mapping: no layer means the task's own block *is* the effective one, which is a
-    different statement from a layer that could not be read.
-    """
-    project_yaml = _enclosing_project(task_yaml)
-    if project_yaml is None:
-        return None
-    return load_project_config(project_yaml).task_defaults.model_dump(exclude_defaults=True) or None
-
-
 def _pack_adapter(task_yaml: Path) -> tuple[str, NativeAdapter]:
     """The task's id and an adapter over it, wired the orchestrator's way.
 
@@ -239,7 +217,7 @@ def _pack_adapter(task_yaml: Path) -> tuple[str, NativeAdapter]:
     while their ``project.yaml`` sits a level above, so enumerating by the declared
     glob silently measures a subset of the corpus.
     """
-    project_yaml = _enclosing_project(task_yaml)
+    project_yaml = enclosing_project(task_yaml)
     if project_yaml is None:
         root, environment = task_yaml.parent, None
     else:
@@ -249,7 +227,7 @@ def _pack_adapter(task_yaml: Path) -> tuple[str, NativeAdapter]:
         {
             "tasks_glob": str(task_yaml.relative_to(root)),
             "task_packs": [str(root)],
-            "project_task_defaults": _project_layer(task_yaml),
+            "project_task_defaults": project_layer(task_yaml),
             "project_default_environment": environment,
         }
     )
@@ -525,7 +503,7 @@ def _effective_combine(task_yaml: Path, grading: Mapping[str, Any]) -> GradingCo
     tasks that inherit theirs.
     """
     return resolve_effective_grading_combine(
-        project_grading_combine(_project_layer(task_yaml)), grading.get("combine")
+        project_grading_combine(project_layer(task_yaml)), grading.get("combine")
     )
 
 
@@ -1418,7 +1396,7 @@ def test_the_two_project_less_task_files_are_the_terminal_bench_pair() -> None:
     orphans = tuple(
         task_yaml
         for task_yaml in sorted(_EXAMPLES.rglob("task.yaml"))
-        if _enclosing_project(task_yaml) is None
+        if enclosing_project(task_yaml) is None
     )
     assert orphans == _TASKS_WITHOUT_A_PROJECT
 

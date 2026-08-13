@@ -1,7 +1,7 @@
 """Unit tests for tolokaforge/core/runner.py — TrialRunner logic.
 
-Covers: constructor, rate limit detection, tool argument normalization,
-completion detection, and basic run loop mechanics.
+Covers: constructor, rate limit detection, tool argument normalization, who
+ends a conversational trial, and basic run loop mechanics.
 """
 
 import time
@@ -74,7 +74,7 @@ def _make_agent_client(responses: list[GenerationResult] | None = None) -> Magic
         client.generate.side_effect = responses
     else:
         client.generate.return_value = GenerationResult(
-            text="I've completed the task. ###STOP###",
+            text="I've completed the task.",
             tool_calls=[],
             usage=Usage(prompt_tokens=100, completion_tokens=50),
             cost_usd=0.01,
@@ -275,38 +275,65 @@ class TestNormalizeToolArguments:
 
 
 # ===================================================================
-# _is_done
+# The agent's own text never terminates a conversational trial
 # ===================================================================
 
 
 @pytest.mark.unit
-class TestIsDone:
-    """The completion marker is matched whatever case the agent emitted it in."""
+class TestAgentTextNeverTerminates:
+    """``###STOP###`` is the user simulator's exit token, read only from the
+    simulator's own replies.
 
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "Here is the result. ###STOP###",
-            "###STOP###",
-            "###stop###",
-            "###Stop###",
-            "###STOP### and some trailing chatter",
-        ],
-    )
-    def test_marker_present_in_any_case(self, text: str) -> None:
-        assert _make_runner()._is_done(text) is True
+    An agent turn carrying that text — quoting the instruction back at the user,
+    say — is dispatched to the user actor like any other tool-call-free turn, and
+    the trial ends when the user closes it or the turn budget runs out.
+    """
 
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "Task is complete, all done.",
-            "",
-            "###STOP",
-            "##STOP##",
-        ],
-    )
-    def test_no_marker(self, text: str) -> None:
-        assert _make_runner()._is_done(text) is False
+    def test_the_exit_token_in_agent_text_is_dispatched_to_the_user(self) -> None:
+        agent = _make_agent_client(
+            [
+                GenerationResult(
+                    text="When the refund lands, reply with ###STOP### and I'll close the ticket.",
+                    tool_calls=[],
+                    usage=Usage(prompt_tokens=10, completion_tokens=5),
+                ),
+            ]
+        )
+        user_sim = _make_user_simulator()
+
+        traj = _make_runner(agent_client=agent, user_simulator=user_sim).run(
+            "System", "Where is my refund?"
+        )
+
+        assert user_sim.reply.call_count == 1
+        assert traj.termination_reason == TerminationReason.USER_STOP
+
+    def test_a_tool_call_sharing_that_turn_runs_and_is_recorded(self) -> None:
+        agent = _make_agent_client(
+            [
+                GenerationResult(
+                    text="Reply with ###STOP### once you see the refund.",
+                    tool_calls=[ToolCall(id="tc1", name="lookup_order", arguments={"id": "42"})],
+                    usage=Usage(prompt_tokens=10, completion_tokens=5),
+                ),
+                GenerationResult(
+                    text="The refund is posted.",
+                    tool_calls=[],
+                    usage=Usage(prompt_tokens=10, completion_tokens=5),
+                ),
+            ]
+        )
+        tool_exec = _make_tool_executor()
+        tool_exec.execute.return_value = ToolResult(success=True, output="order 42: refunded")
+
+        traj = _make_runner(agent_client=agent, tool_executor=tool_exec).run(
+            "System", "Where is my refund?"
+        )
+
+        assert [(record.tool_name, record.arguments) for record in traj.tool_log] == [
+            ("lookup_order", {"id": "42"})
+        ]
+        assert traj.termination_reason == TerminationReason.USER_STOP
 
 
 # ===================================================================
@@ -319,7 +346,7 @@ class TestTrialRunnerRun:
     """Tests for the main run() method."""
 
     def test_agent_response_then_user_stop(self) -> None:
-        """Agent responds without a completion marker, user sends ###STOP###."""
+        """Agent responds with plain text; the user closes the dialogue."""
         agent = _make_agent_client(
             [
                 GenerationResult(
@@ -533,7 +560,7 @@ class TestTrialRunnerRun:
         agent = _make_agent_client(
             [
                 GenerationResult(
-                    text="###STOP###",
+                    text="All done.",
                     tool_calls=[],
                     usage=Usage(prompt_tokens=200, completion_tokens=100),
                     cost_usd=0.05,
@@ -632,7 +659,7 @@ class TestTrialRunnerRun:
         agent = _make_agent_client(
             [
                 GenerationResult(
-                    text="###STOP###",
+                    text="All done.",
                     tool_calls=[],
                     usage=Usage(prompt_tokens=10, completion_tokens=5),
                 ),
@@ -746,7 +773,7 @@ class TestTrialRunnerRun:
         agent = _make_agent_client(
             [
                 GenerationResult(
-                    text="###STOP###",
+                    text="All done.",
                     tool_calls=[],
                     usage=Usage(prompt_tokens=10, completion_tokens=5),
                 ),
@@ -763,7 +790,7 @@ class TestTrialRunnerRun:
         agent = _make_agent_client(
             [
                 GenerationResult(
-                    text="###STOP###",
+                    text="All done.",
                     tool_calls=[],
                     usage=Usage(prompt_tokens=10, completion_tokens=5),
                 ),
@@ -784,7 +811,7 @@ class TestTrialRunnerRun:
                 cost_usd=0.01,
             ),
             GenerationResult(
-                text="Part 2. ###STOP###",
+                text="Part 2.",
                 tool_calls=[],
                 usage=Usage(prompt_tokens=20, completion_tokens=10),
                 cost_usd=0.02,
