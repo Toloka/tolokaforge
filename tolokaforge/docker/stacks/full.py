@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from tolokaforge.docker.config import DockerConfig
+from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.docker.health import HealthProbe
 from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.ports import PortConfig

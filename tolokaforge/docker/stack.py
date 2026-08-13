@@ -35,8 +35,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr
 
+from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.core.run_display_events import build_component_id
-from tolokaforge.docker.config import DockerConfig
 from tolokaforge.docker.container import Container, ContainerStatus
 from tolokaforge.docker.health import HealthProbe, HealthProbeError, HttpHealthProbe
 from tolokaforge.docker.image import Image

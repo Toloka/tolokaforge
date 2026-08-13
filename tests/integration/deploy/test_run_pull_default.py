@@ -318,7 +318,7 @@ class TestBuildModeSkipsPull:
             import json
             from unittest.mock import MagicMock, patch
 
-            from tolokaforge.docker.config import DockerConfig
+            from tolokaforge.core.models.docker_config import DockerConfig
             from tolokaforge.docker.image import Image
             from tolokaforge.docker.stack import EngineStack, ServiceDefinition
 

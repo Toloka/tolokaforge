@@ -5,7 +5,7 @@ before proceeding with operations. It uses the HealthProbe system from health.py
 for consistent health checking across the codebase.
 
 Example:
-    >>> from tolokaforge.docker.config import DockerConfig
+    >>> from tolokaforge.docker import DockerConfig
     >>> from tolokaforge.docker.wait_for_services import wait_for_services, ServiceTarget
     >>>
     >>> config = DockerConfig(wait_timeout_s=60.0, wait_poll_s=0.5)
@@ -24,7 +24,7 @@ import sys
 from dataclasses import dataclass
 from enum import Enum
 
-from tolokaforge.docker.config import DockerConfig
+from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.docker.health import HealthProbe, HealthProbeError
 
 logger = logging.getLogger(__name__)
@@ -219,7 +219,7 @@ def main(
         0 on success, 1 on failure.
 
     Example:
-        >>> from tolokaforge.docker.config import DockerConfig
+        >>> from tolokaforge.docker import DockerConfig
         >>> from tolokaforge.docker.wait_for_services import main, ServiceTarget
         >>>
         >>> config = DockerConfig(wait_timeout_s=60.0)
@@ -240,7 +240,7 @@ if __name__ == "__main__":
         "This module must be called programmatically by the upper layer.\n"
         "\n"
         "Example usage:\n"
-        "    from tolokaforge.docker.config import DockerConfig\n"
+        "    from tolokaforge.docker import DockerConfig\n"
         "    from tolokaforge.docker.wait_for_services import main, ServiceTarget\n"
         "\n"
         "    config = DockerConfig(wait_timeout_s=60.0)\n"

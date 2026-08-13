@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.docker.config import DockerConfig
+from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.docker.container import Container, ContainerStatus
 from tolokaforge.docker.image import Image
 from tolokaforge.docker.stack import EngineStack, ServiceDefinition

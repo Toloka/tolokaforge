@@ -44,6 +44,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.utils.wheel_builds import build_subset_wheel
 from tolokaforge.core._runner_subset import (
     RUNNER_SUBSET_DATA_FILES,
     RUNNER_SUBSET_EXCLUDED_FILES,
@@ -518,49 +519,16 @@ def test_cli_shim_does_not_reach_orchestrator_or_dx() -> None:
 # below verify what pip sees, not what pyproject implies.
 # ---------------------------------------------------------------------------
 
-_SUBSET_WHEEL_GLOB = "tolokaforge_runner_subset-*.whl"
-
-
-def _find_subset_wheel() -> Path | None:
-    """Return the latest subset wheel under ``dist/``, or ``None`` if the
-    build has not run yet in this checkout."""
-    dist_dir = REPO_ROOT / "dist"
-    if not dist_dir.is_dir():
-        return None
-    wheels = sorted(dist_dir.glob(_SUBSET_WHEEL_GLOB))
-    return wheels[-1] if wheels else None
-
 
 @pytest.fixture(scope="module")
-def subset_wheel_path() -> Path:
-    """Path to the subset wheel — build one on demand if the ``dist/`` copy
-    is stale or absent.
+def subset_wheel_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The subset wheel built from the current tree.
 
-    Invokes the hatchling PEP 517 build backend directly via
-    ``python -m hatchling build -t custom``. Equivalent to
-    ``hatch build --target custom`` but drives hatchling straight from the
-    active interpreter, so it has no dependency on the ``hatch`` CLI being
-    installed or on hatch's ``default`` environment being resolvable — both
-    of which fail cleanly in a uv-managed venv where only ``hatchling``
-    (the build backend, listed in ``[dependency-groups] dev``) is present."""
-    existing = _find_subset_wheel()
-    if existing is not None:
-        return existing
-    build_result = subprocess.run(
-        [sys.executable, "-m", "hatchling", "build", "-t", "custom"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    if build_result.returncode != 0:
-        pytest.fail(
-            f"subset wheel build failed (exit {build_result.returncode}):\n"
-            f"stdout:\n{build_result.stdout}\nstderr:\n{build_result.stderr}"
-        )
-    wheel = _find_subset_wheel()
-    if wheel is None:
-        pytest.fail("subset wheel build reported success but produced no artifact under dist/")
-    return wheel
+    The tests below read the archive to state what pip installs into the
+    runner image, so the archive has to come from the code under test — an
+    artifact left in ``dist/`` by an earlier commit would let them attest to
+    a partition that no longer exists."""
+    return build_subset_wheel(tmp_path_factory.mktemp("subset_wheel"))
 
 
 def _wheel_read(wheel_path: Path, member_glob: str) -> str:

@@ -1,10 +1,16 @@
-"""Configuration module for Docker Foundation Layer.
+"""The ``docker:`` block of ``run_config.yaml``.
 
 Provides the DockerConfig Pydantic model for configuring Docker operations.
 No environment variables are read - all configuration is passed programmatically.
 
+It lives beside the other run-config models rather than under
+``tolokaforge/docker/`` because :class:`~tolokaforge.core.models.RunConfig`
+carries it, and ``RunConfig`` rides in the runner subset's model spine —
+ADR-0025 § "The module partition" keeps the whole ``tolokaforge/docker/``
+directory out of that wheel. Nothing here imports the docker layer.
+
 Example:
-    >>> from tolokaforge.docker.config import DockerConfig
+    >>> from tolokaforge.core.models.docker_config import DockerConfig
     >>> config = DockerConfig(wait_timeout_s=60.0, wait_poll_s=0.5)
     >>> config.wait_timeout_s
     60.0

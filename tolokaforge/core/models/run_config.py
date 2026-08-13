@@ -14,6 +14,7 @@ from typing import Annotated, Any, Literal, Self
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from tolokaforge.core.deprecations import coerce_task_packs_alias
+from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.core.models.model_config import ModelConfig
 
 # The probe's bucketing defaults live next to the accumulator that applies them
@@ -23,12 +24,10 @@ from tolokaforge.core.run_display_events import (
     DEFAULT_PROBE_BUCKET_WIDTH_S,
     DEFAULT_PROBE_MAX_BUCKETS,
 )
-from tolokaforge.docker.config import DockerConfig
 
 __all__ = [
     "ComputeConfig",
     "DOCKER_RUNTIME_ALIAS_TARGET",
-    "DockerConfig",
     "EngineConfig",
     "EvaluationConfig",
     "HarnessAdapterConfig",
