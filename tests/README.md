@@ -7,7 +7,7 @@ The test suite is organized into **3 categories**: unit, canonical, and integrat
 | Category | Directory | Speed | External deps | Marker |
 |----------|-----------|-------|---------------|--------|
 | Unit | `tests/unit/` | Fast (< 1s each) | None | `@pytest.mark.unit` |
-| Canonical | `tests/canonical/` | Fast (< 5s each), except the packaging/entry-point smoke tests that build a wheel and install it into a scratch venv (~10–25s) | Golden snapshots; the packaging/entry-point smoke tests also require the `uv` CLI (they skip loud without it) | `@pytest.mark.canonical` |
+| Canonical | `tests/canonical/` | Fast (< 5s each), except the packaging tests that build a wheel from the current tree — the subset partition audit builds one per module, and the packaging/entry-point smoke tests build one per session and install it into a scratch venv (~10–25s) | Golden snapshots; the packaging/entry-point smoke tests also require the `uv` CLI (they skip loud without it) | `@pytest.mark.canonical` |
 | Integration | `tests/integration/` | Slow (5-60s each) | Docker, API keys | `@pytest.mark.integration` |
 
 Current baseline: run the lane you care about (`mcp__dev__run_tests marker=unit`,
@@ -116,6 +116,7 @@ tests/
     ├── fixtures.py           # Common fixtures (mock_env_state, test_task_path, etc.)
     ├── validators.py         # Output validation helpers
     ├── doc_anchors.py        # GitHub-style anchor + section extraction for the canonical doc locks
+    ├── wheel_builds.py       # Subset / models wheels built from the tree under test, into a caller-supplied dir
     ├── mock_clients.py       # MockAsyncClient — canonical source
     ├── networks.py           # Docker network/volume fixtures
     ├── containers.py         # Docker container fixtures
