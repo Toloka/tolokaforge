@@ -60,8 +60,8 @@ def _result(cost_usd: float | None, cost_source: str, prompt_tokens: int = 100) 
     )
 
 
-def _stop_result() -> GenerationResult:
-    """Final agent response that ends the trial via ###STOP###."""
+def _final_result() -> GenerationResult:
+    """The scripted trial's last agent response, priced like the rest."""
     call = ProviderRawCall(
         prompt_tokens=10,
         completion_tokens=5,
@@ -70,7 +70,7 @@ def _stop_result() -> GenerationResult:
         latency_s=0.1,
     )
     return GenerationResult(
-        text="All done. ###STOP###",
+        text="All done.",
         tool_calls=[],
         usage=Usage(prompt_tokens=10, completion_tokens=5, calls=(call,)),
         cost_usd=0.001,
@@ -91,7 +91,12 @@ def _make_tool_executor() -> MagicMock:
 
 
 def _run_trial(results: list[GenerationResult]) -> Trajectory:
-    """Drive ``TrialRunner.run`` over a scripted sequence of results."""
+    """Drive ``TrialRunner.run`` over a scripted sequence of results.
+
+    The turn budget is the length of the script, so the trial ends on
+    ``max_turns`` with every scripted result generated and none left over — the
+    simulator never stops the dialogue, and every call is billed.
+    """
     agent = MagicMock()
     agent.generate.side_effect = results
     runner = TrialRunner(
@@ -101,7 +106,7 @@ def _run_trial(results: list[GenerationResult]) -> Trajectory:
         user_simulator=_make_user_simulator_keep_going(),
         tool_executor=_make_tool_executor(),
         tool_schemas=[{"type": "function", "function": {"name": "noop"}}],
-        max_turns=10,
+        max_turns=len(results),
         turn_timeout_s=30,
         episode_timeout_s=600,
     )
@@ -136,7 +141,7 @@ class TestTrialCostAccumulation:
         results = [
             _result(0.10, "litellm"),
             _result(0.20, "litellm"),
-            _stop_result(),  # 0.001 litellm
+            _final_result(),  # 0.001 litellm
         ]
         traj = _run_trial(results)
 
@@ -149,7 +154,7 @@ class TestTrialCostAccumulation:
         results = [
             _result(0.05, "local"),
             _result(0.07, "local"),
-            _stop_result(),
+            _final_result(),
         ]
         traj = _run_trial(results)
 
@@ -165,7 +170,7 @@ class TestTrialCostAccumulation:
         results = [
             _result(0.10, "litellm"),
             _result(0.05, "local"),
-            _stop_result(),
+            _final_result(),
         ]
         traj = _run_trial(results)
 
@@ -178,7 +183,7 @@ class TestTrialCostAccumulation:
         results = [
             _result(None, "unknown"),
             _result(0.04, "litellm"),
-            _stop_result(),
+            _final_result(),
         ]
         traj = _run_trial(results)
 
@@ -188,7 +193,7 @@ class TestTrialCostAccumulation:
         assert traj.metrics.usage.calls[0].cost_usd is None
 
     def test_per_call_latencies_recorded_on_calls_not_metrics(self) -> None:
-        results = [_result(0.01, "litellm"), _stop_result()]
+        results = [_result(0.01, "litellm"), _final_result()]
         traj = _run_trial(results)
 
         latencies = [c.latency_s for c in traj.metrics.usage.calls]

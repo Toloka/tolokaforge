@@ -64,8 +64,8 @@ InteractionMode = Literal["conversational", "agent_only"]
   Matches τ-bench-style benchmarks where the user is a genuine
   information source.
 - ``agent_only``: no user turn dispatched after the first message.
-  The agent runs to ``###STOP###`` (routed to
-  :attr:`TerminationReason.AGENT_DONE`), ``max_turns``, or
+  The agent runs until it takes a turn without calling a tool (routed
+  to :attr:`TerminationReason.AGENT_DONE`), or to ``max_turns`` or
   ``episode_timeout_s``. Matches code-migration / agent-driven eval
   shape where the task lives entirely in the system prompt and the
   agent decides when it's done. The user simulator is never
@@ -318,8 +318,8 @@ class TaskConfig(BaseModel):
     interaction_mode: InteractionMode = "conversational"
     """Turn-loop shape. ``conversational`` (default) dispatches the user
     simulator every turn — backward-compatible with every existing pack.
-    ``agent_only`` skips user-turn dispatch entirely; the agent runs to
-    ``###STOP###`` / ``max_turns`` / ``episode_timeout_s``. Selects a
+    ``agent_only`` skips user-turn dispatch entirely; the agent runs to its
+    first tool-call-free turn, ``max_turns`` or ``episode_timeout_s``. Selects a
     concrete :class:`TurnPolicy` via the ``tolokaforge.turn_policies``
     entry-point registry (see ADR-0027)."""
     initial_state: InitialStateConfig = Field(default_factory=InitialStateConfig)

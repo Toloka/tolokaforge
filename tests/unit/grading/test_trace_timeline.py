@@ -257,11 +257,11 @@ def test_a_terminating_turns_unexecuted_call_is_a_call_with_no_result() -> None:
     ``absent`` or ``count`` constraint wrong in the agent's favour."""
     messages = [
         _assistant("", _call("call_A", "refund", order_id="42")),
-        _assistant("###STOP###", _call("call_B", "refund", order_id="43")),
+        _assistant("Refunding the second order too.", _call("call_B", "refund", order_id="43")),
     ]
     records = [recorded_call("refund", sequence=0, call_id="call_A")]
 
-    timeline = build_trial_timeline(messages, records, TerminationReason.AGENT_DONE)
+    timeline = build_trial_timeline(messages, records, TerminationReason.STUCK_DETECTED)
 
     assert [event.call_id for event in _of_kind(timeline, TraceEventKind.TOOL_CALL)] == [
         "call_A",
@@ -600,7 +600,7 @@ def test_a_bundle_call_with_no_tool_message_stays_unpaired() -> None:
     messages = [
         _assistant("", _call("call_A", "refund", order_id="42")),
         _tool_message("call_A", '{"ok": true}'),
-        _assistant("###STOP###", _call("call_B", "refund", order_id="43")),
+        _assistant("Refunding the second order too.", _call("call_B", "refund", order_id="43")),
     ]
 
     timeline = build_trial_timeline(messages, [], None)

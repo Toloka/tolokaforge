@@ -555,9 +555,12 @@ does it inside a real runner container over gRPC.
 
 Both substrates give grading the trial's `TerminationReason`: the core substrate
 reads `Trajectory.termination_reason`, and the host sends the same value on
-`GradeTrialRequest.termination_reason`. It exists so grading can tell a
-deliberate finish (`agent_done`) from an exhausted turn budget (`max_turns`) —
-the same score means something different in each case.
+`GradeTrialRequest.termination_reason`. It exists so grading can tell a dialogue
+that reached its own end — `agent_done` under `agent_only`, where the agent took
+a turn without calling a tool and no user party could ask for more, or
+`user_stop` under `conversational`, where the simulated user closed it — from one
+cut off by a budget (`max_turns`, `timeout`). The same score means something
+different in each case.
 
 **It is grading input, not an author-matchable key.** There is no `grading.yaml`
 field for it and no key-manifest entry, so no task can score itself on it. That

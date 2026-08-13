@@ -66,7 +66,7 @@ logger.debug("State synchronized", tables=5)
 **Examples:**
 ```python
 logger.info("Trial execution started", task_id="task-123")
-logger.info("Agent signaled completion")
+logger.info("User signaled completion (###STOP###)", dropped_tool_calls=0)
 logger.info("Trial graded", score=0.95, binary_pass=True)
 ```
 
