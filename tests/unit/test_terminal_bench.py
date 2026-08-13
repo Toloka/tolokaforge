@@ -1010,7 +1010,11 @@ class TestInstallHarnessScript:
     def _recorded_version(tmp_path: Path) -> str:
         return (tmp_path / "state" / "installed-version.txt").read_text().strip()
 
-    def test_every_harness_installs_its_pinned_package(self, tmp_path):
+    def test_every_shipped_harness_installs_via_its_declared_method(self, tmp_path):
+        """Each shipped entry dispatches to whichever install_method it
+        declares. The expected fake-recorder output shape depends on the
+        method, so this test enumerates the per-method contracts once —
+        each of the four dispatch tests below pins one branch in detail."""
         from tolokaforge_adapter_terminal_bench.harness import HARNESSES
 
         for name, spec in HARNESSES.items():
@@ -1018,7 +1022,21 @@ class TestInstallHarnessScript:
                 tmp_path / name, spec.install_method, spec.install_source, spec.version
             )
             assert proc.returncode == 0, f"{name}: {proc.stderr}"
-            assert recorded == [f"install -g {spec.install_source}@{spec.version}"], name
+            if spec.install_method == "npm":
+                assert recorded == [f"install -g {spec.install_source}@{spec.version}"], name
+            elif spec.install_method == "pip":
+                assert recorded == [
+                    f"install --no-cache-dir {spec.install_source}=={spec.version}"
+                ], name
+            elif spec.install_method == "curl-bash":
+                assert recorded == [
+                    f"-fsSL {spec.install_source} -o /tmp/harness-installer.sh",
+                    f"installer --version {spec.version}",
+                ], name
+            elif spec.install_method == "binary":
+                assert recorded == [f"-fsSL {spec.install_source} -o /tmp/harness-download"], name
+            else:
+                raise AssertionError(f"unknown install_method for {name}: {spec.install_method!r}")
             assert self._recorded_version(tmp_path / name) == spec.version, name
 
     def test_pip_install_dispatch_calls_pip(self, tmp_path):
@@ -1120,13 +1138,13 @@ class TestHarnessSpecRegistry:
             "gemini-cli",
             "kimi-code",
             "opencode",
+            "grok-build",
         ]
         assert load_harness_registry(SHIPPED_REGISTRY_FILE) == HARNESSES
 
-    def test_shipped_entries_install_from_npm(self):
-        """Every currently-shipped entry installs via npm — the curl-bash /
-        pip / binary dispatch branches exist for entries not yet in the
-        shipped registry (Grok Build lands in a follow-up)."""
+    def test_shipped_entries_install_methods(self):
+        """Five entries install via npm; Grok Build installs via curl-bash
+        (the first non-npm entry, exercising install-harness.sh dispatch)."""
         from tolokaforge_adapter_terminal_bench.harness import HARNESSES
 
         assert {
@@ -1137,6 +1155,7 @@ class TestHarnessSpecRegistry:
             "gemini-cli": ("npm", "@google/gemini-cli"),
             "kimi-code": ("npm", "@moonshot-ai/kimi-code"),
             "opencode": ("npm", "opencode-ai"),
+            "grok-build": ("curl-bash", "https://x.ai/cli/install.sh"),
         }
 
     @pytest.mark.parametrize(
@@ -1743,6 +1762,253 @@ class TestComposeSynthesisHarnessLayer:
         )
         manifest = EnvironmentManifest(compose_file=env.compose_file, runner_service="runner")
         assert "main-base" in manifest.load_compose()["services"]
+
+
+def _skills_task(tmp_path: Path, task_id: str, declared: str | None, files: dict[str, str]):
+    """A task pack on disk declaring *declared* as its skills bundle.
+
+    Goes through ``discover_tasks`` rather than constructing the dataclass, so
+    the declaration is validated the way a real pack's is.
+    """
+    from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+
+    task_dir = tmp_path / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "docker-compose.yaml").write_text(
+        "services:\n  main:\n    build:\n      context: ./environment\n"
+        "    image: ${T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME}\n"
+    )
+    (task_dir / "environment").mkdir()
+    (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.11-slim\n")
+    declaration = "" if declared is None else f"harness_skills_dir: {declared}\n"
+    (task_dir / "task.yaml").write_text(f"instruction: do the thing\n{declaration}")
+    for rel, content in files.items():
+        target = task_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+    return discover_tasks(tmp_path)[task_id]
+
+
+class TestHarnessSkillsBundle:
+    """A task pack ships its own skills; the operator's home directory never does.
+
+    The parity policy refuses Harbor's ``~/.claude/skills`` smuggling because a
+    reward that depends on the eval machine's home directory is not a
+    reproducible reward. These tests lock the replacement: the bundle is
+    declared by the pack, contained inside it, copied only by a harness that
+    reads skills, and hashed onto the artifact when it is.
+    """
+
+    def test_a_declared_bundle_is_parsed_as_declared(self, tmp_path):
+        meta = _skills_task(tmp_path, "declared", "skills/", {"skills/README.md": "s"})
+        assert meta.harness_skills_dir == "skills/"
+
+    def test_no_declaration_is_no_bundle(self, tmp_path):
+        meta = _skills_task(tmp_path, "bare", None, {})
+        assert meta.harness_skills_dir is None
+
+    def test_an_absolute_path_is_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="absolute path"):
+            _skills_task(tmp_path, "absolute", "/etc/skills", {})
+
+    def test_a_traversal_out_of_the_pack_is_refused(self, tmp_path):
+        """``../`` is the direct route back to the operator's own files."""
+        (tmp_path / "outside").mkdir()
+        (tmp_path / "outside" / "SKILL.md").write_text("smuggled")
+        with pytest.raises(ValueError, match="outside the task directory"):
+            _skills_task(tmp_path, "traversal", "../outside", {})
+
+    def test_a_symlink_out_of_the_pack_is_refused(self, tmp_path):
+        """The traversal a pure string check would wave through.
+
+        ``shutil.copytree`` follows symlinks when staging, so a link pointing at
+        the operator's skills would copy their contents into the build context —
+        exactly the contamination the policy rejects, wearing a relative path.
+        """
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        (outside / "SKILL.md").write_text("smuggled")
+        task_dir = tmp_path / "linked"
+        task_dir.mkdir()
+        (task_dir / "skills").symlink_to(outside, target_is_directory=True)
+        with pytest.raises(ValueError, match="outside the task directory"):
+            _skills_task(tmp_path, "linked", "skills", {})
+
+    def test_a_missing_directory_is_refused(self, tmp_path):
+        """A typo must not read as "this task ships no skills"."""
+        with pytest.raises(ValueError, match="not a directory"):
+            _skills_task(tmp_path, "missing", "skils/", {})
+
+    def test_a_file_is_not_a_bundle(self, tmp_path):
+        with pytest.raises(ValueError, match="not a directory"):
+            _skills_task(tmp_path, "file", "skills", {"skills": "not a directory"})
+
+    def test_the_layer_copies_the_bundle_for_a_harness_that_reads_skills(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _skills_task(tmp_path, "copied", "skills/", {"skills/README.md": "s"})
+        env = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
+        )
+        dockerfile = (env.staging_dir / "_harness" / "harness.Dockerfile").read_text()
+        assert "COPY skills/. /root/.claude/skills/" in dockerfile
+
+    def test_the_bundle_survives_the_build_context_exclusions(self, tmp_path):
+        """``.dockerignore`` excludes the staging tree, so the COPY needs an exception.
+
+        Without it the layer's ``COPY`` fails the build outright — the bundle is
+        not silently skipped, but the failure is a `docker build` error many
+        steps from the cause.
+        """
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _skills_task(tmp_path, "context", "skills/", {"skills/nested/SKILL.md": "s"})
+        env = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
+        )
+        patterns = (env.staging_dir / ".dockerignore").read_text().split()
+        assert "!skills" in patterns
+        assert "!skills/**" in patterns
+
+    def test_the_copy_line_follows_the_cli_install(self, tmp_path):
+        """The CLI is installed before its skills land, so the layer cache
+        invalidates on a bundle edit without reinstalling the CLI."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _skills_task(tmp_path, "ordered", "skills/", {"skills/README.md": "s"})
+        env = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
+        )
+        lines = (env.staging_dir / "_harness" / "harness.Dockerfile").read_text().splitlines()
+        assert lines[-1].startswith("COPY skills/.")
+        assert lines[-2].startswith("RUN sh /opt/tolokaforge/install-harness.sh")
+
+    def test_a_harness_that_reads_no_skills_drops_the_bundle_loudly(self, tmp_path):
+        """Dropped, not refused — one task still runs under every harness."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _skills_task(tmp_path, "dropped", "skills/", {"skills/README.md": "s"})
+        with pytest.warns(UserWarning, match="declares no skills_dir_target"):
+            env = materialise_task_environment(
+                meta, staging_root=tmp_path / "staging", agent_harness="codex"
+            )
+        dockerfile = (env.staging_dir / "_harness" / "harness.Dockerfile").read_text()
+        assert "COPY skills" not in dockerfile
+
+    def test_a_pack_without_skills_warns_about_nothing(self, tmp_path, recwarn):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _skills_task(tmp_path, "quiet", None, {})
+        materialise_task_environment(meta, staging_root=tmp_path / "staging", agent_harness="codex")
+        assert [w for w in recwarn if "skills_dir_target" in str(w.message)] == []
+
+    def test_editing_the_bundle_restages_the_build_context(self, tmp_path):
+        """The staged Dockerfile is only valid for the bundle it was built
+        against, so a bundle edit must not reuse the previous staging dir."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _skills_task(tmp_path, "restaged", "skills/", {"skills/README.md": "before"})
+        first = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
+        )
+        (meta.task_dir / "skills" / "README.md").write_text("after")
+        second = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
+        )
+        assert first.staging_dir != second.staging_dir
+
+    def test_the_bundle_digest_reads_path_and_content(self, tmp_path):
+        """A rename with identical bytes is a different bundle: the path is how
+        the CLI discovers a skill."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import skills_bundle_digest
+
+        meta = _skills_task(tmp_path, "digest", "skills/", {"skills/a/SKILL.md": "same"})
+        before = skills_bundle_digest(meta.task_dir, meta.harness_skills_dir)
+
+        (meta.task_dir / "skills" / "a" / "SKILL.md").rename(meta.task_dir / "skills" / "b.md")
+        renamed = skills_bundle_digest(meta.task_dir, meta.harness_skills_dir)
+        assert renamed != before
+
+        (meta.task_dir / "skills" / "b.md").write_text("edited")
+        assert skills_bundle_digest(meta.task_dir, meta.harness_skills_dir) != renamed
+
+    def test_the_artifact_records_the_bundle_that_reached_the_image(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import skills_bundle_digest
+
+        fixture_dir = Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "task_ids": ["echo-hello-skills"],
+                "staging_root": str(tmp_path),
+                "agent_harness": "claude-code",
+                "agent_model": "m",
+            }
+        )
+        metadata = adapter.to_task_description("echo-hello-skills").metadata
+        assert metadata["harness_skills_bundle_sha"] == skills_bundle_digest(
+            fixture_dir / "echo-hello-skills", "skills/"
+        )
+
+    def test_a_task_without_a_bundle_omits_the_key(self, tmp_path):
+        """Absent has to stay distinguishable from "hashed to something"."""
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        fixture_dir = Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "task_ids": ["echo-hello"],
+                "staging_root": str(tmp_path),
+                "agent_harness": "claude-code",
+                "agent_model": "m",
+            }
+        )
+        metadata = adapter.to_task_description("echo-hello").metadata
+        assert "harness_skills_bundle_sha" not in metadata
+
+    def test_a_dropped_bundle_is_not_recorded_as_installed(self, tmp_path):
+        """The harness read no skills, so the artifact must not claim a bundle."""
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        fixture_dir = Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "task_ids": ["echo-hello-skills"],
+                "staging_root": str(tmp_path),
+                "agent_harness": "codex",
+                "agent_model": "m",
+            }
+        )
+        metadata = adapter.to_task_description("echo-hello-skills").metadata
+        assert "harness_skills_bundle_sha" not in metadata
+
+    def test_a_relative_skills_target_is_refused_at_registry_load(self):
+        """A ``COPY`` target resolving against WORKDIR is not a skills path."""
+        from tolokaforge_adapter_terminal_bench.harness import HarnessSpec
+
+        with pytest.raises(ValueError, match="skills_dir_target"):
+            HarnessSpec(
+                install_source="cli",
+                version="1.0.0",
+                argv_prefix=("cli",),
+                argv_suffix=(),
+                skills_dir_target="~/.claude/skills/",
+            )
 
 
 class TestTerminalBenchAdapterHarnessImageBuilds:

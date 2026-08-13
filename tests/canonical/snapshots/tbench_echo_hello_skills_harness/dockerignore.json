@@ -1,0 +1,3 @@
+{
+  "dockerignore": "*\n!_harness/install-harness.sh\n!skills\n!skills/**\n"
+}

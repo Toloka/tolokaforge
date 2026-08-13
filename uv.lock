@@ -4765,12 +4765,14 @@ name = "tolokaforge-adapter-terminal-bench"
 version = "0.1.0"
 source = { editable = "external_adapters/tolokaforge-adapter-terminal-bench" }
 dependencies = [
+    { name = "jinja2" },
     { name = "pyyaml" },
     { name = "tolokaforge" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "jinja2", specifier = ">=3.1.0" },
     { name = "pyyaml", specifier = ">=6.0.1" },
     { name = "tolokaforge", editable = "." },
 ]

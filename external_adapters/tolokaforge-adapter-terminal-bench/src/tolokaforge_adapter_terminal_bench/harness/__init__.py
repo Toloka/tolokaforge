@@ -210,6 +210,18 @@ class HarnessSpec(BaseModel):
     (compose interpolation is stringly typed) and must not overlap
     :data:`PROVIDER_ENV_KEYS` (a run-config would then shadow this)."""
 
+    skills_dir_target: str | None = None
+    """Absolute container directory a task pack's skills bundle is copied into
+    during the harness image build, or ``None`` for a CLI that reads no skills.
+
+    The parity policy refuses the operator's own ``~/.claude/skills``: what a
+    benchmark agent can read has to be versioned with the task rather than with
+    the laptop the eval ran on. A task declaring
+    :attr:`~tolokaforge_adapter_terminal_bench.task_parser.TerminalBenchTask.harness_skills_dir`
+    gets that directory copied here, and the bundle's content hash is recorded
+    on the trial artifact. Left ``None``, the harness installs no skills and a
+    pack shipping them still runs — without them."""
+
     strip_vendor_namespace: bool = False
     """Whether ``harness_model`` should strip a leading ``vendor/`` namespace
     from the model name before handing it to the CLI. Non-``False`` for CLIs
@@ -253,6 +265,17 @@ class HarnessSpec(BaseModel):
                     f"config_files[{path!r}] reads undeclared variable(s) {unknown!r}; "
                     f"available: {sorted(CONFIG_TEMPLATE_VARIABLES)!r}."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _skills_target_is_an_absolute_path(self) -> HarnessSpec:
+        """Refuse a target the image build would resolve somewhere unintended."""
+        if self.skills_dir_target is not None and not self.skills_dir_target.startswith("/"):
+            raise ValueError(
+                f"skills_dir_target {self.skills_dir_target!r} is relative; a Dockerfile "
+                "`COPY` target resolves against the image's WORKDIR, so give the absolute "
+                "path the CLI reads skills from. `~` is not expanded either."
+            )
         return self
 
     @model_validator(mode="after")
@@ -381,6 +404,14 @@ PROVIDER_ENV_KEYS: frozenset[str] = frozenset(
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "GOOGLE_API_KEY",
+        # OpenRouter as its own named provider surface — Grok Build reads
+        # ``env_key = "OPENROUTER_API_KEY"`` from its config.toml when
+        # routing via OpenRouter rather than through the OpenAI-compat
+        # slot. Adding the two names doesn't reduce safety (the set
+        # stays a closed allow-list); a harness declaring an unknown
+        # OpenRouter-shaped variable still fails validate_provider_env_keys.
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_BASE_URL",
     }
 )
 """Environment variables a harness CLI may be given inside the task container.

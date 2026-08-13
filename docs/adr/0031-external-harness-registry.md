@@ -235,11 +235,20 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
   second contributor wants to ship a harness YAML in a pip package.
 - **Sidecar Python module for new harness classes** — file when a CLI
   surfaces that doesn't fit any HarnessSpec field.
-- **Task-pack skills bundle** — a follow-up field
-  (`harness_skills_dir: str | None`) letting a task pack declare its own
-  Claude skills to inject at image-build time, replacing the operator-
-  environment contamination Harbor smuggles today. Deferred until
-  Arena needs it.
+- **Task-pack skills bundle** — landed. A task pack declares
+  `harness_skills_dir: <task-relative path>` in its `task.yaml`, and
+  `HarnessSpec.skills_dir_target` names where a harness wants such a
+  bundle (`/root/.claude/skills/` for claude-code; unset means the
+  harness installs none). The image layer copies the directory, and
+  `TaskDescription.metadata["harness_skills_bundle_sha"]` records its
+  content hash — the reproducible, auditable replacement for the
+  operator-environment contamination Harbor smuggles. The declared path
+  is refused unless it resolves inside the task pack, symlinks included.
+- **Skills targets for the non-Anthropic harnesses** — only claude-code
+  declares a `skills_dir_target`. Each other CLI needs its own skills
+  path established against that CLI's documented discovery order before
+  it can claim one; until then those harnesses install no skills and say
+  so with a warning.
 
 ## Links
 
@@ -256,6 +265,8 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
     — the shipped registry.
   - `external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py`
     — `harness_presets_file` param, overlay wiring, `provider_env` union.
+  - `external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/task_parser.py`
+    — `harness_skills_dir` parsing and its containment check.
   - Commits `c0773ac3` (Pydantic-ise + `provider_env` + `strip_vendor_namespace`),
     `bc09881a` (YAML loader), `09eed862` (operator overlay + union).
 - External references:

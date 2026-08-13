@@ -84,13 +84,28 @@ def tbench_harness_adapter(test_data_dir, tmp_path) -> TerminalBenchAdapter:
     )
 
 
+@pytest.fixture
+def tbench_skills_harness_adapter(test_data_dir, tmp_path) -> TerminalBenchAdapter:
+    """Harness mode against the fixture task that ships its own skills bundle."""
+    tbench_tasks_dir = test_data_dir / "terminal_bench_tasks"
+    return TerminalBenchAdapter(
+        {
+            "terminal_bench_dir": str(tbench_tasks_dir),
+            "task_ids": ["echo-hello-skills"],
+            "staging_root": str(tmp_path / "staging"),
+            "agent_harness": "claude-code",
+            "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
+        }
+    )
+
+
 class TestTerminalBenchAdapterCanon:
     """Canonical tests for TerminalBenchAdapter task loading and serialisation."""
 
     def test_task_discovery(self, tbench_adapter):
-        """Adapter discovers the echo-hello fixture task."""
+        """Adapter discovers both fixture tasks — plain, and skills-carrying."""
         task_ids = tbench_adapter.get_task_ids()
-        assert task_ids == ["echo-hello"]
+        assert task_ids == ["echo-hello", "echo-hello-skills"]
 
     def test_task_config(self, tbench_adapter, canon_snapshot):
         """TaskConfig has correct adapter_type, category, and instruction."""
@@ -191,6 +206,50 @@ class TestTerminalBenchHarnessModeCanon:
             assert (
                 f"{key}={value}" in agent_env
             ), f"container_env pair {key}={value!r} missing from synthesised compose"
+
+
+class TestTerminalBenchSkillsBundleCanon:
+    """The substrate for a task pack that ships its own skills bundle.
+
+    Pinned because the bundle changes what the agent can read: the ``COPY``
+    line, its build-context exception, and the recorded bundle hash are the
+    three ends that have to agree, and a reward earned with skills installed is
+    not comparable to one earned without them.
+    """
+
+    def test_synthesised_compose(self, tbench_skills_harness_adapter, canon_snapshot):
+        import yaml
+
+        env = tbench_skills_harness_adapter._environment("echo-hello-skills")
+        snap = canon_snapshot("tbench_echo_hello_skills_harness")
+
+        with env.compose_file.open() as f:
+            actual = yaml.safe_load(f)
+        snap.assert_match(actual, "synthesised_compose.json")
+
+    def test_harness_dockerfile_copies_the_bundle(
+        self, tbench_skills_harness_adapter, canon_snapshot
+    ):
+        """The CLI install, then the pack's own skills — nothing from the host."""
+        env = tbench_skills_harness_adapter._environment("echo-hello-skills")
+        snap = canon_snapshot("tbench_echo_hello_skills_harness")
+
+        dockerfile = (env.staging_dir / "_harness" / "harness.Dockerfile").read_text()
+        snap.assert_match({"dockerfile": dockerfile}, "harness_dockerfile.json")
+
+    def test_build_context_readmits_the_bundle(self, tbench_skills_harness_adapter, canon_snapshot):
+        """``.dockerignore`` excludes the staging tree; the bundle is an exception."""
+        env = tbench_skills_harness_adapter._environment("echo-hello-skills")
+        snap = canon_snapshot("tbench_echo_hello_skills_harness")
+
+        dockerignore = (env.staging_dir / ".dockerignore").read_text()
+        snap.assert_match({"dockerignore": dockerignore}, "dockerignore.json")
+
+    def test_metadata_records_the_bundle(self, tbench_skills_harness_adapter):
+        """The hash is on the artifact, so a bundle edit is visible in the run
+        record rather than only in the image."""
+        metadata = tbench_skills_harness_adapter.to_task_description("echo-hello-skills").metadata
+        assert len(metadata["harness_skills_bundle_sha"]) == 64
 
 
 class TestTerminalBenchAdapterIntegrity:

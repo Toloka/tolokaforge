@@ -44,9 +44,18 @@ harnesses:
     # by default. Harbor sets the same env for the same reason.
     # `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` disables the CLI's opt-in
     # telemetry / analytics fetches — harbor sets it too.
+    # `CLAUDE_CONFIG_DIR` names the directory the CLI discovers skills under.
+    # It matches the default for the container's root user, stated rather than
+    # inherited so `skills_dir_target` below and the CLI's search path cannot
+    # drift apart when a task image sets `HOME` elsewhere.
     container_env:
       IS_SANDBOX: "1"
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      CLAUDE_CONFIG_DIR: "/root/.claude"
+    # Where a task pack's own `harness_skills_dir` bundle is copied in the
+    # image layer. Only a task that ships skills installs any; the operator's
+    # `~/.claude/skills` is never a source (README, parity policy).
+    skills_dir_target: "/root/.claude/skills/"
     # Anthropic-shaped OpenRouter endpoint. `ANTHROPIC_BASE_URL` is a literal
     # URL (not a secret); the key value comes from the operator via the
     # `OPENROUTER_API_KEY` secret.
@@ -204,3 +213,75 @@ harnesses:
     provider_env:
       ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
       ANTHROPIC_BASE_URL: "https://openrouter.ai/api"
+
+  grok-build:
+    # Grok Build's installer is a curl-piped shell script from x.ai — the
+    # first non-npm entry in this registry. install-harness.sh's
+    # `curl-bash` branch handles the download; the installer places the
+    # binary at ~/.grok/bin/grok and the branch symlinks it into
+    # /usr/local/bin/ so `grok` resolves on PATH.
+    install_method: "curl-bash"
+    install_source: "https://x.ai/cli/install.sh"
+    # TODO(low-conf): harbor doesn't pin a Grok version; the installer
+    # accepts one on stdin. Bump after the first matrix run confirms the
+    # actually-installed release.
+    version: "0.2.91"
+    argv_prefix: ["grok", "--no-auto-update"]
+    argv_suffix:
+      # `--single` is Grok's non-interactive mode; instruction is the
+      # positional argument that follows the prefix. `--always-approve`
+      # is the permission-bypass equivalent (Grok has no
+      # --permission-mode). `--output-format streaming-json` is the
+      # JSON-stream mode matching harbor's invocation shape.
+      - "--single"
+      - "--always-approve"
+      - "--output-format"
+      - "streaming-json"
+    instruction_channel: "argv"
+    # Grok reads --model on the CLI, but also reads model routing from
+    # config.toml. The env_model_vars quartet claude-code needs doesn't
+    # apply — Grok has no sub-agent notion.
+    env_model_vars: []
+    # Grok's model catalog uses the bare slug post-strip.
+    strip_vendor_namespace: true
+    container_env:
+      GROK_DISABLE_TELEMETRY: "true"
+    # OpenRouter-shaped provider envelope. `OPENROUTER_API_KEY` and
+    # `OPENROUTER_BASE_URL` join the allow-list this release (see
+    # PROVIDER_ENV_KEYS) so Grok's own env_key convention lands cleanly
+    # without pretending its OpenAI-compat.
+    provider_env:
+      OPENROUTER_API_KEY: "${secret:OPENROUTER_API_KEY}"
+      OPENROUTER_BASE_URL: "https://openrouter.ai/api/v1"
+    # Grok's config.toml is a 5-table structured document keyed on the
+    # resolved model slug — the reason HarnessSpec.config_files grew to
+    # accept Jinja-templated content. This drops in verbatim from
+    # harbor's `_build_config_toml` at grok_build.py:350-401 (OpenRouter
+    # provider path). `chat_completions` is Grok's own name for
+    # OpenAI-shaped routing and is not a whitelist variable — hardcoded
+    # because we always route this entry through OpenRouter; an operator
+    # targeting a different provider does a whole-entry replacement per
+    # ADR 0031.
+    config_files:
+      "/root/.grok/config.toml": |
+        [cli]
+        auto_update = false
+
+        [features]
+        telemetry = false
+
+        [harness]
+        disable_codebase_upload = true
+
+        [models]
+        default = "{{ model }}"
+        session_summary = "{{ model }}"
+        image_description = "{{ model }}"
+        web_search = "{{ model }}"
+
+        [model.{{ model }}]
+        name = "{{ model }}"
+        model = "{{ model }}"
+        base_url = "{{ base_url }}"
+        env_key = "{{ api_key_env }}"
+        api_backend = "chat_completions"

@@ -245,15 +245,34 @@ somewhere else, so a per-harness policy is one entry to read.
 | Model-name form | Whether a leading `vendor/` namespace is dropped before the model reaches the CLI. Codex and gemini-cli catalogs use bare names; a namespaced string makes them drop OpenRouter routing for the vendor's default endpoint. | `HarnessSpec.strip_vendor_namespace` |
 | Model-flag form | Whether the model flag and its value are two argv words (`--model gpt-5`) or one (`--model=gpt-5`). A CLI parsing its flags strictly accepts only one of the two. | `HarnessSpec.model_flag_style` |
 | File-based configuration | Files the CLI reads its configuration from, rendered per trial. | `HarnessSpec.config_files` |
+| Skills | Where a task pack's own `harness_skills_dir` bundle is copied in the image layer. Unset means the harness installs no skills; the operator's `~/.claude/skills` is never a source. | `HarnessSpec.skills_dir_target` |
 
-**Skills are deliberately not aligned.** Harbor copies the operator's
-`~/.claude/skills/` into the container, so its Claude sees whatever
-personal skills the person running the eval has installed on their
-laptop. That is not reproducible across operators and it is not a
-property a benchmark reward should quietly depend on, so the TF adapter
-installs no skills. The delta this creates is the *right* delta — it
-shows up as "the container has zero skills", stable across machines and
-dates.
+**Operator skills are deliberately not aligned.** Harbor copies the
+operator's `~/.claude/skills/` into the container, so its Claude sees
+whatever personal skills the person running the eval has installed on
+their laptop. That is not reproducible across operators and it is not a
+property a benchmark reward should quietly depend on, so the adapter
+never reads the operator's home directory. The delta this creates is the
+*right* delta — stable across machines and dates.
+
+A task that genuinely needs domain skills ships them itself. Its
+`task.yaml` declares `harness_skills_dir: <task-relative path>`, and the
+harness image layer copies that directory to the CLI's skills path —
+`HarnessSpec.skills_dir_target`, `/root/.claude/skills/` for claude-code.
+This keeps every property the smuggled version loses: the bundle is
+versioned with the tests it is scored against, it shows up in a `git
+diff` on the task pack, and its content hash is recorded on the trial
+artifact as `metadata["harness_skills_bundle_sha"]` (per-file sha256,
+hashed in sorted path order, so a rename moves it as surely as an edit).
+
+The declared path is refused unless it resolves to a directory *inside*
+the task pack — checked after symlink resolution, since a link out of
+the pack would reintroduce exactly the host contamination the policy
+rejects. A harness leaving `skills_dir_target` unset installs no skills:
+a pack that ships them still runs under it, without them and with a
+warning, so one task stays comparable across harnesses. The bundle hash
+is written only when the bundle actually reached the image, so an absent
+key reads as "this agent had no skills" and never as "unknown".
 
 Some CLIs need file-based configuration that no env var (compose or
 otherwise) can supply — codex reads `openai_base_url` from

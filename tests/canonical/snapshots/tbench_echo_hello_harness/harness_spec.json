@@ -9,6 +9,7 @@
   "config_files": {},
   "container_env": {
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CONFIG_DIR": "/root/.claude",
     "IS_SANDBOX": "1"
   },
   "env_model_vars": [
@@ -32,6 +33,7 @@
     "ANTHROPIC_API_KEY": "${secret:OPENROUTER_API_KEY}",
     "ANTHROPIC_BASE_URL": "https://openrouter.ai/api"
   },
+  "skills_dir_target": "/root/.claude/skills/",
   "strip_vendor_namespace": false,
   "version": "2.1.231"
 }

@@ -49,7 +49,9 @@ from tolokaforge.secrets import expand_secret_refs, get_default
 from tolokaforge_adapter_terminal_bench.compose_synthesis import (
     PROJECT_PREFIX,
     MaterialisedEnvironment,
+    installable_skills_dir,
     materialise_task_environment,
+    skills_bundle_digest,
 )
 from tolokaforge_adapter_terminal_bench.harness import (
     ENGINE_LOOP,
@@ -439,6 +441,11 @@ class TerminalBenchAdapter(BaseAdapter):
         know about a coding-harness CLI: present means run this command once in
         place of the LLM turn loop, absent means run the loop. The CLI's name
         and argv stay inside this adapter.
+
+        ``harness_skills_bundle_sha`` appears only when a skills bundle reached
+        the image — the task shipped one and the harness had somewhere to put
+        it. Absent therefore reads as "this agent had no skills", which a
+        bundle-shaped placeholder value could not say.
         """
         metadata: dict[str, Any] = {
             "difficulty": meta.difficulty,
@@ -456,6 +463,11 @@ class TerminalBenchAdapter(BaseAdapter):
                 self.harnesses,
                 self.agent_provider_env,
             )
+            skills_dir = installable_skills_dir(meta, self.harness_spec)
+            if skills_dir is not None:
+                metadata["harness_skills_bundle_sha"] = skills_bundle_digest(
+                    meta.task_dir, skills_dir
+                )
         return metadata
 
     # -- lifecycle helpers ----------------------------------------------------

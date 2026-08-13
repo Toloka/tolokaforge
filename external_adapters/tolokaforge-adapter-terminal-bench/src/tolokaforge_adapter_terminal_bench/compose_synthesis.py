@@ -26,9 +26,11 @@ in :meth:`docker_stack_requirements`; nothing in this module shells out.
 from __future__ import annotations
 
 import hashlib
+import os.path
 import re
 import shlex
 import shutil
+import warnings
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -213,10 +215,23 @@ def materialise_task_environment(
         db_service_image=db_service_image,
     )
     if harness_spec is not None:
+        skills_dir = installable_skills_dir(meta, harness_spec)
+        if meta.harness_skills_dir is not None and skills_dir is None:
+            # Dropped rather than refused, so one task still runs under every
+            # harness — but never silently: a trial whose agent had no skills
+            # must not read back as one that did.
+            warnings.warn(
+                f"terminal-bench task {meta.task_id!r} declares harness_skills_dir "
+                f"{meta.harness_skills_dir!r}, but the selected harness declares no "
+                "skills_dir_target; the bundle is not installed and the agent runs "
+                "without it.",
+                stacklevel=2,
+            )
         _write_harness_build_context(
             staging_dir,
             base_image=_agent_image(meta.task_id, image_registry, image_tag),
             spec=harness_spec,
+            skills_dir=skills_dir,
         )
     compose_file = staging_dir / _SYNTHESISED_COMPOSE_FILENAME
     compose_file.write_text(yaml.safe_dump(synthesised, sort_keys=False))
@@ -290,6 +305,37 @@ def _compute_digest(task_dir: Path, params: dict[str, str]) -> str:
     return hasher.hexdigest()[:16]
 
 
+def installable_skills_dir(meta: TerminalBenchTask, spec: HarnessSpec) -> str | None:
+    """The task's skills bundle when *spec*'s harness has somewhere to put it.
+
+    The single answer to "did skills reach the agent": the image layer copies
+    what this returns, and the artifact records a bundle hash exactly when it
+    returns one. Split answers would let a trial claim skills its container
+    never had.
+    """
+    if spec.skills_dir_target is None:
+        return None
+    return meta.harness_skills_dir
+
+
+def skills_bundle_digest(task_dir: Path, skills_dir: str) -> str:
+    """Content hash of the skills bundle at ``task_dir / skills_dir``.
+
+    Each file contributes its task-relative path and the sha256 of its bytes;
+    the pairs are hashed in sorted path order, so the value is independent of
+    filesystem walk order and moves when a file is added, removed, renamed, or
+    edited. A rename alone has to move it: a skill's path is how the CLI
+    discovers it, so two bundles differing only in layout are two different
+    things to be told apart on the artifact.
+    """
+    root = task_dir / skills_dir
+    hasher = hashlib.sha256()
+    files = sorted((p.relative_to(root).as_posix(), p) for p in root.rglob("*") if p.is_file())
+    for rel, path in files:
+        hasher.update(f"{rel}\n{hashlib.sha256(path.read_bytes()).hexdigest()}\n".encode())
+    return hasher.hexdigest()
+
+
 def _write_staging(task_dir: Path, staging_dir: Path) -> None:
     """Copy the task directory into ``staging_dir`` and set up the trial layout.
 
@@ -314,27 +360,40 @@ def _write_staging(task_dir: Path, staging_dir: Path) -> None:
     (staging_dir / "_logs" / "agent").mkdir(parents=True, exist_ok=True)
 
 
-def _write_harness_build_context(staging_dir: Path, *, base_image: str, spec: HarnessSpec) -> None:
+def _write_harness_build_context(
+    staging_dir: Path, *, base_image: str, spec: HarnessSpec, skills_dir: str | None
+) -> None:
     """Materialise the harness image layer's build context in the staging dir.
 
     The layer is one ``COPY`` of the install script plus one ``RUN`` of it
-    against *base_image*, installing the version the spec pins. Both
-    live under ``_harness/`` so a task pack shipping its own
-    ``install-harness.sh`` or ``harness.Dockerfile`` at its root cannot collide
-    with them, and a ``.dockerignore`` keeps the rest of the staging tree
-    (task sources, tests, log mountpoints) out of the layer's build context.
+    against *base_image*, installing the version the spec pins — followed by a
+    ``COPY`` of the task's own skills bundle when it ships one and the harness
+    reads skills. The install script lives under ``_harness/`` so a task pack
+    shipping its own ``install-harness.sh`` or ``harness.Dockerfile`` at its
+    root cannot collide with it, and a ``.dockerignore`` keeps the rest of the
+    staging tree (task sources, tests, log mountpoints) out of the layer's
+    build context — everything the layer copies has to be re-included by name.
     """
     harness_dir = staging_dir / _HARNESS_STAGING_DIR
     harness_dir.mkdir(exist_ok=True)
     shutil.copy2(INSTALL_SCRIPT, harness_dir / INSTALL_SCRIPT.name)
-    (harness_dir / _HARNESS_DOCKERFILE_NAME).write_text(
-        f"FROM {base_image}\n"
-        f"COPY {_HARNESS_STAGING_DIR}/{INSTALL_SCRIPT.name} {_HARNESS_INSTALL_PATH}\n"
+
+    install_script_path = f"{_HARNESS_STAGING_DIR}/{INSTALL_SCRIPT.name}"
+    dockerfile = [
+        f"FROM {base_image}",
+        f"COPY {install_script_path} {_HARNESS_INSTALL_PATH}",
         f"RUN sh {_HARNESS_INSTALL_PATH} {spec.install_method} "
-        f"{shlex.quote(spec.install_source)} {shlex.quote(spec.version)}\n"
-    )
+        f"{shlex.quote(spec.install_source)} {shlex.quote(spec.version)}",
+    ]
+    context_includes = [install_script_path]
+    if skills_dir is not None:
+        bundle = os.path.normpath(skills_dir)
+        dockerfile.append(f"COPY {bundle}/. {spec.skills_dir_target}")
+        context_includes.extend([bundle, f"{bundle}/**"])
+
+    (harness_dir / _HARNESS_DOCKERFILE_NAME).write_text("\n".join(dockerfile) + "\n")
     (staging_dir / ".dockerignore").write_text(
-        f"*\n!{_HARNESS_STAGING_DIR}/{INSTALL_SCRIPT.name}\n"
+        "\n".join(["*", *(f"!{path}" for path in context_includes)]) + "\n"
     )
 
 
