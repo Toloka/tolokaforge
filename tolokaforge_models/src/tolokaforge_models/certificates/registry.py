@@ -2645,6 +2645,108 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # Cohere Command A+ 05-2026 (the gateway ``azure_ai`` route, reached
+    # through OpenRouter) — landed via auto-resolve (Slack-requested
+    # integration, PR #1124). Routes through the model-specific
+    # ``cohere_command_a_plus_05_2026`` preset (see model_presets.yaml),
+    # declared ahead of the shared ``cohere_command_a_plus`` preset and a
+    # strict superset of it: ``schema_sanitizer: cohere_recursive``,
+    # ``response_policy: cohere_root_key_repair``,
+    # ``reasoning_codec: openai_summary_replay``, and the shared preset's
+    # ``tool_choice``/``auto`` drop rule carried over verbatim.
+    #
+    # The observe (default) baseline surfaced three preset-fixable clusters,
+    # each 0/15 and each reprobed 5/5 under the preset above:
+    #
+    #   * ``RECURSIVE_REF_TOOL_CALL`` — ``strict`` raised "$ref resolution
+    #     exceeded depth 16" IN-ENGINE on the recursive ``_TreeNode``, so the
+    #     model never saw ``submit_tree`` (0/15 on all four shapes). Cycle-
+    #     tolerant ``$ref`` inlining fixes the engine-side raise; the residual
+    #     ``simple`` / ``deep_chain`` / ``wide_tree`` misses were a root-key
+    #     mangling artifact (``{"submit_treeroot": …}`` carrying a correct
+    #     tree), repaired by the depth-0 rename in the response policy. Stays
+    #     ``required`` — the recursion itself was never wrong.
+    #   * ``DICT_MAP_TOOL_CALL`` / ``DISCRIMINATED_UNION_TOOL_CALL`` — both
+    #     15/15 native on the base probes, so both stay ``required``. Three
+    #     structural *variants* regressed because a dict-map value schema with
+    #     no ``properties`` to lift reached the wire as ``items: {key}`` alone:
+    #     ``dict_map__scalar_values`` packed the value into the key string,
+    #     ``dict_map__nested_in_object`` emitted a list, and
+    #     ``discriminated_union__union_in_dict_map`` emitted key-only items.
+    #     ``carry_scalar_dict_map_value`` + the ``{key, value}`` reversal took
+    #     all three 0/15 → 5/5.
+    #   * ``UNSIGNED_THINKING_REPLAY`` — the ``openai`` codec extracts the flat
+    #     reasoning summary but emitted nothing on replay, so the outgoing
+    #     assistant dict carried no ``reasoning_details`` (0/15).
+    #     ``OpenAISummaryReplayReasoningCodec`` rebuilds the unsigned
+    #     OpenRouter envelope. ``THINKING_EMITS_BLOCKS`` was already 15/15.
+    #
+    # The four ``known_unsupported`` ceilings are the observe-run ceilings
+    # (decision.json), each 0/15 at baseline and not preset-fixable:
+    #
+    #   * ``RE2_PATTERN_TOLERANCE`` — the route COMPILES ``pattern`` values
+    #     rather than treating them as inert hints, and returns HTTP 500 on
+    #     lookaround ("regex_converter.cc:75: Regex parsing error at position
+    #     4: Lookahead is not supported yet"). The sanitiser strips
+    #     RE2-incompatible patterns so real tool schemas survive, which is
+    #     precisely why the tolerance itself cannot be claimed.
+    #   * ``PROMPT_CACHING`` / ``IMPLICIT_PROMPT_CACHING`` — neither cache
+    #     surface is wired on this route: on an 8k-token prompt call 1 created
+    #     0 ``cache_creation_input_tokens`` and an identical call 2 read 0
+    #     ``cache_read_input_tokens``, 15/15 reps. Unlike inkling's flaky
+    #     auto-cache this is a flat zero, so both are demoted rather than one.
+    #   * ``THINKING_REPLAY_ROUNDTRIP`` — the model surfaces summary-only
+    #     reasoning and emits no signed blocks on turn 1, so the signed-replay
+    #     probe has nothing to assert. The replay codec synthesises no
+    #     signature, so fixing ``UNSIGNED_THINKING_REPLAY`` deliberately does
+    #     not lift this one.
+    #
+    # ``COST_USD_POPULATED`` is ``required`` and priced: litellm does not carry
+    # this gateway route, and it is not on OpenRouter's public model list, so
+    # ``pricing.json`` gets the rates derived from the observe run's own live
+    # billing — input $0.80/1M, output $3.20/1M, an exact zero-residual fit
+    # across all 1317 ``cost_source: litellm`` calls in the wire-probe metrics.
+    # No call in that run ever reported cached tokens, consistent with the two
+    # caching ceilings above, so the entry carries no ``cache_read`` rate.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__azure_ai_cohere-command-a-plus-05-2026",
+        provider="openrouter",
+        name="azure_ai/cohere-command-a-plus-05-2026",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.PROGRESS_AFTER_SUCCESS,
+                C.THINKING_EMITS_BLOCKS,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.RE2_PATTERN_TOLERANCE,
+                C.THINKING_REPLAY_ROUNDTRIP,
+            }
+        ),
+    ),
 ]
 
 
