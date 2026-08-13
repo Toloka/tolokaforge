@@ -21,6 +21,10 @@ from testcontainers.core.wait_strategies import (
 
 logger = logging.getLogger(__name__)
 
+#: The image ``runner_container`` starts. The builder tags by content hash and never
+#: moves this tag, so a suite reading the running container's provenance names it too.
+RUNNER_IMAGE = "tolokaforge-runner:latest"
+
 _LOG_TAIL_LINES = 40
 
 
@@ -203,7 +207,7 @@ def runner_container(
     Note:
         Skips gracefully if the Docker image is not available locally.
     """
-    image_name = "tolokaforge-runner:latest"
+    image_name = RUNNER_IMAGE
     _check_image_available(image_name)
 
     container = DockerContainer(image_name)

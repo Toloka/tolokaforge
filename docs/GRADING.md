@@ -276,10 +276,10 @@ plain product of the two scores, each turn every cell red. No cell there lists a
 `numeric_string_fields` entry; that key is proven by its own differential, below.
 Nor does the canonical suite prove this test *passes*: it resolves the nodeid and stops
 there. The job that runs on every pull request is `test-smoke`, whose repo-suite pytest
-step is `tests/unit/ tests/canonical/` and which has no integration step at all; `test-gate`
-is the job that runs `tests/integration/`, and it is triggered by the `ready-to-merge`
-label — so the canonical tier gates every pull request, and this tier's output is
-quoted from a local run until that label lands.
+step is `tests/unit/ tests/canonical/` and which has no integration step at all;
+`tests/integration/` runs in `test-full` (push and schedule) and in `test-gate`, which is
+triggered by the `ready-to-merge` label — so the canonical tier gates every pull request,
+and this tier's output is quoted from a local run until that label lands.
 
 **`numeric_string_fields` folds by name, on both substrates.** A six-cell matrix in the
 parity suite declares one money field at `"130.00"` and grades a trial that left it at
@@ -2362,8 +2362,8 @@ component. The two trials pin the verdict, the zeroed component,
 values and the `FAILED trace gates:` sentence.
 
 **What that proves and what it does not.** The shipped runner image — a separately built
-artefact, installed from a wheel whose file partition excludes twelve `core/grading`
-modules — carries the gate: it reads `severity` off an authored pack and reports which
+artefact, installed from a wheel whose file partition excludes part of `core/grading`
+— carries the gate: it reads `severity` off an authored pack and reports which
 gate shut. Measured by dropping `severity: gate` from that pack, which turns the failing
 trial into a passing one scoring `0.5`: the difference between a gate and a low score is
 what those two trials are. What they do not reach is a gate over records the container

@@ -404,13 +404,15 @@ with the pack as `NativeAdapter` resolves it, then `GradeTrial` over real gRPC w
 the authored trajectory as `llm_messages_json`. What it locks that no canonical
 test can is the **image**: the parity suite's runner half is an in-process servicer
 built from the working tree, while the image installs the
-`tolokaforge-runner-subset` wheel, whose file partition already excludes twelve
-`core/grading` modules. Off the wire it pins the verdict, the `trace_checks`
+`tolokaforge-runner-subset` wheel, whose file partition already excludes part of
+`core/grading`. Off the wire it pins the verdict, the `trace_checks`
 component, `trace_checks_summary.gate_failed`, `failed_gate_ids`, the per-constraint
-`severity` values and the sentence naming the gate that tripped. Every run — green
-or red — names the container's image id and the current tree's expected image ref,
-and a run where the tree's image is built but `:latest` is a different one fails
-naming the retag remedy. Keyless: no LLM, no API key, and no tool is executed.
+`severity` values and the sentence naming the gate that tripped. It refuses to grade
+against an image the current tree did not build: the container's image must carry
+`expected_image_ref("runner")` among its tags, which is what the fixture's own
+build-and-tag path leaves there, so a stale `:latest` fails naming
+`uv run tolokaforge docker build --core` rather than grading under an older tree.
+Keyless: no LLM, no API key, and no tool is executed.
 
 `tests/integration/docker/test_terminal_bench_per_trial.py` is the end-to-end
 lock for the terminal-bench per-trial substrate: it materialises the

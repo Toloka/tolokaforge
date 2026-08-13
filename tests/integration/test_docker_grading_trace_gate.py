@@ -5,8 +5,8 @@
 runner's ``GradeTrial`` handlers, but its runner half is an in-process servicer built from
 the working tree. The image is a separately built artefact: it installs the
 ``tolokaforge-runner-subset`` wheel, whose file partition
-(``tolokaforge/core/_runner_subset.py``) already excludes twelve ``core/grading`` modules,
-and which resolves its own dependencies. Whether the shipped image can grade a gate is
+(``tolokaforge/core/_runner_subset.py``) already excludes part of ``core/grading``, and
+which resolves its own dependencies. Whether the shipped image can grade a gate is
 therefore a fact about the image, and this is where it is read — ``RegisterTrial`` then
 ``GradeTrial`` over a real channel into a real container, with the verdict taken off the
 wire.
@@ -25,9 +25,9 @@ it. The stronger variant, the pack's own ``read_meter`` / ``reset_meter`` driven
 ``ExecuteTool`` so the container grades records it wrote itself, is unreachable: no
 ``mcp_server``-backed tool can start inside the runner image, because
 ``tolokaforge/core/tools_interface.py`` is outside the runner subset and the subset wheel
-requires ``mcp>=0.1.0``, which resolves to an ``mcp`` with no ``mcp.server.fastmcp``.
-Substituting a builtin tool would grade a different pack than the one this suite exists
-for.
+requires ``mcp>=0.1.0``, which resolves to an ``mcp`` with no ``mcp.server.fastmcp``
+(#1114). Substituting a builtin tool would grade a different pack than the one this suite
+exists for.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from typing import Any
 
 import pytest
 
-from tests.utils.docker_helpers import current_runner_image_id
+from tests.utils.containers import RUNNER_IMAGE
 from tests.utils.grading_parity_packs import load_case
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.models import ModelConfig
@@ -53,10 +53,6 @@ _TASK_ID = "trace_checks_gate"
 _PARITY_GLOB = "grading_parity/**/task.yaml"
 _TEST_DATA = Path(__file__).resolve().parents[1] / "data"
 _PACK_DIR = _TEST_DATA / "grading_parity" / _TASK_ID
-
-# The tag the container fixtures pin. The builder tags by content hash and never moves
-# this one (#740), so it can name an image built from any tree.
-_RUNNER_TAG = "tolokaforge-runner:latest"
 
 _SCORED_CONSTRAINT = "the_meter_was_read"
 _GATE_CONSTRAINT = "the_meter_was_not_reset"
@@ -106,36 +102,37 @@ def runner_client(runner_container) -> GrpcRunnerClient:
 
 
 @pytest.fixture(scope="module", autouse=True)
-def runner_image_under_test(request: pytest.FixtureRequest, runner_container) -> str:
-    """The image id these trials are graded by, named on every run, green or red.
+def runner_image_under_test(request: pytest.FixtureRequest, runner_container) -> None:
+    """Refuse to grade against an image the current tree did not build.
 
     A suite whose subject is "the image carries this" cannot be allowed to pass against an
-    image that does not, so the two ids are reported unconditionally rather than only when
-    they disagree: what the running container was created from, and the content-hash ref
-    the current tree would build.
+    image that does not. What says whose tree an image came from is its own tag list: the
+    builder tags by content hash, and ``runner_container`` builds the runner image when
+    ``RUNNER_IMAGE`` is absent and tags what it built as ``:latest`` — so an image this
+    tree produced carries ``expected_image_ref("runner")`` beside ``:latest``, and one
+    built from another tree carries a different hash. The reachable failure is a developer
+    whose ``:latest`` predates their checkout (#740); CI builds, so it passes there.
 
-    The comparison is only possible when the current tree's runner image exists locally.
-    When it does not, ``current_runner_image_id()`` answers ``None`` and this fixture says
-    nothing further — which covers two states at once: nothing to compare, and the tree's
-    image never built while a ``:latest`` from some older tree is tagged. That second one
-    is the default state of a fresh checkout, so the guard closes the ``:latest`` trap
-    (#740) for a developer who has built and for nobody else. The reported ids are what
-    make a green run attributable either way.
+    The one image this refuses that a person might defend is a current one carrying no
+    content-hash tag at all — pulled, or hand-tagged. Nothing about such an image says
+    which tree it came from, so it fails here too.
+
+    The ids are written to the terminal beside the check, which a serial run shows. Under
+    ``-n auto`` a worker's output never reaches the master, so on a distributed run it is
+    the tag assertion — not the line — that makes a green run attributable.
     """
-    container_image_id = runner_container.get_wrapped_container().image.id
+    container_image = runner_container.get_wrapped_container().image
     expected_ref = builder.expected_image_ref("runner")
     writer = request.config.get_terminal_writer()
-    writer.line(f"runner container image id: {container_image_id}")
+    writer.line(f"runner container image: {container_image.id} {container_image.tags}")
     writer.line(f"current tree's runner image ref: {expected_ref}")
 
-    fresh_image_id = current_runner_image_id()
-    if fresh_image_id is not None and fresh_image_id != container_image_id:
+    if expected_ref not in container_image.tags:
         pytest.fail(
-            f"{_RUNNER_TAG} is {container_image_id}, but the current tree builds "
-            f"{expected_ref} ({fresh_image_id}) — these trials would be graded by an image "
-            f"that is not this tree. Retag: docker tag {expected_ref} {_RUNNER_TAG}"
+            f"{RUNNER_IMAGE} is {container_image.id}, tagged {container_image.tags}, and "
+            f"the current tree builds {expected_ref} — these trials would be graded by an "
+            "image that is not this tree. Build it: uv run tolokaforge docker build --core"
         )
-    return container_image_id
 
 
 @pytest.fixture(scope="module")
@@ -160,7 +157,10 @@ def graded_cases(
                 llm_messages_json=json.dumps(load_case(_PACK_DIR, case).runner_messages),
             )
         finally:
-            runner_client.cleanup_trial(trial_id=trial_id)
+            cleaned = runner_client.cleanup_trial(trial_id=trial_id)
+        # Reached only when grading propagated nothing, so a cleanup that failed is
+        # reported without standing in front of the failure that caused it.
+        assert cleaned["success"] is True, cleaned["error"]
         assert result["success"] is True, result["error"]
         assert result["grade"] is not None, result
         grades[case] = result["grade"]
