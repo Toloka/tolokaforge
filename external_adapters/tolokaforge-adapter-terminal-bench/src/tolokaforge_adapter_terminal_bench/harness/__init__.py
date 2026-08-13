@@ -68,6 +68,15 @@ class HarnessSpec:
 
     model_flag: str = "--model"
 
+    pre_exec_shell: str = ""
+    """Shell script chained before the CLI with ``&&``. Non-empty for CLIs that
+    read runtime configuration from a file the compose ``environment:`` block
+    alone can't populate — codex reads ``openai_base_url`` from
+    ``$CODEX_HOME/config.toml`` and drops ``$OPENAI_BASE_URL`` on the floor
+    otherwise (harbor writes the same file, ``harbor/agents/installed/codex.py:1406``).
+    Runs inside the task container's default shell alongside the CLI, so it
+    can reference any forwarded provider env var by name."""
+
 
 HARNESSES: dict[str, HarnessSpec] = {
     "claude-code": HarnessSpec(
@@ -102,6 +111,17 @@ HARNESSES: dict[str, HarnessSpec] = {
         argv_suffix=(
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+        ),
+        # codex reads ``openai_base_url`` from ``$CODEX_HOME/config.toml`` and
+        # silently ignores ``$OPENAI_BASE_URL`` for the Responses API endpoint,
+        # so a compose-forwarded base URL alone lands the CLI at
+        # ``api.openai.com`` and 401s. Write the file from the env var before
+        # the CLI starts. ``CODEX_HOME`` defaults to ``$HOME/.codex``; harbor
+        # sets it to a scratch path — same file either way.
+        pre_exec_shell=(
+            'mkdir -p "${CODEX_HOME:-$HOME/.codex}" && '
+            'printf \'openai_base_url = "%s"\\n\' "$OPENAI_BASE_URL" '
+            '> "${CODEX_HOME:-$HOME/.codex}/config.toml"'
         ),
     ),
     "gemini-cli": HarnessSpec(
@@ -262,4 +282,7 @@ def harness_command(agent_harness: str, instruction: str, model: str) -> str:
         *spec.argv_suffix,
         instruction,
     )
-    return " ".join(shlex.quote(part) for part in argv)
+    cli_command = " ".join(shlex.quote(part) for part in argv)
+    if spec.pre_exec_shell:
+        return f"{spec.pre_exec_shell} && exec {cli_command}"
+    return cli_command

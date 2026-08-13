@@ -989,28 +989,58 @@ class TestHarnessCommand:
             "fix the bug",
         ]
 
-    def test_codex_and_gemini_argv_shapes(self):
+    def test_codex_argv_shape(self):
+        """codex chains a config.toml write before the CLI — the CLI portion,
+        after ``exec``, is what has to match the pinned shape."""
         import shlex
 
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        assert shlex.split(harness_command("codex", "do it", "openai/gpt-5-codex")) == [
+        _, _, cli = harness_command("codex", "do it", "openai/gpt-5-codex").rpartition(" && exec ")
+        assert shlex.split(cli) == [
             "codex",
             "exec",
             "--model",
-            "openai/gpt-5-codex",
+            "gpt-5-codex",
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
             "do it",
         ]
+
+    def test_gemini_argv_shape(self):
+        import shlex
+
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
         assert shlex.split(harness_command("gemini-cli", "do it", "google/gemini-2.5-flash")) == [
             "gemini",
             "--model",
-            "google/gemini-2.5-flash",
+            "gemini-2.5-flash",
             "--yolo",
             "--prompt",
             "do it",
         ]
+
+    def test_codex_writes_openai_base_url_config_toml_before_the_cli(self):
+        """codex reads ``openai_base_url`` from ``$CODEX_HOME/config.toml``,
+        not from ``$OPENAI_BASE_URL`` — the compose env var alone lands the
+        CLI at ``api.openai.com`` and 401s."""
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        preamble, sep, _ = harness_command("codex", "do it", "m").partition(" && exec ")
+        assert sep, "codex must chain a preamble before the CLI"
+        assert "config.toml" in preamble
+        assert "$OPENAI_BASE_URL" in preamble
+        assert "openai_base_url" in preamble
+
+    def test_claude_code_has_no_preamble(self):
+        """A CLI without a pre_exec_shell publishes the CLI command alone —
+        no shell scaffolding for readers of the metadata to peel off."""
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        command = harness_command("claude-code", "go", "anthropic/claude-sonnet-4-6")
+        assert "&& exec " not in command
+        assert command.startswith("env IS_SANDBOX=1 claude ")
 
     def test_instruction_is_one_shell_argument(self):
         import shlex
@@ -1018,7 +1048,8 @@ class TestHarnessCommand:
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
         instruction = "don't $EXPAND `me`;\nsecond line"
-        argv = shlex.split(harness_command("codex", instruction, "m"))
+        _, _, cli = harness_command("codex", instruction, "m").rpartition(" && exec ")
+        argv = shlex.split(cli)
         assert argv[-1] == instruction
 
     def test_engine_loop_has_no_command(self):
