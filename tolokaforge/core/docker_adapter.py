@@ -1,11 +1,11 @@
-"""Per-trial :class:`~tolokaforge.tools.registry.ToolExecutor` backed by a
+"""Per-trial :class:`~tolokaforge.tools.registry.ToolExecuting` backed by a
 :class:`~tolokaforge.core.runtime.RuntimeBackend`.
 
 :class:`DockerRunnerAdapter` binds a ``trial_id`` and an executor identity
-(``"agent"`` / ``"user"``) to a runtime backend, exposing the
-``ToolExecutor`` protocol (``execute()``) that :class:`TrialRunner` speaks
-to. The runner service records the call on its side of the wire; the host
-records it against the trial's
+(``"agent"`` / ``"user"``) to a runtime backend, satisfying the
+:class:`~tolokaforge.tools.registry.ToolExecuting` protocol (``execute()``) that
+:class:`TrialRunner` speaks to. The runner service records the call on its side
+of the wire; the host records it against the trial's
 :class:`~tolokaforge.core.runner.TrialToolCallRecorder`. The adapter keeps
 no history of its own.
 
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 class DockerRunnerAdapter:
-    """Per-trial ``ToolExecutor`` backed by a :class:`RuntimeBackend`.
+    """Per-trial ``ToolExecuting`` backed by a :class:`RuntimeBackend`.
 
     Binds ``trial_id`` and executor identity (``"agent"`` / ``"user"``)
     to a runtime backend so :class:`TrialRunner` can call
@@ -69,7 +69,7 @@ class DockerRunnerAdapter:
         """Execute a tool via the runtime backend under the bound
         ``trial_id`` / ``executor``.
 
-        Matches the :class:`~tolokaforge.tools.registry.ToolExecutor.execute`
+        Matches the :class:`~tolokaforge.tools.registry.ToolExecuting.execute`
         contract :class:`~tolokaforge.core.runner.TrialRunner` calls.
 
         ``call_id`` is named explicitly rather than left to ``**kwargs``: this

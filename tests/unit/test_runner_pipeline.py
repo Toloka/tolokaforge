@@ -32,6 +32,7 @@ from tolokaforge.core.models import TerminationReason
 from tolokaforge.core.trial_grader import GradingFailedError, RunnerRPCTrialGrader
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
+from tolokaforge.runner.tool_factory import ToolFactory
 
 
 @pytest.fixture
@@ -1003,6 +1004,168 @@ class TestDuplicateCallIdPublishesNoScore:
 
         assert DUPLICATE_CALL_ID in str(excinfo.value)
         assert trajectory.grade is None
+
+
+class TestUserSideToolExecution:
+    """Each actor's tools live in its own registry, and ``ExecuteTool`` routes on
+    the request's ``executor`` field. A tool the task declared for the user is
+    executable only under ``executor="user"``; asking for it as the agent finds
+    nothing, because the agent's registry does not hold it.
+    """
+
+    def _register_with_user_tool(self, runner_service, mock_grpc_context, trial_id: str) -> None:
+        task = simple_task_description_dict()
+        task["user_tools"] = [
+            {
+                "name": "calculator",
+                "description": "Arithmetic",
+                "parameters": {"type": "object", "properties": {}},
+                "category": "compute",
+            }
+        ]
+        response = runner_service.RegisterTrial(
+            register_request(trial_spec_json(task, trial_id=trial_id), trial_id=trial_id),
+            mock_grpc_context,
+        )
+        assert response.success is True, response.error
+        assert response.num_agent_tools == 0
+        assert response.num_user_tools == 1
+
+    def test_a_user_declared_tool_executes_under_the_user_identity(
+        self, runner_service, mock_grpc_context
+    ) -> None:
+        trial_id = "user_tool_exec:0"
+        self._register_with_user_tool(runner_service, mock_grpc_context, trial_id)
+
+        response = runner_service.ExecuteTool(
+            execute_request(
+                trial_id,
+                "calculator",
+                arguments_json=json.dumps({"expression": "2 + 2"}),
+                executor="user",
+                call_id="call_u1",
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == pb2.EXECUTION_STATUS_SUCCESS, response.error_message
+        recorded = runner_service.trials[trial_id].recorded[-1]
+        assert (recorded.call_id, recorded.tool_name, recorded.executor) == (
+            "call_u1",
+            "calculator",
+            "user",
+        )
+
+    def test_the_same_tool_asked_for_as_the_agent_is_refused(
+        self, runner_service, mock_grpc_context
+    ) -> None:
+        """The refusal is what makes the conductor's slicing load-bearing: offer
+        the user's tool to the agent and every call it makes dies here."""
+        trial_id = "user_tool_refusal:0"
+        self._register_with_user_tool(runner_service, mock_grpc_context, trial_id)
+
+        response = runner_service.ExecuteTool(
+            execute_request(
+                trial_id,
+                "calculator",
+                arguments_json=json.dumps({"expression": "2 + 2"}),
+                executor="agent",
+                call_id="call_a1",
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == pb2.EXECUTION_STATUS_TOOL_NOT_FOUND
+        assert "calculator" in response.error_message
+
+
+class _RecordingLifecycleTool:
+    """A user tool that manages a per-trial session, and says when it was told to.
+
+    Shaped like the wrappers ``reconstruct_tools`` returns for a session-backed
+    builtin — ``has_lifecycle``, ``start``/``stop`` and an async ``execute`` — because
+    the sweep that starts one selects on the capability, not on the class.
+    """
+
+    has_lifecycle = True
+
+    def __init__(self) -> None:
+        self.started_for: str | None = None
+        self.stopped = False
+
+    def start(self, ctx: Any) -> None:
+        self.started_for = ctx.trial_id
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    async def execute(self, arguments: dict[str, Any]) -> str:
+        if self.started_for is None:
+            raise AssertionError("the session was never started, so this call has no session")
+        return f"ran in {self.started_for}"
+
+
+class TestAUserToolWithASessionIsStartedAndStopped:
+    """Registration starts a lifecycle tool the *user* was given, and reset stops it.
+
+    A ``bash_session`` or a compose-backed exec tool holds a per-trial session that
+    ``start`` opens; without it every call fails at run time on a pack that
+    registered, provisioned a stack and looked healthy. The sweep is capability-driven
+    and now walks both registries, so the actor a tool was declared for decides
+    nothing about whether it is set up.
+    """
+
+    _TOOL = "session_tool"
+
+    def _register(self, runner_service, mock_grpc_context, monkeypatch, trial_id: str):
+        session = _RecordingLifecycleTool()
+        original = ToolFactory._create_wrapper
+
+        def wrapper(factory, schema):
+            return session if schema.name == self._TOOL else original(factory, schema)
+
+        monkeypatch.setattr(ToolFactory, "_create_wrapper", wrapper)
+
+        task = simple_task_description_dict()
+        task["user_tools"] = [
+            {
+                "name": self._TOOL,
+                "description": "A tool holding a per-trial session",
+                "parameters": {"type": "object", "properties": {}},
+                "category": "compute",
+            }
+        ]
+        registered = runner_service.RegisterTrial(
+            register_request(trial_spec_json(task, trial_id=trial_id), trial_id=trial_id),
+            mock_grpc_context,
+        )
+        assert registered.success is True, registered.error
+        return session
+
+    def test_registration_starts_it_and_the_call_it_owns_succeeds(
+        self, runner_service, mock_grpc_context, monkeypatch
+    ) -> None:
+        trial_id = "user_lifecycle:0"
+        session = self._register(runner_service, mock_grpc_context, monkeypatch, trial_id)
+
+        assert session.started_for == trial_id
+
+        response = runner_service.ExecuteTool(
+            execute_request(trial_id, self._TOOL, executor="user", call_id="call_u1"),
+            mock_grpc_context,
+        )
+
+        assert response.status == pb2.EXECUTION_STATUS_SUCCESS, response.error_message
+        assert response.output == f"ran in {trial_id}"
+
+    def test_reset_stops_it(self, runner_service, mock_grpc_context, monkeypatch) -> None:
+        """The other half: a session left open outlives the trial that opened it."""
+        trial_id = "user_lifecycle_reset:0"
+        session = self._register(runner_service, mock_grpc_context, monkeypatch, trial_id)
+
+        runner_service.ResetTrial(pb2.ResetTrialRequest(trial_id=trial_id), mock_grpc_context)
+
+        assert session.stopped is True
 
 
 # NOTE: TestDBClientWithTestClient has been moved to tests/test_db_client.py

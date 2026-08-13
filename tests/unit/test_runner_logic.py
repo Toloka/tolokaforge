@@ -21,6 +21,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.runner import TrialRunner
+from tolokaforge.tools.registry import ToolResult
 
 pytestmark = pytest.mark.unit
 
@@ -32,6 +33,17 @@ pytestmark = pytest.mark.unit
 def _make_tool_executor() -> MagicMock:
     """Create a mock ToolExecutor."""
     return MagicMock()
+
+
+class _EchoingUserToolExecutor:
+    """A user-side executor that answers every call, satisfying ``ToolExecuting``.
+
+    Real rather than a ``MagicMock`` because the runner records what it returns and
+    ``RecordedToolCall`` refuses a mock's attributes for ``status`` and ``output``.
+    """
+
+    def execute(self, tool_name: str, arguments: dict | None = None, *, call_id: str) -> ToolResult:
+        return ToolResult(success=True, output=f"{tool_name} ran")
 
 
 def _make_user_simulator() -> MagicMock:
@@ -497,7 +509,14 @@ class TestTrialRunnerRun:
                 tool_calls=[sim_tool_call],
             ),
         ]
-        runner = _make_runner(agent_client=agent, user_simulator=user_sim)
+        # A trial whose simulator can call a tool is a trial that was built one an
+        # executor: the two are handed over together, and the runner refuses the
+        # half-built shape rather than dropping the calls this test is about.
+        runner = _make_runner(
+            agent_client=agent,
+            user_simulator=user_sim,
+            user_tool_executor=_EchoingUserToolExecutor(),
+        )
         traj = runner.run("System", "Hi")
 
         assert traj.termination_reason == TerminationReason.USER_STOP
@@ -793,6 +812,27 @@ class TestTrialRunnerRun:
 @pytest.mark.unit
 class TestUserSimulatorIntegration:
     """Tests for user simulator message flow in TrialRunner."""
+
+    def test_a_stop_token_in_the_opening_reply_is_seeded_literally(self) -> None:
+        """Turn 0 reads ``###STOP###`` as text, not as a terminator.
+
+        The opening turn shares the tool-call half of a user turn and nothing
+        else. Routed through the dispatch path, this reply would deliver only
+        the pre-token text and arm the pending stop — so the trial would end one
+        agent turn later, for every conversational pack in the field.
+        """
+        user_sim = MagicMock()
+        user_sim.reply.return_value = GenerationResult(
+            text="I need help with my order ###STOP###",
+            tool_calls=[],
+        )
+        runner = _make_runner(user_simulator=user_sim)
+
+        traj = runner.run("System", "")
+
+        assert traj.messages[0].role == MessageRole.USER
+        assert traj.messages[0].content == "I need help with my order ###STOP###"
+        assert runner._user_stop_pending is False
 
     def test_empty_bootstrap_first_message_fails_loud(self) -> None:
         """A simulator bootstrap that returns empty/whitespace text raises.

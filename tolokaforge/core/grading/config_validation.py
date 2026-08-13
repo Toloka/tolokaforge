@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 import re
 import types
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Union, get_args, get_origin, get_type_hints
@@ -70,9 +70,12 @@ from tolokaforge.core.grading.state_composition import (
 )
 from tolokaforge.core.grading.trace_timeline import TraceEvent
 from tolokaforge.core.models import (
+    REQUESTOR_TO_EXECUTOR,
     BoundValue,
     GradingCombineConfig,
     GradingFindingSeverity,
+    RequiredAction,
+    ToolExecutorIdentity,
     ToolExpectations,
     TraceBinding,
     TraceChecksConfig,
@@ -106,7 +109,24 @@ class ToolInventory:
     """The tool set a task gives its actors, and what each tool's schema says."""
 
     declared: frozenset[str]
-    """Union of ``tools.agent.enabled`` and ``tools.user.enabled``."""
+    """Every tool the task gives an actor: :attr:`agent_declared` ∪ :attr:`user_declared`."""
+
+    agent_declared: frozenset[str]
+    """``tools.agent.enabled`` — what the agent may call."""
+
+    user_declared: frozenset[str]
+    """``tools.user.enabled`` — what the user simulator may call."""
+
+    actor_split_known: bool
+    """Whether :attr:`agent_declared` / :attr:`user_declared` are the task's own split.
+
+    ``False`` for a producer that can report the tool set but not whose it was — a
+    recorded trial's wire tool list carries no actor. Such a producer files the whole
+    set under the agent because a set has to go somewhere, and that placement is not
+    a claim: :meth:`declared_by` refuses to answer, and a rule about *which* actor
+    declared a tool reports unchecked instead of refusing the author over a fact the
+    inventory does not hold.
+    """
 
     parameters: Mapping[str, Mapping[str, Any]]
     """Tool name to its JSON-schema parameters object, for the tools that resolved."""
@@ -115,18 +135,61 @@ class ToolInventory:
     """``False`` only for :meth:`unresolvable`."""
 
     def __post_init__(self) -> None:
-        if not self.known and (self.declared or self.parameters):
+        carried = sorted(self.declared | self.agent_declared | self.user_declared)
+        if not self.known and (carried or self.parameters):
             raise ValueError(
                 "an unresolvable inventory carries tools: every rule that reads them is "
-                f"skipped, so {sorted(self.declared) or sorted(self.parameters)} would be "
+                f"skipped, so {carried or sorted(self.parameters)} would be "
                 "resolved and then ignored. Report the tools with known=True, or report "
                 "nothing"
+            )
+        if not self.known and self.actor_split_known:
+            raise ValueError(
+                "an inventory that reports no tools claims to know whose they are. "
+                "Nothing is known of an unresolvable tool set, its split least of all"
+            )
+        if self.declared != self.agent_declared | self.user_declared:
+            raise ValueError(
+                "the declared tool set is not the union of the actors' sets: "
+                f"{sorted(self.declared)} against agent {sorted(self.agent_declared)} and "
+                f"user {sorted(self.user_declared)}. A rule reading one and a rule reading "
+                "the other would decide the same name differently"
             )
 
     @classmethod
     def unresolvable(cls) -> ToolInventory:
         """The inventory of an adapter that cannot report a tool set at all."""
-        return cls(declared=frozenset(), parameters={}, known=False)
+        return cls(
+            declared=frozenset(),
+            agent_declared=frozenset(),
+            user_declared=frozenset(),
+            actor_split_known=False,
+            parameters={},
+            known=False,
+        )
+
+    def declared_by(self, executor: ToolExecutorIdentity) -> frozenset[str]:
+        """The tools ``tools.<executor>.enabled`` gives that one actor.
+
+        Keyed off the recorded executor identity rather than taking a field name,
+        so a rule reading what an actor may call and a record saying who called it
+        speak one vocabulary.
+
+        Raises:
+            ValueError: If :attr:`actor_split_known` is ``False``. The sets exist
+                either way, so answering would hand a caller the agent's whole set
+                as the agent's own — the false certainty this method must not sell.
+        """
+        if not self.actor_split_known:
+            raise ValueError(
+                "this inventory does not know which actor declared what, so it cannot "
+                f"answer what {executor.value!r} may call. Read `declared`, or route the "
+                "question to the report's unchecked channel"
+            )
+        return {
+            ToolExecutorIdentity.AGENT: self.agent_declared,
+            ToolExecutorIdentity.USER: self.user_declared,
+        }[executor]
 
     def strictness(self, tool: str) -> ArgumentSchema:
         """Classify what *tool*'s schema can say about argument names.
@@ -612,6 +675,27 @@ _TOOL_EXPECTATION_HAZARDS: Mapping[str, str] = {
     ),
 }
 
+# What a required action no trial can satisfy costs, and the two shapes that reach it.
+# The hazard is one sentence because both cost the same thing — the component is short
+# an action however the agent behaves — while the fix differs, so each message names its
+# own.
+_A_REQUIRED_ACTION_NOTHING_SATISFIES = (
+    "the transcript component is short a required action on every trial however the agent behaves"
+)
+
+_A_REQUIRED_ACTION_NO_ACTOR_CAN_MAKE = (
+    "tool {name!r} is not declared by this task, which gives its actors {declared}: no actor "
+    "can call it, so {hazard}"
+)
+
+_A_REQUIRED_ACTION_ITS_REQUESTOR_CANNOT_MAKE = (
+    "required action {action_id!r} names tool {name!r} under requestor {requestor!r}, which is "
+    "matched against the calls the {actor} executed alone, and tools.{actor}.enabled declares "
+    "{here}: {declaring} declares the tool instead, so the executor filter never matches and "
+    "{hazard}. Declare {name!r} under tools.{actor}.enabled, or write the requestor whose actor "
+    "already has it"
+)
+
 _A_HASH_SOURCE_NOTHING_READS = (
     "{key} is declared while hash.enabled is {enabled!r}: both substrates read the flag "
     "before any source, so the comparison never runs and the state is graded without it. "
@@ -813,6 +897,7 @@ def inspect_grading_authoring(
         reports += [
             _check_tool_names(sites, inventory),
             _check_tool_expectation_names(rules.tool_expectations if rules else None, inventory),
+            _check_required_action_names(rules.required_actions if rules else (), inventory),
             _check_golden_action_names(grading, inventory),
             _check_argument_paths(sites, inventory),
             _check_bound_extractions(binders, inventory),
@@ -1058,6 +1143,95 @@ def _check_tool_expectation_names(
         if name not in inventory.declared
     )
     return AuthoringReport(errors=errors)
+
+
+def _check_required_action_names(
+    actions: Sequence[RequiredAction], inventory: ToolInventory
+) -> AuthoringReport:
+    """A required action may only name a tool the actor its ``requestor`` names can call.
+
+    The rule its two siblings :func:`_check_tool_names` and
+    :func:`_check_tool_expectation_names` already carry, plus the half only this key
+    has: ``requestor`` is matched against the recorded executor, so an action naming
+    the other actor's tool selects nothing exactly as a misspelling does, and costs
+    the same.
+
+    It is written here and not over ``trace_checks`` because a required action is a
+    *positive* existence claim. A matcher may carry ``executor: user`` inside an
+    ``absent`` constraint on a pack declaring no user tools — an assertion that no
+    user-side call happened, which such a pack satisfies — so refusing that shape
+    would reject packs that grade correctly.
+    """
+    return _merged(
+        _one_required_action(index, action, inventory) for index, action in enumerate(actions)
+    )
+
+
+_A_REQUESTOR_AN_ACTOR_BLIND_INVENTORY_CANNOT_JUDGE = (
+    "the tool set was read off a recorded trial, whose wire tool list says which tools "
+    "an actor was offered and not which actor. Whether {requestor!r} is the actor that "
+    "declared {name!r} is not a fact this inventory holds, and refusing the action on it "
+    "would fail an authoring that may well be right. The name itself is still checked."
+)
+
+
+def _one_required_action(
+    index: int, action: RequiredAction, inventory: ToolInventory
+) -> AuthoringReport:
+    """The one finding *action* draws, or none: a name is wrong once, not twice."""
+    where = f"transcript_rules.required_actions[{index}]"
+    if action.name not in inventory.declared:
+        return AuthoringReport(
+            errors=(
+                Finding(
+                    f"{where}.name",
+                    _A_REQUIRED_ACTION_NO_ACTOR_CAN_MAKE.format(
+                        name=action.name,
+                        declared=sorted(inventory.declared),
+                        hazard=_A_REQUIRED_ACTION_NOTHING_SATISFIES,
+                    ),
+                ),
+            )
+        )
+    if not inventory.actor_split_known:
+        return AuthoringReport(
+            unchecked=(
+                Skip(
+                    f"{where}.requestor",
+                    _A_REQUESTOR_AN_ACTOR_BLIND_INVENTORY_CANNOT_JUDGE.format(
+                        requestor=action.requestor, name=action.name
+                    ),
+                ),
+            )
+        )
+    executor = REQUESTOR_TO_EXECUTOR[action.requestor]
+    if action.name in inventory.declared_by(executor):
+        return AuthoringReport()
+    return AuthoringReport(
+        errors=(
+            Finding(
+                f"{where}.requestor",
+                _A_REQUIRED_ACTION_ITS_REQUESTOR_CANNOT_MAKE.format(
+                    action_id=action.action_id,
+                    name=action.name,
+                    requestor=action.requestor,
+                    actor=executor.value,
+                    here=sorted(inventory.declared_by(executor)),
+                    declaring=sorted(_blocks_declaring(action.name, inventory)),
+                    hazard=_A_REQUIRED_ACTION_NOTHING_SATISFIES,
+                ),
+            ),
+        )
+    )
+
+
+def _blocks_declaring(name: str, inventory: ToolInventory) -> Iterator[str]:
+    """The ``tools.<actor>.enabled`` keys that give some actor *name*."""
+    return (
+        f"tools.{executor.value}.enabled"
+        for executor in ToolExecutorIdentity
+        if name in inventory.declared_by(executor)
+    )
 
 
 def _check_argument_paths(

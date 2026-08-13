@@ -29,6 +29,7 @@ pytestmark = pytest.mark.unit
 def _task(
     enabled_tools: list[str] | None = None,
     initial_state: dict | None = None,
+    user_tools: list[str] | None = None,
 ) -> TaskConfig:
     return TaskConfig(
         task_id="t",
@@ -38,8 +39,11 @@ def _task(
         max_turns=1,
         initial_user_message="x",
         initial_state=initial_state or {},
-        tools={"agent": {"enabled": enabled_tools or []}, "user": {"enabled": []}},
-        actors={"user": {"mode": "scripted"}},
+        tools={
+            "agent": {"enabled": enabled_tools or []},
+            "user": {"enabled": user_tools or []},
+        },
+        actors={"user": {"mode": "llm"}},
         grading="grading.yaml",
     )
 
@@ -78,6 +82,17 @@ def test_mixed_tasks_one_full_stack_tool_triggers():
 
 def test_no_full_stack_signal_returns_false():
     assert _tasks_need_full_stack([_task(["bash", "calculator", "read_file"])]) is False
+
+
+def test_a_user_declared_browser_triggers_full_stack():
+    """The user simulator's tools run in the same container the agent's do.
+
+    A ``browser`` the user declares reaches mock-web exactly as the agent's does,
+    so reading ``tools.agent`` alone would start a core stack with no mock-web and
+    the tool would fail at its first call.
+    """
+    assert _tasks_need_full_stack([_task(user_tools=["browser"])]) is True
+    assert _tasks_need_full_stack([_task(user_tools=[])]) is False
 
 
 def test_empty_task_list_returns_false():

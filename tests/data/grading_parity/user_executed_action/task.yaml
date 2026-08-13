@@ -1,0 +1,30 @@
+task_id: user_executed_action
+name: "Substrate differential: a user-executed required action"
+category: test
+description: |
+  Substrate-parity differential fixture. The grading.yaml declares exactly one
+  author key so a violating trial can only be discriminated by that key, and the
+  action it requires is one the user makes: the tool is declared for the user
+  actor alone, so a call to it can only carry executor: user.
+
+initial_state:
+  json_db: null
+
+interaction_mode: conversational
+
+tools:
+  agent:
+    enabled: []
+  user:
+    enabled:
+      - calculator
+
+actors:
+  user:
+    mode: llm
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml

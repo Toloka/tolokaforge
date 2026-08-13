@@ -261,6 +261,8 @@ def test_in_process_conductor_grade_fires_judgment_scored(tmp_path: Path) -> Non
         adapter_env=MagicMock(),
         tool_schemas=[],
         tool_executor=MagicMock(),
+        user_tool_schemas=[],
+        user_tool_executor=None,
     )
     trajectory = Trajectory(
         task_id="taskA",

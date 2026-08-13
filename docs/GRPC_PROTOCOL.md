@@ -148,12 +148,20 @@ message RegisterTrialResponse {
   // Tool schemas in OpenAI function calling format
   // These are returned to Host for LLM tool configuration
   // Format: [{"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}]
+  //
+  // Ordering contract: the agent's tools come first, then the user actor's,
+  // and num_agent_tools partitions the list exactly — tool_schemas[:n] is the
+  // agent's surface and tool_schemas[n:] the user actor's, with
+  // n + num_user_tools == len(tool_schemas). The host slices on this to decide
+  // which actor is offered which tool; a tool offered to the wrong actor is
+  // refused TOOL_NOT_FOUND at ExecuteTool, since each actor's registry holds
+  // only its own.
   repeated ToolSchema tool_schemas = 3;
 
-  // Number of agent tools registered
+  // Number of agent tools registered — the partition index into tool_schemas
   int32 num_agent_tools = 4;
 
-  // Number of user tools registered (for dual-control scenarios)
+  // Number of user tools registered — tool_schemas[num_agent_tools:] is theirs
   int32 num_user_tools = 5;
 }
 
@@ -248,8 +256,8 @@ message ToolMetrics {
 // - "agent": Tools called by the assistant (LLM agent)
 //   Examples: get_customer_by_phone, book_reservation, create_ticket
 //
-// - "user": Tools called by the user simulator (user-side device tools)
-//   Examples: toggle_airplane_mode, toggle_data, check_internet_speed
+// - "user": Tools called by the user simulator, from `tools.user.enabled`
+//   Examples: calculator, read_file
 //
 // This is important for Native adapter tasks with dual-control scenarios
 // where both agent and user have tools that mutate shared state.

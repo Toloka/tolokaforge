@@ -1,0 +1,29 @@
+satisfying:
+  messages:
+    - role: user
+      content: "Let me add it up myself.\n\ncalculator() result: 4.0"
+      tool_calls:
+        - tool_name: calculator
+          executor: user
+          status: success
+          arguments:
+            expression: "2 + 2"
+          output: "4.0"
+    - role: assistant
+      content: "Then the total is 4."
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Let me add it up myself.\n\ncalculator() result: 5.0"
+      tool_calls:
+        - tool_name: calculator
+          executor: user
+          status: success
+          arguments:
+            expression: "2 + 3"
+          output: "5.0"
+    - role: assistant
+      content: "Then the total is 5."
+  state: {}

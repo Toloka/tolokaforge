@@ -16,7 +16,6 @@ The authored vocabulary is documented in ``docs/GRADING.md`` § "Transcript Rule
 
 import re
 from collections.abc import Sequence
-from typing import Literal
 
 from tolokaforge.core.grading.key_manifest import (
     COMMUNICATE_INFO_KEY,
@@ -35,6 +34,7 @@ from tolokaforge.core.grading.trace_timeline import (
     attempted_calls,
 )
 from tolokaforge.runner.models import (
+    REQUESTOR_TO_EXECUTOR,
     CommunicateInfo,
     KeyAccountingRecord,
     RequiredAction,
@@ -218,15 +218,6 @@ def scored_transcript_rules(
     if rules.min_assistant_turns is None:
         return None
     return TranscriptRulesConfig(min_assistant_turns=rules.min_assistant_turns)
-
-
-# Map the RequiredAction.requestor vocabulary ("assistant"/"user", the
-# author-facing role names) onto the recorded executor identity. They name the
-# same actor.
-_REQUESTOR_TO_EXECUTOR: dict[Literal["assistant", "user"], ToolExecutorIdentity] = {
-    "assistant": ToolExecutorIdentity.AGENT,
-    "user": ToolExecutorIdentity.USER,
-}
 
 
 _UNRECORDED = (
@@ -442,7 +433,7 @@ def _check_required_action(
     names no tool, so it is refused rather than matched against every call.
     """
     declared = action.model_dump()
-    expected_executor = _REQUESTOR_TO_EXECUTOR[action.requestor]
+    expected_executor = REQUESTOR_TO_EXECUTOR[action.requestor]
 
     if action.compare_args is None:
         keys_to_compare = list(action.arguments.keys())

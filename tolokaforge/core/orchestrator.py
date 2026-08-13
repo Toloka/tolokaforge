@@ -14,6 +14,10 @@ from typing import TYPE_CHECKING, Any, NoReturn
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.adapters._task_loader import (
     GradingSourceKind,
+    ToolActor,
+    actor_tool_block,
+    declared_tool_names,
+    enabled_tool_names,
     grading_source_under_adapter,
     replay_world_under_adapter,
     seeded_tables_under_adapter,
@@ -117,17 +121,17 @@ _PLAYWRIGHT_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile"})
 # ``initial_state.mock_web`` / ``initial_state.rag`` directly without
 # enabling those tools — both shapes flip the switch.
 #
-# Routing matrix:
-# +------------------------------------+--------------+
-# | Signal in task config              | Stack        |
-# +------------------------------------+--------------+
-# | tools.agent.enabled ∋ browser      | full_stack   |
-# | tools.agent.enabled ∋ mobile       | full_stack   |
-# | tools.agent.enabled ∋ search_kb    | full_stack   |
-# | initial_state.mock_web is truthy   | full_stack   |
-# | initial_state.rag is truthy        | full_stack   |
-# | otherwise                          | core_stack   |
-# +------------------------------------+--------------+
+# Routing matrix, over either actor's block:
+# +--------------------------------------+--------------+
+# | Signal in task config                | Stack        |
+# +--------------------------------------+--------------+
+# | tools.<actor>.enabled ∋ browser      | full_stack   |
+# | tools.<actor>.enabled ∋ mobile       | full_stack   |
+# | tools.<actor>.enabled ∋ search_kb    | full_stack   |
+# | initial_state.mock_web is truthy     | full_stack   |
+# | initial_state.rag is truthy          | full_stack   |
+# | otherwise                            | core_stack   |
+# +--------------------------------------+--------------+
 _FULL_STACK_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile", "search_kb"})
 
 # Where a bridged local TypeSense server answers from inside ``runner-net``.
@@ -143,15 +147,13 @@ def _tasks_need_playwright(tasks: list[Any]) -> bool:
     """Return True iff any task enables a Playwright-dependent tool.
 
     Used by :class:`Orchestrator` to decide whether to pass
-    ``enable_playwright=True`` to :func:`core_stack`. Pure function so
+    ``enable_playwright=True`` to :func:`core_stack`. Either actor's declaration
+    counts: the runner reconstructs a user tool through the same wrapper as an
+    agent tool, so a user-side ``browser`` needs the same image. Pure function so
     unit tests can construct ``TaskConfig`` instances directly without
     standing up the docker stack.
     """
-    for task in tasks:
-        enabled = task.tools.agent.get("enabled", []) if task.tools else []
-        if _PLAYWRIGHT_TOOL_NAMES.intersection(enabled):
-            return True
-    return False
+    return any(_PLAYWRIGHT_TOOL_NAMES & declared_tool_names(task) for task in tasks)
 
 
 # Tools whose compose variant runs inside a sibling compose service via
@@ -165,7 +167,7 @@ _COMPOSE_VARIANT_TOOL_NAMES: frozenset[str] = frozenset({"bash_session", "str_re
 
 def _tasks_use_compose_variant_tools(tasks: list[Any]) -> bool:
     """Return True iff any task routes a shipped tool into a sibling service
-    via the compose variant (``tools.agent.<tool>.service: <name>``).
+    via the compose variant (``tools.<actor>.<tool>.service: <name>``).
 
     ``bash_session`` and ``str_replace_editor`` each ship a compose variant
     that executes inside a sibling compose service by ``docker exec``-ing
@@ -173,16 +175,23 @@ def _tasks_use_compose_variant_tools(tasks: list[Any]) -> bool:
     CLI when any enabled tool is in that shape — e.g. the Migration Bench
     adapter's task packs (``services.mb-server`` running the workload,
     tools routed there via ``bash_session.service: mb-server``).
+
+    The ``service:`` key is read from the block that enabled the tool, so a
+    user-declared tool is routed by ``tools.user.<tool>.service`` and never by
+    the agent's block for the same name.
     """
-    for task in tasks:
-        if task.tools is None:
-            continue
-        agent_config = task.tools.agent
-        enabled = agent_config.get("enabled", [])
-        for tool_name in _COMPOSE_VARIANT_TOOL_NAMES.intersection(enabled):
-            tool_cfg = agent_config.get(tool_name)
-            if isinstance(tool_cfg, dict) and tool_cfg.get("service"):
-                return True
+    return any(
+        _actor_routes_a_compose_variant(task, actor) for task in tasks for actor in ToolActor
+    )
+
+
+def _actor_routes_a_compose_variant(task: Any, actor: ToolActor) -> bool:
+    """Whether *actor*'s block enables a compose-variant tool and names its service."""
+    block = actor_tool_block(task, actor)
+    for tool_name in _COMPOSE_VARIANT_TOOL_NAMES & enabled_tool_names(task, actor):
+        tool_cfg = block.get(tool_name)
+        if isinstance(tool_cfg, dict) and tool_cfg.get("service"):
+            return True
     return False
 
 
@@ -256,8 +265,7 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
     plain dicts (raw YAML), to keep the unit tests simple.
     """
     for task in tasks:
-        enabled = task.tools.agent.get("enabled", []) if task.tools else []
-        if _FULL_STACK_TOOL_NAMES.intersection(enabled):
+        if _FULL_STACK_TOOL_NAMES & declared_tool_names(task):
             return True
         initial_state = task.initial_state if task.initial_state is not None else None
         if initial_state is None:

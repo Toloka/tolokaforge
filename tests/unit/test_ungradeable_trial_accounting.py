@@ -21,6 +21,7 @@ lane and is not claimed here.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import count
 from pathlib import Path
@@ -47,7 +48,7 @@ from tests.utils.servicer_runtime import (
     produce_grading_refusal,
     register_collided_trial,
 )
-from tolokaforge.core.conductor import ConductorContext, InProcessConductor, _TrialSetup
+from tolokaforge.core.conductor import ConductorContext, InProcessConductor
 from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
@@ -60,7 +61,6 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.orchestrator import GradingCompleteness, Orchestrator, OrchestratorDeps
-from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
 from tolokaforge.core.trial import TrialResult, TrialSpec
 from tolokaforge.core.trial_grader import GradingFailedError, RunnerRPCTrialGrader
