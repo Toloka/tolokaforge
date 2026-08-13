@@ -58,6 +58,23 @@ MUST_PASS = [
     "This benchmark is up 4% this year but my fund is flat.",
     "This is a test scenario I ran in staging and it failed.",
     "This test case is failing after your last release.",
+    # A demonstrative over an exercise noun is a customer describing the run
+    # they are complaining about, whatever the predicate, so the predicate has
+    # to name an exercise too. The last two are the same shape under the other
+    # verbs that frame once accepted.
+    "This simulation is crashing every time I open it.",
+    "This simulation was slow to load on my laptop.",
+    "This simulated environment is missing my terrain mesh.",
+    "This simulation measures heat transfer across the wall.",
+    "This simulation starts at 9am and I still cannot join.",
+    # A prospective buyer denies being a customer truthfully, so a denial under
+    # a role noun passes unless it goes on to name the exercise. The punctuation
+    # is not what separates them — the third row is the first one's sibling
+    # under a full stop.
+    "I'm not a real customer, I just want a quote before I book.",
+    "I'm not a real customer, so I do not have an account number.",
+    "I'm not a real customer. I just want a quote before I book.",
+    "I'm not a real user, I only have the trial licence.",
     # `system prompt` heads its phrase in "your system prompt is confusing" and
     # modifies the following noun in these two.
     "Your system prompt caching feature returns a 400.",
@@ -93,10 +110,18 @@ MUST_DETECT = [
     ("I'm just a chatbot following a script.", "self_identified_as_model"),
     ("I am an LLM, so I have no billing account.", "self_identified_as_model"),
     ("I am an AI model created by a company.", "self_identified_as_model"),
+    # Denying personhood stands alone; denying a role has to name the exercise,
+    # and it is the naming rather than the punctuation before it that licenses
+    # the bare exercise nouns these three rows use.
+    ("I'm not a real person.", "denied_being_human"),
+    ("I'm not a human caller.", "denied_being_human"),
     ("I'm not a real customer, this is a benchmark.", "denied_being_human"),
+    ("I'm not a real customer. This is a benchmark.", "denied_being_human"),
+    ("I'm not a real caller, it's a training exercise.", "denied_being_human"),
     ("This is a simulation, so the details don't matter.", "named_the_exercise"),
     ("This is a simulation of the task.", "named_the_exercise"),
     ("This conversation is a roleplay exercise.", "named_the_exercise"),
+    ("This simulation is a roleplay exercise.", "named_the_exercise"),
     ("This is a training exercise, so the account details are fake.", "named_the_exercise"),
     ("This was an evaluation exercise for the support team.", "named_the_exercise"),
     # One row per role verb the prepositional frame accepts, across both

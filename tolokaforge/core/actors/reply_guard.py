@@ -27,9 +27,11 @@ it plays. Its governing rule, which every pattern obeys:
     A pattern matches only when the meta-concept is attributed to a
     conversational party or to the exercise itself, *and* the noun carrying it
     heads its own phrase. A machine noun matches only bound to a first-person
-    subject; an exercise noun only under a demonstrative, or in a prepositional
-    frame the speaker puts itself inside; a system prompt only when possessed by
-    the agent, or by the speaker with an instruction verb.
+    subject; an exercise noun only where a demonstrative predicates it, in a
+    prepositional frame the speaker puts itself inside, or — for the nouns too
+    ambiguous to carry a demonstrative — where a denial of being human
+    attributes it; a system prompt only when possessed by the agent, or by the
+    speaker with an instruction verb.
 
 The bare noun never matches, and neither does a noun used attributively (``an
 AI engineer``, ``a benchmark index fund``, ``a real person of interest``, ``your
@@ -53,6 +55,23 @@ often enough that the demonstrative head cannot separate them:
   release."`` are ordinary support turns. Only the compounds (``roleplay
   exercise``, ``training exercise``, ``evaluation exercise``) survive, so a bare
   ``"This benchmark tests performance."`` is missed.
+* an exercise noun under a demonstrative but predicated on anything other than
+  an exercise — ``"This simulation is over."``, ``"This roleplay tests how you
+  handle a refund."`` — because that frame is exactly how a customer of
+  simulation or training software talks about the run they are complaining
+  about: ``"This simulation is crashing every time I open it."``, ``"This
+  simulation measures heat transfer across the wall."``, ``"This simulation
+  starts at 9am and I still cannot join."`` The demonstrative survives only
+  where the predicate itself names an exercise (``"This simulation is a roleplay
+  exercise."``).
+* a denial of being a ``customer``, ``user`` or ``caller`` that stands on its
+  own — ``"I'm not a real customer."`` — because a prospective buyer denies it
+  truthfully: ``"I'm not a real customer, I just want a quote before I book."``
+  Under those three the denial matches only where it goes on to name the
+  exercise, and that naming is in turn what licenses a bare exercise noun in
+  that one position (``"I'm not a real customer, this is a benchmark."``).
+  ``person`` and ``human`` carry no such reading — nobody denies being a person
+  in a support turn — so under them the denial still stands alone.
 * the prepositional frame without a claimed role —
   ``"During the simulation, the app froze and I lost my mesh."`` and ``"In the
   simulation I get an error at step 4."`` are what a customer of simulation
@@ -133,6 +152,18 @@ _MACHINE_END = (
 #   _HUMAN_END excludes `of`/`for`: "not a real person OF interest" is a fraud ticket.
 _HUMAN_END = rf"(?=\s*(?:{_CLOSE}|$)|\s+(?:and|but|so|then|here|I|it|this|that|you|we|they)\b)"
 
+# The nouns a demonstrative head cannot carry alone — this module's residual
+# list — become exercise nouns in the one position where a denial of being human
+# supplies the attribution they lack.
+_DENIED_EXERCISE_NOUN = (
+    rf"(?:{_EXERCISE_NOUN}|benchmark|evaluation|exercise"
+    r"|test(?:\s+(?:scenario|case|run|conversation))?)"
+)
+_DENIAL_NAMES_THE_EXERCISE = (
+    rf"(?=\s*[.,;:]?\s*(?:this|it|that)(?:'s|\s+(?:is|was))\s+"
+    rf"(?:just\s+|only\s+|merely\s+)?an?\s+{_DENIED_EXERCISE_NOUN}\b{_EXERCISE_END})"
+)
+
 _FOURTH_WALL_PATTERNS: tuple[tuple[str, str], ...] = (
     # family 1 — the speaker identifies itself as a machine
     (
@@ -144,21 +175,33 @@ _FOURTH_WALL_PATTERNS: tuple[tuple[str, str], ...] = (
         "self_identified_as_model",
         rf"\bas\s+an?\s+(?:\w+[\s-]+){{0,2}}?{_MACHINE_NOUN}\b\s*,?\s+(?:I\b|my\b)",
     ),
+    # Denying personhood needs no continuation — no support turn says it. Denying
+    # a ROLE does: "I'm not a real customer, I just want a quote before I book."
+    # is a prospective buyer, so there the denial has to go on to name the
+    # exercise it is part of.
     (
         "denied_being_human",
-        rf"\bI(?:'m| am)\s+not\s+(?:a\s+)?(?:real|actual|human|genuine)\s+"
-        rf"(?:person|customer|user|human|caller)\b{_HUMAN_END}",
+        rf"\bI(?:'m| am)\s+not\s+(?:a\s+)?"
+        rf"(?:(?:real|actual|human|genuine)\s+(?:person|human)"
+        rf"|human\s+(?:customer|user|caller))\b{_HUMAN_END}",
+    ),
+    (
+        "denied_being_human",
+        rf"\bI(?:'m| am)\s+not\s+(?:a\s+)?(?:real|actual|genuine)\s+"
+        rf"(?:customer|user|caller)\b{_DENIAL_NAMES_THE_EXERCISE}",
     ),
     # family 2 — the exercise named as an exercise, or a party's prompt named
+    #
+    # The demonstrative may head an exercise noun itself ("this simulation is a
+    # roleplay exercise"), but the predicate still has to name an exercise: a
+    # bare copula under one is what a customer of simulation software says about
+    # the run they are complaining about ("This simulation is crashing every
+    # time I open it.").
     (
         "named_the_exercise",
-        rf"\bthis\s+(?:conversation\s+|chat\s+|call\s+)?(?:is|was)\s+"
+        rf"\bthis\s+(?:conversation\s+|chat\s+|call\s+|{_EXERCISE_NOUN}\s+)?(?:is|was)\s+"
         rf"(?:just\s+|only\s+|merely\s+)?an?\s+"
         rf"{_EXERCISE_NOUN}(?:\s+{_EXERCISE_NOUN})?\b{_EXERCISE_END}",
-    ),
-    (
-        "named_the_exercise",
-        rf"\bthis\s+{_EXERCISE_NOUN}\s+(?:is|was|tests|measures|scores|ends|starts|matters)\b",
     ),
     # The prepositional frame is where a customer describes what went wrong
     # ("during the simulation, the app froze"), so an end anchor cannot carry

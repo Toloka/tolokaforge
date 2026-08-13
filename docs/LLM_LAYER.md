@@ -588,7 +588,8 @@ outranks recall — and where a demonstrative head cannot separate the two sense
 the frame is given up rather than the support turn. `exercise` and `evaluation`
 are exercise nouns only in their compounds (`roleplay exercise`, `training
 exercise`, `evaluation exercise`), `benchmark` only under the prepositional frame
-(`in this benchmark`), and `test scenario` / `test case` are not exercise nouns
+(`in this benchmark`) or after a denial of being human, and `test scenario` /
+`test case` are not exercise nouns
 in any frame. The prepositional frame itself matches only when the speaker claims a role
 inside the exercise (`In this benchmark, I am playing a frustrated customer.`),
 because `During the simulation, the app froze and I lost my mesh.` and `In the
@@ -596,6 +597,20 @@ simulation I get an error at step 4.` are what a customer of simulation software
 says — a first-person subject alone does not separate them. So `This exercise is
 not showing up in my activity ring.` passes, and a bare `This benchmark tests
 performance.` is missed.
+
+A demonstrative heading an exercise noun matches only when the predicate names an
+exercise too (`This simulation is a roleplay exercise.`), because that frame is
+how a customer of simulation software talks about the run being complained about
+— `This simulation is crashing every time I open it.`, `This simulation measures
+heat transfer across the wall.` — so `This simulation is over.` is missed.
+Denying humanity stands on its own under `person` and `human` (`I'm not a real
+person.`); under the role nouns `customer`, `user` and `caller` it matches only
+where it goes on to name the exercise (`I'm not a real customer, this is a
+benchmark.`, `I'm not a real caller, it's a training exercise.`), that naming
+being the attribution a bare exercise noun cannot carry alone. `I'm not a real
+customer, I just want a quote before I book.` is a prospective buyer, and it is
+the naming rather than the punctuation before it that separates the two, so a
+bare `I'm not a real customer.` is missed.
 `reply_guard.py`'s module docstring carries the full list of the recall given up
 and why.
 
