@@ -4,15 +4,19 @@ Pass rows and detect rows are one corpus, because the pair that decides the
 rule — a tag beginning a line versus the same tag inside a sentence — is only
 readable side by side.
 
-The falsifying patches, both measured against the tables below:
+The falsifying patches, all measured against the tables below:
 
-* dropping the ``^[ \t]*`` anchor (leaving ``</?think\s*>``) reddens four of the
+* dropping the position anchor (leaving ``</?think\s*>``) reddens four of the
   six ``MUST_PASS`` rows — every row carrying a literal tag mid-line.
-* dropping the ``\s*>`` tail (leaving ``^[ \t]*</?think``) reddens the
-  ``<thinking>`` row, the only one whose line-leading text starts a longer word.
-* anchoring on the start of the *string* instead of the start of a *line*
-  (dropping ``re.MULTILINE``) loses ``MUST_DETECT`` row 2, the bare closing tag
-  the measurement reports as the dominant leak shape.
+* dropping the ``\s*>`` tail reddens the ``<thinking>`` row, the only one whose
+  line-leading text starts a longer word.
+* anchoring on the start of the *string* alone (dropping the ``(?<=[\r\n])``
+  half) loses ``MUST_DETECT`` rows 2 and 7, the two whose tag begins a line
+  rather than the reply — row 2 being the shape the measurement reports as
+  dominant — and the excerpt test with them.
+* narrowing that lookbehind to ``\n`` alone loses row 7 and nothing else: a
+  provider emitting ``\r`` line endings carries the leak past a ``\n`` anchor
+  untouched, which is the whole of what ``re.MULTILINE``'s ``^`` could see.
 
 ``The error is <500ms latency> in the log`` is the angle-bracket control: it
 carries no tag at all, so no patch to this pattern reddens it.
@@ -48,6 +52,7 @@ MUST_DETECT = [
     ),
     "<think>plan</think>\nThe user wants me to play a caller who lost their debit card.",
     "   <think>\nLet me plan the opening.\n</think>\nHi, I need help.",
+    "The user wants me to act as a caller.\r</think>\rHi, my card was declined.",
 ]
 
 MUST_PASS = [

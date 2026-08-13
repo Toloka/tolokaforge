@@ -26,20 +26,28 @@ it plays. Its governing rule, which every pattern obeys:
 
     A pattern matches only when the meta-concept is attributed to a
     conversational party or to the exercise itself, *and* the noun carrying it
-    heads its own phrase. A machine noun matches only bound to a first-person
-    subject; an exercise noun only where a demonstrative predicates it, in a
-    prepositional frame the speaker puts itself inside, or — for the nouns too
-    ambiguous to carry a demonstrative — where a denial of being human
-    attributes it; a system prompt only when possessed by the agent, or by the
-    speaker with an instruction verb.
+    heads its own phrase. A machine noun matches only as the complement of a
+    first-person copula, with the phrase's own determiner heading it; an
+    exercise noun only where a demonstrative predicates it, in a prepositional
+    frame the speaker puts itself inside, or — for the nouns too ambiguous to
+    carry a demonstrative — where a denial of being human attributes it; a
+    system prompt only when possessed by the agent, or by the speaker with an
+    instruction verb.
 
 The bare noun never matches, and neither does a noun used attributively (``an
 AI engineer``, ``a benchmark index fund``, ``a real person of interest``, ``your
-system prompt caching feature``) — the second clause is what makes the first one
-safe. ``ai``, ``model``, ``prompt``, ``benchmark``, ``simulation`` and ``llm``
-are ordinary support vocabulary and are not triggers on their own: a false
-positive costs a whole turn's attempt budget and then the trial, so precision
-outranks recall here.
+system prompt caching feature``) or in the possessive (``I'm an AI's owner``,
+``I was the LLM's user last week.`` — the speaker's machine, not the speaker) —
+the second clause is what makes the first one safe. Requiring the determiner to
+head the phrase is the same guarantee one step earlier: it is what keeps ``I
+am`` reading as a copula, and without it the premodifier slot bridges a report
+verb (``"I was told an AI would help me."``, ``"I'm hoping an AI can call me
+back."``) and a third party's machine is read as a self-identification.
+
+``ai``, ``model``, ``prompt``, ``benchmark``, ``simulation`` and ``llm`` are
+ordinary support vocabulary and are not triggers on their own: a false positive
+costs a whole turn's attempt budget and then the trial, so precision outranks
+recall here.
 
 The user describing the *agent* as a machine (``"You are chatting with an
 internal AI agent"``) is in frame and passes by design; only the simulator
@@ -88,6 +96,18 @@ often enough that the demonstrative head cannot separate them:
   tablets daily."`` is a support turn far more often than a leaked persona.
 * ``"I'm an LLM-based assistant."`` — the hyphen makes the machine noun
   attributive, which is the anchor doing its job on a genuine break.
+* a self-identification whose noun phrase is entered without its determiner:
+  an adverb outside ``just``/``only``/``merely``/``simply``/``basically``/
+  ``essentially``/``literally`` standing before it misses (``"I am probably an
+  AI."``), which is the price of the copula reading above.
+* **bare AI-adjacent vocabulary in any frame this rule does not name.** No
+  sanitizer stands anywhere in this path and the bare nouns are deliberately
+  unmatched, so ``"Sorry, the AI is thinking about this."`` and ``"Just check
+  the prompt I sent earlier."`` reach the agent transcript verbatim. That is the
+  recall trade this module is built on, backstopped only by the simulator's own
+  prompt rule — and it is outside the two deltas the ``simulator_schema_version``
+  2 → 3 difficulty re-baseline measures, so it is not one of the movements that
+  comparison is reading.
 
 One false positive is accepted rather than removed. ``"In the simulation I act
 as the admin but cannot reset passwords."`` is a hit, and no rule separates it
@@ -131,6 +151,23 @@ _EXERCISE_NOUN = (
 )
 _CLOSE = r"[.,;:!?)\"']"
 
+# What may stand between `I am` and the machine noun, in this order: a
+# downplaying adverb, a determiner, then up to two premodifiers of the noun.
+# The determiner has to come before the premodifiers, and that ordering is the
+# whole of the copula reading — a slot that can be entered without one bridges a
+# report verb into a third party's machine ("I was told AN AI would help me.",
+# "I'm hoping an AI can call me back."), which is a customer talking about a
+# product rather than the speaker being one. The adverb list is wider than the
+# exercise families' because it sits under a different frame: here it downplays
+# the speaker's own identity ("I am basically an AI.").
+_DOWNPLAYING_ADVERB = r"(?:just|only|merely|simply|basically|essentially|literally)"
+_MACHINE_HEAD = rf"(?:{_DOWNPLAYING_ADVERB}\s+)?(?:(?:an?|the|my|your)\s+(?:\w+[\s-]+){{0,2}}?)?"
+# A machine noun in the possessive is the speaker's own AI product ("I'm an AI's
+# owner", "I was the LLM's user"), so the apostrophe `_CLOSE` carries for a
+# closing quote must not read as one. `system prompt` keeps it: that noun's
+# possessive still names the agent's prompt.
+_NOT_POSSESSIVE = r"(?!'s\b)"
+
 # Every family needs the same guarantee — the noun must HEAD its phrase, not
 # modify a following noun — but the legal continuations differ, so there are
 # three anchors rather than one.
@@ -168,8 +205,7 @@ _FOURTH_WALL_PATTERNS: tuple[tuple[str, str], ...] = (
     # family 1 — the speaker identifies itself as a machine
     (
         "self_identified_as_model",
-        rf"\bI(?:'m| am| was)\s+(?:just\s+|only\s+|merely\s+)?(?:an?\s+)?"
-        rf"(?:\w+[\s-]+){{0,2}}?{_MACHINE_NOUN}\b{_MACHINE_END}",
+        rf"\bI(?:'m| am| was)\s+{_MACHINE_HEAD}{_MACHINE_NOUN}\b{_NOT_POSSESSIVE}{_MACHINE_END}",
     ),
     (
         "self_identified_as_model",
@@ -217,10 +253,10 @@ _FOURTH_WALL_PATTERNS: tuple[tuple[str, str], ...] = (
         "named_the_exercise",
         r"\b(?:in|for|during)\s+(?:this|the)\s+"
         r"(?:(?:simulation|benchmark|evaluation\s+run)\b\s*,?\s+"
-        r"(?:I|we)(?:'m|\s+(?:am|are))?\s+"
+        r"(?:I|we)(?:'m|'re|\s+(?:am|are))?\s+"
         r"(?:play(?!\s+back\b)|playing|act|acting|pretend|pretending)\b"
         r"|(?:roleplay|role[-\s]play)\b\s*,?\s+"
-        r"(?:I|we)(?:'m|\s+(?:am|are))?\s+"
+        r"(?:I|we)(?:'m|'re|\s+(?:am|are))?\s+"
         r"(?:play(?!\s+back\b)|playing|act|acting|pretend|pretending"
         r"|represent|representing)\b)",
     ),
@@ -333,6 +369,14 @@ class UserReplyGuard:
         *,
         max_attempts: int = USER_REPLY_MAX_ATTEMPTS,
     ) -> None:
+        """Inspect with *detectors*, refusing the turn once *max_attempts* is spent.
+
+        Production constructs the guard only with the default *max_attempts*,
+        and the rate-limit probe's ``turn_budget_s`` is sized for exactly that:
+        one agent call plus ``USER_REPLY_MAX_ATTEMPTS`` simulator calls. A guard
+        built with any other value is test-facing, and its attempts are outside
+        the budget that invariant covers.
+        """
         if max_attempts < 1:
             raise ValueError(
                 f"UserReplyGuard needs at least one generation attempt, got {max_attempts}; "
