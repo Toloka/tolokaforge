@@ -126,6 +126,7 @@ tests/
     ├── servicer_runtime.py   # RuntimeBackend over the in-process servicer + the duplicate-call_id refusal
     ├── search_plane_harness.py  # RegisterTrial through the search plane: registry stand-in, kb task, both address sources
     ├── timelines.py          # Coherent TrialTimeline fixtures (message view + records)
+    ├── grading_parity_packs.py  # A grading_parity pack's trial.yaml, decoded once into each substrate's input shape — every tier driving a parity trial reads it here
     ├── trace_constraints.py  # One trace constraint evaluated, for single-verdict assertions
     ├── trace_checks_configs.py  # One authored trace_checks block spanning the whole vocabulary
     ├── trace_overrides.py    # A supplied constraint block, written to a file and loaded back
