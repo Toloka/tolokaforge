@@ -261,8 +261,15 @@ harnesses:
     # config.toml. The env_model_vars quartet claude-code needs doesn't
     # apply — Grok has no sub-agent notion.
     env_model_vars: []
-    # Grok's model catalog uses the bare slug post-strip.
-    strip_vendor_namespace: true
+    # OpenRouter routes x-ai models by the vendor-namespaced slug (e.g.
+    # `x-ai/grok-4-fast`); the bare form `grok-4-fast` 404s at
+    # `openrouter.ai/api/v1/chat/completions` because there's no
+    # non-namespaced grok entry in its catalog. Keep the openrouter/ strip
+    # (harness_model always drops that) but preserve the vendor namespace
+    # so the CLI's config.toml and its `--model` flag both carry the slug
+    # OpenRouter actually indexes. Grok's own model catalog accepts the
+    # namespaced form too — it's a proxy configuration, not a slug alias.
+    strip_vendor_namespace: false
     container_env:
       GROK_DISABLE_TELEMETRY: "true"
     # OpenRouter-shaped provider envelope. `OPENROUTER_API_KEY` and
@@ -298,7 +305,7 @@ harnesses:
         image_description = "{{ model }}"
         web_search = "{{ model }}"
 
-        [model.{{ model }}]
+        [model."{{ model }}"]
         name = "{{ model }}"
         model = "{{ model }}"
         base_url = "{{ base_url }}"
