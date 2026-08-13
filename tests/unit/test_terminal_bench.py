@@ -972,12 +972,20 @@ class TestInstallHarnessScript:
 
 class TestHarnessCommand:
     def test_claude_code_argv(self):
+        import shlex
+
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        assert (
+        assert shlex.split(
             harness_command("claude-code", "fix the bug", "anthropic/claude-sonnet-4-6")
-            == "claude --model anthropic/claude-sonnet-4-6 --print 'fix the bug'"
-        )
+        ) == [
+            "claude",
+            "--model",
+            "anthropic/claude-sonnet-4-6",
+            "--permission-mode=bypassPermissions",
+            "--print",
+            "fix the bug",
+        ]
 
     def test_codex_and_gemini_argv_shapes(self):
         import shlex
@@ -989,12 +997,14 @@ class TestHarnessCommand:
             "exec",
             "--model",
             "openai/gpt-5-codex",
+            "--dangerously-bypass-approvals-and-sandbox",
             "do it",
         ]
         assert shlex.split(harness_command("gemini-cli", "do it", "google/gemini-2.5-flash")) == [
             "gemini",
             "--model",
             "google/gemini-2.5-flash",
+            "--yolo",
             "--prompt",
             "do it",
         ]

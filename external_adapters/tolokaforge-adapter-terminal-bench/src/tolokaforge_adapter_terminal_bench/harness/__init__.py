@@ -74,19 +74,34 @@ HARNESSES: dict[str, HarnessSpec] = {
         npm_package="@anthropic-ai/claude-code",
         version="2.1.228",
         argv_prefix=("claude",),
-        argv_suffix=("--print",),
+        # ``--permission-mode=bypassPermissions`` is mandatory: without it the CLI
+        # blocks at the first tool-permission prompt in ``--print`` mode and burns
+        # the whole episode budget without ever calling the LLM. Harbor's own
+        # invocation carries the same flag for the same reason.
+        argv_suffix=(
+            "--permission-mode=bypassPermissions",
+            "--print",
+        ),
     ),
     "codex": HarnessSpec(
         npm_package="@openai/codex",
         version="0.147.0",
         argv_prefix=("codex", "exec"),
-        argv_suffix=(),
+        # ``--dangerously-bypass-approvals-and-sandbox`` skips the approval prompt
+        # that ``codex exec`` otherwise blocks on when it wants to write or run a
+        # command — the harness has no interactive stdin to answer it.
+        argv_suffix=("--dangerously-bypass-approvals-and-sandbox",),
     ),
     "gemini-cli": HarnessSpec(
         npm_package="@google/gemini-cli",
         version="0.55.1",
         argv_prefix=("gemini",),
-        argv_suffix=("--prompt",),
+        # ``--yolo`` accepts every tool call without asking. ``--prompt`` sits at
+        # the end so it stays adjacent to the trailing instruction argument.
+        argv_suffix=(
+            "--yolo",
+            "--prompt",
+        ),
     ),
 }
 
