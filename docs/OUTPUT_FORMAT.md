@@ -1451,6 +1451,14 @@ evidence about us, and our own defects stay counted. See
 | `tools_schemas.yaml` | — | n/a | Format is the litellm tool-schema dict list, post-`schema_sanitizer` |
 | `tool_log.yaml` | — (struct-typed) | n/a | Format is the `RecordedToolCall` list; its presence is stamped by `metrics.yaml`'s `schema_version` |
 
+The `simulator_schema_version` row is mechanical on its first trigger:
+[`tests/canonical/test_simulator_prompt_generation.py`](../tests/canonical/test_simulator_prompt_generation.py)
+records a sha256 digest of the rendered simulator prompt body per generation, so
+a prompt-body edit that skips the bump reds the canonical tier. That manifest is
+hand-edited and has no regeneration mechanism — `--update-canon` does not touch
+it. A bump made for the second trigger, a conversation-context revision, carries
+a row repeating the previous generation's digests.
+
 There is no global version stamp — each subsystem stamps independently so
 changes localise.
 

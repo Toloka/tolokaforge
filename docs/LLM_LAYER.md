@@ -467,9 +467,11 @@ alternates strictly. Two invariants hold on the request it sends:
    improvising.
 
 The greeting exists only in the simulator's private request; it never
-enters the shared transcript or `trajectory.yaml`. Context-shape revisions
-bump `Trajectory.simulator_schema_version` (see
-[`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § Schema Version Stamps).
+enters the shared transcript or `trajectory.yaml`. A revision to the prompt
+body or to this context shape bumps `Trajectory.simulator_schema_version`
+(see [`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § Schema Version Stamps);
+[`tests/canonical/test_simulator_prompt_generation.py`](../tests/canonical/test_simulator_prompt_generation.py)
+holds the prompt body to the generation it is stamped with.
 
 ### The reply guard
 
