@@ -270,9 +270,11 @@ unparseable document) is refused at load naming the file and the harness key,
 so no entry is ever silently dropped.
 
 An operator ships their own entries without an adapter release by pointing
-`harness_presets_file` at a second YAML of the same shape — the harness-registry
-counterpart of the operator-pointed preset file in
-[ADR 0002](../../docs/adr/0002-external-model-registry.md). Merging is
+`harness_presets_file` at a second YAML of the same shape — see
+[ADR 0031](../../docs/adr/0031-external-harness-registry.md) for the decision
+record, which mirrors the operator-pointed preset file in
+[ADR 0002](../../docs/adr/0002-external-model-registry.md) for the model
+registry. Merging is
 **whole-entry**: a harness the overlay declares replaces the shipped spec
 completely and is validated on its own, and a harness it does not declare is
 untouched. A field-wise merge would let an overlay inherit a shipped default it
