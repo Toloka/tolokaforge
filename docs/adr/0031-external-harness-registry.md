@@ -111,8 +111,12 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
     dispatches inside `install-harness.sh` and constrains the source
     (package name vs. download URL), validated at load.
   - `argv_prefix`, `argv_suffix`, `flags_pre_permission`, `model_flag`,
-    `instruction_channel`, `env_model_vars`, `pre_exec_shell` — argv
-    assembly.
+    `model_flag_style`, `instruction_channel`, `env_model_vars`,
+    `pre_exec_shell` — argv assembly.
+  - `config_files: dict[str, str]` — container path to Jinja template for
+    CLIs configured by file. Rendered per trial against a closed variable
+    set (`model`, `provider`, `base_url`, `api_key_env`); an undeclared
+    name is refused at load.
   - `container_env: dict[str, str]` — compose environment lines the
     agent service always carries.
   - `strip_vendor_namespace: bool` — whether to strip a `vendor/` prefix

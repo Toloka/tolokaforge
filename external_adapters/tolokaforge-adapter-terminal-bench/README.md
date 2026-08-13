@@ -243,6 +243,8 @@ somewhere else, so a per-harness policy is one entry to read.
 | Static hardening env | Env pairs the compose `environment:` block writes for the agent service. Claude Code declares `IS_SANDBOX=1` (root-user bypass, without which the CLI refuses `--permission-mode=bypassPermissions` under UID 0) and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (opt-in telemetry off). | `HarnessSpec.container_env` |
 | Provider envelope | The variables the CLI needs to reach its provider, as defaults a run config unions over. Claude Code declares `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL`; codex the `OPENAI_*` pair; gemini-cli `GOOGLE_API_KEY`. | `HarnessSpec.provider_env` |
 | Model-name form | Whether a leading `vendor/` namespace is dropped before the model reaches the CLI. Codex and gemini-cli catalogs use bare names; a namespaced string makes them drop OpenRouter routing for the vendor's default endpoint. | `HarnessSpec.strip_vendor_namespace` |
+| Model-flag form | Whether the model flag and its value are two argv words (`--model gpt-5`) or one (`--model=gpt-5`). A CLI parsing its flags strictly accepts only one of the two. | `HarnessSpec.model_flag_style` |
+| File-based configuration | Files the CLI reads its configuration from, rendered per trial. | `HarnessSpec.config_files` |
 
 **Skills are deliberately not aligned.** Harbor copies the operator's
 `~/.claude/skills/` into the container, so its Claude sees whatever
@@ -254,11 +256,26 @@ shows up as "the container has zero skills", stable across machines and
 dates.
 
 Some CLIs need file-based configuration that no env var (compose or
-otherwise) can supply. `HarnessSpec.pre_exec_shell` is a shell fragment
-chained before the CLI with `&&`: codex reads `openai_base_url` from
-`$CODEX_HOME/config.toml` and the API key from `$CODEX_HOME/auth.json`,
-so its `pre_exec_shell` writes both files from the compose-forwarded
-env vars before invoking `codex exec`.
+otherwise) can supply — codex reads `openai_base_url` from
+`$CODEX_HOME/config.toml` and its API key from `$CODEX_HOME/auth.json`,
+and honours neither env var alone. `HarnessSpec.config_files` maps a
+container path to a Jinja template; each file is written by the shell
+chain that runs before the CLI. A path may be rooted at a `$VAR`
+(`${CODEX_HOME:-$HOME/.codex}/config.toml`) so a harness need not assume
+the container's user. Templates render against four variables and no
+others — `model` (as the CLI receives it), `provider` (the routing prefix
+the run config's model named), `base_url` (the provider envelope's
+`*_BASE_URL` value, after any run-config override), and `api_key_env`
+(the *name* of its `*_API_KEY` entry). An unknown name is a load-time
+error, since a silently empty substitution surfaces as a provider auth
+failure many layers from the typo.
+
+Content is written through a double-quoted `printf`, so a `$VAR`
+reference expands inside the container: `{"{{ api_key_env }}":
+"${{ api_key_env }}"}` puts the credential in the file without the
+assembled command — which trial metadata records — ever carrying its
+value. A template must therefore not carry a literal `$` it does not
+want expanded.
 
 ### The harness registry is data
 

@@ -450,7 +450,11 @@ class TerminalBenchAdapter(BaseAdapter):
             metadata["agent_harness_version"] = self.harness_spec.version
             metadata["agent_harness_model"] = self.agent_model
             metadata["agent_harness_command"] = harness_command(
-                self.agent_harness, meta.instruction, self.agent_model, self.harnesses
+                self.agent_harness,
+                meta.instruction,
+                self.agent_model,
+                self.harnesses,
+                self.agent_provider_env,
             )
         return metadata
 

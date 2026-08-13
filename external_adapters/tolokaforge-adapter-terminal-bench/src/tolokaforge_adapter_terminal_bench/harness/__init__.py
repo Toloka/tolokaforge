@@ -14,15 +14,19 @@ whatever command it finds there.
 
 from __future__ import annotations
 
+import re
 import shlex
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Literal
 
 import yaml
+from jinja2 import Environment, StrictUndefined, TemplateSyntaxError
+from jinja2.meta import find_undeclared_variables
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 __all__ = [
+    "CONFIG_TEMPLATE_VARIABLES",
     "ENGINE_LOOP",
     "HARNESSES",
     "INSTALL_SCRIPT",
@@ -42,6 +46,24 @@ __all__ = [
 
 _URL_INSTALL_METHODS: frozenset[str] = frozenset({"curl-bash", "binary"})
 """Install methods whose ``install_source`` is downloaded rather than named."""
+
+CONFIG_TEMPLATE_VARIABLES: frozenset[str] = frozenset(
+    {"model", "provider", "base_url", "api_key_env"}
+)
+"""Every name a :attr:`HarnessSpec.config_files` template may reference.
+
+``model`` is the slug as the CLI must receive it (see :func:`harness_model`),
+``provider`` the routing prefix the run config's model named (``openrouter``),
+``base_url`` the value of the provider envelope's ``*_BASE_URL`` entry, and
+``api_key_env`` the *name* of its ``*_API_KEY`` entry — a template writes
+``$``-prefixed to let the container's own environment supply the credential.
+Deliberately closed: a template that could read arbitrary state would put that
+state in the assembled command, which trial metadata records.
+"""
+
+_TEMPLATES = Environment(undefined=StrictUndefined)
+"""Renderer for :attr:`HarnessSpec.config_files`. Strict-undefined so a typo
+raises instead of writing a config file with a silently empty value."""
 
 
 def _is_package_name(value: str) -> bool:
@@ -120,12 +142,34 @@ class HarnessSpec(BaseModel):
     :attr:`env_model_vars` is non-empty — env carries the model instead, and
     the CLI flag would be redundant."""
 
+    model_flag_style: Literal["space", "equals"] = "space"
+    """Whether :attr:`model_flag` and the model are two argv words
+    (``--model gpt-5``) or one (``--model=gpt-5``). A CLI parsing its flags
+    strictly accepts only one of the two."""
+
+    config_files: dict[str, str] = Field(default_factory=dict)
+    """Files the CLI reads its runtime configuration from, as
+    ``{container path: Jinja template}``.
+
+    For CLIs the compose ``environment:`` block alone cannot configure: codex
+    reads ``openai_base_url`` from ``$CODEX_HOME/config.toml`` and drops
+    ``$OPENAI_BASE_URL`` on the floor otherwise. Each template renders against
+    :data:`CONFIG_TEMPLATE_VARIABLES` and nothing else — an unknown name is a
+    load-time error, since a silently empty substitution would surface as a
+    provider auth failure many layers from the typo.
+
+    The path may start with ``$`` (``${CODEX_HOME:-$HOME/.codex}/config.toml``)
+    so a harness need not assume the container's user. Both path and content
+    are written through a double-quoted ``printf``, so ``$VAR`` references
+    expand inside the container: that is how a credential reaches the file
+    without the assembled command — which is recorded on
+    ``TaskDescription.metadata`` — ever carrying its value. A template must
+    therefore not carry a literal ``$`` it does not want expanded."""
+
     pre_exec_shell: str = ""
-    """Shell script chained before the CLI with ``&&``. Non-empty for CLIs that
-    read runtime configuration from a file the compose ``environment:`` block
-    alone can't populate — codex reads ``openai_base_url`` from
-    ``$CODEX_HOME/config.toml`` and drops ``$OPENAI_BASE_URL`` on the floor
-    otherwise (harbor writes the same file, ``harbor/agents/installed/codex.py:1406``).
+    """Shell script chained before the CLI with ``&&``, after the
+    :attr:`config_files` writes. For preparation that is not a file write;
+    a file write belongs on :attr:`config_files`, which quotes and renders it.
     Runs inside the task container's default shell alongside the CLI, so it
     can reference any forwarded provider env var by name."""
 
@@ -189,6 +233,27 @@ class HarnessSpec(BaseModel):
     declaring a different endpoint gets that, and one caller can add a
     key the harness didn't ship (e.g. ``ANTHROPIC_AUTH_TOKEN``) without
     losing the URL. Keys must be a subset of :data:`PROVIDER_ENV_KEYS`."""
+
+    @model_validator(mode="after")
+    def _config_templates_read_only_declared_variables(self) -> HarnessSpec:
+        """Refuse a template a trial could not render, at load rather than run."""
+        for path, template in self.config_files.items():
+            if not path.startswith(("/", "$")):
+                raise ValueError(
+                    f"config_files path {path!r} is relative; the CLI reads it from a "
+                    "fixed location, so give an absolute path or one rooted at a `$VAR`."
+                )
+            try:
+                parsed = _TEMPLATES.parse(template)
+            except TemplateSyntaxError as exc:
+                raise ValueError(f"config_files[{path!r}] is not a valid template: {exc}") from exc
+            unknown = sorted(find_undeclared_variables(parsed) - CONFIG_TEMPLATE_VARIABLES)
+            if unknown:
+                raise ValueError(
+                    f"config_files[{path!r}] reads undeclared variable(s) {unknown!r}; "
+                    f"available: {sorted(CONFIG_TEMPLATE_VARIABLES)!r}."
+                )
+        return self
 
     @model_validator(mode="after")
     def _install_source_fits_the_method(self) -> HarnessSpec:
@@ -403,16 +468,68 @@ def harness_model(
     return model
 
 
+def _shell_string(value: str) -> str:
+    """*value* as a double-quoted shell word, with ``$`` left expandable."""
+    return '"' + re.sub(r'([\\"`])', r"\\\1", value) + '"'
+
+
+def _config_file_write(path: str, content: str) -> str:
+    """Command writing *content* to *path*, creating the parent directory.
+
+    One ``printf`` argument per line, so the assembled command stays on a
+    single line whatever the file holds.
+    """
+    lines = " ".join(_shell_string(line) for line in content.rstrip("\n").split("\n"))
+    target = _shell_string(path)
+    return f"mkdir -p \"$(dirname {target})\" && printf '%s\\n' {lines} > {target}"
+
+
+def _config_template_variables(
+    resolved_model: str, model: str, provider_env: Mapping[str, str]
+) -> dict[str, str]:
+    """The :data:`CONFIG_TEMPLATE_VARIABLES` values for one trial.
+
+    Raises:
+        ValueError: *provider_env* carries more than one ``*_BASE_URL`` or
+            ``*_API_KEY`` entry, leaving no single answer for a template that
+            asks for "the" endpoint or key.
+    """
+    base_urls = sorted(key for key in provider_env if key.endswith("_BASE_URL"))
+    api_keys = sorted(key for key in provider_env if key.endswith("_API_KEY"))
+    ambiguous = sorted(key for keys in (base_urls, api_keys) if len(keys) > 1 for key in keys)
+    if ambiguous:
+        raise ValueError(
+            "terminal-bench adapter: the provider envelope carries several entries a "
+            f"config_files template would have to choose between ({ambiguous!r}); declare "
+            "one endpoint and one key per harness."
+        )
+    return {
+        "model": resolved_model,
+        "provider": model.partition("/")[0] if "/" in model else "",
+        "base_url": provider_env[base_urls[0]] if base_urls else "",
+        "api_key_env": api_keys[0] if api_keys else "",
+    }
+
+
 def harness_command(
     agent_harness: str,
     instruction: str,
     model: str,
     registry: Mapping[str, HarnessSpec] = HARNESSES,
+    provider_env: Mapping[str, str] | None = None,
 ) -> str:
     """Shell command that runs *agent_harness* against *instruction*.
 
+    *provider_env* is the envelope the trial's container will carry, which the
+    adapter resolves from the harness default and the run config; it supplies
+    the ``base_url`` / ``api_key_env`` template variables. It defaults to the
+    harness's own :attr:`HarnessSpec.provider_env`, and only its ``*_BASE_URL``
+    value is ever read — a credential reaches a config file by name, through
+    the container's environment, never through this command.
+
     Assembly order (blank pieces drop out):
 
+        <config_files write> &&    # one per HarnessSpec.config_files entry
         <pre_exec_shell> &&
         <export VAR=<model> && …>  # one per HarnessSpec.env_model_vars
         <printf "%s" '<instr>' |>  # only when instruction_channel == "stdin"
@@ -440,16 +557,26 @@ def harness_command(
 
     # Pre-exec preamble: on-disk config-file emission + env-quartet exports.
     preamble_parts: list[str] = []
+    if spec.config_files:
+        variables = _config_template_variables(
+            resolved_model, model, spec.provider_env if provider_env is None else provider_env
+        )
+        preamble_parts.extend(
+            _config_file_write(path, _TEMPLATES.from_string(template).render(variables))
+            for path, template in spec.config_files.items()
+        )
     if spec.pre_exec_shell:
         preamble_parts.append(spec.pre_exec_shell)
     for var in spec.env_model_vars:
         preamble_parts.append(f"export {var}={shlex.quote(resolved_model)}")
-    preamble = " && ".join(preamble_parts)
 
     # CLI argv (without the instruction when it's coming on stdin).
     cli_tokens: list[str] = [*spec.argv_prefix, *spec.flags_pre_permission]
     if not spec.env_model_vars and spec.model_flag:
-        cli_tokens.extend([spec.model_flag, resolved_model])
+        if spec.model_flag_style == "equals":
+            cli_tokens.append(f"{spec.model_flag}={resolved_model}")
+        else:
+            cli_tokens.extend([spec.model_flag, resolved_model])
     cli_tokens.extend(spec.argv_suffix)
     if spec.instruction_channel == "argv":
         cli_tokens.append(instruction)
@@ -458,6 +585,4 @@ def harness_command(
     if spec.instruction_channel == "stdin":
         cli_command = f"printf %s {shlex.quote(instruction)} | {cli_command}"
 
-    if preamble:
-        return f"{preamble} && {cli_command}"
-    return cli_command
+    return " && ".join([*preamble_parts, cli_command])

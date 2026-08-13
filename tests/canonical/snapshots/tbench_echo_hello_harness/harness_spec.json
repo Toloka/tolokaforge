@@ -6,6 +6,7 @@
     "--permission-mode=bypassPermissions",
     "--print"
   ],
+  "config_files": {},
   "container_env": {
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "IS_SANDBOX": "1"
@@ -25,6 +26,7 @@
   "install_source": "@anthropic-ai/claude-code",
   "instruction_channel": "stdin",
   "model_flag": "--model",
+  "model_flag_style": "space",
   "pre_exec_shell": "",
   "provider_env": {
     "ANTHROPIC_API_KEY": "${secret:OPENROUTER_API_KEY}",

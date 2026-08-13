@@ -1273,10 +1273,8 @@ class TestHarnessCommand:
         assert sep, "codex must chain a preamble before the CLI"
         assert "config.toml" in preamble
         assert "openai_base_url" in preamble
-        assert "$OPENAI_BASE_URL" in preamble
         assert "auth.json" in preamble
         assert "OPENAI_API_KEY" in preamble
-        assert "$OPENAI_API_KEY" in preamble
 
     def test_gemini_has_no_preamble_no_stdin(self):
         """A CLI without a pre_exec_shell, without env_model_vars, and with
@@ -1321,6 +1319,158 @@ class TestHarnessCommand:
         assert "terminus-2" not in accepted_harnesses()
         with pytest.raises(ValueError, match="not supported"):
             validate_harness("terminus-2")
+
+
+class TestHarnessConfigFiles:
+    """CLIs configured by file: rendered from the declared variables only."""
+
+    @staticmethod
+    def _spec(**overrides):
+        from tolokaforge_adapter_terminal_bench.harness import HarnessSpec
+
+        return HarnessSpec(
+            install_source="cli", version="1", argv_prefix=("cli",), argv_suffix=(), **overrides
+        )
+
+    def test_config_toml_renders_the_effective_base_url(self):
+        """The endpoint the trial's container will carry, not the shipped
+        default — a run config pointing the harness at its own gateway has to
+        reach the file codex actually reads."""
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        command = harness_command(
+            "codex",
+            "do it",
+            "m",
+            provider_env={
+                "OPENAI_BASE_URL": "https://gateway.invalid/v1",
+                "OPENAI_API_KEY": "sk-not-in-the-command",
+            },
+        )
+        assert 'openai_base_url = \\"https://gateway.invalid/v1\\"' in command
+
+    def test_auth_json_names_the_key_env_var_and_never_its_value(self):
+        """The command lands on ``TaskDescription.metadata`` and from there in
+        the trial artifacts, so the credential reaches the file through the
+        container's environment instead."""
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        command = harness_command(
+            "codex",
+            "do it",
+            "m",
+            provider_env={
+                "OPENAI_BASE_URL": "https://gateway.invalid/v1",
+                "OPENAI_API_KEY": "sk-not-in-the-command",
+            },
+        )
+        assert "$OPENAI_API_KEY" in command
+        assert "sk-not-in-the-command" not in command
+
+    def test_rendered_files_land_where_the_cli_reads_them(self, tmp_path):
+        """The assembled preamble is shell, so run it: the quoting, the
+        ``$HOME``-rooted path and the credential expansion all have to survive
+        a real shell, and none of that is visible in the string."""
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "codex").write_text("#!/bin/sh\n")
+        (bin_dir / "codex").chmod(0o755)
+        command = harness_command("codex", "do it", "openrouter/openai/gpt-5-mini")
+
+        proc = subprocess.run(
+            ["bash", "-c", command],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={
+                "PATH": f"{bin_dir}:/usr/bin:/bin",
+                "HOME": str(tmp_path),
+                "OPENAI_API_KEY": "sk-from-the-container",
+            },
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert (tmp_path / ".codex" / "config.toml").read_text() == (
+            'openai_base_url = "https://openrouter.ai/api/v1"\n'
+        )
+        assert (tmp_path / ".codex" / "auth.json").read_text() == (
+            '{"OPENAI_API_KEY": "sk-from-the-container"}\n'
+        )
+
+    def test_undeclared_variable_is_refused_at_construction(self):
+        from tolokaforge_adapter_terminal_bench.harness import CONFIG_TEMPLATE_VARIABLES
+
+        with pytest.raises(ValueError, match="undeclared variable"):
+            self._spec(config_files={"/etc/cli.toml": "key = {{ api_key }}\n"})
+        assert "api_key" not in CONFIG_TEMPLATE_VARIABLES
+
+    def test_relative_path_is_refused_at_construction(self):
+        with pytest.raises(ValueError, match="is relative"):
+            self._spec(config_files={"cli.toml": "key = {{ model }}\n"})
+
+    def test_every_declared_variable_renders(self):
+        """The whitelist is the contract an operator writes templates against."""
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        spec = self._spec(
+            config_files={
+                "$HOME/cli.toml": (
+                    "model={{ model }} provider={{ provider }} "
+                    "base_url={{ base_url }} key=${{ api_key_env }}\n"
+                )
+            },
+        )
+        command = harness_command(
+            "cli",
+            "go",
+            "openrouter/openai/gpt-5-mini",
+            registry={"cli": spec},
+            provider_env={"OPENAI_BASE_URL": "https://x.invalid/v1", "OPENAI_API_KEY": "s"},
+        )
+        assert (
+            "model=openai/gpt-5-mini provider=openrouter "
+            "base_url=https://x.invalid/v1 key=$OPENAI_API_KEY" in command
+        )
+
+    def test_ambiguous_provider_envelope_is_refused(self):
+        """Two endpoints leave no single answer for ``{{ base_url }}``."""
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        spec = self._spec(config_files={"/etc/cli.toml": "url={{ base_url }}\n"})
+        with pytest.raises(ValueError, match="several entries"):
+            harness_command(
+                "cli",
+                "go",
+                "m",
+                registry={"cli": spec},
+                provider_env={"OPENAI_BASE_URL": "https://a.invalid", "ANTHROPIC_BASE_URL": "b"},
+            )
+
+
+class TestModelFlagStyle:
+    def test_space_style_is_two_argv_words(self):
+        import shlex
+
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        argv = shlex.split(harness_command("gemini-cli", "go", "google/gemini-2.5-flash"))
+        assert argv[1:3] == ["--model", "gemini-2.5-flash"]
+
+    def test_equals_style_is_one_argv_word(self):
+        import shlex
+
+        from tolokaforge_adapter_terminal_bench.harness import HarnessSpec, harness_command
+
+        spec = HarnessSpec(
+            install_source="opencode",
+            version="1",
+            argv_prefix=("opencode", "run"),
+            argv_suffix=(),
+            model_flag_style="equals",
+        )
+        command = harness_command("opencode", "go", "openrouter/openai/gpt-5", {"opencode": spec})
+        assert shlex.split(command) == ["opencode", "run", "--model=openai/gpt-5", "go"]
 
 
 class TestHarnessModelPrefix:
