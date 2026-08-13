@@ -1166,6 +1166,16 @@ Rules merge per parameter and per value across `default:` → preset →
 `providers:` → operator overlay. A shallow merge would let an overlay declaring
 one rule delete every other rule, disarming a guard nobody touched.
 
+One pre-existing exception, inherited from how overlays work generally: an
+overlay `presets:` entry with the **same name** as a bundled preset replaces
+that preset wholesale, rules included. Shadowing by name is a replacement, not
+a merge. Only `providers.gemini` carries rules today, so nothing is affected in
+practice, but declare rules on a differently-named preset if you mean to add
+rather than replace.
+
+`tool_choice` rules are inert on a call that sends no tools, because the
+parameter is only ever attached alongside `tools`.
+
 > [!WARNING]
 > `override` silently satisfies a call the provider would have refused, and
 > nothing in the response says so. `drop` can change the request too — omitting

@@ -66,6 +66,10 @@ __all__ = [
     "ParamsPolicy",
     "ParamPolicy",  # noqa: F822 — resolved via module-level __getattr__ shim
     "GenerationParams",
+    # Named in docs/LLM_LAYER.md as the operator-facing contract, so exported
+    # rather than left as module internals a reader cannot import.
+    "RULABLE_PARAMS",
+    "VALID_RULE_ACTIONS",
 ]
 
 logger = logging.getLogger(__name__)
@@ -458,11 +462,11 @@ class GenerationParams(ParamsPolicy):
         if effort_hint is None:
             return
         effort = effort_hint.lower()
-        if self.rule_for("reasoning_effort", effort) == "reject":
+        action = self.rule_for("reasoning_effort", effort)
+        if action == "reject":
             # Both the refused set and the remaining choices come from the
-            # rules, so a rejection reports what actually caused it.
-            # Only `reject` rules are refusals. A `drop` or `override` rule on
-            # another level is still usable, so listing it here would tell the
+            # rules, and only `reject` rules count: a `drop` or `override` on
+            # another level is still usable, so listing it would tell the
             # operator a level is unavailable when it is not.
             refused = {
                 v
@@ -480,7 +484,6 @@ class GenerationParams(ParamsPolicy):
                 f"the direct provider, when available). See "
                 f"tolokaforge_models/data/model_presets.yaml for the declarations."
             )
-        action = self.rule_for("reasoning_effort", effort)
         if action == "drop":
             # Omitting the parameter yields the provider's DEFAULT budget, not
             # the level asked for, so this is a real change to the request. The
