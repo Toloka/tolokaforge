@@ -3,8 +3,14 @@
 A user-simulator reply is inspected by a list of :class:`ReplyDetector`
 implementations before it reaches the agent. A reply any of them flags is
 **discarded whole and regenerated** — no text is edited, excised, truncated or
-substituted, so the engine has no path that can put words into a turn the model
-did not write. When the attempt budget
+substituted, with one carve-out inside the guarded closure:
+:meth:`~tolokaforge.core.llm.client.UserSimulator._llm_reply` replaces an empty
+reply that carried tool calls with a fixed placeholder before the detectors see
+it. That placeholder is the only text the engine contributes to a user turn, and
+it is unreachable in-tree — the simulator is handed tool schemas only alongside a
+``user_tool_executor``, and the conductor always passes ``None``. Its removal is
+tracked in #1089. Apart from it, the engine has no path that can put words into a
+turn the model did not write. When the attempt budget
 (:data:`~tolokaforge.core.models.run_config.USER_REPLY_MAX_ATTEMPTS`) is spent,
 :class:`UserReplyGuard.enforce` raises :class:`UserReplyRefused` and the trial
 fails as a harness error rather than delivering a defective turn.

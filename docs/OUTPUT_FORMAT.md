@@ -309,13 +309,6 @@ status: "completed"                                   # TrialStatus enum
 termination_reason: "agent_done"                      # TerminationReason enum or null
 grading_error: null                                   # why grading produced no verdict, or null
 first_user_message_source: "pinned"                   # pinned | simulator | null
-user_reply_guard_events:                              # [] on a trial no detector ever flagged
-  - message_index: 2
-    outcome: "refused"                                # delivered | refused
-    rejected:
-      - detector: "fourth_wall"
-        reason: "self_identified_as_model"
-        excerpt: "As an AI language model, I"
 messages:
   - role: "user"
     content: "..."
@@ -336,6 +329,13 @@ messages:
       summary: null   # null when blocks already cover the content (Plan B)
       budget_used: 512
     ts: "2026-01-01T12:00:01Z"
+user_reply_guard_events:                              # [] on a trial no detector ever flagged
+  - message_index: 2
+    outcome: "refused"                                # delivered | refused
+    rejected:
+      - detector: "fourth_wall"
+        reason: "self_identified_as_model"
+        excerpt: "As an AI language model, I"
 ```
 
 ### Top-level fields
