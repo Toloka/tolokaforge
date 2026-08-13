@@ -64,6 +64,7 @@ from tolokaforge.core.logging import (
     silence_root_logging,
 )
 from tolokaforge.core.models import ModelConfig, ProjectConfig, RunConfig, TaskConfig
+from tolokaforge.core.models.docker_config import ImageSource as _ImageSourceLiteral
 from tolokaforge.core.orchestrator import (
     GradingCompleteness,
     Orchestrator,
@@ -79,7 +80,6 @@ from tolokaforge.core.project_loader import (
 )
 from tolokaforge.core.resume import RunStateManager, resolve_resume_run_directory
 from tolokaforge.core.run_queue import create_run_queue
-from tolokaforge.docker.config import ImageSource as _ImageSourceLiteral
 from tolokaforge.dx._display import (
     DisplayMode,
     console,

@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.docker.builder import get_image_definition
-from tolokaforge.docker.config import DockerConfig
 from tolokaforge.docker.health import HealthProbe
 from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.policy import Capability, ResourcePolicy

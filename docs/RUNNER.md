@@ -267,7 +267,7 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
 | `tolokaforge/secrets/` | Single-abstraction secret manager reconstructed from `TOLOKAFORGE_SECRETS_JSON`. |
 | `tolokaforge/tools/` | Tool registry + built-in tool drivers the tool factory dispatches by name at `RegisterTrial`. |
 | `tolokaforge/core/actors/` | Actor seams the turn loop dispatches on. (One file excluded — see below.) |
-| `tolokaforge/core/models/` | Wire types the gRPC surface serialises. |
+| `tolokaforge/core/models/` | Wire types the gRPC surface serialises, plus the run-config blocks `RunConfig` is typed by — `docker_config.py` rides along because `RunConfig` carries it; the runner does not read it. |
 | `tolokaforge/core/llm/` | LLM client + policies; the runner runs LLM-as-judge in-container. (One file excluded — see below.) |
 | `tolokaforge/core/grading/` | Grading substrate — check runner, checks helpers, judge, key manifest, state composition, state diff, trace timeline, transcript wire. (Eleven files excluded — see below.) |
 
