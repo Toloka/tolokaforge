@@ -23,10 +23,12 @@ from tolokaforge.core.run_display_events import (
     DEFAULT_PROBE_BUCKET_WIDTH_S,
     DEFAULT_PROBE_MAX_BUCKETS,
 )
+from tolokaforge.docker.config import DockerConfig
 
 __all__ = [
     "ComputeConfig",
     "DOCKER_RUNTIME_ALIAS_TARGET",
+    "DockerConfig",
     "EngineConfig",
     "EvaluationConfig",
     "HarnessAdapterConfig",
@@ -887,6 +889,7 @@ class RunConfig(BaseModel):
     compute: ComputeConfig | None = None
     storage: StorageConfig | None = None
     observability: ObservabilityConfig | None = None
+    docker: DockerConfig | None = None
 
     @property
     def effective_workers(self) -> int:

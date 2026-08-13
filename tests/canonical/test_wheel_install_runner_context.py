@@ -237,11 +237,13 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
         import shutil
         from pathlib import Path
 
+        import tolokaforge
         from tolokaforge.docker.builder import (
             assemble_build_context,
             get_image_definition,
             repo_root,
         )
+        from tolokaforge.docker.image_source_policy import resolve_image_source
         from tolokaforge.docker.stacks.core import core_stack
 
         # Confirm the venv actually looks like a wheel install — this is
@@ -255,6 +257,20 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
         svc = core_stack().services["runner"]
         gi = get_image_definition("runner")
         lists_equal = svc.context_files == gi["context_files"]
+        # #1068 — SSOT check across the wheel boundary. On a wheel
+        # install the runner service must declare its published repo,
+        # and the pull-policy resolver (given the engine version
+        # ``importlib.metadata`` reports for THIS venv) must resolve
+        # ``auto`` to ``pull``. A regression that drops
+        # ``published_image_repo`` from the ServiceDefinition, or that
+        # ships a broken ``__version__`` sentinel, would fail here in a
+        # real wheel install — not just in unit-test mocks.
+        engine_version = tolokaforge.__version__
+        resolved_auto = resolve_image_source(
+            request="auto",
+            is_wheel_install=wheel_install,
+            engine_version=engine_version,
+        )
 
         # Assemble the build context via the PRODUCTION path — the exact
         # call ``EngineStack.build_images`` makes on a live run.
@@ -281,6 +297,9 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
             "files_present": files_present,
             "pyproject_has_custom_target": _PYPROJECT_MARKER in pyproject_text,
             "pyproject_size": len(pyproject_text),
+            "runner_published_repo": svc.published_image_repo,
+            "engine_version": engine_version,
+            "resolved_auto": resolved_auto,
         }))
         """).strip()
     probe = probe_prelude + probe_body
@@ -356,4 +375,28 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
         "was force-included or the pyproject's custom target section was "
         "removed. Check ``[tool.hatch.build.targets.wheel.force-include]`` "
         "and ``[tool.hatch.build.targets.custom]`` in the repo-root ``pyproject.toml``."
+    )
+
+    # #1068 — SSOT: the runner ServiceDefinition on a wheel install must
+    # declare its published repo, and the pull-policy resolver must map
+    # ``auto`` to ``pull`` for a real wheel install with a real reported
+    # version. A regression that drops ``published_image_repo`` or that
+    # ships a broken ``__version__`` fallback would silently keep every
+    # wheel-installed user on the slow local-build path.
+    assert probe_data["runner_published_repo"] == "tolokasoft1/tolokaforge-runner", (
+        "runner ServiceDefinition on a wheel install did not declare "
+        f"``published_image_repo=tolokasoft1/tolokaforge-runner`` "
+        f"(got: {probe_data['runner_published_repo']!r}). The pull-vs-build "
+        "policy in ``EngineStack._maybe_pull_service_image`` needs this field "
+        "to resolve to ``pull``; a missing / renamed value silently forces "
+        "every wheel-installed user onto the local-build path."
+    )
+    assert probe_data["resolved_auto"] == "pull", (
+        "``resolve_image_source(request='auto', is_wheel_install=True, "
+        f"engine_version={probe_data['engine_version']!r})`` returned "
+        f"{probe_data['resolved_auto']!r} on a real wheel install. The wheel "
+        "should report a real version from ``importlib.metadata`` and route "
+        "to ``pull``; if it does not, either ``__version__`` fell back to the "
+        "unknown sentinel (metadata missing from the built wheel) or the "
+        "policy resolver's default behaviour changed."
     )

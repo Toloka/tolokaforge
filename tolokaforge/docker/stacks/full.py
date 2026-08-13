@@ -91,6 +91,7 @@ def full_stack(
     rag_service = ServiceDefinition(
         name="rag-service",
         image_name="tolokaforge-rag-service",
+        published_image_repo="tolokasoft1/tolokaforge-rag-service",
         dockerfile="tolokaforge/docker/dockerfiles/rag.Dockerfile",
         context=".",
         context_files=[
@@ -131,6 +132,7 @@ def full_stack(
     mock_web_service = ServiceDefinition(
         name="mock-web",
         image_name="tolokaforge-mock-web",
+        published_image_repo="tolokasoft1/tolokaforge-mock-web",
         dockerfile="tolokaforge/docker/dockerfiles/mock_web.Dockerfile",
         context=".",
         # Narrow build-context-hash to what the Dockerfile actually COPYs.
