@@ -254,6 +254,13 @@ class TestPullPathLandsPublishedImage:
             }}))
         """).strip()
 
+        # Remove the tag reference (not the underlying image) BEFORE
+        # the pull so we exercise the real network path — otherwise a
+        # cached copy from a prior run would short-circuit and hide any
+        # regression in the pull code. Post-run we don't clean up: the
+        # cached image is a fixture for the cache-hit test below.
+        _cleanup_local_alias(published_ref)
+
         try:
             result = subprocess.run(
                 [str(_scratch_venv), "-c", probe],
@@ -291,27 +298,56 @@ class TestBuildModeSkipsPull:
         _scratch_venv: Path,
         tmp_path_factory: pytest.TempPathFactory,
     ) -> None:
-        """With ``docker.image_source=build``, the stack never calls
-        ``Image.pull``. We can't directly observe absence-of-network-
-        call, but we CAN verify the resolver returns 'build' for every
-        input combination that would otherwise pull — which is
-        equivalent to observing at the layer above what the network
-        would see below."""
+        """With ``docker.image_source=build``, the stack's pull path is
+        never entered. We can't directly observe absence-of-network-call
+        across a subprocess boundary, but we CAN exercise the real
+        ``EngineStack._build_one_image`` code path with a monkey-patched
+        ``Image.pull`` that raises if called — and assert the raise
+        never fires. This actually tests the stack wiring rather than
+        the pure resolver (which is separately covered in
+        ``tests/unit/test_image_source_policy.py`` — the previous
+        version of this test only asserted the resolver output, which
+        was a tautology).
+
+        The probe patches ``Image.pull`` to fail loudly if called, then
+        calls ``_build_one_image`` for the runner service with
+        ``image_source=build``, catching any exceptions to see if
+        ``Image.pull`` was invoked."""
         probe_cwd = tmp_path_factory.mktemp("integration_pull_build_mode_cwd")
         probe = textwrap.dedent("""
             import json
-            import tolokaforge
-            from tolokaforge.docker.image_source_policy import resolve_image_source
+            from unittest.mock import MagicMock, patch
 
-            # Even the case that would otherwise pull (auto + wheel + known
-            # version) resolves to build when the caller declares build
-            # explicitly.
-            forced_build = resolve_image_source(
-                request="build",
-                is_wheel_install=True,
-                engine_version=tolokaforge.__version__,
+            from tolokaforge.docker.config import DockerConfig
+            from tolokaforge.docker.image import Image
+            from tolokaforge.docker.stack import EngineStack, ServiceDefinition
+
+            svc = ServiceDefinition(
+                name="runner",
+                image_name="tolokaforge-runner",
+                published_image_repo="tolokasoft1/tolokaforge-runner",
+                dockerfile="/nonexistent",  # ensures the build branch fails
+                context=".",
             )
-            print(json.dumps({"forced_build": forced_build}))
+            stack = EngineStack(config=DockerConfig(image_source="build"))
+
+            pull_called = {"value": False}
+            def _sentinel_pull(**kwargs):
+                pull_called["value"] = True
+                raise AssertionError("Image.pull must never be called in build mode")
+
+            with patch.object(Image, "pull", side_effect=_sentinel_pull):
+                try:
+                    stack._build_one_image(svc, force=False)
+                except AssertionError:
+                    raise
+                except Exception:
+                    # Expected — the build path will fail against the fake
+                    # dockerfile. What matters for this test is that
+                    # Image.pull was NOT called first.
+                    pass
+
+            print(json.dumps({"pull_called": pull_called["value"]}))
         """).strip()
 
         try:
@@ -324,11 +360,16 @@ class TestBuildModeSkipsPull:
             )
             if result.returncode != 0:
                 pytest.fail(
-                    f"resolve_image_source probe failed (exit "
-                    f"{result.returncode}):\nstderr:\n{result.stderr}"
+                    f"build-mode probe failed (exit "
+                    f"{result.returncode}):\nstdout:\n{result.stdout}\n"
+                    f"stderr:\n{result.stderr}"
                 )
             data = json.loads(result.stdout.strip().splitlines()[-1])
-            assert data["forced_build"] == "build"
+            assert data["pull_called"] is False, (
+                "EngineStack._build_one_image called Image.pull in build "
+                "mode — the pull-vs-build policy is broken for the "
+                "'build' branch."
+            )
         finally:
             shutil.rmtree(probe_cwd, ignore_errors=True)
 

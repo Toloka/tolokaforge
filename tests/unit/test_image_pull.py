@@ -108,6 +108,72 @@ class TestImagePullCacheHit:
         assert image.image_id == "sha256:already-here"
         client.images.pull.assert_not_called()
 
+    def test_cache_hit_verifies_platform_arch_and_re_pulls_on_mismatch(self) -> None:
+        """If a cached image is present but its Os/Architecture do not
+        match the requested platform (e.g. an operator previously
+        ``docker tag``-ed an arm64 image onto the pulled tag), the pull
+        must NOT short-circuit — otherwise the caller gets a
+        wrong-arch image that fails much later with 'exec format error'."""
+        from tolokaforge.docker.image import Image
+
+        cached_wrong_arch = MagicMock(name="cached_wrong_arch")
+        cached_wrong_arch.id = "sha256:arm64-copy"
+        cached_wrong_arch.attrs = {"Os": "linux", "Architecture": "arm64"}
+
+        pulled_correct = MagicMock(name="pulled_correct")
+        pulled_correct.id = "sha256:amd64-fresh"
+
+        client = _mock_client(get_side_effect=None)
+        client.images.get.side_effect = None
+        client.images.get.return_value = cached_wrong_arch
+        client.images.pull.return_value = pulled_correct
+
+        image = Image.pull(name=NAME, tag=TAG, platform="linux/amd64", client=client)
+
+        # Cache short-circuit was skipped — a fresh pull actually
+        # happened.
+        client.images.pull.assert_called_once_with(NAME, tag=TAG, platform="linux/amd64")
+        assert image.image_id == "sha256:amd64-fresh"
+
+    def test_cache_hit_uses_cached_image_when_platform_matches(self) -> None:
+        from tolokaforge.docker.image import Image
+
+        cached_correct = MagicMock(name="cached_correct")
+        cached_correct.id = "sha256:amd64-cached"
+        cached_correct.attrs = {"Os": "linux", "Architecture": "amd64"}
+
+        client = _mock_client(get_side_effect=None)
+        client.images.get.side_effect = None
+        client.images.get.return_value = cached_correct
+
+        image = Image.pull(name=NAME, tag=TAG, platform="linux/amd64", client=client)
+
+        assert image.image_id == "sha256:amd64-cached"
+        client.images.pull.assert_not_called()
+
+    def test_cache_hit_re_pulls_when_attrs_missing(self) -> None:
+        """When the cached image's attrs don't expose Os/Architecture
+        (unexpected daemon behavior, older docker version, etc.), err
+        on the side of re-pulling rather than returning an unverifiable
+        image."""
+        from tolokaforge.docker.image import Image
+
+        cached_unknown = MagicMock(name="cached_unknown")
+        cached_unknown.id = "sha256:unknown"
+        cached_unknown.attrs = {}
+
+        pulled = MagicMock()
+        pulled.id = "sha256:fresh"
+
+        client = _mock_client(get_side_effect=None)
+        client.images.get.side_effect = None
+        client.images.get.return_value = cached_unknown
+        client.images.pull.return_value = pulled
+
+        Image.pull(name=NAME, tag=TAG, platform="linux/amd64", client=client)
+
+        client.images.pull.assert_called_once()
+
 
 class TestImagePullErrors:
     def test_image_not_found_becomes_tag_missing(self) -> None:
@@ -191,7 +257,12 @@ class TestImagePullErrors:
         assert client.images.pull.call_count == 5
         _ = docker
 
-    def test_docker_exception_becomes_unreachable(self) -> None:
+    def test_docker_exception_becomes_unreachable_without_retries(self) -> None:
+        """Bare ``DockerException`` (e.g. 'daemon socket closed') is
+        NOT retried — it isn't recoverable by waiting, and burning ~130 s
+        of tenacity backoff on it just delays surfacing the real
+        problem. Only network-layer transient errors get the full
+        5-attempt budget (see the 500 test above)."""
         docker = pytest.importorskip("docker")
         from docker.errors import DockerException
 
@@ -205,7 +276,40 @@ class TestImagePullErrors:
                 Image.pull(name=NAME, tag=TAG, client=client)
 
         assert excinfo.value.kind == "unreachable"
+        # Bare DockerException is terminal — no retries.
+        assert client.images.pull.call_count == 1
         _ = docker
+
+    def test_connection_error_becomes_unreachable_after_retries(self) -> None:
+        """``requests.ConnectionError`` and other ``OSError`` subclasses
+        can escape docker-py un-wrapped when the daemon socket becomes
+        unresponsive mid-pull. Classify as transient and burn the full
+        retry budget before surfacing — the daemon might come back."""
+        client = _mock_client()
+        client.images.pull.side_effect = ConnectionError("daemon socket flapping")
+
+        from tolokaforge.docker.image import Image, ImagePullError
+
+        with patch("tenacity.nap.time.sleep"):
+            with pytest.raises(ImagePullError) as excinfo:
+                Image.pull(name=NAME, tag=TAG, client=client)
+
+        assert excinfo.value.kind == "unreachable"
+        assert client.images.pull.call_count == 5
+
+    def test_os_error_becomes_unreachable_after_retries(self) -> None:
+        """Raw ``OSError`` (broken socket, EPIPE, etc.) — same shape."""
+        client = _mock_client()
+        client.images.pull.side_effect = OSError("EPIPE")
+
+        from tolokaforge.docker.image import Image, ImagePullError
+
+        with patch("tenacity.nap.time.sleep"):
+            with pytest.raises(ImagePullError) as excinfo:
+                Image.pull(name=NAME, tag=TAG, client=client)
+
+        assert excinfo.value.kind == "unreachable"
+        assert client.images.pull.call_count == 5
 
 
 class TestImagePullDoesNotRetryTerminal:

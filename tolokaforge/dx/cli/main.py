@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from typing import get_args as _get_type_args
 
 import click
 import yaml
@@ -68,6 +69,7 @@ from tolokaforge.core.project_loader import (
 )
 from tolokaforge.core.resume import RunStateManager, resolve_resume_run_directory
 from tolokaforge.core.run_queue import create_run_queue
+from tolokaforge.docker.config import ImageSource as _ImageSourceLiteral
 from tolokaforge.dx._display import (
     DisplayMode,
     console,
@@ -584,7 +586,12 @@ def _run_dry_run(
 @click.option(
     "--image-source",
     "image_source",
-    type=click.Choice(["auto", "pull", "build"]),
+    # SSOT: the allow-list lives on ``DockerConfig.image_source``'s
+    # ``Literal`` type. Deriving the Click Choice values from
+    # ``typing.get_args`` keeps this argparser, the env-var validation
+    # below, and the pydantic model in lock-step — adding a new value
+    # is a one-line edit at the type-alias.
+    type=click.Choice(list(_get_type_args(_ImageSourceLiteral))),
     default=None,
     help=(
         "Where first-party service images come from. 'auto' (the default "
@@ -700,13 +707,21 @@ def run(
     # --user-model / --judge-model above.
     image_source_override = image_source or os.environ.get("TOLOKAFORGE_IMAGE_SOURCE")
     if image_source_override:
-        if image_source_override not in ("auto", "pull", "build"):
+        allowed = _get_type_args(_ImageSourceLiteral)
+        if image_source_override not in allowed:
             raise click.BadParameter(
                 f"TOLOKAFORGE_IMAGE_SOURCE={image_source_override!r} is not one of "
-                "'auto', 'pull', 'build'",
+                f"{', '.join(repr(v) for v in allowed)}",
                 param_hint="TOLOKAFORGE_IMAGE_SOURCE",
             )
-        config_data.setdefault("docker", {})["image_source"] = image_source_override
+        # Defensive: PyYAML parses a bare ``docker:`` key with no value
+        # as ``None``. ``dict.setdefault('docker', {})`` returns that
+        # existing None and ``None['image_source'] = ...`` blows up
+        # with an opaque TypeError. Coerce None → {} first so the
+        # override lands cleanly no matter how the YAML shape looked.
+        if config_data.get("docker") is None:
+            config_data["docker"] = {}
+        config_data["docker"]["image_source"] = image_source_override
 
     run_config = construct_config(RunConfig, config_data, source=Path(config))
 

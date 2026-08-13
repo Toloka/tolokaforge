@@ -52,6 +52,30 @@ def _extract_status_code(exc: APIError) -> int | None:
     return inner if isinstance(inner, int) else None
 
 
+def _cached_image_matches_platform(existing: Any, platform: str) -> bool:
+    """True if the daemon-side cached image matches a Docker platform spec.
+
+    Docker platform strings are ``os/arch`` or ``os/arch/variant``; the
+    docker-py image's ``attrs`` carries the ``Os`` and ``Architecture``
+    fields from a ``docker image inspect``. Comparison is defensive: any
+    missing / unexpected attr yields ``False`` (falls through to a fresh
+    pull rather than silently accepting an unverifiable image).
+    """
+    parts = platform.split("/")
+    if len(parts) < 2:
+        return False
+    want_os, want_arch = parts[0], parts[1]
+    try:
+        attrs = existing.attrs or {}
+    except Exception:
+        return False
+    have_os = attrs.get("Os")
+    have_arch = attrs.get("Architecture")
+    if not isinstance(have_os, str) or not isinstance(have_arch, str):
+        return False
+    return have_os == want_os and have_arch == want_arch
+
+
 def _extract_response_headers(exc: APIError) -> Mapping[str, str] | None:
     """Best-effort response-header extraction from an ``APIError``.
 
@@ -532,20 +556,35 @@ class Image(BaseModel):
 
         # Cache hit — same shape as the build path's skip-if-cached
         # short-circuit. Do not spend a pull round-trip if the exact
-        # reference already resolves in the local daemon.
+        # reference already resolves in the local daemon AND the cached
+        # image matches the requested platform (arch/os). Without the
+        # platform check a stale wrong-arch entry (e.g. an operator
+        # locally ``docker tag``-ed an arm64 image onto the pulled tag,
+        # or a partial pull left the previous arch cached) would return
+        # the wrong-arch image with ``context_hash='pulled'`` and the
+        # container would only fail far downstream with "exec format
+        # error".
         existing = cls._find_existing_image(client, full_tag)
         if existing is not None:
-            logger.info("Image '%s' already present in daemon, skipping pull", full_tag)
-            image = cls(
-                name=name,
-                tag=tag,
-                image_id=existing.id,
-                dockerfile="pulled",
-                context="pulled",
-                context_hash="pulled",
-            )
-            object.__setattr__(image, "_client", client)
-            return image
+            if platform is not None and not _cached_image_matches_platform(existing, platform):
+                logger.info(
+                    "Image '%s' present in daemon but architecture does not "
+                    "match requested platform %s; pulling a fresh copy",
+                    full_tag,
+                    platform,
+                )
+            else:
+                logger.info("Image '%s' already present in daemon, skipping pull", full_tag)
+                image = cls(
+                    name=name,
+                    tag=tag,
+                    image_id=existing.id,
+                    dockerfile="pulled",
+                    context="pulled",
+                    context_hash="pulled",
+                )
+                object.__setattr__(image, "_client", client)
+                return image
 
         from tenacity import (
             retry,
@@ -560,10 +599,18 @@ class Image(BaseModel):
                 return False
             if isinstance(exc, APIError):
                 status = _extract_status_code(exc)
-                if status in (404, 429):
-                    return False
-            # Any other APIError / network exception is a candidate for retry.
-            return isinstance(exc, APIError | DockerException)
+                return status not in (404, 429)
+            # Network-layer exceptions (``requests.ConnectionError``,
+            # ``urllib3.ReadTimeoutError``, raw socket errors) can escape
+            # docker-py un-wrapped when the daemon socket becomes
+            # unresponsive mid-pull; retry those the full budget.
+            if isinstance(exc, ConnectionError | TimeoutError | OSError):
+                return True
+            # A bare ``DockerException`` without network context (e.g.
+            # "daemon socket closed", schema errors) is not recoverable
+            # by waiting — treat it as terminal so we don't burn ~130s
+            # of exponential backoff before surfacing.
+            return False
 
         @retry(
             stop=stop_after_attempt(5),
@@ -630,6 +677,16 @@ class Image(BaseModel):
                 "unreachable",
                 full_tag,
                 f"Docker SDK error while pulling: {e}",
+            ) from e
+        except (ConnectionError, TimeoutError, OSError) as e:
+            # Un-wrapped network-layer exceptions escape docker-py when
+            # the daemon socket goes quiet mid-pull. Classify as
+            # ``unreachable`` so the caller's fallback/retry policy sees
+            # a proper ImagePullError instead of a raw stack trace.
+            raise ImagePullError(
+                "unreachable",
+                full_tag,
+                f"Network error while pulling: {e}",
             ) from e
 
         logger.info("Successfully pulled image '%s' (ID: %s)", full_tag, pulled.id)

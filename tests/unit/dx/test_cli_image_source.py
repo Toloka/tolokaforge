@@ -149,6 +149,35 @@ class TestPrecedence:
         assert captured["config"].docker is not None
         assert captured["config"].docker.image_source == "pull"
 
+    def test_null_docker_in_yaml_does_not_typeerror_on_override(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A YAML file with a bare ``docker:`` (which PyYAML parses to
+        ``None``) must not crash with a TypeError when the CLI applies
+        an ``--image-source`` override. Pre-fix behaviour was
+        ``None['image_source'] = 'pull'`` → confusing error with no
+        hint that the underlying issue is a malformed YAML value."""
+        config_path = _write_config(tmp_path)
+        raw = config_path.read_text()
+        # Inject a bare ``docker:`` line the YAML parser will resolve
+        # to ``None`` — the exact pathological input the fix addresses.
+        config_path.write_text(raw + "\ndocker:\n")
+
+        result, captured = _invoke(
+            runner,
+            tmp_path,
+            monkeypatch,
+            config_path=config_path,
+            extra_args=["--image-source", "pull"],
+        )
+
+        assert result.exit_code == 0, result.stderr
+        assert captured["config"].docker is not None
+        assert captured["config"].docker.image_source == "pull"
+
     def test_flag_beats_env_and_yaml(
         self,
         runner: CliRunner,

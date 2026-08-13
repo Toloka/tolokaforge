@@ -372,8 +372,20 @@ class EngineStack(BaseModel):
             )
 
         # Pull path — resolved against DockerConfig.image_source and the
-        # service's declared published repo. ``force=True`` skips it
-        # unconditionally: the caller explicitly wants a fresh build.
+        # service's declared published repo.
+        #
+        # ``force=True`` normally skips the pull (the caller wants a
+        # fresh build), BUT in explicit ``pull`` mode that would silently
+        # violate the pull-or-die contract — the operator explicitly
+        # asked for a pulled image. Raise instead so the caller sees the
+        # conflict.
+        if force and self.config.image_source == "pull":
+            raise ValueError(
+                f"force=True is incompatible with docker.image_source='pull' "
+                f"on service '{svc.name}': explicit pull mode refuses to "
+                f"build. Set image_source to 'auto' or 'build', or omit "
+                f"force=True."
+            )
         if not force:
             pulled = self._maybe_pull_service_image(svc)
             if pulled is not None:
@@ -448,8 +460,19 @@ class EngineStack(BaseModel):
         """
         # No published-repo declaration → no pull target. Task-declared
         # services, third-party images, and any first-party service not
-        # yet wired up all take this branch.
+        # yet wired up all take this branch. In explicit ``pull`` mode
+        # this is a contract violation (the operator asked for a pull
+        # but the service has nothing to pull from) — refuse rather than
+        # silently drop to build.
         if svc.published_image_repo is None:
+            if self.config.image_source == "pull":
+                raise ValueError(
+                    f"docker.image_source='pull' but service '{svc.name}' "
+                    "has no published_image_repo declared. Nothing to pull. "
+                    "Either declare a published_image_repo on the "
+                    "ServiceDefinition, switch to image_source='auto' or "
+                    "'build', or exclude this service from the stack."
+                )
             return None
 
         import tolokaforge
@@ -675,6 +698,28 @@ class EngineStack(BaseModel):
 
         return result
 
+    def _inspect_running_image(self, container_name: str) -> tuple[list[str], str | None]:
+        """Read the underlying image's tag list + daemon id for a container.
+
+        Returns ``([], None)`` on any failure — the caller treats that as
+        'we couldn't verify' and destroys the container to be safe.
+        Separate helper so the reuse-check comparison in ``_start_service``
+        stays readable and the raw ``docker`` client call is contained.
+        """
+        import docker as docker_lib
+
+        try:
+            client = docker_lib.from_env()
+            raw = client.containers.get(container_name)
+        except Exception:
+            return [], None
+        try:
+            tags = list(raw.image.tags or [])
+            image_id = raw.image.id
+        except Exception:
+            return [], None
+        return tags, image_id
+
     def _try_reuse_existing(
         self,
         container_name: str,
@@ -853,21 +898,39 @@ class EngineStack(BaseModel):
         component_id = build_component_id("engine", "docker.service", name)
 
         # ── Try to reuse an existing healthy container ──────────────
-        # Verify the running container's image tag matches the freshly-built
-        # tag; otherwise we'd silently keep a stale container after a build_arg
-        # change (e.g., enable_playwright on/off).
+        # Verify the running container's image matches the freshly-built
+        # or freshly-pulled image; otherwise we'd silently keep a stale
+        # container after a build_arg change (e.g., enable_playwright on/off).
+        #
+        # Reuse-check identity: match on either (a) daemon image id (uniquely
+        # identifies the image regardless of tags) OR (b) presence of our
+        # expected full_tag in the container image's tag list. The pull path
+        # aliases the underlying image with ``tolokaforge-runner:local`` on
+        # top of the pulled ``tolokasoft1/tolokaforge-runner:X.Y.Z`` tag; a
+        # single-slot ``existing.image.tags[0]`` compare could pick the alias
+        # in one run and the pulled tag in the next (Docker does not
+        # guarantee tag-list ordering), spuriously destroying healthy
+        # containers on every subsequent run.
         existing = self._try_reuse_existing(container_name, svc)
         if existing:
             reuse = False
             try:
-                running_image = existing.image_tag or ""
-                expected_image = image.full_tag
-                if running_image and running_image != expected_image:
+                expected_full_tag = image.full_tag
+                expected_image_id = image.image_id
+                actual_tags, actual_image_id = self._inspect_running_image(container_name)
+                tags_match = expected_full_tag in actual_tags
+                ids_match = bool(
+                    actual_image_id and expected_image_id and actual_image_id == expected_image_id
+                )
+                if not (tags_match or ids_match):
                     logger.info(
-                        "Existing container '%s' uses image '%s' but expected '%s' — recreating",
+                        "Existing container '%s' uses image (id=%s, tags=%s) but "
+                        "expected id=%s / full_tag='%s' — recreating",
                         container_name,
-                        running_image,
-                        expected_image,
+                        actual_image_id or "unknown",
+                        actual_tags or ["unknown"],
+                        expected_image_id or "unknown",
+                        expected_full_tag,
                     )
                     existing.destroy()
                 else:

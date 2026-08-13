@@ -349,6 +349,49 @@ class TestServiceWithoutPublishedRepoAlwaysBuilds:
         assert len(registry.calls) == 1
 
 
+class TestExplicitPullModeContract:
+    """Two contract corners the sibling ``TestExplicitPullMode`` does
+    not cover: explicit ``pull`` mode refuses to fall back to build
+    silently when the request cannot be honoured."""
+
+    def test_force_true_in_explicit_pull_mode_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``force=True`` normally skips the pull path (fresh rebuild),
+        but in explicit ``pull`` mode that would silently violate the
+        pull-or-die contract."""
+        stack, _pull_mock, _registry = _make_stack(
+            monkeypatch,
+            image_source="pull",
+            pull_result=_fake_pulled_image(),
+            is_wheel_install=True,
+            engine_version="0.18.0",
+        )
+
+        with pytest.raises(ValueError) as excinfo:
+            stack._build_one_image(_svc(), force=True)
+
+        assert "pull" in str(excinfo.value).lower()
+        assert "force" in str(excinfo.value).lower()
+
+    def test_missing_published_repo_in_explicit_pull_mode_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A service without ``published_image_repo`` has nothing to
+        pull from; in explicit ``pull`` mode that's a hard configuration
+        error rather than a silent drop to build."""
+        stack, _pull_mock, _registry = _make_stack(
+            monkeypatch,
+            image_source="pull",
+            pull_result=_fake_pulled_image(),
+            is_wheel_install=True,
+            engine_version="0.18.0",
+        )
+
+        with pytest.raises(ValueError) as excinfo:
+            stack._build_one_image(_svc(published=None))
+
+        assert "published_image_repo" in str(excinfo.value)
+
+
 class TestForceRebuildSkipsPull:
     def test_force_true_skips_pull_and_calls_image_build_directly(
         self, monkeypatch: pytest.MonkeyPatch

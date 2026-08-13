@@ -78,4 +78,18 @@ def resolve_image_source(
         return "build"
     if engine_version == UNKNOWN_VERSION_SENTINEL:
         return "build"
+    # PEP 440 local-version segment (``+something``) is not a legal
+    # Docker tag character (Docker tags match ``[A-Za-z0-9_.-]{1,128}``).
+    # An editable install or a hatch build from a dirty tree emits
+    # versions like ``0.18.0+dirty``, ``0.18.0+editable``, or
+    # ``0.18.0+abcdef.dirty``; feeding these to Image.pull would produce
+    # a client-side tag-format error that the pull-path error handler
+    # would misclassify as ``unreachable`` (no HTTP round-trip, so no
+    # status code). Route these to build in ``auto`` mode instead — the
+    # local version means "this bit of code is not what's on Docker Hub"
+    # by definition, so building is the right choice. Explicit ``pull``
+    # still tries; the resulting tag-format error surfaces as a hard
+    # failure that matches the operator's stated intent.
+    if "+" in engine_version:
+        return "build"
     return "pull"

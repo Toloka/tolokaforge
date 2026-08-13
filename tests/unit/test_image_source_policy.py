@@ -102,16 +102,13 @@ class TestAutoMode:
 
     @pytest.mark.parametrize(
         "engine_version",
-        ["0.18.0.dev5", "0.18.0.post1", "1.2.3+dirty", "0.19.0.rc.1"],
+        ["0.18.0.dev5", "0.18.0.post1", "0.19.0.rc.1"],
     )
     def test_wheel_install_with_prerelease_version_still_attempts_pull(
         self, engine_version: str
     ) -> None:
-        # Prerelease / local versions likely aren't published to Docker
-        # Hub — but the pull attempt is the authoritative check. The
-        # policy says "yes, try pull"; the caller falls back on
-        # ImagePullError. Keeping the denylist OUT of policy avoids a
-        # stale hardcoded rule lying about published tags.
+        # Prerelease versions are legal Docker tag characters and might
+        # be published — let the pull attempt be the authoritative check.
         assert (
             resolve_image_source(
                 request="auto",
@@ -119,6 +116,26 @@ class TestAutoMode:
                 engine_version=engine_version,
             )
             == "pull"
+        )
+
+    @pytest.mark.parametrize(
+        "engine_version",
+        ["0.18.0+dirty", "0.18.0+editable", "1.2.3+abcdef.dirty", "0.19.0+local"],
+    )
+    def test_wheel_install_with_pep440_local_version_falls_back_to_build(
+        self, engine_version: str
+    ) -> None:
+        """PEP 440 local segment (``+something``) is not a legal Docker
+        tag character. Route to build in ``auto`` mode so the caller
+        never emits a malformed tag that the pull error handler would
+        misclassify as ``unreachable``."""
+        assert (
+            resolve_image_source(
+                request="auto",
+                is_wheel_install=True,
+                engine_version=engine_version,
+            )
+            == "build"
         )
 
 
