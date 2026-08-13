@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from tolokaforge.core.deprecations import coerce_task_packs_alias
+from tolokaforge.core.deprecations import coerce_task_packs_alias, drop_retired_max_idle_turns
 from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.core.models.model_config import ModelConfig
 
@@ -359,7 +359,11 @@ class StuckHeuristics(BaseModel):
 
     enabled: bool = True
     max_repeated_tool_calls: int = 10
-    max_idle_turns: int = 12
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_keys(cls, data: Any) -> Any:
+        return drop_retired_max_idle_turns(data)
 
 
 class TypeSenseConfig(BaseModel):
@@ -467,12 +471,13 @@ class OrchestratorConfig(BaseModel):
     a non-default value."""
 
     stuck_heuristics: StuckHeuristics = Field(default_factory=StuckHeuristics)
-    """Deprecated. The conductor now reads stuck-heuristics from the
-    task-scoped ``TaskConfig.stuck_heuristics`` (populated via the M2
-    loader's per-task merge chain from
-    ``project.task_defaults.stuck_heuristics``). Kept on this model
-    for backward compatibility; a ``DeprecationWarning`` fires when
-    the field is explicitly set."""
+    """Deprecated, and still read: the conductor falls back to this block
+    for any task declaring no task-scoped ``TaskConfig.stuck_heuristics``
+    (populated via the M2 loader's per-task merge chain from
+    ``project.task_defaults.stuck_heuristics``) — which is every shipped
+    pack but one, so these are the values most trials run at. The canonical
+    home is ``task_defaults``; a ``DeprecationWarning`` fires when this
+    field is explicitly set."""
 
     runtime: str | None = None
     """Deprecated operator override for backend selection.

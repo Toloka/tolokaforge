@@ -712,8 +712,7 @@ class InProcessConductor:
         stuck_detector = None
         if stuck_cfg.enabled:
             stuck_detector = StuckDetector(
-                max_repeated_tool_calls=stuck_cfg.max_repeated_tool_calls,
-                max_idle_turns=stuck_cfg.max_idle_turns,
+                max_repeated_tool_calls=stuck_cfg.max_repeated_tool_calls
             )
 
         system_prompt = self._build_system_prompt(task, setup.tool_schemas, setup.task_dir)

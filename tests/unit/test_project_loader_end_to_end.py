@@ -217,7 +217,6 @@ class TestTaskLoaderWithProjectDefaults:
             "stuck_heuristics": {
                 "enabled": True,
                 "max_repeated_tool_calls": 4,
-                "max_idle_turns": 2,
             },
             "timeouts": {"trial_seconds": 400, "tool_call_seconds": 30},
         }
@@ -227,7 +226,6 @@ class TestTaskLoaderWithProjectDefaults:
         )
         assert task.stuck_heuristics is not None
         assert task.stuck_heuristics.max_repeated_tool_calls == 4
-        assert task.stuck_heuristics.max_idle_turns == 2
         assert task.timeouts is not None
         assert task.timeouts.trial_seconds == 400
         assert task.timeouts.tool_call_seconds == 30

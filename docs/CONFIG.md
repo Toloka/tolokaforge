@@ -55,7 +55,6 @@ orchestrator:
     enabled: false
   stuck_heuristics:
     max_repeated_tool_calls: 5
-    max_idle_turns: 8
   runtime: "shared"       # deprecated override; any registered backend name
   strict_task_load: false   # true = refuse to start on an adapter task-load failure
 

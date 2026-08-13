@@ -104,7 +104,6 @@ orchestrator:
     episode_s: 120
   stuck_heuristics:
     max_repeated_tool_calls: 3
-    max_idle_turns: 2
 """
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
