@@ -8,7 +8,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from jsonschema import validate
 from pydantic import BaseModel
@@ -321,6 +321,21 @@ class ToolRegistry:
     def reset_counts(self) -> None:
         """Reset call counts (per trial)"""
         self._call_counts = dict.fromkeys(self._tools.keys(), 0)
+
+
+@runtime_checkable
+class ToolExecuting(Protocol):
+    """The seam a trial's tool call crosses: a name and arguments in, a
+    :class:`ToolResult` out, under the caller's episode-unique ``call_id``.
+
+    Structural rather than nominal because the two implementations share no
+    base: :class:`ToolExecutor` runs the tool in-process against a
+    :class:`ToolRegistry`, and
+    :class:`~tolokaforge.core.docker_adapter.DockerRunnerAdapter` forwards it
+    to the runner container over gRPC under a bound executor identity.
+    """
+
+    def execute(self, tool_name: str, arguments: dict[str, Any], *, call_id: str) -> ToolResult: ...
 
 
 class ToolExecutor:

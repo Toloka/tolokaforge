@@ -2315,8 +2315,8 @@ class UserSimulator(Actor):
         tool_guidance = ""
         if self.tool_schemas:
             tool_guidance = """
-- You have access to tools to check device status and perform actions. Use them when the agent asks you about your device state.
-- ALWAYS use tools to ground your responses. For example, if the agent asks "what does your status bar show?", you must call check_status_bar tool first, then report the result.
+- You have access to tools. Use them whenever the agent asks you for something one of them can establish.
+- ALWAYS use a tool to ground your answer rather than answering from memory or assumption.
 - Never make up or hallucinate tool results. Always call the actual tool and report what it returns.
 - If unsure whether you need to use a tool, prefer using it over making assumptions."""
 

@@ -123,7 +123,6 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/grading/trace_replay.py",
     "tolokaforge/core/grading/unknown_keys.py",
     "tolokaforge/core/llm/fallback_client.py",
-    "tolokaforge/tools/user_tools.py",
 )
 """Files that live under a shared-spine subpackage but are orchestrator-only.
 
@@ -136,14 +135,12 @@ orchestrator does that before handing a :class:`TrialRunner` to the
 conductor, and the runner-side wire protocol carries only the resolved
 per-turn artefacts.
 
-Eight grading-side files (``core.grading.combine``,
+Seven grading-side files (``core.grading.combine``,
 ``core.grading.corpus_curation``, ``core.grading.migration_declaration``,
 ``core.grading.replay``, ``core.grading.rubric_migration``,
-``core.grading.state_checks``, ``core.grading.trace_replay``,
-``core.tools.user_tools``) reach orchestrator-only siblings
-(``core.output.artifacts``, ``core.output_writer``,
-``core.utils.diff``, ``core.env_state``, ``adapters._task_loader``) —
-including any of these in
+``core.grading.state_checks``, ``core.grading.trace_replay``) reach
+orchestrator-only siblings (``core.output.artifacts``, ``core.output_writer``,
+``core.utils.diff``, ``adapters._task_loader``) — including any of these in
 the subset would drag those orchestrator-only surfaces along with them, or
 fail at import time inside the runner container. ``migration_declaration``
 reaches ``core.output.artifacts`` and ``core.output_writer`` indirectly, through

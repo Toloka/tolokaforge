@@ -945,6 +945,79 @@ class TestDuplicateCallIdPublishesNoScore:
         assert trajectory.grade is None
 
 
+class TestUserSideToolExecution:
+    """Each actor's tools live in its own registry, and ``ExecuteTool`` routes on
+    the request's ``executor`` field. A tool the task declared for the user is
+    executable only under ``executor="user"``; asking for it as the agent finds
+    nothing, because the agent's registry does not hold it.
+    """
+
+    def _register_with_user_tool(self, runner_service, mock_grpc_context, trial_id: str) -> None:
+        task = simple_task_description_dict()
+        task["user_tools"] = [
+            {
+                "name": "calculator",
+                "description": "Arithmetic",
+                "parameters": {"type": "object", "properties": {}},
+                "category": "compute",
+            }
+        ]
+        response = runner_service.RegisterTrial(
+            register_request(trial_spec_json(task, trial_id=trial_id), trial_id=trial_id),
+            mock_grpc_context,
+        )
+        assert response.success is True, response.error
+        assert response.num_agent_tools == 0
+        assert response.num_user_tools == 1
+
+    def test_a_user_declared_tool_executes_under_the_user_identity(
+        self, runner_service, mock_grpc_context
+    ) -> None:
+        trial_id = "user_tool_exec:0"
+        self._register_with_user_tool(runner_service, mock_grpc_context, trial_id)
+
+        response = runner_service.ExecuteTool(
+            execute_request(
+                trial_id,
+                "calculator",
+                arguments_json=json.dumps({"expression": "2 + 2"}),
+                executor="user",
+                call_id="call_u1",
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == pb2.EXECUTION_STATUS_SUCCESS, response.error_message
+        recorded = runner_service.trials[trial_id].recorded[-1]
+        assert (recorded.call_id, recorded.tool_name, recorded.executor) == (
+            "call_u1",
+            "calculator",
+            "user",
+        )
+
+    def test_the_same_tool_asked_for_as_the_agent_is_refused(
+        self, runner_service, mock_grpc_context
+    ) -> None:
+        """The refusal is what makes the conductor's slicing load-bearing: offer
+        the user's tool to the agent and every call it makes dies here."""
+        trial_id = "user_tool_refusal:0"
+        self._register_with_user_tool(runner_service, mock_grpc_context, trial_id)
+
+        response = runner_service.ExecuteTool(
+            execute_request(
+                trial_id,
+                "calculator",
+                arguments_json=json.dumps({"expression": "2 + 2"}),
+                executor="agent",
+                call_id="call_a1",
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == pb2.EXECUTION_STATUS_TOOL_NOT_FOUND
+        assert "calculator" in response.error_message
+
+
 # NOTE: TestDBClientWithTestClient has been moved to tests/test_db_client.py
 # to avoid duplication. See TestDBServiceClientLifecycle for comprehensive
 # DB client tests against real json_db_service.

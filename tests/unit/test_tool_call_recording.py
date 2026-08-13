@@ -35,7 +35,6 @@ from tolokaforge.core.runner import TrialRunner, TrialToolCallRecorder
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.tools.registry import Tool, ToolExecutor, ToolRegistry, ToolResult
-from tolokaforge.tools.user_tools import UserToolExecutor
 
 pytestmark = pytest.mark.unit
 
@@ -397,14 +396,12 @@ class TestOneOrderedRecordPerTrial:
 
         The replaced implementation read one list per executor and concatenated
         them, so this trial recorded agent, agent, user: interleaved order was
-        destroyed by construction, and order looked right only because no run
-        has a live user executor (#688). The user branch is therefore driven
-        directly on :class:`TrialRunner`, which is the seam #688's fix will make
-        reachable, not a mock of it.
+        destroyed by construction. The user branch is therefore driven directly
+        on :class:`TrialRunner`, which is the seam the conductor hands a
+        user-side executor to, not a mock of it.
         """
         agent_registry = _registry(_Echo("agent_tool"))
-        user_executor = UserToolExecutor(env_state=None, use_default_tools=False)
-        user_executor.register_tool(_Echo("user_tool"))
+        user_executor = ToolExecutor(_registry(_Echo("user_tool")))
 
         user_simulator = MagicMock()
         user_simulator.last_system_prompt = None

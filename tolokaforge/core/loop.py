@@ -60,7 +60,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.run_display_events import LLMCallObservation
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
-from tolokaforge.tools.registry import ToolExecutor, resolve_tool_output, resolve_tool_status
+from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
 
 
 class LoopLLMClient(Protocol):
@@ -254,7 +254,7 @@ class ToolCallingLoop:
     """
 
     llm_client: LoopLLMClient
-    tool_executor: ToolExecutor
+    tool_executor: ToolExecuting
     tool_schemas: list[dict[str, Any]]
     config: LoopConfig
     metrics: MetricsSink

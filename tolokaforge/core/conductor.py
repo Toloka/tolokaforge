@@ -288,6 +288,8 @@ class _TrialSetup:
     adapter_env: Any
     tool_schemas: list[dict[str, Any]]
     tool_executor: DockerRunnerAdapter
+    user_tool_schemas: list[dict[str, Any]]
+    user_tool_executor: DockerRunnerAdapter | None
 
 
 @dataclass
@@ -593,7 +595,7 @@ class InProcessConductor:
 
         # Tool schemas from register_trial (converted to OpenAI format).
         # Sanitise property names to match LLM API requirements (^[a-zA-Z0-9_.-]+$).
-        tool_schemas = [
+        declared_schemas = [
             {
                 "type": "function",
                 "function": {
@@ -605,10 +607,25 @@ class InProcessConductor:
             for ts in register_result["tool_schemas"]
         ]
 
+        # ``tool_schemas`` is one list carrying both actors' surfaces, agent
+        # slice first, partitioned at ``num_agent_tools`` (RegisterTrialResponse,
+        # ``runner.proto``). Offering the whole list to the agent would advertise
+        # tools the runner refuses to execute under ``executor="agent"``.
+        num_agent_tools = register_result["num_agent_tools"]
+        tool_schemas = declared_schemas[:num_agent_tools]
+        user_tool_schemas = declared_schemas[num_agent_tools:]
+
+        user_tool_executor = (
+            DockerRunnerAdapter(runtime=self.runtime_backend, trial_id=trial_id, executor="user")
+            if user_tool_schemas
+            else None
+        )
+
         self.logger.info(
             "Docker runtime: Registered trial",
             trial_id=trial_id,
-            tool_count=register_result.get("num_agent_tools", len(tool_schemas)),
+            tool_count=num_agent_tools,
+            user_tool_count=len(user_tool_schemas),
         )
 
         return _TrialSetup(
@@ -620,6 +637,8 @@ class InProcessConductor:
             adapter_env=adapter_env,
             tool_schemas=tool_schemas,
             tool_executor=tool_executor,
+            user_tool_schemas=user_tool_schemas,
+            user_tool_executor=user_tool_executor,
         )
 
     def _run_agent_loop(
@@ -638,10 +657,6 @@ class InProcessConductor:
         """
         task = task_config
         user_config = spec.user_model_config
-
-        # User tool executor is not used in Docker mode (Runner handles tools).
-        user_tool_executor = None
-        user_tool_schemas: list[dict[str, Any]] = []
 
         # ``interaction_mode='agent_only'`` runs the agent as a monologue —
         # the turn loop never dispatches a user actor, so constructing a
@@ -665,7 +680,7 @@ class InProcessConductor:
                 persona=sim.persona,
                 backstory=sim.backstory,
                 scripted_flow=sim.scripted_flow,
-                tool_schemas=user_tool_schemas if user_tool_executor else None,
+                tool_schemas=setup.user_tool_schemas or None,
                 rate_limit_probe=rate_limit_probe.for_simulator(),
             )
         else:
@@ -736,7 +751,7 @@ class InProcessConductor:
             turn_timeout_s=turn_timeout_s,
             episode_timeout_s=episode_timeout_s,
             stuck_detector=stuck_detector,
-            user_tool_executor=user_tool_executor,
+            user_tool_executor=setup.user_tool_executor,
             request_limiter=self.request_limiter,
             verbose=self.verbose,
             strict=self.strict,
@@ -905,11 +920,17 @@ class InProcessConductor:
         grading_config = self.adapter.get_grading_config(task.task_id)
 
         # Persist the post-policy tool list inside the trial bundle as
-        # ``tools_schemas.yaml`` — the exact list handed to the agent's
-        # :class:`LLMClient`, passed through the capabilities' schema
-        # sanitizer so the file reproduces what the provider saw.
+        # ``tools_schemas.yaml`` — the trial's declared tool surface, agent
+        # slice then user slice, passed through the capabilities' schema
+        # sanitizer so the agent's half reproduces what the provider saw. Both
+        # slices are recorded because the replay authoring gate rebuilds the
+        # trial's whole ``ToolInventory`` from this one file
+        # (``grading.trace_replay.tool_inventory_from_bundle``): an agent-only
+        # record would leave a matcher naming a user tool unblessable.
         agent_config = self.agent_client.config
-        sanitized = self.agent_client.capabilities.schema_sanitizer.sanitize(setup.tool_schemas)
+        sanitized = self.agent_client.capabilities.schema_sanitizer.sanitize(
+            setup.tool_schemas + setup.user_tool_schemas
+        )
         writer.write_tools_schemas(setup.trial_dir, sanitized)
 
         # Persist the agent's effective (post-policy) system prompt and

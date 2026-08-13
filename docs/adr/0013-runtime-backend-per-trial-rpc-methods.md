@@ -65,7 +65,7 @@ Doesn't delete the class. Doesn't reduce the surface. Just moves the constructor
 
 Moving both into `RuntimeBackend` would make the Protocol grow per-trial state (which `RuntimeBackend` doesn't have — it's a run-level object). Keeping a slim per-trial `ToolExecutor` that owns `tool_logs` and delegates `execute_tool` to `RuntimeBackend` is the honest split.
 
-The `ToolExecutor` surface is already established (`tolokaforge.tools.registry`, `tolokaforge.tools.user_tools`) — this is just one more implementation of that established shape, not a new pattern.
+The tool-executor surface is already established (`tolokaforge.tools.registry.ToolExecuting`, the Protocol `ToolExecutor` satisfies) — this is just one more implementation of that established shape, not a new pattern.
 
 ## Consequences
 
@@ -86,11 +86,11 @@ The carve-out was justified by two things `execute()` does beyond delegating:
 binding the `executor` identity, and appending to a per-trial `tool_logs` list.
 Only the first survives.
 
-Three executors — `ToolExecutor`, `UserToolExecutor`, `DockerRunnerAdapter` —
-each owned a list, in three different shapes, with no shared clock. `TrialRunner`
-read them back through `get_logs()` and concatenated the agent's list with the
-user's, so a trial's recorded order was agent-calls-then-user-calls rather than
-execution order. Three lists cannot be merged back into one order after the fact.
+Each executor owned its own list, in its own shape, with no shared clock.
+`TrialRunner` read them back through `get_logs()` and concatenated the agent's
+list with the user's, so a trial's recorded order was agent-calls-then-user-calls
+rather than execution order. Per-executor lists cannot be merged back into one
+order after the fact.
 
 So the current design is:
 

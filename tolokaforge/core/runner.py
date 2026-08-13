@@ -38,13 +38,7 @@ from tolokaforge.core.run_display_events import (
     RunDisplayEvents,
 )
 from tolokaforge.core.stuck import StuckDetector
-from tolokaforge.tools.registry import ToolExecutor, resolve_tool_output, resolve_tool_status
-
-# Import user tools support (optional for dual-control scenarios)
-try:
-    from tolokaforge.tools.user_tools import UserToolExecutor
-except ImportError:
-    UserToolExecutor = None
+from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
 
 _AGENT_DONE_MARKERS: tuple[str, ...] = ("###STOP###",)
 
@@ -115,13 +109,13 @@ class TrialRunner:
         trial_index: int,
         agent_client: LLMClient,
         user_simulator: UserSimulator | None,
-        tool_executor: ToolExecutor,
+        tool_executor: ToolExecuting,
         tool_schemas: list[dict[str, Any]],
         max_turns: int = 50,
         turn_timeout_s: int = 60,
         episode_timeout_s: int = 1200,
         stuck_detector: StuckDetector | None = None,
-        user_tool_executor: Any | None = None,  # UserToolExecutor for dual-control
+        user_tool_executor: ToolExecuting | None = None,
         request_limiter: GlobalRateLimiter | None = None,
         verbose: bool = False,
         strict: bool = False,
@@ -139,7 +133,7 @@ class TrialRunner:
         self.turn_timeout_s = turn_timeout_s
         self.episode_timeout_s = episode_timeout_s
         self.stuck_detector = stuck_detector
-        self.user_tool_executor = user_tool_executor  # For dual-control scenarios
+        self.user_tool_executor = user_tool_executor
         self.request_limiter = request_limiter
         self.verbose = verbose
         self.strict = strict

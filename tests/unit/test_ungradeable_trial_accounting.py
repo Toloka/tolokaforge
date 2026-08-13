@@ -203,6 +203,8 @@ def _make_setup(output_dir: Path, task_id: str, trial_idx: int) -> _TrialSetup:
         adapter_env=MagicMock(),
         tool_schemas=[],
         tool_executor=MagicMock(),
+        user_tool_schemas=[],
+        user_tool_executor=None,
     )
 
 
