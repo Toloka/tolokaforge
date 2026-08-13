@@ -926,7 +926,11 @@ class InProcessConductor:
         # slices are recorded because the replay authoring gate rebuilds the
         # trial's whole ``ToolInventory`` from this one file
         # (``grading.trace_replay.tool_inventory_from_bundle``): an agent-only
-        # record would leave a matcher naming a user tool unblessable.
+        # record would leave a matcher naming a user tool unblessable. Both slices
+        # go through the *agent's* provider sanitizer, so the user slice is recorded
+        # in the agent provider's dialect rather than in whatever the simulator's own
+        # provider was handed — the file records one trial's declared surface, not two
+        # providers' wire payloads.
         agent_config = self.agent_client.config
         sanitized = self.agent_client.capabilities.schema_sanitizer.sanitize(
             setup.tool_schemas + setup.user_tool_schemas

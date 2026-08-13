@@ -30,7 +30,6 @@ class SearchKBTool(Tool):
         policy = ToolPolicy(
             timeout_s=15.0,
             category=ToolCategory.READ,
-            visibility=["agent"],
         )
         super().__init__(
             name="search_kb",

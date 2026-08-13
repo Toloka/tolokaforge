@@ -185,7 +185,6 @@ class ToolPolicy(BaseModel):
     rate_limit: int | None = None  # Max calls per trial
     timeout_s: float = 30.0
     cost_weight: float = 1.0
-    visibility: list[str] = ["agent"]  # "agent", "user", or both
     category: ToolCategory = ToolCategory.COMPUTE
 
 

@@ -275,3 +275,65 @@ class TestUserToolsNeedATurnThatCanCallThem:
             _write_yaml(task_path, _task_body(**extra))
             task, _ = _load(task_path)
             assert task.tools.user["enabled"] == []
+
+
+class TestOneTaskShipsOneMcpServer:
+    """A second MCP server has nowhere to put its schemas.
+
+    Resolution reads ``<task_dir>/fixtures/tools.json``, which is keyed on the task
+    and not on the server, so a user block naming its own server resolves against
+    the agent server's fixture: the simulator would be offered tools that do not
+    exist, and a grading rule naming one would be checked against another tool's
+    arguments. The pack is refused where the two names are written rather than
+    resolved into the wrong answer.
+    """
+
+    def test_a_user_block_naming_a_second_server_is_refused(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(
+                tools={
+                    "agent": {"mcp_server": "mcp_server.py", "enabled": ["write_file"]},
+                    "user": {"mcp_server": "user_server.py", "enabled": ["calculator"]},
+                },
+            ),
+        )
+
+        with pytest.raises(ValidationError, match="A task ships one MCP server"):
+            _load(task_path)
+
+    def test_both_blocks_naming_one_server_loads(self, tmp_path: Path) -> None:
+        """The control: it is the second *name* that is refused, not a user block
+        with a server."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(
+                tools={
+                    "agent": {"mcp_server": "mcp_server.py", "enabled": ["write_file"]},
+                    "user": {"mcp_server": "mcp_server.py", "enabled": ["read_meter"]},
+                },
+            ),
+        )
+
+        task, _ = _load(task_path)
+
+        assert task.tools.user["mcp_server"] == task.tools.agent["mcp_server"]
+
+    def test_a_user_only_server_loads(self, tmp_path: Path) -> None:
+        """One server is one server whichever block names it."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(
+                tools={
+                    "agent": {"enabled": []},
+                    "user": {"mcp_server": "user_server.py", "enabled": ["read_meter"]},
+                },
+            ),
+        )
+
+        task, _ = _load(task_path)
+
+        assert task.tools.user["mcp_server"] == "user_server.py"

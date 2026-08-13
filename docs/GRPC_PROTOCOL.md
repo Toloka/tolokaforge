@@ -161,7 +161,7 @@ message RegisterTrialResponse {
   // Number of agent tools registered — the partition index into tool_schemas
   int32 num_agent_tools = 4;
 
-  // Number of user tools registered (for dual-control scenarios)
+  // Number of user tools registered — tool_schemas[num_agent_tools:] is theirs
   int32 num_user_tools = 5;
 }
 

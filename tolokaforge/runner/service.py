@@ -1148,13 +1148,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # Start any tools that manage per-trial resources. Driven by the tool's
         # ``has_lifecycle`` capability, not by adapter identity, so any lifecycle
-        # tool (e.g. a compose-backed sandbox) is provisioned the same way.
+        # tool (e.g. a compose-backed sandbox) is provisioned the same way —
+        # and over both registries, because either actor may be given one.
         lifecycle_ctx = ToolLifecycleContext(
             trial_id=trial_id,
             artifacts_dir=str(artifacts_dir) if artifacts_dir is not None else None,
             work_dir=AGENT_WORK_DIR,
         )
-        for tool in trial_context.agent_tools.values():
+        for tool in (*trial_context.agent_tools.values(), *trial_context.user_tools.values()):
             if getattr(tool, "has_lifecycle", False):
                 try:
                     tool.start(lifecycle_ctx)
@@ -2926,8 +2927,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_context.clear_history()
 
             # Stop any per-trial lifecycle tools started during registration.
-            # Capability-driven (has_lifecycle), not adapter identity.
-            for tool in trial_context.agent_tools.values():
+            # Capability-driven (has_lifecycle), not adapter identity, and over both
+            # registries because registration started both.
+            for tool in (*trial_context.agent_tools.values(), *trial_context.user_tools.values()):
                 if getattr(tool, "has_lifecycle", False):
                     try:
                         tool.stop()

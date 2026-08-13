@@ -729,7 +729,10 @@ class TrialRunner:
             pre_stop_text, _, _ = user_result.text.partition("###STOP###")
             pre_stop_text = pre_stop_text.rstrip()
             if not pre_stop_text:
-                self.logger.info("User signaled completion (###STOP###)")
+                self.logger.info(
+                    "User signaled completion (###STOP###)",
+                    dropped_tool_calls=len(user_result.tool_calls or []),
+                )
                 return UserTurnResult(
                     termination=TerminationDecision(
                         reason=TerminationReason.USER_STOP,
@@ -767,9 +770,23 @@ class TrialRunner:
         Results are embedded in the user message text — Anthropic does not
         accept ``tool_use`` from the USER role — while the calls themselves ride
         on the message so ``transcript_rules.required_actions`` can match them.
+
+        Raises:
+            RuntimeError: If the reply carries calls and the trial has no user-side
+                executor. The conductor builds the executor and offers the schemas
+                together, so a simulator with no executor is offered no tools and a
+                provider offered no tools emits no calls — the pair is unreachable
+                from a real run, and running on would silently drop the calls a rule
+                may be grading.
         """
-        if not tool_calls or self.user_tool_executor is None:
-            return reply_text, list(tool_calls)
+        if not tool_calls:
+            return reply_text, []
+        if self.user_tool_executor is None:
+            raise RuntimeError(
+                f"the user simulator emitted {len(tool_calls)} tool call(s) "
+                f"({', '.join(call.name for call in tool_calls)}) and this trial has no "
+                "user-side executor to run them. The trial is built with both or neither"
+            )
 
         executed: list[ToolCall] = []
         results_text: list[str] = []

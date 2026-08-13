@@ -38,7 +38,7 @@ tools:
   agent:
     enabled: ["db_query", "browser", "read_file"]
   user:
-    enabled: ["user_check_device"]
+    enabled: ["calculator"]
 ```
 
 The `ToolExecutor` enforces:

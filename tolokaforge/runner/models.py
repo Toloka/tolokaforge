@@ -229,7 +229,8 @@ class RunnerInitializationAction(BaseModel):
     """
     Action to execute before trial starts.
 
-    Used by Native adapter for user device setup (toggle_airplane_mode, etc.)
+    Used by the Native adapter to put the world in its starting shape — a user-side
+    tool run before the agent's first turn.
     """
 
     env_type: Literal["assistant", "user"]

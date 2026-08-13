@@ -11,9 +11,9 @@ user registry, the trial's own recorder and the transcript evaluator.
 
 The two stubs are the two LLMs, and nothing else: the tool is the pack's own
 builtin, executed by the runner. What stands in for the gRPC channel is
-:class:`_ServicerRuntime`, which forwards the one ``RuntimeBackend`` method a
-tool call uses to the servicer in this process; that the same drive survives a
-real channel and the shipped image is
+:class:`tests.utils.servicer_runtime.ServicerBackend`, which drives the real client
+mapping against the servicer in this process; that the same drive survives a real
+channel and the shipped image is
 ``tests/integration/test_docker_grading_user_executed_action.py``.
 
 Both trials are driven from one script differing only in the expression the
@@ -23,7 +23,6 @@ compares rather than on two differently shaped runs.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -31,6 +30,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests.utils.runner_requests import register_request, trial_spec_json
+from tests.utils.servicer_runtime import ServicerBackend
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.grading.combine import GradingEngine
@@ -44,9 +44,7 @@ from tolokaforge.core.models import (
     Trajectory,
 )
 from tolokaforge.core.runner import TrialRunner
-from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.service import RunnerServiceImpl
-from tolokaforge.tools.registry import ToolResult
 
 pytestmark = pytest.mark.unit
 
@@ -57,45 +55,6 @@ _USER_TOOL = "calculator"
 #: The expression the pack's required action compares against, and one it does not.
 _REQUIRED_EXPRESSION = "2 + 2"
 _OTHER_EXPRESSION = "2 + 3"
-
-
-class _ServicerRuntime:
-    """The ``RuntimeBackend`` seam a tool call takes, served in this process.
-
-    ``DockerRunnerAdapter`` reaches the runner through ``execute_tool`` alone, so
-    that is the whole of what a trial's tool execution needs from the backend.
-    """
-
-    def __init__(self, servicer: RunnerServiceImpl, context: Any) -> None:
-        self._servicer = servicer
-        self._context = context
-
-    def execute_tool(
-        self,
-        trial_id: str,
-        tool_name: str,
-        arguments: dict[str, Any],
-        timeout_seconds: float = 30.0,
-        executor: str = "agent",
-        *,
-        call_id: str,
-    ) -> ToolResult:
-        response = self._servicer.ExecuteTool(
-            pb2.ExecuteToolRequest(
-                trial_id=trial_id,
-                tool_name=tool_name,
-                arguments_json=json.dumps(arguments),
-                executor=executor,
-                call_id=call_id,
-                timeout_seconds=timeout_seconds,
-            ),
-            self._context,
-        )
-        return ToolResult(
-            success=response.status == pb2.EXECUTION_STATUS_SUCCESS,
-            output=response.output,
-            error=response.error_message,
-        )
 
 
 class _ScriptedAgent:
@@ -157,7 +116,7 @@ def _run_trial(
     )
     assert registered.success is True, registered.error
 
-    runtime = _ServicerRuntime(servicer, context)
+    runtime = ServicerBackend(servicer, context)
     return TrialRunner(
         task_id=_TASK_ID,
         trial_index=0,

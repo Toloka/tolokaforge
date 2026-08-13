@@ -93,6 +93,7 @@ from tolokaforge.core.models import (
     StateChecksConfig,
     TaskConfig,
     TaskDefaults,
+    ToolExecutorIdentity,
     ToolExpectations,
     TraceChecksConfig,
     TranscriptRulesConfig,
@@ -656,6 +657,20 @@ class ToolActor(str, Enum):
     USER = "user"
 
 
+ACTOR_EXECUTOR_IDENTITY: Mapping[ToolActor, ToolExecutorIdentity] = {
+    ToolActor.AGENT: ToolExecutorIdentity.AGENT,
+    ToolActor.USER: ToolExecutorIdentity.USER,
+}
+"""The block a declaration is written in, onto the identity a record of that call
+carries.
+
+:meth:`ToolInventory.declared_by` answers "what may this executor call" from a set
+built out of ``tools.<actor>.enabled``, and the authoring gate names the block back
+to the author from a recorded identity. Both rest on the two vocabularies agreeing,
+which is stated here and read where the inventory is built — so a third actor moves
+one map instead of silently landing its declarations under the wrong identity."""
+
+
 def actor_tool_block(task: Any, actor: ToolActor) -> dict[str, Any]:
     """The ``tools.<actor>`` block: ``enabled``, ``mcp_server`` and per-tool kwargs.
 
@@ -742,9 +757,10 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
     """The task's declared tool set and resolved schemas, without touching the tree.
 
     Both actors' blocks are resolved, so a tool only the user declares carries its
-    schema as an agent tool does. A name both declare resolves under the agent —
-    the two blocks can name different servers, and the agent's is the reading the
-    rest of the gate is written against.
+    schema as an agent tool does. A name both declare resolves once: a task ships
+    one MCP server — ``TaskConfig`` refuses a user block naming a second — so both
+    blocks read the same ``fixtures/tools.json``, and a builtin name resolves
+    against the one registry whichever block enabled it.
 
     A tool whose schema does not resolve — an MCP task with no committed
     ``fixtures/tools.json``, a name the builtin registry does not know, a fixture
@@ -755,8 +771,11 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
     grading block cannot draw an undeclared-tool error and an argument finding
     from the same name.
     """
-    agent_declared = enabled_tool_names(task, ToolActor.AGENT)
-    user_declared = enabled_tool_names(task, ToolActor.USER)
+    declared_by_executor = {
+        ACTOR_EXECUTOR_IDENTITY[actor]: enabled_tool_names(task, actor) for actor in ToolActor
+    }
+    agent_declared = declared_by_executor[ToolExecutorIdentity.AGENT]
+    user_declared = declared_by_executor[ToolExecutorIdentity.USER]
     declared = agent_declared | user_declared
     parameters = {
         **_declared_parameters(task, task_dir, ToolActor.USER, user_declared),
@@ -775,6 +794,7 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
         declared=declared,
         agent_declared=agent_declared,
         user_declared=user_declared,
+        actor_split_known=True,
         parameters=parameters,
         known=True,
     )

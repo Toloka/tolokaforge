@@ -117,6 +117,17 @@ class ToolInventory:
     user_declared: frozenset[str]
     """``tools.user.enabled`` — what the user simulator may call."""
 
+    actor_split_known: bool
+    """Whether :attr:`agent_declared` / :attr:`user_declared` are the task's own split.
+
+    ``False`` for a producer that can report the tool set but not whose it was — a
+    recorded trial's wire tool list carries no actor. Such a producer files the whole
+    set under the agent because a set has to go somewhere, and that placement is not
+    a claim: :meth:`declared_by` refuses to answer, and a rule about *which* actor
+    declared a tool reports unchecked instead of refusing the author over a fact the
+    inventory does not hold.
+    """
+
     parameters: Mapping[str, Mapping[str, Any]]
     """Tool name to its JSON-schema parameters object, for the tools that resolved."""
 
@@ -131,6 +142,11 @@ class ToolInventory:
                 f"skipped, so {carried or sorted(self.parameters)} would be "
                 "resolved and then ignored. Report the tools with known=True, or report "
                 "nothing"
+            )
+        if not self.known and self.actor_split_known:
+            raise ValueError(
+                "an inventory that reports no tools claims to know whose they are. "
+                "Nothing is known of an unresolvable tool set, its split least of all"
             )
         if self.declared != self.agent_declared | self.user_declared:
             raise ValueError(
@@ -147,6 +163,7 @@ class ToolInventory:
             declared=frozenset(),
             agent_declared=frozenset(),
             user_declared=frozenset(),
+            actor_split_known=False,
             parameters={},
             known=False,
         )
@@ -157,7 +174,18 @@ class ToolInventory:
         Keyed off the recorded executor identity rather than taking a field name,
         so a rule reading what an actor may call and a record saying who called it
         speak one vocabulary.
+
+        Raises:
+            ValueError: If :attr:`actor_split_known` is ``False``. The sets exist
+                either way, so answering would hand a caller the agent's whole set
+                as the agent's own — the false certainty this method must not sell.
         """
+        if not self.actor_split_known:
+            raise ValueError(
+                "this inventory does not know which actor declared what, so it cannot "
+                f"answer what {executor.value!r} may call. Read `declared`, or route the "
+                "question to the report's unchecked channel"
+            )
         return {
             ToolExecutorIdentity.AGENT: self.agent_declared,
             ToolExecutorIdentity.USER: self.user_declared,
@@ -1139,6 +1167,14 @@ def _check_required_action_names(
     )
 
 
+_A_REQUESTOR_AN_ACTOR_BLIND_INVENTORY_CANNOT_JUDGE = (
+    "the tool set was read off a recorded trial, whose wire tool list says which tools "
+    "an actor was offered and not which actor. Whether {requestor!r} is the actor that "
+    "declared {name!r} is not a fact this inventory holds, and refusing the action on it "
+    "would fail an authoring that may well be right. The name itself is still checked."
+)
+
+
 def _one_required_action(
     index: int, action: RequiredAction, inventory: ToolInventory
 ) -> AuthoringReport:
@@ -1153,6 +1189,17 @@ def _one_required_action(
                         name=action.name,
                         declared=sorted(inventory.declared),
                         hazard=_A_REQUIRED_ACTION_NOTHING_SATISFIES,
+                    ),
+                ),
+            )
+        )
+    if not inventory.actor_split_known:
+        return AuthoringReport(
+            unchecked=(
+                Skip(
+                    f"{where}.requestor",
+                    _A_REQUESTOR_AN_ACTOR_BLIND_INVENTORY_CANNOT_JUDGE.format(
+                        requestor=action.requestor, name=action.name
                     ),
                 ),
             )

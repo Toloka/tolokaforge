@@ -92,11 +92,13 @@ from tolokaforge.core.grading.state_composition import (
     StateHashConfig,
     hash_block_is_a_state_source,
 )
+from tolokaforge.core.grading.trace_replay import tool_inventory_from_bundle
 from tolokaforge.core.grading.trace_timeline import TraceEvent
 from tolokaforge.core.models import (
     GradingCombineConfig,
     GradingConfig,
     GradingFindingSeverity,
+    ToolExecutorIdentity,
     ToolExpectations,
     TranscriptRulesConfig,
 )
@@ -2472,6 +2474,7 @@ def test_an_unresolvable_inventory_may_not_carry_tools() -> None:
             declared=frozenset({"http_request"}),
             agent_declared=frozenset({"http_request"}),
             user_declared=frozenset(),
+            actor_split_known=False,
             parameters={},
             known=False,
         )
@@ -2481,6 +2484,7 @@ def test_an_unresolvable_inventory_may_not_carry_tools() -> None:
             declared=frozenset(),
             agent_declared=frozenset(),
             user_declared=frozenset(),
+            actor_split_known=False,
             parameters={"http_request": {}},
             known=False,
         )
@@ -2501,6 +2505,7 @@ def test_the_declared_set_is_the_union_of_the_two_actors() -> None:
             declared=frozenset({"calculator"}),
             agent_declared=frozenset(),
             user_declared=frozenset(),
+            actor_split_known=True,
             parameters={},
             known=True,
         )
@@ -2510,6 +2515,7 @@ def test_the_declared_set_is_the_union_of_the_two_actors() -> None:
             declared=frozenset({"read_file"}),
             agent_declared=frozenset({"read_file"}),
             user_declared=frozenset({"calculator"}),
+            actor_split_known=True,
             parameters={},
             known=True,
         )
@@ -2518,6 +2524,7 @@ def test_the_declared_set_is_the_union_of_the_two_actors() -> None:
         declared=frozenset({"read_file", "calculator"}),
         agent_declared=frozenset({"read_file"}),
         user_declared=frozenset({"calculator"}),
+        actor_split_known=True,
         parameters={},
         known=True,
     ).declared == frozenset({"read_file", "calculator"})
@@ -2586,6 +2593,74 @@ def test_a_required_action_is_read_against_the_actor_its_requestor_names(
     message = report.errors[0].message
     assert name in message, message
     assert "tools.agent.enabled" in message and "tools.user.enabled" in message, message
+
+
+def test_a_requestor_is_unchecked_where_the_tool_set_came_off_a_recorded_trial(
+    tmp_path: Path,
+) -> None:
+    """A replayed trial's tool list says *what* was offered, never *to whom*.
+
+    ``tools_schemas.yaml`` is one list, so the inventory built from it files every
+    tool under the agent because a set has to go somewhere. Reading that placement
+    as a fact would refuse every ``requestor: user`` action a replay re-checks — an
+    authoring that may well be right, failed on evidence the bundle does not hold.
+    The half the bundle *can* answer keeps its teeth: a name no recorded tool
+    carries is still an error.
+    """
+    bundle = tmp_path / "trial0"
+    bundle.mkdir()
+    (bundle / "tools_schemas.yaml").write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "calculator",
+                        "description": "Perform safe arithmetic calculations",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"expression": {"type": "string"}},
+                            "additionalProperties": False,
+                        },
+                    },
+                }
+            ]
+        )
+    )
+    inventory = tool_inventory_from_bundle(bundle)
+
+    on_the_recorded_tool = inspect_grading_authoring(
+        _required_action("calculator", "user"), inventory
+    )
+    assert on_the_recorded_tool.errors == (), _texts(on_the_recorded_tool, "errors")
+    assert [skip.where for skip in on_the_recorded_tool.unchecked] == [_THE_REQUESTORS_ADDRESS]
+
+    on_a_tool_it_never_recorded = inspect_grading_authoring(
+        _required_action("totally_absent", "user"), inventory
+    )
+    assert [finding.where for finding in on_a_tool_it_never_recorded.errors] == [
+        "transcript_rules.required_actions[0].name"
+    ]
+
+
+def test_an_actor_blind_inventory_refuses_to_say_what_an_actor_may_call() -> None:
+    """The method behind the routing above, asked directly.
+
+    ``declared_by`` answers off two sets that exist whatever the producer knew, so
+    an inventory that cannot tell the actors apart has to refuse rather than hand
+    back the agent's whole set as the agent's own.
+    """
+    inventory = ToolInventory(
+        declared=frozenset({"calculator"}),
+        agent_declared=frozenset({"calculator"}),
+        user_declared=frozenset(),
+        actor_split_known=False,
+        parameters={},
+        known=True,
+    )
+
+    with pytest.raises(ValueError, match="does not know which actor declared what"):
+        inventory.declared_by(ToolExecutorIdentity.USER)
 
 
 def test_an_absent_user_side_call_is_no_finding_on_a_pack_with_no_user_tools() -> None:
@@ -3200,6 +3275,7 @@ def _one_task_worth_of_tools(*tasks: Path) -> ToolInventory:
         declared=frozenset(name for one in resolved for name in one.declared),
         agent_declared=frozenset(name for one in resolved for name in one.agent_declared),
         user_declared=frozenset(name for one in resolved for name in one.user_declared),
+        actor_split_known=True,
         parameters={name: schema for one in resolved for name, schema in one.parameters.items()},
         known=True,
     )
@@ -3585,6 +3661,7 @@ def test_an_argument_typed_outside_the_json_type_names_leaves_it_unchecked() -> 
         declared=frozenset({"read_file"}),
         agent_declared=frozenset({"read_file"}),
         user_declared=frozenset(),
+        actor_split_known=True,
         parameters={
             "read_file": {
                 "additionalProperties": False,
@@ -3693,6 +3770,7 @@ def test_an_argument_typed_outside_the_json_type_names_is_not_flagged() -> None:
         declared=frozenset({"read_file"}),
         agent_declared=frozenset({"read_file"}),
         user_declared=frozenset(),
+        actor_split_known=True,
         parameters={
             "read_file": {
                 "additionalProperties": False,

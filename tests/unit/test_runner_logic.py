@@ -21,6 +21,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.runner import TrialRunner
+from tolokaforge.tools.registry import ToolResult
 
 pytestmark = pytest.mark.unit
 
@@ -32,6 +33,17 @@ pytestmark = pytest.mark.unit
 def _make_tool_executor() -> MagicMock:
     """Create a mock ToolExecutor."""
     return MagicMock()
+
+
+class _EchoingUserToolExecutor:
+    """A user-side executor that answers every call, satisfying ``ToolExecuting``.
+
+    Real rather than a ``MagicMock`` because the runner records what it returns and
+    ``RecordedToolCall`` refuses a mock's attributes for ``status`` and ``output``.
+    """
+
+    def execute(self, tool_name: str, arguments: dict | None = None, *, call_id: str) -> ToolResult:
+        return ToolResult(success=True, output=f"{tool_name} ran")
 
 
 def _make_user_simulator() -> MagicMock:
@@ -497,7 +509,14 @@ class TestTrialRunnerRun:
                 tool_calls=[sim_tool_call],
             ),
         ]
-        runner = _make_runner(agent_client=agent, user_simulator=user_sim)
+        # A trial whose simulator can call a tool is a trial that was built one an
+        # executor: the two are handed over together, and the runner refuses the
+        # half-built shape rather than dropping the calls this test is about.
+        runner = _make_runner(
+            agent_client=agent,
+            user_simulator=user_sim,
+            user_tool_executor=_EchoingUserToolExecutor(),
+        )
         traj = runner.run("System", "Hi")
 
         assert traj.termination_reason == TerminationReason.USER_STOP

@@ -80,7 +80,7 @@ The tool-executor surface is already established (`tolokaforge.tools.registry.To
 
 The decision above stands: the five per-trial RPC methods live on
 `RuntimeBackend`, and `DockerRunnerAdapter` survives as a per-trial
-`ToolExecutor`. What changed is the carve-out's *content*.
+`ToolExecuting`. What changed is the carve-out's *content*.
 
 The carve-out was justified by two things `execute()` does beyond delegating:
 binding the `executor` identity, and appending to a per-trial `tool_logs` list.

@@ -1,8 +1,9 @@
 """Driving a real ``GradeTrial`` against the in-process runner servicer.
 
-:class:`ServicerBackend` runs the real ``GrpcRunnerClient.grade_trial``
-proto→dict mapping against a real servicer, so the host grader sees the dict
-production builds — no Docker, no gRPC channel.
+:class:`ServicerBackend` runs the real ``GrpcRunnerClient`` mappings against a real
+servicer — ``grade_trial``'s proto→dict and ``execute_tool``'s proto→``ToolResult`` —
+so a host grader or a trial's tool executor sees what production builds, with no
+Docker and no gRPC channel.
 :func:`register_collided_trial` stages the cheapest deterministic refusal that
 servicer can be made to produce, and :func:`produce_grading_refusal` drives the
 production grader against it and hands back what it raised — so a test that
@@ -34,6 +35,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 from tolokaforge.core.trial_grader import GradingFailedError, RunnerRPCTrialGrader
 from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.tools.registry import ToolResult
 
 DUPLICATE_CALL_ID = "toolu_dup"
 """The ``call_id`` :func:`register_collided_trial` records twice."""
@@ -51,9 +53,18 @@ class ServicerStub:
     def GradeTrial(self, request):  # noqa: N802 — matches the gRPC stub method name
         return self._service.GradeTrial(request, self._context)
 
+    def ExecuteTool(self, request):  # noqa: N802 — matches the gRPC stub method name
+        return self._service.ExecuteTool(request, self._context)
+
 
 class ServicerBackend:
-    """``RuntimeBackend.grade_trial`` backed by the in-process servicer."""
+    """The ``RuntimeBackend`` methods a trial takes, backed by the in-process servicer.
+
+    Every one routes through the real :class:`GrpcRunnerClient`, so a caller sees the
+    proto→Python mapping production builds — including the recorded status a
+    ``ToolResult`` carries — with the channel and the container removed and nothing
+    else.
+    """
 
     def __init__(self, service: Any, context: Any) -> None:
         self._client = GrpcRunnerClient(runner_address="unused:0")
@@ -71,6 +82,25 @@ class ServicerBackend:
             llm_messages_json=llm_messages_json,
             grading_components=grading_components,
             termination_reason=termination_reason,
+        )
+
+    def execute_tool(
+        self,
+        trial_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        timeout_seconds: float = 30.0,
+        executor: str = "agent",
+        *,
+        call_id: str,
+    ) -> ToolResult:
+        return self._client.execute_tool(
+            trial_id=trial_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            timeout_seconds=timeout_seconds,
+            executor=executor,
+            call_id=call_id,
         )
 
 
