@@ -1170,7 +1170,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # Use tool-specific timeout or default
             timeout_seconds = getattr(tool, "timeout_s", trial_context.default_timeout)
 
-        # Run async execution on dedicated event loop thread
+        # Run async execution on dedicated event loop thread. The RPC timeout is
+        # the effective deadline: the inner tool wrapper enforces the same value on
+        # its own subprocess, so the two must agree — otherwise a slow tool (a long
+        # harness CLI, a heavy compose exec) hits the 5-minute default and errors
+        # while its subprocess is still writing.
         try:
             result = self._run_async(
                 self._execute_tool_async(
@@ -1181,7 +1185,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     arguments=arguments,
                     executor=executor,
                     timeout_seconds=timeout_seconds,
-                )
+                ),
+                timeout=timeout_seconds,
             )
             return result
         except Exception as e:
