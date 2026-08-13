@@ -222,6 +222,16 @@ def test_start_service_wires_component_id_on_reused_container(
         "_try_reuse_existing",
         lambda self, container_name, svc: spy_existing,
     )
+    # ``_start_service`` reuses a running container only when the image behind
+    # it matches the one the stack holds, and reads that identity off the
+    # daemon. Report the stack's own image, so the probe answers for the fake
+    # container the reuse stub above just handed back.
+    running_image = stack._images[svc.name]
+    monkeypatch.setattr(
+        stack,
+        "_inspect_running_image",
+        lambda container_name: ([running_image.full_tag], running_image.image_id),
+    )
     monkeypatch.setattr(
         stack_mod.Container,
         "create",
