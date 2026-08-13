@@ -15,7 +15,7 @@ whatever command it finds there.
 from __future__ import annotations
 
 import shlex
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Literal
 
@@ -23,7 +23,6 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 __all__ = [
-    "ACCEPTED_HARNESSES",
     "ENGINE_LOOP",
     "HARNESSES",
     "INSTALL_SCRIPT",
@@ -32,6 +31,7 @@ __all__ = [
     "PROVIDER_ENV_KEYS",
     "SHIPPED_REGISTRY_FILE",
     "HarnessSpec",
+    "accepted_harnesses",
     "harness_command",
     "harness_model",
     "load_harness_registry",
@@ -234,8 +234,6 @@ HARNESSES: dict[str, HarnessSpec] = load_harness_registry(SHIPPED_REGISTRY_FILE)
 """The shipped registry, loaded from :data:`SHIPPED_REGISTRY_FILE` at import."""
 
 
-ACCEPTED_HARNESSES: tuple[str, ...] = (ENGINE_LOOP, *HARNESSES)
-
 INSTALL_SCRIPT = Path(__file__).parent / "install-harness.sh"
 
 OPENROUTER_PREFIX = "openrouter/"
@@ -303,22 +301,36 @@ def validate_provider_env_keys(keys: Iterable[str]) -> None:
     rejected = sorted(k for k in keys if k not in PROVIDER_ENV_KEYS)
     if rejected:
         raise ValueError(
-            f"terminal-bench adapter: agent_provider_env key(s) {rejected!r} are not "
+            f"terminal-bench adapter: provider env key(s) {rejected!r} are not "
             f"forwardable; accepted: {sorted(PROVIDER_ENV_KEYS)!r}."
         )
 
 
-def validate_harness(agent_harness: str) -> str:
+def accepted_harnesses(registry: Mapping[str, HarnessSpec] = HARNESSES) -> tuple[str, ...]:
+    """Values ``agent_harness`` accepts: the engine loop plus every registry key.
+
+    *registry* is the shipped one unless an operator overlay added or replaced
+    entries, in which case the adapter passes its own.
+    """
+    return (ENGINE_LOOP, *registry)
+
+
+def validate_harness(agent_harness: str, registry: Mapping[str, HarnessSpec] = HARNESSES) -> str:
     """Return *agent_harness* unchanged, or raise naming the accepted set."""
-    if agent_harness not in ACCEPTED_HARNESSES:
+    accepted = accepted_harnesses(registry)
+    if agent_harness not in accepted:
         raise ValueError(
             f"terminal-bench adapter: agent_harness {agent_harness!r} is not supported; "
-            f"accepted: {list(ACCEPTED_HARNESSES)!r}."
+            f"accepted: {list(accepted)!r}."
         )
     return agent_harness
 
 
-def harness_model(model: str, agent_harness: str | None = None) -> str:
+def harness_model(
+    model: str,
+    agent_harness: str | None = None,
+    registry: Mapping[str, HarnessSpec] = HARNESSES,
+) -> str:
     """Model name as *agent_harness*'s CLI must receive it.
 
     Always strips the ``openrouter/`` route marker (see
@@ -336,7 +348,7 @@ def harness_model(model: str, agent_harness: str | None = None) -> str:
     if model.startswith(OPENROUTER_PREFIX):
         model = model[len(OPENROUTER_PREFIX) :]
     if agent_harness is not None:
-        spec = HARNESSES.get(agent_harness)
+        spec = registry.get(agent_harness)
         if spec is not None and spec.strip_vendor_namespace:
             for prefix in _VENDOR_NAMESPACE_PREFIXES:
                 if model.startswith(prefix):
@@ -344,7 +356,12 @@ def harness_model(model: str, agent_harness: str | None = None) -> str:
     return model
 
 
-def harness_command(agent_harness: str, instruction: str, model: str) -> str:
+def harness_command(
+    agent_harness: str,
+    instruction: str,
+    model: str,
+    registry: Mapping[str, HarnessSpec] = HARNESSES,
+) -> str:
     """Shell command that runs *agent_harness* against *instruction*.
 
     Assembly order (blank pieces drop out):
@@ -365,14 +382,14 @@ def harness_command(agent_harness: str, instruction: str, model: str) -> str:
         ValueError: *agent_harness* is unknown, or is :data:`ENGINE_LOOP`
             (which runs no CLI, so there is no command to build).
     """
-    validate_harness(agent_harness)
-    spec = HARNESSES.get(agent_harness)
+    validate_harness(agent_harness, registry)
+    spec = registry.get(agent_harness)
     if spec is None:
         raise ValueError(
             f"terminal-bench adapter: agent_harness {agent_harness!r} runs no CLI; "
             "the trial goes through the engine's LLM turn loop instead."
         )
-    resolved_model = harness_model(model, agent_harness)
+    resolved_model = harness_model(model, agent_harness, registry)
 
     # Pre-exec preamble: on-disk config-file emission + env-quartet exports.
     preamble_parts: list[str] = []

@@ -28,7 +28,7 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +44,7 @@ from tolokaforge_adapter_terminal_bench.harness import (
     ENGINE_LOOP,
     HARNESSES,
     INSTALL_SCRIPT,
+    HarnessSpec,
     provider_env_input,
     validate_harness,
 )
@@ -97,6 +98,7 @@ def materialise_task_environment(
     image_registry: str | None = None,
     image_tag: str = "local",
     agent_harness: str = ENGINE_LOOP,
+    harness_registry: Mapping[str, HarnessSpec] = HARNESSES,
     provider_env_keys: Sequence[str] = (),
     runner_image: str = "tolokaforge-runner:local",
     db_service_image: str = "tolokaforge-db-service:local",
@@ -129,6 +131,9 @@ def materialise_task_environment(
             The layered image carries the harness in its tag, so switching
             harnesses (or bumping a pinned CLI version) can never reuse a
             stale cached image.
+        harness_registry: Specs ``agent_harness`` resolves against. Defaults
+            to the shipped registry; the adapter passes its own when an
+            operator overlay replaced or added an entry.
         provider_env_keys: Environment-variable names the agent service
             receives. Each is bound to an adapter-namespaced compose input
             (``KEY=${TBENCH_PROVIDER_KEY}``) that the per-trial ``.env``
@@ -151,7 +156,8 @@ def materialise_task_environment(
             f"terminal-bench adapter: image_tag {image_tag!r} is a floating tag; "
             "pin to an immutable tag (e.g. 'local' for local builds, or a digest)."
         )
-    validate_harness(agent_harness)
+    validate_harness(agent_harness, harness_registry)
+    harness_spec = harness_registry.get(agent_harness)
 
     original = _load_compose(meta.compose_file)
     task_services = original.get("services")
@@ -176,6 +182,11 @@ def materialise_task_environment(
             "image_registry": image_registry or "",
             "image_tag": image_tag,
             "agent_harness": agent_harness,
+            # The spec's whole content, because the staging dir carries the
+            # generated harness Dockerfile: two adapters differing only by an
+            # overlaid spec would otherwise share a staging dir and one would
+            # overwrite the other's build context.
+            "harness_spec": harness_spec.model_dump_json() if harness_spec else "",
             "provider_env_keys": ",".join(sorted(provider_env_keys)),
             "runner_image": runner_image,
             "db_service_image": db_service_image,
@@ -195,15 +206,16 @@ def materialise_task_environment(
         image_registry=image_registry,
         image_tag=image_tag,
         agent_harness=agent_harness,
+        harness_spec=harness_spec,
         provider_env_keys=provider_env_keys,
         runner_image=runner_image,
         db_service_image=db_service_image,
     )
-    if agent_harness != ENGINE_LOOP:
+    if harness_spec is not None:
         _write_harness_build_context(
             staging_dir,
             base_image=_agent_image(meta.task_id, image_registry, image_tag),
-            agent_harness=agent_harness,
+            spec=harness_spec,
         )
     compose_file = staging_dir / _SYNTHESISED_COMPOSE_FILENAME
     compose_file.write_text(yaml.safe_dump(synthesised, sort_keys=False))
@@ -301,17 +313,16 @@ def _write_staging(task_dir: Path, staging_dir: Path) -> None:
     (staging_dir / "_logs" / "agent").mkdir(parents=True, exist_ok=True)
 
 
-def _write_harness_build_context(staging_dir: Path, *, base_image: str, agent_harness: str) -> None:
+def _write_harness_build_context(staging_dir: Path, *, base_image: str, spec: HarnessSpec) -> None:
     """Materialise the harness image layer's build context in the staging dir.
 
     The layer is one ``COPY`` of the install script plus one ``RUN`` of it
-    against *base_image*, installing the version :data:`HARNESSES` pins. Both
+    against *base_image*, installing the version the spec pins. Both
     live under ``_harness/`` so a task pack shipping its own
     ``install-harness.sh`` or ``harness.Dockerfile`` at its root cannot collide
     with them, and a ``.dockerignore`` keeps the rest of the staging tree
     (task sources, tests, log mountpoints) out of the layer's build context.
     """
-    spec = HARNESSES[agent_harness]
     harness_dir = staging_dir / _HARNESS_STAGING_DIR
     harness_dir.mkdir(exist_ok=True)
     shutil.copy2(INSTALL_SCRIPT, harness_dir / INSTALL_SCRIPT.name)
@@ -340,6 +351,7 @@ def _build_synthesised_compose(
     image_registry: str | None,
     image_tag: str,
     agent_harness: str,
+    harness_spec: HarnessSpec | None,
     provider_env_keys: Sequence[str],
     runner_image: str,
     db_service_image: str,
@@ -351,11 +363,10 @@ def _build_synthesised_compose(
     a locally-built task image.
     """
     base_image = _agent_image(meta.task_id, image_registry, image_tag)
-    if agent_harness == ENGINE_LOOP:
+    if harness_spec is None:
         agent_image = base_image
     else:
-        spec = HARNESSES[agent_harness]
-        agent_image = f"{base_image}-{agent_harness}-{spec.version}"
+        agent_image = f"{base_image}-{agent_harness}-{harness_spec.version}"
     agent_container_name = f"{PROJECT_PREFIX}{_TOLOKAFORGE_TRIAL_SLUG_PLACEHOLDER}_{agent_service}"
 
     resolved_vars = {
@@ -384,16 +395,16 @@ def _build_synthesised_compose(
         agent_body["environment"] = _set_env_key(
             agent_body["environment"], key, f"${{{provider_env_input(key)}}}"
         )
-    if agent_harness != ENGINE_LOOP:
+    if harness_spec is not None:
         # Static per-harness env — hardening flags the CLI reads at start-up
         # (``IS_SANDBOX=1`` for claude-code's root-user bypass, etc.). Written
         # into the compose ``environment:`` block so ``docker exec`` inherits
         # them. See :attr:`HarnessSpec.container_env`.
-        for key, value in sorted(HARNESSES[agent_harness].container_env.items()):
+        for key, value in sorted(harness_spec.container_env.items()):
             agent_body["environment"] = _set_env_key(agent_body["environment"], key, value)
 
     base_build_service: str | None = None
-    if agent_harness != ENGINE_LOOP:
+    if harness_spec is not None:
         agent_body["build"] = {
             "context": ".",
             "dockerfile": f"{_HARNESS_STAGING_DIR}/{_HARNESS_DOCKERFILE_NAME}",

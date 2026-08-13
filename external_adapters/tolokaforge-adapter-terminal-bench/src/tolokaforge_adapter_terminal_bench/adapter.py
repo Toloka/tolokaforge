@@ -54,7 +54,9 @@ from tolokaforge_adapter_terminal_bench.compose_synthesis import (
 from tolokaforge_adapter_terminal_bench.harness import (
     ENGINE_LOOP,
     HARNESSES,
+    HarnessSpec,
     harness_command,
+    load_harness_registry,
     provider_env_input,
     validate_harness,
     validate_provider_env_keys,
@@ -81,24 +83,39 @@ _REMOVED_PARAMS: dict[str, str] = {
 }
 
 
-def _resolve_provider_env(declared: dict[str, str]) -> dict[str, str]:
-    """Validate the declared provider-env keys and resolve their values.
+def _resolve_provider_env(
+    shipped: dict[str, str], declared: dict[str, str], agent_harness: str
+) -> dict[str, str]:
+    """Effective provider envelope: *shipped* defaults, *declared* winning.
+
+    A run config that names no ``agent_provider_env`` gets the harness's own
+    :attr:`HarnessSpec.provider_env` — the CLI reaches its provider without the
+    operator re-deriving an envelope the harness already knows. Declaring one
+    key (a different endpoint, a different vault name) keeps the rest of the
+    shipped envelope rather than replacing it.
 
     Values go through :func:`~tolokaforge.secrets.expand_secret_refs`, so a run
     config names a credential as ``${secret:NAME}`` instead of carrying it
-    literally. The empty-declaration early return is what keeps the canonical
-    and ``--dry-run`` paths from constructing a ``SecretManager`` at all —
-    ``get_default()`` would otherwise lazily build one just to resolve nothing.
+    literally. The empty-envelope early return is what keeps the engine loop's
+    canonical and ``--dry-run`` paths from constructing a ``SecretManager`` at
+    all — ``get_default()`` would otherwise lazily build one to resolve nothing.
     """
-    if not declared:
+    effective = shipped | declared
+    if not effective:
         return {}
-    validate_provider_env_keys(declared)
+    validate_provider_env_keys(effective)
     secrets = get_default()
     resolved = {
         key: expand_secret_refs(
-            value, secrets, where=f"terminal-bench adapter_params.agent_provider_env[{key!r}]"
+            value,
+            secrets,
+            where=(
+                f"terminal-bench adapter_params.agent_provider_env[{key!r}]"
+                if key in declared
+                else f"terminal-bench harness {agent_harness!r} provider_env[{key!r}]"
+            ),
         )
-        for key, value in declared.items()
+        for key, value in effective.items()
     }
     # Each value is written as one ``KEY=value`` line in the per-trial compose
     # ``.env``. A newline splits the line and turns the remainder into a
@@ -111,12 +128,40 @@ def _resolve_provider_env(declared: dict[str, str]) -> dict[str, str]:
     )
     if unrepresentable:
         raise ValueError(
-            f"terminal-bench adapter: agent_provider_env value(s) for {unrepresentable!r} "
+            f"terminal-bench adapter: provider env value(s) for {unrepresentable!r} "
             "contain a newline or a `$`; each value becomes one line of the per-trial "
             "compose `.env`, where a newline splits the line and a `$` starts an "
             "interpolation. Neither survives intact."
         )
     return resolved
+
+
+def _resolve_harness_registry(presets_file: str | None) -> dict[str, HarnessSpec]:
+    """Shipped harness registry with an operator overlay applied.
+
+    The overlay is the harness-registry counterpart of ADR 0002's
+    operator-pointed preset file (``engine.presets_file``): the same data
+    shape as the shipped file, named by the run config, no effect when
+    unconfigured.
+
+    Merging is whole-entry, not field-wise: a key the overlay declares
+    replaces the shipped spec entirely and is validated on its own. A
+    field-wise merge would let an overlay silently inherit a shipped default
+    it never meant to keep — a pinned CLI version, a mandatory permission
+    flag — and produce an invocation neither side declared.
+
+    Args:
+        presets_file: Path to a second registry YAML, absolute or relative to
+            the working directory. ``None`` leaves the shipped registry alone.
+
+    Raises:
+        ValueError: *presets_file* names a file that does not exist, is not
+            valid YAML, or declares an entry :class:`HarnessSpec` rejects.
+    """
+    if not presets_file:
+        return dict(HARNESSES)
+    overlay = load_harness_registry(Path(presets_file).expanduser().resolve())
+    return {**HARNESSES, **overlay}
 
 
 class TerminalBenchAdapter(BaseAdapter):
@@ -142,7 +187,12 @@ class TerminalBenchAdapter(BaseAdapter):
             params.get("network_policy", NetworkPolicy.FULL_INTERNET.value)
         )
         self.prebuild_images: bool = params.get("prebuild_images", True)
-        self.agent_harness: str = validate_harness(params.get("agent_harness", ENGINE_LOOP))
+        self.harnesses: dict[str, HarnessSpec] = _resolve_harness_registry(
+            params.get("harness_presets_file")
+        )
+        self.agent_harness: str = validate_harness(
+            params.get("agent_harness", ENGINE_LOOP), self.harnesses
+        )
         # Empty under the engine loop, which never reads it: the run config's
         # model reaches litellm through the engine's own LLM layer there.
         self.agent_model: str = params.get("agent_model") or ""
@@ -153,7 +203,9 @@ class TerminalBenchAdapter(BaseAdapter):
                 "config's model would not be the one measured."
             )
         self.agent_provider_env: dict[str, str] = _resolve_provider_env(
-            params.get("agent_provider_env") or {}
+            self.harness_spec.provider_env if self.harness_spec else {},
+            params.get("agent_provider_env") or {},
+            self.agent_harness,
         )
         staging_root = params.get("staging_root")
         self.staging_root: Path = (
@@ -164,6 +216,11 @@ class TerminalBenchAdapter(BaseAdapter):
 
         self._tasks: dict[str, TerminalBenchTask] = {}
         self._environments: dict[str, MaterialisedEnvironment] = {}
+
+    @property
+    def harness_spec(self) -> HarnessSpec | None:
+        """This run's harness spec. ``None`` under the engine loop, which runs no CLI."""
+        return self.harnesses.get(self.agent_harness)
 
     # -- discovery ------------------------------------------------------------
 
@@ -199,6 +256,7 @@ class TerminalBenchAdapter(BaseAdapter):
             image_registry=self.image_registry,
             image_tag=self.image_tag,
             agent_harness=self.agent_harness,
+            harness_registry=self.harnesses,
             provider_env_keys=sorted(self.agent_provider_env),
         )
         self._environments[task_id] = env
@@ -388,11 +446,11 @@ class TerminalBenchAdapter(BaseAdapter):
             "verifier_timeout_sec": meta.verifier_timeout_sec,
             "agent_harness": self.agent_harness,
         }
-        if self.agent_harness != ENGINE_LOOP:
-            metadata["agent_harness_version"] = HARNESSES[self.agent_harness].version
+        if self.harness_spec is not None:
+            metadata["agent_harness_version"] = self.harness_spec.version
             metadata["agent_harness_model"] = self.agent_model
             metadata["agent_harness_command"] = harness_command(
-                self.agent_harness, meta.instruction, self.agent_model
+                self.agent_harness, meta.instruction, self.agent_model, self.harnesses
             )
         return metadata
 

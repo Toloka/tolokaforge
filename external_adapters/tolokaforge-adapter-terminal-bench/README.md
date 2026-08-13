@@ -158,7 +158,16 @@ no base service is declared and only the layer is built locally.
 
 A harness CLI authenticates against its vendor's API from inside the task
 container, so it needs credentials the engine's own LLM layer never puts
-there. `agent_provider_env` declares them:
+there. Each harness ships the envelope its CLI needs as
+`HarnessSpec.provider_env` — claude-code declares
+`ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"` plus the Anthropic-shaped
+OpenRouter `ANTHROPIC_BASE_URL` — so a run config that names only the harness
+already reaches the provider, given the `OPENROUTER_API_KEY` secret.
+
+`agent_provider_env` **unions over** that envelope, key by key, with the run
+config winning on conflict. Pointing the CLI at a different endpoint therefore
+does not drop the credential, and naming a vault key the harness does not ship
+(`ANTHROPIC_AUTH_TOKEN`) does not drop the endpoint:
 
 ```yaml
 evaluation:
@@ -168,9 +177,11 @@ evaluation:
       agent_harness: "claude-code"
       agent_model: "openrouter/anthropic/claude-sonnet-4-6"
       agent_provider_env:
-        ANTHROPIC_API_KEY: "${secret:ANTHROPIC_API_KEY}"
-        ANTHROPIC_BASE_URL: "${secret:ANTHROPIC_BASE_URL}"
+        ANTHROPIC_BASE_URL: "https://proxy.internal.example"
 ```
+
+Under `engine-loop` there is no harness and no shipped envelope, so nothing is
+forwarded unless the run config asks for it.
 
 Every adapter param goes under `evaluation.harness_adapter.params`.
 `EvaluationConfig` is `extra="ignore"`, so a block at the wrong depth is
@@ -189,7 +200,8 @@ refused naming the accepted set.
 
 The path from config to container:
 
-`harness_adapter.params.agent_provider_env` → `StackPatch.inputs` →
+`HarnessSpec.provider_env` + `harness_adapter.params.agent_provider_env` →
+`StackPatch.inputs` →
 `project_loader.resolve` → `EnvironmentManifest.stack_inputs` →
 `PerTrialRuntimeBackend.provision` → the per-trial `.env` → compose
 interpolation at up-time.
@@ -218,10 +230,9 @@ during matrix validation traced to invocation-shape differences alone
 (0.133 delta on `fix-billing-holds × claude-code`; closed to 0.033 once
 the shape aligned).
 
-`HarnessSpec` carries a small set of *parity knobs* — five fields, each
-one covering one dimension of the alignment. Every knob is data on the
-spec, not code somewhere else, so a per-harness policy is one entry to
-read.
+`HarnessSpec` carries a small set of *parity knobs* — one field per
+dimension of the alignment. Every knob is data on the spec, not code
+somewhere else, so a per-harness policy is one entry to read.
 
 | Aspect | The alignment | Field |
 |---|---|---|
@@ -230,6 +241,8 @@ read.
 | Instruction path | `"argv"` (positional argument) or `"stdin"` (`printf "%s" '<instr>' \| cli …`). `"stdin"` sidesteps every shell-escape edge case a positional-arg prompt would have to survive. Claude Code uses stdin. | `HarnessSpec.instruction_channel` |
 | Model routing | Env variables the resolved model exports into. Non-empty for CLIs whose sub-agents route model independently of the top-level `--model` flag: without the export, Task/Explore sub-agents fall back to the CLI's own sonnet-default and may pick a different provider mid-trial. Claude Code declares the quartet `ANTHROPIC_MODEL` + `_DEFAULT_SONNET_MODEL` / `_OPUS_MODEL` / `_HAIKU_MODEL` + `CLAUDE_CODE_SUBAGENT_MODEL`. When set, the redundant `--model` CLI flag is dropped. | `HarnessSpec.env_model_vars` |
 | Static hardening env | Env pairs the compose `environment:` block writes for the agent service. Claude Code declares `IS_SANDBOX=1` (root-user bypass, without which the CLI refuses `--permission-mode=bypassPermissions` under UID 0) and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (opt-in telemetry off). | `HarnessSpec.container_env` |
+| Provider envelope | The variables the CLI needs to reach its provider, as defaults a run config unions over. Claude Code declares `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL`; codex the `OPENAI_*` pair; gemini-cli `GOOGLE_API_KEY`. | `HarnessSpec.provider_env` |
+| Model-name form | Whether a leading `vendor/` namespace is dropped before the model reaches the CLI. Codex and gemini-cli catalogs use bare names; a namespaced string makes them drop OpenRouter routing for the vendor's default endpoint. | `HarnessSpec.strip_vendor_namespace` |
 
 **Skills are deliberately not aligned.** Harbor copies the operator's
 `~/.claude/skills/` into the container, so its Claude sees whatever
@@ -247,9 +260,37 @@ chained before the CLI with `&&`: codex reads `openai_base_url` from
 so its `pre_exec_shell` writes both files from the compose-forwarded
 env vars before invoking `codex exec`.
 
-Consolidation of these fields into a Pydantic model with an
-operator-overridable YAML overlay (following the ADR-0002 model-registry
-pattern) is tracked separately.
+### The harness registry is data
+
+The shipped specs live in
+[`data/harnesses.yaml`](src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml),
+loaded into `HARNESSES` at import. Adding a harness or bumping a pinned CLI
+version is a YAML edit; a typo (unknown field, missing required field,
+unparseable document) is refused at load naming the file and the harness key,
+so no entry is ever silently dropped.
+
+An operator ships their own entries without an adapter release by pointing
+`harness_presets_file` at a second YAML of the same shape — the harness-registry
+counterpart of the operator-pointed preset file in
+[ADR 0002](../../docs/adr/0002-external-model-registry.md). Merging is
+**whole-entry**: a harness the overlay declares replaces the shipped spec
+completely and is validated on its own, and a harness it does not declare is
+untouched. A field-wise merge would let an overlay inherit a shipped default it
+never meant to keep — a pinned version, a mandatory permission flag — and
+produce an invocation neither side declared. An overlay may also add a harness
+the adapter does not ship; `install-harness.sh` installs whatever npm package
+and version the entry names. The path may be absolute or relative to the
+working directory; a missing file, malformed YAML, or an invalid entry is
+refused when the adapter is constructed, naming the file and the failing key.
+
+```yaml
+evaluation:
+  harness_adapter:
+    type: "terminal_bench"
+    params:
+      harness_presets_file: "./harness_presets.yaml"
+      agent_harness: "codex"
+```
 
 ### Trial-level timeout
 

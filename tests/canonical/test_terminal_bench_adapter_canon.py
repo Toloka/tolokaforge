@@ -36,6 +36,28 @@ def _normalize_paths(obj):
     return json.loads(text)
 
 
+@pytest.fixture(autouse=True)
+def env_backed_secrets(monkeypatch):
+    """Pin the process ``SecretManager`` to ``os.environ`` with the shipped
+    harness provider key resolvable.
+
+    Harness mode resolves ``HarnessSpec.provider_env`` — claude-code ships
+    ``${secret:OPENROUTER_API_KEY}`` — while constructing the adapter. The
+    process default manager reads a ``.env`` file first, so without this the
+    lane would resolve whatever credential the developer happens to have on
+    disk and would fail on a machine that has none. No resolved value reaches
+    a snapshot: the compose file carries names, and values live only in the
+    per-trial ``.env``.
+    """
+    from tolokaforge.secrets import SecretManager
+    from tolokaforge.secrets.providers import EnvProvider
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter-test")
+    monkeypatch.setattr(
+        "tolokaforge.secrets.manager._default_manager", SecretManager([EnvProvider()])
+    )
+
+
 @pytest.fixture
 def tbench_adapter(test_data_dir, tmp_path) -> TerminalBenchAdapter:
     """Create TerminalBenchAdapter pointed at tests/data/terminal_bench_tasks/."""
@@ -124,6 +146,32 @@ class TestTerminalBenchHarnessModeCanon:
 
         dockerfile = (env.staging_dir / "_harness" / "harness.Dockerfile").read_text()
         snap.assert_match({"dockerfile": dockerfile}, "harness_dockerfile.json")
+
+    def test_harness_spec_wire_shape(self, canon_snapshot):
+        """ADR 0011 Pattern B: the spec's serialised shape is pinned, so a
+        field added to ``HarnessSpec`` (or dropped from the shipped YAML)
+        fails here rather than silently changing what a harness trial runs."""
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        snap = canon_snapshot("tbench_echo_hello_harness")
+        snap.assert_match(HARNESSES["claude-code"].model_dump(mode="json"), "harness_spec.json")
+
+    def test_synthesised_compose_uses_provider_env_defaults_when_run_config_declares_none(
+        self, tbench_harness_adapter
+    ):
+        """A run config naming only the harness still gets that harness's
+        provider envelope on the agent service — the CLI cannot reach its
+        provider without it, and the operator should not have to re-derive
+        an envelope the harness already declares."""
+        import yaml
+
+        env = tbench_harness_adapter._environment("echo-hello")
+        with env.compose_file.open() as f:
+            compose = yaml.safe_load(f)
+        agent_env = compose["services"]["main"]["environment"]
+        assert "ANTHROPIC_API_KEY=${TBENCH_PROVIDER_ANTHROPIC_API_KEY}" in agent_env
+        assert "ANTHROPIC_BASE_URL=${TBENCH_PROVIDER_ANTHROPIC_BASE_URL}" in agent_env
+        assert "sk-openrouter-test" not in env.compose_file.read_text()
 
     def test_synthesised_compose_carries_container_env(self, tbench_harness_adapter):
         """``HarnessSpec.container_env`` must reach the agent service's env

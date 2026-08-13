@@ -29,6 +29,8 @@
       "container_name": "tbench_${TOLOKAFORGE_TRIAL_SLUG}_main",
       "environment": [
         "TEST_DIR=/tests",
+        "ANTHROPIC_API_KEY=${TBENCH_PROVIDER_ANTHROPIC_API_KEY}",
+        "ANTHROPIC_BASE_URL=${TBENCH_PROVIDER_ANTHROPIC_BASE_URL}",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
         "IS_SANDBOX=1"
       ],

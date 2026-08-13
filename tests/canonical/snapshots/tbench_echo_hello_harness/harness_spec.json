@@ -1,0 +1,34 @@
+{
+  "argv_prefix": [
+    "claude"
+  ],
+  "argv_suffix": [
+    "--permission-mode=bypassPermissions",
+    "--print"
+  ],
+  "container_env": {
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "IS_SANDBOX": "1"
+  },
+  "env_model_vars": [
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL"
+  ],
+  "flags_pre_permission": [
+    "--verbose",
+    "--output-format=stream-json"
+  ],
+  "instruction_channel": "stdin",
+  "model_flag": "--model",
+  "npm_package": "@anthropic-ai/claude-code",
+  "pre_exec_shell": "",
+  "provider_env": {
+    "ANTHROPIC_API_KEY": "${secret:OPENROUTER_API_KEY}",
+    "ANTHROPIC_BASE_URL": "https://openrouter.ai/api"
+  },
+  "strip_vendor_namespace": false,
+  "version": "2.1.231"
+}

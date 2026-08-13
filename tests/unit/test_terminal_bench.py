@@ -28,6 +28,28 @@ from tolokaforge.runner.tool_factory import (
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def env_backed_secrets(monkeypatch):
+    """Pin the process ``SecretManager`` to ``os.environ`` with the shipped
+    harness provider key resolvable.
+
+    Harness mode resolves ``HarnessSpec.provider_env`` — claude-code ships
+    ``${secret:OPENROUTER_API_KEY}`` — while constructing the adapter. The
+    process default manager reads a ``.env`` file first, so without this the
+    lane would resolve whatever credential the developer happens to have on
+    disk and would fail on a machine that has none. Patching the module global
+    (rather than ``init_default_from``) restores the singleton when the test
+    ends, so no manager leaks into a neighbouring test's secret reads.
+    """
+    from tolokaforge.secrets import SecretManager
+    from tolokaforge.secrets.providers import EnvProvider
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter-test")
+    monkeypatch.setattr(
+        "tolokaforge.secrets.manager._default_manager", SecretManager([EnvProvider()])
+    )
+
+
 # =============================================================================
 # Models: new enum values
 # =============================================================================
@@ -1169,11 +1191,11 @@ class TestHarnessCommand:
     def test_terminus_2_is_not_an_accepted_harness(self):
         """This repo installs no Terminus-2 scaffold, so no trial may claim it."""
         from tolokaforge_adapter_terminal_bench.harness import (
-            ACCEPTED_HARNESSES,
+            accepted_harnesses,
             validate_harness,
         )
 
-        assert "terminus-2" not in ACCEPTED_HARNESSES
+        assert "terminus-2" not in accepted_harnesses()
         with pytest.raises(ValueError, match="not supported"):
             validate_harness("terminus-2")
 
@@ -1615,35 +1637,16 @@ class TestProviderEnvWire:
         with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
             self._adapter(fixture_dir, tmp_path, agent_provider_env={"PATH": "/usr/bin"})
 
-    @pytest.fixture
-    def env_backed_secrets(self, monkeypatch):
-        """Install an ``os.environ``-only ``SecretManager`` as the process default.
-
-        Patches the module global rather than calling ``init_default_from`` so
-        the singleton is restored when the test ends — a leaked manager would
-        make every later test's secret reads depend on test ordering.
-        """
-        from tolokaforge.secrets import SecretManager
-        from tolokaforge.secrets.providers import EnvProvider
-
-        monkeypatch.setattr(
-            "tolokaforge.secrets.manager._default_manager", SecretManager([EnvProvider()])
-        )
-
-    def test_secret_reference_is_expanded(
-        self, fixture_dir, tmp_path, monkeypatch, env_backed_secrets
-    ):
+    def test_secret_reference_is_expanded(self, fixture_dir, tmp_path, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-from-secret-manager")
         adapter = self._adapter(
             fixture_dir,
             tmp_path,
             agent_provider_env={"ANTHROPIC_API_KEY": "${secret:ANTHROPIC_API_KEY}"},
         )
-        assert adapter.agent_provider_env == {"ANTHROPIC_API_KEY": "sk-from-secret-manager"}
+        assert adapter.agent_provider_env["ANTHROPIC_API_KEY"] == "sk-from-secret-manager"
 
-    def test_unresolvable_secret_reference_fails_loud(
-        self, fixture_dir, tmp_path, monkeypatch, env_backed_secrets
-    ):
+    def test_unresolvable_secret_reference_fails_loud(self, fixture_dir, tmp_path, monkeypatch):
         from tolokaforge.secrets import UnresolvedReferenceError
 
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -1661,8 +1664,14 @@ class TestProviderEnvWire:
                 fixture_dir, tmp_path, agent_provider_env={"OPENAI_API_KEY": "sk-a\nsk-b"}
             )
 
-    def test_no_provider_env_leaves_stack_inputs_empty(self, fixture_dir, tmp_path):
-        adapter = self._adapter(fixture_dir, tmp_path)
+    def test_engine_loop_forwards_nothing_by_default(self, fixture_dir, tmp_path):
+        """No harness, no shipped envelope: the engine's own LLM layer holds
+        the credentials, so nothing reaches the task container."""
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
+        )
         assert adapter.agent_provider_env == {}
         assert adapter.get_task("echo-hello").environment_manifest.stack.inputs == {}
 
@@ -1682,6 +1691,177 @@ class TestProviderEnvWire:
             provider_env_keys=["OPENAI_API_KEY"],
         )
         assert a.staging_dir != b.staging_dir
+
+
+class TestHarnessProviderEnvOverlay:
+    """A harness ships the provider envelope its CLI needs; a run config
+    adjusts it key by key instead of restating it."""
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    def _adapter(self, fixture_dir, tmp_path, **extra):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        return TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                "agent_harness": "claude-code",
+                "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
+                **extra,
+            }
+        )
+
+    def test_claude_code_ships_the_anthropic_pair(self):
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        assert HARNESSES["claude-code"].provider_env == {
+            "ANTHROPIC_API_KEY": "${secret:OPENROUTER_API_KEY}",
+            "ANTHROPIC_BASE_URL": "https://openrouter.ai/api",
+        }
+
+    def test_shipped_envelope_applies_when_the_run_config_declares_none(
+        self, fixture_dir, tmp_path
+    ):
+        adapter = self._adapter(fixture_dir, tmp_path)
+        assert adapter.agent_provider_env == {
+            "ANTHROPIC_API_KEY": "sk-openrouter-test",
+            "ANTHROPIC_BASE_URL": "https://openrouter.ai/api",
+        }
+
+    def test_declared_key_wins_and_the_rest_of_the_envelope_survives(self, fixture_dir, tmp_path):
+        """Union, not replacement: an operator pointing the CLI at a different
+        endpoint should not have to restate the credential to keep it."""
+        adapter = self._adapter(
+            fixture_dir,
+            tmp_path,
+            agent_provider_env={"ANTHROPIC_BASE_URL": "https://different.example"},
+        )
+        assert adapter.agent_provider_env == {
+            "ANTHROPIC_API_KEY": "sk-openrouter-test",
+            "ANTHROPIC_BASE_URL": "https://different.example",
+        }
+
+    def test_shipped_keys_reach_the_agent_service(self, fixture_dir, tmp_path):
+        adapter = self._adapter(fixture_dir, tmp_path)
+        environment = _load_synthesised(adapter._environment("echo-hello"))["services"]["main"][
+            "environment"
+        ]
+        assert "ANTHROPIC_API_KEY=${TBENCH_PROVIDER_ANTHROPIC_API_KEY}" in environment
+        assert "ANTHROPIC_BASE_URL=${TBENCH_PROVIDER_ANTHROPIC_BASE_URL}" in environment
+
+    def test_unresolvable_shipped_secret_names_the_harness(
+        self, fixture_dir, tmp_path, monkeypatch
+    ):
+        """The failure has to point at the harness that shipped the reference —
+        the run config never mentioned the key, so naming ``agent_provider_env``
+        would send the operator to a block that does not exist."""
+        from tolokaforge.secrets import UnresolvedReferenceError
+
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with pytest.raises(UnresolvedReferenceError, match="claude-code"):
+            self._adapter(fixture_dir, tmp_path)
+
+
+class TestHarnessPresetsFileOverlay:
+    """An operator ships harness entries without an adapter release."""
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    @staticmethod
+    def _overlay(tmp_path: Path, body: str) -> Path:
+        path = tmp_path / "harness_presets.yaml"
+        path.write_text(body)
+        return path
+
+    def _adapter(self, fixture_dir, tmp_path, presets: Path | None, **extra):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        params = {
+            "terminal_bench_dir": str(fixture_dir),
+            "staging_root": str(tmp_path / "staging"),
+            "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
+            **extra,
+        }
+        if presets is not None:
+            params["harness_presets_file"] = str(presets)
+        return TerminalBenchAdapter(params)
+
+    def test_overlay_entry_replaces_the_shipped_spec(self, fixture_dir, tmp_path):
+        """Whole-entry replacement, and it has to reach every surface that
+        reads the spec — the recorded version and the layered image tag."""
+        presets = self._overlay(
+            tmp_path,
+            "harnesses:\n"
+            "  claude-code:\n"
+            "    npm_package: '@anthropic-ai/claude-code'\n"
+            "    version: '0.0.0-overlay'\n"
+            "    argv_prefix: [claude]\n"
+            "    argv_suffix: ['--print']\n",
+        )
+        adapter = self._adapter(fixture_dir, tmp_path, presets, agent_harness="claude-code")
+        assert adapter.harnesses["claude-code"].version == "0.0.0-overlay"
+        # The shipped entry's other fields are gone, not merged underneath.
+        assert adapter.harnesses["claude-code"].env_model_vars == ()
+        td = adapter.to_task_description("echo-hello")
+        assert td.metadata["agent_harness_version"] == "0.0.0-overlay"
+        assert " --model " in td.metadata["agent_harness_command"]
+        compose = _load_synthesised(adapter._environment("echo-hello"))
+        assert compose["services"]["main"]["image"].endswith("claude-code-0.0.0-overlay")
+
+    def test_shipped_entries_the_overlay_leaves_alone_are_untouched(self, fixture_dir, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        presets = self._overlay(
+            tmp_path,
+            "harnesses:\n"
+            "  codex:\n"
+            "    npm_package: '@openai/codex'\n"
+            "    version: '0.0.0-overlay'\n"
+            "    argv_prefix: [codex, exec]\n"
+            "    argv_suffix: []\n",
+        )
+        adapter = self._adapter(fixture_dir, tmp_path, presets)
+        assert adapter.harnesses["claude-code"] == HARNESSES["claude-code"]
+
+    def test_overlay_can_add_a_harness(self, fixture_dir, tmp_path):
+        presets = self._overlay(
+            tmp_path,
+            "harnesses:\n"
+            "  in-house-cli:\n"
+            "    npm_package: '@acme/in-house-cli'\n"
+            "    version: '1.2.3'\n"
+            "    argv_prefix: [acme]\n"
+            "    argv_suffix: ['--go']\n",
+        )
+        adapter = self._adapter(
+            fixture_dir, tmp_path, presets, agent_harness="in-house-cli", agent_model="m"
+        )
+        command = adapter.to_task_description("echo-hello").metadata["agent_harness_command"]
+        assert command.startswith("acme --model m --go ")
+
+    def test_missing_overlay_file_is_refused_at_construction(self, fixture_dir, tmp_path):
+        missing = tmp_path / "absent.yaml"
+        with pytest.raises(ValueError, match="does not exist") as excinfo:
+            self._adapter(fixture_dir, tmp_path, missing)
+        assert str(missing) in str(excinfo.value)
+
+    def test_invalid_overlay_entry_names_the_harness(self, fixture_dir, tmp_path):
+        presets = self._overlay(
+            tmp_path,
+            "harnesses:\n  codex:\n    npm_package: '@openai/codex'\n    argv_prefix: [codex]\n",
+        )
+        with pytest.raises(ValueError, match="codex"):
+            self._adapter(fixture_dir, tmp_path, presets)
+
+    def test_no_overlay_leaves_the_shipped_registry(self, fixture_dir, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        assert self._adapter(fixture_dir, tmp_path, None).harnesses == HARNESSES
 
 
 class TestHarnessTaskDescriptionMetadata:
