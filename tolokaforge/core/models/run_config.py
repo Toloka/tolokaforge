@@ -471,12 +471,13 @@ class OrchestratorConfig(BaseModel):
     a non-default value."""
 
     stuck_heuristics: StuckHeuristics = Field(default_factory=StuckHeuristics)
-    """Deprecated. The conductor now reads stuck-heuristics from the
-    task-scoped ``TaskConfig.stuck_heuristics`` (populated via the M2
-    loader's per-task merge chain from
-    ``project.task_defaults.stuck_heuristics``). Kept on this model
-    for backward compatibility; a ``DeprecationWarning`` fires when
-    the field is explicitly set."""
+    """Deprecated, and still read: the conductor falls back to this block
+    for any task declaring no task-scoped ``TaskConfig.stuck_heuristics``
+    (populated via the M2 loader's per-task merge chain from
+    ``project.task_defaults.stuck_heuristics``) — which is every shipped
+    pack but one, so these are the values most trials run at. The canonical
+    home is ``task_defaults``; a ``DeprecationWarning`` fires when this
+    field is explicitly set."""
 
     runtime: str | None = None
     """Deprecated operator override for backend selection.

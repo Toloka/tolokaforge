@@ -515,11 +515,12 @@ copies as **caps or removes them**:
   `TimeoutConfig`'s current `turn_s`/`episode_s` names are
   legacy and retire with the other aliases in M5.
 - `orchestrator.stuck_heuristics` is deprecated by this design;
-  `task_defaults` is its only home (legacy alias retired in M5,
-  #214). The M2 loader must repoint the conductor — today it
-  reads the orchestrator copy. Operator-side runaway protection
-  is already covered by `max_budget_usd`, the `max_turns` cap,
-  and the timeout caps.
+  `task_defaults` is its canonical home (legacy alias retired in
+  M5, #214). The conductor reads the task-scope block when the
+  task declares one and falls back to the orchestrator copy when
+  it does not, so the run-side block is still what most trials
+  run at. Operator-side runaway protection is already covered by
+  `max_budget_usd`, the `max_turns` cap, and the timeout caps.
 - `continue_prompt` is currently consumed by **nothing** in
   either home. M2 either wires the conductor to the
   task-resolved value or drops the field entirely; it must not

@@ -333,9 +333,7 @@ repeated phrasing — and a run of reasoning-only calls at the `max_tokens`
 ceiling is neither: it is typed evidence (`finish_reason`, reasoning-only
 output), not a turn count. Open issue
 [#1142](https://github.com/Toloka/tolokaforge/issues/1142)
-carries it. Tracking issue
-[#148](https://github.com/Toloka/tolokaforge/issues/148)
-adds a composable per-call reasoning ceiling. Neither shipped yet.
+carries it.
 
 ### 3.2 Heavy completion-token usage (good and bad)
 

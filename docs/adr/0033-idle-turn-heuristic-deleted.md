@@ -90,16 +90,19 @@ field alone would drop an author's declaration without a word.
 Whether an agent must *act* is declared per task in `grading.yaml transcript_rules`,
 where the task author scopes it to the tasks it is true of.
 
-That every surviving heuristic can fire at every configuration this repository ships is
-now enforced by `tests/canonical/test_stuck_heuristics_are_satisfiable.py`, which
-discovers both the heuristic set and the configuration set rather than listing them, and
-drives each case through a real trial.
+That every surviving heuristic is satisfiable at every threshold this repository ships,
+given a turn budget that admits it, is now enforced by
+`tests/canonical/test_stuck_heuristics_are_satisfiable.py`, which discovers both the
+heuristic set and the threshold set rather than listing them, and drives each case
+through a real trial at a budget manufactured to admit the threshold. It does not claim
+a shipped pack reaches those conditions inside its own turn budget — see § Still
+unaddressed.
 
 ## Consequences
 
 ### Positive
 
-- Every heuristic the detector runs is reachable at every shipped configuration, and a
+- Every heuristic the detector runs is satisfiable at every shipped threshold, and a
   heuristic added without a driving case fails a test.
 - The question the deleted heuristic gestured at is asked where it can be answered
   truthfully — per task, by the author who knows whether acting is required.
@@ -129,10 +132,16 @@ drives each case through a real trial.
   phrase repeated inside one message and never on repetition across turns, and it returns
   `False` before reading any content once the agent emits two or more tool messages per
   turn.
-- **`max_repeated_tool_calls` still has two live answers**: 5 on the task-scope
+- **`max_repeated_tool_calls` still has two live answers (#1145)**: 5 on the task-scope
   `StuckHeuristicsDefaults` and 10 on the run-side `StuckHeuristics`, both readable on
   the fallback chain above, so which one a task runs at depends on whether its project
   declares a block. Reconciling them is its own decision.
+- **A shipped threshold is not the same as a reachable one (#1144).** Satisfiability is
+  measured at a turn budget manufactured to admit the threshold. Five shipped packs
+  authored a `max_turns` too small for a run-side threshold of 10 to be reached inside
+  it, so for those the surviving heuristic is live in principle and unreachable in
+  practice — a budget question, not a heuristic one, and it is why the lock's claim is
+  scoped to the threshold rather than to the pack.
 
 ## Links
 
@@ -141,4 +150,5 @@ drives each case through a real trial.
 - Related code: `tolokaforge/core/stuck.py`, `tolokaforge/core/conductor.py`,
   `tolokaforge/core/models/task_config.py`, `tolokaforge/core/models/run_config.py`.
 - External references: #709, #1141 (looping content), #1142 (the reasoning-only stall),
-  #677 (the activity lower bound `transcript_rules` shipped).
+  #1144 (threshold vs. authored turn budget), #1145 (the run-side mirror's 5-vs-10
+  split), #677 (the activity lower bound `transcript_rules` shipped).

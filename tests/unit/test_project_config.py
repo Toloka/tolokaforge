@@ -107,6 +107,11 @@ class TestTaskDefaultsFields:
         assert "max_idle_turns in project.yaml" in message
         assert "ADR-0033" in message
         assert "transcript_rules" in message
+        assert "tracked in #" not in message, (
+            "the warning carries a retirement tracker, which promises a later "
+            "strict flip. There is none: the key names a deleted heuristic, so "
+            "accept-and-warn is the end state."
+        )
 
     def test_grading_defaults_wraps_combine(self) -> None:
         gd = GradingDefaults(

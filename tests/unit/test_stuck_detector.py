@@ -23,11 +23,13 @@ def _tool_log(tool: str, arguments: dict | None = None) -> RecordedToolCall:
 
 
 def test_the_repeated_call_threshold_has_to_be_named() -> None:
-    """The detector has no answer of its own to "how many is too many".
+    """How many repeats is too many is the configuration's answer, never the class's.
 
-    Its one production caller resolves the threshold from config and always
-    passes it, so a class-level default would be a second answer that nothing
-    reads and no configuration ships.
+    What is locked is that decision, not the exception: the detector's one
+    production caller resolves the threshold from config and always passes it,
+    so a class-level default would be a second answer that nothing reads and no
+    configuration ships — a divergent value that reads as shipped. Re-add one
+    and this fails; ``TypeError`` is only how Python reports it.
     """
     with pytest.raises(TypeError):
         StuckDetector()  # type: ignore[call-arg]
@@ -187,7 +189,7 @@ class TestLoopingContent:
 
 @pytest.mark.unit
 class TestCustomThresholds:
-    """Verify that constructor parameters control detection sensitivity."""
+    """Verify that the constructor parameter controls detection sensitivity."""
 
     def test_custom_thresholds(self) -> None:
         """StuckDetector with a low threshold should detect stuck earlier."""

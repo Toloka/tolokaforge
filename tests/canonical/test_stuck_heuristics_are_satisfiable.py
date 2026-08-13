@@ -1,5 +1,6 @@
-"""Every heuristic the stuck detector runs can fire at every configuration this
-repository ships, and prose alone is not one of them.
+"""Every heuristic the stuck detector runs is satisfiable at every threshold
+this repository ships, given a turn budget that admits it — and prose alone is
+not one of them.
 
 A stuck verdict ends the trial and short-circuits its grade, so a heuristic that
 cannot fire is not a harmless spare part: it is a control that reads as live in
@@ -9,10 +10,15 @@ discovered rather than typed:
 
 - the heuristic set is read off ``StuckDetector`` itself, so a predicate added
   with no driving case fails here rather than joining the tree unmeasured;
-- the configuration set is read off the shipped sources — both config models,
-  the detector's own signature, and every ``stuck_heuristics`` block declared in
-  in-tree YAML — so a threshold nobody could reach is a failure at the value
-  somebody actually ships, not at one chosen to make the branch reachable.
+- the threshold set is read off the shipped sources — both config models and
+  every ``stuck_heuristics`` block declared in in-tree YAML — so a threshold
+  nobody could reach is a failure at the value somebody actually ships, not at
+  one chosen to make the branch reachable.
+
+What this does **not** claim is that a shipped pack reaches these conditions
+inside its own turn budget. Each case is driven at a budget manufactured to
+admit the threshold (see :func:`_drive`); whether a pack's authored ``max_turns``
+leaves room for its threshold is a separate question, open as #1144.
 
 Every case is driven end to end through :class:`TrialRunner` with a scripted
 agent and a scripted user simulator, and asserted on the trajectory the trial
@@ -175,15 +181,6 @@ def _thresholds(block: Mapping[str, Any]) -> dict[str, int]:
     return {**canonical, **declared}
 
 
-def _signature_defaults() -> dict[str, int]:
-    """The thresholds ``StuckDetector`` answers with when its caller names none."""
-    return {
-        name: parameter.default
-        for name, parameter in inspect.signature(StuckDetector).parameters.items()
-        if isinstance(parameter.default, int) and not isinstance(parameter.default, bool)
-    }
-
-
 def _stuck_blocks(node: Any) -> Iterator[Mapping[str, Any]]:
     """Every ``stuck_heuristics`` mapping anywhere in one loaded YAML document.
 
@@ -202,12 +199,18 @@ def _stuck_blocks(node: Any) -> Iterator[Mapping[str, Any]]:
 
 
 def _declared_in_tree() -> dict[str, dict[str, int]]:
-    """Every stuck-heuristics block declared in in-tree YAML, by source file."""
+    """Every stuck-heuristics block declared in in-tree YAML, by source file.
+
+    A block declaring ``enabled: false`` is skipped: the conductor builds no
+    detector for it, so it ships no threshold for anything to satisfy.
+    """
     declared: dict[str, dict[str, int]] = {}
     for glob in _CONFIG_GLOBS:
         for path in sorted(_REPO_ROOT.glob(glob)):
             document = yaml.safe_load(path.read_text(encoding="utf-8"))
             for index, block in enumerate(_stuck_blocks(document)):
+                if block.get("enabled") is False:
+                    continue
                 label = str(path.relative_to(_REPO_ROOT))
                 declared[label if not index else f"{label} (block {index + 1})"] = _thresholds(
                     block
@@ -218,16 +221,15 @@ def _declared_in_tree() -> dict[str, dict[str, int]]:
 def _shipped_configurations() -> dict[str, dict[str, int]]:
     """Every stuck-heuristics configuration this repository ships, by source.
 
-    A source naming no threshold at all contributes no configuration — there is
-    nothing to drive a trial at.
+    The detector's own signature is not a source: it declares no default, and
+    reading one from it would re-admit a re-added class default as a shipped
+    value — the opposite of what its absence is for.
     """
-    configurations = {
+    return {
         "task-scope model defaults": _thresholds(StuckHeuristicsDefaults().model_dump()),
         "run-side model defaults": _thresholds(OrchestratorConfig().stuck_heuristics.model_dump()),
-        "StuckDetector signature defaults": _signature_defaults(),
         **_declared_in_tree(),
     }
-    return {label: thresholds for label, thresholds in configurations.items() if thresholds}
 
 
 _SHIPPED_CONFIGURATIONS = _shipped_configurations()
@@ -236,9 +238,13 @@ _SHIPPED_CONFIGURATIONS = _shipped_configurations()
 def _drive(script: Callable[[int], GenerationResult], thresholds: Mapping[str, int]) -> Trajectory:
     """Run one whole trial through :class:`TrialRunner` at *thresholds*.
 
-    The turn budget is four times the largest threshold under test, so a
-    threshold has room to be reached before the budget ends the trial and the
-    reason the trial ended is the one the case is about.
+    The turn budget is manufactured rather than read from any pack: four times
+    the largest threshold under test, minimum 20. That is deliberate, and it is
+    what scopes this module's claim. A budget below the threshold would end
+    every trial ``max_turns`` and the sweep would report a heuristic as
+    unsatisfiable when the real finding is that the budget was too small — two
+    different defects, and only the first is this module's subject. Whether a
+    shipped pack's own ``max_turns`` admits its threshold is #1144.
     """
     return TrialRunner(
         task_id="stuck-heuristics",
