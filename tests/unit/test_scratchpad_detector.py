@@ -26,7 +26,7 @@ from typing import Any
 import pytest
 import yaml
 
-from tests.unit.test_user_reply_guard import MUST_PASS as FOURTH_WALL_MUST_PASS
+from tests.utils.fourth_wall_corpus import MUST_PASS as FOURTH_WALL_MUST_PASS
 from tests.utils.project_fixtures import is_lfs_pointer
 from tolokaforge.core.actors.reply_guard import FourthWallDetector
 from tolokaforge.core.actors.scratchpad import ScratchpadDetector

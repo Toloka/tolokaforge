@@ -2434,6 +2434,12 @@ Rules:
                 temperature=0.2,
                 observation=observation,
             )
+            # The one substitution the reply guard wraps rather than forbids, and
+            # the only text the engine contributes to a user turn. Unreachable
+            # while the conductor wires no ``user_tool_executor``: the simulator
+            # is then handed no tool schemas, so no generation carries tool calls.
+            # TODO(#1089): remove it — a universal filler is hazardous (AGENTS.md
+            # gotcha 23), so the removal carries its own analysis.
             if result.tool_calls and not result.text.strip():
                 result.text = "Let me check that."
             return result

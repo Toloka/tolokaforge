@@ -525,8 +525,14 @@ wrote, or it does not reach the agent at all. Every generation inside
 list of `ReplyDetector`s over the reply text:
 
 - A flagged reply is **discarded whole and regenerated**. No text is edited,
-  excised, truncated or substituted — the engine has no path that can put words
-  into a turn the model did not write.
+  excised, truncated or substituted, with one carve-out inside the guarded
+  closure: `_llm_reply` replaces an empty reply that carried tool calls with a
+  fixed placeholder before the detectors see it. That placeholder is the only
+  text the engine contributes to a user turn, and it is unreachable in-tree —
+  the simulator is handed tool schemas only alongside a `user_tool_executor`,
+  and the conductor always passes `None`. Its removal is tracked in
+  [#1089](https://github.com/Toloka/tolokaforge/issues/1089). Apart from it, the
+  engine has no path that can put words into a turn the model did not write.
 - Every discarded attempt logs at `WARNING` with the detector, the reason code,
   the matched excerpt and the `trial_id` that paid for it, and rides back on
   `GenerationResult.guard_rejections`. The guard logs under its own logger name,
@@ -582,8 +588,8 @@ outranks recall — and where a demonstrative head cannot separate the two sense
 the frame is given up rather than the support turn. `exercise` and `evaluation`
 are exercise nouns only in their compounds (`roleplay exercise`, `training
 exercise`, `evaluation exercise`), `benchmark` only under the prepositional frame
-(`in this benchmark`), and `test scenario` / `test case` no longer match in any
-frame. The prepositional frame itself matches only when the speaker claims a role
+(`in this benchmark`), and `test scenario` / `test case` are not exercise nouns
+in any frame. The prepositional frame itself matches only when the speaker claims a role
 inside the exercise (`In this benchmark, I am playing a frustrated customer.`),
 because `During the simulation, the app froze and I lost my mesh.` and `In the
 simulation I get an error at step 4.` are what a customer of simulation software

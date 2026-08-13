@@ -127,6 +127,7 @@ tests/
     ├── migration_packs.py    # A task directory a migration declaration is read out of
     ├── combine_method_verdicts.py  # The combine.method answer table both tiers hold
     ├── wire_grades.py        # A wire Grade driven through the real gRPC client lowering
+    ├── fourth_wall_corpus.py  # The fourth-wall detector's pass/detect rows, read by two suites
     └── project_fixtures.py   # food_delivery_2 project data loaders
 ```
 
