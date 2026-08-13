@@ -2351,6 +2351,30 @@ where it applies whichever route was taken. A block whose routes are *all* gate-
 is admitted: there is no scored sibling for one to stand in front of, and the block
 asks the gates' own question whichever route the agent walked.
 
+The gate is read out of a real container as well, in
+[`tests/integration/test_docker_grading_trace_gate.py`](../tests/integration/test_docker_grading_trace_gate.py):
+the committed `trace_checks_gate` parity pack driven through `RegisterTrial` →
+`GradeTrial` over real gRPC, one trial that trips the gate beside one that does not. That
+pack's `pass_threshold` is `0.0` and its scored constraint holds in both trials, so a
+tripped gate is the only thing that can fail one and the only thing that can move the
+component. The two trials pin the verdict, the zeroed component,
+`trace_checks_summary.gate_failed`, `failed_gate_ids`, the per-constraint `severity`
+values and the `FAILED trace gates:` sentence.
+
+**What that proves and what it does not.** The shipped runner image — a separately built
+artefact, installed from a wheel whose file partition excludes twelve `core/grading`
+modules — carries the gate: it reads `severity` off an authored pack and reports which
+gate shut. Measured by dropping `severity: gate` from that pack, which turns the failing
+trial into a passing one scoring `0.5`: the difference between a gate and a low score is
+what those two trials are. What they do not reach is a gate over records the container
+wrote itself — every `TOOL_CALL` event there derives from the message view the host
+supplies in `llm_messages_json`, the shape production sends, which leaves the record half
+of the timeline empty. Nor does the canonical suite prove this test *passes*: the job that
+runs on every pull request is `test-smoke`, whose repo-suite pytest step is
+`tests/unit/ tests/canonical/` and which has no integration step at all. `tests/integration/`
+runs in `test-full` (push and schedule) and in `test-gate`, which is triggered by the
+`ready-to-merge` label.
+
 ### Alternative paths
 
 `alternatives` declares two or more routes, each a `TracePath` carrying an `id`, a
