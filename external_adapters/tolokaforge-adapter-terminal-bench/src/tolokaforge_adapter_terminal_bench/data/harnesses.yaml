@@ -120,3 +120,87 @@ harnesses:
     # section.
     provider_env:
       GOOGLE_API_KEY: "${secret:OPENROUTER_API_KEY}"
+
+  kimi-code:
+    install_method: "npm"
+    install_source: "@moonshot-ai/kimi-code"
+    # Pinned to the version harbor's docstring cites
+    # (harbor/agents/installed/kimi_code.py:31); Moonshot has no separate
+    # bootstrap installer, so this pin fully governs which agent code runs.
+    version: "0.28.1"
+    argv_prefix: ["kimi"]
+    # No permission-mode analogue. `--output-format stream-json` matches
+    # harbor's invocation shape so trajectory JSON is emitted for the
+    # runner to record — same reason claude-code carries the flag.
+    argv_suffix: ["--output-format", "stream-json"]
+    # Instruction is passed through the `KIMI_MODEL_NAME`-adjacent
+    # `--prompt "$INSTRUCTION"` — argv-side, no shell escaping tax beyond
+    # what harness_command already applies.
+    instruction_channel: "argv"
+    # kimi-code reads the model name from an env var, not `--model`.
+    env_model_vars: ["KIMI_MODEL_NAME"]
+    # Static hardening: no telemetry, no auto-update, no color codes in
+    # the stream. Every knob comes from harbor's kimi_code.py:107-113.
+    container_env:
+      KIMI_DISABLE_TELEMETRY: "true"
+      KIMI_CODE_NO_AUTO_UPDATE: "true"
+      NO_COLOR: "true"
+    # OpenRouter emits `moonshotai/kimi-k2.5`; the CLI wants bare
+    # `kimi-k2.5`. Same shape as codex and gemini-cli.
+    strip_vendor_namespace: true
+    # OpenRouter's OpenAI-compat surface accepts Moonshot models via the
+    # `moonshotai/*` slug — the URL points at OpenRouter's v1 endpoint,
+    # not `api.moonshot.ai/v1`. Empirically confirmed the first time we
+    # matrix-test this CLI; if it 401s, the fallback is to declare
+    # `MOONSHOT_API_KEY` and route direct.
+    provider_env:
+      KIMI_MODEL_API_KEY: "${secret:OPENROUTER_API_KEY}"
+      KIMI_MODEL_BASE_URL: "https://openrouter.ai/api/v1"
+
+  opencode:
+    install_method: "npm"
+    install_source: "opencode-ai"
+    # Pinned as of the research pass. Bump to a newer release with an
+    # ADR entry; the artifact records whatever install-harness.sh landed on.
+    version: "0.15.14"
+    argv_prefix: ["opencode"]
+    # opencode expects `--model=<name>` (equals form). See the
+    # model_flag_style knob just below.
+    model_flag: "--model"
+    model_flag_style: "equals"
+    # Flags before `--permission-*`: none; opencode has no equivalent.
+    # `run` is the sub-command that reads the instruction. `--format=json`
+    # emits the JSON stream we record. `--thinking` matches harbor's
+    # invocation to keep thinking blocks in the stream (parity policy).
+    # `--dangerously-skip-permissions` is the equivalent of claude-code's
+    # bypass. `--` separates the instruction from CLI flags so any
+    # leading dash in the prompt is treated as text, not a flag.
+    argv_suffix:
+      - "run"
+      - "--format=json"
+      - "--thinking"
+      - "--dangerously-skip-permissions"
+      - "--"
+    instruction_channel: "argv"
+    # opencode requires `provider/model` (harbor:489 raises without a `/`),
+    # so we keep the OpenRouter namespace on the model name.
+    strip_vendor_namespace: false
+    # opencode's config-dir env vars point at a scratch path under the
+    # log volume so anything opencode writes ends up captured.
+    # OPENCODE_FAKE_VCS keeps opencode happy under `/app` (which isn't a
+    # git repo, and opencode otherwise refuses).
+    container_env:
+      OPENCODE_FAKE_VCS: "git"
+      XDG_DATA_HOME: "/logs/agent/opencode/xdg-data"
+      XDG_STATE_HOME: "/logs/agent/opencode/xdg-state"
+    # opencode's provider baseURL is read from ~/.config/opencode/opencode.json,
+    # not from an env var (harbor:435-473). Config-file emission via
+    # HarnessSpec.config_files. Default: OpenRouter's Anthropic-compat
+    # surface (matches claude-code's routing). An operator targeting an
+    # OpenAI or Gemini variant overlays this via harness_presets_file.
+    config_files:
+      "/root/.config/opencode/opencode.json": |-
+        {"provider":{"anthropic":{"options":{"baseURL":"{{ base_url }}"}}}}
+    provider_env:
+      ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
+      ANTHROPIC_BASE_URL: "https://openrouter.ai/api"

@@ -1106,7 +1106,7 @@ class TestInstallHarnessScript:
 class TestHarnessSpecRegistry:
     """The shipped registry is packaged YAML data, loaded at import."""
 
-    def test_shipped_file_declares_the_three_harnesses(self):
+    def test_shipped_file_declares_the_supported_harnesses(self):
         from tolokaforge_adapter_terminal_bench.harness import (
             HARNESSES,
             SHIPPED_REGISTRY_FILE,
@@ -1114,10 +1114,19 @@ class TestHarnessSpecRegistry:
         )
 
         assert SHIPPED_REGISTRY_FILE.is_file()
-        assert list(HARNESSES) == ["claude-code", "codex", "gemini-cli"]
+        assert list(HARNESSES) == [
+            "claude-code",
+            "codex",
+            "gemini-cli",
+            "kimi-code",
+            "opencode",
+        ]
         assert load_harness_registry(SHIPPED_REGISTRY_FILE) == HARNESSES
 
     def test_shipped_entries_install_from_npm(self):
+        """Every currently-shipped entry installs via npm — the curl-bash /
+        pip / binary dispatch branches exist for entries not yet in the
+        shipped registry (Grok Build lands in a follow-up)."""
         from tolokaforge_adapter_terminal_bench.harness import HARNESSES
 
         assert {
@@ -1126,6 +1135,8 @@ class TestHarnessSpecRegistry:
             "claude-code": ("npm", "@anthropic-ai/claude-code"),
             "codex": ("npm", "@openai/codex"),
             "gemini-cli": ("npm", "@google/gemini-cli"),
+            "kimi-code": ("npm", "@moonshot-ai/kimi-code"),
+            "opencode": ("npm", "opencode-ai"),
         }
 
     @pytest.mark.parametrize(
