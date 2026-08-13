@@ -1,0 +1,119 @@
+# Shipped coding-harness registry. Every entry is a `HarnessSpec`
+# (`harness/__init__.py`), which documents what each field is; the comments
+# here carry why each *value* is what it is.
+
+harnesses:
+  claude-code:
+    npm_package: "@anthropic-ai/claude-code"
+    # Pinned to the version harbor's `bootstrap.sh` resolved when the matrix
+    # comparison was baselined — three patch versions ahead of what TF
+    # previously pinned. The pin closes the CLI-code delta with harbor while
+    # keeping reproducibility.
+    version: "2.1.231"
+    argv_prefix: ["claude"]
+    # `--verbose --output-format=stream-json` matches harbor's invocation
+    # (`harbor/agents/installed/claude_code.py`). Aligning the flag block
+    # aligns the CLI's internal reasoning mode; without them the CLI ran a
+    # different scaffold and made different fixes on the same task.
+    flags_pre_permission: ["--verbose", "--output-format=stream-json"]
+    # `--permission-mode=bypassPermissions` is mandatory: without it the CLI
+    # blocks at the first tool-permission prompt in `--print` mode and burns
+    # the whole episode budget without ever calling the LLM.
+    argv_suffix: ["--permission-mode=bypassPermissions", "--print"]
+    # Instruction on stdin sidesteps every shell-escape edge case a
+    # positional-arg prompt would have to survive (a natural user request can
+    # contain quotes, `$`, backticks, newlines). Harbor pipes the instruction
+    # the same way.
+    instruction_channel: "stdin"
+    # The env quartet forces every sub-agent (`Task`, `Explore`, `Plan`,
+    # `general-purpose`) to use the declared model. With `--model` on the CLI
+    # alone, sub-agents fall back to the CLI's sonnet-default and may pick a
+    # different provider mid-trial — a silent divergence from the declared
+    # benchmark model.
+    env_model_vars:
+      - "ANTHROPIC_MODEL"
+      - "ANTHROPIC_DEFAULT_SONNET_MODEL"
+      - "ANTHROPIC_DEFAULT_OPUS_MODEL"
+      - "ANTHROPIC_DEFAULT_HAIKU_MODEL"
+      - "CLAUDE_CODE_SUBAGENT_MODEL"
+    # `IS_SANDBOX=1` is claude-code's documented root-user override: without
+    # it, `--permission-mode=bypassPermissions` (which the CLI rewrites
+    # internally to `--dangerously-skip-permissions`) refuses to run under
+    # UID 0 and exits before the model is called. The task container is root
+    # by default. Harbor sets the same env for the same reason.
+    # `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` disables the CLI's opt-in
+    # telemetry / analytics fetches — harbor sets it too.
+    container_env:
+      IS_SANDBOX: "1"
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+    # Anthropic-shaped OpenRouter endpoint. `ANTHROPIC_BASE_URL` is a literal
+    # URL (not a secret); the key value comes from the operator via the
+    # `OPENROUTER_API_KEY` secret.
+    provider_env:
+      ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
+      ANTHROPIC_BASE_URL: "https://openrouter.ai/api"
+
+  codex:
+    npm_package: "@openai/codex"
+    version: "0.147.0"
+    argv_prefix: ["codex", "exec"]
+    # Three mandatory flags. `--dangerously-bypass-approvals-and-sandbox`
+    # skips the approval prompt that `codex exec` otherwise blocks on when it
+    # wants to write or run a command — the harness has no interactive stdin
+    # to answer it. `--skip-git-repo-check` disables the "trusted directory"
+    # gate that refuses to operate anywhere without a `.git` — tbench task
+    # containers work under `/app` and are not git repos.
+    # `-c model_reasoning_effort=high` is the OpenRouter-compat mandatory
+    # config: gpt-5-mini via the Responses API rejects requests that omit
+    # reasoning ("Reasoning is mandatory for this endpoint and cannot be
+    # disabled"). Harbor's own invocation carries the same override
+    # (`harbor/agents/installed/codex.py` — its default codex command).
+    argv_suffix:
+      - "--dangerously-bypass-approvals-and-sandbox"
+      - "--skip-git-repo-check"
+      - "-c"
+      - "model_reasoning_effort=high"
+    # Two on-disk files, one shell chain — codex reads both and honours
+    # neither the env var they mirror:
+    #
+    # 1. `$CODEX_HOME/config.toml` carries `openai_base_url`. The env var
+    #    `OPENAI_BASE_URL` alone is ignored for the Responses API endpoint
+    #    (codex hits `api.openai.com` regardless).
+    # 2. `$CODEX_HOME/auth.json` carries the API key as JSON. The env var
+    #    `OPENAI_API_KEY` alone earns "401 No cookie auth credentials found"
+    #    from OpenRouter — the CLI sends no `Authorization` header without
+    #    the file.
+    #
+    # Harbor writes both files (`harbor/agents/installed/codex.py:1391` /
+    # `:1406`). `CODEX_HOME` defaults to `$HOME/.codex`.
+    pre_exec_shell: >-
+      CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}" &&
+      mkdir -p "$CODEX_HOME_DIR" &&
+      printf 'openai_base_url = "%s"\n' "$OPENAI_BASE_URL"
+      > "$CODEX_HOME_DIR/config.toml" &&
+      printf '{"OPENAI_API_KEY": "%s"}\n' "$OPENAI_API_KEY"
+      > "$CODEX_HOME_DIR/auth.json"
+    # codex 0.147's model catalog refuses the OpenRouter namespaced form.
+    strip_vendor_namespace: true
+    # OpenRouter's OpenAI-compat endpoint. The literal URL means an operator
+    # doesn't need to plumb OPENAI_BASE_URL through .env.
+    provider_env:
+      OPENAI_API_KEY: "${secret:OPENROUTER_API_KEY}"
+      OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
+
+  gemini-cli:
+    npm_package: "@google/gemini-cli"
+    version: "0.55.1"
+    argv_prefix: ["gemini"]
+    # `--yolo` accepts every tool call without asking. `--prompt` sits at the
+    # end so it stays adjacent to the trailing instruction argument.
+    argv_suffix: ["--yolo", "--prompt"]
+    # gemini-cli's model catalog uses bare names.
+    strip_vendor_namespace: true
+    # gemini-cli reads `GEMINI_API_KEY` natively; OpenRouter's OpenAI-compat
+    # surface doesn't proxy Google's generative-AI endpoints, so this default
+    # only makes the CLI *reach* the endpoint — it will still 401 without a
+    # real Google AI Studio key. Documented in the README's parity-policy
+    # section.
+    provider_env:
+      GOOGLE_API_KEY: "${secret:OPENROUTER_API_KEY}"

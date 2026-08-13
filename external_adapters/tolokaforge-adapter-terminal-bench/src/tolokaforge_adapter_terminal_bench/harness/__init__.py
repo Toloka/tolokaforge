@@ -19,7 +19,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 __all__ = [
     "ACCEPTED_HARNESSES",
@@ -29,9 +30,11 @@ __all__ = [
     "OPENROUTER_PREFIX",
     "PROVIDER_ENV_INPUT_PREFIX",
     "PROVIDER_ENV_KEYS",
+    "SHIPPED_REGISTRY_FILE",
     "HarnessSpec",
     "harness_command",
     "harness_model",
+    "load_harness_registry",
     "provider_env_input",
     "validate_harness",
     "validate_provider_env_keys",
@@ -161,138 +164,75 @@ class HarnessSpec(BaseModel):
     losing the URL. Keys must be a subset of :data:`PROVIDER_ENV_KEYS`."""
 
 
-HARNESSES: dict[str, HarnessSpec] = {
-    "claude-code": HarnessSpec(
-        npm_package="@anthropic-ai/claude-code",
-        # Pinned to the version harbor's ``bootstrap.sh`` resolved when the
-        # matrix comparison was baselined — three patch versions ahead of what
-        # TF previously pinned. The pin closes the CLI-code delta with harbor
-        # while keeping reproducibility (see :attr:`HarnessSpec.version`).
-        version="2.1.231",
-        argv_prefix=("claude",),
-        # ``--verbose --output-format=stream-json`` matches harbor's invocation
-        # (``harbor/agents/installed/claude_code.py``). Aligning the flag block
-        # aligns the CLI's internal reasoning mode; without them the CLI ran a
-        # different scaffold and made different fixes on the same task.
-        flags_pre_permission=("--verbose", "--output-format=stream-json"),
-        # ``--permission-mode=bypassPermissions`` is mandatory: without it the
-        # CLI blocks at the first tool-permission prompt in ``--print`` mode
-        # and burns the whole episode budget without ever calling the LLM.
-        argv_suffix=(
-            "--permission-mode=bypassPermissions",
-            "--print",
-        ),
-        # Instruction on stdin sidesteps every shell-escape edge case a
-        # positional-arg prompt would have to survive (a natural user request
-        # can contain quotes, ``$``, backticks, newlines). Harbor pipes the
-        # instruction the same way.
-        instruction_channel="stdin",
-        # The env quartet forces every sub-agent (``Task``, ``Explore``,
-        # ``Plan``, ``general-purpose``) to use the declared model. With
-        # ``--model`` on the CLI alone, sub-agents fall back to the CLI's
-        # sonnet-default and may pick a different provider mid-trial — a
-        # silent divergence from the declared benchmark model.
-        env_model_vars=(
-            "ANTHROPIC_MODEL",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL",
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-            "CLAUDE_CODE_SUBAGENT_MODEL",
-        ),
-        # ``IS_SANDBOX=1`` is claude-code's documented root-user override:
-        # without it, ``--permission-mode=bypassPermissions`` (which the CLI
-        # rewrites internally to ``--dangerously-skip-permissions``) refuses
-        # to run under UID 0 and exits before the model is called. The task
-        # container is root by default. Harbor sets the same env for the
-        # same reason.
-        # ``CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`` disables the CLI's
-        # opt-in telemetry / analytics fetches — harbor sets it too.
-        container_env={
-            "IS_SANDBOX": "1",
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        },
-        # Anthropic-shaped OpenRouter endpoint. ``ANTHROPIC_BASE_URL`` is a
-        # literal URL (not a secret); the key value comes from the operator
-        # via the ``OPENROUTER_API_KEY`` secret. A run-config's
-        # ``agent_provider_env`` overlays this map key-by-key.
-        provider_env={
-            "ANTHROPIC_API_KEY": "${secret:OPENROUTER_API_KEY}",
-            "ANTHROPIC_BASE_URL": "https://openrouter.ai/api",
-        },
-    ),
-    "codex": HarnessSpec(
-        npm_package="@openai/codex",
-        version="0.147.0",
-        argv_prefix=("codex", "exec"),
-        # Three mandatory flags. ``--dangerously-bypass-approvals-and-sandbox``
-        # skips the approval prompt that ``codex exec`` otherwise blocks on when
-        # it wants to write or run a command — the harness has no interactive
-        # stdin to answer it. ``--skip-git-repo-check`` disables the "trusted
-        # directory" gate that refuses to operate anywhere without a ``.git`` —
-        # tbench task containers work under ``/app`` and are not git repos.
-        # ``-c model_reasoning_effort=high`` is the OpenRouter-compat mandatory
-        # config: gpt-5-mini via the Responses API rejects requests that omit
-        # reasoning ("Reasoning is mandatory for this endpoint and cannot be
-        # disabled"). Harbor's own invocation carries the same override
-        # (``harbor/agents/installed/codex.py`` — its default codex command).
-        argv_suffix=(
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--skip-git-repo-check",
-            "-c",
-            "model_reasoning_effort=high",
-        ),
-        # Two on-disk files, one shell chain — codex reads both and honours
-        # neither the env var they mirror:
-        #
-        # 1. ``$CODEX_HOME/config.toml`` carries ``openai_base_url``. The env
-        #    var ``OPENAI_BASE_URL`` alone is ignored for the Responses API
-        #    endpoint (codex hits ``api.openai.com`` regardless).
-        # 2. ``$CODEX_HOME/auth.json`` carries the API key as JSON. The env
-        #    var ``OPENAI_API_KEY`` alone earns "401 No cookie auth
-        #    credentials found" from OpenRouter — the CLI sends no
-        #    ``Authorization`` header without the file.
-        #
-        # Harbor writes both files (``harbor/agents/installed/codex.py:1391``
-        # / ``:1406``). ``CODEX_HOME`` defaults to ``$HOME/.codex``.
-        pre_exec_shell=(
-            'CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}" && '
-            'mkdir -p "$CODEX_HOME_DIR" && '
-            'printf \'openai_base_url = "%s"\\n\' "$OPENAI_BASE_URL" '
-            '> "$CODEX_HOME_DIR/config.toml" && '
-            'printf \'{"OPENAI_API_KEY": "%s"}\\n\' "$OPENAI_API_KEY" '
-            '> "$CODEX_HOME_DIR/auth.json"'
-        ),
-        # codex 0.147's model catalog refuses the OpenRouter namespaced form.
-        strip_vendor_namespace=True,
-        # OpenRouter's OpenAI-compat endpoint. The literal URL means an
-        # operator doesn't need to plumb OPENAI_BASE_URL through .env.
-        provider_env={
-            "OPENAI_API_KEY": "${secret:OPENROUTER_API_KEY}",
-            "OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
-        },
-    ),
-    "gemini-cli": HarnessSpec(
-        npm_package="@google/gemini-cli",
-        version="0.55.1",
-        argv_prefix=("gemini",),
-        # ``--yolo`` accepts every tool call without asking. ``--prompt`` sits at
-        # the end so it stays adjacent to the trailing instruction argument.
-        argv_suffix=(
-            "--yolo",
-            "--prompt",
-        ),
-        # gemini-cli's model catalog uses bare names.
-        strip_vendor_namespace=True,
-        # gemini-cli reads ``GEMINI_API_KEY`` natively; OpenRouter's OpenAI-
-        # compat surface doesn't proxy Google's generative-AI endpoints, so
-        # this default only makes the CLI *reach* the endpoint — it will still
-        # 401 without a real Google AI Studio key. Documented in the README's
-        # parity-policy section.
-        provider_env={
-            "GOOGLE_API_KEY": "${secret:OPENROUTER_API_KEY}",
-        },
-    ),
-}
+SHIPPED_REGISTRY_FILE = Path(__file__).resolve().parent.parent / "data" / "harnesses.yaml"
+"""Packaged registry data — the source of truth for the shipped harnesses.
+
+Data, not code: adding a harness or bumping a pinned CLI version is a YAML
+edit. An operator ships their own entries by pointing the adapter's
+``harness_presets_file`` param at a second file of the same shape.
+"""
+
+
+def load_harness_registry(path: Path) -> dict[str, HarnessSpec]:
+    """Registry declared by the YAML file at *path*.
+
+    Expected shape::
+
+        harnesses:
+          <name>:
+            <HarnessSpec field>: <value>
+
+    Every entry is validated by :class:`HarnessSpec` on its own, so an unknown
+    field, a missing required one, or a wrong type is refused naming the file,
+    the harness key, and the offending field — an operator's typo reads as the
+    config error it is instead of surfacing as a trial-time failure.
+
+    Raises:
+        ValueError: *path* does not exist, is not valid YAML, carries a
+            top-level key other than ``harnesses``, declares no harness, or
+            declares an entry :class:`HarnessSpec` rejects.
+    """
+    if not path.is_file():
+        raise ValueError(f"terminal-bench adapter: harness registry file {path} does not exist.")
+    try:
+        document = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as exc:
+        raise ValueError(
+            f"terminal-bench adapter: harness registry file {path} is not valid YAML: {exc}"
+        ) from exc
+    if not isinstance(document, dict):
+        raise ValueError(
+            f"terminal-bench adapter: harness registry file {path} must be a YAML mapping "
+            f"with a `harnesses:` key; got {type(document).__name__}."
+        )
+    unknown = sorted(set(document) - {"harnesses"})
+    if unknown:
+        raise ValueError(
+            f"terminal-bench adapter: harness registry file {path} declares unknown top-level "
+            f"key(s) {unknown!r}; the only accepted key is `harnesses`."
+        )
+    entries = document.get("harnesses")
+    if not isinstance(entries, dict) or not entries:
+        raise ValueError(
+            f"terminal-bench adapter: harness registry file {path} must declare a non-empty "
+            "`harnesses:` mapping."
+        )
+    registry: dict[str, HarnessSpec] = {}
+    for name, entry in entries.items():
+        try:
+            registry[name] = HarnessSpec.model_validate(entry)
+        except ValidationError as exc:
+            fields = sorted(".".join(str(part) for part in err["loc"]) for err in exc.errors())
+            raise ValueError(
+                f"terminal-bench adapter: harness registry file {path}, harness {name!r}: "
+                f"invalid field(s) {fields!r} — {exc}"
+            ) from exc
+    return registry
+
+
+HARNESSES: dict[str, HarnessSpec] = load_harness_registry(SHIPPED_REGISTRY_FILE)
+"""The shipped registry, loaded from :data:`SHIPPED_REGISTRY_FILE` at import."""
+
 
 ACCEPTED_HARNESSES: tuple[str, ...] = (ENGINE_LOOP, *HARNESSES)
 

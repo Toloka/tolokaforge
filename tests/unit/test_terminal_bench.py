@@ -983,6 +983,71 @@ class TestInstallHarnessScript:
         assert recorded == []
 
 
+class TestHarnessSpecRegistry:
+    """The shipped registry is packaged YAML data, loaded at import."""
+
+    def test_shipped_file_declares_the_three_harnesses(self):
+        from tolokaforge_adapter_terminal_bench.harness import (
+            HARNESSES,
+            SHIPPED_REGISTRY_FILE,
+            load_harness_registry,
+        )
+
+        assert SHIPPED_REGISTRY_FILE.is_file()
+        assert list(HARNESSES) == ["claude-code", "codex", "gemini-cli"]
+        assert load_harness_registry(SHIPPED_REGISTRY_FILE) == HARNESSES
+
+    @pytest.mark.parametrize(
+        ("document", "expected"),
+        [
+            pytest.param(
+                "harnesses:\n"
+                "  claude-code:\n"
+                "    npm_package: p\n"
+                "    version: '1'\n"
+                "    argv_prefix: [claude]\n"
+                "    argv_suffix: []\n"
+                "    typo_field: nope\n",
+                "typo_field",
+                id="unknown-field",
+            ),
+            pytest.param(
+                "harnesses:\n  claude-code:\n    version: '1'\n    argv_prefix: [claude]\n",
+                "npm_package",
+                id="missing-required-field",
+            ),
+            pytest.param(
+                "harnesses:\n  claude-code:\n    npm_package: p\n"
+                "    version: '1'\n    argv_prefix: [claude]\n    argv_suffix: []\n"
+                "defaults:\n  version: '2'\n",
+                "defaults",
+                id="unknown-top-level-key",
+            ),
+            pytest.param("harnesses: {}\n", "non-empty", id="no-harness-declared"),
+            pytest.param("- claude-code\n", "must be a YAML mapping", id="not-a-mapping"),
+            pytest.param("harnesses: [\n", "not valid YAML", id="malformed-yaml"),
+        ],
+    )
+    def test_malformed_registry_is_refused(self, tmp_path, document, expected):
+        """A registry typo has to name the file and the offending key: it is an
+        operator's config error, and silently dropping the entry would surface
+        much later as an unknown-harness or missing-flag trial failure."""
+        from tolokaforge_adapter_terminal_bench.harness import load_harness_registry
+
+        path = tmp_path / "harnesses.yaml"
+        path.write_text(document)
+        with pytest.raises(ValueError, match=expected) as excinfo:
+            load_harness_registry(path)
+        assert str(path) in str(excinfo.value)
+
+    def test_missing_file_is_refused(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import load_harness_registry
+
+        missing = tmp_path / "absent.yaml"
+        with pytest.raises(ValueError, match="does not exist"):
+            load_harness_registry(missing)
+
+
 class TestHarnessCommand:
     def test_claude_code_argv(self):
         """claude-code exports the model quartet, pipes the instruction via
