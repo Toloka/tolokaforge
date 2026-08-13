@@ -244,15 +244,18 @@ harnesses:
     version: "0.2.91"
     argv_prefix: ["grok", "--no-auto-update"]
     argv_suffix:
-      # `--single` is Grok's non-interactive mode; instruction is the
-      # positional argument that follows the prefix. `--always-approve`
-      # is the permission-bypass equivalent (Grok has no
-      # --permission-mode). `--output-format streaming-json` is the
-      # JSON-stream mode matching harbor's invocation shape.
-      - "--single"
+      # `--always-approve` is the permission-bypass equivalent (Grok has
+      # no --permission-mode). `--output-format streaming-json` is the
+      # JSON-stream mode matching harbor's invocation shape. `--single`
+      # is Grok's non-interactive mode and its VALUE is the prompt, so
+      # it MUST sit last — the assembler appends the instruction as the
+      # trailing argv token, which becomes `--single`'s argument. Any
+      # flag ordered after `--single` steals the position: exit 2 with
+      # "a value is required for '--single <PROMPT>' but none was supplied".
       - "--always-approve"
       - "--output-format"
       - "streaming-json"
+      - "--single"
     instruction_channel: "argv"
     # Grok reads --model on the CLI, but also reads model routing from
     # config.toml. The env_model_vars quartet claude-code needs doesn't
