@@ -72,7 +72,7 @@ class TestGuards:
 
     def test_unknown_action_is_refused(self) -> None:
         with pytest.raises(ValueError, match="not implemented"):
-            GenerationParams(param_value_rules=_rules("tool_choice", "auto", "override"))
+            GenerationParams(param_value_rules=_rules("tool_choice", "auto", "coerce"))
 
     def test_an_action_with_no_consult_site_is_refused(self) -> None:
         # `reject` is a real action, and `tool_choice` is a real parameter, but
@@ -90,8 +90,8 @@ class TestGuards:
         )
 
         assert {
-            "reasoning_effort": frozenset({"reject"}),
-            "tool_choice": frozenset({"drop"}),
+            "reasoning_effort": frozenset({"reject", "override"}),
+            "tool_choice": frozenset({"drop", "override"}),
         } == SUPPORTED_ACTIONS
         # Anything that may be dropped must have a documented omission-equal.
         for param, actions in SUPPORTED_ACTIONS.items():
@@ -294,3 +294,99 @@ class TestLayering:
             }
         )
         assert policy.rule_evidence("reasoning_effort", "medium") == "operator says so"
+
+
+class TestOverride:
+    """`override` sends something other than what was asked.
+
+    It is the one action that changes the meaning of the request, so the tests
+    here are as much about the guard rails as the behaviour.
+    """
+
+    def test_the_substitute_is_sent_instead(self) -> None:
+        policy = GenerationParams(
+            param_value_rules={
+                "reasoning_effort": {
+                    "medium": {"action": "override", "with": "low", "evidence": "litellm#19403"}
+                }
+            }
+        )
+        kwargs: dict = {}
+        policy.adapt(
+            kwargs,
+            config_temperature=None,
+            config_seed=None,
+            config_reasoning=ReasoningConfig(mode="adaptive", effort_hint="medium"),
+            temperature=None,
+            seed=None,
+            reasoning=None,
+        )
+        assert kwargs["reasoning_effort"] == "low"
+
+    def test_every_substitution_is_logged_with_both_values(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Nothing in the response says a substitution happened, so the log line
+        # is the only trace a caller has. It must name what was asked for as
+        # well as what was sent, or it cannot be acted on.
+        policy = GenerationParams(
+            param_value_rules={
+                "reasoning_effort": {
+                    "medium": {"action": "override", "with": "low", "evidence": "why"}
+                }
+            }
+        )
+        with caplog.at_level("WARNING"):
+            policy.adapt(
+                {},
+                config_temperature=None,
+                config_seed=None,
+                config_reasoning=ReasoningConfig(mode="adaptive", effort_hint="medium"),
+                temperature=None,
+                seed=None,
+                reasoning=None,
+            )
+        assert "'medium'" in caplog.text and "'low'" in caplog.text
+        assert "why" in caplog.text
+        assert "not directly comparable" in caplog.text
+
+    def test_override_requires_a_replacement(self) -> None:
+        with pytest.raises(ValueError, match="requires a 'with' value"):
+            GenerationParams(
+                param_value_rules={
+                    "reasoning_effort": {"medium": {"action": "override", "evidence": "x"}}
+                }
+            )
+
+    def test_a_no_op_override_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="that rule does nothing"):
+            GenerationParams(
+                param_value_rules={
+                    "reasoning_effort": {
+                        "medium": {"action": "override", "with": "medium", "evidence": "x"}
+                    }
+                }
+            )
+
+    def test_substituting_into_another_declared_gap_is_refused(self) -> None:
+        # Overriding medium -> low when low is itself declared unusable would
+        # send a value the same block calls broken.
+        with pytest.raises(ValueError, match="also declares a rule for"):
+            GenerationParams(
+                param_value_rules={
+                    "reasoning_effort": {
+                        "medium": {"action": "override", "with": "low", "evidence": "x"},
+                        "low": {"action": "reject", "evidence": "y"},
+                    }
+                }
+            )
+
+    def test_with_is_meaningless_on_other_actions(self) -> None:
+        with pytest.raises(ValueError, match="only meaningful for action 'override'"):
+            GenerationParams(
+                param_value_rules={
+                    "reasoning_effort": {
+                        "medium": {"action": "reject", "with": "low", "evidence": "x"}
+                    }
+                }
+            )

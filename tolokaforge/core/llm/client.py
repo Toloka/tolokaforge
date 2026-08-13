@@ -1773,8 +1773,14 @@ class LLMClient:
             # changes nothing about what the model was asked to do — while
             # sending it would fail the call outright on a route that refuses
             # the parameter.
-            dropped = self.capabilities.params_policy.rule_for("tool_choice", tool_choice) == "drop"
-            if tool_choice and not dropped:
+            policy = self.capabilities.params_policy
+            action = policy.rule_for("tool_choice", tool_choice)
+            if action == "override" and tool_choice:
+                substitute = policy.rule_substitute("tool_choice", tool_choice)
+                if substitute:
+                    policy.warn_substituted("tool_choice", tool_choice, substitute)
+                    tool_choice = substitute
+            if tool_choice and action != "drop":
                 kwargs["tool_choice"] = tool_choice
 
         kwargs["messages"] = self._convert_messages(system, messages)

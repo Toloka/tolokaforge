@@ -55,6 +55,7 @@ See [`docs/LLM_LAYER.md`](../../../docs/LLM_LAYER.md) § ``params_policy``.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, ClassVar, Final
@@ -66,6 +67,8 @@ __all__ = [
     "ParamPolicy",  # noqa: F822 — resolved via module-level __getattr__ shim
     "GenerationParams",
 ]
+
+logger = logging.getLogger(__name__)
 
 _SAMPLING_KEYS: tuple[str, ...] = ("temperature", "top_p", "top_k")
 
@@ -118,6 +121,10 @@ class ParamsPolicy(ABC):
         """Evidence behind a declared value gap; ``None`` when unruled."""
         return None
 
+    def rule_substitute(self, param: str, value: str | None) -> str | None:
+        """Replacement value for an ``override`` rule; ``None`` otherwise."""
+        return None
+
 
 #: Deprecated alias for :class:`ParamsPolicy`. Kept as a class-identity
 #: alias (``ParamPolicy is ParamsPolicy`` remains true) so
@@ -152,6 +159,7 @@ class _ValueRule:
 
     action: str
     evidence: str
+    substitute: str | None = None
 
 
 def _normalise_value_rules(
@@ -208,6 +216,25 @@ def _normalise_value_rules(
                     f"later whether it still holds."
                 )
             normalised_value = str(value).lower()
+            substitute = spec.get("with")
+            if action == "override":
+                if not str(substitute or "").strip():
+                    raise ValueError(
+                        f"param_value_rules[{param!r}][{value!r}]: action "
+                        f"'override' requires a 'with' value — the rule has to "
+                        f"say what to send instead."
+                    )
+                substitute = str(substitute).lower()
+                if substitute == normalised_value:
+                    raise ValueError(
+                        f"param_value_rules[{param!r}][{value!r}]: 'with' is "
+                        f"the value being overridden; that rule does nothing."
+                    )
+            elif substitute is not None:
+                raise ValueError(
+                    f"param_value_rules[{param!r}][{value!r}]: 'with' is only "
+                    f"meaningful for action 'override', not {action!r}."
+                )
             if action == "drop" and OMISSION_EQUIVALENT_VALUE.get(param) != normalised_value:
                 equivalent = OMISSION_EQUIVALENT_VALUE.get(param)
                 detail = (
@@ -221,36 +248,53 @@ def _normalise_value_rules(
                     f"equivalent to {value!r} ({detail}). Dropping it would "
                     f"change what was asked without saying so; use 'reject'."
                 )
-            rules[(param, normalised_value)] = _ValueRule(action=action, evidence=evidence)
+            rules[(param, normalised_value)] = _ValueRule(
+                action=action, evidence=evidence, substitute=substitute
+            )
+    # A substitute that is itself ruled would send a value the same block
+    # already declares unusable, so reject the contradiction rather than
+    # resolve it in some order the operator cannot predict.
+    for (param, value), rule in rules.items():
+        if rule.substitute is not None and (param, rule.substitute) in rules:
+            raise ValueError(
+                f"param_value_rules[{param!r}][{value!r}]: 'with' names "
+                f"{rule.substitute!r}, which this block also declares a rule "
+                f"for. Substituting into another declared gap would send a "
+                f"value already known to be unusable."
+            )
     return rules
 
 
 #: The declared contract, as ONE table: which parameters may carry a rule, and
-#: which actions are actually implemented for each. Three separate constants
-#: (rulable params, valid actions, drop-legality) could describe a cell nobody
-#: had wired up — ``tool_choice: reject`` type-checked, constructed cleanly and
-#: then did nothing, because the client only ever tested for ``drop``. A single
-#: table cannot express an unimplemented cell.
+#: which actions are actually implemented for each. Separate constants could
+#: describe a cell nobody had wired up — an action that type-checked,
+#: constructed cleanly and then did nothing on the wire. A single table cannot
+#: express an unimplemented cell.
 #:
 #: An action appears here only when a consult site exists:
 #:
-#: * ``reasoning_effort: reject`` — ``GenerationParams._emit_effort_kwargs``
-#:   raises before the request is built. ``drop`` is absent on purpose: omitting
-#:   the parameter yields the provider's default budget, not the level asked
-#:   for, so dropping it would change the measurement without saying so.
-#: * ``tool_choice: drop`` — ``LLMClient._build_kwargs`` omits the parameter.
-#:   Legal because omission is how the OpenAI-shaped envelope says "the model
-#:   decides", which is what ``auto`` names; Cohere's Chat API has no ``AUTO``
-#:   at all and documents omission as its equivalent
-#:   (https://docs.cohere.com/reference/chat). ``reject`` is absent because no
+#: * ``reasoning_effort`` — ``reject`` raises before the request is built;
+#:   ``override`` substitutes the declared replacement. ``drop`` is absent on
+#:   purpose: omitting the parameter yields the provider's default budget, not
+#:   the level asked for, so dropping it would change the request while looking
+#:   like it changed nothing.
+#: * ``tool_choice`` — ``drop`` omits the parameter, legal because omission is
+#:   how the OpenAI-shaped envelope says "the model decides", which is what
+#:   ``auto`` names; ``override`` substitutes. ``reject`` is absent because no
 #:   site raises on it — add the site first, then the cell.
 #:
+#: ``override`` is the one action that changes what the request means, so it is
+#: gated on a ``with:`` value and logged at WARNING on every substitution (see
+#: ``ParamsPolicy.warn_substituted``). Callers that compare results across
+#: models, providers or time have to treat an overridden call as carrying a
+#: caveat; the engine cannot know whether they do, so it makes the deviation
+#: visible rather than deciding for them.
+#:
 #: Adding a parameter means adding a consult site wherever it is attached, so
-#: this table stays honest by construction: an entry without a site is a cell
-#: that silently does nothing, which is what it exists to prevent.
+#: this table stays honest by construction.
 SUPPORTED_ACTIONS: Final[dict[str, frozenset[str]]] = {
-    "reasoning_effort": frozenset({"reject"}),
-    "tool_choice": frozenset({"drop"}),
+    "reasoning_effort": frozenset({"reject", "override"}),
+    "tool_choice": frozenset({"drop", "override"}),
 }
 
 #: Values whose omission the provider documents as equivalent to sending them.
@@ -443,6 +487,32 @@ class GenerationParams(ParamsPolicy):
         rule = self._param_value_rules.get((param, value.lower()))
         return rule.evidence if rule else None
 
+    def rule_substitute(self, param: str, value: str | None) -> str | None:
+        """The replacement an ``override`` rule declares, or ``None``."""
+        if value is None:
+            return None
+        rule = self._param_value_rules.get((param, value.lower()))
+        return rule.substitute if rule else None
+
+    def warn_substituted(self, param: str, requested: str, sent: str) -> None:
+        """Log that the request no longer carries what the caller asked for.
+
+        An ``override`` is the one action that changes the request's meaning,
+        and nothing downstream can tell from the response that it happened. The
+        engine cannot know what its callers do with the result, so it records
+        the substitution where any of them can see it.
+        """
+        logger.warning(
+            "param_value_rules: sent %s=%r instead of the requested %r "
+            "(evidence: %s). Results from this call are not directly "
+            "comparable with calls that sent %r.",
+            param,
+            sent,
+            requested,
+            self.rule_evidence(param, requested),
+            requested,
+        )
+
     def _emit_effort_kwargs(self, kwargs: dict[str, Any], effort_hint: str | None) -> None:
         """Emit provider-flavoured effort kwargs for adaptive / fallback modes."""
         if effort_hint is None:
@@ -465,6 +535,10 @@ class GenerationParams(ParamsPolicy):
                 f"the direct provider, when available). See "
                 f"tolokaforge_models/data/model_presets.yaml for the declarations."
             )
+        substitute = self.rule_substitute("reasoning_effort", effort)
+        if self.rule_for("reasoning_effort", effort) == "override" and substitute:
+            self.warn_substituted("reasoning_effort", effort, substitute)
+            effort = substitute
         if self._reasoning_via_extra_body:
             self._emit_extra_body_reasoning(kwargs, {"effort": effort})
         else:

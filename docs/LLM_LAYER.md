@@ -1129,6 +1129,9 @@ params:
       medium:
         action: reject
         evidence: "2026-05-21, litellm 1.83.14: empty response with tool calls, BerriAI/litellm#19403"
+      # or, when an answer matters more than a like-for-like comparison:
+      #   action: override
+      #   with: low
 ```
 
 - **`drop`** omits the parameter. Legal *only* for the one value whose omission
@@ -1139,11 +1142,16 @@ params:
 
 Which actions exist is **per parameter**, declared in one table,
 `SUPPORTED_ACTIONS`. An action appears there only when a consult site actually
-implements it: `reasoning_effort` supports `reject` (the effort path raises),
-`tool_choice` supports `drop` (the client omits it). Declaring a combination
-with no site — `tool_choice: reject`, say — is refused at construction rather
-than accepted and silently ignored on the wire. Adding a parameter therefore
-means adding its consult site first, then its row.
+implements it: `reasoning_effort` supports `reject` and `override` (the effort
+path raises or substitutes), `tool_choice` supports `drop` and `override` (the
+client omits or substitutes). Declaring a combination with no site — say
+`tool_choice: reject`, which nothing raises on — is refused at construction
+rather than accepted and silently ignored on the wire. Adding a parameter
+therefore means adding its consult site first, then its row.
+
+An `override` whose `with:` value is itself ruled in the same block is refused:
+substituting into another declared gap would send a value the block already
+calls unusable.
 
 Rules merge per parameter and per value across `default:` → preset →
 `providers:` → operator overlay. A shallow merge would let an overlay declaring
@@ -1152,11 +1160,26 @@ one rule delete every other rule, disarming a guard nobody touched.
   the evidence. This is the right answer when there is no equivalent, e.g. a
   transport defect: the caller picks the workaround (another value, another
   route, or waiting for the upstream fix).
-- There is deliberately **no `override`**. Sending a different value than asked
-  always changes the measurement, and a run that silently deviates produces a
-  leaderboard row that looks comparable and is not. If a deviation is wanted it
-  belongs in the operator's run config, where it is recorded and can be
-  footnoted.
+- **`override`** sends a different value in place of the requested one, named
+  by a required `with:` key.
+
+> [!WARNING]
+> `override` is the only action that changes what the request means. `reject`
+> sends nothing; `drop` is permitted only where omission is the provider's own
+> spelling of the same value. An override, by contrast, silently satisfies a
+> call the provider would have refused — and nothing in the response says so.
+>
+> Anything derived from a call that was overridden is **not directly comparable**
+> with a call that sent the requested value. If you compare results across
+> models, across providers, or across time, an override breaks that comparison
+> for the affected calls, and it does so invisibly unless you look.
+>
+> The engine therefore logs a `WARNING` on every substitution, naming the
+> requested value, the value actually sent, and the declared evidence. Callers
+> that care about comparability should surface or record that, and should treat
+> an overridden call as carrying a caveat rather than as a like-for-like result.
+> Prefer `reject` when you can act on the failure; reach for `override` when
+> getting an answer at all is worth more than comparing it.
 
 `evidence` is required. A value gap is a claim about a provider on a date; the
 Gemini entry above is already conditional on an upstream bug being open, and
