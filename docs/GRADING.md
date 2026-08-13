@@ -539,9 +539,17 @@ check loses signal it would otherwise have had.
 drives a real recording path for every member, so the vocabulary cannot grow a
 value no run produces.
 
-`executor: user` is unreachable in every run today, **equally on both
-substrates**, because no code path constructs a user-side tool executor (#688).
-An unreachable-everywhere value is a scope limit, not substrate drift.
+`executor: user` is what a call the **user simulator** made records, on either
+substrate. A pack declaring `tools.user.enabled` gets a user-side tool executor
+for the trial, the simulator is offered those schemas and nobody else's, and the
+call it makes is recorded under the user identity — so a `requestor: user`
+required action or an `executor: user` matcher grades against a call that
+happened. The two actors draw their call ids from one trial-scoped sequence (G3),
+so a record never carries an id the other actor's provider also minted.
+[`tests/canonical/test_user_executed_action_substrate_parity.py`](../tests/canonical/test_user_executed_action_substrate_parity.py)
+grades one such call on both substrates, and
+[`tests/integration/test_docker_grading_user_executed_action.py`](../tests/integration/test_docker_grading_user_executed_action.py)
+does it inside a real runner container over gRPC.
 
 ### How the trial ended
 
@@ -865,12 +873,12 @@ declared call (G7): the message view alone proves that tool never ran.
 
 ### Non-guarantees
 
-- **N2 — no user-executed tool events occur today.** The builder emits
-  `executor: user` whenever a record carries it, but no code path constructs a
-  user-side tool executor (#688), so the vocabulary is defined and unreachable.
-  A user-simulator call also emits no `role: tool` message — the result is inlined
-  into the user message text — so such a call pairs with a `tool_result` built
-  from the record and never from the message view.
+- **N2 — a user-executed call emits no `role: tool` message.** The user turn runs
+  the calls its reply declared and inlines each result into the message text it
+  sends, so a user-side `tool_result` is built from the record and never from the
+  message view. On a records-less timeline the call is still an event — the user
+  message declares it — and how it ended is unknown, which is the same posture a
+  terminating turn's declared agent call takes.
 - **N3 — `role: system` messages are not events.** The loop appends termination
   and max-turns notices as system messages, and the transcript wire prepends the
   agent's policy as one. They are harness text, not agent or user behaviour;
@@ -2744,7 +2752,6 @@ evaluator.
 | limit | owner |
 |---|---|
 | An `args` path is checked only at its first segment, so a typo below it is reported as unchecked rather than caught | #765 |
-| `executor` never distinguishes a user-side call, because no code path builds one | #688 |
 | A harness-side `TRIAL_NOT_FOUND` is recorded as a tool error, so a `status` matcher reads it as the agent's failure | #727 |
 
 Wall-clock time is not on the list: `latency_seconds` is deliberately unmatchable

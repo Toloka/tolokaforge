@@ -256,8 +256,8 @@ message ToolMetrics {
 // - "agent": Tools called by the assistant (LLM agent)
 //   Examples: get_customer_by_phone, book_reservation, create_ticket
 //
-// - "user": Tools called by the user simulator (user-side device tools)
-//   Examples: toggle_airplane_mode, toggle_data, check_internet_speed
+// - "user": Tools called by the user simulator, from `tools.user.enabled`
+//   Examples: calculator, read_file
 //
 // This is important for Native adapter tasks with dual-control scenarios
 // where both agent and user have tools that mutate shared state.

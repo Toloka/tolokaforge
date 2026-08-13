@@ -2789,7 +2789,7 @@ class TaskDescription(BaseModel):
 
     # --- Tools ---
     agent_tools: list[ToolSchema] = Field(default_factory=list)
-    user_tools: list[ToolSchema] = Field(default_factory=list)  # User-side device tools
+    user_tools: list[ToolSchema] = Field(default_factory=list)  # Offered to the user simulator
 
     # --- State ---
     initial_state: RunnerInitialStateConfig = Field(default_factory=RunnerInitialStateConfig)
