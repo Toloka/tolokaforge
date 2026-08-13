@@ -2414,6 +2414,204 @@ class TestHarnessPresetsFileOverlay:
         assert self._adapter(fixture_dir, tmp_path, None).harnesses == HARNESSES
 
 
+class _FakeDistribution:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _FakeEntryPoint:
+    """Stand-in for a plugin's ``importlib.metadata`` entry point.
+
+    ``importlib.metadata.EntryPoint`` refuses attribute assignment, so a test
+    cannot bind a fabricated distribution to a real one.
+    """
+
+    def __init__(self, name: str, distribution: str, module) -> None:
+        self.name = name
+        self.dist = _FakeDistribution(distribution)
+        self._module = module
+
+    def load(self):
+        return self._module
+
+
+class TestHarnessRegistryPluginDiscovery:
+    """A pip-installed bundle contributes harnesses without an adapter release."""
+
+    _TASKS_DIR = Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    @pytest.fixture(autouse=True)
+    def _isolated_discovery(self, monkeypatch):
+        """Drop the per-group entry-point cache around every case.
+
+        ``discover_entry_points`` caches its scan, so an injected plugin set
+        would otherwise leak into the next case — including into the
+        no-plugin-installed case, which asserts the opposite.
+        """
+        from tolokaforge.core import plugin_registry
+
+        plugin_registry._clear_discovery_cache()
+        yield
+        plugin_registry._clear_discovery_cache()
+
+    @pytest.fixture
+    def plugin(self, tmp_path, monkeypatch):
+        """Build an importable plugin package shipping a registry YAML."""
+        import importlib
+        import sys
+
+        def _build(package: str, distribution: str, harnesses: str) -> _FakeEntryPoint:
+            root = tmp_path / distribution
+            (root / package).mkdir(parents=True)
+            (root / package / "__init__.py").write_text("")
+            (root / package / "harnesses.yaml").write_text(harnesses)
+            monkeypatch.syspath_prepend(str(root))
+            monkeypatch.delitem(sys.modules, package, raising=False)
+            return _FakeEntryPoint(package, distribution, importlib.import_module(package))
+
+        return _build
+
+    @staticmethod
+    def _install(monkeypatch, *entry_points):
+        """Make *entry_points* the installed set for the harness-registry group."""
+        import importlib.metadata
+
+        from tolokaforge_adapter_terminal_bench.harness import (
+            HARNESS_REGISTRY_ENTRY_POINT_GROUP,
+        )
+
+        real = importlib.metadata.entry_points
+
+        def _entry_points(**kwargs):
+            if kwargs.get("group") == HARNESS_REGISTRY_ENTRY_POINT_GROUP:
+                return list(entry_points)
+            return real(**kwargs)
+
+        monkeypatch.setattr(importlib.metadata, "entry_points", _entry_points)
+
+    @staticmethod
+    def _bundle(name: str, version: str) -> str:
+        return (
+            "harnesses:\n"
+            f"  {name}:\n"
+            f"    install_source: '@acme/{name}'\n"
+            f"    version: '{version}'\n"
+            f"    argv_prefix: [{name}]\n"
+            f"    argv_suffix: ['--go']\n"
+        )
+
+    def test_nothing_installed_contributes_nothing(self):
+        """The common case: no plugin, no change to what the adapter ships."""
+        from tolokaforge_adapter_terminal_bench.harness import (
+            discover_plugin_harness_registries,
+        )
+
+        assert discover_plugin_harness_registries() == {}
+
+    def test_installed_bundle_is_loaded_from_its_packaged_yaml(self, monkeypatch, plugin):
+        from tolokaforge_adapter_terminal_bench.harness import (
+            discover_plugin_harness_registries,
+        )
+
+        self._install(
+            monkeypatch,
+            plugin("acme_harnesses", "acme-tbench-harnesses", self._bundle("acme-cli", "4.5.6")),
+        )
+        discovered = discover_plugin_harness_registries()
+        assert list(discovered) == ["acme-cli"]
+        assert discovered["acme-cli"].version == "4.5.6"
+        assert discovered["acme-cli"].argv_prefix == ("acme-cli",)
+
+    def test_two_plugins_claiming_one_harness_name_are_refused(self, monkeypatch, plugin):
+        """No safe pick: the two bundles disagree about what the name installs
+        and how it is invoked, so install order must not decide it."""
+        from tolokaforge_adapter_terminal_bench.harness import (
+            discover_plugin_harness_registries,
+        )
+
+        self._install(
+            monkeypatch,
+            plugin("acme_harnesses", "acme-tbench-harnesses", self._bundle("shared-cli", "1.0.0")),
+            plugin("globex_harnesses", "globex-harnesses", self._bundle("shared-cli", "2.0.0")),
+        )
+        with pytest.raises(ValueError) as excinfo:
+            discover_plugin_harness_registries()
+        message = str(excinfo.value)
+        assert "shared-cli" in message
+        assert "acme-tbench-harnesses" in message
+        assert "globex-harnesses" in message
+
+    def test_plugin_replaces_a_shipped_entry_whole(self, monkeypatch, plugin):
+        """Whole-entry replacement, as at every other layer: the shipped
+        ``codex`` fields the bundle omits are gone, not merged underneath."""
+        from tolokaforge_adapter_terminal_bench.harness import (
+            HARNESSES,
+            resolve_effective_registry,
+        )
+
+        self._install(
+            monkeypatch,
+            plugin("acme_harnesses", "acme-tbench-harnesses", self._bundle("codex", "9.9.9")),
+        )
+        effective = resolve_effective_registry()
+        assert effective["codex"].version == "9.9.9"
+        assert effective["codex"].config_files == {}
+        assert HARNESSES["codex"].config_files != {}
+        assert effective["claude-code"] == HARNESSES["claude-code"]
+
+    def test_operator_overlay_wins_over_a_plugin(self, monkeypatch, plugin, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import resolve_effective_registry
+
+        self._install(
+            monkeypatch,
+            plugin("acme_harnesses", "acme-tbench-harnesses", self._bundle("acme-cli", "4.5.6")),
+        )
+        overlay = tmp_path / "harness_presets.yaml"
+        overlay.write_text(self._bundle("acme-cli", "0.0.0-overlay"))
+        effective = resolve_effective_registry(str(overlay))
+        assert effective["acme-cli"].version == "0.0.0-overlay"
+
+    def test_disable_harness_plugins_bypasses_discovery(self, monkeypatch, tmp_path):
+        """An audit run pins the registry to what the adapter ships, whatever
+        else happens to be installed in the environment — so discovery must not
+        run at all, not merely have its result discarded."""
+        import importlib.metadata
+
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        def _refuse(**kwargs):
+            raise AssertionError(f"entry-point discovery ran for group {kwargs.get('group')!r}")
+
+        monkeypatch.setattr(importlib.metadata, "entry_points", _refuse)
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(self._TASKS_DIR),
+                "staging_root": str(tmp_path / "staging"),
+                "disable_harness_plugins": True,
+            }
+        )
+        assert adapter.harnesses == HARNESSES
+
+    def test_adapter_runs_a_harness_a_plugin_contributed(self, monkeypatch, plugin, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        self._install(
+            monkeypatch,
+            plugin("acme_harnesses", "acme-tbench-harnesses", self._bundle("acme-cli", "4.5.6")),
+        )
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(self._TASKS_DIR),
+                "staging_root": str(tmp_path / "staging"),
+                "agent_harness": "acme-cli",
+                "agent_model": "m",
+            }
+        )
+        command = adapter.to_task_description("echo-hello").metadata["agent_harness_command"]
+        assert command.startswith("acme-cli --model m --go ")
+
+
 class TestHarnessTaskDescriptionMetadata:
     """What the engine core reads to decide a trial runs a harness CLI."""
 

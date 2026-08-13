@@ -88,8 +88,10 @@ following the same overlay shape as ADR-0002 for the model registry.
 3. **Entry-point plugin discovery for harness bundles.** A
    `tolokaforge_adapter_terminal_bench.harness_registries` entry-point
    group. Operators install a `pip` package that ships a YAML file. Same
-   distribution mechanism ADR-0002 deferred as a follow-up. Deferred
-   again — no evidence of cross-project reuse yet.
+   distribution mechanism ADR-0002 deferred as a follow-up. Deferred here
+   for want of evidence of cross-project reuse; adopted in
+   [ADR-0032](0032-external-harness-plugin-discovery.md) once the Arena
+   expansion supplied it.
 
 4. **Sidecar Python module for new harness classes.** For a CLI whose
    invocation shape doesn't fit any HarnessSpec field (e.g. a CLI that
@@ -222,8 +224,11 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
   (field-wise merge) has worse failure modes; this is the deliberate
   trade-off. If operators complain, a subsequent ADR can add an explicit
   `inherit_from: <name>` field to the overlay entry.
-- Entry-point plugin discovery for harness bundles (Option 3) is
-  deferred. Same follow-up ADR-0002 named for the model registry.
+- Entry-point plugin discovery for harness bundles (Option 3) lands
+  separately in [ADR-0032](0032-external-harness-plugin-discovery.md), so a
+  `pip install` can change which spec a harness name resolves to. The
+  overlay stays the highest-precedence layer, and
+  `disable_harness_plugins` pins the registry to what the adapter ships.
 
 ### Follow-ups
 
@@ -231,8 +236,12 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
   `tools/tbench-compare/src/tbench_compare/pipeline_a.py` once the tools
   workspace picks up the tolokaforge release carrying
   `HarnessSpec.provider_env`. TECHDEL-569.
-- **Entry-point plugin discovery** for harness bundles — file when a
-  second contributor wants to ship a harness YAML in a pip package.
+- **Entry-point plugin discovery** for harness bundles — landed as
+  [ADR-0032](0032-external-harness-plugin-discovery.md). A contributor
+  publishes a package declaring
+  `tolokaforge_adapter_terminal_bench.harness_registries`; the adapter unions
+  every installed bundle above the shipped registry and below the operator
+  overlay, refusing two plugins that claim one harness name.
 - **Sidecar Python module for new harness classes** — file when a CLI
   surfaces that doesn't fit any HarnessSpec field.
 - **Task-pack skills bundle** — landed. A task pack declares

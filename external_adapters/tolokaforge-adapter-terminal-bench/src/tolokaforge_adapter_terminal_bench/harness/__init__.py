@@ -14,6 +14,8 @@ whatever command it finds there.
 
 from __future__ import annotations
 
+import importlib.resources
+import logging
 import re
 import shlex
 from collections.abc import Iterable, Mapping
@@ -24,25 +26,32 @@ import yaml
 from jinja2 import Environment, StrictUndefined, TemplateSyntaxError
 from jinja2.meta import find_undeclared_variables
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from tolokaforge.core.plugin_registry import discover_entry_points
 
 __all__ = [
     "CONFIG_TEMPLATE_VARIABLES",
     "ENGINE_LOOP",
     "HARNESSES",
+    "HARNESS_REGISTRY_ENTRY_POINT_GROUP",
     "INSTALL_SCRIPT",
     "OPENROUTER_PREFIX",
+    "PLUGIN_REGISTRY_RESOURCE",
     "PROVIDER_ENV_INPUT_PREFIX",
     "PROVIDER_ENV_KEYS",
     "SHIPPED_REGISTRY_FILE",
     "HarnessSpec",
     "accepted_harnesses",
+    "discover_plugin_harness_registries",
     "harness_command",
     "harness_model",
     "load_harness_registry",
     "provider_env_input",
+    "resolve_effective_registry",
     "validate_harness",
     "validate_provider_env_keys",
 ]
+
+logger = logging.getLogger(__name__)
 
 _URL_INSTALL_METHODS: frozenset[str] = frozenset({"curl-bash", "binary"})
 """Install methods whose ``install_source`` is downloaded rather than named."""
@@ -302,7 +311,10 @@ SHIPPED_REGISTRY_FILE = Path(__file__).resolve().parent.parent / "data" / "harne
 
 Data, not code: adding a harness or bumping a pinned CLI version is a YAML
 edit. An operator ships their own entries by pointing the adapter's
-``harness_presets_file`` param at a second file of the same shape.
+``harness_presets_file`` param at a second file of the same shape, or installs
+a bundle that registers itself in
+:data:`HARNESS_REGISTRY_ENTRY_POINT_GROUP`; :func:`resolve_effective_registry`
+composes the three.
 """
 
 
@@ -367,6 +379,121 @@ def load_harness_registry(path: Path) -> dict[str, HarnessSpec]:
 
 HARNESSES: dict[str, HarnessSpec] = load_harness_registry(SHIPPED_REGISTRY_FILE)
 """The shipped registry, loaded from :data:`SHIPPED_REGISTRY_FILE` at import."""
+
+
+HARNESS_REGISTRY_ENTRY_POINT_GROUP = "tolokaforge_adapter_terminal_bench.harness_registries"
+"""Entry-point group a pip-installable harness bundle registers itself in.
+
+Each entry point names the plugin's Python package; the package ships its
+registry as a :data:`PLUGIN_REGISTRY_RESOURCE` resource beside its
+``__init__.py``::
+
+    [project.entry-points."tolokaforge_adapter_terminal_bench.harness_registries"]
+    my_org = "my_org.tolokaforge_harnesses"
+
+Adapter-namespaced rather than ``tolokaforge.*``: the harness registry is the
+terminal-bench adapter's surface, and the engine core never learns these names.
+"""
+
+PLUGIN_REGISTRY_RESOURCE = "harnesses.yaml"
+"""File name a plugin package ships its registry under.
+
+Convention rather than a second declaration: the plugin's whole contract is the
+``pyproject.toml`` entry point plus a file named like the shipped registry it
+extends, so there is no module attribute that could disagree with the file on
+disk. Same shape as :data:`SHIPPED_REGISTRY_FILE`'s ``harnesses:`` mapping.
+"""
+
+
+def discover_plugin_harness_registries() -> dict[str, HarnessSpec]:
+    """Registry union of every installed :data:`HARNESS_REGISTRY_ENTRY_POINT_GROUP` plugin.
+
+    Each entry point is loaded to its package, whose
+    :data:`PLUGIN_REGISTRY_RESOURCE` is read through
+    :func:`load_harness_registry` — so a plugin's typo is refused with the same
+    message an operator overlay's would be, naming the file and the harness key.
+
+    Returns an empty mapping when nothing is installed, which is the common
+    case and the one that must stay free of surprises: no plugin, no change.
+
+    Raises:
+        ValueError: two installed plugins declare the same harness name. There
+            is no safe pick — the two bundles disagree about what that name
+            installs and how it is invoked — so the ambiguity is refused naming
+            both distributions rather than resolved by install order.
+    """
+    registry: dict[str, HarnessSpec] = {}
+    provenance: dict[str, str] = {}
+    installed = discover_entry_points(HARNESS_REGISTRY_ENTRY_POINT_GROUP)
+    for name, entry_point in sorted(installed.items()):
+        distribution = entry_point.dist.name if entry_point.dist is not None else name
+        resource = importlib.resources.files(entry_point.load()) / PLUGIN_REGISTRY_RESOURCE
+        with importlib.resources.as_file(resource) as path:
+            bundle = load_harness_registry(path)
+        for harness_name in sorted(bundle):
+            owner = provenance.get(harness_name)
+            if owner is not None:
+                raise ValueError(
+                    f"terminal-bench adapter: harness {harness_name!r} is declared by two "
+                    f"installed registry plugins, {owner!r} and {distribution!r}. Uninstall "
+                    "one, or rename the harness in one of the bundles."
+                )
+            provenance[harness_name] = distribution
+        registry.update(bundle)
+        logger.info(
+            "terminal-bench adapter: harness registry plugin %s contributed %s",
+            distribution,
+            sorted(bundle),
+        )
+    return registry
+
+
+def resolve_effective_registry(
+    presets_file: str | None = None, *, discover_plugins: bool = True
+) -> dict[str, HarnessSpec]:
+    """The registry one adapter runs on, composed from all three sources.
+
+    Precedence, lowest to highest, whole-entry replacement at each transition::
+
+        shipped SHIPPED_REGISTRY_FILE
+          ← discover_plugin_harness_registries()   (logs a warning when it
+                                                    shadows a shipped entry)
+          ← the *presets_file* operator overlay    (shadows silently: naming
+                                                    the file is the intent)
+
+    Replacement is whole-entry, never field-wise, at every layer: a merge would
+    let a bundle silently inherit a default it never meant to keep — a pinned
+    CLI version, a mandatory permission flag — and produce an invocation no
+    layer declared.
+
+    Args:
+        presets_file: Path to an overlay registry YAML, absolute or relative to
+            the working directory. ``None`` adds no overlay layer.
+        discover_plugins: Whether installed plugins contribute. ``False`` pins
+            the effective registry to what this adapter ships plus the named
+            overlay, for runs that must reproduce independently of what is
+            installed alongside them.
+
+    Raises:
+        ValueError: *presets_file* names a file that does not exist, is not
+            valid YAML, or declares an entry :class:`HarnessSpec` rejects; or
+            two installed plugins collide.
+    """
+    registry = dict(HARNESSES)
+    if discover_plugins:
+        plugins = discover_plugin_harness_registries()
+        shadowed = sorted(set(plugins) & set(HARNESSES))
+        if shadowed:
+            logger.warning(
+                "terminal-bench adapter: installed registry plugin(s) replace shipped "
+                "harness spec(s) %s; the shipped install source, pinned version and argv "
+                "for those names are not what runs.",
+                shadowed,
+            )
+        registry.update(plugins)
+    if presets_file:
+        registry.update(load_harness_registry(Path(presets_file).expanduser().resolve()))
+    return registry
 
 
 INSTALL_SCRIPT = Path(__file__).parent / "install-harness.sh"

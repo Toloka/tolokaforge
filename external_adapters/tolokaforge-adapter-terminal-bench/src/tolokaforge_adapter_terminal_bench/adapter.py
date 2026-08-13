@@ -55,11 +55,10 @@ from tolokaforge_adapter_terminal_bench.compose_synthesis import (
 )
 from tolokaforge_adapter_terminal_bench.harness import (
     ENGINE_LOOP,
-    HARNESSES,
     HarnessSpec,
     harness_command,
-    load_harness_registry,
     provider_env_input,
+    resolve_effective_registry,
     validate_harness,
     validate_provider_env_keys,
 )
@@ -138,34 +137,6 @@ def _resolve_provider_env(
     return resolved
 
 
-def _resolve_harness_registry(presets_file: str | None) -> dict[str, HarnessSpec]:
-    """Shipped harness registry with an operator overlay applied.
-
-    The overlay is the harness-registry counterpart of ADR 0002's
-    operator-pointed preset file (``engine.presets_file``): the same data
-    shape as the shipped file, named by the run config, no effect when
-    unconfigured.
-
-    Merging is whole-entry, not field-wise: a key the overlay declares
-    replaces the shipped spec entirely and is validated on its own. A
-    field-wise merge would let an overlay silently inherit a shipped default
-    it never meant to keep — a pinned CLI version, a mandatory permission
-    flag — and produce an invocation neither side declared.
-
-    Args:
-        presets_file: Path to a second registry YAML, absolute or relative to
-            the working directory. ``None`` leaves the shipped registry alone.
-
-    Raises:
-        ValueError: *presets_file* names a file that does not exist, is not
-            valid YAML, or declares an entry :class:`HarnessSpec` rejects.
-    """
-    if not presets_file:
-        return dict(HARNESSES)
-    overlay = load_harness_registry(Path(presets_file).expanduser().resolve())
-    return {**HARNESSES, **overlay}
-
-
 class TerminalBenchAdapter(BaseAdapter):
     """Adapter that runs terminal-bench tasks through
     :class:`~tolokaforge.core.per_trial_runtime.PerTrialRuntimeBackend`.
@@ -189,8 +160,9 @@ class TerminalBenchAdapter(BaseAdapter):
             params.get("network_policy", NetworkPolicy.FULL_INTERNET.value)
         )
         self.prebuild_images: bool = params.get("prebuild_images", True)
-        self.harnesses: dict[str, HarnessSpec] = _resolve_harness_registry(
-            params.get("harness_presets_file")
+        self.harnesses: dict[str, HarnessSpec] = resolve_effective_registry(
+            params.get("harness_presets_file"),
+            discover_plugins=not params.get("disable_harness_plugins", False),
         )
         self.agent_harness: str = validate_harness(
             params.get("agent_harness", ENGINE_LOOP), self.harnesses

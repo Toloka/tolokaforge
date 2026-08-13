@@ -322,6 +322,28 @@ be asked afterwards what they resolved; `curl-bash` and `binary` refuse it,
 since neither can report what an installer chose and an unrecorded agent
 version is not a benchmark result.
 
+An external contributor ships a harness as a **pip-installable bundle**: a
+package declaring the `tolokaforge_adapter_terminal_bench.harness_registries`
+entry-point group, whose value names the package shipping a `harnesses.yaml`
+beside its `__init__.py`.
+
+```toml
+[project.entry-points."tolokaforge_adapter_terminal_bench.harness_registries"]
+my_org = "my_org.tolokaforge_harnesses"
+```
+
+The adapter discovers every installed bundle when it is constructed and unions
+them over the shipped registry, logging at INFO which distribution contributed
+which harness keys — and at WARNING when a bundle replaces a shipped entry,
+since the pinned version and argv for that name are then not the ones this
+repo ships. Two installed bundles claiming the same harness name are refused
+naming both distributions: they disagree about what that name installs and how
+it is invoked, so install order must not decide which agent a benchmark
+measures. Discovery is on by default and skipped entirely by
+`disable_harness_plugins: true`, for runs that must reproduce independently of
+what else is installed in the environment. See
+[ADR 0032](../../docs/adr/0032-external-harness-plugin-discovery.md).
+
 An operator ships their own entries without an adapter release by pointing
 `harness_presets_file` at a second YAML of the same shape — see
 [ADR 0031](../../docs/adr/0031-external-harness-registry.md) for the decision
@@ -346,6 +368,10 @@ evaluation:
       harness_presets_file: "./harness_presets.yaml"
       agent_harness: "codex"
 ```
+
+The three layers compose lowest to highest — shipped YAML, then installed
+plugin bundles, then the overlay — with whole-entry replacement at each
+transition.
 
 ### Trial-level timeout
 

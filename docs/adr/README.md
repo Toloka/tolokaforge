@@ -62,3 +62,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0029](0029-build-check-builtin-tool.md) | `build_check` as a generic peer-service HTTP probe in core | Accepted |
 | [0030](0030-tolokaforge-models-split.md) | Model data as a second PyPI wheel — `tolokaforge-models` from the same monorepo | Proposed |
 | [0031](0031-external-harness-registry.md) | External harness registry — operator-overridable YAML for coding-CLI parity knobs | Accepted |
+| [0032](0032-external-harness-plugin-discovery.md) | External harness plugin discovery — pip-installable harness bundles | Accepted |
