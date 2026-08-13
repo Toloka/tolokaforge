@@ -509,8 +509,9 @@ asserts each:
 With no backstory the `Instruction:` label is absent entirely rather than
 rendered empty: `UserSimulatorConfig.backstory` defaults to `None` while `mode`
 defaults to `llm`, and a bundled project ships that shape —
-`native_shared_domain` declares `mode: llm` with no `backstory` in its shared
-`domain.yaml`. Those tasks therefore render rules that keep deferring to an
+`example-microservices-pack` declares `mode: llm` with no `backstory` in its
+`project.yaml` `task_defaults`, and none of its five tasks overrides the user
+actor. Those tasks therefore render rules that keep deferring to an
 `Instruction` the prompt does not carry, which is the cheaper of the two wrong
 renderings — a bare `Instruction:` label would tell the model a section exists
 and then leave it empty, while a rule deferring to nothing is merely vacuous.
