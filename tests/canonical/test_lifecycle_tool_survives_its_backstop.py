@@ -25,9 +25,11 @@ Two shapes this file commits to:
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -76,6 +78,10 @@ def _without_ansi(text: str) -> str:
     return _ANSI_ESCAPE.sub("", text)
 
 
+def _open_fd_count() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
 @dataclass(frozen=True)
 class FollowUp:
     """What one round's follow-up command answered."""
@@ -117,10 +123,12 @@ def _new_session_wrapper() -> PersistentShellToolWrapper:
     )
 
 
-def _drive_rounds(runner_service, mock_grpc_context, trial_id: str) -> list[FollowUp]:
+def _drive_rounds(
+    runner_service, mock_grpc_context, trial_id: str, rounds: int = REPEATS
+) -> list[FollowUp]:
     """Backstop one command per round, then ask the same session for its own output."""
     follow_ups: list[FollowUp] = []
-    for index in range(REPEATS):
+    for index in range(rounds):
         wrapper = _new_session_wrapper()
         wrapper.start(ToolLifecycleContext(trial_id=trial_id, work_dir=None))
         runner_service.trials[trial_id].agent_tools["bash_session"] = wrapper
@@ -303,6 +311,29 @@ def test_a_session_that_cannot_be_rebuilt_refuses_every_later_call_by_name(
     assert "no pty available" in later.error_message, (
         "the refusal does not name why the tool is unusable, so an operator reading "
         f"the record cannot tell: {later.error_message!r}"
+    )
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc to count open fds")
+def test_a_backstop_and_rebuild_round_leaks_no_file_descriptors(
+    runner_service, mock_grpc_context, shell_trial
+) -> None:
+    """Each round abandons a pty reader and opens a fresh session in its place.
+
+    A descriptor left behind per round would accumulate across a run — and long
+    before any limit is reached it pushes later sessions onto high descriptor
+    numbers, which is its own hazard (see
+    ``_PtyBashSession._wait_readable``). One round runs first so anything
+    allocated once is already allocated when the count is taken.
+    """
+    _drive_rounds(runner_service, mock_grpc_context, shell_trial, rounds=1)
+    before = _open_fd_count()
+
+    _drive_rounds(runner_service, mock_grpc_context, shell_trial, rounds=3)
+
+    assert _open_fd_count() == before, (
+        f"three backstop-and-rebuild rounds moved the open-descriptor count from "
+        f"{before} to {_open_fd_count()} — the abandoned session is leaving its pty behind"
     )
 
 
