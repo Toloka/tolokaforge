@@ -105,6 +105,15 @@ exit codes are surfaced as an `[exit code: <n>]` suffix.
   timed-out command is lost (unlike the local variant, which preserves it), and
   the runaway command may briefly survive as an in-container orphan.
 
+Both variants lose their session state if the runner's backstop fires instead of
+the tool's own timeout. The backstop cannot terminate the command — it abandons
+the worker thread, which keeps reading the same pipe — so the runner closes that
+session and opens a fresh one before the call returns, and the timed-out call's
+message says the session was reset. The agent's next command therefore runs in a
+clean shell rather than reading output the abandoned reader is still draining.
+If the session cannot be reopened, the tool is refused by name for the rest of
+the trial, with the reason it could not be reopened.
+
 The compose variant resolves its target container as
 `<compose_project_prefix><sanitised-trial-id>_<service>`, where the trial id is
 sanitised through the shared `compose_trial_slug` (ASCII alphanumerics and
