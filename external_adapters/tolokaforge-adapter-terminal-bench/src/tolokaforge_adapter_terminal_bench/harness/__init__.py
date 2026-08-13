@@ -531,6 +531,12 @@ PROVIDER_ENV_KEYS: frozenset[str] = frozenset(
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "GOOGLE_API_KEY",
+        # gemini-cli reads ``GEMINI_API_KEY`` natively (Google's own name for
+        # a Google-AI-Studio key). ``GOOGLE_API_KEY`` was previously the only
+        # Google-shaped key here, but it's the name Vertex uses; gemini-cli
+        # itself insists on ``GEMINI_API_KEY``. Both are here to accept
+        # whichever a run config declares.
+        "GEMINI_API_KEY",
         # OpenRouter as its own named provider surface — Grok Build reads
         # ``env_key = "OPENROUTER_API_KEY"`` from its config.toml when
         # routing via OpenRouter rather than through the OpenAI-compat

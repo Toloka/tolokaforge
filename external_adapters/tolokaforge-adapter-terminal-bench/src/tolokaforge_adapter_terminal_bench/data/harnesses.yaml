@@ -122,13 +122,19 @@ harnesses:
     argv_suffix: ["--yolo", "--prompt"]
     # gemini-cli's model catalog uses bare names.
     strip_vendor_namespace: true
-    # gemini-cli reads `GEMINI_API_KEY` natively; OpenRouter's OpenAI-compat
-    # surface doesn't proxy Google's generative-AI endpoints, so this default
-    # only makes the CLI *reach* the endpoint — it will still 401 without a
-    # real Google AI Studio key. Documented in the README's parity-policy
-    # section.
+    # gemini-cli speaks Google's native Gemini schema (`generateContent`),
+    # not OpenAI-compat, so an OpenRouter key does not authenticate its
+    # requests — pointing `GOOGLE_GEMINI_BASE_URL` at OpenRouter returns 400.
+    # Harbor's own gemini_cli agent reads `GEMINI_API_KEY` and 401s otherwise
+    # (empirically verified: no matrix run of any pipeline ever produced a
+    # real gemini trajectory without a real Google AI Studio key).
+    # The operator supplies `GEMINI_API_KEY=<google-key>` in `.env`; the
+    # secret ref below is honest about what is required. Without the secret,
+    # SecretManager fails at trial start (loudly), which is the right shape:
+    # a run measuring a model against a laptop the operator can't
+    # authenticate would silently degrade to the baseline container score.
     provider_env:
-      GOOGLE_API_KEY: "${secret:OPENROUTER_API_KEY}"
+      GEMINI_API_KEY: "${secret:GEMINI_API_KEY}"
 
   kimi-code:
     install_method: "npm"
