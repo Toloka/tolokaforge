@@ -10,8 +10,10 @@ initial_state:
 
 tools:
   agent:
+    mcp_server: mcp_server.py
     enabled:
       - write_file
+      - cancel_order
   user:
     enabled: []
 

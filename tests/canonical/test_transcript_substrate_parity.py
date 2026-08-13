@@ -320,7 +320,8 @@ _ROWS: tuple[_Row, ...] = (
     ),
     # Both CALL_EXECUTOR rows author USER-executor records: the grading path reads the
     # executor off the record alone; the packs' `tools.user.enabled: []` inventory is
-    # deliberately not consulted (per-actor inventory validation is #974, dormant until #688).
+    # deliberately not consulted. `tool_expectations` names are still held against the
+    # actor-blind union at load, which #974 owns.
     _Row(
         row_id="user_call_does_not_satisfy_required_tool",
         pack="required_tools_one",

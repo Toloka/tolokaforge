@@ -43,7 +43,7 @@ def _task(
             "agent": {"enabled": enabled_tools or []},
             "user": {"enabled": user_tools or []},
         },
-        actors={"user": {"mode": "scripted"}},
+        actors={"user": {"mode": "llm"}},
         grading="grading.yaml",
     )
 

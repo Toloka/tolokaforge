@@ -34,7 +34,7 @@ import ipaddress
 import math
 import re
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -2836,12 +2836,23 @@ class TaskDescription(BaseModel):
 class ToolExecutorIdentity(str, Enum):
     """Which side of the dialogue made a tool call.
 
-    ``USER`` is unreachable in every run today because no code path constructs
-    a user-side tool executor (#688) — equally on both substrates.
+    ``USER`` is reached by a trial whose task declares ``tools.user.enabled``:
+    the conductor builds the user actor its own executor and the simulator is
+    offered those schemas — equally on both substrates.
     """
 
     AGENT = "agent"
     USER = "user"
+
+
+REQUESTOR_TO_EXECUTOR: Mapping[Literal["assistant", "user"], ToolExecutorIdentity] = {
+    "assistant": ToolExecutorIdentity.AGENT,
+    "user": ToolExecutorIdentity.USER,
+}
+"""The author-facing :attr:`RequiredAction.requestor` role names, onto the recorded
+executor identity. They name the same actor, and one map serves the grader that
+matches a declared action against a record and the gate that holds the same
+declaration against the tools each actor was given."""
 
 
 class RecordedToolCall(BaseModel):
@@ -2852,9 +2863,10 @@ class RecordedToolCall(BaseModel):
     trial's :class:`ToolCallRecorder`.
     """
 
-    # The trial's episode-unique tool-call id, assigned by the agent loop and
-    # carried on ExecuteToolRequest. Two calls to the same tool with identical
-    # arguments differ only here and in ``sequence``.
+    # The trial's episode-unique tool-call id, assigned from one trial-scoped
+    # sequence whichever actor made the call, and carried on ExecuteToolRequest.
+    # Two calls to the same tool with identical arguments differ only here and in
+    # ``sequence``.
     call_id: str = Field(min_length=1)
     # Trial-wide, 0-based, stamped by the recorder at append time.
     sequence: int

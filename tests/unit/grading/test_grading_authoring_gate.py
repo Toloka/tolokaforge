@@ -157,6 +157,17 @@ def _tool_call(tool: str, **args: dict[str, Any]) -> dict[str, Any]:
     return match
 
 
+def _required_action(name: str, requestor: str) -> dict[str, Any]:
+    """One ``required_actions`` entry, in the shape an author writes it."""
+    return {
+        "transcript_rules": {
+            "required_actions": [
+                {"action_id": "the_declared_call", "requestor": requestor, "name": name}
+            ]
+        }
+    }
+
+
 def _bound_block(
     binder: dict[str, Any], values: dict[str, Any], require: dict[str, Any]
 ) -> dict[str, Any]:
@@ -333,6 +344,27 @@ _RULES: tuple[_Rule, ...] = (
         checker="_check_tool_expectation_names",
         channel="errors",
         message="short a required tool on every trial",
+    ),
+    _Rule(
+        label="required_action_naming_an_undeclared_tool",
+        task=_HELPDESK,
+        grading=_required_action("http_reqest", "assistant"),
+        checker="_check_required_action_names",
+        channel="errors",
+        # The tool, the set the task does declare, and what the action costs: an
+        # author shown only the hazard has nothing to correct the name against.
+        message="tool 'http_reqest' is not declared by this task, which gives its actors "
+        "['http_request', 'write_file']: no actor can call it, so the transcript component "
+        "is short a required action on every trial",
+    ),
+    _Rule(
+        label="required_action_whose_requestor_declares_no_such_tool",
+        task=_HELPDESK,
+        grading=_required_action("http_request", "user"),
+        checker="_check_required_action_names",
+        channel="errors",
+        message="tools.user.enabled declares []: ['tools.agent.enabled'] declares the tool "
+        "instead, so the executor filter never matches",
     ),
     _Rule(
         label="argument_outside_a_closed_schema",
@@ -2489,6 +2521,100 @@ def test_the_declared_set_is_the_union_of_the_two_actors() -> None:
         parameters={},
         known=True,
     ).declared == frozenset({"read_file", "calculator"})
+
+
+# ---------------------------------------------------------------------------
+# A required action names an actor, and that actor has to have the tool
+# ---------------------------------------------------------------------------
+
+
+def _two_actor_pack(tmp_path: Path, *, agent: list[str], user: list[str]) -> ToolInventory:
+    """The inventory of a pack giving each actor its own builtin tools.
+
+    Written to disk and read back through the loader and the inventory producer,
+    rather than constructed, so what separates the two actors here is what the
+    adapter separates them by at run time.
+    """
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        yaml.safe_dump(
+            {
+                "task_id": "two_actors",
+                "description": "a task whose two actors each declare a tool",
+                "tools": {"agent": {"enabled": agent}, "user": {"enabled": user}},
+            }
+        )
+    )
+    task, task_dir = load_task_yaml(task_path)
+    return build_tool_inventory(task, task_dir)
+
+
+_THE_REQUESTORS_ADDRESS = "transcript_rules.required_actions[0].requestor"
+
+_AN_ACTION_PER_ACTOR = (
+    pytest.param("calculator", "user", None, id="the_users_tool_asked_of_the_user"),
+    pytest.param("write_file", "assistant", None, id="the_agents_tool_asked_of_the_agent"),
+    pytest.param(
+        "calculator", "assistant", _THE_REQUESTORS_ADDRESS, id="the_users_tool_asked_of_the_agent"
+    ),
+    pytest.param(
+        "write_file", "user", _THE_REQUESTORS_ADDRESS, id="the_agents_tool_asked_of_the_user"
+    ),
+)
+
+
+@pytest.mark.parametrize(("name", "requestor", "address"), _AN_ACTION_PER_ACTOR)
+def test_a_required_action_is_read_against_the_actor_its_requestor_names(
+    tmp_path: Path, name: str, requestor: str, address: str | None
+) -> None:
+    """Both columns of the same pack, because either half alone reads as clean.
+
+    ``requestor`` is matched against the recorded executor at grade time, so an
+    action naming the other actor's tool selects nothing however the trial went —
+    the cost a misspelling carries, from a name that is spelled right. A rule
+    reading only the union would pass both offending rows; one reading only the
+    user's tools would refuse the agent's own action.
+    """
+    inventory = _two_actor_pack(tmp_path, agent=["write_file"], user=["calculator"])
+
+    report = inspect_grading_authoring(_required_action(name, requestor), inventory)
+
+    if address is None:
+        assert report.errors == (), _texts(report, "errors")
+        return
+    assert [finding.where for finding in report.errors] == [address]
+    message = report.errors[0].message
+    assert name in message, message
+    assert "tools.agent.enabled" in message and "tools.user.enabled" in message, message
+
+
+def test_an_absent_user_side_call_is_no_finding_on_a_pack_with_no_user_tools() -> None:
+    """A ``trace_checks`` matcher may name an actor the task gives no tools.
+
+    ``absent`` over ``executor: user`` asserts that no user-side call happened,
+    which a pack declaring no user tools satisfies — and is true of. Extending the
+    actor rule to trace matchers would refuse packs that grade correctly, so it
+    stops at ``required_actions``, where the declaration is a positive claim.
+
+    The typo beside it is the positive control: the same matcher, one letter wrong
+    in the tool, is an error — so this rule reading nothing is a decision about the
+    executor rather than a site the gate never walked.
+    """
+    user_side = {
+        "kind": "tool_call",
+        "tool": {"equals": "http_request"},
+        "executor": {"equals": "user"},
+    }
+
+    clean = inspect_grading_authoring(_trace_block(user_side, kind="absent"), _inventory(_HELPDESK))
+    assert clean.errors == (), _texts(clean, "errors")
+    assert clean.advisories == (), _texts(clean, "advisories")
+
+    typo = inspect_grading_authoring(
+        _trace_block({**user_side, "tool": {"equals": "http_reqest"}}, kind="absent"),
+        _inventory(_HELPDESK),
+    )
+    assert [finding.where for finding in typo.errors] == ["trace_checks.probe.absent.match.tool"]
 
 
 # ---------------------------------------------------------------------------

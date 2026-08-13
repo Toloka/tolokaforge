@@ -31,7 +31,7 @@ def _task(enabled_tools: list[str], user_tools: list[str] | None = None) -> Task
         initial_user_message="x",
         initial_state={},
         tools={"agent": {"enabled": enabled_tools}, "user": {"enabled": user_tools or []}},
-        actors={"user": {"mode": "scripted"}},
+        actors={"user": {"mode": "llm"}},
         grading="grading.yaml",
     )
 

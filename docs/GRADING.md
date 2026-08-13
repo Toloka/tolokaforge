@@ -2788,9 +2788,11 @@ so a distributed enqueue is rejected once rather than by every worker identicall
 The named list is of packs that **load** and cannot be graded. A pack the loader itself
 refuses — a malformed grading shape, the file's own or one of its keys; a grading file
 that is not parseable YAML; a task naming an `initial_state.json_db` that is not on
-disk, read to hold `id_fields` against the tables it seeds; an adapter backend the host
-has not installed — stops the pass where it stands with its own sentence, and the packs
-behind it are not read. #880
+disk, read to hold `id_fields` against the tables it seeds; a task declaring
+`tools.user.enabled` that no user turn of that task can call
+([`docs/CONFIG.md`](CONFIG.md#interaction_mode--turn-loop-shape)); an adapter backend the
+host has not installed — stops the pass where it stands with its own sentence, and the
+packs behind it are not read. #880
 owns folding that class into the named list.
 
 Findings come in three classes:
@@ -2799,6 +2801,8 @@ Findings come in three classes:
 |---|---|---|
 | a `tool: { equals: X }` or `{ in_: [X, …] }` naming a tool outside the task's declared set | error | every `trace_checks` matcher |
 | `required_tools` / `disallowed_tools` naming a tool outside that set | error | `transcript_rules.tool_expectations` |
+| a `required_actions[i].name` naming a tool outside that set | error | `transcript_rules.required_actions[i].name` |
+| a `required_actions[i].name` the actor its `requestor` names does not declare — `assistant` reads `tools.agent.enabled`, `user` reads `tools.user.enabled` | error | `transcript_rules.required_actions[i].requestor` |
 | an `args` address whose first segment is outside the properties of a tool whose schema forbids extras | error | every matcher's `args` key, every `bind.values[*].field` |
 | the same against a tool whose schema permits extras | advisory | as above |
 | a `bind.values[*].field` the tool types `integer` / `number` / `boolean` / `array` / `object`, read by a reference on one of the event's text fields — `tool`, `text`, `result`, `status`, `executor` — or beside a `regex` on the same predicate | error on a schema forbidding extras, advisory on one permitting them | every `bind.values[*].field` |
@@ -2894,6 +2898,23 @@ vacuous pass for it while reading as configured:
 Each rule reads its keys for **truth**, not presence, because that is what both
 substrates do: an empty `golden_actions` replays nothing, an empty `required_actions`
 requires nothing.
+
+**A required action names a tool, and the actor its `requestor` names has to have
+it.** Two ways one action can assert what no trial satisfies, and the fix differs: a
+`name` no actor of the task declares, and a `name` the *other* actor declares alone.
+`requestor` is matched against the executor recorded for the call — `assistant` against
+the agent's, `user` against the user simulator's — so an action asking the agent for a
+tool only `tools.user.enabled` gives selects nothing however the trial went, and the
+transcript component is short a required action on every one. Each action draws at most
+one finding, at the key that repairs it.
+
+**The rule stops at `required_actions`, and `trace_checks` is deliberately outside
+it.** A matcher may carry `executor: {equals: user}` inside an `absent` constraint on a
+pack that declares no user tools — an assertion that no user-side call happened, which
+such a pack satisfies and which is true. Refusing that shape would reject packs that
+grade correctly, so the actor rule is written where the declaration is a *positive*
+existence claim and only there. A trace matcher's `tool` name is still held against the
+task's declared set, whatever its `executor` says.
 
 **Two state sources, one of them a probe, is refused as well** — the mirror of the
 no-source rule above, and the two divide the block between them. `db_probes` beside a

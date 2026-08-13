@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from tolokaforge.adapters._task_loader import load_task_yaml
 
@@ -208,3 +209,69 @@ class TestDirectPythonUserSimulatorKwargShim:
             warnings.simplefilter("error")  # any DeprecationWarning becomes an error
             task = TaskConfig(task_id="t1", description="d")
         assert task.actors is None
+
+
+class TestUserToolsNeedATurnThatCanCallThem:
+    """``tools.user.enabled`` is a claim that the user actor calls those tools.
+
+    The declaration reaches the runner either way — the tools are registered for
+    the trial like the agent's — so a pack whose user turn cannot make a call
+    fails nothing at run time and grades a ``requestor: user`` action against a
+    call that could not have happened, on every trial. Two shapes reach that
+    state, and each is refused at load naming which one it is.
+    """
+
+    def test_a_user_tool_under_agent_only_is_refused(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(
+                interaction_mode="agent_only",
+                tools={"agent": {"enabled": []}, "user": {"enabled": ["calculator"]}},
+            ),
+        )
+
+        with pytest.raises(ValidationError, match="dispatches no user turn at all"):
+            _load(task_path)
+
+    def test_a_user_tool_under_a_scripted_simulator_is_refused(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(
+                actors={"user": {"mode": "scripted"}},
+                tools={"agent": {"enabled": []}, "user": {"enabled": ["calculator"]}},
+            ),
+        )
+
+        with pytest.raises(ValidationError, match="never a tool call"):
+            _load(task_path)
+
+    def test_the_same_declaration_loads_under_a_conversational_llm_simulator(
+        self, tmp_path: Path
+    ) -> None:
+        """The row that makes the two above about the shape rather than the key."""
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(
+                interaction_mode="conversational",
+                actors={"user": {"mode": "llm"}},
+                tools={"agent": {"enabled": []}, "user": {"enabled": ["calculator"]}},
+            ),
+        )
+
+        task, _ = _load(task_path)
+
+        assert task.tools.user["enabled"] == ["calculator"]
+
+    def test_an_empty_declaration_loads_under_both_refused_shapes(self, tmp_path: Path) -> None:
+        """Every pack in the tree declares ``tools.user.enabled: []``, under both."""
+        for label, extra in (
+            ("agent_only", {"interaction_mode": "agent_only"}),
+            ("scripted", {"actors": {"user": {"mode": "scripted"}}}),
+        ):
+            task_path = tmp_path / label / "task.yaml"
+            _write_yaml(task_path, _task_body(**extra))
+            task, _ = _load(task_path)
+            assert task.tools.user["enabled"] == []

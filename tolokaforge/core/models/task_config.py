@@ -164,6 +164,37 @@ def _validate_actors_map(
     return value
 
 
+_A_USER_TOOL_NOTHING_CAN_CALL = (
+    "tools.user.enabled declares {tools}, and {because}, so the declared tools are "
+    "registered for every trial and no turn can ever call one. {remedy}, or drop "
+    "tools.user.enabled."
+)
+
+_AGENT_ONLY_DISPATCHES_NO_USER_TURN = (
+    "interaction_mode is agent_only, which dispatches no user turn at all"
+)
+_TO_DISPATCH_A_USER_TURN = "Write interaction_mode: conversational"
+
+_A_SCRIPTED_SIMULATOR_EMITS_NO_TOOL_CALL = (
+    "the user simulator resolves to mode scripted, whose reply is text and never a tool call"
+)
+_TO_LET_THE_SIMULATOR_CALL = "Write actors.user.mode: llm"
+
+
+def _why_no_user_turn_can_call_a_tool(task: "TaskConfig") -> tuple[str, str] | None:
+    """Why no turn of *task* can make a user-side call, and the fix, or ``None``.
+
+    Ordered outward-in: the interaction mode decides whether a user turn is
+    dispatched at all, and only then does the simulator's own mode decide what a
+    dispatched turn can emit.
+    """
+    if task.interaction_mode == "agent_only":
+        return _AGENT_ONLY_DISPATCHES_NO_USER_TURN, _TO_DISPATCH_A_USER_TURN
+    if task.resolve_user_simulator().mode == "scripted":
+        return _A_SCRIPTED_SIMULATOR_EMITS_NO_TOOL_CALL, _TO_LET_THE_SIMULATOR_CALL
+    return None
+
+
 class TaskMetadata(BaseModel):
     """Optional metadata used for analytics slicing."""
 
@@ -314,6 +345,29 @@ class TaskConfig(BaseModel):
         cls, value: dict[str, ActorSpec] | None
     ) -> dict[str, ActorSpec] | None:
         return _validate_actors_map(value)
+
+    @model_validator(mode="after")
+    def _refuse_user_tools_no_turn_can_call(self) -> Self:
+        """Refuse a ``tools.user.enabled`` no user turn of this task can ever call.
+
+        Nothing downstream fails on such a pack: the tools are registered for the
+        trial like any other, so a ``requestor: user`` action or an ``executor: user``
+        matcher grades against a call that could not have happened, on every trial.
+        The refusal is here because the three keys that decide it — the tool block,
+        the interaction mode and the simulator's mode — are all in ``task.yaml``.
+        """
+        declared = self.tools.user.get("enabled")
+        if not declared:
+            return self
+        reason = _why_no_user_turn_can_call_a_tool(self)
+        if reason is None:
+            return self
+        because, remedy = reason
+        raise ValueError(
+            _A_USER_TOOL_NOTHING_CAN_CALL.format(
+                tools=sorted(declared), because=because, remedy=remedy
+            )
+        )
 
     def resolve_user_simulator(self) -> UserSimulatorConfig:
         """Return the effective user-simulator config from ``actors.user``.

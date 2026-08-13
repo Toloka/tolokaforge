@@ -116,6 +116,7 @@ from tolokaforge.core.models.trajectory import (
 # matcher and constraint vocabulary) and ``tools.registry`` (tool
 # execution status).
 from tolokaforge.runner.models import (
+    REQUESTOR_TO_EXECUTOR,
     AbsentBeforeConstraint,
     AbsentBetweenConstraint,
     AbsentConstraint,
@@ -248,6 +249,7 @@ __all__ = [
     "ToolsConfig",
     "UserSimulatorConfig",
     # Cross-package re-exports (runner.models canonical wire types)
+    "REQUESTOR_TO_EXECUTOR",
     "AbsentBeforeConstraint",
     "AbsentBetweenConstraint",
     "AbsentConstraint",
