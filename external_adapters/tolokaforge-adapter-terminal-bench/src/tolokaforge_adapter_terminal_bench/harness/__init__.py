@@ -131,6 +131,31 @@ deliberately blank vendor key, and fails with a 401. So a vendor harness gets
 the prefix stripped, while the engine loop keeps it (litellm needs it).
 """
 
+_HARNESSES_STRIPPING_VENDOR_NAMESPACE: frozenset[str] = frozenset({"codex", "gemini-cli"})
+"""Harnesses whose CLI wants a bare model name (``gpt-5-mini``) rather than an
+OpenRouter-style ``vendor/model`` (``openai/gpt-5-mini``).
+
+Claude Code stays out of this set: with ``ANTHROPIC_BASE_URL`` pointing at
+OpenRouter, its OpenRouter catalog entry IS ``anthropic/claude-sonnet-4-6``
+and harbor forwards that whole string in ``ANTHROPIC_MODEL``. Codex asked
+for ``openai/gpt-5-mini`` prints ``Model metadata for openai/gpt-5-mini not
+found`` and drops OPENAI_BASE_URL, hitting hard-coded ``api.openai.com``
+— harbor's fix is ``model.split('/')[-1]`` (``harbor/agents/installed/codex.py:1341``)."""
+
+_VENDOR_NAMESPACE_PREFIXES: tuple[str, ...] = (
+    "anthropic/",
+    "openai/",
+    "google/",
+    "x-ai/",
+    "meta-llama/",
+    "moonshotai/",
+    "qwen/",
+    "deepseek/",
+)
+"""OpenRouter ``vendor/`` namespaces harnesses in
+:data:`_HARNESSES_STRIPPING_VENDOR_NAMESPACE` drop from the model name. A new
+namespace would surface as the same "metadata not found" warning."""
+
 PROVIDER_ENV_KEYS: frozenset[str] = frozenset(
     {
         "ANTHROPIC_API_KEY",
@@ -186,9 +211,30 @@ def validate_harness(agent_harness: str) -> str:
     return agent_harness
 
 
-def harness_model(model: str) -> str:
-    """Model name as a vendor CLI must receive it — see :data:`OPENROUTER_PREFIX`."""
-    return model[len(OPENROUTER_PREFIX) :] if model.startswith(OPENROUTER_PREFIX) else model
+def harness_model(model: str, agent_harness: str | None = None) -> str:
+    """Model name as *agent_harness*'s CLI must receive it.
+
+    Always strips the ``openrouter/`` route marker (see
+    :data:`OPENROUTER_PREFIX`); a vendor CLI does not go through litellm and
+    would otherwise select its own direct-vendor handler and fail with 401.
+
+    For harnesses in :data:`_HARNESSES_STRIPPING_VENDOR_NAMESPACE` (codex,
+    gemini-cli), also strips a leading ``vendor/`` namespace so the model
+    name is the CLI-catalog bare form (``gpt-5-mini`` from
+    ``openrouter/openai/gpt-5-mini``). Claude Code stays out of this set;
+    with ``ANTHROPIC_BASE_URL`` pointing at OpenRouter its catalog entry
+    IS ``anthropic/claude-sonnet-4-6``.
+
+    *agent_harness* defaults to ``None`` for older callers that only need the
+    ``openrouter/`` strip; when unknown, no vendor-namespace stripping happens.
+    """
+    if model.startswith(OPENROUTER_PREFIX):
+        model = model[len(OPENROUTER_PREFIX) :]
+    if agent_harness in _HARNESSES_STRIPPING_VENDOR_NAMESPACE:
+        for prefix in _VENDOR_NAMESPACE_PREFIXES:
+            if model.startswith(prefix):
+                return model[len(prefix) :]
+    return model
 
 
 def harness_command(agent_harness: str, instruction: str, model: str) -> str:
@@ -212,7 +258,7 @@ def harness_command(agent_harness: str, instruction: str, model: str) -> str:
     argv = (
         *spec.argv_prefix,
         spec.model_flag,
-        harness_model(model),
+        harness_model(model, agent_harness),
         *spec.argv_suffix,
         instruction,
     )

@@ -1058,10 +1058,33 @@ class TestHarnessModelPrefix:
         )
         assert argv[argv.index("--model") + 1] == "anthropic/claude-sonnet-4-6"
 
-    def test_a_bare_model_name_is_untouched(self):
+    def test_codex_gets_the_bare_model_name(self):
+        """codex refuses ``openai/gpt-5-mini`` as off-catalog and drops
+        OPENAI_BASE_URL — harbor's fix is the last-path-segment strip."""
+        import shlex
+
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        argv = shlex.split(harness_command("codex", "go", "openrouter/openai/gpt-5-mini"))
+        assert argv[argv.index("--model") + 1] == "gpt-5-mini"
+
+    def test_gemini_cli_gets_the_bare_model_name(self):
+        import shlex
+
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        argv = shlex.split(
+            harness_command("gemini-cli", "go", "openrouter/google/gemini-2.5-flash")
+        )
+        assert argv[argv.index("--model") + 1] == "gemini-2.5-flash"
+
+    def test_a_bare_model_name_is_untouched_for_claude_code(self):
         from tolokaforge_adapter_terminal_bench.harness import harness_model
 
-        assert harness_model("anthropic/claude-sonnet-4-6") == "anthropic/claude-sonnet-4-6"
+        assert (
+            harness_model("anthropic/claude-sonnet-4-6", "claude-code")
+            == "anthropic/claude-sonnet-4-6"
+        )
 
     def test_only_a_leading_prefix_is_stripped(self):
         from tolokaforge_adapter_terminal_bench.harness import harness_model
