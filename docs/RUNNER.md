@@ -96,7 +96,9 @@ the backend lifecycle.
 
 At `tolokaforge run` time the four first-party service images
 (`runner`, `db-service`, `rag-service`, `mock-web`) resolve through a
-`docker.image_source` policy with three values:
+`docker.image_source` policy with three values. Design rationale,
+alternatives considered, and the failure-mode contract are captured in
+[ADR-0031](adr/0031-pull-vs-build-default-for-service-images.md).
 
 | `docker.image_source` | Behavior |
 | --- | --- |
