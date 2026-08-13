@@ -7,12 +7,14 @@ Task authors write jsonpath state_checks like::
         - path: "$.filesystem['/env/fs/agent-visible/buggy_math.py']"
           contains: "amount * (1 + tax_rate)"
 
-For that to match, the runner must expose the on-disk contents of /work/
+For that to match, the runner exposes the on-disk contents of /work/
 back out under the logical /env/fs/agent-visible/ layout the task YAML
-wrote against — the same layout the RegisterTrial provisioner accepted.
+wrote against — the same layout the RegisterTrial provisioner accepts.
 
-Regression for #1074: filesystem-only tasks used to hit "State: FAIL:
-DB state unavailable" because the runner only consulted the DB service.
+The runner catches ``TrialNotFoundError`` from the DB client so a
+filesystem-only trial (one whose task never provisions ``initial_state.tables``
+and therefore never calls ``db_client.init_trial()``) still assembles a
+jsonpath state rooted at ``$.filesystem[…]``.
 """
 
 from __future__ import annotations
@@ -88,6 +90,24 @@ def test_read_agent_visible_filesystem_skips_binary_and_returns_empty_when_absen
     (work / "readme.txt").write_text("hello")
     fs = svc._read_agent_visible_filesystem()
     assert fs == {"/env/fs/agent-visible/readme.txt": "hello"}
+
+
+def test_read_agent_visible_filesystem_skips_symlinks(
+    redirect_work_dir: Path,
+) -> None:
+    # A symlink under /work/ could point at any container-readable path
+    # (e.g. /etc/hostname). The assertion vocabulary is not a general-purpose
+    # container filesystem probe, so the walk must ignore the link even
+    # though ``is_file()`` returns True for a file-target symlink.
+    outside = redirect_work_dir.parent / "outside.txt"
+    outside.write_text("must not leak")
+    (redirect_work_dir / "readme.txt").write_text("ok")
+    (redirect_work_dir / "link").symlink_to(outside)
+
+    svc = _StubRunnerServiceImpl(db_client=AsyncMock())
+    fs = svc._read_agent_visible_filesystem()
+
+    assert fs == {"/env/fs/agent-visible/readme.txt": "ok"}
 
 
 @pytest.mark.asyncio

@@ -1390,6 +1390,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             stable = await self.db_client.get_stable_state(trial_id)
             db_state: dict[str, Any] = stable.data
         except DBTrialNotFoundError:
+            # Filesystem-only tasks never call db_client.init_trial(), so an
+            # absent DB is the expected shape. For tasks that DID declare a
+            # DB this same branch fires and downstream ``$.db.*`` assertions
+            # surface as "Path not found" — log at warn so ops see the real
+            # cause rather than debugging per-assertion failures.
+            logger.warning(
+                f"GradeTrial: {trial_id} - DB trial not found; grading with empty DB state"
+            )
             db_state = {}
         return {
             "db": db_state,
@@ -1398,21 +1406,27 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         }
 
     def _read_agent_visible_filesystem(self) -> dict[str, str]:
-        # Inverse of the RegisterTrial provisioner (see line 882): files
-        # provisioned from ``/env/fs/agent-visible/<rel>`` were written to
-        # ``/work/<rel>``, so we walk /work/ and expose each file back at
-        # its logical path. Binaries and unreadable entries are skipped —
-        # ``contains:``/``equals:`` operators can only match text anyway.
+        # Inverse of the RegisterTrial provisioner's
+        # ``/env/fs/agent-visible/<rel>`` → ``/work/<rel>`` block: expose each
+        # file back at its logical path so
+        # ``$.filesystem['/env/fs/agent-visible/<rel>']`` resolves. Binary
+        # files are skipped — ``contains:``/``equals:`` operators can only
+        # match text. Symlinks are skipped too: the assertion vocabulary was
+        # not designed to expose arbitrary container-readable paths reachable
+        # via a link the agent dropped in ``/work/``.
         root = Path(AGENT_WORK_DIR)
         fs: dict[str, str] = {}
         if not root.is_dir():
             return fs
         for path in root.rglob("*"):
-            if not path.is_file():
+            if path.is_symlink() or not path.is_file():
                 continue
             try:
                 content = path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
+            except UnicodeDecodeError:
+                continue
+            except OSError as exc:
+                logger.warning(f"GradeTrial: could not read {path} for jsonpath state: {exc}")
                 continue
             rel = path.relative_to(root)
             fs[f"/env/fs/agent-visible/{rel.as_posix()}"] = content

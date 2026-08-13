@@ -1012,7 +1012,7 @@ trial's final state, and both levels are fixed:
 | source | evaluated against |
 |---|---|
 | `hash` | the **unwrapped** database inside the final state (`db`, else `agent`, else the state itself) — the level the golden state and `compute_stable_hash` both describe |
-| `jsonpaths` | the **whole** final environment state, so an assertion is rooted `$.db.<table>[…]` |
+| `jsonpaths` | the **whole** final environment state — `$.db.<table>[…]` for a row and `$.filesystem['/env/fs/agent-visible/<rel>']` for a provisioned file the agent may have edited |
 
 A source that declares nothing to evaluate produces no verdict, and a source
 nobody configured contributes nothing rather than a score. An empty `jsonpaths`
@@ -1022,7 +1022,12 @@ has the answer `1.0`, and that fraction of nothing never becomes a component sco
 - **hash only** (`jsonpaths` empty — the tau-bench shape): the component *is* the
   hash verdict, at every `weight`. An empty assertion list is not a pass.
 - **non-empty `jsonpaths` only** (no hash source declared): the component is the
-  assertion score. **Core-side only** — see the substrate note below.
+  assertion score. Both substrates evaluate the shape; on the runner side the
+  jsonpath state is `$.db`/`$.tables` for stored rows and `$.filesystem` for
+  files provisioned under `/env/fs/agent-visible/` — a filesystem-only task
+  (one whose `initial_state` declares no `tables`) still grades, and a
+  `$.filesystem['/env/fs/agent-visible/<rel>']` assertion resolves to the
+  file's current on-disk content.
 - **both**: `jsonpath_score × (1 − weight) + hash_score × weight`.
 - **neither** — an empty `jsonpaths` list with hash grading off, or on and unable
   to produce a verdict: the component is **not evaluated**. It is absent from the
