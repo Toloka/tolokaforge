@@ -127,6 +127,7 @@ tests/
     ├── conductor_phases.py   # Arguments for the conductor's _grade / _write_artifacts phases
     ├── search_plane_harness.py  # RegisterTrial through the search plane: registry stand-in, kb task, both address sources
     ├── timelines.py          # Coherent TrialTimeline fixtures (message view + records)
+    ├── grading_parity_packs.py  # A grading_parity pack's trial.yaml, decoded once into each substrate's input shape — the canonical differential and the docker gate suite read one set of bytes
     ├── trace_constraints.py  # One trace constraint evaluated, for single-verdict assertions
     ├── trace_checks_configs.py  # One authored trace_checks block spanning the whole vocabulary
     ├── trace_overrides.py    # A supplied constraint block, written to a file and loaded back
@@ -415,6 +416,23 @@ family and for `state_checks.numeric_string_fields`,
 resolves each nodeid without importing it — every entry carrying one, whatever its
 enforcement tier — so renaming one of those test functions fails the canonical tier
 naming the manifest entry.
+
+`test_docker_grading_trace_gate.py` drives the committed `trace_checks_gate`
+parity pack — the one the canonical differential reads, through the one decoder in
+`utils/grading_parity_packs.py` — through a containerised runner: `RegisterTrial`
+with the pack as `NativeAdapter` resolves it, then `GradeTrial` over real gRPC with
+the authored trajectory as `llm_messages_json`. What it locks that no canonical
+test can is the **image**: the parity suite's runner half is an in-process servicer
+built from the working tree, while the image installs the
+`tolokaforge-runner-subset` wheel, whose file partition already excludes part of
+`core/grading`. Off the wire it pins the verdict, the `trace_checks`
+component, `trace_checks_summary.gate_failed`, `failed_gate_ids`, the per-constraint
+`severity` values and the sentence naming the gate that tripped. It refuses to grade
+against an image the current tree did not build: the container's image must carry
+`expected_image_ref("runner")` among its tags, which is what the fixture's own
+build-and-tag path leaves there, so a stale `:latest` fails naming
+`uv run tolokaforge docker build --core` rather than grading under an older tree.
+Keyless: no LLM, no API key, and no tool is executed.
 
 `tests/integration/docker/test_terminal_bench_per_trial.py` is the end-to-end
 lock for the terminal-bench per-trial substrate: it materialises the
