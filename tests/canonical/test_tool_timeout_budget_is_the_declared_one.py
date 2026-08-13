@@ -52,9 +52,9 @@ SLEEP_S = 1.5
 TRIAL_DEFAULT_BUDGET_S = 25.0
 """The trial's fallback budget.
 
-Distinct from both the declared budget and the 30.0 the host used to send, so
-a call bounded at :data:`DECLARED_BUDGET_S` can only have been bounded by the
-tool's own declaration.
+Distinct from the declared budget, so a call bounded at
+:data:`DECLARED_BUDGET_S` can only have been bounded by the tool's own
+declaration rather than by this fallback.
 """
 
 

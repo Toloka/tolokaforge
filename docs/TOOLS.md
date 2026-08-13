@@ -18,7 +18,9 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
 - `get_db_schema`: SQL schema inspection for JSON DB tables.
 - `search_kb`: RAG search over a per-trial corpus index. Functional for native
   tasks — declare `initial_state.rag.corpus_dir` and the runner indexes that
-  corpus into the rag-service per trial (see `docs/TASKS.md`).
+  corpus into the rag-service per trial (see `docs/TASKS.md`). Each search is
+  bounded at the tool's own 15 s, on both substrates, rather than inheriting
+  whatever the shared RAG client was constructed with.
 - `http_request`: Restricted HTTP client for mock web services.
 - `build_check`: Zero-argument peer-service HTTP probe (compile / interface
   check). See [`build_check`](#build_check) below.

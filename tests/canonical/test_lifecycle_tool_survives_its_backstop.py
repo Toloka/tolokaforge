@@ -24,6 +24,7 @@ Two shapes this file commits to:
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from dataclasses import dataclass
@@ -37,8 +38,13 @@ from tests.utils.runner_requests import (
     trial_spec_json,
 )
 from tolokaforge.runner import runner_pb2 as pb2
-from tolokaforge.runner.models import ToolSchema
-from tolokaforge.runner.tool_factory import PersistentShellToolWrapper, ToolLifecycleContext
+from tolokaforge.runner.models import ToolExecutorIdentity, ToolSchema
+from tolokaforge.runner.tool_factory import (
+    DockerComposeExecToolWrapper,
+    PersistentShellToolWrapper,
+    ToolLifecycleContext,
+    ToolWrapper,
+)
 from tolokaforge.tools.persistent_shell import _SENTINEL_PREFIX
 from tolokaforge.tools.registry import ToolExecutionStatus
 
@@ -297,6 +303,102 @@ def test_a_session_that_cannot_be_rebuilt_refuses_every_later_call_by_name(
     assert "no pty available" in later.error_message, (
         "the refusal does not name why the tool is unusable, so an operator reading "
         f"the record cannot tell: {later.error_message!r}"
+    )
+
+
+def test_a_tool_with_no_session_to_rebuild_does_not_claim_one_was_reset(
+    runner_service, mock_grpc_context, shell_trial
+) -> None:
+    """``docker_compose_exec`` is a lifecycle tool that holds no session.
+
+    Its ``start()`` resolves a container name and nothing else — the compose
+    stack belongs to the per-trial runtime — so closing and reopening it clears
+    nothing an abandoned worker could serve. Telling the agent its session was
+    reset would be a claim the runner cannot honour.
+    """
+    wrapper = DockerComposeExecToolWrapper(
+        ToolSchema(
+            name="run_command",
+            description="exec into a running service",
+            parameters={"type": "object", "properties": {"command": {"type": "string"}}},
+        ),
+        service="app",
+        compose_project_prefix="p",
+    )
+    wrapper.start(ToolLifecycleContext(trial_id=shell_trial, work_dir=None))
+
+    def _hangs_past_the_band(command: str, timeout: float) -> str:
+        time.sleep(BACKSTOP_BAND_S * 4)
+        return ""
+
+    wrapper._exec_sync = _hangs_past_the_band
+    runner_service.trials[shell_trial].agent_tools["run_command"] = wrapper
+
+    response = runner_service.ExecuteTool(
+        execute_request(
+            shell_trial,
+            "run_command",
+            '{"command": "sleep 30"}',
+            call_id="toolu_compose_exec",
+            timeout_seconds=BACKSTOP_BAND_S,
+        ),
+        mock_grpc_context,
+    )
+
+    assert response.status == pb2.EXECUTION_STATUS_TIMEOUT
+    assert "session was reset" not in response.error_message, (
+        "the call told the agent its session was reset, but this tool holds no "
+        f"session to reset: {response.error_message!r}"
+    )
+
+
+async def test_rebuilding_a_session_does_not_stall_the_runners_event_loop(
+    runner_service, mock_grpc_context, shell_trial
+) -> None:
+    """The runner serves every concurrent trial from one loop.
+
+    ``stop()`` and ``start()`` are synchronous and slow — a SIGKILL wait, and on
+    the compose engine a reopened exec — so a rebuild on the loop thread would
+    freeze every other trial for its duration.
+    """
+    blocked_for = BACKSTOP_BAND_S
+
+    class _BlockingRebuild(ToolWrapper):
+        has_lifecycle = True
+
+        def stop(self) -> None:
+            time.sleep(blocked_for)
+
+        def start(self, ctx: ToolLifecycleContext) -> None:
+            pass
+
+        async def execute(self, arguments: dict) -> str:  # pragma: no cover — never called
+            return ""
+
+    tool = _BlockingRebuild(
+        ToolSchema(name="wedged", description="blocks on rebuild", parameters={})
+    )
+    trial_context = runner_service.trials[shell_trial]
+
+    ticks = 0
+
+    async def tick() -> None:
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    ticker = asyncio.create_task(tick())
+    try:
+        await runner_service._reset_backstopped_tool(
+            trial_context, tool, "wedged", ToolExecutorIdentity.AGENT, 1.0
+        )
+    finally:
+        ticker.cancel()
+
+    assert ticks > 10, (
+        f"the loop ticked {ticks} times while a {blocked_for}s rebuild ran — the "
+        "rebuild is holding the event loop, so every concurrent trial is stalled"
     )
 
 

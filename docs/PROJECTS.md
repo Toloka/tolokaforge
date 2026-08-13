@@ -519,8 +519,8 @@ copies as **caps or removes them**:
   are read by nothing; a per-call budget is the tool's own, and
   making one pack-declarable is tracked in
   [#1147](https://github.com/Toloka/tolokaforge/issues/1147).
-  The `tool_call_seconds: 60` lines in the layouts below are
-  therefore declared, not yet enforced.
+  The `tool_call_seconds: 60` lines in the layouts in this
+  document are therefore declared, not yet enforced.
 - `orchestrator.stuck_heuristics` is deprecated by this design;
   `task_defaults` is its canonical home (legacy alias retired in
   M5, #214). The conductor reads the task-scope block when the

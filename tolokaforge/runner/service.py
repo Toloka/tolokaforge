@@ -1316,16 +1316,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error_message=f"Invalid arguments JSON: {e}",
             )
 
-        refusal = self._refuse_unavailable_tool(
+        tool, refusal = self._resolve_tool_or_refuse(
             trial_context=trial_context,
             call_id=call_id,
             tool_name=tool_name,
             arguments=arguments,
             executor=executor,
         )
-        if refusal is not None:
+        if tool is None:
             return refusal
-        tool = trial_context.get_tool(tool_name, executor)
 
         timeout_seconds = request.timeout_seconds
         if timeout_seconds <= 0:
@@ -1356,7 +1355,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 metrics=pb2.ToolMetrics(),
             )
 
-    def _refuse_unavailable_tool(
+    def _resolve_tool_or_refuse(
         self,
         *,
         trial_context: TrialContextRuntime,
@@ -1364,17 +1363,18 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         tool_name: str,
         arguments: dict[str, Any],
         executor: ToolExecutorIdentity,
-    ) -> pb2.ExecuteToolResponse | None:
-        """The recorded refusal for a tool that cannot serve this call, or ``None``.
+    ) -> tuple[Any, None] | tuple[None, pb2.ExecuteToolResponse]:
+        """The tool that will serve this call, or the recorded refusal instead.
 
         Two ways a registered trial holds no tool able to answer: the name
         resolves to nothing in this executor's registry, or the tool's session
         could not be rebuilt after the backstop fired and there is nothing left
         to serve from.
         """
-        if trial_context.get_tool(tool_name, executor) is None:
+        tool = trial_context.get_tool(tool_name, executor)
+        if tool is None:
             logger.warning(f"ExecuteTool: Tool not found: {tool_name} ({executor.value})")
-            return self._reject_tool_call(
+            return None, self._reject_tool_call(
                 trial_context=trial_context,
                 call_id=call_id,
                 tool_name=tool_name,
@@ -1386,9 +1386,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         unusable = trial_context.unusable_reason(tool_name, executor)
         if unusable is None:
-            return None
+            return tool, None
         logger.warning(f"ExecuteTool: refusing {tool_name} ({executor.value}): {unusable}")
-        return self._reject_tool_call(
+        return None, self._reject_tool_call(
             trial_context=trial_context,
             call_id=call_id,
             tool_name=tool_name,
@@ -1451,7 +1451,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             timeout=timeout_seconds,
         )
 
-    def _reset_backstopped_tool(
+    async def _reset_backstopped_tool(
         self,
         trial_context: TrialContextRuntime,
         tool: Any,
@@ -1471,18 +1471,26 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         for the trial and every later call on it is refused by name rather than
         served from a pipe nobody owns.
 
-        Dispatch is by the ``has_lifecycle`` capability, never by adapter
-        identity: a stateless tool has no session to rebuild.
+        Dispatch is by capability, never by adapter identity: a tool rebuilding
+        into the same configuration it already held clears nothing, and is left
+        alone rather than told the agent its session was reset.
+
+        ``stop()`` / ``start()`` are synchronous and can take seconds — a
+        SIGKILL wait plus, on the compose engine, reopening an exec — so they go
+        through the executor. Running them on the event loop would stall every
+        other trial this runner is serving.
         """
         timed_out = f"Tool execution timed out after {timeout_seconds}s"
-        if not getattr(tool, "has_lifecycle", False):
+        if not getattr(tool, "has_lifecycle", False) or not getattr(
+            tool, "rebuild_clears_backstopped_state", False
+        ):
             return timed_out
         try:
             lifecycle_ctx = trial_context.lifecycle_ctx
             if lifecycle_ctx is None:
                 raise RuntimeError("the trial stored no ToolLifecycleContext at registration")
-            tool.stop()
-            tool.start(lifecycle_ctx)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._rebuild_session, tool, lifecycle_ctx)
         except Exception as e:
             reason = (
                 f"Tool '{tool_name}' is unusable for the rest of this trial: its session "
@@ -1493,6 +1501,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_context.mark_tool_unusable(tool_name, executor, reason)
             return f"{timed_out}. {reason}"
         return f"{timed_out}. The tool's session was reset, so the next call starts clean."
+
+    @staticmethod
+    def _rebuild_session(tool: Any, lifecycle_ctx: ToolLifecycleContext) -> None:
+        tool.stop()
+        tool.start(lifecycle_ctx)
 
     async def _execute_tool_async(
         self,
@@ -1537,7 +1550,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         except asyncio.TimeoutError:
             status = pb2.EXECUTION_STATUS_TIMEOUT
             logger.warning(f"ExecuteTool: {tool_name} timed out after {timeout_seconds}s")
-            error_message = self._reset_backstopped_tool(
+            error_message = await self._reset_backstopped_tool(
                 trial_context, tool, tool_name, executor, timeout_seconds
             )
 
