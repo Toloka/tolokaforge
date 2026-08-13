@@ -502,7 +502,8 @@ class TrialContextRuntime:
         agent_tools: Map of tool name -> tool callable for agent tools
         user_tools: Map of tool name -> tool callable for user-side tools
         tool_call_history: The trial's ordered tool-call record
-        default_timeout: Default timeout for tool execution in seconds
+        default_timeout: Fallback band for a tool that names none of its own
+        lifecycle_ctx: The context this trial's lifecycle tools were started with
     """
 
     def __init__(
@@ -1439,7 +1440,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         session rebuilt by :meth:`_reset_backstopped_tool`.
         """
         if hasattr(tool, "execute"):
-            # ToolWrapper interface
             return await asyncio.wait_for(tool.execute(arguments), timeout=timeout_seconds)
         if not callable(tool):
             raise TypeError(f"Tool {tool_name} is not callable")

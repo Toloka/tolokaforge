@@ -245,7 +245,6 @@ runner = TrialRunner(
     tool_executor=tool_executor,
     tool_schemas=tool_schemas,
     max_turns=50,
-    turn_timeout_s=60,
     episode_timeout_s=1200,
 )
 trajectory = runner.run(system_prompt, initial_message)

@@ -1047,5 +1047,5 @@ See [`DB_SERVICE_API.md`](DB_SERVICE_API.md) for full endpoint specifications.
 1. **Trial Isolation**: Each trial has isolated state in DB Service
 2. **Tool Sandboxing**: Tools execute in container with limited permissions
 3. **Input Validation**: All JSON inputs validated against schemas
-4. **Timeout Enforcement**: Hard timeouts prevent runaway execution
+4. **Timeout Enforcement**: `ExecuteTool` bands every call, so a wedged tool cannot hold the RPC open indefinitely. The band cancels the await; it does not terminate a tool already running on a worker thread, so a tool holding state across calls has its session rebuilt before the next one
 5. **Resource Limits**: Container resource limits prevent DoS

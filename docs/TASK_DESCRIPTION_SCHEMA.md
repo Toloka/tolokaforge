@@ -90,12 +90,20 @@ class ToolSchema(BaseModel):
     
     # Metadata
     category: Literal["read", "write", "compute"] = "compute"
-    timeout_s: float = 30.0
+    timeout_s: float = 30.0                       # see below
 
     # How to reconstruct this tool at runtime
     source: ToolSource
+```
 
+`ToolSchema.timeout_s` is the budget the runner resolves for its backstop around
+a call on that tool. It is not pack-declarable: `NativeAdapter` builds every
+tool's schema with the model default, so a pack cannot influence the value —
+tracked in [#1147](https://github.com/Toloka/tolokaforge/issues/1147). The one
+budget a pack can set today is `bash_session`'s `tool_config.timeout_s`, which
+that tool applies to its own commands (see [`docs/TOOLS.md`](TOOLS.md)).
 
+```python
 # =============================================================================
 # State and Data
 # =============================================================================

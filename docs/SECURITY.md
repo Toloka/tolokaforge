@@ -47,16 +47,19 @@ The `ToolExecutor` enforces:
 2. Arguments are validated against JSON schemas (`additionalProperties: false`)
 3. Missing required parameters are rejected
 4. Per-tool rate limits are enforced (configurable via `ToolPolicy.rate_limit`)
-5. Per-tool timeouts are enforced (configurable via `ToolPolicy.timeout_s`, default 30s)
+
+It applies no time bound of its own: it runs a tool to completion. The per-call
+budget is the tool's own — `ToolPolicy.timeout_s` is the value a tool hands its
+own HTTP client, subprocess, or `asyncio.wait_for` — so a tool that bounds
+nothing runs until the episode budget expires.
 
 ### Rate Limits and Timeouts
 
-Multiple timeout layers prevent runaway execution:
-
 | Control | Default | Config path |
 | --- | --- | --- |
-| Per-tool timeout | 30s | `ToolPolicy.timeout_s` |
-| Per-turn timeout | 60s | `orchestrator.timeouts.turn_s` |
+| Per-call budget the tool applies to its own I/O | per tool (20s for `http_request`, 120s for `bash_session`) | `ToolPolicy.timeout_s`; `tool_config.timeout_s` for `bash_session`. Not pack-declarable in general — #1147 |
+| Runner backstop around a tool call | the tool's declared budget, plus 5s for a tool that bounds itself | `ToolWrapper.effective_timeout_s` — runner substrate only |
+| Per-LLM-call timeout | per model | `api_call_timeout_s` on the model preset |
 | Episode timeout | 1200s | `orchestrator.timeouts.episode_s` |
 | Max turns | 50 | `orchestrator.max_turns` (always-on cap; #534 will flip to opt-in) |
 | Request throttle | 1.0/s | `orchestrator.max_requests_per_second` |
@@ -102,7 +105,7 @@ The agent never sees grading criteria or expected outputs:
 | Threat | Mitigation |
 | --- | --- |
 | Agent calling unauthorized tools | Tool allowlisting + schema validation |
-| Runaway execution (cost/time) | Budget cap, episode timeout, max turns, per-tool timeout |
+| Runaway execution (cost/time) | Budget cap, episode timeout, max turns, the per-call budget each tool applies to its own I/O |
 | Agent accessing grading criteria | Grading data is host-side only, never in tool outputs |
 | Environment state leaking between trials | Per-trial namespace isolation in JSON DB (built-in stack); per-trial containers, networks, and volumes under `PerTrialRuntimeBackend` (task-declared stack) |
 | Task-declared services reaching external internet | `network_policy: no_internet` (the default) attaches them to an injected `internal: true` network via `enforce_network_policy` (Case B/C) |
