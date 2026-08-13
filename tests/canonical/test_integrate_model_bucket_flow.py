@@ -203,3 +203,54 @@ def test_finalize_preserves_existing_verification_gates() -> None:
     for pattern, label in required_gates:
         msg = f"finalize step no longer contains the {label} - the retarget must not drop it"
         assert re.search(pattern, body), msg
+
+
+# ---------------------------------------------------------------------------
+# The observe cleanliness gate treats infra contamination as a rate.
+#
+# `any(non-zero)` discarded an entire observe run for one transient error in
+# 200 trials — a full-cost run thrown away and a clean candidate sent to a
+# human. The gate's job is to keep the agent away from transport-caused
+# failures, which arrive in bulk; a single hiccup cannot bias what it sees.
+# ---------------------------------------------------------------------------
+
+
+def _strip_comments(body: str) -> str:
+    """Shell body minus comment lines — the rationale mentions the construct it
+    replaced, and a substring check must not trip on the explanation."""
+    return "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
+
+
+def _gate_step_body() -> str:
+    doc = yaml.safe_load(_WORKFLOW_PATH.read_text())
+    for job in doc["jobs"].values():
+        for step in job.get("steps", []):
+            name = step.get("name", "")
+            if isinstance(name, str) and name.startswith("Cleanliness gate"):
+                run = step.get("run")
+                assert isinstance(run, str)
+                return run
+    raise AssertionError("no `Cleanliness gate` step found")
+
+
+def test_the_gate_scores_a_rate_not_a_boolean() -> None:
+    body = _strip_comments(_gate_step_body())
+    assert "any(" not in body, (
+        "a boolean over the infra counters fails the whole observe on one "
+        "transient error; the gate must weigh them against the trial count"
+    )
+    assert "trials" in body, "the rate needs the denominator"
+    assert "r>0.01" in body or "r > 0.01" in body, "expected the 1%-of-trials threshold"
+
+
+def test_a_suite_that_never_ran_is_still_absolute() -> None:
+    # Not a rate question: no capability data at all means nothing to analyse,
+    # however quiet the wire pack was.
+    body = _gate_step_body()
+    assert 'not f.get("capability_ran")' in body
+
+
+def test_the_verdict_and_its_numbers_are_surfaced() -> None:
+    body = _gate_step_body()
+    assert "observe gate:" in body, "the decision must be greppable in the run log"
+    assert "$GATE" in body, "the needs-human Slack must name the counts, not just say dirty"

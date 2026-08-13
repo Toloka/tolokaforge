@@ -437,7 +437,26 @@ jobs:
             touch "$RUNNER_TEMP/slack_terminal_sent" || true
             echo "no findings.json -> needs human"; exit 0
           fi
-          CLEAN="$(uv run python -c 'import json; f=json.load(open("observation/findings.json")); i=f.get("wire",{}).get("infra",{}); print("dirty" if (not f.get("capability_ran")) or any(i.get(k,0) for k in ("rate_limit","api_error","status_error")) else "clean")')"
+          # Infra contamination is a RATE, not a boolean. This gate exists so the
+          # agent never analyses failures the transport caused rather than the
+          # model, and a systematic problem -- throttling, an outage, a broken
+          # route -- shows up as many errors across the pack. A single transient
+          # hiccup does not, and cannot bias which quirks the agent sees, but
+          # `any(...)` discarded the whole observe for one. Measured on run
+          # 31694131208: status_error=1 of 200 trials (0.5%) aborted an
+          # otherwise healthy observe -- 22/31 capability probes green, 0
+          # tool-arg rejections across 911 tool calls -- and sent a clean
+          # candidate to a human at full observe cost.
+          #
+          # The threshold is a fraction of wire trials so it scales with pack
+          # size: 1 error in 200 passes, 3 do not, and on a 10-trial pack one
+          # error is 10% and still fails. `capability_ran` stays absolute -- a
+          # suite that never ran is not a rate question. Zero trials with any
+          # noise counts as fully dirty rather than dividing by zero. Counts are
+          # echoed so a reader can see how close the call was.
+          GATE="$(uv run python -c 'import json; f=json.load(open("observation/findings.json")); w=f.get("wire",{}); i=w.get("infra",{}); t=w.get("trials") or 0; n=sum(i.get(k,0) for k in ("rate_limit","api_error","status_error")); r=(n/t) if t else (1.0 if n else 0.0); print("dirty" if not f.get("capability_ran") else ("dirty" if r>0.01 else "clean"), n, t, round(r,4))')"
+          CLEAN="${GATE%% *}"
+          echo "observe gate: $GATE  (verdict noise trials rate)"
           if [ "$CLEAN" = "clean" ]; then
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
               --add-label 'automation:resolve-running' || true
@@ -452,7 +471,7 @@ jobs:
             echo "clean=no" >> "$GITHUB_OUTPUT"
             uv run automation slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
-              --icon needs_human --text 'Needs human: observe infra-dirty (rate-limit / API error / capability suite did not run)' \
+              --icon needs_human --text "Needs human: observe infra-dirty ($GATE - verdict noise trials rate; threshold 1% of trials)" \
               --pr-url "$PR_URL" --run-url "$RUN_URL" || true
             touch "$RUNNER_TEMP/slack_terminal_sent" || true
             echo "observe infra-dirty or did-not-run -> needs human"
