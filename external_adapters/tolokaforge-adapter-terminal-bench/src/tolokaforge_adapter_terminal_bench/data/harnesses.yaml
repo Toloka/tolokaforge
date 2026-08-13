@@ -176,29 +176,35 @@ harnesses:
   opencode:
     install_method: "npm"
     install_source: "opencode-ai"
-    # Pinned as of the research pass. Bump to a newer release with an
-    # ADR entry; the artifact records whatever install-harness.sh landed on.
-    version: "0.15.14"
-    # `run` is opencode's sub-command that reads the instruction, and every
-    # subsequent flag (including `--model`) is parsed as an option of `run`
-    # — putting `--model` between `opencode` and `run` makes the CLI drop
-    # to its usage banner with exit 1. Keep the sub-command adjacent to the
-    # executable in argv_prefix so model_flag inserts after it.
+    # Pinned to a specific 1.18.x release. opencode jumped from a 0.15
+    # series (the original research pin) to the 1.x line during this
+    # branch's development; the argv shape changed enough that the old
+    # entry was landing on the usage banner. Bump the pin with an ADR
+    # entry when a newer stable is available; the artifact records
+    # whatever install-harness.sh landed on.
+    version: "1.18.18"
+    # `run` is opencode's sub-command that reads the instruction. Every
+    # option (including `--model`) is parsed after `run`. `--model`
+    # accepted before `run` too on 1.18.x, but keeping the sub-command
+    # adjacent to the executable in argv_prefix so model_flag inserts
+    # after it matches how the assembler is documented.
     argv_prefix: ["opencode", "run"]
-    # opencode expects `--model=<name>` (equals form). See the
-    # model_flag_style knob just below.
+    # opencode expects `--model=<name>` (equals form).
     model_flag: "--model"
     model_flag_style: "equals"
-    # `--format=json` emits the JSON stream we record. `--` separates the
-    # instruction from CLI flags so any leading dash in the prompt is
-    # treated as text, not a flag. `--thinking` and
-    # `--dangerously-skip-permissions` (documented in the initial
-    # research pass) turned out to be absent from opencode 0.15.x's argv
-    # parser — the CLI drops to its usage banner with exit 1. Add them
-    # back via overlay if a later opencode version reintroduces them, or
-    # bump the shipped `version` past the release that accepts them.
+    # `--format=json` emits the JSON stream we record.
+    # `--auto` auto-approves every permission that isn't explicitly
+    # denied — the 1.18.x replacement for the `--dangerously-skip-permissions`
+    # flag the initial research cited (which was removed sometime during
+    # the 0.x → 1.x transition and no longer parses).
+    # `--thinking` keeps thinking blocks in the JSON stream — parity
+    # match with harbor's own opencode invocation.
+    # `--` separates the instruction from CLI flags so any leading dash
+    # in the prompt is treated as text, not a flag.
     argv_suffix:
       - "--format=json"
+      - "--auto"
+      - "--thinking"
       - "--"
     instruction_channel: "argv"
     # opencode requires `provider/model` (harbor:489 raises without a `/`),

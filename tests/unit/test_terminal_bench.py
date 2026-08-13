@@ -1031,7 +1031,7 @@ class TestInstallHarnessScript:
             elif spec.install_method == "curl-bash":
                 assert recorded == [
                     f"-fsSL {spec.install_source} -o /tmp/harness-installer.sh",
-                    f"installer --version {spec.version}",
+                    f"installer {spec.version}",
                 ], name
             elif spec.install_method == "binary":
                 assert recorded == [f"-fsSL {spec.install_source} -o /tmp/harness-download"], name
@@ -1055,7 +1055,7 @@ class TestInstallHarnessScript:
         assert proc.returncode == 0, proc.stderr
         assert recorded == [
             "-fsSL https://harness.invalid/install.sh -o /tmp/harness-installer.sh",
-            "installer --version 1.2.3",
+            "installer 1.2.3",
         ]
         assert self._recorded_version(tmp_path) == "1.2.3"
 
