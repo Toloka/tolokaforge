@@ -46,7 +46,6 @@ orchestrator:
 
   stuck_heuristics:
     max_repeated_tool_calls: 5      # Identical tool call threshold
-    max_idle_turns: 8               # Turns without tool calls
 
 evaluation:
   task_packs:

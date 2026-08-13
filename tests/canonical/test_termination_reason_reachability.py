@@ -52,7 +52,13 @@ from tolokaforge.core.llm.client import (
 )
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
-from tolokaforge.core.models import Message, TerminationReason, Trajectory, TrialStatus
+from tolokaforge.core.models import (
+    Message,
+    TerminationReason,
+    ToolCall,
+    Trajectory,
+    TrialStatus,
+)
 from tolokaforge.core.models.task_config import InteractionMode
 from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 from tolokaforge.core.run_display_events import LLMCallObservation
@@ -149,6 +155,16 @@ def _text(body: str) -> GenerationResult:
     )
 
 
+def _repeated_call() -> GenerationResult:
+    """The same call every turn — the agent behaviour the stuck detector reads
+    as a loop. The queue repeats its last item, so one is enough."""
+    return GenerationResult(
+        text="",
+        tool_calls=[ToolCall(id="repeat", name="search", arguments={"q": "same"})],
+        usage=Usage(prompt_tokens=10, completion_tokens=5),
+    )
+
+
 def _run_trial(
     *agent_items: GenerationResult | Exception,
     user_reply: str = "Please carry on.",
@@ -190,7 +206,11 @@ def observed_outcomes() -> frozenset[tuple[TrialStatus, TerminationReason]]:
     trajectories = [
         _run_trial(_text("All set."), interaction_mode="agent_only"),
         _run_trial(_text("Anything else?"), user_reply="###STOP###"),
-        _run_trial(_text("Thinking."), stuck_detector=StuckDetector(max_idle_turns=1)),
+        _run_trial(
+            _repeated_call(),
+            max_turns=20,
+            stuck_detector=StuckDetector(max_repeated_tool_calls=5),
+        ),
         _run_trial(_text("Still working."), max_turns=1),
         _run_trial(_text("unreached"), episode_timeout_s=0),
         _run_trial(LLMApiTimeoutError("upstream never answered")),

@@ -11,7 +11,7 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
-from tolokaforge.core.deprecations import canonicalize_actor_config
+from tolokaforge.core.deprecations import canonicalize_actor_config, drop_retired_max_idle_turns
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
 from tolokaforge.core.grading.state_composition import (
@@ -260,14 +260,18 @@ class TimeoutDefaults(BaseModel):
 class StuckHeuristicsDefaults(BaseModel):
     """Task-shape stuck-detection knobs applied to every task via
     ``task_defaults``. The canonical home for stuck-heuristic config;
-    ``OrchestratorConfig.stuck_heuristics`` is deprecated and no longer
-    read by the conductor."""
+    the deprecated ``OrchestratorConfig.stuck_heuristics`` is what the
+    conductor falls back to for a task declaring no block of its own."""
 
     model_config = {"extra": "ignore"}
 
     enabled: bool = True
     max_repeated_tool_calls: int = Field(default=5, ge=1)
-    max_idle_turns: int = Field(default=3, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_keys(cls, data: Any) -> Any:
+        return drop_retired_max_idle_turns(data)
 
 
 def _lift_user_simulator_kwarg(data: Any) -> Any:
@@ -342,8 +346,8 @@ class TaskConfig(BaseModel):
     """Task-scope stuck-detection knobs. Populated by the M2 loader
     merge chain when ``project.task_defaults.stuck_heuristics`` is set;
     the task's own ``task.yaml`` overrides win on conflict. The
-    conductor reads from here; ``OrchestratorConfig.stuck_heuristics``
-    is deprecated."""
+    conductor reads from here when it is set and from the deprecated
+    ``OrchestratorConfig.stuck_heuristics`` when it is not."""
 
     timeouts: TimeoutDefaults | None = None
     """Task-scope timeouts. Populated by the M2 loader merge chain;

@@ -30,4 +30,3 @@ orchestrator:
   stuck_heuristics:
     enabled: true
     max_repeated_tool_calls: 3
-    max_idle_turns: 2
