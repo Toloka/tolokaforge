@@ -147,10 +147,11 @@ harnesses:
     # No permission-mode analogue. `--output-format stream-json` matches
     # harbor's invocation shape so trajectory JSON is emitted for the
     # runner to record — same reason claude-code carries the flag.
-    argv_suffix: ["--output-format", "stream-json"]
-    # Instruction is passed through the `KIMI_MODEL_NAME`-adjacent
-    # `--prompt "$INSTRUCTION"` — argv-side, no shell escaping tax beyond
-    # what harness_command already applies.
+    # `--prompt` MUST sit last: kimi wants the instruction as its value
+    # (harbor's kimi_code.py:183 renders `--prompt "$INSTRUCTION"`).
+    # Passing the instruction as a bare positional argv token (the initial
+    # attempt) drops kimi to its usage banner with "See 'kimi --help'".
+    argv_suffix: ["--output-format", "stream-json", "--prompt"]
     instruction_channel: "argv"
     # kimi-code reads the model name from an env var, not `--model`.
     env_model_vars: ["KIMI_MODEL_NAME"]
@@ -188,16 +189,16 @@ harnesses:
     # model_flag_style knob just below.
     model_flag: "--model"
     model_flag_style: "equals"
-    # Flags before `--permission-*`: none; opencode has no equivalent.
-    # `--format=json` emits the JSON stream we record. `--thinking` matches
-    # harbor's invocation to keep thinking blocks in the stream (parity
-    # policy). `--dangerously-skip-permissions` is the equivalent of
-    # claude-code's bypass. `--` separates the instruction from CLI flags
-    # so any leading dash in the prompt is treated as text, not a flag.
+    # `--format=json` emits the JSON stream we record. `--` separates the
+    # instruction from CLI flags so any leading dash in the prompt is
+    # treated as text, not a flag. `--thinking` and
+    # `--dangerously-skip-permissions` (documented in the initial
+    # research pass) turned out to be absent from opencode 0.15.x's argv
+    # parser — the CLI drops to its usage banner with exit 1. Add them
+    # back via overlay if a later opencode version reintroduces them, or
+    # bump the shipped `version` past the release that accepts them.
     argv_suffix:
       - "--format=json"
-      - "--thinking"
-      - "--dangerously-skip-permissions"
       - "--"
     instruction_channel: "argv"
     # opencode requires `provider/model` (harbor:489 raises without a `/`),

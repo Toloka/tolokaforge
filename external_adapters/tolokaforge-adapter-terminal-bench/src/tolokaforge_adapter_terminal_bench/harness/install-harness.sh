@@ -158,9 +158,19 @@ install_pip() {
 }
 
 install_curl_bash() {
+    # Installer scripts published under ``curl … | bash`` conventions are
+    # bash, not POSIX sh — they routinely use ``[[ … ]]``, arrays, and
+    # ``process substitution``. Running with ``/bin/sh`` produces
+    # ``Syntax error: "(" unexpected`` on installers like x.ai's.
+    ensure_command bash bash bash
     installer=/tmp/harness-installer.sh
     download "$SOURCE" "$installer"
-    sh "$installer" --version "$VERSION"
+    # Positional version arg (``bash installer.sh <version>``) matches the
+    # ``curl … | bash -s -- <version>`` shape most installers document. If
+    # a specific installer needs ``--version`` instead, its harness entry
+    # should ship a ``pre_exec_shell`` that rewrites the invocation — the
+    # generic branch stays predictable.
+    bash "$installer" "$VERSION"
     rm -f "$installer"
     record_version "$VERSION"
 }
