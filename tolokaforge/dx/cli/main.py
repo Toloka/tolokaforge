@@ -638,6 +638,20 @@ def run(
             "--run-dir requires --resume; use it only to point --resume at an existing run directory"
         )
 
+    # Validate TOLOKAFORGE_IMAGE_SOURCE eagerly — Click already checks
+    # ``--image-source`` via its ``Choice`` type, but a typo in the env
+    # var would otherwise not surface until after load_effective_run_config
+    # walks the entire YAML tree, so a two-letter mistake burns seconds.
+    _env_image_source = os.environ.get("TOLOKAFORGE_IMAGE_SOURCE")
+    if _env_image_source:
+        _allowed_sources = _get_type_args(_ImageSourceLiteral)
+        if _env_image_source not in _allowed_sources:
+            raise click.BadParameter(
+                f"TOLOKAFORGE_IMAGE_SOURCE={_env_image_source!r} is not one of "
+                f"{', '.join(repr(v) for v in _allowed_sources)}",
+                param_hint="TOLOKAFORGE_IMAGE_SOURCE",
+            )
+
     console.print(f"[bold blue]Loading configuration from {config}...[/bold blue]")
 
     # Load config with the enclosing project's run_defaults layered under
@@ -705,15 +719,11 @@ def run(
     # images are pulled from Docker Hub or built locally. Precedence:
     # flag > env > YAML config > default (auto). Same ad-hoc pattern as
     # --user-model / --judge-model above.
+    # Both sources are already validated: --image-source by Click's
+    # ``Choice`` at parse time, TOLOKAFORGE_IMAGE_SOURCE by the eager
+    # env check above. This block only applies the resolved value.
     image_source_override = image_source or os.environ.get("TOLOKAFORGE_IMAGE_SOURCE")
     if image_source_override:
-        allowed = _get_type_args(_ImageSourceLiteral)
-        if image_source_override not in allowed:
-            raise click.BadParameter(
-                f"TOLOKAFORGE_IMAGE_SOURCE={image_source_override!r} is not one of "
-                f"{', '.join(repr(v) for v in allowed)}",
-                param_hint="TOLOKAFORGE_IMAGE_SOURCE",
-            )
         # Defensive: PyYAML parses a bare ``docker:`` key with no value
         # as ``None``. ``dict.setdefault('docker', {})`` returns that
         # existing None and ``None['image_source'] = ...`` blows up

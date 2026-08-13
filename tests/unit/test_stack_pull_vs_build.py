@@ -32,12 +32,14 @@ def _svc(
     published: str | None = PUBLISHED_REPO,
     use_prebuilt: bool = False,
     dockerfile: str = "docker/runner.Dockerfile",
+    platform: str = "linux/amd64",
 ) -> ServiceDefinition:
     """A minimal runnable ServiceDefinition for stack-branch tests."""
     return ServiceDefinition(
         name="runner",
         image_name="tolokaforge-runner",
         published_image_repo=published,
+        published_image_platform=platform,
         dockerfile=dockerfile if not use_prebuilt else "",
         context=".",
         use_prebuilt_image=use_prebuilt,
@@ -150,7 +152,14 @@ class TestAutoModeWheelInstall:
         assert image.context_hash == "pulled"
         # ``linux/amd64`` is the published-images platform axis; the caller
         # passes it explicitly so arm64 hosts can pull the amd64 variant.
-        pull_mock.assert_called_once_with(name=PUBLISHED_REPO, tag="0.18.0", platform="linux/amd64")
+        # ``log_label`` carries the service name so concurrent-retry log
+        # lines can be correlated back to a specific service.
+        pull_mock.assert_called_once_with(
+            name=PUBLISHED_REPO,
+            tag="0.18.0",
+            platform="linux/amd64",
+            log_label="runner",
+        )
         assert registry.calls == []  # build path never taken
 
     def test_tag_missing_fallback_to_build_with_warning(
@@ -347,6 +356,28 @@ class TestServiceWithoutPublishedRepoAlwaysBuilds:
 
         pull_mock.assert_not_called()
         assert len(registry.calls) == 1
+
+
+class TestServicePlatformOverride:
+    """``published_image_platform`` is a per-service field so a service
+    that publishes multi-arch or arm64-native images can override the
+    default ``linux/amd64`` without touching stack.py."""
+
+    def test_platform_field_reaches_image_pull(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        stack, pull_mock, _registry = _make_stack(
+            monkeypatch,
+            image_source="auto",
+            pull_result=_fake_pulled_image(),
+            is_wheel_install=True,
+            engine_version="0.18.0",
+        )
+
+        # Runner declared with a non-default platform — the pull path
+        # must forward it verbatim, not silently coerce to amd64.
+        stack._build_one_image(_svc(platform="linux/arm64"))
+
+        args = pull_mock.call_args
+        assert args.kwargs["platform"] == "linux/arm64"
 
 
 class TestExplicitPullModeContract:

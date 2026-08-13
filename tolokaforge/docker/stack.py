@@ -155,6 +155,17 @@ class ServiceDefinition(BaseModel):
             "service (task-declared services, third-party images, etc.)."
         ),
     )
+    published_image_platform: str = Field(
+        default="linux/amd64",
+        description=(
+            "Docker platform spec passed to Image.pull for this service's "
+            "published images. Defaults to linux/amd64 because that's what "
+            "publish-images.yml currently produces for every first-party "
+            "image; an arm64 host pulls the amd64 variant under emulation. "
+            "A service that publishes multi-arch or arm64-native images "
+            "overrides this per-service."
+        ),
+    )
     context_files: list[str | tuple[str, str]] = Field(
         default_factory=list,
         description="Explicit list of files/dirs to include in build context. "
@@ -499,17 +510,18 @@ class EngineStack(BaseModel):
             self.config.image_source,
             "" if self.config.image_source != "auto" else f", wheel_install={is_wheel_install}",
         )
-        # Published tolokaforge-* images are linux/amd64 only. On arm64
-        # hosts (Apple Silicon), docker refuses to pull a manifest that
-        # doesn't declare arm64 unless a platform override is passed —
-        # matches the deploy/standalone/docker-compose.yaml pin at
-        # ``platform: ${TOLOKAFORGE_PLATFORM:-linux/amd64}``. amd64 hosts
-        # get the same image without emulation.
+        # Platform pinned per-service via published_image_platform (default
+        # linux/amd64 — the current publish-images.yml target). On arm64
+        # hosts an explicit platform override is required or docker will
+        # refuse the pull with "no matching manifest for linux/arm64/v8"
+        # even if it can emulate. Matches deploy/standalone/docker-
+        # compose.yaml's ``platform: ${TOLOKAFORGE_PLATFORM:-linux/amd64}``.
         try:
             return Image.pull(
                 name=svc.published_image_repo,
                 tag=engine_version,
-                platform="linux/amd64",
+                platform=svc.published_image_platform,
+                log_label=svc.name,
             )
         except ImagePullError as exc:
             if self.config.image_source == "pull":

@@ -502,6 +502,7 @@ class Image(BaseModel):
         name: str,
         tag: str,
         platform: str | None = None,
+        log_label: str | None = None,
         client: DockerClient | None = None,
     ) -> Image:
         """Pull an image reference from a Docker registry.
@@ -612,13 +613,20 @@ class Image(BaseModel):
             # of exponential backoff before surfacing.
             return False
 
+        # Retry log carries ``log_label`` (usually the service name) so
+        # when multiple services retry concurrently the operator can
+        # correlate the log lines back to a specific service without
+        # having to parse the ``full_tag`` suffix.
+        log_prefix = f"[{log_label}] " if log_label else ""
+
         @retry(
             stop=stop_after_attempt(5),
             wait=wait_exponential(multiplier=10, min=10, max=60),
             retry=retry_if_exception(_is_transient),
             reraise=True,
             before_sleep=lambda rs: logger.warning(
-                "Docker pull attempt %d for '%s' failed, retrying in %ds...",
+                "%sDocker pull attempt %d for '%s' failed, retrying in %ds...",
+                log_prefix,
                 rs.attempt_number,
                 full_tag,
                 rs.next_action.sleep,
