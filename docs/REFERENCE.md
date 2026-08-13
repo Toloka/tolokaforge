@@ -41,7 +41,7 @@ orchestrator:
                                     # task-authored max_turns above 50 stand
 
   timeouts:
-    turn_s: 60                      # Per-turn timeout
+    turn_s: 60                      # Declared, not yet enforced — #1147
     episode_s: 1200                 # Total episode timeout
 
   stuck_heuristics:

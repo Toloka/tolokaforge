@@ -79,6 +79,15 @@ container at start (`tolokaforge/docker/stacks/core.py`). The orchestrator
 mirrors the value on ``TrialSpec.env_endpoints`` so a future out-of-process
 runner reads its service URLs from the spec instead of its own env."""
 
+RUNNER_RESOLVES_TOOL_TIMEOUT = 0.0
+"""The ``ExecuteToolRequest.timeout_seconds`` the engine sends on every call.
+
+Zero tells the runner to resolve the budget the tool itself declares — the
+runner is the only layer that knows which tool is about to run. The field stays
+on the wire for engine/image skew: an older engine naming a positive budget is
+still honoured by a new image, and a new engine's zero still resolves on an
+older one."""
+
 
 def _normalise_runner_url(runner_address: str) -> str:
     """Prepend ``http://`` to a bare ``host:port`` runner address, leaving
@@ -148,7 +157,6 @@ class RunnerClient(Protocol):
         trial_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        timeout_seconds: float = 30.0,
         executor: str = "agent",
         *,
         call_id: str,
@@ -455,7 +463,6 @@ class GrpcRunnerClient:
         trial_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        timeout_seconds: float = 30.0,
         executor: str = "agent",
         *,
         call_id: str,
@@ -467,7 +474,6 @@ class GrpcRunnerClient:
             trial_id: Trial ID
             tool_name: Tool name to execute
             arguments: Tool arguments as dict
-            timeout_seconds: Execution timeout
             executor: Which environment is making the call ("agent" or "user")
             call_id: The trial's episode-unique tool-call id, which the runner
                 records with the call
@@ -483,7 +489,7 @@ class GrpcRunnerClient:
                 trial_id=trial_id,
                 tool_name=tool_name,
                 arguments_json=json.dumps(arguments),
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=RUNNER_RESOLVES_TOOL_TIMEOUT,
                 executor=executor,
                 call_id=call_id,
             )
@@ -1339,7 +1345,6 @@ class SharedStackRuntimeBackend:
         trial_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        timeout_seconds: float = 30.0,
         executor: str = "agent",
         *,
         call_id: str,
@@ -1348,7 +1353,6 @@ class SharedStackRuntimeBackend:
             trial_id=trial_id,
             tool_name=tool_name,
             arguments=arguments,
-            timeout_seconds=timeout_seconds,
             executor=executor,
             call_id=call_id,
         )

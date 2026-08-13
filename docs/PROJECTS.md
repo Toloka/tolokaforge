@@ -514,6 +514,13 @@ copies as **caps or removes them**:
   (`trial_seconds`, `tool_call_seconds`); the orchestrator
   `TimeoutConfig`'s current `turn_s`/`episode_s` names are
   legacy and retire with the other aliases in M5.
+  Only `trial_seconds` is enforced today. `tool_call_seconds` —
+  and the `turn_s` it resolves against — reach `TrialRunner` and
+  are read by nothing; a per-call budget is the tool's own, and
+  making one pack-declarable is tracked in
+  [#1147](https://github.com/Toloka/tolokaforge/issues/1147).
+  The `tool_call_seconds: 60` lines in the layouts in this
+  document are therefore declared, not yet enforced.
 - `orchestrator.stuck_heuristics` is deprecated by this design;
   `task_defaults` is its canonical home (legacy alias retired in
   M5, #214). The conductor reads the task-scope block when the

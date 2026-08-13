@@ -61,7 +61,6 @@ class DockerRunnerAdapter:
         self,
         tool_name: str,
         arguments: dict[str, Any] | None = None,
-        timeout_seconds: float = 30.0,
         *,
         call_id: str,
         **kwargs,
@@ -84,7 +83,6 @@ class DockerRunnerAdapter:
             trial_id=self.trial_id,
             tool_name=tool_name,
             arguments=arguments,
-            timeout_seconds=timeout_seconds,
             executor=self.executor,
             call_id=call_id,
         )

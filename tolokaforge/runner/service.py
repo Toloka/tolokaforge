@@ -177,6 +177,7 @@ from tolokaforge.runner.tool_factory import (
     ToolFactory,
     ToolLifecycleContext,
     ToolReconstructionError,
+    ToolWrapper,
 )
 from tolokaforge.tools.registry import ToolExecutionStatus, raised_tool_failure_text
 
@@ -472,6 +473,19 @@ def _unreachable_state_checks_refusal(
     return None
 
 
+def _backstop_seconds(tool: Any, trial_default: float) -> float:
+    """The band the runner applies around a call on *tool*.
+
+    A :class:`ToolWrapper` names its own band, which for a tool enforcing a
+    per-call budget of its own sits above that budget. Anything else — a bare
+    callable injected onto a trial — has no band to name, so the trial's
+    default stands.
+    """
+    if isinstance(tool, ToolWrapper):
+        return tool.effective_timeout_s
+    return trial_default
+
+
 # =============================================================================
 # Trial Context - Per-trial runtime state (with tool callables)
 # =============================================================================
@@ -493,7 +507,8 @@ class TrialContextRuntime:
         agent_tools: Map of tool name -> tool callable for agent tools
         user_tools: Map of tool name -> tool callable for user-side tools
         tool_call_history: The trial's ordered tool-call record
-        default_timeout: Default timeout for tool execution in seconds
+        default_timeout: Fallback band for a tool that names none of its own
+        lifecycle_ctx: The context this trial's lifecycle tools were started with
     """
 
     def __init__(
@@ -520,6 +535,21 @@ class TrialContextRuntime:
         # concurrent across trials; this gives lifecycle for free and avoids
         # locking/leak. See the kb_search resolver methods below.
         self._kb_search: KnowledgeSearch | None = None
+        # The context this trial's lifecycle tools were started with, kept so a
+        # tool whose session the backstop poisoned is rebuilt against the same
+        # artifacts_dir and work_dir rather than a reconstruction of them.
+        self.lifecycle_ctx: ToolLifecycleContext | None = None
+        self._unusable_tools: dict[tuple[ToolExecutorIdentity, str], str] = {}
+
+    def mark_tool_unusable(
+        self, tool_name: str, executor: ToolExecutorIdentity, reason: str
+    ) -> None:
+        """Refuse every later call to this tool, naming *reason*."""
+        self._unusable_tools[(executor, tool_name)] = reason
+
+    def unusable_reason(self, tool_name: str, executor: ToolExecutorIdentity) -> str | None:
+        """Why this tool can no longer be called, or ``None`` if it can."""
+        return self._unusable_tools.get((executor, tool_name))
 
     def register_kb_search(self, impl: KnowledgeSearch) -> None:
         """Bind the per-trial :class:`KnowledgeSearch` resolved at trial setup."""
@@ -1155,7 +1185,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # ``has_lifecycle`` capability, not by adapter identity, so any lifecycle
         # tool (e.g. a compose-backed sandbox) is provisioned the same way —
         # and over both registries, because either actor may be given one.
-        lifecycle_ctx = ToolLifecycleContext(
+        trial_context.lifecycle_ctx = ToolLifecycleContext(
             trial_id=trial_id,
             artifacts_dir=str(artifacts_dir) if artifacts_dir is not None else None,
             work_dir=AGENT_WORK_DIR,
@@ -1163,7 +1193,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         for tool in (*trial_context.agent_tools.values(), *trial_context.user_tools.values()):
             if getattr(tool, "has_lifecycle", False):
                 try:
-                    tool.start(lifecycle_ctx)
+                    tool.start(trial_context.lifecycle_ctx)
                 except Exception as e:
                     logger.error(f"RegisterTrial: Failed to start tool lifecycle: {e}")
                     return pb2.RegisterTrialResponse(
@@ -1291,25 +1321,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error_message=f"Invalid arguments JSON: {e}",
             )
 
-        # Look up tool in the appropriate tool set
-        tool = trial_context.get_tool(tool_name, executor)
+        tool, refusal = self._resolve_tool_or_refuse(
+            trial_context=trial_context,
+            call_id=call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            executor=executor,
+        )
         if tool is None:
-            logger.warning(f"ExecuteTool: Tool not found: {tool_name} ({executor.value})")
-            return self._reject_tool_call(
-                trial_context=trial_context,
-                call_id=call_id,
-                tool_name=tool_name,
-                arguments=arguments,
-                executor=executor,
-                status=pb2.EXECUTION_STATUS_TOOL_NOT_FOUND,
-                error_message=f"Tool '{tool_name}' not found",
-            )
+            return refusal
 
-        # Determine timeout
         timeout_seconds = request.timeout_seconds
         if timeout_seconds <= 0:
-            # Use tool-specific timeout or default
-            timeout_seconds = getattr(tool, "timeout_s", trial_context.default_timeout)
+            timeout_seconds = _backstop_seconds(tool, trial_context.default_timeout)
 
         # Run async execution on dedicated event loop thread. The RPC timeout is
         # the effective deadline: the inner tool wrapper enforces the same value on
@@ -1343,6 +1367,49 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 metrics=pb2.ToolMetrics(),
             )
 
+    def _resolve_tool_or_refuse(
+        self,
+        *,
+        trial_context: TrialContextRuntime,
+        call_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        executor: ToolExecutorIdentity,
+    ) -> tuple[Any, None] | tuple[None, pb2.ExecuteToolResponse]:
+        """The tool that will serve this call, or the recorded refusal instead.
+
+        Two ways a registered trial holds no tool able to answer: the name
+        resolves to nothing in this executor's registry, or the tool's session
+        could not be rebuilt after the backstop fired and there is nothing left
+        to serve from.
+        """
+        tool = trial_context.get_tool(tool_name, executor)
+        if tool is None:
+            logger.warning(f"ExecuteTool: Tool not found: {tool_name} ({executor.value})")
+            return None, self._reject_tool_call(
+                trial_context=trial_context,
+                call_id=call_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                executor=executor,
+                status=pb2.EXECUTION_STATUS_TOOL_NOT_FOUND,
+                error_message=f"Tool '{tool_name}' not found",
+            )
+
+        unusable = trial_context.unusable_reason(tool_name, executor)
+        if unusable is None:
+            return tool, None
+        logger.warning(f"ExecuteTool: refusing {tool_name} ({executor.value}): {unusable}")
+        return None, self._reject_tool_call(
+            trial_context=trial_context,
+            call_id=call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            executor=executor,
+            status=pb2.EXECUTION_STATUS_ERROR,
+            error_message=unusable,
+        )
+
     def _reject_tool_call(
         self,
         trial_context: TrialContextRuntime,
@@ -1369,6 +1436,88 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             error_message=error_message,
             metrics=pb2.ToolMetrics(),
         )
+
+    async def _invoke_tool(
+        self,
+        tool: Any,
+        tool_name: str,
+        arguments: dict[str, Any],
+        timeout_seconds: float,
+    ) -> Any:
+        """Call *tool* under the runner's band, whatever shape it takes.
+
+        Raises :class:`asyncio.TimeoutError` when the band elapses. The band is
+        a backstop: it cancels the await, but a tool running on a worker thread
+        keeps running there, which is why a timed-out lifecycle tool has its
+        session rebuilt by :meth:`_reset_backstopped_tool`.
+        """
+        if hasattr(tool, "execute"):
+            return await asyncio.wait_for(tool.execute(arguments), timeout=timeout_seconds)
+        if not callable(tool):
+            raise TypeError(f"Tool {tool_name} is not callable")
+        if inspect.iscoroutinefunction(tool):
+            return await asyncio.wait_for(tool(arguments), timeout=timeout_seconds)
+        loop = asyncio.get_event_loop()
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: tool(arguments)),
+            timeout=timeout_seconds,
+        )
+
+    async def _reset_backstopped_tool(
+        self,
+        trial_context: TrialContextRuntime,
+        tool: Any,
+        tool_name: str,
+        executor: ToolExecutorIdentity,
+        timeout_seconds: float,
+    ) -> str:
+        """Rebuild a backstopped lifecycle tool's session, and say so in the call's message.
+
+        The backstop abandons the worker thread rather than killing it, so a
+        tool holding a session across calls is left with a reader still draining
+        its pipe — and the next call on that session can read what it drains.
+        Rebuilding before this call returns is what keeps that from happening;
+        the agent's next call finds a clean session, so the transcript says so.
+
+        A rebuild that fails leaves nothing usable behind, so the tool is marked
+        for the trial and every later call on it is refused by name rather than
+        served from a pipe nobody owns.
+
+        Dispatch is by capability, never by adapter identity: a tool rebuilding
+        into the same configuration it already held clears nothing, and is left
+        alone rather than told the agent its session was reset.
+
+        ``stop()`` / ``start()`` are synchronous and can take seconds — a
+        SIGKILL wait plus, on the compose engine, reopening an exec — so they go
+        through the executor. Running them on the event loop would stall every
+        other trial this runner is serving.
+        """
+        timed_out = f"Tool execution timed out after {timeout_seconds}s"
+        if not getattr(tool, "has_lifecycle", False) or not getattr(
+            tool, "rebuild_clears_backstopped_state", False
+        ):
+            return timed_out
+        try:
+            lifecycle_ctx = trial_context.lifecycle_ctx
+            if lifecycle_ctx is None:
+                raise RuntimeError("the trial stored no ToolLifecycleContext at registration")
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._rebuild_session, tool, lifecycle_ctx)
+        except Exception as e:
+            reason = (
+                f"Tool '{tool_name}' is unusable for the rest of this trial: its session "
+                f"could not be rebuilt after a timeout ({type(e).__name__}: {e})"
+            )
+            logger.error(f"ExecuteTool: {reason}")
+            logger.error(traceback.format_exc())
+            trial_context.mark_tool_unusable(tool_name, executor, reason)
+            return f"{timed_out}. {reason}"
+        return f"{timed_out}. The tool's session was reset, so the next call starts clean."
+
+    @staticmethod
+    def _rebuild_session(tool: Any, lifecycle_ctx: ToolLifecycleContext) -> None:
+        tool.stop()
+        tool.start(lifecycle_ctx)
 
     async def _execute_tool_async(
         self,
@@ -1397,30 +1546,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         error_message = ""
 
         try:
-            # Execute tool with timeout
-            # Tool wrappers have async execute(arguments) -> str method
-            if hasattr(tool, "execute"):
-                # ToolWrapper interface
-                result = await asyncio.wait_for(
-                    tool.execute(arguments),
-                    timeout=timeout_seconds,
-                )
-            elif callable(tool):
-                # Direct callable (for testing or simple tools)
-                if inspect.iscoroutinefunction(tool):
-                    result = await asyncio.wait_for(
-                        tool(arguments),
-                        timeout=timeout_seconds,
-                    )
-                else:
-                    # Sync callable - run in executor
-                    loop = asyncio.get_event_loop()
-                    result = await asyncio.wait_for(
-                        loop.run_in_executor(None, lambda: tool(arguments)),
-                        timeout=timeout_seconds,
-                    )
-            else:
-                raise TypeError(f"Tool {tool_name} is not callable")
+            result = await self._invoke_tool(tool, tool_name, arguments, timeout_seconds)
 
             # Convert result to string
             if isinstance(result, str):
@@ -1435,8 +1561,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         except asyncio.TimeoutError:
             status = pb2.EXECUTION_STATUS_TIMEOUT
-            error_message = f"Tool execution timed out after {timeout_seconds}s"
             logger.warning(f"ExecuteTool: {tool_name} timed out after {timeout_seconds}s")
+            error_message = await self._reset_backstopped_tool(
+                trial_context, tool, tool_name, executor, timeout_seconds
+            )
 
         except Exception as e:
             # Catch all exceptions from tool execution

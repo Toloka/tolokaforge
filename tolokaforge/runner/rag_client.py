@@ -340,6 +340,7 @@ class RAGServiceClient:
         query: str,
         limit: int = 5,
         alpha: float = 0.5,
+        timeout: float | None = None,
     ) -> SearchResponse:
         """
         Search indexed documents.
@@ -355,6 +356,9 @@ class RAGServiceClient:
             query: Search query string
             limit: Maximum number of results (default: 5)
             alpha: Hybrid search weight (default: 0.5)
+            timeout: Budget for this one request, overriding the client's.
+                A caller that is itself banded from outside passes the budget
+                it was given, so the request cannot outlive it.
 
         Returns:
             SearchResponse with search results
@@ -385,6 +389,7 @@ class RAGServiceClient:
             response = await client.post(
                 f"/trials/{trial_id}/search",
                 json=request.model_dump(),
+                timeout=timeout if timeout is not None else self.timeout,
             )
 
             if response.status_code == 200:

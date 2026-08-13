@@ -156,6 +156,28 @@ class ToolCallOutcome:
     declared_failure: bool
 
 
+BACKSTOP_GRACE_S = 5.0
+"""Slack between a tool's own per-call budget and the runner's backstop.
+
+It covers what a tool spends finishing *after* its own budget elapses, and the
+two engines spend it differently:
+
+* local shell — measured 0.7 s worst case: SIGINT, then SIGKILL 0.2 s later,
+  then a 0.3 s drain, on top of a 0.2 s poll interval. 5 s clears it ~7x.
+* compose shell — SIGKILL, then ``proc.wait(5)``, then a reopened ``docker
+  exec`` whose readiness and ``cd`` round trips are bounded at
+  ``_OPEN_TIMEOUT_S`` each. Warm, a local exec reopens in milliseconds and 5 s
+  clears it comfortably; at those bounds it would not.
+
+That second worst case is accepted rather than covered, because covering it
+would mean holding a wedged trial ~35 s past its budget on every engine. When it
+happens the backstop fires mid-reopen and the call reports a plain timeout —
+``DockerComposeExecToolWrapper`` rebuilds no session of the runner's, so the
+degradation is a lost reopen, not a poisoned pipe.
+
+Resizing this downward needs both engines re-measured, not just the local one."""
+
+
 class ToolWrapper(ABC):
     """
     Base class for tool wrappers.
@@ -172,10 +194,52 @@ class ToolWrapper(ABC):
     # lifecycle off this capability, never off the adapter type.
     has_lifecycle: bool = False
 
+    # Consulted only for a ``has_lifecycle`` tool the runner's backstop fires on:
+    # does closing and reopening this tool clear state an abandoned worker could
+    # otherwise serve to the next call? True for a tool holding a pipe or session
+    # of its own. False for a tool whose start() only resolves configuration —
+    # rebuilding that clears nothing, so the call must not tell the agent its
+    # session was reset. Defaults True so a new lifecycle tool is rebuilt rather
+    # than silently left holding a poisoned pipe.
+    rebuild_clears_backstopped_state: bool = True
+
     def __init__(self, tool_schema: ToolSchemaModel):
         self.tool_schema = tool_schema
         self.name = tool_schema.name
         self.timeout_s = tool_schema.timeout_s
+
+    @property
+    def own_budget_s(self) -> float | None:
+        """The per-call budget this wrapper applies to its own work, if any.
+
+        Override in a wrapper that hands a number to its own timeout mechanism
+        — an ``httpx`` ``timeout=``, a ``subprocess`` ``timeout=``, a session's
+        per-command budget. A wrapper that bounds nothing leaves this ``None``
+        and is banded by its declared ``timeout_s`` alone.
+
+        This is the one place a self-bounding wrapper has to override:
+        :attr:`effective_timeout_s` derives the backstop from it.
+        """
+        return None
+
+    @property
+    def effective_timeout_s(self) -> float:
+        """The band the runner's backstop applies to a call on this tool.
+
+        Strictly greater than :attr:`own_budget_s` whenever the wrapper names
+        one. The backstop abandons the worker thread rather than killing it,
+        while a tool's own timeout terminates the work and leaves its session
+        usable — so the tool's control must be the one that fires, and equality
+        between the two is a race.
+
+        The declared ``timeout_s`` is kept as a floor, so a tool bounding
+        itself well inside its declaration keeps the wider band rather than
+        being tightened to a value nothing asked for.
+        """
+        own = self.own_budget_s
+        if own is None:
+            return self.timeout_s
+        return max(self.timeout_s, own + BACKSTOP_GRACE_S)
 
     @abstractmethod
     async def execute(self, arguments: dict[str, Any]) -> str:
@@ -809,6 +873,18 @@ class BuiltinGenericToolWrapper(ToolWrapper):
                 f"Failed to instantiate builtin tool '{tool_schema.name}': {exc}",
             ) from exc
 
+    @property
+    def own_budget_s(self) -> float:
+        """The budget the wrapped builtin applies to its own I/O.
+
+        Read from the tool, not from the schema: the schema carries one pinned
+        value for every builtin of every native pack (#1147), and several
+        builtins bound themselves above it — ``build_check`` at 300 s,
+        ``browser`` and ``mobile`` at 60 s, against a pinned 30 s. Banding on
+        the schema alone cuts a healthy call short and records it a timeout.
+        """
+        return self._tool.policy.timeout_s
+
     async def execute(self, arguments: dict[str, Any]) -> str:
         result = self._tool.execute(**arguments)
         if result.success:
@@ -847,6 +923,17 @@ class RAGSearchToolWrapper(ToolWrapper):
         super().__init__(tool_schema)
         self.rag_client = rag_client
         self.trial_id = trial_id
+
+    @property
+    def own_budget_s(self) -> float:
+        """The declared budget, which this wrapper hands to the RAG request.
+
+        The same shape the in-process ``search_kb`` uses
+        (:mod:`tolokaforge.tools.builtin.rag_search` passes its declared budget
+        to ``httpx``), so the two substrates bound the same call the same way
+        rather than one inheriting whatever the shared client was built with.
+        """
+        return self.timeout_s
 
     async def execute(self, arguments: dict[str, Any]) -> str:
         """
@@ -888,6 +975,7 @@ class RAGSearchToolWrapper(ToolWrapper):
                 query=query,
                 limit=top_k,
                 alpha=alpha,
+                timeout=self.own_budget_s,
             )
 
             # Format results for LLM consumption
@@ -1018,6 +1106,9 @@ def create_search_kb_schema() -> ToolSchemaModel:
 # =============================================================================
 
 
+_COMPOSE_EXEC_DEFAULT_TIMEOUT_S = 120.0
+
+
 class DockerComposeExecToolWrapper(ToolWrapper):
     """Execute a command inside an already-running compose service via ``docker exec``.
 
@@ -1036,6 +1127,11 @@ class DockerComposeExecToolWrapper(ToolWrapper):
     # in start() — the compose stack is brought up by the per-trial runtime.
     has_lifecycle = True
 
+    # Which is also why rebuilding this wrapper clears nothing: it holds a
+    # container *name*, not a session, and the exec that outlived the backstop
+    # is inside a container the per-trial runtime owns.
+    rebuild_clears_backstopped_state = False
+
     def __init__(
         self,
         tool_schema: ToolSchemaModel,
@@ -1052,11 +1148,14 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         self._trial_id = ctx.trial_id
         self._container = compose_container_name(ctx.trial_id, self._service, self._project_prefix)
 
+    @property
+    def own_budget_s(self) -> float:
+        return self.timeout_s or _COMPOSE_EXEC_DEFAULT_TIMEOUT_S
+
     async def execute(self, arguments: dict[str, Any]) -> str:
         command = arguments.get("command", "")
-        timeout = self.timeout_s or 120.0
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._exec_sync, command, timeout)
+        return await loop.run_in_executor(None, self._exec_sync, command, self.own_budget_s)
 
     def _exec_sync(self, command: str, timeout: float) -> str:
         if self._container is None:
@@ -1121,6 +1220,10 @@ class PersistentShellToolWrapper(ToolWrapper):
         self._trial_id: str | None = None
         self._session: BashSession | None = None
         self._cwd: str | None = None
+
+    @property
+    def own_budget_s(self) -> float:
+        return self._timeout_s
 
     def start(self, ctx: "ToolLifecycleContext") -> None:
         self._trial_id = ctx.trial_id

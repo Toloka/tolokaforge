@@ -221,12 +221,15 @@ class RuntimeBackend(Protocol):
         trial_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        timeout_seconds: float = 30.0,
         executor: str = "agent",
         *,
         call_id: str,
     ) -> ToolResult:
         """Execute a tool call registered for ``trial_id``.
+
+        No layer between the agent loop and the runner names a per-call
+        budget: only the runner knows which tool is about to run, so it is
+        the one layer that can resolve the budget that tool declares.
 
         ``executor`` names the caller environment (``"agent"`` or
         ``"user"``); the runtime routes the call to the matching tool
@@ -577,7 +580,6 @@ class InMemoryRuntimeBackend:
         trial_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        timeout_seconds: float = 30.0,
         executor: str = "agent",
         *,
         call_id: str,

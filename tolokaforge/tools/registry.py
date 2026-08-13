@@ -184,6 +184,14 @@ class ToolPolicy(BaseModel):
 
     rate_limit: int | None = None  # Max calls per trial
     timeout_s: float = 30.0
+    """The per-call budget the tool applies to its own work.
+
+    Read by the tool at its own I/O boundary — the ``timeout=`` it hands httpx,
+    ``subprocess``, or ``asyncio.wait_for``. It is not a band an executor
+    enforces around the tool: ``ToolExecutor`` runs a tool to completion, and
+    the runner's backstop reads ``ToolWrapper.effective_timeout_s`` instead.
+    """
+
     cost_weight: float = 1.0
     category: ToolCategory = ToolCategory.COMPUTE
 
@@ -354,6 +362,12 @@ class ToolExecutor:
         """
         Execute a tool with validation
 
+        This executor runs a tool to completion: it applies no band of its own,
+        so the per-call budget is whatever the tool applies at its own I/O
+        boundary (``ToolPolicy.timeout_s``). Its one production consumer is the
+        LLM judge's tool loop, whose tools are httpx-backed and self-bounded; a
+        tool that bounds nothing runs until the episode budget expires.
+
         Args:
             tool_name: Name of the tool to execute
             arguments: Tool arguments
@@ -453,7 +467,6 @@ class ToolExecutor:
                     status=ToolExecutionStatus.ERROR,
                 )
 
-        # Execute tool with timeout
         try:
             result = tool.execute(**arguments)
             self.registry._call_counts[tool_name] = self.registry._call_counts.get(tool_name, 0) + 1
