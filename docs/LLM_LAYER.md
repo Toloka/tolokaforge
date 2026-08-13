@@ -1205,12 +1205,9 @@ it describes a **model** (the Cohere entry — true on every route because it is
 the vendor's API contract). Choosing the layer is choosing what the claim is
 about.
 
-`unsupported_effort_levels` was the older shorthand for a `reasoning_effort`
-rejection. It is **removed**: it carried no evidence, covered one parameter, and
-had no way to say anything but "refuse". The shipped Gemini declaration is
-migrated. An operator overlay still using the old key fails loud at overlay *load*, with
-a `ValueError` naming the file, the block, and the keys that are legal — before
-any model resolves.
+`unsupported_effort_levels` is not a `params:` key. An operator overlay
+carrying it fails loud at overlay *load*, with a `ValueError` naming the
+file, the block, and the keys that are legal — before any model resolves.
 
 ### Base class
 

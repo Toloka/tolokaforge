@@ -58,6 +58,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, ClassVar, Final
 
 from tolokaforge.core.llm.reasoning import ReasoningConfig
@@ -69,6 +70,7 @@ __all__ = [
     # Named in docs/LLM_LAYER.md as the operator-facing contract, so exported
     # rather than left as module internals a reader cannot import.
     "RULABLE_PARAMS",
+    "RuleAction",
     "VALID_RULE_ACTIONS",
 ]
 
@@ -161,7 +163,7 @@ def __getattr__(name: str) -> Any:
 class _ValueRule:
     """One declared value gap: what to do, and the evidence it rests on."""
 
-    action: str
+    action: RuleAction
     evidence: str
     substitute: str | None = None
 
@@ -199,6 +201,15 @@ def _normalise_value_rules(
                     f"mapping with 'action' and 'evidence', got "
                     f"{type(spec).__name__}."
                 )
+            unknown = set(spec) - {"action", "evidence", "with"}
+            if unknown:
+                raise ValueError(
+                    f"param_value_rules[{param!r}][{value!r}]: unknown key(s) "
+                    f"{sorted(unknown)}. Legal keys are ['action', 'evidence', "
+                    f"'with']. An unrecognised key here would be accepted and "
+                    f"never read, which is what every other check in this "
+                    f"function exists to prevent."
+                )
             action = str(spec.get("action", "")).lower()
             if action not in VALID_RULE_ACTIONS:
                 raise ValueError(
@@ -216,7 +227,7 @@ def _normalise_value_rules(
                 )
             normalised_value = str(value).lower()
             substitute = spec.get("with")
-            if action == "override":
+            if action == RuleAction.OVERRIDE:
                 if not str(substitute or "").strip():
                     raise ValueError(
                         f"param_value_rules[{param!r}][{value!r}]: action "
@@ -235,7 +246,7 @@ def _normalise_value_rules(
                     f"meaningful for action 'override', not {action!r}."
                 )
             rules[(param, normalised_value)] = _ValueRule(
-                action=action, evidence=evidence, substitute=substitute
+                action=RuleAction(action), evidence=evidence, substitute=substitute
             )
     # A substitute that is itself ruled would send a value the same block
     # already declares unusable, so reject the contradiction rather than
@@ -257,19 +268,36 @@ def _normalise_value_rules(
 #: adding the site that consults it.
 RULABLE_PARAMS: Final[frozenset[str]] = frozenset({"reasoning_effort", "tool_choice"})
 
-#: What a rule may ask for. All three are implemented at every consult site.
-#:
-#: ``reject`` refuses to build the request. ``drop`` omits the parameter and
-#: lets the provider default apply. ``override`` sends a declared replacement.
-#:
-#: ``drop`` and ``override`` both change what the request carries, and only the
-#: caller knows whether that matters — omitting ``tool_choice`` is the
-#: provider's own spelling of ``auto`` and costs nothing, while omitting
-#: ``reasoning_effort`` yields the provider's default budget rather than the
-#: level asked for. The engine does not adjudicate: it applies the declaration
-#: and logs a WARNING naming both values, so a caller that compares results can
-#: see the deviation. ``docs/LLM_LAYER.md`` carries the warning in full.
-VALID_RULE_ACTIONS: Final[frozenset[str]] = frozenset({"reject", "drop", "override"})
+
+class RuleAction(str, Enum):
+    """What a rule may ask for.
+
+    A named type rather than bare literals: the action is compared at three
+    consult sites across two modules, and a typo at a future one
+    (``action == "overide"``) would be a silent no-op — the exact failure class
+    this feature exists to remove. Subclassing ``str`` keeps YAML values and
+    equality against plain strings working.
+
+    ``reject`` refuses to build the request. ``drop`` omits the parameter and
+    lets the provider default apply. ``override`` sends a declared replacement.
+
+    ``drop`` and ``override`` both change what the request carries, and only
+    the caller knows whether that matters — omitting ``tool_choice`` is the
+    provider's own spelling of ``auto`` and costs nothing, while omitting
+    ``reasoning_effort`` yields the provider's default budget rather than the
+    level asked for. The engine does not adjudicate: it applies the
+    declaration and logs a WARNING naming both values, so a caller that
+    compares results can see the deviation. ``docs/LLM_LAYER.md`` carries the
+    warning in full.
+    """
+
+    REJECT = "reject"
+    DROP = "drop"
+    OVERRIDE = "override"
+
+
+#: Derived, so the set and the type cannot drift apart.
+VALID_RULE_ACTIONS: Final[frozenset[str]] = frozenset(a.value for a in RuleAction)
 
 
 class GenerationParams(ParamsPolicy):
@@ -463,7 +491,7 @@ class GenerationParams(ParamsPolicy):
             return
         effort = effort_hint.lower()
         action = self.rule_for("reasoning_effort", effort)
-        if action == "reject":
+        if action == RuleAction.REJECT:
             # Both the refused set and the remaining choices come from the
             # rules, and only `reject` rules count: a `drop` or `override` on
             # another level is still usable, so listing it would tell the
@@ -471,7 +499,7 @@ class GenerationParams(ParamsPolicy):
             refused = {
                 v
                 for (param, v), rule in self._param_value_rules.items()
-                if param == "reasoning_effort" and rule.action == "reject"
+                if param == "reasoning_effort" and rule.action == RuleAction.REJECT
             }
             supported = tuple(e for e in ("low", "medium", "high", "xhigh") if e not in refused)
             evidence = self.rule_evidence("reasoning_effort", effort)
@@ -484,7 +512,7 @@ class GenerationParams(ParamsPolicy):
                 f"the direct provider, when available). See "
                 f"tolokaforge_models/data/model_presets.yaml for the declarations."
             )
-        if action == "drop":
+        if action == RuleAction.DROP:
             # Omitting the parameter yields the provider's DEFAULT budget, not
             # the level asked for, so this is a real change to the request. The
             # caller declared it; log it and move on.

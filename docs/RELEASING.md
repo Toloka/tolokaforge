@@ -105,13 +105,13 @@ exists, so it cannot be raised in the feature PR that introduces the key: the
 engine version has not been cut yet, and setting a future floor would fail the
 import gate on every developer tree.
 
-The failure this prevents is quiet. `_check_minimum_engine_version` passes when
-the floor is satisfied, so an engine below the real requirement boots normally
-and then raises `TypeError` from `GenerationParams.__init__` at the first
-capability build — mid-run, not at startup. Concretely: `param_value_rules`
-landed in the data while the floor still read `>=0.17`, so a `pip install -U
-tolokaforge-models` against an older engine would have broken every resolution
-for the affected provider.
+The failure this prevents is quiet. `_check_minimum_engine_version` passes
+whenever the declared floor is satisfied, so an engine below the *real*
+requirement boots normally and then raises `TypeError` from the policy
+constructor at the first capability build — mid-run, not at startup. A
+`pip install -U tolokaforge-models` against an engine that predates the key is
+enough to trigger it, and only for the models that use it, so it reads as a
+provider-specific bug rather than a version mismatch.
 
 Checklist when cutting an engine release that carries a new data-facing key:
 

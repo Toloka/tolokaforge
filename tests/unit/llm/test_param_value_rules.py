@@ -17,13 +17,32 @@ a YAML line.
 
 from __future__ import annotations
 
-import pytest
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
 
+import pytest
+import yaml
+
+from tolokaforge.core.llm import presets
 from tolokaforge.core.llm.params_policy import GenerationParams
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.reasoning import ReasoningConfig
 
 pytestmark = pytest.mark.unit
+
+
+@contextmanager
+def _overlay(tmp_path: Path, overlay: dict[str, Any]):
+    """Install ``overlay`` for the block. Shared by both suites below, on
+    pytest's ``tmp_path`` so nothing survives the run."""
+    path = tmp_path / "overlay.yaml"
+    path.write_text(yaml.dump(overlay), encoding="utf-8")
+    presets.set_overlay_path(str(path))
+    try:
+        yield
+    finally:
+        presets.set_overlay_path(None)
 
 
 _COHERE_RULES = {
@@ -151,25 +170,14 @@ class TestLayering:
     """
 
     @staticmethod
-    def _with_overlay(overlay: dict):
-        import tempfile
-        from pathlib import Path
-
-        import yaml
-
-        from tolokaforge.core.llm import presets
-
-        path = Path(tempfile.mkdtemp()) / "overlay.yaml"
-        path.write_text(yaml.dump(overlay), encoding="utf-8")
-        presets.set_overlay_path(str(path))
-        try:
+    def _with_overlay(overlay: dict, tmp_path: Path):
+        with _overlay(tmp_path, overlay):
             return build_capabilities("google/gemini-3.1-pro", provider="gemini").params_policy
-        finally:
-            presets.set_overlay_path(None)
 
-    def test_an_overlay_rule_does_not_delete_the_bundled_one(self) -> None:
+    def test_an_overlay_rule_does_not_delete_the_bundled_one(self, tmp_path: Path) -> None:
         policy = self._with_overlay(
-            {
+            tmp_path=tmp_path,
+            overlay={
                 "providers": {
                     "gemini": {
                         "params": {
@@ -179,16 +187,17 @@ class TestLayering:
                         }
                     }
                 }
-            }
+            },
         )
         assert policy.rule_for("tool_choice", "auto") == "drop", "the overlay rule must apply"
         assert (
             policy.rule_for("reasoning_effort", "medium") == "reject"
         ), "the bundled gemini guard must survive an unrelated overlay rule"
 
-    def test_an_overlay_can_still_override_the_same_declaration(self) -> None:
+    def test_an_overlay_can_still_override_the_same_declaration(self, tmp_path: Path) -> None:
         policy = self._with_overlay(
-            {
+            tmp_path=tmp_path,
+            overlay={
                 "providers": {
                     "gemini": {
                         "params": {
@@ -200,7 +209,7 @@ class TestLayering:
                         }
                     }
                 }
-            }
+            },
         )
         assert policy.rule_evidence("reasoning_effort", "medium") == "operator says so"
 
@@ -212,7 +221,7 @@ class TestOverride:
     here are as much about the guard rails as the behaviour.
     """
 
-    def test_the_substitute_is_sent_instead(self) -> None:
+    def test_the_substitute_is_sent_instead(self, tmp_path: Path) -> None:
         policy = GenerationParams(
             param_value_rules={
                 "reasoning_effort": {
@@ -259,7 +268,7 @@ class TestOverride:
         assert "why" in caplog.text
         assert "not directly comparable" in caplog.text
 
-    def test_override_requires_a_replacement(self) -> None:
+    def test_override_requires_a_replacement(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="requires a 'with' value"):
             GenerationParams(
                 param_value_rules={
@@ -267,7 +276,7 @@ class TestOverride:
                 }
             )
 
-    def test_a_no_op_override_is_refused(self) -> None:
+    def test_a_no_op_override_is_refused(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="that rule does nothing"):
             GenerationParams(
                 param_value_rules={
@@ -277,7 +286,7 @@ class TestOverride:
                 }
             )
 
-    def test_substituting_into_another_declared_gap_is_refused(self) -> None:
+    def test_substituting_into_another_declared_gap_is_refused(self, tmp_path: Path) -> None:
         # Overriding medium -> low when low is itself declared unusable would
         # send a value the same block calls broken.
         with pytest.raises(ValueError, match="also declares a rule for"):
@@ -290,7 +299,7 @@ class TestOverride:
                 }
             )
 
-    def test_with_is_meaningless_on_other_actions(self) -> None:
+    def test_with_is_meaningless_on_other_actions(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="only meaningful for action 'override'"):
             GenerationParams(
                 param_value_rules={
@@ -311,21 +320,17 @@ class TestThroughTheRealClient:
     """
 
     @staticmethod
-    def _kwargs(rules: dict | None, tool_choice: str | None = "auto", tools: bool = True) -> dict:
-        import tempfile
-        from pathlib import Path
-
-        import yaml
-
-        from tolokaforge.core.llm import presets
+    def _kwargs(
+        rules: dict | None,
+        tmp_path: Path,
+        tool_choice: str | None = "auto",
+        tools: bool = True,
+    ) -> dict:
         from tolokaforge.core.llm.client import LLMClient
         from tolokaforge.core.models import ModelConfig
 
         overlay = {"providers": {"mock": {"params": {"param_value_rules": rules or {}}}}}
-        path = Path(tempfile.mkdtemp()) / "overlay.yaml"
-        path.write_text(yaml.dump(overlay), encoding="utf-8")
-        presets.set_overlay_path(str(path))
-        try:
+        with _overlay(tmp_path, overlay):
             client = LLMClient(ModelConfig(provider="mock", name="mock-model"))
             return client._build_kwargs(
                 system=None,
@@ -342,41 +347,118 @@ class TestThroughTheRealClient:
                 top_p=None,
                 max_tokens=None,
             )
-        finally:
-            presets.set_overlay_path(None)
 
-    def test_no_rule_sends_tool_choice(self) -> None:
-        assert self._kwargs(None)["tool_choice"] == "auto"
+    def test_no_rule_sends_tool_choice(self, tmp_path: Path) -> None:
+        assert self._kwargs(tmp_path=tmp_path, rules=None)["tool_choice"] == "auto"
 
-    def test_drop_removes_it_and_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_drop_removes_it_and_warns(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         with caplog.at_level("WARNING"):
-            kwargs = self._kwargs(_rules("tool_choice", "auto", "drop", "vendor has no AUTO"))
+            kwargs = self._kwargs(
+                tmp_path=tmp_path, rules=_rules("tool_choice", "auto", "drop", "vendor has no AUTO")
+            )
         assert "tool_choice" not in kwargs
         assert "vendor has no AUTO" in caplog.text
 
-    def test_override_substitutes_and_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_override_substitutes_and_warns(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         with caplog.at_level("WARNING"):
             kwargs = self._kwargs(
-                {
+                tmp_path=tmp_path,
+                rules={
                     "tool_choice": {
                         "auto": {"action": "override", "with": "required", "evidence": "e"}
                     }
-                }
+                },
             )
         assert kwargs["tool_choice"] == "required"
         assert "not directly comparable" in caplog.text
 
-    def test_reject_raises_naming_the_evidence(self) -> None:
+    def test_reject_raises_naming_the_evidence(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="declared unusable"):
-            self._kwargs(_rules("tool_choice", "auto", "reject", "the reason"))
+            self._kwargs(
+                tmp_path=tmp_path, rules=_rules("tool_choice", "auto", "reject", "the reason")
+            )
 
-    def test_an_unruled_value_is_untouched(self) -> None:
+    def test_an_unruled_value_is_untouched(self, tmp_path: Path) -> None:
         # Only the declared value is affected; `required` passes through.
-        kwargs = self._kwargs(_rules("tool_choice", "auto", "drop", "e"), tool_choice="required")
+        kwargs = self._kwargs(
+            tmp_path=tmp_path,
+            rules=_rules("tool_choice", "auto", "drop", "e"),
+            tool_choice="required",
+        )
         assert kwargs["tool_choice"] == "required"
 
-    def test_rules_are_inert_without_tools(self) -> None:
+    def test_rules_are_inert_without_tools(self, tmp_path: Path) -> None:
         # tool_choice is only ever attached alongside tools, so a rule cannot
         # fire on a toolless call. Documented here rather than left surprising.
-        kwargs = self._kwargs(_rules("tool_choice", "auto", "reject", "e"), tools=False)
+        kwargs = self._kwargs(
+            tmp_path=tmp_path, rules=_rules("tool_choice", "auto", "reject", "e"), tools=False
+        )
         assert "tool_choice" not in kwargs
+
+
+class TestEffortDrop:
+    """`reasoning_effort: drop` — the sixth cell of the 2x3 matrix.
+
+    Both halves matter and neither is implied by the other: the emission has to
+    be suppressed on *both* transports, and the substitution has to be logged.
+    Remove the early `return` and the dropped level ships silently, which is
+    the failure this whole mechanism exists to prevent.
+    """
+
+    @staticmethod
+    def _adapt(policy: GenerationParams) -> dict:
+        kwargs: dict = {}
+        policy.adapt(
+            kwargs,
+            config_temperature=None,
+            config_seed=None,
+            config_reasoning=ReasoningConfig(mode="adaptive", effort_hint="medium"),
+            temperature=None,
+            seed=None,
+            reasoning=None,
+        )
+        return kwargs
+
+    def test_nothing_is_emitted_on_the_plain_transport(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        policy = GenerationParams(
+            param_value_rules=_rules("reasoning_effort", "medium", "drop", "provider chokes on it")
+        )
+        with caplog.at_level("WARNING"):
+            kwargs = self._adapt(policy)
+        assert "reasoning_effort" not in kwargs
+        assert "extra_body" not in kwargs
+        assert "provider chokes on it" in caplog.text
+        assert "not directly comparable" in caplog.text
+
+    def test_nothing_is_emitted_on_the_extra_body_transport(self, tmp_path: Path) -> None:
+        # The OpenRouter path emits through extra_body rather than a top-level
+        # kwarg, so a drop that only guarded one branch would leak here.
+        policy = GenerationParams(
+            reasoning_via_extra_body=True,
+            param_value_rules=_rules("reasoning_effort", "medium", "drop", "e"),
+        )
+        kwargs = self._adapt(policy)
+        assert "extra_body" not in kwargs
+        assert "reasoning_effort" not in kwargs
+
+    def test_an_unruled_level_still_emits(self, tmp_path: Path) -> None:
+        policy = GenerationParams(
+            param_value_rules=_rules("reasoning_effort", "medium", "drop", "e")
+        )
+        kwargs: dict = {}
+        policy.adapt(
+            kwargs,
+            config_temperature=None,
+            config_seed=None,
+            config_reasoning=ReasoningConfig(mode="adaptive", effort_hint="high"),
+            temperature=None,
+            seed=None,
+            reasoning=None,
+        )
+        assert kwargs["reasoning_effort"] == "high"
