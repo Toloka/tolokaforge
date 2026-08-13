@@ -134,6 +134,12 @@ from tests.utils.combine_method_verdicts import (
     COMBINE_METHOD_PASS_THRESHOLD,
     COMBINE_METHOD_VERDICTS,
 )
+from tests.utils.grading_parity_packs import (
+    FIXTURE_TIMESTAMP,
+    TrialCase,
+    load_case,
+    wire_message,
+)
 from tests.utils.runner_requests import execute_request, register_request, trial_spec_json
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
@@ -156,14 +162,12 @@ from tolokaforge.core.grading.key_manifest import (
 )
 from tolokaforge.core.grading.state_checks import StateChecker, extract_db_state, state_digest
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
-from tolokaforge.core.grading.trace_timeline import TrialTimeline, build_trial_timeline
+from tolokaforge.core.grading.trace_timeline import TrialTimeline
 from tolokaforge.core.grading.transcript import evaluate_transcript_rules
 from tolokaforge.core.models import (
     Message,
     RecordedToolCall,
     ToolCall,
-    ToolExecutionStatus,
-    ToolExecutorIdentity,
     Trajectory,
 )
 from tolokaforge.runner import grading as runner_grading
@@ -619,24 +623,6 @@ def _declared_hash_verdict_producers() -> dict[tuple[str, str], Any]:
 # Fixture-pack helpers
 # --------------------------------------------------------------------------
 
-# The one shape a ``trial.yaml`` case may take. Every key is read; anything else
-# is rejected, so a pack cannot carry a field the loader silently drops.
-_CASE_KEYS = frozenset({"messages", "state"})
-_MESSAGE_KEYS = frozenset({"role", "content", "tool_calls"})
-_CALL_KEYS = frozenset({"tool_name", "executor", "status", "arguments", "output"})
-
-_FIXTURE_TIMESTAMP = "2026-01-01T00:00:00+00:00"
-
-
-@dataclass(frozen=True)
-class _TrialCase:
-    """One satisfying-or-violating trial, in each substrate's own input shape."""
-
-    core_trajectory: Trajectory
-    runner_messages: list[dict[str, Any]]
-    runner_timeline: TrialTimeline
-    state: dict[str, Any]
-
 
 def _task_id_for(author_key: str) -> str:
     return author_key.replace(".", "_")
@@ -765,95 +751,6 @@ def _top_level_constraint_kinds(grading_yaml: dict[str, Any]) -> set[str]:
     }
 
 
-def _reject_unknown(authored: dict[str, Any], allowed: frozenset[str], *, what: str) -> None:
-    """A fixture key nothing reads expresses less than its author wrote — so it is an error."""
-    unknown = sorted(set(authored) - allowed)
-    assert not unknown, f"{what} declares {unknown}; the loader reads only {sorted(allowed)}"
-
-
-def _authored_call(raw_call: dict[str, Any], *, sequence: int) -> tuple[ToolCall, RecordedToolCall]:
-    """One authored call, as the message view declares it and as the record kept it.
-
-    ``latency_seconds`` is not authorable and is pinned at ``0.0``: wall time is
-    not compared across substrates, so a fixture varying it would pin a number no
-    parity claim reads.
-    """
-    call_id = f"call_{sequence}"
-    return (
-        ToolCall(id=call_id, name=raw_call["tool_name"], arguments=raw_call["arguments"]),
-        RecordedToolCall(
-            call_id=call_id,
-            sequence=sequence,
-            tool_name=raw_call["tool_name"],
-            arguments=raw_call["arguments"],
-            executor=ToolExecutorIdentity(raw_call["executor"]),
-            output=raw_call.get("output", ""),
-            status=ToolExecutionStatus(raw_call["status"]),
-            latency_seconds=0.0,
-            timestamp=_FIXTURE_TIMESTAMP,
-        ),
-    )
-
-
-def _wire_message(message: Message) -> dict[str, Any]:
-    """One turn as the runner receives it, in ``llm_messages_json``'s OpenAI shape."""
-    wire: dict[str, Any] = {"role": message.role.value, "content": message.content}
-    if message.tool_calls:
-        wire["tool_calls"] = [
-            {
-                "id": call.id,
-                "type": "function",
-                "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
-            }
-            for call in message.tool_calls
-        ]
-    return wire
-
-
-def _load_case(pack_dir: Path, case: str) -> _TrialCase:
-    """One authored trial, in the input shape each substrate really takes.
-
-    A call is authored inside the message that requested it, so a fixture places
-    its calls across turns and the timeline's ``turn_index`` and event order follow
-    what the author wrote.
-    """
-    fixture = yaml.safe_load((pack_dir / "trial.yaml").read_text())[case]
-    where = f"{pack_dir.name}/trial.yaml case {case!r}"
-    _reject_unknown(fixture, _CASE_KEYS, what=where)
-
-    # One recorded-tool-call list feeds both substrates: the core engine holds it
-    # on the Trajectory, the runner's evaluators read its dump. A per-substrate
-    # fixture could disagree with itself, which is the divergence this suite exists
-    # to catch. The message view declares every one of them, or the trial's two
-    # views disagree and neither substrate will grade it.
-    view: list[Message] = []
-    recorded: list[RecordedToolCall] = []
-    for index, raw in enumerate(fixture["messages"]):
-        _reject_unknown(raw, _MESSAGE_KEYS, what=f"{where} message {index}")
-        declared: list[ToolCall] = []
-        for raw_call in raw.get("tool_calls", ()):
-            _reject_unknown(raw_call, _CALL_KEYS, what=f"{where} message {index} tool call")
-            call, record = _authored_call(raw_call, sequence=len(recorded))
-            declared.append(call)
-            recorded.append(record)
-        view.append(Message(role=raw["role"], content=raw["content"], tool_calls=declared or None))
-
-    trajectory = Trajectory(
-        task_id=pack_dir.name,
-        trial_index=0,
-        start_ts=_FIXTURE_TIMESTAMP,
-        end_ts=_FIXTURE_TIMESTAMP,
-        messages=view,
-        tool_log=recorded,
-    )
-    return _TrialCase(
-        core_trajectory=trajectory,
-        runner_messages=[_wire_message(message) for message in view],
-        runner_timeline=build_trial_timeline(view, recorded, None),
-        state=fixture["state"],
-    )
-
-
 class _FixtureStateDBClient:
     """Serves a table map where a real trial reads it from the DB service.
 
@@ -875,7 +772,7 @@ class _FixtureStateDBClient:
 def _core_verdict(
     family: str,
     grading_config: core_models.GradingConfig,
-    case: _TrialCase,
+    case: TrialCase,
     task_dir: Path,
     *,
     task_initial_state: core_models.InitialStateConfig | None,
@@ -899,7 +796,7 @@ def _core_verdict(
 
 
 def _runner_custom_checks_score(
-    task_description: runner_models.TaskDescription, case: _TrialCase
+    task_description: runner_models.TaskDescription, case: TrialCase
 ) -> float:
     """The runner's ``custom_checks`` component, via its real delivery + executor.
 
@@ -944,7 +841,7 @@ def _write_case_state_into_the_trial_database(
 
 def _runner_state_checks_hash_verdict(
     task_description: runner_models.TaskDescription,
-    case: _TrialCase,
+    case: TrialCase,
     servicer: RunnerServiceImpl,
     context: Any,
     *,
@@ -981,7 +878,7 @@ def _runner_state_checks_hash_verdict(
 def _runner_verdict(
     family: str,
     task_description: runner_models.TaskDescription,
-    case: _TrialCase,
+    case: TrialCase,
     *,
     servicer: RunnerServiceImpl,
     context: Any,
@@ -1233,8 +1130,8 @@ def _drive_both_substrates(
     core_config = adapter.get_grading_config(task_id)
     task_description = adapter.to_task_description(task_id)
     initial_state = adapter.get_task(task_id).initial_state
-    satisfying = _load_case(pack, "satisfying")
-    violating = _load_case(pack, "violating")
+    satisfying = load_case(pack, "satisfying")
+    violating = load_case(pack, "violating")
     # The core engine imports the pack's ``checks.py`` from its task dir, which
     # writes ``__pycache__`` beside the fixture; grade from a copy so a canonical
     # run leaves the repo clean.
@@ -1580,7 +1477,7 @@ def _composition_verdict(
     task_id = _task_id_for(_COMPOSITION_KEY)
     core_config = adapter.get_grading_config(task_id)
     runner_grading = adapter.to_task_description(task_id).grading
-    trial = _load_case(pack, case)
+    trial = load_case(pack, case)
 
     core_component, core_total = _core_verdict(
         "state_checks",
@@ -1884,7 +1781,7 @@ def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
         )
     )
     for case, hash_score in _COMPOSITION_HASH_CASES:
-        db_state = extract_db_state(_load_case(pack, case).state)
+        db_state = extract_db_state(load_case(pack, case).state)
         actual, _ = StateChecker().check_hash(db_state, expected_hash)
         assert actual == hash_score, (
             f"the composition fixture's {case!r} case scores {actual} against the hash of "
@@ -2104,7 +2001,7 @@ def _core_method_verdict(test_data_dir: Path, root: Path, *, method: str) -> _Me
         f"the pack's authored pass_threshold is {grading_config.combine.pass_threshold}, so "
         f"the flags pinned against {COMBINE_METHOD_PASS_THRESHOLD} answer a different question"
     )
-    case = _load_case(_pack_dir(test_data_dir, _METHOD_KEY), _METHOD_CASE)
+    case = load_case(_pack_dir(test_data_dir, _METHOD_KEY), _METHOD_CASE)
     grade = GradingEngine(grading_config, task_dir=_pack_dir(root, _METHOD_KEY)).grade_trajectory(
         case.core_trajectory, case.state
     )
@@ -2133,7 +2030,7 @@ def _runner_method_verdict(test_data_dir: Path, root: Path, *, method: str) -> _
         f"the adapter translated pass_threshold {grading.pass_threshold}, so "
         f"the flags pinned against {COMBINE_METHOD_PASS_THRESHOLD} answer a different question"
     )
-    case = _load_case(_pack_dir(test_data_dir, _METHOD_KEY), _METHOD_CASE)
+    case = load_case(_pack_dir(test_data_dir, _METHOD_KEY), _METHOD_CASE)
     jsonpath_score, _ = evaluate_jsonpath_checks(
         grading.state_checks.jsonpath_checks, state=case.state
     )
@@ -2198,7 +2095,7 @@ _TRACE_CHECKS_TASK = "trace_checks_constraints"
 
 
 def _replay_authored_calls(
-    servicer: RunnerServiceImpl, context: Any, trial_id: str, case: _TrialCase
+    servicer: RunnerServiceImpl, context: Any, trial_id: str, case: TrialCase
 ) -> None:
     """Execute each authored call through the runner, in the order it was written.
 
@@ -2272,7 +2169,7 @@ def _grade_pack_through_the_runner(
     servicer: RunnerServiceImpl,
     context: Any,
     task_description: runner_models.TaskDescription,
-    case: _TrialCase,
+    case: TrialCase,
     trial_id: str,
 ) -> pb2.GradeTrialResponse:
     """Register the task, replay ``case``'s calls, grade — the runner's whole path.
@@ -2291,7 +2188,7 @@ def _grade_pack_through_the_runner(
 def _runner_trace_checks_grade(
     servicer: RunnerServiceImpl,
     task_description: runner_models.TaskDescription,
-    case: _TrialCase,
+    case: TrialCase,
     trial_id: str,
     context: Any,
 ) -> pb2.Grade:
@@ -2318,8 +2215,8 @@ def test_both_substrates_score_trace_checks_through_their_own_grading_path(
     adapter = _parity_adapter(test_data_dir)
     core_config = adapter.get_grading_config(_TRACE_CHECKS_TASK)
     task_description = adapter.to_task_description(_TRACE_CHECKS_TASK)
-    satisfying = _load_case(pack, "satisfying")
-    violating = _load_case(pack, "violating")
+    satisfying = load_case(pack, "satisfying")
+    violating = load_case(pack, "violating")
 
     initial_state = adapter.get_task(_TRACE_CHECKS_TASK).initial_state
     core_ok, _ = _core_verdict(
@@ -2376,8 +2273,8 @@ def test_a_trace_gate_fails_the_trial_on_both_substrates(
     adapter = _parity_adapter(test_data_dir)
     core_config = adapter.get_grading_config(_TRACE_GATE_TASK)
     task_description = adapter.to_task_description(_TRACE_GATE_TASK)
-    satisfying = _load_case(pack, "satisfying")
-    violating = _load_case(pack, "violating")
+    satisfying = load_case(pack, "satisfying")
+    violating = load_case(pack, "violating")
 
     core_ok = GradingEngine(core_config, task_dir=tmp_path).grade_trajectory(
         satisfying.core_trajectory, satisfying.state
@@ -2458,7 +2355,7 @@ def test_the_winning_route_crosses_the_wire(
     adapter = _parity_adapter(test_data_dir)
     core_config = adapter.get_grading_config(_TRACE_ALTERNATIVES_TASK)
     task_description = adapter.to_task_description(_TRACE_ALTERNATIVES_TASK)
-    ledger, cherry_picked = _load_case(pack, "satisfying"), _load_case(pack, "violating")
+    ledger, cherry_picked = load_case(pack, "satisfying"), load_case(pack, "violating")
 
     core_won = GradingEngine(core_config, task_dir=tmp_path).grade_trajectory(
         ledger.core_trajectory, ledger.state
@@ -2564,7 +2461,7 @@ def _runner_undecided_grade(
     response = servicer.GradeTrial(
         pb2.GradeTrialRequest(
             trial_id=trial_id,
-            llm_messages_json=json.dumps([_wire_message(message) for message in _UNDECIDED_VIEW]),
+            llm_messages_json=json.dumps([wire_message(message) for message in _UNDECIDED_VIEW]),
         ),
         context,
     )
@@ -2582,8 +2479,8 @@ def _core_undecided_verdict(
         Trajectory(
             task_id=_TRACE_UNDECIDED_TASK,
             trial_index=0,
-            start_ts=_FIXTURE_TIMESTAMP,
-            end_ts=_FIXTURE_TIMESTAMP,
+            start_ts=FIXTURE_TIMESTAMP,
+            end_ts=FIXTURE_TIMESTAMP,
             messages=_UNDECIDED_VIEW,
             tool_log=list(recorded),
         ),
@@ -2691,7 +2588,7 @@ def test_a_state_reading_pack_grades_through_the_runners_own_registration(
     """
     adapter = _parity_adapter(test_data_dir)
     task_description = adapter.to_task_description(task_id)
-    case = _load_case(test_data_dir / "grading_parity" / task_id, case_name)
+    case = load_case(test_data_dir / "grading_parity" / task_id, case_name)
 
     response = _grade_pack_through_the_runner(
         runner_service,
@@ -3021,8 +2918,8 @@ def _messageless_trajectory(task_id: str) -> Trajectory:
     return Trajectory(
         task_id=task_id,
         trial_index=0,
-        start_ts=_FIXTURE_TIMESTAMP,
-        end_ts=_FIXTURE_TIMESTAMP,
+        start_ts=FIXTURE_TIMESTAMP,
+        end_ts=FIXTURE_TIMESTAMP,
         messages=[],
     )
 
@@ -3078,7 +2975,7 @@ def test_an_empty_assertion_list_is_unscored_on_both_substrates(declared, test_d
         f"{pack}/grading.yaml declares no JSONPath assertions, so the declared column "
         "below carries an empty list too and this test compares one cell against itself"
     )
-    case = _load_case(pack, "satisfying")
+    case = load_case(pack, "satisfying")
 
     core, runner = _jsonpath_presence(authored if declared else [], case.state)
 
@@ -3251,7 +3148,7 @@ def test_a_scored_component_with_no_declared_weight_refuses_on_both_substrates(c
     """
     pack = _pack_dir(test_data_dir, _JSONPATHS_KEY)
     authored = yaml.safe_load((pack / "grading.yaml").read_text())["state_checks"]["jsonpaths"]
-    trial = _load_case(pack, "violating")
+    trial = load_case(pack, "violating")
     weights = _WEIGHT_MAPS[case]
     core_config, runner_config = _scored_pair_configs(authored, weights)
     jsonpath_score, _ = evaluate_jsonpath_checks(authored, state=trial.state)
@@ -3301,7 +3198,7 @@ def test_a_zero_total_weight_decides_under_weighted_alone_on_both_substrates(
     """
     pack = _pack_dir(test_data_dir, _JSONPATHS_KEY)
     authored = yaml.safe_load((pack / "grading.yaml").read_text())["state_checks"]["jsonpaths"]
-    trial = _load_case(pack, case)
+    trial = load_case(pack, case)
     core_config = core_models.GradingConfig(
         state_checks={"jsonpaths": authored},
         combine={
@@ -3508,7 +3405,7 @@ def _drive_parity_pack(
 ) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
     """Grade the key's own pack, and hand back the config the runner actually graded."""
     task_description = _parity_adapter(test_data_dir).to_task_description(_task_id_for(author_key))
-    case = _load_case(_pack_dir(test_data_dir, author_key), "satisfying")
+    case = load_case(_pack_dir(test_data_dir, author_key), "satisfying")
     response = _grade_pack_through_the_runner(servicer, context, task_description, case, trial_id)
     return servicer.trials[trial_id].grading_config, response
 
@@ -4065,7 +3962,7 @@ def _runner_custom_checks_grade(
     servicer: RunnerServiceImpl,
     context: Any,
     task_description: runner_models.TaskDescription,
-    case: _TrialCase,
+    case: TrialCase,
     trial_id: str,
 ) -> pb2.Grade:
     """The runner's own ``GradeTrial`` verdict, over the case's state.
@@ -4114,7 +4011,7 @@ def custom_checks_grades(
     caller = re.sub(r"[^0-9a-zA-Z_]", "_", request.node.name)
     grades: dict[str, tuple[core_models.Grade, pb2.Grade]] = {}
     for case_name in ("satisfying", "violating"):
-        case = _load_case(pack, case_name)
+        case = load_case(pack, case_name)
         core_grade = GradingEngine(
             core_config, task_dir=core_task_dir, task_initial_state=initial_state
         ).grade_trajectory(case.core_trajectory, case.state)
@@ -4514,8 +4411,8 @@ def test_an_unmakeable_comparison_fails_its_own_call_on_both_substrates(
     core_config = adapter.get_grading_config(_NESTED_BINDING_PACK)
     task_description = adapter.to_task_description(_NESTED_BINDING_PACK)
     initial_state = adapter.get_task(_NESTED_BINDING_PACK).initial_state
-    satisfying = _load_case(pack, "satisfying")
-    violating = _load_case(pack, "violating")
+    satisfying = load_case(pack, "satisfying")
+    violating = load_case(pack, "violating")
 
     core_ok, _ = _core_verdict(
         "trace_checks", core_config, satisfying, tmp_path, task_initial_state=initial_state
@@ -4635,7 +4532,7 @@ def test_the_fixture_loader_places_each_turns_calls_where_the_author_wrote_them(
     — with no expressible fixture at all.
     """
     pack = _write_pack(tmp_path, _MULTI_TURN_FIXTURE)
-    trial = _load_case(pack, _MULTI_TURN_CASE)
+    trial = load_case(pack, _MULTI_TURN_CASE)
 
     assert _produced_events(trial.runner_timeline) == _MULTI_TURN_EVENTS
 
@@ -4657,7 +4554,7 @@ def test_the_fixture_loader_hands_the_runner_wire_shaped_tool_calls(tmp_path):
     call — the parity suite's own silent divergence.
     """
     pack = _write_pack(tmp_path, _MULTI_TURN_FIXTURE)
-    transcript = _build_runner_check_transcript(_load_case(pack, _MULTI_TURN_CASE).runner_messages)
+    transcript = _build_runner_check_transcript(load_case(pack, _MULTI_TURN_CASE).runner_messages)
 
     assert [
         (call.name, call.arguments)
@@ -4705,4 +4602,4 @@ def test_the_fixture_loader_rejects_a_key_it_would_not_read(what, mutate, reject
     pack = _write_pack(tmp_path, fixture)
 
     with pytest.raises(AssertionError, match=re.escape(rejected)):
-        _load_case(pack, _MULTI_TURN_CASE)
+        load_case(pack, _MULTI_TURN_CASE)
