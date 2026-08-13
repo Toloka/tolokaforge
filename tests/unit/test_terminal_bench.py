@@ -936,6 +936,19 @@ class TestInstallHarnessScript:
         fake_npm = bin_dir / "npm"
         fake_npm.write_text(f'#!/bin/sh\necho "$@" >> {record}\n')
         fake_npm.chmod(0o755)
+        # ``install-harness.sh`` first checks for a Node ≥ 18. On the CI runner
+        # the check hits real node; on a developer laptop where PATH is
+        # deliberately restricted (below), it wouldn't. A fake ``node``
+        # reporting a recent major keeps the script off its apt/apk install
+        # branch so the assertion is on what ``npm`` receives.
+        fake_node = bin_dir / "node"
+        fake_node.write_text(
+            '#!/bin/sh\ncase "$*" in\n'
+            "  -e*process.exit*) exit 0 ;;\n"
+            '  *) echo "v20.0.0" ;;\n'
+            "esac\n"
+        )
+        fake_node.chmod(0o755)
         proc = subprocess.run(
             ["sh", str(INSTALL_SCRIPT), *args],
             capture_output=True,
@@ -972,31 +985,44 @@ class TestInstallHarnessScript:
 
 class TestHarnessCommand:
     def test_claude_code_argv(self):
+        """claude-code exports the model quartet, pipes the instruction via
+        stdin, and drops ``--model`` because the env vars carry the model."""
         import shlex
 
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        assert shlex.split(
-            harness_command("claude-code", "fix the bug", "anthropic/claude-sonnet-4-6")
-        ) == [
-            "env",
-            "IS_SANDBOX=1",
+        command = harness_command("claude-code", "fix the bug", "anthropic/claude-sonnet-4-6")
+        preamble, sep, cli = command.partition(" && printf ")
+        assert sep, "claude-code pipes instruction via printf on stdin"
+        # Preamble: five model exports, matching the harbor env quartet + subagent var.
+        exports = [p.strip() for p in preamble.split(" && ")]
+        assert exports == [
+            "export ANTHROPIC_MODEL=anthropic/claude-sonnet-4-6",
+            "export ANTHROPIC_DEFAULT_SONNET_MODEL=anthropic/claude-sonnet-4-6",
+            "export ANTHROPIC_DEFAULT_OPUS_MODEL=anthropic/claude-sonnet-4-6",
+            "export ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic/claude-sonnet-4-6",
+            "export CLAUDE_CODE_SUBAGENT_MODEL=anthropic/claude-sonnet-4-6",
+        ]
+        # printf part: instruction on stdin, no positional argv arg.
+        printf_prefix, _, cli_only = ("printf " + cli).partition(" | ")
+        assert shlex.split(printf_prefix) == ["printf", "%s", "fix the bug"]
+        assert shlex.split(cli_only) == [
             "claude",
-            "--model",
-            "anthropic/claude-sonnet-4-6",
+            "--verbose",
+            "--output-format=stream-json",
             "--permission-mode=bypassPermissions",
             "--print",
-            "fix the bug",
         ]
 
     def test_codex_argv_shape(self):
-        """codex chains a config.toml write before the CLI — the CLI portion,
-        after ``exec``, is what has to match the pinned shape."""
+        """codex chains a config.toml + auth.json write before the CLI. The
+        CLI portion, after the final ``&&``, is what has to match the pinned
+        shape — instruction stays on positional argv."""
         import shlex
 
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        _, _, cli = harness_command("codex", "do it", "openai/gpt-5-codex").rpartition(" && exec ")
+        _, _, cli = harness_command("codex", "do it", "openai/gpt-5-codex").rpartition(" && ")
         assert shlex.split(cli) == [
             "codex",
             "exec",
@@ -1031,7 +1057,9 @@ class TestHarnessCommand:
         found" from OpenRouter)."""
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        preamble, sep, _ = harness_command("codex", "do it", "m").partition(" && exec ")
+        # codex still uses positional-argv instruction, so the CLI is chained
+        # after " && " and everything before that is preamble + the CLI itself.
+        preamble, sep, _ = harness_command("codex", "do it", "m").rpartition(" && ")
         assert sep, "codex must chain a preamble before the CLI"
         assert "config.toml" in preamble
         assert "openai_base_url" in preamble
@@ -1040,14 +1068,16 @@ class TestHarnessCommand:
         assert "OPENAI_API_KEY" in preamble
         assert "$OPENAI_API_KEY" in preamble
 
-    def test_claude_code_has_no_preamble(self):
-        """A CLI without a pre_exec_shell publishes the CLI command alone —
-        no shell scaffolding for readers of the metadata to peel off."""
+    def test_gemini_has_no_preamble_no_stdin(self):
+        """A CLI without a pre_exec_shell, without env_model_vars, and with
+        argv-channel instruction publishes the CLI command alone — no shell
+        scaffolding for readers of the metadata to peel off."""
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        command = harness_command("claude-code", "go", "anthropic/claude-sonnet-4-6")
-        assert "&& exec " not in command
-        assert command.startswith("env IS_SANDBOX=1 claude ")
+        command = harness_command("gemini-cli", "go", "google/gemini-2.5-flash")
+        assert "&&" not in command
+        assert "printf" not in command
+        assert command.startswith("gemini ")
 
     def test_instruction_is_one_shell_argument(self):
         import shlex
@@ -1055,7 +1085,7 @@ class TestHarnessCommand:
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
         instruction = "don't $EXPAND `me`;\nsecond line"
-        _, _, cli = harness_command("codex", instruction, "m").rpartition(" && exec ")
+        _, _, cli = harness_command("codex", instruction, "m").rpartition(" && ")
         argv = shlex.split(cli)
         assert argv[-1] == instruction
 
@@ -1087,14 +1117,14 @@ class TestHarnessModelPrefix:
     """A vendor CLI reaches OpenRouter through ``*_BASE_URL``, not litellm."""
 
     def test_openrouter_prefix_stripped_for_a_vendor_cli(self):
-        import shlex
-
+        """Claude-code no longer emits ``--model`` on the CLI (env quartet
+        carries the model), but the resolved model name must still land in
+        the env quartet with the ``openrouter/`` prefix stripped."""
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        argv = shlex.split(
-            harness_command("claude-code", "go", "openrouter/anthropic/claude-sonnet-4-6")
-        )
-        assert argv[argv.index("--model") + 1] == "anthropic/claude-sonnet-4-6"
+        command = harness_command("claude-code", "go", "openrouter/anthropic/claude-sonnet-4-6")
+        assert "export ANTHROPIC_MODEL=anthropic/claude-sonnet-4-6 " in command
+        assert "openrouter/anthropic/claude-sonnet-4-6" not in command
 
     def test_codex_gets_the_bare_model_name(self):
         """codex refuses ``openai/gpt-5-mini`` as off-catalog and drops
@@ -1192,7 +1222,7 @@ class TestComposeSynthesisHarnessLayer:
         assert base["profiles"] == ["tolokaforge-build"]
 
         main = compose["services"]["main"]
-        assert main["image"] == "tbench-layered:local-claude-code-2.1.228"
+        assert main["image"] == "tbench-layered:local-claude-code-2.1.231"
         assert main["build"] == {
             "context": ".",
             "dockerfile": "_harness/harness.Dockerfile",
@@ -1242,7 +1272,7 @@ class TestComposeSynthesisHarnessLayer:
         compose = _load_synthesised(env)
         assert "main-base" not in compose["services"]
         assert env.base_build_service is None
-        assert compose["services"]["main"]["image"] == "tbench-prebuilt:local-claude-code-2.1.228"
+        assert compose["services"]["main"]["image"] == "tbench-prebuilt:local-claude-code-2.1.231"
 
     def test_registry_base_is_pulled_not_built(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
@@ -1597,8 +1627,9 @@ class TestHarnessTaskDescriptionMetadata:
         return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
 
     def test_harness_command_carries_the_instruction(self, fixture_dir, tmp_path):
-        import shlex
-
+        """claude-code publishes an instruction-on-stdin command; the task's
+        instruction is the single ``printf`` argument, and the resolved model
+        (with ``openrouter/`` stripped) lands in the env quartet."""
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
         adapter = TerminalBenchAdapter(
@@ -1611,13 +1642,20 @@ class TestHarnessTaskDescriptionMetadata:
         )
         td = adapter.to_task_description("echo-hello")
         assert td.metadata["agent_harness"] == "claude-code"
-        argv = shlex.split(td.metadata["agent_harness_command"])
-        assert argv[:2] == ["claude", "--model"]
-        # The vendor CLI must not see the litellm route prefix.
-        assert argv[2] == "anthropic/claude-sonnet-4-6"
-        assert argv[3] == "--print"
-        assert argv[4] == adapter.get_task("echo-hello").initial_user_message
-        assert td.metadata["agent_harness_version"] == "2.1.228"
+        command = td.metadata["agent_harness_command"]
+        instruction = adapter.get_task("echo-hello").initial_user_message
+        # Env quartet carries the resolved model, no ``--model`` on the CLI.
+        assert "export ANTHROPIC_MODEL=anthropic/claude-sonnet-4-6 " in command
+        assert " --model " not in command
+        # Instruction reaches the CLI on stdin.
+        assert f"printf %s {instruction!r}".replace("'", "'") in command or (
+            f"printf %s '{instruction}'" in command
+        )
+        assert command.rstrip().endswith(
+            "claude --verbose --output-format=stream-json "
+            "--permission-mode=bypassPermissions --print"
+        )
+        assert td.metadata["agent_harness_version"] == "2.1.231"
 
     def test_default_harness_publishes_no_command(self, fixture_dir, tmp_path):
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter

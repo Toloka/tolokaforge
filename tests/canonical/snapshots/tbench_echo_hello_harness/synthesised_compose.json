@@ -28,9 +28,11 @@
       ],
       "container_name": "tbench_${TOLOKAFORGE_TRIAL_SLUG}_main",
       "environment": [
-        "TEST_DIR=/tests"
+        "TEST_DIR=/tests",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+        "IS_SANDBOX=1"
       ],
-      "image": "tbench-echo-hello:local-claude-code-2.1.228",
+      "image": "tbench-echo-hello:local-claude-code-2.1.231",
       "volumes": [
         "./tests:/tests",
         "./_logs:/logs"

@@ -125,6 +125,25 @@ class TestTerminalBenchHarnessModeCanon:
         dockerfile = (env.staging_dir / "_harness" / "harness.Dockerfile").read_text()
         snap.assert_match({"dockerfile": dockerfile}, "harness_dockerfile.json")
 
+    def test_synthesised_compose_carries_container_env(self, tbench_harness_adapter):
+        """``HarnessSpec.container_env`` must reach the agent service's env
+        block — every static hardening key claude-code declares (``IS_SANDBOX``,
+        ``CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC``) has to survive the
+        synthesis pass. This is a direct behavioural pin so a regression here
+        is not merely a snapshot diff."""
+        import yaml
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        env = tbench_harness_adapter._environment("echo-hello")
+        with env.compose_file.open() as f:
+            compose = yaml.safe_load(f)
+        agent_env = compose["services"]["main"]["environment"]
+        assert isinstance(agent_env, list)
+        for key, value in HARNESSES["claude-code"].container_env.items():
+            assert (
+                f"{key}={value}" in agent_env
+            ), f"container_env pair {key}={value!r} missing from synthesised compose"
+
 
 class TestTerminalBenchAdapterIntegrity:
     """Validate adapter output against source files without snapshots."""

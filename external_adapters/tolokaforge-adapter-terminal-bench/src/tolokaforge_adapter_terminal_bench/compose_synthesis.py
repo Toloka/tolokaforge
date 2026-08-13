@@ -384,6 +384,13 @@ def _build_synthesised_compose(
         agent_body["environment"] = _set_env_key(
             agent_body["environment"], key, f"${{{provider_env_input(key)}}}"
         )
+    if agent_harness != ENGINE_LOOP:
+        # Static per-harness env — hardening flags the CLI reads at start-up
+        # (``IS_SANDBOX=1`` for claude-code's root-user bypass, etc.). Written
+        # into the compose ``environment:`` block so ``docker exec`` inherits
+        # them. See :attr:`HarnessSpec.container_env`.
+        for key, value in sorted(HARNESSES[agent_harness].container_env.items()):
+            agent_body["environment"] = _set_env_key(agent_body["environment"], key, value)
 
     base_build_service: str | None = None
     if agent_harness != ENGINE_LOOP:

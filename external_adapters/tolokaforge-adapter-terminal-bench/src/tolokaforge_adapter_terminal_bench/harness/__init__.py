@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 __all__ = [
     "ACCEPTED_HARNESSES",
@@ -48,25 +49,44 @@ trial recorded as ``terminus-2`` would be claiming a comparison it did not run.
 
 @dataclass(frozen=True)
 class HarnessSpec:
-    """One coding-harness CLI: how to install it, how to drive it."""
+    """One coding-harness CLI: how to install it, how to drive it.
+
+    Every per-harness parity knob lives on this dataclass so the answer to
+    "how do I add / fix a harness" has one address. TECHDEL-569 tracks the
+    consolidation follow-up (Pydantic + YAML overlay per ADR 0002)."""
 
     npm_package: str
     """Global npm package providing the CLI."""
 
     version: str
-    """Exact version installed. Pinned because the agent is the largest
-    variable in a coding benchmark: the layered image tag is stable, and the
-    orchestrator skips a build whose tag already resolves locally, so a
-    floating version would freeze per-machine on first build, differ between
-    contributors, and appear in no artifact."""
+    """Exact version installed, or the literal ``"latest"``.
+
+    Pinned by default because the agent is the largest variable in a coding
+    benchmark: the layered image tag is stable, and the orchestrator skips a
+    build whose tag already resolves locally, so a floating version would
+    freeze per-machine on first build and differ between contributors.
+
+    ``"latest"`` is available for exploration runs; when used, ``install-harness.sh``
+    records the resolved version to a file the adapter reads back at
+    trial-registration time and stamps on ``TaskDescription.metadata`` — so
+    reproducibility is preserved by the *artifact*, not by the pin. An
+    operator can also override per-run via
+    :attr:`TerminalBenchAdapter.agent_harness_version_override`."""
 
     argv_prefix: tuple[str, ...]
-    """Words before the model flag."""
+    """Words before the flags block. The CLI executable (and its sub-command,
+    if any) — e.g. ``("claude",)`` or ``("codex", "exec")``. Static env
+    hardening (``IS_SANDBOX=1`` etc.) does NOT belong here — put it on
+    :attr:`container_env` so the compose ``environment:`` block carries it."""
 
     argv_suffix: tuple[str, ...]
-    """Words between the model and the trailing instruction argument."""
+    """Words between the flags block and the trailing instruction argument.
+    Typically the mandatory ``--permission-mode=…`` / ``--print`` group."""
 
     model_flag: str = "--model"
+    """CLI flag that receives the model name. Ignored when
+    :attr:`env_model_vars` is non-empty — env carries the model instead, and
+    the CLI flag would be redundant."""
 
     pre_exec_shell: str = ""
     """Shell script chained before the CLI with ``&&``. Non-empty for CLIs that
@@ -77,18 +97,58 @@ class HarnessSpec:
     Runs inside the task container's default shell alongside the CLI, so it
     can reference any forwarded provider env var by name."""
 
+    flags_pre_permission: tuple[str, ...] = ()
+    """Flags inserted between the CLI executable and the model flag / argv
+    suffix. Harbor invokes claude-code as
+    ``claude --verbose --output-format=stream-json --permission-mode=… --print``;
+    this field is where ``--verbose --output-format=stream-json`` land.
+    Aligning the flag block aligns the CLI's internal reasoning mode — the
+    principal source of the pipeline-vs-pipeline reward delta on
+    ``fix-billing-holds`` before the parity work."""
+
+    instruction_channel: Literal["argv", "stdin"] = "argv"
+    """How the task instruction reaches the CLI. ``"argv"`` — the trailing
+    positional argument (current default). ``"stdin"`` — piped in via
+    ``printf "%s" '<instr>' | cli …`` so the shell never re-interprets any
+    character in the prompt. Harbor uses stdin for claude-code; the
+    positional form was TF's default and worked in practice, but stdin is
+    the shape aligning-to-Harbor calls for."""
+
+    env_model_vars: tuple[str, ...] = ()
+    """Env variable names that carry the model name into the CLI. Non-empty
+    for CLIs whose sub-agents (``Task``, ``Explore``) resolve their model
+    independently of the top-level ``--model`` flag: without the env quartet,
+    ``Task`` sub-agents fall back to the CLI's default model — a different
+    provider mid-trial — even when ``--model`` is set on the outer CLI. When
+    non-empty, ``harness_command`` chains ``export VAR=<model>`` for each
+    into the pre-exec shell AND drops the redundant ``--model`` CLI arg.
+    Claude Code's harbor invocation sets ``ANTHROPIC_MODEL`` and its
+    ``_DEFAULT_SONNET_MODEL`` / ``_OPUS_MODEL`` / ``_HAIKU_MODEL`` /
+    ``CLAUDE_CODE_SUBAGENT_MODEL`` siblings — a five-var quartet."""
+
+    container_env: dict[str, str] = field(default_factory=dict)
+    """Static env pairs the compose ``environment:`` block writes for the
+    agent service. Zero-model, one-key-per-behaviour hardening — claude-code
+    reads ``IS_SANDBOX=1`` (root-user override) and
+    ``CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1``. Values must be strings
+    (compose interpolation is stringly typed) and must not overlap
+    :data:`PROVIDER_ENV_KEYS` (a run-config would then shadow this)."""
+
 
 HARNESSES: dict[str, HarnessSpec] = {
     "claude-code": HarnessSpec(
         npm_package="@anthropic-ai/claude-code",
-        version="2.1.228",
-        # ``env IS_SANDBOX=1`` is claude-code's documented root-user override:
-        # without it, ``--permission-mode=bypassPermissions`` (which the CLI
-        # rewrites internally to ``--dangerously-skip-permissions``) refuses to
-        # run under UID 0 and exits before the model is called. The task
-        # container is root by default, and harbor's own invocation sets the
-        # same env for the same reason.
-        argv_prefix=("env", "IS_SANDBOX=1", "claude"),
+        # Pinned to the version harbor's ``bootstrap.sh`` resolved when the
+        # matrix comparison was baselined — three patch versions ahead of what
+        # TF previously pinned. The pin closes the CLI-code delta with harbor
+        # while keeping reproducibility (see :attr:`HarnessSpec.version`).
+        version="2.1.231",
+        argv_prefix=("claude",),
+        # ``--verbose --output-format=stream-json`` matches harbor's invocation
+        # (``harbor/agents/installed/claude_code.py``). Aligning the flag block
+        # aligns the CLI's internal reasoning mode; without them the CLI ran a
+        # different scaffold and made different fixes on the same task.
+        flags_pre_permission=("--verbose", "--output-format=stream-json"),
         # ``--permission-mode=bypassPermissions`` is mandatory: without it the
         # CLI blocks at the first tool-permission prompt in ``--print`` mode
         # and burns the whole episode budget without ever calling the LLM.
@@ -96,6 +156,35 @@ HARNESSES: dict[str, HarnessSpec] = {
             "--permission-mode=bypassPermissions",
             "--print",
         ),
+        # Instruction on stdin sidesteps every shell-escape edge case a
+        # positional-arg prompt would have to survive (a natural user request
+        # can contain quotes, ``$``, backticks, newlines). Harbor pipes the
+        # instruction the same way.
+        instruction_channel="stdin",
+        # The env quartet forces every sub-agent (``Task``, ``Explore``,
+        # ``Plan``, ``general-purpose``) to use the declared model. With
+        # ``--model`` on the CLI alone, sub-agents fall back to the CLI's
+        # sonnet-default and may pick a different provider mid-trial — a
+        # silent divergence from the declared benchmark model.
+        env_model_vars=(
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ),
+        # ``IS_SANDBOX=1`` is claude-code's documented root-user override:
+        # without it, ``--permission-mode=bypassPermissions`` (which the CLI
+        # rewrites internally to ``--dangerously-skip-permissions``) refuses
+        # to run under UID 0 and exits before the model is called. The task
+        # container is root by default. Harbor sets the same env for the
+        # same reason.
+        # ``CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`` disables the CLI's
+        # opt-in telemetry / analytics fetches — harbor sets it too.
+        container_env={
+            "IS_SANDBOX": "1",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        },
     ),
     "codex": HarnessSpec(
         npm_package="@openai/codex",
@@ -276,8 +365,18 @@ def harness_model(model: str, agent_harness: str | None = None) -> str:
 def harness_command(agent_harness: str, instruction: str, model: str) -> str:
     """Shell command that runs *agent_harness* against *instruction*.
 
-    Every word is quoted for ``sh``: the compose-exec tool wrapper hands the
-    returned string to ``bash -c`` inside the task container, so an instruction
+    Assembly order (blank pieces drop out):
+
+        <pre_exec_shell> &&
+        <export VAR=<model> && …>  # one per HarnessSpec.env_model_vars
+        <printf "%s" '<instr>' |>  # only when instruction_channel == "stdin"
+        <argv_prefix> <flags_pre_permission>
+        <--model <model>>          # only when env_model_vars is empty
+        <argv_suffix>
+        <'<instr>'>                # only when instruction_channel == "argv"
+
+    Every argv token is shell-quoted; the compose-exec tool wrapper hands the
+    result to ``bash -c`` inside the task container, so an instruction
     carrying quotes, newlines, or ``$`` must survive verbatim.
 
     Raises:
@@ -291,14 +390,28 @@ def harness_command(agent_harness: str, instruction: str, model: str) -> str:
             f"terminal-bench adapter: agent_harness {agent_harness!r} runs no CLI; "
             "the trial goes through the engine's LLM turn loop instead."
         )
-    argv = (
-        *spec.argv_prefix,
-        spec.model_flag,
-        harness_model(model, agent_harness),
-        *spec.argv_suffix,
-        instruction,
-    )
-    cli_command = " ".join(shlex.quote(part) for part in argv)
+    resolved_model = harness_model(model, agent_harness)
+
+    # Pre-exec preamble: on-disk config-file emission + env-quartet exports.
+    preamble_parts: list[str] = []
     if spec.pre_exec_shell:
-        return f"{spec.pre_exec_shell} && exec {cli_command}"
+        preamble_parts.append(spec.pre_exec_shell)
+    for var in spec.env_model_vars:
+        preamble_parts.append(f"export {var}={shlex.quote(resolved_model)}")
+    preamble = " && ".join(preamble_parts)
+
+    # CLI argv (without the instruction when it's coming on stdin).
+    cli_tokens: list[str] = [*spec.argv_prefix, *spec.flags_pre_permission]
+    if not spec.env_model_vars and spec.model_flag:
+        cli_tokens.extend([spec.model_flag, resolved_model])
+    cli_tokens.extend(spec.argv_suffix)
+    if spec.instruction_channel == "argv":
+        cli_tokens.append(instruction)
+    cli_command = " ".join(shlex.quote(part) for part in cli_tokens)
+
+    if spec.instruction_channel == "stdin":
+        cli_command = f"printf %s {shlex.quote(instruction)} | {cli_command}"
+
+    if preamble:
+        return f"{preamble} && {cli_command}"
     return cli_command
