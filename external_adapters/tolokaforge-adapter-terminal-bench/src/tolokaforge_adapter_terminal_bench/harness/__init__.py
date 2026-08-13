@@ -73,11 +73,16 @@ HARNESSES: dict[str, HarnessSpec] = {
     "claude-code": HarnessSpec(
         npm_package="@anthropic-ai/claude-code",
         version="2.1.228",
-        argv_prefix=("claude",),
-        # ``--permission-mode=bypassPermissions`` is mandatory: without it the CLI
-        # blocks at the first tool-permission prompt in ``--print`` mode and burns
-        # the whole episode budget without ever calling the LLM. Harbor's own
-        # invocation carries the same flag for the same reason.
+        # ``env IS_SANDBOX=1`` is claude-code's documented root-user override:
+        # without it, ``--permission-mode=bypassPermissions`` (which the CLI
+        # rewrites internally to ``--dangerously-skip-permissions``) refuses to
+        # run under UID 0 and exits before the model is called. The task
+        # container is root by default, and harbor's own invocation sets the
+        # same env for the same reason.
+        argv_prefix=("env", "IS_SANDBOX=1", "claude"),
+        # ``--permission-mode=bypassPermissions`` is mandatory: without it the
+        # CLI blocks at the first tool-permission prompt in ``--print`` mode
+        # and burns the whole episode budget without ever calling the LLM.
         argv_suffix=(
             "--permission-mode=bypassPermissions",
             "--print",

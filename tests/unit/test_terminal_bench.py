@@ -979,6 +979,8 @@ class TestHarnessCommand:
         assert shlex.split(
             harness_command("claude-code", "fix the bug", "anthropic/claude-sonnet-4-6")
         ) == [
+            "env",
+            "IS_SANDBOX=1",
             "claude",
             "--model",
             "anthropic/claude-sonnet-4-6",
