@@ -449,12 +449,23 @@ jobs:
           # candidate to a human at full observe cost.
           #
           # The threshold is a fraction of wire trials so it scales with pack
-          # size: 1 error in 200 passes, 3 do not, and on a 10-trial pack one
-          # error is 10% and still fails. `capability_ran` stays absolute -- a
-          # suite that never ran is not a rate question. Zero trials with any
-          # noise counts as fully dirty rather than dividing by zero. Counts are
-          # echoed so a reader can see how close the call was.
-          GATE="$(uv run python -c 'import json; f=json.load(open("observation/findings.json")); w=f.get("wire",{}); i=w.get("infra",{}); t=w.get("trials") or 0; n=sum(i.get(k,0) for k in ("rate_limit","api_error","status_error")); r=(n/t) if t else (1.0 if n else 0.0); print("dirty" if not f.get("capability_ran") else ("dirty" if r>0.01 else "clean"), n, t, round(r,4))')"
+          # size: on a 200-trial pack 10 errors pass and 11 do not, while on a
+          # 10-trial pack a single error is 10% and still fails.
+          #
+          # 5% rather than something tighter because the two ways to be wrong
+          # cost very differently. A false "dirty" throws away a paid observe
+          # run and puts a clean candidate in a human queue. A false "clean"
+          # hands the agent slightly noisy data -- which is work it does anyway,
+          # since separating model quirks from transport failures is its job,
+          # and `findings.json` carries the infra counters for it to read. Above
+          # 5% the word "transient" stops being credible.
+          #
+          # `capability_ran` stays absolute -- a suite that never ran is not a
+          # rate question. Zero trials with any noise counts as fully dirty
+          # rather than dividing by zero. Counts are echoed so a reader can see
+          # how close the call was, and so the real noise floor becomes visible
+          # over the next few runs rather than staying a guess.
+          GATE="$(uv run python -c 'import json; f=json.load(open("observation/findings.json")); w=f.get("wire",{}); i=w.get("infra",{}); t=w.get("trials") or 0; n=sum(i.get(k,0) for k in ("rate_limit","api_error","status_error")); r=(n/t) if t else (1.0 if n else 0.0); print("dirty" if not f.get("capability_ran") else ("dirty" if r>0.05 else "clean"), n, t, round(r,4))')"
           CLEAN="${GATE%% *}"
           echo "observe gate: $GATE  (verdict noise trials rate)"
           if [ "$CLEAN" = "clean" ]; then
@@ -471,7 +482,7 @@ jobs:
             echo "clean=no" >> "$GITHUB_OUTPUT"
             uv run automation slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
-              --icon needs_human --text "Needs human: observe infra-dirty ($GATE - verdict noise trials rate; threshold 1% of trials)" \
+              --icon needs_human --text "Needs human: observe infra-dirty ($GATE - verdict noise trials rate; threshold 5% of trials)" \
               --pr-url "$PR_URL" --run-url "$RUN_URL" || true
             touch "$RUNNER_TEMP/slack_terminal_sent" || true
             echo "observe infra-dirty or did-not-run -> needs human"

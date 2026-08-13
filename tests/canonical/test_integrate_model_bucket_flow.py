@@ -240,7 +240,7 @@ def test_the_gate_scores_a_rate_not_a_boolean() -> None:
         "transient error; the gate must weigh them against the trial count"
     )
     assert "trials" in body, "the rate needs the denominator"
-    assert "r>0.01" in body or "r > 0.01" in body, "expected the 1%-of-trials threshold"
+    assert "r>0.05" in body or "r > 0.05" in body, "expected the 5%-of-trials threshold"
 
 
 def test_a_suite_that_never_ran_is_still_absolute() -> None:
