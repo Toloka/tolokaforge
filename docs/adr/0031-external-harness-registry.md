@@ -17,25 +17,24 @@ invocations agree on a small set of parity knobs — reasoning-mode flags,
 instruction path (argv vs stdin), sub-agent model routing (env quartet
 vs `--model`), root-user override (`IS_SANDBOX=1`), telemetry (`_DISABLE_NONESSENTIAL_TRAFFIC=1`),
 and the ancillary on-disk state some CLIs need (codex reads
-`openai_base_url` from `$CODEX_HOME/config.toml`, not the env var). PR
-[#1083](https://github.com/Toloka/tolokaforge/pull/1083) landed six
-mechanical fixes over one afternoon just to keep three CLIs functional on
-OpenRouter. Every fix left an accumulating footprint of per-harness knobs
-in three separate structures:
+`openai_base_url` from `$CODEX_HOME/config.toml`, not the env var). Six
+mechanical fixes accumulated in one afternoon just to keep three CLIs
+functional on OpenRouter. Every fix left an accumulating footprint of
+per-harness knobs in three separate structures:
 
 - `HarnessSpec` (frozen dataclass) — CLI argv, install package, version,
   optional shell preamble.
 - A module-level `frozenset` of harness names whose model catalog wants
   bare names, alongside a tuple of vendor-namespace prefixes to strip.
-- In `toloka-partners/tolokaforge-tools`, `tools/tbench-compare/src/tbench_compare/pipeline_a.py`
-  declares `_HARNESS_PROVIDER_ENV: dict[str, dict[str, str]]` mapping every
-  harness to the `${secret:…}` and URL pairs its CLI needs to reach
-  OpenRouter — reproducing per-harness knowledge in a different repo.
+- An out-of-tree tolokaforge tooling package maintains a parallel
+  per-harness envelope, mapping every harness to the `${secret:…}` and URL
+  pairs its CLI needs to reach OpenRouter — reproducing per-harness
+  knowledge outside this repo.
 
-Adding a fourth harness (Grok Build, OpenCode, Kimi Code CLI on Anna's
-Arena spreadsheet) or fixing a per-CLI routing bug touched all three
-structures. Two of them were Python constants; one was in a different
-repo. The knowledge was one thing distributed across three shapes.
+Adding a fourth harness (Grok Build, OpenCode, Kimi Code CLI) or fixing a
+per-CLI routing bug touched all three structures. Two of them were Python
+constants; one was out of tree. The knowledge was one thing distributed
+across three shapes.
 
 The same forces surfaced in [ADR-0002](0002-external-model-registry.md)
 for the LLM preset registry a year earlier: per-entry knobs in engine
@@ -75,8 +74,8 @@ following the same overlay shape as ADR-0002 for the model registry.
 ## Considered Options
 
 1. **Status quo** — every harness addition or fix is an adapter release
-   plus a `tolokaforge-tools` release. Rejected on the same grounds
-   ADR-0002 rejected it: the release cadence gates work the release
+   plus a release of the out-of-tree tooling package. Rejected on the same
+   grounds ADR-0002 rejected it: the release cadence gates work the release
    doesn't need to change.
 
 2. **Pydantic HarnessSpec + shipped YAML + operator overlay YAML.**
@@ -113,8 +112,8 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
     dispatches inside `install-harness.sh` and constrains the source
     (package name vs. download URL), validated at load.
   - `argv_prefix`, `argv_suffix`, `flags_pre_permission`, `model_flag`,
-    `model_flag_style`, `instruction_channel`, `env_model_vars`,
-    `pre_exec_shell` — argv assembly.
+    `model_flag_style`, `instruction_channel`, `env_model_vars` — argv
+    assembly.
   - `config_files: dict[str, str]` — container path to Jinja template for
     CLIs configured by file. Rendered per trial against a closed variable
     set (`model`, `provider`, `base_url`, `api_key_env`); an undeclared
@@ -208,17 +207,16 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
 - Existing run-configs continue to work identically. A run-config that
   used to declare its own `agent_provider_env` still overrides the
   harness default — which is what it was implicitly doing before.
-- The `tolokaforge-tools` `tbench-compare` mapping becomes deletable
-  (follow-up ticket) — the per-harness envelope now lives in one place.
+- The out-of-tree tooling package's parallel mapping becomes deletable —
+  the per-harness envelope now lives in one place.
 - Two adapters in one process can carry independent overlays without
   race.
 
 ### Negative / Trade-offs
 
-- The tolokaforge-tools mapping isn't deleted by this ADR — a coordinated
-  release lag remains until `tolokaforge-tools` picks up the tolokaforge
-  version carrying `HarnessSpec.provider_env`. Tracked in TECHDEL-569 as
-  a follow-up.
+- The out-of-tree mapping isn't deleted by this ADR — a coordinated
+  release lag remains until that package picks up the tolokaforge version
+  carrying `HarnessSpec.provider_env`.
 - Overlay's whole-entry replacement means an operator wanting to change
   one field (e.g. bump `version`) copies the whole entry. The alternative
   (field-wise merge) has worse failure modes; this is the deliberate
@@ -232,10 +230,9 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
 
 ### Follow-ups
 
-- **`tolokaforge-tools` migration**: delete `_HARNESS_PROVIDER_ENV` in
-  `tools/tbench-compare/src/tbench_compare/pipeline_a.py` once the tools
-  workspace picks up the tolokaforge release carrying
-  `HarnessSpec.provider_env`. TECHDEL-569.
+- **Out-of-tree tooling migration**: delete that package's parallel
+  per-harness envelope once it picks up the tolokaforge release carrying
+  `HarnessSpec.provider_env`.
 - **Entry-point plugin discovery** for harness bundles — landed as
   [ADR-0032](0032-external-harness-plugin-discovery.md). A contributor
   publishes a package declaring
@@ -251,8 +248,9 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
   harness installs none). The image layer copies the directory, and
   `TaskDescription.metadata["harness_skills_bundle_sha"]` records its
   content hash — the reproducible, auditable replacement for the
-  operator-environment contamination Harbor smuggles. The declared path
-  is refused unless it resolves inside the task pack, symlinks included.
+  operator-environment contamination the out-of-tree host smuggles. The
+  declared path is refused unless it resolves inside the task pack, symlinks
+  included.
 - **Skills targets for the non-Anthropic harnesses** — only claude-code
   declares a `skills_dir_target`. Each other CLI needs its own skills
   path established against that CLI's documented discovery order before
@@ -276,7 +274,3 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
     — `harness_presets_file` param, overlay wiring, `provider_env` union.
   - `external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/task_parser.py`
     — `harness_skills_dir` parsing and its containment check.
-  - Commits `c0773ac3` (Pydantic-ise + `provider_env` + `strip_vendor_namespace`),
-    `bc09881a` (YAML loader), `09eed862` (operator overlay + union).
-- External references:
-  - Related Jira: **TECHDEL-569**.

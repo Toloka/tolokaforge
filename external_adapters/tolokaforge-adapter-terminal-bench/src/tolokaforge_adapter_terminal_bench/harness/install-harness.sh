@@ -166,10 +166,7 @@ install_curl_bash() {
     installer=/tmp/harness-installer.sh
     download "$SOURCE" "$installer"
     # Positional version arg (``bash installer.sh <version>``) matches the
-    # ``curl … | bash -s -- <version>`` shape most installers document. If
-    # a specific installer needs ``--version`` instead, its harness entry
-    # should ship a ``pre_exec_shell`` that rewrites the invocation — the
-    # generic branch stays predictable.
+    # ``curl … | bash -s -- <version>`` shape most installers document.
     bash "$installer" "$VERSION"
     rm -f "$installer"
     record_version "$VERSION"

@@ -6,16 +6,15 @@ harnesses:
   claude-code:
     install_method: "npm"
     install_source: "@anthropic-ai/claude-code"
-    # Pinned to the version harbor's `bootstrap.sh` resolved when the matrix
-    # comparison was baselined — three patch versions ahead of what TF
-    # previously pinned. The pin closes the CLI-code delta with harbor while
-    # keeping reproducibility.
+    # Pinned to the version the out-of-tree host we compared against resolved
+    # when the matrix comparison was baselined. The pin closes the CLI-code
+    # delta with that host while keeping reproducibility.
     version: "2.1.231"
     argv_prefix: ["claude"]
-    # `--verbose --output-format=stream-json` matches harbor's invocation
-    # (`harbor/agents/installed/claude_code.py`). Aligning the flag block
-    # aligns the CLI's internal reasoning mode; without them the CLI ran a
-    # different scaffold and made different fixes on the same task.
+    # `--verbose --output-format=stream-json` matches the reference vendor-CLI
+    # invocation. Aligning the flag block aligns the CLI's internal reasoning
+    # mode; without them the CLI ran a different scaffold and made different
+    # fixes on the same task.
     flags_pre_permission: ["--verbose", "--output-format=stream-json"]
     # `--permission-mode=bypassPermissions` is mandatory: without it the CLI
     # blocks at the first tool-permission prompt in `--print` mode and burns
@@ -23,8 +22,8 @@ harnesses:
     argv_suffix: ["--permission-mode=bypassPermissions", "--print"]
     # Instruction on stdin sidesteps every shell-escape edge case a
     # positional-arg prompt would have to survive (a natural user request can
-    # contain quotes, `$`, backticks, newlines). Harbor pipes the instruction
-    # the same way.
+    # contain quotes, `$`, backticks, newlines). The reference vendor-CLI
+    # invocation pipes the instruction the same way.
     instruction_channel: "stdin"
     # The env quartet forces every sub-agent (`Task`, `Explore`, `Plan`,
     # `general-purpose`) to use the declared model. With `--model` on the CLI
@@ -41,9 +40,10 @@ harnesses:
     # it, `--permission-mode=bypassPermissions` (which the CLI rewrites
     # internally to `--dangerously-skip-permissions`) refuses to run under
     # UID 0 and exits before the model is called. The task container is root
-    # by default. Harbor sets the same env for the same reason.
+    # by default. The reference vendor-CLI invocation sets the same env for
+    # the same reason.
     # `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` disables the CLI's opt-in
-    # telemetry / analytics fetches — harbor sets it too.
+    # telemetry / analytics fetches — the reference invocation sets it too.
     # `CLAUDE_CONFIG_DIR` names the directory the CLI discovers skills under.
     # It matches the default for the container's root user, stated rather than
     # inherited so `skills_dir_target` below and the CLI's search path cannot
@@ -77,8 +77,8 @@ harnesses:
     # `-c model_reasoning_effort=high` is the OpenRouter-compat mandatory
     # config: gpt-5-mini via the Responses API rejects requests that omit
     # reasoning ("Reasoning is mandatory for this endpoint and cannot be
-    # disabled"). Harbor's own invocation carries the same override
-    # (`harbor/agents/installed/codex.py` — its default codex command).
+    # disabled"). The reference vendor-CLI invocation carries the same
+    # override in its default codex command.
     argv_suffix:
       - "--dangerously-bypass-approvals-and-sandbox"
       - "--skip-git-repo-check"
@@ -95,8 +95,8 @@ harnesses:
     #    from OpenRouter — the CLI sends no `Authorization` header without
     #    the file.
     #
-    # Harbor writes both files (`harbor/agents/installed/codex.py:1391` /
-    # `:1406`). `CODEX_HOME` defaults to `$HOME/.codex`. The key is written as
+    # The reference vendor-CLI invocation writes both files too.
+    # `CODEX_HOME` defaults to `$HOME/.codex`. The key is written as
     # a `$`-reference so it reaches the file from the container's environment
     # rather than through the recorded command.
     config_files:
@@ -125,7 +125,7 @@ harnesses:
     # gemini-cli speaks Google's native Gemini schema (`generateContent`),
     # not OpenAI-compat, so an OpenRouter key does not authenticate its
     # requests — pointing `GOOGLE_GEMINI_BASE_URL` at OpenRouter returns 400.
-    # Harbor's own gemini_cli agent reads `GEMINI_API_KEY` and 401s otherwise
+    # The reference vendor-CLI invocation reads `GEMINI_API_KEY` and 401s otherwise
     # (empirically verified: no matrix run of any pipeline ever produced a
     # real gemini trajectory without a real Google AI Studio key).
     # The operator supplies `GEMINI_API_KEY=<google-key>` in `.env`; the
@@ -139,16 +139,16 @@ harnesses:
   kimi-code:
     install_method: "npm"
     install_source: "@moonshot-ai/kimi-code"
-    # Pinned to the version harbor's docstring cites
-    # (harbor/agents/installed/kimi_code.py:31); Moonshot has no separate
-    # bootstrap installer, so this pin fully governs which agent code runs.
+    # Pinned to the version the out-of-tree host we compared against cites;
+    # Moonshot has no separate bootstrap installer, so this pin fully governs
+    # which agent code runs.
     version: "0.28.1"
     argv_prefix: ["kimi"]
-    # No permission-mode analogue. `--output-format stream-json` matches
-    # harbor's invocation shape so trajectory JSON is emitted for the
-    # runner to record — same reason claude-code carries the flag.
-    # `--prompt` MUST sit last: kimi wants the instruction as its value
-    # (harbor's kimi_code.py:183 renders `--prompt "$INSTRUCTION"`).
+    # No permission-mode analogue. `--output-format stream-json` matches the
+    # reference vendor-CLI invocation shape so trajectory JSON is emitted for
+    # the runner to record — same reason claude-code carries the flag.
+    # `--prompt` MUST sit last: kimi wants the instruction as its value, which
+    # is how the reference invocation renders it too.
     # Passing the instruction as a bare positional argv token (the initial
     # attempt) drops kimi to its usage banner with "See 'kimi --help'".
     argv_suffix: ["--output-format", "stream-json", "--prompt"]
@@ -156,7 +156,7 @@ harnesses:
     # kimi-code reads the model name from an env var, not `--model`.
     env_model_vars: ["KIMI_MODEL_NAME"]
     # Static hardening: no telemetry, no auto-update, no color codes in
-    # the stream. Every knob comes from harbor's kimi_code.py:107-113.
+    # the stream. Every knob comes from the reference vendor-CLI invocation.
     # `KIMI_MODEL_MAX_COMPLETION_TOKENS` caps the CLI's output-token
     # reservation. Kimi's shipped default is the full model context
     # (~131K on any release we've inspected), which is a marketing-
@@ -211,7 +211,7 @@ harnesses:
     # flag the initial research cited (which was removed sometime during
     # the 0.x → 1.x transition and no longer parses).
     # `--thinking` keeps thinking blocks in the JSON stream — parity
-    # match with harbor's own opencode invocation.
+    # match with the reference vendor-CLI invocation.
     # `--` separates the instruction from CLI flags so any leading dash
     # in the prompt is treated as text, not a flag.
     argv_suffix:
@@ -220,8 +220,8 @@ harnesses:
       - "--thinking"
       - "--"
     instruction_channel: "argv"
-    # opencode requires `provider/model` (harbor:489 raises without a `/`),
-    # so we keep the OpenRouter namespace on the model name.
+    # opencode requires `provider/model` — a bare name raises — so we keep
+    # the OpenRouter namespace on the model name.
     strip_vendor_namespace: false
     # opencode's config-dir env vars point at a scratch path under the
     # log volume so anything opencode writes ends up captured.
@@ -232,7 +232,7 @@ harnesses:
       XDG_DATA_HOME: "/logs/agent/opencode/xdg-data"
       XDG_STATE_HOME: "/logs/agent/opencode/xdg-state"
     # opencode's provider baseURL is read from ~/.config/opencode/opencode.json,
-    # not from an env var (harbor:435-473). Config-file emission via
+    # not from an env var. Config-file emission via
     # HarnessSpec.config_files. Default: OpenRouter's Anthropic-compat
     # surface (matches claude-code's routing). An operator targeting an
     # OpenAI or Gemini variant overlays this via harness_presets_file.
@@ -251,15 +251,15 @@ harnesses:
     # /usr/local/bin/ so `grok` resolves on PATH.
     install_method: "curl-bash"
     install_source: "https://x.ai/cli/install.sh"
-    # TODO(low-conf): harbor doesn't pin a Grok version; the installer
-    # accepts one on stdin. Bump after the first matrix run confirms the
-    # actually-installed release.
+    # TODO(low-conf): the out-of-tree host we compared against doesn't pin a
+    # Grok version; the installer accepts one on stdin. Bump after the first
+    # matrix run confirms the actually-installed release.
     version: "0.2.91"
     argv_prefix: ["grok", "--no-auto-update"]
     argv_suffix:
       # `--always-approve` is the permission-bypass equivalent (Grok has
       # no --permission-mode). `--output-format streaming-json` is the
-      # JSON-stream mode matching harbor's invocation shape. `--single`
+      # JSON-stream mode matching the reference invocation shape. `--single`
       # is Grok's non-interactive mode and its VALUE is the prompt, so
       # it MUST sit last — the assembler appends the instruction as the
       # trailing argv token, which becomes `--single`'s argument. Any
@@ -294,9 +294,9 @@ harnesses:
       OPENROUTER_BASE_URL: "https://openrouter.ai/api/v1"
     # Grok's config.toml is a 5-table structured document keyed on the
     # resolved model slug — the reason HarnessSpec.config_files grew to
-    # accept Jinja-templated content. This drops in verbatim from
-    # harbor's `_build_config_toml` at grok_build.py:350-401 (OpenRouter
-    # provider path). `chat_completions` is Grok's own name for
+    # accept Jinja-templated content. This drops in verbatim from the
+    # reference vendor-CLI invocation's OpenRouter provider path.
+    # `chat_completions` is Grok's own name for
     # OpenAI-shaped routing and is not a whitelist variable — hardcoded
     # because we always route this entry through OpenRouter; an operator
     # targeting a different provider does a whole-entry replacement per

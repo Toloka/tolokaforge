@@ -27,29 +27,7 @@ from tolokaforge.runner.tool_factory import (
     ToolLifecycleContext,
 )
 
-pytestmark = pytest.mark.unit
-
-
-@pytest.fixture(autouse=True)
-def env_backed_secrets(monkeypatch):
-    """Pin the process ``SecretManager`` to ``os.environ`` with the shipped
-    harness provider key resolvable.
-
-    Harness mode resolves ``HarnessSpec.provider_env`` — claude-code ships
-    ``${secret:OPENROUTER_API_KEY}`` — while constructing the adapter. The
-    process default manager reads a ``.env`` file first, so without this the
-    lane would resolve whatever credential the developer happens to have on
-    disk and would fail on a machine that has none. Patching the module global
-    (rather than ``init_default_from``) restores the singleton when the test
-    ends, so no manager leaks into a neighbouring test's secret reads.
-    """
-    from tolokaforge.secrets import SecretManager
-    from tolokaforge.secrets.providers import EnvProvider
-
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter-test")
-    monkeypatch.setattr(
-        "tolokaforge.secrets.manager._default_manager", SecretManager([EnvProvider()])
-    )
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("env_backed_secrets")]
 
 
 # =============================================================================
@@ -1234,7 +1212,7 @@ class TestHarnessCommand:
         command = harness_command("claude-code", "fix the bug", "anthropic/claude-sonnet-4-6")
         preamble, sep, cli = command.partition(" && printf ")
         assert sep, "claude-code pipes instruction via printf on stdin"
-        # Preamble: five model exports, matching the harbor env quartet + subagent var.
+        # Preamble: five model exports, matching the reference env quartet + subagent var.
         exports = [p.strip() for p in preamble.split(" && ")]
         assert exports == [
             "export ANTHROPIC_MODEL=anthropic/claude-sonnet-4-6",
@@ -1307,7 +1285,7 @@ class TestHarnessCommand:
         assert "OPENAI_API_KEY" in preamble
 
     def test_gemini_has_no_preamble_no_stdin(self):
-        """A CLI without a pre_exec_shell, without env_model_vars, and with
+        """A CLI without config_files, without env_model_vars, and with
         argv-channel instruction publishes the CLI command alone — no shell
         scaffolding for readers of the metadata to peel off."""
         from tolokaforge_adapter_terminal_bench.harness import harness_command
@@ -1463,19 +1441,28 @@ class TestHarnessConfigFiles:
             "base_url=https://x.invalid/v1 key=$OPENAI_API_KEY" in command
         )
 
-    def test_ambiguous_provider_envelope_is_refused(self):
-        """Two endpoints leave no single answer for ``{{ base_url }}``."""
+    @pytest.mark.parametrize(
+        ("template", "provider_env"),
+        [
+            pytest.param(
+                "url={{ base_url }}\n",
+                {"OPENAI_BASE_URL": "https://a.invalid", "ANTHROPIC_BASE_URL": "b"},
+                id="two-base-urls",
+            ),
+            pytest.param(
+                "key=${{ api_key_env }}\n",
+                {"OPENAI_API_KEY": "sk-a", "ANTHROPIC_API_KEY": "sk-b"},
+                id="two-api-keys",
+            ),
+        ],
+    )
+    def test_ambiguous_provider_envelope_is_refused(self, template, provider_env):
+        """Two endpoints — or two keys — leave no single answer for the template."""
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        spec = self._spec(config_files={"/etc/cli.toml": "url={{ base_url }}\n"})
+        spec = self._spec(config_files={"/etc/cli.toml": template})
         with pytest.raises(ValueError, match="several entries"):
-            harness_command(
-                "cli",
-                "go",
-                "m",
-                registry={"cli": spec},
-                provider_env={"OPENAI_BASE_URL": "https://a.invalid", "ANTHROPIC_BASE_URL": "b"},
-            )
+            harness_command("cli", "go", "m", registry={"cli": spec}, provider_env=provider_env)
 
 
 class TestModelFlagStyle:
@@ -1518,7 +1505,7 @@ class TestHarnessModelPrefix:
 
     def test_codex_gets_the_bare_model_name(self):
         """codex refuses ``openai/gpt-5-mini`` as off-catalog and drops
-        OPENAI_BASE_URL — harbor's fix is the last-path-segment strip."""
+        OPENAI_BASE_URL — the reference fix is the last-path-segment strip."""
         import shlex
 
         from tolokaforge_adapter_terminal_bench.harness import harness_command
@@ -1792,7 +1779,8 @@ def _skills_task(tmp_path: Path, task_id: str, declared: str | None, files: dict
 class TestHarnessSkillsBundle:
     """A task pack ships its own skills; the operator's home directory never does.
 
-    The parity policy refuses Harbor's ``~/.claude/skills`` smuggling because a
+    The parity policy refuses the out-of-tree host's ``~/.claude/skills``
+    smuggling because a
     reward that depends on the eval machine's home directory is not a
     reproducible reward. These tests lock the replacement: the bundle is
     declared by the pack, contained inside it, copied only by a harness that

@@ -175,29 +175,18 @@ class HarnessSpec(BaseModel):
     ``TaskDescription.metadata`` — ever carrying its value. A template must
     therefore not carry a literal ``$`` it does not want expanded."""
 
-    pre_exec_shell: str = ""
-    """Shell script chained before the CLI with ``&&``, after the
-    :attr:`config_files` writes. For preparation that is not a file write;
-    a file write belongs on :attr:`config_files`, which quotes and renders it.
-    Runs inside the task container's default shell alongside the CLI, so it
-    can reference any forwarded provider env var by name."""
-
     flags_pre_permission: tuple[str, ...] = ()
     """Flags inserted between the CLI executable and the model flag / argv
-    suffix. Harbor invokes claude-code as
+    suffix. The reference vendor-CLI invocation runs claude-code as
     ``claude --verbose --output-format=stream-json --permission-mode=… --print``;
     this field is where ``--verbose --output-format=stream-json`` land.
-    Aligning the flag block aligns the CLI's internal reasoning mode — the
-    principal source of the pipeline-vs-pipeline reward delta on
-    ``fix-billing-holds`` before the parity work."""
+    Aligning the flag block aligns the CLI's internal reasoning mode, which
+    drives how the agent reasons about the task and so what reward it earns."""
 
     instruction_channel: Literal["argv", "stdin"] = "argv"
     """How the task instruction reaches the CLI. ``"argv"`` — the trailing
-    positional argument (current default). ``"stdin"`` — piped in via
-    ``printf "%s" '<instr>' | cli …`` so the shell never re-interprets any
-    character in the prompt. Harbor uses stdin for claude-code; the
-    positional form was TF's default and worked in practice, but stdin is
-    the shape aligning-to-Harbor calls for."""
+    positional argument. ``"stdin"`` — piped in via ``printf "%s" '<instr>' |
+    cli …`` so the shell never re-interprets any character in the prompt."""
 
     env_model_vars: tuple[str, ...] = ()
     """Env variable names that carry the model name into the CLI. Non-empty
@@ -206,9 +195,9 @@ class HarnessSpec(BaseModel):
     ``Task`` sub-agents fall back to the CLI's default model — a different
     provider mid-trial — even when ``--model`` is set on the outer CLI. When
     non-empty, ``harness_command`` chains ``export VAR=<model>`` for each
-    into the pre-exec shell AND drops the redundant ``--model`` CLI arg.
-    Claude Code's harbor invocation sets ``ANTHROPIC_MODEL`` and its
-    ``_DEFAULT_SONNET_MODEL`` / ``_OPUS_MODEL`` / ``_HAIKU_MODEL`` /
+    into the preamble AND drops the redundant ``--model`` CLI arg.
+    The reference vendor-CLI invocation of Claude Code sets ``ANTHROPIC_MODEL``
+    and its ``_DEFAULT_SONNET_MODEL`` / ``_OPUS_MODEL`` / ``_HAIKU_MODEL`` /
     ``CLAUDE_CODE_SUBAGENT_MODEL`` siblings — a five-var quartet."""
 
     container_env: dict[str, str] = Field(default_factory=dict)
@@ -237,8 +226,8 @@ class HarnessSpec(BaseModel):
     whose model catalog uses bare names (``gpt-5-mini``, not
     ``openai/gpt-5-mini``) — a namespaced string prints "Model metadata for
     <name> not found" and the CLI silently drops OpenRouter routing to hit
-    the vendor's default endpoint. Harbor sidesteps the same trap by taking
-    the last path segment (``harbor/agents/installed/codex.py:1341``)."""
+    the vendor's default endpoint. The reference vendor-CLI invocation
+    sidesteps the same trap by taking the last path segment."""
 
     provider_env: dict[str, str] = Field(default_factory=dict)
     """Default provider-env envelope for this harness — the shape the CLI
@@ -546,9 +535,8 @@ PROVIDER_ENV_KEYS: frozenset[str] = frozenset(
         "OPENROUTER_API_KEY",
         "OPENROUTER_BASE_URL",
         # Kimi Code CLI reads ``KIMI_MODEL_API_KEY`` / ``KIMI_MODEL_BASE_URL``
-        # natively (harbor ``gemini_cli.py``-analogous naming for Moonshot's
-        # CLI). No pre-existing OpenRouter alias name covers this — the CLI's
-        # own credentials-loader looks up these two names verbatim.
+        # natively. No pre-existing OpenRouter alias name covers this — the
+        # CLI's own credentials-loader looks up these two names verbatim.
         "KIMI_MODEL_API_KEY",
         "KIMI_MODEL_BASE_URL",
     }
@@ -700,7 +688,6 @@ def harness_command(
     Assembly order (blank pieces drop out):
 
         <config_files write> &&    # one per HarnessSpec.config_files entry
-        <pre_exec_shell> &&
         <export VAR=<model> && …>  # one per HarnessSpec.env_model_vars
         <printf "%s" '<instr>' |>  # only when instruction_channel == "stdin"
         <argv_prefix> <flags_pre_permission>
@@ -735,8 +722,6 @@ def harness_command(
             _config_file_write(path, _TEMPLATES.from_string(template).render(variables))
             for path, template in spec.config_files.items()
         )
-    if spec.pre_exec_shell:
-        preamble_parts.append(spec.pre_exec_shell)
     for var in spec.env_model_vars:
         preamble_parts.append(f"export {var}={shlex.quote(resolved_model)}")
 

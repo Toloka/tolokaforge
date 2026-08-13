@@ -223,9 +223,9 @@ exactly what the run config declared.
 ### Harness parity policy
 
 A harness trial's job is to produce a reward comparable to the one the same
-CLI would produce when driven by its out-of-tree host (the Harbor CLI is the
-reference). Reproducibility across pipelines depends on how the CLI is
-invoked, not just which model it calls — a stable divergence surfaced
+CLI would produce when driven by its out-of-tree host — the reference
+vendor-CLI invocation. Reproducibility across pipelines depends on how the
+CLI is invoked, not just which model it calls — a stable divergence surfaced
 during matrix validation traced to invocation-shape differences alone
 (0.133 delta on `fix-billing-holds × claude-code`; closed to 0.033 once
 the shape aligned).
@@ -237,7 +237,7 @@ somewhere else, so a per-harness policy is one entry to read.
 | Aspect | The alignment | Field |
 |---|---|---|
 | CLI version | Pinned to a specific release. The pin rides the layered image tag and `metadata["agent_harness_version"]`. | `HarnessSpec.version` |
-| Reasoning-mode flags | Flags between the CLI name and `--permission-mode` — for claude-code, `--verbose --output-format=stream-json` (the mode Harbor drives). | `HarnessSpec.flags_pre_permission` |
+| Reasoning-mode flags | Flags between the CLI name and `--permission-mode` — for claude-code, `--verbose --output-format=stream-json` (the mode the reference invocation drives). | `HarnessSpec.flags_pre_permission` |
 | Instruction path | `"argv"` (positional argument) or `"stdin"` (`printf "%s" '<instr>' \| cli …`). `"stdin"` sidesteps every shell-escape edge case a positional-arg prompt would have to survive. Claude Code uses stdin. | `HarnessSpec.instruction_channel` |
 | Model routing | Env variables the resolved model exports into. Non-empty for CLIs whose sub-agents route model independently of the top-level `--model` flag: without the export, Task/Explore sub-agents fall back to the CLI's own sonnet-default and may pick a different provider mid-trial. Claude Code declares the quartet `ANTHROPIC_MODEL` + `_DEFAULT_SONNET_MODEL` / `_OPUS_MODEL` / `_HAIKU_MODEL` + `CLAUDE_CODE_SUBAGENT_MODEL`. When set, the redundant `--model` CLI flag is dropped. | `HarnessSpec.env_model_vars` |
 | Static hardening env | Env pairs the compose `environment:` block writes for the agent service. Claude Code declares `IS_SANDBOX=1` (root-user bypass, without which the CLI refuses `--permission-mode=bypassPermissions` under UID 0) and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (opt-in telemetry off). | `HarnessSpec.container_env` |
@@ -247,10 +247,11 @@ somewhere else, so a per-harness policy is one entry to read.
 | File-based configuration | Files the CLI reads its configuration from, rendered per trial. | `HarnessSpec.config_files` |
 | Skills | Where a task pack's own `harness_skills_dir` bundle is copied in the image layer. Unset means the harness installs no skills; the operator's `~/.claude/skills` is never a source. | `HarnessSpec.skills_dir_target` |
 
-**Operator skills are deliberately not aligned.** Harbor copies the
-operator's `~/.claude/skills/` into the container, so its Claude sees
-whatever personal skills the person running the eval has installed on
-their laptop. That is not reproducible across operators and it is not a
+**Operator skills are deliberately not aligned.** The out-of-tree host we
+compared against copies the operator's `~/.claude/skills/` into the
+container, so its Claude sees whatever personal skills the person running
+the eval has installed on their laptop. That is not reproducible across
+operators and it is not a
 property a benchmark reward should quietly depend on, so the adapter
 never reads the operator's home directory. The delta this creates is the
 *right* delta — stable across machines and dates.

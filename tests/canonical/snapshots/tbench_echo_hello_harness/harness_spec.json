@@ -28,7 +28,6 @@
   "instruction_channel": "stdin",
   "model_flag": "--model",
   "model_flag_style": "space",
-  "pre_exec_shell": "",
   "provider_env": {
     "ANTHROPIC_API_KEY": "${secret:OPENROUTER_API_KEY}",
     "ANTHROPIC_BASE_URL": "https://openrouter.ai/api"

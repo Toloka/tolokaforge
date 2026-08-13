@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
-pytestmark = pytest.mark.canonical
+pytestmark = [pytest.mark.canonical, pytest.mark.usefixtures("env_backed_secrets")]
 
 SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
 
@@ -34,28 +34,6 @@ def _normalize_paths(obj):
         text,
     )
     return json.loads(text)
-
-
-@pytest.fixture(autouse=True)
-def env_backed_secrets(monkeypatch):
-    """Pin the process ``SecretManager`` to ``os.environ`` with the shipped
-    harness provider key resolvable.
-
-    Harness mode resolves ``HarnessSpec.provider_env`` — claude-code ships
-    ``${secret:OPENROUTER_API_KEY}`` — while constructing the adapter. The
-    process default manager reads a ``.env`` file first, so without this the
-    lane would resolve whatever credential the developer happens to have on
-    disk and would fail on a machine that has none. No resolved value reaches
-    a snapshot: the compose file carries names, and values live only in the
-    per-trial ``.env``.
-    """
-    from tolokaforge.secrets import SecretManager
-    from tolokaforge.secrets.providers import EnvProvider
-
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter-test")
-    monkeypatch.setattr(
-        "tolokaforge.secrets.manager._default_manager", SecretManager([EnvProvider()])
-    )
 
 
 @pytest.fixture

@@ -232,5 +232,4 @@ No plugin, no line: the common case stays silent.
   - `tolokaforge/core/plugin_registry.py` — `discover_entry_points`, the
     fail-loud scan this reuses.
 - External references:
-  - Related Jira: **TECHDEL-569**.
   - [Python packaging: entry points](https://packaging.python.org/en/latest/specifications/entry-points/).
