@@ -271,14 +271,15 @@ class ToolCallingLoop:
         None
     )
     call_observation: LLMCallObservation | None = None
+    # The episode's id assigner. Injected rather than owned: a trial's second
+    # actor executes tool calls outside this loop and must draw from the same
+    # sequence, while a rubric judge's loop takes the default and disambiguates
+    # only against its own calls.
+    call_ids: EpisodeUniqueCallIds = field(default_factory=EpisodeUniqueCallIds)
 
     # Captured from the first generation's effective system prompt.
     _captured_effective_prompt: str | None = field(default=None, init=False)
     _captured: bool = field(default=False, init=False)
-    # One assigner per loop instance, which is one per episode: the loop is
-    # constructed per trial and per judge run, so a judge's own calls never
-    # disambiguate against the trial's.
-    _call_ids: EpisodeUniqueCallIds = field(default_factory=EpisodeUniqueCallIds, init=False)
 
     def run(self, system_prompt: str, messages: list[Message], start_time: float) -> LoopOutcome:
         """Run the turn loop, mutating ``messages`` in place.
@@ -371,7 +372,7 @@ class ToolCallingLoop:
         """
         assigned: list[ToolCall] = []
         for call in result.tool_calls:
-            key = self._call_ids.assign(call.id)
+            key = self.call_ids.assign(call.id)
             if key == call.id:
                 assigned.append(call)
                 continue

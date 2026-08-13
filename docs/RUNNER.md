@@ -285,7 +285,7 @@ canonical test rejects drift between them and the pyproject mirror.
 | `tolokaforge/core/grading/migration_declaration.py` | Reaches the same two through its `corpus_curation` import. |
 | `tolokaforge/core/grading/replay.py` | Imports `core.output.artifacts` (orchestrator-only). |
 | `tolokaforge/core/grading/replay_layout.py` | Standard library only; consumed by the offline replay commands. |
-| `tolokaforge/core/grading/rubric_migration.py` | Imports `adapters._task_loader` (orchestrator-only). |
+| `tolokaforge/core/grading/rubric_migration.py` | Imports the adapters' private task loader (orchestrator-only). |
 | `tolokaforge/core/grading/state_checks.py` | Imports `core.utils.diff` (orchestrator-only). |
 | `tolokaforge/core/grading/trace_replay.py` | Imports `core.output.artifacts` (orchestrator-only). |
 | `tolokaforge/core/grading/unknown_keys.py` | Shared-spine imports only; consumed by the pre-run authoring gate. |

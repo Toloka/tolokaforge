@@ -24,6 +24,7 @@ from tolokaforge.core.models import (
     RateLimitProbeRoleMetrics,
     RecordedToolCall,
     TerminationReason,
+    ToolCall,
     ToolExecutionStatus,
     ToolExecutorIdentity,
     Trajectory,
@@ -38,6 +39,7 @@ from tolokaforge.core.run_display_events import (
     RunDisplayEvents,
 )
 from tolokaforge.core.stuck import StuckDetector
+from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
 from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
 
 _AGENT_DONE_MARKERS: tuple[str, ...] = ("###STOP###",)
@@ -146,6 +148,10 @@ class TrialRunner:
 
         self.messages: list[Message] = []
         self.tool_call_recorder = TrialToolCallRecorder()
+        # One assigner for the whole trial, drawn from by both actors — the
+        # agent's loop takes it as an argument — so a raw provider id one actor
+        # used is disambiguated for the other rather than recorded twice.
+        self._call_ids = EpisodeUniqueCallIds()
         self.metrics = Metrics()
         self.start_time: float = 0.0
         self.logger: StructuredLogger | None = None  # Initialized in run()
@@ -332,6 +338,7 @@ class TrialRunner:
                     should_terminate=self._agent_termination,
                     user_turn=lambda messages: self._policy_user_turn(policy, messages),
                     recorder=self.tool_call_recorder,
+                    call_ids=self._call_ids,
                     request_limiter=self.request_limiter,
                     normalize_tool_arguments=self._normalize_tool_arguments,
                     classify_error=self.agent_client.classify_loop_error,
@@ -375,12 +382,17 @@ class TrialRunner:
             self._apply_probe_stats()
 
             recorded_calls = self.tool_call_recorder.recorded
-            if recorded_calls:
+            # Both describe the agent's tool use — the scoping stuck detection
+            # and ``tool_expectations`` already apply. The guard is the agent
+            # slice too: a trial whose only calls were the user's would divide
+            # by zero here, and its true agent count is the sink's own 0.
+            agent_calls = self.tool_call_recorder.recorded_for(ToolExecutorIdentity.AGENT)
+            if agent_calls:
                 success_count = sum(
-                    1 for call in recorded_calls if call.status is ToolExecutionStatus.SUCCESS
+                    1 for call in agent_calls if call.status is ToolExecutionStatus.SUCCESS
                 )
-                self.metrics.tool_success_rate = success_count / len(recorded_calls)
-                self.metrics.tool_calls = len(recorded_calls)
+                self.metrics.tool_success_rate = success_count / len(agent_calls)
+                self.metrics.tool_calls = len(agent_calls)
 
             self.logger.info(
                 "Trial execution finished",
@@ -531,11 +543,12 @@ class TrialRunner:
         seed = initial_user_message if initial_user_message.strip() else None
         decision = policy.bootstrap(task_config, seed)
 
+        first_user_calls: list[ToolCall] = []
         if decision.first_user_message is not None:
             first_user_text = decision.first_user_message
             self.logger.debug("Using provided initial_user_message directly")
         elif decision.bootstrap_via_simulator:
-            first_user_text = self._bootstrap_via_simulator()
+            first_user_text, first_user_calls = self._bootstrap_via_simulator()
         else:
             raise RuntimeError(
                 "BootstrapDecision must supply first_user_message or bootstrap_via_simulator=True"
@@ -545,13 +558,20 @@ class TrialRunner:
             Message(
                 role=MessageRole.USER,
                 content=first_user_text,
+                tool_calls=first_user_calls if first_user_calls else None,
                 ts=datetime.now(tz=timezone.utc),
             )
         )
 
-    def _bootstrap_via_simulator(self) -> str:
+    def _bootstrap_via_simulator(self) -> tuple[str, list[ToolCall]]:
         """Synthesise turn 0 by dispatching the user simulator against a canned
         agent greeting. Retries on rate limits only.
+
+        Returns the opening message text with any tool results inlined, and the
+        calls that produced them. Only the tool-call half of a user turn is
+        shared with :meth:`_dispatch_user_actor`: turn 0 keeps its own
+        ``###STOP###`` reading, which seeds the token literally rather than
+        terminating the trial before the agent has spoken.
 
         Probe mode collapses this to one attempt. The retry loop only ever
         catches 429s (see the ``is_rate_limit`` guard below), and under probe
@@ -587,13 +607,17 @@ class TrialRunner:
                 # turn: the simulator's flipped context then drops it, loses
                 # every trace of having asked, and restarts the conversation —
                 # the failure mode the seeded-opening fix exists to prevent.
+                # Read before inlining, so a reply that is only a tool call
+                # refuses rather than opening with the tool's own output.
                 if not first_user_result.text.strip():
                     raise RuntimeError(
                         "User simulator bootstrap produced an empty first message; "
                         "a blank opening cannot seed the conversation."
                     )
                 self.logger.debug("User simulator generated first message")
-                return first_user_result.text
+                return self._run_user_tool_calls(
+                    first_user_result.text, first_user_result.tool_calls
+                )
             except Exception as exc:
                 is_rate_limit = self._is_rate_limit_error(exc)
                 if is_rate_limit and attempt < init_attempts:
@@ -679,10 +703,6 @@ class TrialRunner:
     def _dispatch_user_actor(self, actor: Actor, messages: list[Message]) -> UserTurnResult:
         """Run one user actor turn: reply, ``###STOP###`` detection, user tools.
 
-        Embeds user tool-call results in the user message text (Anthropic does
-        not support ``tool_use`` from the USER role) while preserving the
-        original ``tool_calls`` so ``transcript_rules.required_actions`` can match them.
-
         Stop-token handling has two shapes:
 
         * Bare ``###STOP###`` (or the token with only whitespace before it) —
@@ -722,45 +742,68 @@ class TrialRunner:
             self._user_stop_pending = True
             user_result.text = pre_stop_text
 
-        user_message_text = user_result.text
-        if user_result.tool_calls and self.user_tool_executor:
-            tool_results_text = []
-            for tc in user_result.tool_calls:
-                tool_start = time.time()
-                tool_result = self.user_tool_executor.execute(tc.name, tc.arguments, call_id=tc.id)
-                tool_duration = time.time() - tool_start
-
-                self.tool_call_recorder.record(
-                    call_id=tc.id,
-                    tool_name=tc.name,
-                    arguments=tc.arguments or {},
-                    executor=ToolExecutorIdentity.USER,
-                    status=resolve_tool_status(tool_result),
-                    output=resolve_tool_output(tool_result),
-                    latency_seconds=tool_duration,
-                )
-
-                self.logger.debug(
-                    "User tool executed",
-                    tool=tc.name,
-                    success=tool_result.success,
-                    duration_s=tool_duration,
-                )
-
-                result_text = f"{tc.name}() result: {tool_result.output if tool_result.success else f'Error: {tool_result.error}'}"
-                tool_results_text.append(result_text)
-
-            if tool_results_text:
-                user_message_text = f"{user_result.text}\n\n" + "\n".join(tool_results_text)
+        user_message_text, executed_calls = self._run_user_tool_calls(
+            user_result.text, user_result.tool_calls
+        )
 
         return UserTurnResult(
             message=Message(
                 role=MessageRole.USER,
                 content=user_message_text,
-                tool_calls=user_result.tool_calls if user_result.tool_calls else None,
+                tool_calls=executed_calls if executed_calls else None,
                 ts=datetime.now(tz=timezone.utc),
             )
         )
+
+    def _run_user_tool_calls(
+        self, reply_text: str, tool_calls: list[ToolCall]
+    ) -> tuple[str, list[ToolCall]]:
+        """Execute one user reply's tool calls; return the message text and the calls.
+
+        Every call is keyed through the trial's assigner before it is executed,
+        recorded or written onto the message, so a raw provider id the agent
+        already used is disambiguated rather than recorded twice.
+
+        Results are embedded in the user message text — Anthropic does not
+        accept ``tool_use`` from the USER role — while the calls themselves ride
+        on the message so ``transcript_rules.required_actions`` can match them.
+        """
+        if not tool_calls or self.user_tool_executor is None:
+            return reply_text, list(tool_calls)
+
+        executed: list[ToolCall] = []
+        results_text: list[str] = []
+        for call in tool_calls:
+            keyed = call.model_copy(update={"id": self._call_ids.assign(call.id)})
+            executed.append(keyed)
+
+            tool_start = time.time()
+            tool_result = self.user_tool_executor.execute(
+                keyed.name, keyed.arguments, call_id=keyed.id
+            )
+            tool_duration = time.time() - tool_start
+
+            self.tool_call_recorder.record(
+                call_id=keyed.id,
+                tool_name=keyed.name,
+                arguments=keyed.arguments or {},
+                executor=ToolExecutorIdentity.USER,
+                status=resolve_tool_status(tool_result),
+                output=resolve_tool_output(tool_result),
+                latency_seconds=tool_duration,
+            )
+
+            self.logger.debug(
+                "User tool executed",
+                tool=keyed.name,
+                success=tool_result.success,
+                duration_s=tool_duration,
+            )
+
+            outcome = tool_result.output if tool_result.success else f"Error: {tool_result.error}"
+            results_text.append(f"{keyed.name}() result: {outcome}")
+
+        return f"{reply_text}\n\n" + "\n".join(results_text), executed
 
 
 class _AgentMetricsSink(MetricsSink):

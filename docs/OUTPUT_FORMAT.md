@@ -541,6 +541,14 @@ time measured around each call, failures included.
 `executor` and `latency_seconds` it aggregates live in
 [`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml).
 
+`tool_calls` and `tool_success_rate` count the **agent's** calls — the same
+scoping stuck detection and `transcript_rules.tool_expectations` apply, so a
+trial whose user actor called a tool of its own does not read as the agent having
+used one. `tool_usage` and `tool_log.yaml` carry every executor's calls, so on a
+task declaring `tools.user.enabled` the roll-up's call counts sum to more than
+`tool_calls`; `tool_log.yaml` is the only one of the three that says which
+executor made each call.
+
 Semantics per `usage` field (see
 [`docs/LLM_LAYER.md`](LLM_LAYER.md:1) § `usage` for the provider-routing
 table):

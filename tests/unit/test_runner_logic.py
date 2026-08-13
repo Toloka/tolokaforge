@@ -837,6 +837,27 @@ class TestUserSimulatorIntegration:
         assert traj.messages[0].role == MessageRole.USER
         assert traj.messages[0].content == "I need help with my order"
 
+    def test_a_stop_token_in_the_opening_reply_is_seeded_literally(self) -> None:
+        """Turn 0 reads ``###STOP###`` as text, not as a terminator.
+
+        The opening turn shares the tool-call half of a user turn and nothing
+        else. Routed through the dispatch path, this reply would deliver only
+        the pre-token text and arm the pending stop — so the trial would end one
+        agent turn later, for every conversational pack in the field.
+        """
+        user_sim = MagicMock()
+        user_sim.reply.return_value = GenerationResult(
+            text="I need help with my order ###STOP###",
+            tool_calls=[],
+        )
+        runner = _make_runner(user_simulator=user_sim)
+
+        traj = runner.run("System", "")
+
+        assert traj.messages[0].role == MessageRole.USER
+        assert traj.messages[0].content == "I need help with my order ###STOP###"
+        assert runner._user_stop_pending is False
+
     def test_empty_bootstrap_first_message_fails_loud(self) -> None:
         """A simulator bootstrap that returns empty/whitespace text raises.
 
