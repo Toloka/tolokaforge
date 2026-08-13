@@ -460,14 +460,22 @@ jobs:
           # and `findings.json` carries the infra counters for it to read. Above
           # 5% the word "transient" stops being credible.
           #
+          # The four summed counters are the transport ones. `api_timeout` sits
+          # beside `api_error` in the producer (observe.py) precisely so a wire
+          # run that died on provider 5xx/timeouts cannot read as clean, and
+          # "an outage" -- which this gate claims to catch -- most often
+          # arrives as timeouts. `max_turns` and `stuck` are excluded on
+          # purpose: those are the model failing to finish, which is exactly
+          # what the agent is here to analyse.
+          #
           # `capability_ran` stays absolute -- a suite that never ran is not a
           # rate question. Zero trials with any noise counts as fully dirty
           # rather than dividing by zero. Counts are echoed so a reader can see
           # how close the call was, and so the real noise floor becomes visible
           # over the next few runs rather than staying a guess.
-          GATE="$(uv run python -c 'import json; f=json.load(open("observation/findings.json")); w=f.get("wire",{}); i=w.get("infra",{}); t=w.get("trials") or 0; n=sum(i.get(k,0) for k in ("rate_limit","api_error","status_error")); r=(n/t) if t else (1.0 if n else 0.0); print("dirty" if not f.get("capability_ran") else ("dirty" if r>0.05 else "clean"), n, t, round(r,4))')"
+          GATE="$(uv run python -c 'import json; f=json.load(open("observation/findings.json")); w=f.get("wire",{}); i=w.get("infra",{}); t=w.get("trials") or 0; n=sum(i.get(k,0) for k in ("rate_limit","api_error","api_timeout","status_error")); r=(n/t) if t else (1.0 if n else 0.0); print("dirty" if not f.get("capability_ran") else ("dirty" if r>0.05 else "clean"), "capability-suite-did-not-run" if not f.get("capability_ran") else "infra-noise", n, t, round(r,4))')"
           CLEAN="${GATE%% *}"
-          echo "observe gate: $GATE  (verdict noise trials rate)"
+          echo "observe gate: $GATE  (verdict reason noise trials rate)"
           if [ "$CLEAN" = "clean" ]; then
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
               --add-label 'automation:resolve-running' || true
@@ -482,7 +490,7 @@ jobs:
             echo "clean=no" >> "$GITHUB_OUTPUT"
             uv run automation slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
-              --icon needs_human --text "Needs human: observe infra-dirty ($GATE - verdict noise trials rate; threshold 5% of trials)" \
+              --icon needs_human --text "Needs human: observe infra-dirty ($GATE - verdict reason noise trials rate; threshold 5% of trials)" \
               --pr-url "$PR_URL" --run-url "$RUN_URL" || true
             touch "$RUNNER_TEMP/slack_terminal_sent" || true
             echo "observe infra-dirty or did-not-run -> needs human"

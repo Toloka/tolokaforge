@@ -254,3 +254,41 @@ def test_the_verdict_and_its_numbers_are_surfaced() -> None:
     body = _gate_step_body()
     assert "observe gate:" in body, "the decision must be greppable in the run log"
     assert "$GATE" in body, "the needs-human Slack must name the counts, not just say dirty"
+
+
+def test_the_gate_sums_every_transport_counter_the_producer_emits() -> None:
+    """The consumed counter list must match the producer's transport set.
+
+    `api_timeout` was missing from the sum, so a wire run where every trial
+    died on a provider timeout scored zero noise and chained to resolve — the
+    exact case the producer's own comment says those counters exist to catch.
+    Nothing locked the list, which is why it survived a rewrite of that very
+    expression.
+    """
+    body = _strip_comments(_gate_step_body())
+    producer = (_REPO_ROOT / "tools/automation/src/automation/observe.py").read_text()
+    infra_block = producer[producer.index('"infra": {') : producer.index('"infra": {') + 600]
+
+    transport = {"rate_limit", "status_error", "api_error", "api_timeout"}
+    for counter in transport:
+        assert f'"{counter}"' in infra_block, f"{counter} is no longer produced; revisit the gate"
+        assert f'"{counter}"' in body, (
+            f"the gate ignores {counter!r}, so a run contaminated only that way "
+            f"scores zero noise and reaches the agent as clean data"
+        )
+
+    # Model-behaviour counters must stay out: a model that fails to finish is
+    # the finding, not contamination.
+    for counter in ("max_turns", "stuck"):
+        assert f'"{counter}"' not in body, (
+            f"{counter!r} measures the model, not the transport; counting it "
+            f"would discard exactly the runs worth analysing"
+        )
+
+
+def test_the_verdict_carries_a_reason_token() -> None:
+    # `dirty … 0 200 0.0` on its own reads as a contradiction; the reason says
+    # whether the rate was exceeded or the capability suite never ran.
+    body = _strip_comments(_gate_step_body())
+    assert "capability-suite-did-not-run" in body
+    assert "infra-noise" in body
