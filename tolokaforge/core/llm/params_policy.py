@@ -114,7 +114,7 @@ class ParamsPolicy(ABC):
         reasoning: ReasoningConfig | None,
     ) -> dict[str, Any]: ...
 
-    def rule_for(self, param: str, value: str | None) -> str | None:
+    def rule_for(self, param: str, value: str | None) -> RuleAction | None:
         """Declared action for ``value`` of ``param``; ``None`` when unruled.
 
         Concrete on the base rather than abstract: ``LLMClient`` asks every
@@ -439,7 +439,7 @@ class GenerationParams(ParamsPolicy):
             )
         return budget
 
-    def rule_for(self, param: str, value: str | None) -> str | None:
+    def rule_for(self, param: str, value: str | None) -> RuleAction | None:
         """The declared action for ``value`` of ``param``, or ``None``.
 
         Read by every site that attaches a rulable parameter — the effort path
@@ -518,7 +518,7 @@ class GenerationParams(ParamsPolicy):
             # caller declared it; log it and move on.
             self.warn_substituted("reasoning_effort", effort, "<omitted>")
             return
-        if action == "override":
+        if action == RuleAction.OVERRIDE:
             substitute = self.rule_substitute("reasoning_effort", effort)
             if substitute:
                 self.warn_substituted("reasoning_effort", effort, substitute)

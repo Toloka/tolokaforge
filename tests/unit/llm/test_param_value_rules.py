@@ -25,9 +25,11 @@ import pytest
 import yaml
 
 from tolokaforge.core.llm import presets
+from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.llm.params_policy import GenerationParams
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.reasoning import ReasoningConfig
+from tolokaforge.core.models import ModelConfig
 
 pytestmark = pytest.mark.unit
 
@@ -100,6 +102,25 @@ class TestGuards:
     def test_blank_evidence_is_refused(self) -> None:
         with pytest.raises(ValueError, match="'evidence' is required"):
             GenerationParams(param_value_rules=_rules("tool_choice", "auto", "drop", "   "))
+
+    def test_an_unknown_key_in_a_rule_is_refused(self) -> None:
+        # `until:`, `note:`, `owner:` — plausible things to write, none of them
+        # read by anything. Accepting one would be the same silent no-op every
+        # other guard in this function exists to stop.
+        with pytest.raises(ValueError, match=r"unknown key\(s\) \['until'\]"):
+            GenerationParams(
+                param_value_rules={
+                    "tool_choice": {"auto": {"action": "drop", "evidence": "e", "until": "2027-01"}}
+                }
+            )
+
+    def test_the_unknown_key_error_names_the_legal_ones(self) -> None:
+        with pytest.raises(ValueError, match="'action', 'evidence', 'with'"):
+            GenerationParams(
+                param_value_rules={
+                    "tool_choice": {"auto": {"action": "drop", "evidence": "e", "note": "x"}}
+                }
+            )
 
     def test_a_non_mapping_block_is_refused_with_context(self) -> None:
         with pytest.raises(ValueError, match="expected a mapping of parameter"):
@@ -221,7 +242,7 @@ class TestOverride:
     here are as much about the guard rails as the behaviour.
     """
 
-    def test_the_substitute_is_sent_instead(self, tmp_path: Path) -> None:
+    def test_the_substitute_is_sent_instead(self) -> None:
         policy = GenerationParams(
             param_value_rules={
                 "reasoning_effort": {
@@ -268,7 +289,7 @@ class TestOverride:
         assert "why" in caplog.text
         assert "not directly comparable" in caplog.text
 
-    def test_override_requires_a_replacement(self, tmp_path: Path) -> None:
+    def test_override_requires_a_replacement(self) -> None:
         with pytest.raises(ValueError, match="requires a 'with' value"):
             GenerationParams(
                 param_value_rules={
@@ -276,7 +297,7 @@ class TestOverride:
                 }
             )
 
-    def test_a_no_op_override_is_refused(self, tmp_path: Path) -> None:
+    def test_a_no_op_override_is_refused(self) -> None:
         with pytest.raises(ValueError, match="that rule does nothing"):
             GenerationParams(
                 param_value_rules={
@@ -286,7 +307,7 @@ class TestOverride:
                 }
             )
 
-    def test_substituting_into_another_declared_gap_is_refused(self, tmp_path: Path) -> None:
+    def test_substituting_into_another_declared_gap_is_refused(self) -> None:
         # Overriding medium -> low when low is itself declared unusable would
         # send a value the same block calls broken.
         with pytest.raises(ValueError, match="also declares a rule for"):
@@ -299,7 +320,7 @@ class TestOverride:
                 }
             )
 
-    def test_with_is_meaningless_on_other_actions(self, tmp_path: Path) -> None:
+    def test_with_is_meaningless_on_other_actions(self) -> None:
         with pytest.raises(ValueError, match="only meaningful for action 'override'"):
             GenerationParams(
                 param_value_rules={
@@ -326,9 +347,6 @@ class TestThroughTheRealClient:
         tool_choice: str | None = "auto",
         tools: bool = True,
     ) -> dict:
-        from tolokaforge.core.llm.client import LLMClient
-        from tolokaforge.core.models import ModelConfig
-
         overlay = {"providers": {"mock": {"params": {"param_value_rules": rules or {}}}}}
         with _overlay(tmp_path, overlay):
             client = LLMClient(ModelConfig(provider="mock", name="mock-model"))
@@ -436,7 +454,7 @@ class TestEffortDrop:
         assert "provider chokes on it" in caplog.text
         assert "not directly comparable" in caplog.text
 
-    def test_nothing_is_emitted_on_the_extra_body_transport(self, tmp_path: Path) -> None:
+    def test_nothing_is_emitted_on_the_extra_body_transport(self) -> None:
         # The OpenRouter path emits through extra_body rather than a top-level
         # kwarg, so a drop that only guarded one branch would leak here.
         policy = GenerationParams(
@@ -447,7 +465,7 @@ class TestEffortDrop:
         assert "extra_body" not in kwargs
         assert "reasoning_effort" not in kwargs
 
-    def test_an_unruled_level_still_emits(self, tmp_path: Path) -> None:
+    def test_an_unruled_level_still_emits(self) -> None:
         policy = GenerationParams(
             param_value_rules=_rules("reasoning_effort", "medium", "drop", "e")
         )
