@@ -302,7 +302,7 @@ agent and user-simulator system prompts live in
 ```yaml
 task_id: "051fa6cb-..."
 trial_index: 0
-simulator_schema_version: 2
+simulator_schema_version: 3
 start_ts: "2026-01-01T12:00:00+00:00"
 end_ts: "2026-01-01T12:05:00+00:00"
 status: "completed"                                   # TrialStatus enum
@@ -342,7 +342,7 @@ messages:
 
 | Field | Type | When populated | Purpose |
 |---|---|---|---|
-| `simulator_schema_version` | `int` | current value: `2` | Monotonic; bump whenever the simulator prompt shape or the conversation context the simulator sees changes. Analytics consumers gate cross-run comparisons on this stamp. |
+| `simulator_schema_version` | `int` | always; [§ Schema Version Stamps](#schema-version-stamps) carries the current value | Monotonic; bump whenever the simulator prompt shape or the conversation context the simulator sees changes. Analytics consumers gate cross-run comparisons on this stamp. |
 | `first_user_message_source` | `"pinned"`, `"simulator"`, or `null` | set once the turn loop delivers message index 0 | Where the opening user turn came from. `pinned` — the task's `initial_user_message`, delivered verbatim with no simulator dispatch; `simulator` — a user-simulator dispatch wrote it. Partitions a run's trials into authored-opener and generated-opener without re-reading the task pack. `null` means the trial never bootstrapped (it failed first), or the bundle was written before the key existed. |
 | `user_reply_guard_events` | list of `{message_index, outcome, rejected[]}` | one entry per user turn the reply guard did not accept on its first generation | What a defective user turn cost. `[]` is the normal state — a turn accepted on its first generation records nothing. `outcome: delivered` means a later attempt passed the guard and the turn was delivered; `outcome: refused` means the attempt budget was spent, so no clean turn could be produced and the trial errored as a `harness_error`. `rejected` carries one `{detector, reason, excerpt}` per discarded attempt, in order, and is never empty — a turn that discarded nothing is recorded by the absence of an entry, not by an empty list. `detector` is the name the detector is registered under, and `excerpt` is the evidence that detector recorded, truncated to 200 characters — the matched phrase for `fourth_wall`, and for `scratchpad` the matched tag plus the text that follows it, because a bare think tag reads the same whether it leaked or was pasted. `message_index` is the position in `messages` the turn was **dispatched at** — for a turn whose accepted reply was a bare `###STOP###`, and for a refused turn, that position holds the loop's own SYSTEM message rather than a USER turn. |
 | `grading_error` | `str` or `null` | non-null when grading ran and refused to produce a verdict | The reason the grading substrate gave. Such a trial has no `grade.yaml` but keeps its own `status` / `termination_reason`, is counted in `total_trials` and `measured_trials`, and is excluded from `scored_trials`. `null` means grading either succeeded or was correctly not attempted — `grade.yaml`'s presence tells those two apart. |
@@ -1441,7 +1441,7 @@ evidence about us, and our own defects stay counted. See
 
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
-| `trajectory.yaml` | `simulator_schema_version` | `2` | Any revision to the LLM user-simulator prompt body or the conversation context it sees |
+| `trajectory.yaml` | `simulator_schema_version` | `3` | Any revision to the LLM user-simulator prompt body or the conversation context it sees |
 | `metrics.yaml` | `schema_version` | `4` | The per-trial bundle's file set or field semantics change |
 | `aggregate.json` | `schema_version` | `3` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, or the `outcomes_by_reason` class vocabulary |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
@@ -1450,6 +1450,14 @@ evidence about us, and our own defects stay counted. See
 | `prompts.yaml` | — | n/a | Two-key mapping; field names match the legacy `Trajectory.system_prompt` / `Trajectory.user_system_prompt` |
 | `tools_schemas.yaml` | — | n/a | Format is the litellm tool-schema dict list, post-`schema_sanitizer` |
 | `tool_log.yaml` | — (struct-typed) | n/a | Format is the `RecordedToolCall` list; its presence is stamped by `metrics.yaml`'s `schema_version` |
+
+The `simulator_schema_version` row is mechanical on its first trigger:
+[`tests/canonical/test_simulator_prompt_generation.py`](../tests/canonical/test_simulator_prompt_generation.py)
+records a sha256 digest of the rendered simulator prompt body per generation, so
+a prompt-body edit that skips the bump reds the canonical tier. That manifest is
+hand-edited and has no regeneration mechanism — `--update-canon` does not touch
+it. A bump made for the second trigger, a conversation-context revision, carries
+a row repeating the previous generation's digests.
 
 There is no global version stamp — each subsystem stamps independently so
 changes localise.

@@ -66,7 +66,7 @@ def test_trajectory_has_simulator_schema_version_field() -> None:
     message trace, which is what ``trajectory.yaml`` carries."""
     traj = Trajectory(**_base_kwargs())
     assert hasattr(traj, "simulator_schema_version")
-    assert traj.simulator_schema_version == 2
+    assert traj.simulator_schema_version == 3
 
 
 def test_trajectory_roundtrip_preserves_simulator_schema_version() -> None:

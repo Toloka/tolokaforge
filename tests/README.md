@@ -176,6 +176,14 @@ Compare output against committed golden snapshots in `snapshots/`.
   constant, so a bump nobody documented reds nothing; the table is the second source. A
   failure means the constants moved and the docs table follows — never the other way
   round.
+- Simulator prompt generation (`test_simulator_prompt_generation.py`) — the sha256 of
+  the rendered LLM user-simulator prompt body, per generation of
+  `Trajectory.simulator_schema_version`. A failure means either the prompt body moved
+  without the stamp bump that dates it, or the stamp was bumped without a manifest row
+  for the generation it opened. Fix by reconciling the two in one commit: the stamp,
+  the row, and the body. `--update-canon` does not touch this module — the manifest is
+  hand-edited by design, because a regenerated snapshot would let the very edit the
+  module exists to catch be blessed by the commit that made it.
 - Protocol version documented (`test_protocol_version_documented.py`) — the versions
   `docs/GRPC_PROTOCOL.md` § Version lock names, one sentence each, must be exactly
   `1..ENGINE_PROTOCOL_VERSION`. Every in-tree caller reads the constant, so a bump
@@ -231,7 +239,10 @@ it. Write the two trials so that a build ignoring the thing under test would sco
 them *identically*: that is what makes discrimination evidence for the key rather
 than for the pack.
 
-Use `--update-canon` flag to regenerate snapshots after intentional changes.
+Use `--update-canon` flag to regenerate the snapshots under `snapshots/` after
+intentional changes. The guard modules above that compare code against a doc or a
+hand-edited manifest have no snapshot behind them, so the flag does not reach them —
+they are reconciled by editing the file the failure names.
 
 ### Integration Tests (`tests/integration/`)
 
@@ -345,7 +356,7 @@ All markers are enforced via `--strict-markers`.
 | `food_delivery_2` tests skip | Run `git lfs pull` to fetch project data |
 | Integration tests skip | Set API keys in `.env`, ensure Docker is running |
 | `--strict-markers` error | Add new markers to `pyproject.toml` |
-| Snapshot mismatch | Re-run with `--update-canon` if change is intentional |
+| Snapshot mismatch | Re-run with `--update-canon` if change is intentional — unless the failure names a doc or a hand-edited manifest, which the flag does not regenerate |
 
 ## Test Philosophy
 

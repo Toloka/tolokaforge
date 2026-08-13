@@ -467,9 +467,54 @@ alternates strictly. Two invariants hold on the request it sends:
    improvising.
 
 The greeting exists only in the simulator's private request; it never
-enters the shared transcript or `trajectory.yaml`. Context-shape revisions
-bump `Trajectory.simulator_schema_version` (see
-[`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § Schema Version Stamps).
+enters the shared transcript or `trajectory.yaml`. A revision to the prompt
+body or to this context shape bumps `Trajectory.simulator_schema_version`
+(see [`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § Schema Version Stamps);
+[`tests/canonical/test_simulator_prompt_generation.py`](../tests/canonical/test_simulator_prompt_generation.py)
+holds the prompt body to the generation it is stamped with.
+
+### The prompt body
+
+The system prompt is a fixed opening line, the task's `Instruction` when the
+task supplied a backstory, and a `Rules:` block of twelve rules, with four more
+appended when the simulator holds tool schemas. Those four are the text the
+builder currently renders rather than a contract: they are written in one task
+family's device vocabulary, and
+[#1106](https://github.com/Toloka/tolokaforge/issues/1106) tracks making the
+segment task-declarable. Four properties of the twelve are contract rather than
+wording, and
+[`tests/unit/test_user_simulator_prompt_rules.py`](../tests/unit/test_user_simulator_prompt_rules.py)
+asserts each:
+
+- **The Instruction outranks the rules.** The first rule says so, and its
+  position is load-bearing — a precedence clause has to be read before the
+  rules it governs. Everything the rules say about disclosure, wording and
+  sequencing defers to what the task authored.
+- **The simulator does not correct the agent.** It does not restate a
+  requirement the agent got wrong, reject an alternative the agent offered, or
+  otherwise supervise the work. Pushback is a per-task authored property, not a
+  global default: a task that wants it writes it into its backstory. Rescuing
+  the agent's mistakes would hide exactly the failures the tasks exist to
+  detect.
+- **Termination is outcome-based.** `###STOP###` is sent once every part of the
+  request has reached an outcome — carried out, or turned down by the agent.
+  An outcome the user did not want still counts, so a scenario the agent
+  correctly refuses ends with a gradeable transcript instead of running to
+  `max_user_turns`.
+- **The simulator never mentions the frame.** No rule may be added that lets it
+  refer to a simulation, test, benchmark, prompt, or to itself as a model. A
+  harness that runs the simulator outside the trial loop, without the reply
+  guard, has this rule as its only protection on that path.
+
+With no backstory the `Instruction:` label is absent entirely rather than
+rendered empty: `UserSimulatorConfig.backstory` defaults to `None` while `mode`
+defaults to `llm`, and a bundled project ships that shape —
+`example-microservices-pack` declares `mode: llm` with no `backstory` in its
+`project.yaml` `task_defaults`, and none of its five tasks overrides the user
+actor. Those tasks therefore render rules that keep deferring to an
+`Instruction` the prompt does not carry, which is the cheaper of the two wrong
+renderings — a bare `Instruction:` label would tell the model a section exists
+and then leave it empty, while a rule deferring to nothing is merely vacuous.
 
 ### The reply guard
 
