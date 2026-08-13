@@ -49,7 +49,7 @@ orchestrator:
                               # task-authored max_turns above 50 stand
   continue_prompt: "Please proceed to the next step."
   timeouts:
-    turn_s: 60
+    turn_s: 60                 # declared, not yet enforced — #1147
     episode_s: 1200
   rate_limit_probe:            # off by default — see below
     enabled: false

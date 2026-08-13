@@ -89,7 +89,6 @@ class ServicerBackend:
         trial_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        timeout_seconds: float = 30.0,
         executor: str = "agent",
         *,
         call_id: str,
@@ -98,7 +97,6 @@ class ServicerBackend:
             trial_id=trial_id,
             tool_name=tool_name,
             arguments=arguments,
-            timeout_seconds=timeout_seconds,
             executor=executor,
             call_id=call_id,
         )

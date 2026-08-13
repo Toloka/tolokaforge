@@ -200,7 +200,6 @@ class TestTerminalBenchPerTrialBracket:
                         "echo READY"
                     ),
                 },
-                timeout_seconds=30.0,
                 call_id="probe-1",
             )
             assert probe.success is True, probe.error

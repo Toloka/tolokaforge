@@ -531,10 +531,12 @@ Two properties are worth reading carefully:
 **One status value is not producible on every path.** `SUCCESS`, `ERROR`,
 `TOOL_NOT_FOUND` and `INVALID_ARGUMENTS` come from four distinct branches of the
 in-process executor and are recorded on both substrates. `TIMEOUT` is produced
-only on the runner substrate, because the pure in-process executor implements no
-timeout at all — `ToolPolicy.timeout_s` is declared and never read (#691). That is
-a missing *feature*, not a recording gap: there is no behaviour to record, so no
-check loses signal it would otherwise have had.
+only on the runner substrate, which is the only one that bands a tool call from
+outside: the in-process executor runs a tool to completion, so a tool exceeding
+its own `ToolPolicy.timeout_s` reports that as its own failure (`ERROR`) rather
+than being cut short by the executor. A call there is bounded by the episode
+budget and nothing between. That is a difference in *behaviour*, not a recording
+gap: there is no timeout event in-process for a record to omit.
 [`tests/canonical/test_tool_execution_status_reachability.py`](../tests/canonical/test_tool_execution_status_reachability.py)
 drives a real recording path for every member, so the vocabulary cannot grow a
 value no run produces.
@@ -892,8 +894,9 @@ declared call (G7): the message view alone proves that tool never ran.
   `reasoning` and per-message timestamps are not on the timeline. A
   screenshot-only turn carries `text = ""`.
 - **N5 — `timeout` is unproducible on the pure in-process path**, because that
-  executor implements no timeout at all (#691). `status` itself is present on
-  every recorded call on both substrates.
+  executor runs a tool to completion and bands nothing: a tool exceeding its own
+  budget reports that itself, as an `error`. `status` itself is present on every
+  recorded call on both substrates.
 - **N6 — the timeline says what happened, not whether it was correct.** A green
   timeline is not a correctness proof; that is each task's grading config's job.
 - **N7 — `TraceEvent` is not hashable.** `arguments` is a dict on every

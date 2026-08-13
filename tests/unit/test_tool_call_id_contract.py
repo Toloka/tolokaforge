@@ -41,7 +41,6 @@ class _RecordingRuntime:
         trial_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        timeout_seconds: float = 30.0,
         executor: str = "agent",
         *,
         call_id: str,

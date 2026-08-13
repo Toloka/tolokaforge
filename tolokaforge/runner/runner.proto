@@ -127,8 +127,10 @@ message ExecuteToolRequest {
   // Must conform to the tool's parameter schema
   string arguments_json = 3;
 
-  // Timeout for this execution (seconds)
-  // If 0, uses default from RegisterTrial or tool schema
+  // Per-call budget (seconds). The engine always sends 0: only the runner
+  // knows which tool is about to run, so it resolves the budget that tool
+  // declares, falling back to the trial's default_tool_timeout_s. A positive
+  // value overrides that resolution and is retained for engine/image skew.
   double timeout_seconds = 4;
 
   // Which environment is making the call
