@@ -301,6 +301,9 @@ def tool_inventory_from_bundle(bundle: Path) -> ToolInventory:
     every schema-dependent rule into the report's ``unchecked`` channel: absent is
     not empty, and an empty inventory would make every tool name in an override
     wrong.
+
+    The recorded list carries no actor, so the whole of it reports as the agent's
+    declared set — the honest reading of a tool set that never distinguished them.
     """
     path = Path(bundle) / _TOOLS_SCHEMAS_FILENAME
     if not path.exists():
@@ -315,8 +318,11 @@ def tool_inventory_from_bundle(bundle: Path) -> ToolInventory:
             "belongs, so the trial cannot say which tools its actor could call"
         )
     recorded_tools = [_recorded_tool(path, index, entry) for index, entry in enumerate(recorded)]
+    recorded_names = frozenset(name for name, _ in recorded_tools)
     return ToolInventory(
-        declared=frozenset(name for name, _ in recorded_tools),
+        declared=recorded_names,
+        agent_declared=recorded_names,
+        user_declared=frozenset(),
         parameters={name: schema for name, schema in recorded_tools if schema is not None},
         known=True,
     )

@@ -106,7 +106,13 @@ class ToolInventory:
     """The tool set a task gives its actors, and what each tool's schema says."""
 
     declared: frozenset[str]
-    """Union of ``tools.agent.enabled`` and ``tools.user.enabled``."""
+    """Every tool the task gives an actor: :attr:`agent_declared` ∪ :attr:`user_declared`."""
+
+    agent_declared: frozenset[str]
+    """``tools.agent.enabled`` — what the agent may call."""
+
+    user_declared: frozenset[str]
+    """``tools.user.enabled`` — what the user simulator may call."""
 
     parameters: Mapping[str, Mapping[str, Any]]
     """Tool name to its JSON-schema parameters object, for the tools that resolved."""
@@ -115,18 +121,32 @@ class ToolInventory:
     """``False`` only for :meth:`unresolvable`."""
 
     def __post_init__(self) -> None:
-        if not self.known and (self.declared or self.parameters):
+        carried = sorted(self.declared | self.agent_declared | self.user_declared)
+        if not self.known and (carried or self.parameters):
             raise ValueError(
                 "an unresolvable inventory carries tools: every rule that reads them is "
-                f"skipped, so {sorted(self.declared) or sorted(self.parameters)} would be "
+                f"skipped, so {carried or sorted(self.parameters)} would be "
                 "resolved and then ignored. Report the tools with known=True, or report "
                 "nothing"
+            )
+        if self.declared != self.agent_declared | self.user_declared:
+            raise ValueError(
+                "the declared tool set is not the union of the actors' sets: "
+                f"{sorted(self.declared)} against agent {sorted(self.agent_declared)} and "
+                f"user {sorted(self.user_declared)}. A rule reading one and a rule reading "
+                "the other would decide the same name differently"
             )
 
     @classmethod
     def unresolvable(cls) -> ToolInventory:
         """The inventory of an adapter that cannot report a tool set at all."""
-        return cls(declared=frozenset(), parameters={}, known=False)
+        return cls(
+            declared=frozenset(),
+            agent_declared=frozenset(),
+            user_declared=frozenset(),
+            parameters={},
+            known=False,
+        )
 
     def strictness(self, tool: str) -> ArgumentSchema:
         """Classify what *tool*'s schema can say about argument names.

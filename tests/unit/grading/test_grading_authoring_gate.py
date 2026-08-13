@@ -2436,12 +2436,59 @@ def test_an_unresolvable_inventory_may_not_carry_tools() -> None:
     resolved and then ignored — a name checked against nothing, reading as clean.
     """
     with pytest.raises(ValueError, match="unresolvable inventory carries tools"):
-        ToolInventory(declared=frozenset({"http_request"}), parameters={}, known=False)
+        ToolInventory(
+            declared=frozenset({"http_request"}),
+            agent_declared=frozenset({"http_request"}),
+            user_declared=frozenset(),
+            parameters={},
+            known=False,
+        )
 
     with pytest.raises(ValueError, match="unresolvable inventory carries tools"):
-        ToolInventory(declared=frozenset(), parameters={"http_request": {}}, known=False)
+        ToolInventory(
+            declared=frozenset(),
+            agent_declared=frozenset(),
+            user_declared=frozenset(),
+            parameters={"http_request": {}},
+            known=False,
+        )
 
     assert ToolInventory.unresolvable().known is False
+
+
+def test_the_declared_set_is_the_union_of_the_two_actors() -> None:
+    """Three sets that can disagree are three sets a rule can read differently.
+
+    ``declared`` answers "does the task give anyone this tool"; the two actor sets
+    answer "may *this* actor call it". A producer reporting a union that is not one
+    would make an undeclared-tool rule and an actor rule contradict each other over
+    the same name, each reading as clean.
+    """
+    with pytest.raises(ValueError, match="not the union of the actors"):
+        ToolInventory(
+            declared=frozenset({"calculator"}),
+            agent_declared=frozenset(),
+            user_declared=frozenset(),
+            parameters={},
+            known=True,
+        )
+
+    with pytest.raises(ValueError, match="not the union of the actors"):
+        ToolInventory(
+            declared=frozenset({"read_file"}),
+            agent_declared=frozenset({"read_file"}),
+            user_declared=frozenset({"calculator"}),
+            parameters={},
+            known=True,
+        )
+
+    assert ToolInventory(
+        declared=frozenset({"read_file", "calculator"}),
+        agent_declared=frozenset({"read_file"}),
+        user_declared=frozenset({"calculator"}),
+        parameters={},
+        known=True,
+    ).declared == frozenset({"read_file", "calculator"})
 
 
 # ---------------------------------------------------------------------------
@@ -3025,6 +3072,8 @@ def _one_task_worth_of_tools(*tasks: Path) -> ToolInventory:
     resolved = [_inventory(task) for task in tasks]
     return ToolInventory(
         declared=frozenset(name for one in resolved for name in one.declared),
+        agent_declared=frozenset(name for one in resolved for name in one.agent_declared),
+        user_declared=frozenset(name for one in resolved for name in one.user_declared),
         parameters={name: schema for one in resolved for name, schema in one.parameters.items()},
         known=True,
     )
@@ -3408,6 +3457,8 @@ def test_an_argument_typed_outside_the_json_type_names_leaves_it_unchecked() -> 
     """
     inventory = ToolInventory(
         declared=frozenset({"read_file"}),
+        agent_declared=frozenset({"read_file"}),
+        user_declared=frozenset(),
         parameters={
             "read_file": {
                 "additionalProperties": False,
@@ -3514,6 +3565,8 @@ def test_an_argument_typed_outside_the_json_type_names_is_not_flagged() -> None:
     """
     inventory = ToolInventory(
         declared=frozenset({"read_file"}),
+        agent_declared=frozenset({"read_file"}),
+        user_declared=frozenset(),
         parameters={
             "read_file": {
                 "additionalProperties": False,

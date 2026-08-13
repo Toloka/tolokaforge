@@ -28,6 +28,7 @@ def _build_adapter(
     tmp_path: Path,
     *,
     enabled_agent_tools: list[str],
+    enabled_user_tools: list[str] | None = None,
     rag: dict | None = None,
     write_corpus: bool = True,
 ) -> NativeAdapter:
@@ -46,7 +47,10 @@ def _build_adapter(
         "category": "rag_search",
         "description": "rag task",
         "initial_state": {"json_db": "initial_state.json"},
-        "tools": {"agent": {"enabled": enabled_agent_tools}, "user": {"enabled": []}},
+        "tools": {
+            "agent": {"enabled": enabled_agent_tools},
+            "user": {"enabled": enabled_user_tools or []},
+        },
         "actors": {"user": {"mode": "llm", "persona": "cooperative"}},
         "grading": "grading.yaml",
         "system_prompt": "system_prompt.md",
@@ -96,6 +100,29 @@ class TestRagSearchEnabled:
         # search_kb carries the real schema, not a parameter-less stub.
         search_kb = next(t for t in td.agent_tools if t.name == "search_kb")
         assert search_kb.parameters["required"] == ["query"]
+        assert set(search_kb.parameters["properties"]) == {"query", "top_k", "alpha"}
+
+    def test_a_user_declared_search_kb_searches_the_same_corpus(self, tmp_path: Path) -> None:
+        """The tool the corpus is for may be the user simulator's.
+
+        ``search_kb`` is rebuilt as the same source-less RAG wrapper whichever
+        actor declares it, so a corpus declared beside a user-side ``search_kb``
+        is searchable and the trial needs its index — reading the agent's block
+        alone would refuse the pack for a corpus nobody could search.
+        """
+        adapter = _build_adapter(
+            tmp_path,
+            enabled_agent_tools=["submit_report"],
+            enabled_user_tools=["search_kb"],
+            rag={"corpus_dir": "rag/corpus"},
+        )
+        td = adapter.to_task_description("rag_task")
+
+        assert td.search.enabled is True
+        assert td.search.documents_path == "rag/corpus"
+        assert "rag/corpus/policies.md" in td.tool_artifacts
+        assert [t.name for t in td.agent_tools] == ["submit_report"]
+        search_kb = next(t for t in td.user_tools if t.name == "search_kb")
         assert set(search_kb.parameters["properties"]) == {"query", "top_k", "alpha"}
 
 

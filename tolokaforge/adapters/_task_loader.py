@@ -40,9 +40,10 @@ When a ``task.yaml`` carries a ``domain:`` ref, :func:`load_task_yaml`:
 A flat ``<task>/task.yaml`` without a ``domain:`` ref returns
 ``(TaskConfig, task_path.parent)`` — the legacy behaviour.
 
-It is also the single producer of a task's agent tool set and the JSON schemas
-behind it (:func:`resolve_agent_tool_schemas`), so the ``TaskDescription`` a run
-puts on the wire and the inventory a validation gate reads cannot drift apart.
+It is also the single producer of a task's tool set — either actor's — and the
+JSON schemas behind it (:func:`resolve_tool_schemas`), so the ``TaskDescription``
+a run puts on the wire and the inventory a validation gate reads cannot drift
+apart.
 """
 
 from __future__ import annotations
@@ -648,8 +649,36 @@ def load_task(
     return task
 
 
-def agent_tool_configs(task: TaskConfig) -> dict[str, dict]:
-    """Per-tool init kwargs lifted from the ``tools.agent.<name>`` blocks.
+class ToolActor(str, Enum):
+    """The actor whose ``tools.<actor>`` block a tool resolution reads."""
+
+    AGENT = "agent"
+    USER = "user"
+
+
+def actor_tool_block(task: Any, actor: ToolActor) -> dict[str, Any]:
+    """The ``tools.<actor>`` block: ``enabled``, ``mcp_server`` and per-tool kwargs.
+
+    A task object carrying no ``tools`` at all — what an external adapter's task
+    can be — declares nothing for either actor.
+    """
+    if task.tools is None:
+        return {}
+    return getattr(task.tools, actor.value)
+
+
+def enabled_tool_names(task: Any, actor: ToolActor) -> frozenset[str]:
+    """The tool names ``tools.<actor>.enabled`` lists."""
+    return frozenset(actor_tool_block(task, actor).get("enabled", []))
+
+
+def declared_tool_names(task: Any) -> frozenset[str]:
+    """Every tool name the task declares, whichever actor it declares it for."""
+    return frozenset().union(*(enabled_tool_names(task, actor) for actor in ToolActor))
+
+
+def tool_configs(task: TaskConfig, actor: ToolActor) -> dict[str, dict]:
+    """Per-tool init kwargs lifted from the ``tools.<actor>.<name>`` blocks.
 
     Only enabled tools are read. The kwargs reach the runner via
     ``ToolSchema.tool_config`` and drive the builtin instantiation whose schema
@@ -661,54 +690,61 @@ def agent_tool_configs(task: TaskConfig) -> dict[str, dict]:
             that would otherwise surface at trial registration as a ``TypeError``
             with no task in the message.
     """
+    block = actor_tool_block(task, actor)
     configs: dict[str, dict] = {}
-    for tool_name in task.tools.agent.get("enabled", []):
-        raw = task.tools.agent.get(tool_name)
+    for tool_name in block.get("enabled", []):
+        raw = block.get(tool_name)
         if raw is None:
             continue
         if not isinstance(raw, dict):
             raise ValueError(
-                f"tools.agent.{tool_name} must be a mapping of init kwargs "
+                f"tools.{actor.value}.{tool_name} must be a mapping of init kwargs "
                 f"(got {type(raw).__name__}={raw!r}) in task {task.task_id!r}"
             )
         configs[tool_name] = dict(raw)
     return configs
 
 
-def resolve_agent_tool_schemas(
-    task: TaskConfig, task_dir: Path, *, allow_subprocess: bool
+def resolve_tool_schemas(
+    task: TaskConfig, task_dir: Path, actor: ToolActor, *, allow_subprocess: bool
 ) -> dict[str, dict]:
-    """Resolve ``{tool_name: {"description", "parameters"}}`` for the agent's tools.
+    """Resolve ``{tool_name: {"description", "parameters"}}`` for *actor*'s tools.
 
-    An MCP task's schemas come from ``<task_dir>/fixtures/tools.json``; a task
+    An MCP block's schemas come from ``<task_dir>/fixtures/tools.json``; a block
     without an ``mcp_server`` gets them from the builtin registry.
 
     Args:
         task: The loaded task config.
         task_dir: The effective task dir, i.e. the second element of
             :func:`load_task_yaml`'s return.
-        allow_subprocess: When ``True``, an MCP task with no readable fixture is
+        actor: Whose ``tools.<actor>`` block to read.
+        allow_subprocess: When ``True``, an MCP block with no readable fixture is
             resolved by starting its server and querying ``tools/list``, and the
             answer is cached into the task tree. When ``False`` the resolution is
-            strictly read-only and that task resolves to no schemas at all — the
+            strictly read-only and that block resolves to no schemas at all — the
             mode a pre-run gate uses, because a gate must not mutate the tree it
             is validating.
 
     Raises:
         RuntimeError: If a live ``tools/list`` query is reached and fails.
-        ValueError: If a ``tools.agent.<name>`` block is not a mapping.
+        ValueError: If a ``tools.<actor>.<name>`` block is not a mapping.
     """
-    enabled: list[str] = task.tools.agent.get("enabled", [])
-    mcp_server_ref = task.tools.agent.get("mcp_server")
+    block = actor_tool_block(task, actor)
+    mcp_server_ref = block.get("mcp_server")
     if mcp_server_ref:
         return _load_rich_tool_schemas(
             task_dir, task_dir / mcp_server_ref, allow_subprocess=allow_subprocess
         )
-    return _builtin_tool_schemas(enabled, agent_tool_configs(task))
+    return _builtin_tool_schemas(block.get("enabled", []), tool_configs(task, actor))
 
 
 def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
     """The task's declared tool set and resolved schemas, without touching the tree.
+
+    Both actors' blocks are resolved, so a tool only the user declares carries its
+    schema as an agent tool does. A name both declare resolves under the agent —
+    the two blocks can name different servers, and the agent's is the reading the
+    rest of the gate is written against.
 
     A tool whose schema does not resolve — an MCP task with no committed
     ``fixtures/tools.json``, a name the builtin registry does not know, a fixture
@@ -719,14 +755,12 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
     grading block cannot draw an undeclared-tool error and an argument finding
     from the same name.
     """
-    declared = frozenset(task.tools.agent.get("enabled", [])) | frozenset(
-        task.tools.user.get("enabled", [])
-    )
-    schemas = resolve_agent_tool_schemas(task, task_dir, allow_subprocess=False)
+    agent_declared = enabled_tool_names(task, ToolActor.AGENT)
+    user_declared = enabled_tool_names(task, ToolActor.USER)
+    declared = agent_declared | user_declared
     parameters = {
-        name: entry["parameters"]
-        for name, entry in schemas.items()
-        if name in declared and isinstance(entry.get("parameters"), dict)
+        **_declared_parameters(task, task_dir, ToolActor.USER, user_declared),
+        **_declared_parameters(task, task_dir, ToolActor.AGENT, agent_declared),
     }
     if "search_kb" in declared:
         # The runner rebuilds search_kb as a source-less RAG wrapper, so the
@@ -737,7 +771,25 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
         from tolokaforge.runner.tool_factory import create_search_kb_schema
 
         parameters["search_kb"] = create_search_kb_schema().parameters
-    return ToolInventory(declared=declared, parameters=parameters, known=True)
+    return ToolInventory(
+        declared=declared,
+        agent_declared=agent_declared,
+        user_declared=user_declared,
+        parameters=parameters,
+        known=True,
+    )
+
+
+def _declared_parameters(
+    task: TaskConfig, task_dir: Path, actor: ToolActor, declared: frozenset[str]
+) -> dict[str, Mapping[str, Any]]:
+    """*actor*'s resolved parameter schemas, for the tools *actor* declares."""
+    schemas = resolve_tool_schemas(task, task_dir, actor, allow_subprocess=False)
+    return {
+        name: entry["parameters"]
+        for name, entry in schemas.items()
+        if name in declared and isinstance(entry.get("parameters"), dict)
+    }
 
 
 def tool_inventory_under_adapter(

@@ -200,10 +200,12 @@ transcript_rules:
 ## Tool Schemas (fixtures/tools.json)
 
 The parameter schemas that tell the LLM what arguments each tool accepts come
-from one producer inside the adapter layer, `resolve_agent_tool_schemas`, so the
+from one producer inside the adapter layer, `resolve_tool_schemas`, so the
 schemas a run puts on the wire and the schemas a pre-run gate inspects cannot
-drift apart.  A task without an `mcp_server` gets them from the builtin
-registry; an MCP task gets them from its server, in one of two modes:
+drift apart.  It takes the actor whose `tools.<actor>` block to read — `agent`
+or `user` — and resolves each block by the same rule: a block without an
+`mcp_server` gets its schemas from the builtin registry; a block naming one gets
+them from that server, in one of two modes:
 
 | `allow_subprocess` | Resolution | Used by |
 |---|---|---|
@@ -312,8 +314,8 @@ called to serialize the task for transfer to the Runner container.
 
 | Field | Source |
 |-------|--------|
-| `agent_tools` | `tools.agent.enabled` list + schemas from `resolve_agent_tool_schemas` (see [Tool Schemas](#tool-schemas-fixturestoolsjson)) |
-| `user_tools` | `tools.user.enabled` list |
+| `agent_tools` | `tools.agent.enabled` list + schemas from `resolve_tool_schemas` (see [Tool Schemas](#tool-schemas-fixturestoolsjson)) |
+| `user_tools` | `tools.user.enabled` list + schemas from `resolve_tool_schemas`, built identically — a builtin carries no `ToolSource`, a block naming an `mcp_server` carries that script |
 | `initial_state.tables` | `initial_state.json` (collection → list of records) |
 | `initialization_actions` | `initial_state.initialization_actions` |
 | `grading` | `grading.yaml`, translated into the runner's grading config |
@@ -401,11 +403,3 @@ the adapter (noted in the `NativeAdapter.get_registry_tools` docstring).
 
 The method returns `None` for every shape and the substrate grading the trial
 evaluates both hash sources itself; #836 owns deleting it.
-
-#### User tools not supported
-
-`user_tools` in `to_task_description()` is always an empty list because
-`user.enabled: []` in all current native tasks.  If user tools are added in
-future tasks, the schema-loading logic will need to be implemented (user tools
-use `InvocationStyle.TAU_SYNC`, not MCP, so schemas cannot come from
-`fixtures/tools.json`).
