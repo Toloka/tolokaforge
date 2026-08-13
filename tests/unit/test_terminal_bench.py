@@ -1021,17 +1021,22 @@ class TestHarnessCommand:
             "do it",
         ]
 
-    def test_codex_writes_openai_base_url_config_toml_before_the_cli(self):
-        """codex reads ``openai_base_url`` from ``$CODEX_HOME/config.toml``,
-        not from ``$OPENAI_BASE_URL`` — the compose env var alone lands the
-        CLI at ``api.openai.com`` and 401s."""
+    def test_codex_writes_config_toml_and_auth_json_before_the_cli(self):
+        """codex reads ``openai_base_url`` from ``$CODEX_HOME/config.toml`` and
+        the API key from ``$CODEX_HOME/auth.json``. The env vars they mirror
+        both land the CLI at 401s without the files (config.toml drop routes
+        to api.openai.com; missing auth.json earns "No cookie auth credentials
+        found" from OpenRouter)."""
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
         preamble, sep, _ = harness_command("codex", "do it", "m").partition(" && exec ")
         assert sep, "codex must chain a preamble before the CLI"
         assert "config.toml" in preamble
-        assert "$OPENAI_BASE_URL" in preamble
         assert "openai_base_url" in preamble
+        assert "$OPENAI_BASE_URL" in preamble
+        assert "auth.json" in preamble
+        assert "OPENAI_API_KEY" in preamble
+        assert "$OPENAI_API_KEY" in preamble
 
     def test_claude_code_has_no_preamble(self):
         """A CLI without a pre_exec_shell publishes the CLI command alone —

@@ -112,16 +112,26 @@ HARNESSES: dict[str, HarnessSpec] = {
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
         ),
-        # codex reads ``openai_base_url`` from ``$CODEX_HOME/config.toml`` and
-        # silently ignores ``$OPENAI_BASE_URL`` for the Responses API endpoint,
-        # so a compose-forwarded base URL alone lands the CLI at
-        # ``api.openai.com`` and 401s. Write the file from the env var before
-        # the CLI starts. ``CODEX_HOME`` defaults to ``$HOME/.codex``; harbor
-        # sets it to a scratch path — same file either way.
+        # Two on-disk files, one shell chain — codex reads both and honours
+        # neither the env var they mirror:
+        #
+        # 1. ``$CODEX_HOME/config.toml`` carries ``openai_base_url``. The env
+        #    var ``OPENAI_BASE_URL`` alone is ignored for the Responses API
+        #    endpoint (codex hits ``api.openai.com`` regardless).
+        # 2. ``$CODEX_HOME/auth.json`` carries the API key as JSON. The env
+        #    var ``OPENAI_API_KEY`` alone earns "401 No cookie auth
+        #    credentials found" from OpenRouter — the CLI sends no
+        #    ``Authorization`` header without the file.
+        #
+        # Harbor writes both files (``harbor/agents/installed/codex.py:1391``
+        # / ``:1406``). ``CODEX_HOME`` defaults to ``$HOME/.codex``.
         pre_exec_shell=(
-            'mkdir -p "${CODEX_HOME:-$HOME/.codex}" && '
+            'CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}" && '
+            'mkdir -p "$CODEX_HOME_DIR" && '
             'printf \'openai_base_url = "%s"\\n\' "$OPENAI_BASE_URL" '
-            '> "${CODEX_HOME:-$HOME/.codex}/config.toml"'
+            '> "$CODEX_HOME_DIR/config.toml" && '
+            'printf \'{"OPENAI_API_KEY": "%s"}\\n\' "$OPENAI_API_KEY" '
+            '> "$CODEX_HOME_DIR/auth.json"'
         ),
     ),
     "gemini-cli": HarnessSpec(
