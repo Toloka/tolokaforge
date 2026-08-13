@@ -263,26 +263,29 @@ def test_write_trajectory_does_not_include_system_prompt(tmp_path):
     assert "user_system_prompt" not in data
     # ``simulator_schema_version`` stays — it's metadata about the
     # message-trace shape, not a prompt itself.
-    assert data["simulator_schema_version"] == 2
+    assert data["simulator_schema_version"] == 3
 
 
-def test_write_task_info_includes_model_config(tmp_path):
-    """write_task_info() includes model_config when present in task_config dict"""
+def test_write_task_info_writes_every_key_the_caller_supplied(tmp_path):
+    """The snapshot is the definition of task.yaml's shape: keys the writer has
+    no knowledge of reach the file, in the caller's order."""
     writer = OutputWriter(tmp_path)
 
-    model_config = {
-        "agent": {"provider": "openai", "name": "gpt-4", "temperature": 0.0},
-        "user": None,
-    }
     task_config = {
-        "task_id": "test-mc",
+        "task_id": "test-full-snapshot",
         "trial_index": 0,
         "category": "test",
         "description": "Test",
+        "interaction_mode": "conversational",
+        "initial_user_message": "Hi, I need to replace my pass.",
+        "user_actor": {"mode": "llm", "persona": "frustrated commuter"},
         "grading_config": {},
         "tools": {},
         "policies": {},
-        "model_config": model_config,
+        "model_config": {
+            "agent": {"provider": "openai", "name": "gpt-4", "temperature": 0.0},
+            "user": None,
+        },
     }
 
     writer.write_task_info(task_config)
@@ -290,29 +293,20 @@ def test_write_task_info_includes_model_config(tmp_path):
     with open(tmp_path / "task.yaml") as f:
         data = yaml.safe_load(f)
 
-    assert "model_config" in data
-    assert data["model_config"]["agent"]["provider"] == "openai"
-    assert data["model_config"]["agent"]["name"] == "gpt-4"
-    assert data["model_config"]["user"] is None
+    assert data == task_config
+    assert list(data) == list(task_config)
 
 
-def test_write_task_info_omits_model_config_when_absent(tmp_path):
-    """write_task_info() does not add model_config key when not in task_config"""
+def test_write_task_info_invents_no_key_the_caller_omitted(tmp_path):
+    """A partial snapshot writes a partial file — the writer supplies no
+    defaults of its own for keys the caller left out."""
     writer = OutputWriter(tmp_path)
 
-    task_config = {
-        "task_id": "test-no-mc",
-        "trial_index": 0,
-        "category": "test",
-        "description": "Test",
-        "grading_config": {},
-        "tools": {},
-        "policies": {},
-    }
+    task_config = {"task_id": "test-partial", "description": "Test"}
 
     writer.write_task_info(task_config)
 
     with open(tmp_path / "task.yaml") as f:
         data = yaml.safe_load(f)
 
-    assert "model_config" not in data
+    assert data == task_config

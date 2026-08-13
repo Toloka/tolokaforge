@@ -66,6 +66,8 @@ category: "terminal"                # e.g. terminal, web, airline, retail
 description: |
   Detailed task description.
 
+initial_user_message: "Hi, I need help with ..."   # optional — pinned opener, delivered verbatim as turn 1
+
 initial_state:
   json_db: "initial_state.json"     # JSON database seed
   filesystem:
@@ -86,15 +88,16 @@ tools:
   user:
     enabled: []                     # User-side tools (dual-control)
 
-user_simulator:
-  mode: "llm"                       # "llm" or "scripted"
-  persona: "cooperative"
-  backstory: |
-    Context for LLM user simulator...
-  scripted_flow:                    # For scripted mode
-    - if_assistant_contains: "name"
-      user: "My name is Alice."
-    - default: "Please proceed."
+actors:
+  user:
+    mode: "llm"                     # "llm" or "scripted"
+    persona: "cooperative"
+    backstory: |
+      Context for LLM user simulator...
+    scripted_flow:                  # For scripted mode
+      - if_assistant_contains: "name"
+        user: "My name is Alice."
+      - default: "Please proceed."
 
 policies:
   disallowed_actions:

@@ -113,11 +113,9 @@
   "tool_artifacts": {},
   "user_simulator": {
     "backstory": "",
-    "first_message": null,
     "mode": "scripted",
     "persona": "cooperative",
-    "scripted_flow": null,
-    "user_context": null
+    "scripted_flow": null
   },
   "user_tools": []
 }

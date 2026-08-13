@@ -509,24 +509,6 @@ class TestTrialRunnerRun:
         assert len(delivered.tool_calls) == 1
         assert delivered.tool_calls[0].id == "uc1"
 
-    def test_initial_user_message_used_directly(self) -> None:
-        """When initial_user_message is provided, it's used directly."""
-        agent = _make_agent_client(
-            [
-                GenerationResult(
-                    text="Done. ###STOP###",
-                    tool_calls=[],
-                    usage=Usage(prompt_tokens=10, completion_tokens=5),
-                ),
-            ]
-        )
-        runner = _make_runner(agent_client=agent)
-        traj = runner.run("System prompt", "My specific request")
-
-        # First message should be the provided initial user message
-        assert traj.messages[0].role == MessageRole.USER
-        assert traj.messages[0].content == "My specific request"
-
     def test_metrics_tracking(self) -> None:
         """Verify metrics are accumulated correctly."""
         agent = _make_agent_client(
@@ -811,31 +793,6 @@ class TestTrialRunnerRun:
 @pytest.mark.unit
 class TestUserSimulatorIntegration:
     """Tests for user simulator message flow in TrialRunner."""
-
-    def test_user_simulator_generates_first_message(self) -> None:
-        """When no initial_user_message, user simulator generates first msg."""
-        agent = _make_agent_client(
-            [
-                GenerationResult(
-                    text="###STOP###",
-                    tool_calls=[],
-                    usage=Usage(prompt_tokens=10, completion_tokens=5),
-                ),
-            ]
-        )
-        user_sim = MagicMock()
-        user_sim.reply.return_value = GenerationResult(
-            text="I need help with my order",
-            tool_calls=[],
-        )
-
-        runner = _make_runner(agent_client=agent, user_simulator=user_sim)
-        traj = runner.run("System", "")  # Empty initial message
-
-        # User simulator should have been called for first message
-        assert user_sim.reply.called
-        assert traj.messages[0].role == MessageRole.USER
-        assert traj.messages[0].content == "I need help with my order"
 
     def test_empty_bootstrap_first_message_fails_loud(self) -> None:
         """A simulator bootstrap that returns empty/whitespace text raises.

@@ -142,7 +142,7 @@ orchestrator:
 | `retry_interval_s` | `15.0` | Mean wait between 429 retries. Constant by design: a blocked client polls `1 / retry_interval_s` times per second, so blocked client-time is recoverable from the 429 count. |
 | `jitter_fraction` | `0.2` | Symmetric jitter as a fraction of the interval (`interval x (1 +/- f)`). Without it, every client blocked at the cap retries in lockstep — burst, all rejected, wait, burst — which biases the measurement and is harsher on the provider. The mean interval is unchanged, so the poll-rate inversion still holds in expectation. `0.0` restores the exact fixed interval. |
 | `per_call_budget_s` | `3600.0` | Wall-clock budget for one **agent** call's 429 retries. Exhausting it reraises the last 429, which surfaces as `termination_reason: rate_limit`. A *floor*, not an exact ceiling: `stop` is evaluated on an attempt's outcome, so a call overshoots by up to one retry interval plus one attempt's own timeout budget. |
-| `simulator_per_call_budget_s` | `600.0` | Same, for the user-simulator client. Deliberately shorter: the simulator shares the agent's quota so it must absorb 429s (otherwise a simulator 429 kills the trial the agent-side probe kept alive), but its throughput is not what the probe measures, so agent-sized wall time here only eats lease headroom. |
+| `simulator_per_call_budget_s` | `600.0` | Same, for the user-simulator client. Deliberately shorter: the simulator shares the agent's quota so it must absorb 429s (otherwise a simulator 429 kills the trial the agent-side probe kept alive), but its throughput is not what the probe measures, so agent-sized wall time here only eats lease headroom. One turn can spend it three times over — the reply guard regenerates a user reply a detector flags instead of editing it — so the per-turn ceiling below multiplies it. |
 | `bucket_width_s` | `30` | Width of one goodput window, **whole seconds**. Windows are anchored on the Unix epoch, not on run start, so simultaneous run legs emit the same boundaries and can be summed window by window. **Every leg of one measurement must use the same width** or the series do not align. Whole seconds keep every boundary an exact integer epoch, so the timestamps match byte-for-byte across legs. |
 | `max_buckets` | `4096` | Per-trial cap on how many `(role, model, window)` **rows** may be opened, so memory is bounded. A two-role trial consumes two rows per window, so at 30 s this is ~34 h for a single `(role, model)` series and ~17 h for the two-role default. Past the cap a recording still lands in the flat and per-`(role, model)` totals but cannot open a new row; `Metrics.probe_dropped_buckets` counts the refused rows (also rows, not windows), so truncation is never silent. Refusing *new* rows rather than evicting old ones keeps the retained series a contiguous prefix — a series with a hole would let a cross-leg sum silently undercount. The cap is global rather than per series, so a high-volume role can consume all of it. |
 
@@ -160,19 +160,26 @@ episode budget after the `min(task trial_seconds, run episode_s)` clamp:
 - the whole **per-turn 429 ceiling** must be strictly below `episode_s`:
 
   ```
-  turn_wall_ceiling_s = per_call_budget_s + simulator_per_call_budget_s
-                      + 2 x (retry_interval_s x (1 + jitter_fraction) + 737)
+  turn_wall_ceiling_s = per_call_budget_s + 3 x simulator_per_call_budget_s
+                      + 4 x (retry_interval_s x (1 + jitter_fraction) + 737)
   ```
 
-  The episode timeout is only evaluated *between* turns, one turn issues **two**
-  probe-capable calls (the agent's `generate`, then the simulator's `reply`), and
-  `stop` is evaluated on an attempt's *outcome* — so each call can overrun its
-  budget by one jitter-maximum retry interval plus one attempt's own ceiling
-  (`737 s` = the client's `6 x 120 s` timeout budget plus its inner backoff).
-  Worst-case trial wall time is therefore `episode_s + turn_wall_ceiling_s`, and
-  holding the ceiling below `episode_s` bounds it under the
-  `max(300, episode_s * 2)` queue lease. At the defaults the ceiling is
-  `4200 + 1510 = 5710 s` against a 14400 s budget.
+  The episode timeout is only evaluated *between* turns, and one turn issues the
+  agent's `generate` plus up to **three** user-simulator `reply` calls: the reply
+  guard discards a reply a detector flags and regenerates it, up to
+  `USER_REPLY_MAX_ATTEMPTS` times, and a 429 does not consume one of those
+  attempts. `stop` is evaluated on an attempt's *outcome*, so each of those four
+  calls can overrun its budget by one jitter-maximum retry interval plus one
+  attempt's own ceiling (`737 s` = the client's `6 x 120 s` timeout budget plus
+  its inner backoff). Worst-case trial wall time is therefore
+  `episode_s + turn_wall_ceiling_s`, and holding the ceiling below `episode_s`
+  bounds it under the `max(300, episode_s * 2)` queue lease. At the defaults the
+  ceiling is `5400 + 3020 = 8420 s` against a 14400 s budget.
+
+  The attempt count is a module constant rather than a config field
+  (`tolokaforge/core/models/run_config.py`): it is a multiplier this invariant
+  reads, so a run config able to raise it could defeat the invariant from the
+  config file.
 
   `retry_interval_s` and `jitter_fraction` are part of the invariant on purpose:
   the defaults plus a large `retry_interval_s` alone can blow the lease.
@@ -485,6 +492,7 @@ task_id: "browser_simple_navigation"
 name: "Simple Browser Navigation"
 category: "browser"
 description: "Navigate to the mock Example Domain page"
+initial_user_message: "Open example.com and tell me the page title."   # optional — pinned opener, delivered verbatim as turn 1
 
 initial_state:
   json_db: "initial_state.json"          # optional
@@ -507,14 +515,15 @@ tools:
   user:
     enabled: []
 
-user_simulator:
-  mode: "scripted"   # "scripted" or "llm"
-  persona: "cooperative"
-  backstory: ""
-  scripted_flow:
-    - if_assistant_contains: "done"
-      user: "Thanks!"
-    - default: "Please continue."
+actors:
+  user:
+    mode: "scripted" # "scripted" or "llm"
+    persona: "cooperative"
+    backstory: ""
+    scripted_flow:
+      - if_assistant_contains: "done"
+        user: "Thanks!"
+      - default: "Please continue."
 
 policies:
   guidance:
@@ -542,11 +551,17 @@ entry-point group. See [ADR-0028](adr/0028-multi-actor-turn-policy.md).
 - **`agent_only`** — no user turn dispatched after the initial message.
   The agent runs to `###STOP###` (routed to `TerminationReason.AGENT_DONE`),
   `max_turns`, or `episode_timeout_s`. The user simulator is never
-  constructed. Requires a non-empty `initial_user_message` at pack
-  authoring time (fails loud at run-start otherwise — the agent-only
-  route has no simulator to synthesize a bootstrap message). Matches
-  agent-driven eval shapes (code migration, autonomous tool-use) where
-  the task lives entirely in the system prompt.
+  constructed. Matches agent-driven eval shapes (code migration,
+  autonomous tool-use) where the task lives entirely in the system prompt.
+
+Both shapes read the same field for turn 0. `initial_user_message` is the
+task's pinned opener: its text is delivered verbatim as the first user
+message, whitespace included, and no simulator dispatch produces that turn.
+`agent_only` **requires** it — that shape has no simulator to synthesize a
+bootstrap message, so a task declaring it without an opener fails loud at
+run-start. `conversational` treats it as optional: unset, the user simulator
+writes turn 1. Under either mode, declaring the key with an empty or
+whitespace-only value is refused at load.
 
 ## Grading Specification (`grading.yaml`)
 

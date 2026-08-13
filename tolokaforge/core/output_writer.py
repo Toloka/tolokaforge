@@ -67,34 +67,15 @@ class OutputWriter:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def write_task_info(self, task_config: dict[str, Any]):
-        """Write task.yaml with task metadata and grading config
+        """Write task.yaml — the caller's task snapshot, serialised whole
 
         Args:
-            task_config: Dictionary containing:
-                - task_id: Task identifier
-                - trial_index: Trial index
-                - category: Task category
-                - description: Task description
-                - grading_config: Grading configuration dict
-                - tools: Tools configuration dict
-                - policies: Task policies dict
+            task_config: The trial's task snapshot. Every key is written, in
+                the caller's insertion order; the snapshot the conductor
+                composes is the sole definition of the file's shape.
         """
-        task_info = {
-            "task_id": task_config.get("task_id"),
-            "trial_index": task_config.get("trial_index"),
-            "category": task_config.get("category"),
-            "description": task_config.get("description"),
-            "grading_config": task_config.get("grading_config", {}),
-            "tools": task_config.get("tools", {}),
-            "policies": task_config.get("policies", {}),
-        }
-
-        # Include model_config when present (added by orchestrator for reproducibility)
-        if "model_config" in task_config:
-            task_info["model_config"] = task_config["model_config"]
-
         with open(self.output_dir / "task.yaml", "w") as f:
-            yaml.dump(task_info, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+            yaml.dump(task_config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     def write_trajectory(self, trajectory: Trajectory):
         """Write trajectory.yaml — message trace + status + metrics only.
@@ -128,7 +109,15 @@ class OutputWriter:
                 trajectory.termination_reason.value if trajectory.termination_reason else None
             ),
             "grading_error": trajectory.grading_error,
+            "first_user_message_source": (
+                trajectory.first_user_message_source.value
+                if trajectory.first_user_message_source
+                else None
+            ),
             "messages": [msg.model_dump(mode="json") for msg in trajectory.messages],
+            "user_reply_guard_events": [
+                event.model_dump(mode="json") for event in trajectory.user_reply_guard_events
+            ],
         }
 
         with open(self.output_dir / "trajectory.yaml", "w") as f:

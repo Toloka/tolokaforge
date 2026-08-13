@@ -34,8 +34,8 @@ def _parse_task_yaml(task_dir: Path) -> str:
         data = yaml.safe_load(f)
     if data is None:
         return ""
-    # task.yaml may have 'instruction' as a string
-    instruction = data.get("instruction", "")
+    # A bare ``instruction:`` key parses as None, which no default can cover.
+    instruction = data.get("instruction") or ""
     if not instruction:
         # Fallback: try instruction.md
         instruction_md = task_dir / "instruction.md"

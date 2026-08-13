@@ -62,7 +62,7 @@ def load_project_grading(project_name: str, task_id: str) -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def _is_lfs_pointer(path: Path) -> bool:
+def is_lfs_pointer(path: Path) -> bool:
     """Check if a file is a Git LFS pointer (not actual content)."""
     try:
         # LFS pointers are small files (<200 bytes) starting with "version https://git-lfs"
@@ -104,7 +104,7 @@ def load_project_trajectory(
 
         # New split format (YAML) - merge files for backward compatibility
         if yaml_path.exists():
-            if _is_lfs_pointer(yaml_path):
+            if is_lfs_pointer(yaml_path):
                 pytest.skip(
                     f"Trajectory data is LFS pointer — run 'git lfs pull' first: {yaml_path}"
                 )
@@ -134,7 +134,7 @@ def load_project_trajectory(
 
         # Old single file format (JSON)
         elif json_path.exists():
-            if _is_lfs_pointer(json_path):
+            if is_lfs_pointer(json_path):
                 pytest.skip(
                     f"Trajectory data is LFS pointer — run 'git lfs pull' first: {json_path}"
                 )
@@ -218,7 +218,7 @@ def food_delivery_2_trajectory_051fa6cb() -> dict[str, Any]:
     traj_path = traj_dir / "trajectory.yaml"
     if not traj_path.exists():
         pytest.skip("Trajectory data not available (missing file)")
-    if _is_lfs_pointer(traj_path):
+    if is_lfs_pointer(traj_path):
         pytest.skip("Trajectory data is LFS pointer — run 'git lfs pull' first")
     return load_project_trajectory("food_delivery_2", trial_uuid, 0)
 

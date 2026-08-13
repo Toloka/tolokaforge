@@ -119,6 +119,7 @@ tests/
     ├── recorded_calls.py     # RecordedToolCall builders
     ├── runner_requests.py    # gRPC request + TaskDescription builders
     ├── servicer_runtime.py   # RuntimeBackend over the in-process servicer + the duplicate-call_id refusal
+    ├── conductor_phases.py   # Arguments for the conductor's _grade / _write_artifacts phases
     ├── timelines.py          # Coherent TrialTimeline fixtures (message view + records)
     ├── trace_constraints.py  # One trace constraint evaluated, for single-verdict assertions
     ├── trace_checks_configs.py  # One authored trace_checks block spanning the whole vocabulary
@@ -126,6 +127,7 @@ tests/
     ├── migration_packs.py    # A task directory a migration declaration is read out of
     ├── combine_method_verdicts.py  # The combine.method answer table both tiers hold
     ├── wire_grades.py        # A wire Grade driven through the real gRPC client lowering
+    ├── fourth_wall_corpus.py  # The fourth-wall detector's pass/detect rows, read by two suites
     └── project_fixtures.py   # food_delivery_2 project data loaders
 ```
 
@@ -175,6 +177,21 @@ Compare output against committed golden snapshots in `snapshots/`.
   constant, so a bump nobody documented reds nothing; the table is the second source. A
   failure means the constants moved and the docs table follows — never the other way
   round.
+- Simulator prompt generation (`test_simulator_prompt_generation.py`) — the sha256 of
+  the rendered LLM user-simulator prompt body, per generation of
+  `Trajectory.simulator_schema_version`. A failure means either the prompt body moved
+  without the stamp bump that dates it, or the stamp was bumped without a manifest row
+  for the generation it opened. Fix by reconciling the two in one commit: the stamp,
+  the row, and the body. `--update-canon` does not touch this module — the manifest is
+  hand-edited by design, because a regenerated snapshot would let the very edit the
+  module exists to catch be blessed by the commit that made it.
+- Protocol version documented (`test_protocol_version_documented.py`) — the versions
+  `docs/GRPC_PROTOCOL.md` § Version lock names, one sentence each, must be exactly
+  `1..ENGINE_PROTOCOL_VERSION`. Every in-tree caller reads the constant, so a bump
+  nobody documented reds nothing while the doc keeps telling an operator that the
+  newest version is the previous one; a sentence above the constant describes a gate
+  nothing enforces. A failure means the section follows the constant — document what
+  the new version is the first to change, never edit the constant to match the prose.
 - Gate semantics parity (`test_gate_semantics_parity.py`) — the judge's required
   criterion and a trace check's `severity: gate` are one gate scored by two
   implementations, driven against one shared answer table. A failure names the cell
@@ -223,7 +240,10 @@ it. Write the two trials so that a build ignoring the thing under test would sco
 them *identically*: that is what makes discrimination evidence for the key rather
 than for the pack.
 
-Use `--update-canon` flag to regenerate snapshots after intentional changes.
+Use `--update-canon` flag to regenerate the snapshots under `snapshots/` after
+intentional changes. The guard modules above that compare code against a doc or a
+hand-edited manifest have no snapshot behind them, so the flag does not reach them —
+they are reconciled by editing the file the failure names.
 
 ### Integration Tests (`tests/integration/`)
 
@@ -337,7 +357,7 @@ All markers are enforced via `--strict-markers`.
 | `food_delivery_2` tests skip | Run `git lfs pull` to fetch project data |
 | Integration tests skip | Set API keys in `.env`, ensure Docker is running |
 | `--strict-markers` error | Add new markers to `pyproject.toml` |
-| Snapshot mismatch | Re-run with `--update-canon` if change is intentional |
+| Snapshot mismatch | Re-run with `--update-canon` if change is intentional — unless the failure names a doc or a hand-edited manifest, which the flag does not regenerate |
 
 ## Test Philosophy
 

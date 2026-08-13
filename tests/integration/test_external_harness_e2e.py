@@ -56,17 +56,20 @@ _TASK_ID = "capstone"
 
 # Runs run_trial over the three fixture seams, builds an Orchestrator baseline
 # wired to the same seams, and writes both serialisations to ``out_file``.
-# _build_conductor resolves self.adapter.trial_grader_name (the stub pins it to
-# "runner_rpc") and builds the default grader into ctx.trial_grader — which would
-# fire a real gRPC. The baseline injects the fixture grader through the
-# conductor_factory closure, which supplies FixtureGrader to FixtureConductor
-# directly and ignores ctx.trial_grader, so both paths run FixtureConductor +
-# FixtureGrader, Docker-free. The payload is written to a file because run_trial's
-# StructuredLogger writes to stdout, which must not be parsed as the payload.
+# The baseline drives the same NativeAdapter the probe reads the task from, so
+# every adapter seam the orchestrator touches — the grading gate's get_task_dir
+# and grading_combine_layer among them — answers about the pack on disk.
+# _build_conductor resolves adapter.trial_grader_name, which the pack leaves at
+# the base-class "runner_rpc", and builds the default grader into
+# ctx.trial_grader — which would fire a real gRPC. The baseline injects the
+# fixture grader through the conductor_factory closure, which supplies
+# FixtureGrader to FixtureConductor directly and ignores ctx.trial_grader, so
+# both paths run FixtureConductor + FixtureGrader, Docker-free. The payload is
+# written to a file because run_trial's StructuredLogger writes to stdout, which
+# must not be parsed as the payload.
 _RUN_TRIAL_PROBE = """
 import json
 import sys
-from unittest.mock import MagicMock
 from pathlib import Path
 
 from tolokaforge.adapters.native import NativeAdapter
@@ -92,7 +95,6 @@ result = run_trial(
 )
 assert isinstance(result, TrialResult), type(result)
 
-task_desc = adapter.to_task_description("capstone")
 config = RunConfig(
     models={"agent": ModelConfig(**agent)},
     orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
@@ -106,11 +108,7 @@ orch = Orchestrator(
     ),
 )
 orch.tasks = [task]
-adapter_stub = MagicMock()
-adapter_stub.to_task_description.side_effect = lambda _tid: task_desc
-adapter_stub.docker_stack_requirements.return_value = None
-adapter_stub.trial_grader_name = "runner_rpc"
-orch.adapter = adapter_stub
+orch.adapter = adapter
 orch.run()
 (orch_trajectory,) = orch.results
 
@@ -143,7 +141,13 @@ def isolated_env(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
 
 @pytest.fixture(scope="module")
 def flat_pack(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """A flat-layout, MCP-free pack the adapter can glob. Returns the base dir."""
+    """A flat-layout, MCP-free pack the adapter can glob. Returns the base dir.
+
+    The pack is graded entirely by the downstream ``fixture_grader``, so its
+    ``grading.yaml`` configures no engine-graded component and declares no
+    blend over one. The file exists because a task naming no grading source is
+    refused by the orchestrator's grading gate before any trial runs.
+    """
     base = tmp_path_factory.mktemp("pack")
     task_dir = base / "tasks" / "flat"
     task_dir.mkdir(parents=True)
@@ -160,16 +164,7 @@ def flat_pack(tmp_path_factory: pytest.TempPathFactory) -> Path:
             "grading": "grading.yaml",
         },
     )
-    write_yaml_file(
-        task_dir / "grading.yaml",
-        {
-            "combine": {
-                "method": "weighted",
-                "weights": {"state_checks": 1.0},
-                "pass_threshold": 1.0,
-            }
-        },
-    )
+    write_yaml_file(task_dir / "grading.yaml", {})
     return base
 
 

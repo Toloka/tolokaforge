@@ -42,7 +42,7 @@ import json
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
@@ -116,8 +116,6 @@ def _sample_task_description() -> TaskDescription:
             mode="llm",
             persona="cooperative",
             backstory="Wants a refund on order 1.",
-            first_message="Please refund order 1.",
-            user_context={"customer_id": "c-42"},
         ),
         grading=RunnerGradingConfig(
             combine_method="weighted",
@@ -189,7 +187,6 @@ def test_reconciled_wire_types_forbid_extras():
     Locks each renamed class independently (``TaskDescription``'s own
     forbid rule doesn't reach nested siblings by construction).
     """
-    from pydantic import ValidationError
 
     def _requires_forbid(model_cls: type, payload: dict[str, object]) -> None:
         with pytest.raises(ValidationError):
@@ -209,6 +206,29 @@ def test_reconciled_wire_types_forbid_extras():
         {"env_type": "assistant", "tool_name": "t"},
     )
     _requires_forbid(RunnerGradeComponents, {})
+
+
+@pytest.mark.parametrize("retired", ["first_message", "user_context"])
+def test_retired_user_simulator_keys_are_undeclared_and_refused_with_directions(retired: str):
+    """The two keys no consumer ever read are gone from the wire schema.
+
+    A payload still carrying one comes from an engine older than this image or
+    from an adapter populating it, so the refusal has to carry both remedies —
+    ``extra_forbidden`` alone names the key and neither fix.
+    """
+    assert retired not in RunnerUserSimulatorConfig.model_fields
+
+    payload = json.loads(_sample_task_description().model_dump_json())
+    payload["user_simulator"][retired] = None
+
+    with pytest.raises(ValidationError) as excinfo:
+        TaskDescription.model_validate(payload)
+
+    message = str(excinfo.value)
+    assert retired in message
+    assert "initial_user_message" in message
+    assert "get_task()" in message
+    assert "make docker-build-core" in message
 
 
 # ────────────────────────────────────────────────────────────────
