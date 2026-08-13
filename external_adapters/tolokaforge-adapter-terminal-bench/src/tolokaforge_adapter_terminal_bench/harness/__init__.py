@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 __all__ = [
     "ENGINE_LOOP",
@@ -39,6 +39,18 @@ __all__ = [
     "validate_harness",
     "validate_provider_env_keys",
 ]
+
+_URL_INSTALL_METHODS: frozenset[str] = frozenset({"curl-bash", "binary"})
+"""Install methods whose ``install_source`` is downloaded rather than named."""
+
+
+def _is_package_name(value: str) -> bool:
+    """Whether *value* is a bare npm / PyPI installable rather than a path or URL."""
+    if value.split() != [value]:
+        return False
+    scope, _, rest = value.partition("/")
+    return "/" not in rest and (not rest or scope.startswith("@"))
+
 
 ENGINE_LOOP = "engine-loop"
 """The default: tolokaforge's own turn loop drives the trial.
@@ -62,8 +74,22 @@ class HarnessSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    npm_package: str
-    """Global npm package providing the CLI."""
+    install_method: Literal["npm", "pip", "curl-bash", "binary"] = "npm"
+    """How ``install-harness.sh`` puts the CLI in the image.
+
+    ``npm`` / ``pip`` install :attr:`install_source` by name from the public
+    registry; ``curl-bash`` downloads it as an installer script and runs it
+    with ``--version <version>``; ``binary`` downloads it as a ``.tar.gz`` /
+    ``.tgz`` unpacked onto ``PATH``, or as a bare executable placed there
+    under the URL's basename. The URL methods refuse ``version: "latest"``:
+    neither can report back what it installed, and an unrecorded agent
+    version is not a benchmark result."""
+
+    install_source: str
+    """What :attr:`install_method` installs — a package name for ``npm`` /
+    ``pip`` (``@scope/`` allowed, nothing else path-shaped), a download URL
+    for ``curl-bash`` / ``binary``. Mismatches are refused at registry-load
+    time rather than at ``docker build`` time."""
 
     version: str
     """Exact version installed, or the literal ``"latest"``.
@@ -73,10 +99,11 @@ class HarnessSpec(BaseModel):
     build whose tag already resolves locally, so a floating version would
     freeze per-machine on first build and differ between contributors.
 
-    ``"latest"`` is available for exploration runs; when used, ``install-harness.sh``
-    records the resolved version to a file the adapter reads back at
-    trial-registration time and stamps on ``TaskDescription.metadata`` — so
-    reproducibility is preserved by the *artifact*, not by the pin."""
+    ``"latest"`` is available for exploration runs of the registry methods
+    (``npm`` / ``pip``): ``install-harness.sh`` resolves it during the image
+    build and records what it actually installed at
+    ``/opt/tolokaforge/installed-version.txt`` inside the layer, so the
+    container carries the evidence the pin would otherwise have provided."""
 
     argv_prefix: tuple[str, ...]
     """Words before the flags block. The CLI executable (and its sub-command,
@@ -163,6 +190,24 @@ class HarnessSpec(BaseModel):
     key the harness didn't ship (e.g. ``ANTHROPIC_AUTH_TOKEN``) without
     losing the URL. Keys must be a subset of :data:`PROVIDER_ENV_KEYS`."""
 
+    @model_validator(mode="after")
+    def _install_source_fits_the_method(self) -> HarnessSpec:
+        """Refuse a source the method cannot consume, at load rather than build."""
+        if self.install_method in _URL_INSTALL_METHODS:
+            if not self.install_source.startswith(("http://", "https://")):
+                raise ValueError(
+                    f"install_method {self.install_method!r} downloads its source, but "
+                    f"install_source {self.install_source!r} is not one "
+                    "(expected an http:// or https:// URL)."
+                )
+        elif not _is_package_name(self.install_source):
+            raise ValueError(
+                f"install_method {self.install_method!r} installs a named package, but "
+                f"install_source {self.install_source!r} is not a bare package name "
+                "(no whitespace, and no `/` outside a leading `@scope/`)."
+            )
+        return self
+
 
 SHIPPED_REGISTRY_FILE = Path(__file__).resolve().parent.parent / "data" / "harnesses.yaml"
 """Packaged registry data — the source of truth for the shipped harnesses.
@@ -222,7 +267,9 @@ def load_harness_registry(path: Path) -> dict[str, HarnessSpec]:
         try:
             registry[name] = HarnessSpec.model_validate(entry)
         except ValidationError as exc:
-            fields = sorted(".".join(str(part) for part in err["loc"]) for err in exc.errors())
+            fields = sorted(
+                ".".join(str(part) for part in err["loc"]) or "<entry>" for err in exc.errors()
+            )
             raise ValueError(
                 f"terminal-bench adapter: harness registry file {path}, harness {name!r}: "
                 f"invalid field(s) {fields!r} — {exc}"

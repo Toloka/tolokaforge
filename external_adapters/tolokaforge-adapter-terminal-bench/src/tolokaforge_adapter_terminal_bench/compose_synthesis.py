@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shlex
 import shutil
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
@@ -329,7 +330,8 @@ def _write_harness_build_context(staging_dir: Path, *, base_image: str, spec: Ha
     (harness_dir / _HARNESS_DOCKERFILE_NAME).write_text(
         f"FROM {base_image}\n"
         f"COPY {_HARNESS_STAGING_DIR}/{INSTALL_SCRIPT.name} {_HARNESS_INSTALL_PATH}\n"
-        f"RUN sh {_HARNESS_INSTALL_PATH} {spec.npm_package} {spec.version}\n"
+        f"RUN sh {_HARNESS_INSTALL_PATH} {spec.install_method} "
+        f"{shlex.quote(spec.install_source)} {shlex.quote(spec.version)}\n"
     )
     (staging_dir / ".dockerignore").write_text(
         f"*\n!{_HARNESS_STAGING_DIR}/{INSTALL_SCRIPT.name}\n"

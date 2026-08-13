@@ -1,6 +1,8 @@
 """Unit tests for terminal-bench adapter and Docker Compose exec wrapper."""
 
+import os
 import subprocess
+import tarfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -943,21 +945,40 @@ class TestComposeSynthesisNoSubprocess:
 class TestInstallHarnessScript:
     """The install script is the only place a harness's install steps live."""
 
-    @staticmethod
-    def _run_with_fake_npm(tmp_path: Path, *args: str):
-        """Run the script with a fake ``npm`` on ``PATH`` recording its argv.
+    _DEFAULT_DOWNLOAD = 'echo "installer $*" >> {record}\n'
 
-        Behavioural rather than source-scraping: what matters is the package
-        and version the script asks npm for, not how the dispatch is written.
+    @staticmethod
+    def _run_script(tmp_path: Path, *args: str, download: Path | None = None):
+        """Run the script with fake package managers on ``PATH``.
+
+        Each fake appends its argv to one record file, so a dispatch assertion
+        reads as the request the method made of its tool — behavioural rather
+        than source-scraping. ``curl`` additionally copies *download* to the
+        path behind ``-o``, standing in for what the URL would have served.
         """
         from tolokaforge_adapter_terminal_bench.harness import INSTALL_SCRIPT
 
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
-        record = tmp_path / "npm-argv.txt"
-        fake_npm = bin_dir / "npm"
-        fake_npm.write_text(f'#!/bin/sh\necho "$@" >> {record}\n')
-        fake_npm.chmod(0o755)
+        record = tmp_path / "tool-argv.txt"
+        if download is None:
+            download = tmp_path / "downloaded"
+            download.write_text(TestInstallHarnessScript._DEFAULT_DOWNLOAD.format(record=record))
+
+        def _fake(name: str, body: str = "") -> None:
+            path = bin_dir / name
+            path.write_text(f'#!/bin/sh\necho "$@" >> {record}\n{body}')
+            path.chmod(0o755)
+
+        _fake("npm")
+        _fake("pip")
+        _fake(
+            "curl",
+            'out=""\nprev=""\nfor arg in "$@"; do\n'
+            '  if [ "$prev" = "-o" ]; then out="$arg"; fi\n'
+            '  prev="$arg"\ndone\n'
+            f'if [ -n "$out" ]; then cp {download} "$out"; fi\n',
+        )
         # ``install-harness.sh`` first checks for a Node ≥ 18. On the CI runner
         # the check hits real node; on a developer laptop where PATH is
         # deliberately restricted (below), it wouldn't. A fake ``node``
@@ -976,32 +997,109 @@ class TestInstallHarnessScript:
             capture_output=True,
             text=True,
             timeout=30,
-            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+            env={
+                "PATH": f"{bin_dir}:/usr/bin:/bin",
+                "TOLOKAFORGE_HARNESS_STATE_DIR": str(tmp_path / "state"),
+                "TOLOKAFORGE_HARNESS_BIN_DIR": str(tmp_path / "target-bin"),
+            },
         )
         recorded = record.read_text().splitlines() if record.exists() else []
         return proc, recorded
+
+    @staticmethod
+    def _recorded_version(tmp_path: Path) -> str:
+        return (tmp_path / "state" / "installed-version.txt").read_text().strip()
 
     def test_every_harness_installs_its_pinned_package(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.harness import HARNESSES
 
         for name, spec in HARNESSES.items():
-            proc, recorded = self._run_with_fake_npm(
-                tmp_path / name, spec.npm_package, spec.version
+            proc, recorded = self._run_script(
+                tmp_path / name, spec.install_method, spec.install_source, spec.version
             )
             assert proc.returncode == 0, f"{name}: {proc.stderr}"
-            assert recorded == [f"install -g {spec.npm_package}@{spec.version}"], name
+            assert recorded == [f"install -g {spec.install_source}@{spec.version}"], name
+            assert self._recorded_version(tmp_path / name) == spec.version, name
+
+    def test_pip_install_dispatch_calls_pip(self, tmp_path):
+        proc, recorded = self._run_script(tmp_path, "pip", "some-harness-cli", "1.2.3")
+        assert proc.returncode == 0, proc.stderr
+        assert recorded == ["install --no-cache-dir some-harness-cli==1.2.3"]
+        assert self._recorded_version(tmp_path) == "1.2.3"
+
+    def test_curl_bash_dispatch_runs_the_downloaded_installer(self, tmp_path):
+        """The installer is downloaded and then run: POSIX sh has no
+        ``pipefail``, so piping ``curl`` into ``sh`` would leave a failed
+        download green with nothing installed."""
+        proc, recorded = self._run_script(
+            tmp_path, "curl-bash", "https://harness.invalid/install.sh", "1.2.3"
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert recorded == [
+            "-fsSL https://harness.invalid/install.sh -o /tmp/harness-installer.sh",
+            "installer --version 1.2.3",
+        ]
+        assert self._recorded_version(tmp_path) == "1.2.3"
+
+    def test_binary_dispatch_installs_the_downloaded_executable(self, tmp_path):
+        proc, recorded = self._run_script(
+            tmp_path, "binary", "https://harness.invalid/dl/grok", "1.2.3"
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert recorded == ["-fsSL https://harness.invalid/dl/grok -o /tmp/harness-download"]
+        installed = tmp_path / "target-bin" / "grok"
+        assert os.access(installed, os.X_OK)
+        assert self._recorded_version(tmp_path) == "1.2.3"
+
+    def test_binary_dispatch_unpacks_a_tarball(self, tmp_path):
+        """A `.tar.gz` source carries its executables at the archive root."""
+        payload = tmp_path / "payload"
+        payload.mkdir()
+        (payload / "grok").write_text("#!/bin/sh\necho grok\n")
+        (payload / "grok").chmod(0o755)
+        archive = tmp_path / "harness.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(payload / "grok", arcname="grok")
+
+        proc, _ = self._run_script(
+            tmp_path, "binary", "https://harness.invalid/dl/grok.tar.gz", "1.2.3", download=archive
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert os.access(tmp_path / "target-bin" / "grok", os.X_OK)
+
+    def test_floating_version_aborts_for_a_downloaded_install(self, tmp_path):
+        """Neither URL method can report what an installer chose, and an
+        unrecorded agent version is not a benchmark result."""
+        proc, recorded = self._run_script(
+            tmp_path, "curl-bash", "https://harness.invalid/install.sh", "latest"
+        )
+        assert proc.returncode != 0
+        assert "pin a version" in proc.stderr
+        assert recorded == []
+
+    def test_unknown_method_aborts(self, tmp_path):
+        proc, recorded = self._run_script(tmp_path, "brew", "some-harness-cli", "1.2.3")
+        assert proc.returncode != 0
+        assert "unknown install method" in proc.stderr
+        assert recorded == []
 
     def test_missing_version_aborts(self, tmp_path):
         """An unpinned install would make the agent version unrecorded."""
-        proc, recorded = self._run_with_fake_npm(tmp_path, "@anthropic-ai/claude-code")
+        proc, recorded = self._run_script(tmp_path, "npm", "@anthropic-ai/claude-code")
         assert proc.returncode != 0
         assert "pinned" in proc.stderr
         assert recorded == []
 
-    def test_missing_package_aborts(self, tmp_path):
-        proc, recorded = self._run_with_fake_npm(tmp_path)
+    def test_missing_source_aborts(self, tmp_path):
+        proc, recorded = self._run_script(tmp_path, "npm")
         assert proc.returncode != 0
-        assert "npm package" in proc.stderr
+        assert "no install source" in proc.stderr
+        assert recorded == []
+
+    def test_missing_method_aborts(self, tmp_path):
+        proc, recorded = self._run_script(tmp_path)
+        assert proc.returncode != 0
+        assert "no install method" in proc.stderr
         assert recorded == []
 
 
@@ -1019,13 +1117,24 @@ class TestHarnessSpecRegistry:
         assert list(HARNESSES) == ["claude-code", "codex", "gemini-cli"]
         assert load_harness_registry(SHIPPED_REGISTRY_FILE) == HARNESSES
 
+    def test_shipped_entries_install_from_npm(self):
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        assert {
+            name: (spec.install_method, spec.install_source) for name, spec in HARNESSES.items()
+        } == {
+            "claude-code": ("npm", "@anthropic-ai/claude-code"),
+            "codex": ("npm", "@openai/codex"),
+            "gemini-cli": ("npm", "@google/gemini-cli"),
+        }
+
     @pytest.mark.parametrize(
         ("document", "expected"),
         [
             pytest.param(
                 "harnesses:\n"
                 "  claude-code:\n"
-                "    npm_package: p\n"
+                "    install_source: p\n"
                 "    version: '1'\n"
                 "    argv_prefix: [claude]\n"
                 "    argv_suffix: []\n"
@@ -1035,15 +1144,29 @@ class TestHarnessSpecRegistry:
             ),
             pytest.param(
                 "harnesses:\n  claude-code:\n    version: '1'\n    argv_prefix: [claude]\n",
-                "npm_package",
+                "install_source",
                 id="missing-required-field",
             ),
             pytest.param(
-                "harnesses:\n  claude-code:\n    npm_package: p\n"
+                "harnesses:\n  claude-code:\n    install_source: p\n"
                 "    version: '1'\n    argv_prefix: [claude]\n    argv_suffix: []\n"
                 "defaults:\n  version: '2'\n",
                 "defaults",
                 id="unknown-top-level-key",
+            ),
+            pytest.param(
+                "harnesses:\n  grok:\n    install_method: curl-bash\n"
+                "    install_source: not-a-url\n"
+                "    version: '1'\n    argv_prefix: [grok]\n    argv_suffix: []\n",
+                "http:// or https:// URL",
+                id="downloaded-source-is-not-a-url",
+            ),
+            pytest.param(
+                "harnesses:\n  grok:\n    install_method: pip\n"
+                "    install_source: 'https://harness.invalid/grok.tar.gz'\n"
+                "    version: '1'\n    argv_prefix: [grok]\n    argv_suffix: []\n",
+                "not a bare package name",
+                id="named-source-is-a-url",
             ),
             pytest.param("harnesses: {}\n", "non-empty", id="no-harness-declared"),
             pytest.param("- claude-code\n", "must be a YAML mapping", id="not-a-mapping"),
@@ -1342,7 +1465,7 @@ class TestComposeSynthesisHarnessLayer:
 
         dockerfile = (env.staging_dir / "_harness" / "harness.Dockerfile").read_text()
         assert dockerfile.splitlines()[0] == "FROM tbench-dockerfile:local"
-        assert "install-harness.sh @google/gemini-cli 0.55.1" in dockerfile
+        assert "install-harness.sh npm @google/gemini-cli 0.55.1" in dockerfile
         assert (env.staging_dir / "_harness" / "install-harness.sh").exists()
 
     def test_task_without_build_context_declares_no_base_service(self, tmp_path):
@@ -1798,7 +1921,7 @@ class TestHarnessPresetsFileOverlay:
             tmp_path,
             "harnesses:\n"
             "  claude-code:\n"
-            "    npm_package: '@anthropic-ai/claude-code'\n"
+            "    install_source: '@anthropic-ai/claude-code'\n"
             "    version: '0.0.0-overlay'\n"
             "    argv_prefix: [claude]\n"
             "    argv_suffix: ['--print']\n",
@@ -1820,7 +1943,7 @@ class TestHarnessPresetsFileOverlay:
             tmp_path,
             "harnesses:\n"
             "  codex:\n"
-            "    npm_package: '@openai/codex'\n"
+            "    install_source: '@openai/codex'\n"
             "    version: '0.0.0-overlay'\n"
             "    argv_prefix: [codex, exec]\n"
             "    argv_suffix: []\n",
@@ -1833,7 +1956,7 @@ class TestHarnessPresetsFileOverlay:
             tmp_path,
             "harnesses:\n"
             "  in-house-cli:\n"
-            "    npm_package: '@acme/in-house-cli'\n"
+            "    install_source: '@acme/in-house-cli'\n"
             "    version: '1.2.3'\n"
             "    argv_prefix: [acme]\n"
             "    argv_suffix: ['--go']\n",
@@ -1853,7 +1976,7 @@ class TestHarnessPresetsFileOverlay:
     def test_invalid_overlay_entry_names_the_harness(self, fixture_dir, tmp_path):
         presets = self._overlay(
             tmp_path,
-            "harnesses:\n  codex:\n    npm_package: '@openai/codex'\n    argv_prefix: [codex]\n",
+            "harnesses:\n  codex:\n    install_source: '@openai/codex'\n    argv_prefix: [codex]\n",
         )
         with pytest.raises(ValueError, match="codex"):
             self._adapter(fixture_dir, tmp_path, presets)

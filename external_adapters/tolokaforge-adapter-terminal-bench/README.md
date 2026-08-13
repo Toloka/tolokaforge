@@ -269,6 +269,23 @@ version is a YAML edit; a typo (unknown field, missing required field,
 unparseable document) is refused at load naming the file and the harness key,
 so no entry is ever silently dropped.
 
+`install_method` picks how `install-harness.sh` puts the CLI in the image and
+what `install_source` has to be — the pair is validated at load, so a source
+the method cannot consume fails there rather than at `docker build`:
+
+| `install_method` | `install_source`                              | What the layer runs                                              |
+| ---------------- | --------------------------------------------- | ---------------------------------------------------------------- |
+| `npm` (default)  | package name (`@scope/` allowed)               | `npm install -g <source>@<version>`, after installing Node 20 LTS |
+| `pip`            | PyPI distribution name                         | `pip install --no-cache-dir <source>==<version>`                  |
+| `curl-bash`      | installer-script URL                           | downloads it, then `sh <script> --version <version>`              |
+| `binary`         | URL to a `.tar.gz`/`.tgz` or a bare executable | unpacks / installs it into `/usr/local/bin`                       |
+
+The script records what it installed at `/opt/tolokaforge/installed-version.txt`
+inside the layer. `version: "latest"` is accepted by `npm` and `pip`, which can
+be asked afterwards what they resolved; `curl-bash` and `binary` refuse it,
+since neither can report what an installer chose and an unrecorded agent
+version is not a benchmark result.
+
 An operator ships their own entries without an adapter release by pointing
 `harness_presets_file` at a second YAML of the same shape — see
 [ADR 0031](../../docs/adr/0031-external-harness-registry.md) for the decision
@@ -280,8 +297,8 @@ completely and is validated on its own, and a harness it does not declare is
 untouched. A field-wise merge would let an overlay inherit a shipped default it
 never meant to keep — a pinned version, a mandatory permission flag — and
 produce an invocation neither side declared. An overlay may also add a harness
-the adapter does not ship; `install-harness.sh` installs whatever npm package
-and version the entry names. The path may be absolute or relative to the
+the adapter does not ship; `install-harness.sh` installs whatever the entry's
+`install_method` / `install_source` / `version` name. The path may be absolute or relative to the
 working directory; a missing file, malformed YAML, or an invalid entry is
 refused when the adapter is constructed, naming the file and the failing key.
 

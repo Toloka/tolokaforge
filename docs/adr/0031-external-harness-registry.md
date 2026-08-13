@@ -106,7 +106,10 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
   Adding a field requires an ADR update and a snapshot regen; mutation on
   an instance is refused at runtime.
 - Fields (as of this ADR):
-  - `npm_package: str`, `version: str` — installation.
+  - `install_method: Literal["npm", "pip", "curl-bash", "binary"]`,
+    `install_source: str`, `version: str` — installation. The method
+    dispatches inside `install-harness.sh` and constrains the source
+    (package name vs. download URL), validated at load.
   - `argv_prefix`, `argv_suffix`, `flags_pre_permission`, `model_flag`,
     `instruction_channel`, `env_model_vars`, `pre_exec_shell` — argv
     assembly.
@@ -150,7 +153,7 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
   permission-bypass flag, an `env_model_vars` quartet — and produce an
   invocation neither side declared. The overlay may also add a new
   harness the adapter does not ship; `install-harness.sh` installs
-  whatever npm package and version it names.
+  whatever install method, source and version it names.
 - **Per-adapter registry, not global mutation.** `HARNESSES` (the shipped
   default) stays module-level and is what module-level helpers
   (`validate_harness`, `harness_model`, `harness_command`,

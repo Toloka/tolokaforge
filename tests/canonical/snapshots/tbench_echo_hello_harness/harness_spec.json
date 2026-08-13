@@ -21,9 +21,10 @@
     "--verbose",
     "--output-format=stream-json"
   ],
+  "install_method": "npm",
+  "install_source": "@anthropic-ai/claude-code",
   "instruction_channel": "stdin",
   "model_flag": "--model",
-  "npm_package": "@anthropic-ai/claude-code",
   "pre_exec_shell": "",
   "provider_env": {
     "ANTHROPIC_API_KEY": "${secret:OPENROUTER_API_KEY}",

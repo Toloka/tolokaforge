@@ -296,9 +296,10 @@ _FAKE_PROVIDER_KEY = "sk-integration-fake"
 # reward the test had to special-case.
 _INSTALL_STUB = """#!/bin/sh
 set -eu
-# Same contract as the real script: package and pinned version, both required.
-[ -n "${1:-}" ] || { echo "stub: no package" >&2; exit 1; }
-[ -n "${2:-}" ] || { echo "stub: no version" >&2; exit 1; }
+# Same contract as the real script: method, source and pinned version.
+[ -n "${1:-}" ] || { echo "stub: no install method" >&2; exit 1; }
+[ -n "${2:-}" ] || { echo "stub: no install source" >&2; exit 1; }
+[ -n "${3:-}" ] || { echo "stub: no version" >&2; exit 1; }
 cat > /usr/local/bin/claude <<'CLI'
 #!/bin/sh
 echo "harness-stub argv: $*"

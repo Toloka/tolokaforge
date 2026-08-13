@@ -4,7 +4,8 @@
 
 harnesses:
   claude-code:
-    npm_package: "@anthropic-ai/claude-code"
+    install_method: "npm"
+    install_source: "@anthropic-ai/claude-code"
     # Pinned to the version harbor's `bootstrap.sh` resolved when the matrix
     # comparison was baselined — three patch versions ahead of what TF
     # previously pinned. The pin closes the CLI-code delta with harbor while
@@ -54,7 +55,8 @@ harnesses:
       ANTHROPIC_BASE_URL: "https://openrouter.ai/api"
 
   codex:
-    npm_package: "@openai/codex"
+    install_method: "npm"
+    install_source: "@openai/codex"
     version: "0.147.0"
     argv_prefix: ["codex", "exec"]
     # Three mandatory flags. `--dangerously-bypass-approvals-and-sandbox`
@@ -102,7 +104,8 @@ harnesses:
       OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
 
   gemini-cli:
-    npm_package: "@google/gemini-cli"
+    install_method: "npm"
+    install_source: "@google/gemini-cli"
     version: "0.55.1"
     argv_prefix: ["gemini"]
     # `--yolo` accepts every tool call without asking. `--prompt` sits at the
