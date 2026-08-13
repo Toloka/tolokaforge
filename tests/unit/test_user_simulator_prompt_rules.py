@@ -1,10 +1,10 @@
 """The properties the simulator's ``Rules:`` block is required to have.
 
 These assert what the block must say and must not say, not what the template
-looks like: the precedence clause and its position, the two rules authored for
-a named failure and therefore kept word for word, the rule count, the absence
-of every rule dropped for contradicting authored backstories, outcome-based
-termination, and the two conditional rendering seams.
+looks like: the precedence clause and its position, the three rules whose
+wording is itself the protection and are therefore kept word for word, the rule
+count, the absence of every rule dropped for contradicting authored backstories,
+outcome-based termination, and the two conditional rendering seams.
 
 The full rendered body is pinned by digest in
 ``tests/canonical/test_simulator_prompt_generation.py``. That guard says the
@@ -24,8 +24,10 @@ _PRECEDENCE_RULE = (
     "follow the Instruction."
 )
 
-# Authored for a specific observed failure and reproduced here character for
-# character: a reviewer editing either rule has to edit this file too.
+# Reproduced character for character, so a reviewer rewording one in the prompt
+# has to edit this file too: the first two were authored against a specific
+# observed failure, and the third is the only protection on a path that runs
+# without the reply guard.
 _UNSENT_MANDATORY_REPLY_RULE = (
     "If your Instruction still specifies an unsent mandatory reply (e.g. a verbal decline, "
     "confirmation, or acknowledgement you MUST say to the agent), send that reply first. A "
@@ -37,6 +39,10 @@ _NO_RESTART_RULE = (
     "Once the agent has substantively addressed your request, do not re-state or restart the "
     "original opening as if it had not been answered. Send at most one short acknowledgement and "
     "end with '###STOP###'; do not introduce new goals or remediation steps."
+)
+_NEVER_MENTION_THE_FRAME_RULE = (
+    "Never mention that this is a simulation, test, benchmark, prompt, or that you are an "
+    "AI/model."
 )
 
 _DROPPED_RULE_PHRASES = [
@@ -65,11 +71,8 @@ def _rules(prompt: str) -> list[str]:
 
 
 def test_the_instruction_outranks_the_rules_and_says_so_first() -> None:
-    """Position is load-bearing, so this asserts the index, not membership.
-
-    The block the rewrite replaced held the recency position over the task's
-    backstory; a precedence clause has to be read before the rules it governs.
-    """
+    """Position is load-bearing, so this asserts the index, not membership: a
+    precedence clause has to be read before the rules it governs."""
     rules = _rules(_prompt(backstory="Return the blue kettle."))
 
     assert rules[0] == _PRECEDENCE_RULE, (
@@ -80,13 +83,14 @@ def test_the_instruction_outranks_the_rules_and_says_so_first() -> None:
 
 @pytest.mark.parametrize(
     "rule",
-    [_UNSENT_MANDATORY_REPLY_RULE, _NO_RESTART_RULE],
-    ids=["unsent_mandatory_reply", "no_restart_of_the_opening"],
+    [_UNSENT_MANDATORY_REPLY_RULE, _NO_RESTART_RULE, _NEVER_MENTION_THE_FRAME_RULE],
+    ids=["unsent_mandatory_reply", "no_restart_of_the_opening", "never_mention_the_frame"],
 )
-def test_the_rules_authored_for_a_named_failure_are_carried_word_for_word(rule: str) -> None:
+def test_the_rules_whose_wording_is_the_protection_are_carried_word_for_word(rule: str) -> None:
     assert rule in _rules(_prompt()), (
-        "this rule was authored against an observed failure and is reproduced here character "
-        "for character; reword it in the prompt and it stops covering that failure"
+        "this rule's wording is what it protects — the failure it was authored against, or "
+        "the frame it keeps the simulator from naming where no reply guard runs; reword it "
+        "in the prompt and the cover goes with it"
     )
 
 
@@ -142,10 +146,7 @@ def test_a_task_with_no_backstory_renders_no_instruction_label() -> None:
     defaults to ``llm``, and a bundled project ships exactly that shape — a
     bare ``Instruction:`` label above twelve rules that keep referring to it
     would be a regression for every task in it."""
-    prompt = _prompt()
-
-    assert "Instruction:" not in prompt
-    assert len(_rules(prompt)) == 12
+    assert "Instruction:" not in _prompt()
 
 
 def test_a_backstory_is_rendered_once_between_the_opening_line_and_the_rules() -> None:

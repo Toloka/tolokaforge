@@ -45,7 +45,6 @@ def test_llm_simulator_captures_system_prompt() -> None:
     result = sim.reply(context)
     assert result.text  # Mock emits deterministic text.
 
-    # P5 invariant: last_system_prompt populated, non-empty, equals builder.
     captured = sim.last_system_prompt
     assert isinstance(captured, str)
     assert captured, "last_system_prompt must be non-empty after _llm_reply"

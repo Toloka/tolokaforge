@@ -476,9 +476,13 @@ holds the prompt body to the generation it is stamped with.
 ### The prompt body
 
 The system prompt is a fixed opening line, the task's `Instruction` when the
-task supplied a backstory, a twelve-rule `Rules:` block, and the tool-guidance
-block when the simulator holds tool schemas. Four properties of that block are
-contract rather than wording, and
+task supplied a backstory, and a `Rules:` block of twelve rules, with four more
+appended when the simulator holds tool schemas. Those four are the text the
+builder currently renders rather than a contract: they are written in one task
+family's device vocabulary, and
+[#1106](https://github.com/Toloka/tolokaforge/issues/1106) tracks making the
+segment task-declarable. Four properties of the twelve are contract rather than
+wording, and
 [`tests/unit/test_user_simulator_prompt_rules.py`](../tests/unit/test_user_simulator_prompt_rules.py)
 asserts each:
 
@@ -498,13 +502,18 @@ asserts each:
   correctly refuses ends with a gradeable transcript instead of running to
   `max_user_turns`.
 - **The simulator never mentions the frame.** No rule may be added that lets it
-  refer to a simulation, test, benchmark, prompt, or to itself as a model. The
-  delivered export harness runs the simulator without the reply guard, so this
-  rule is the only protection on that path.
+  refer to a simulation, test, benchmark, prompt, or to itself as a model. A
+  harness that runs the simulator outside the trial loop, without the reply
+  guard, has this rule as its only protection on that path.
 
 With no backstory the `Instruction:` label is absent entirely rather than
 rendered empty: `UserSimulatorConfig.backstory` defaults to `None` while `mode`
-defaults to `llm`, and a bundled project ships that shape.
+defaults to `llm`, and a bundled project ships that shape —
+`native_shared_domain` declares `mode: llm` with no `backstory` in its shared
+`domain.yaml`. Those tasks therefore render rules that keep deferring to an
+`Instruction` the prompt does not carry, which is the cheaper of the two wrong
+renderings — a bare `Instruction:` label would tell the model a section exists
+and then leave it empty, while a rule deferring to nothing is merely vacuous.
 
 ### The reply guard
 

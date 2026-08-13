@@ -45,15 +45,20 @@ _PROMPT_DIGESTS: dict[int, dict[str, str]] = {
 }
 
 
+# The rendering names live here alone: every generation's row carries exactly
+# these keys, and a row keyed by anything else names itself in the comparison
+# below rather than passing unread.
+_RENDERINGS: dict[str, UserSimulator] = {
+    "without_tools": UserSimulator(backstory=None, tool_schemas=None),
+    "with_tools": UserSimulator(backstory=None, tool_schemas=[{}]),
+    "with_backstory": UserSimulator(backstory="BACKSTORY", tool_schemas=None),
+}
+
+
 def _rendered_digests() -> dict[str, str]:
-    simulators = {
-        "without_tools": UserSimulator(backstory=None, tool_schemas=None),
-        "with_tools": UserSimulator(backstory=None, tool_schemas=[{}]),
-        "with_backstory": UserSimulator(backstory="BACKSTORY", tool_schemas=None),
-    }
     return {
         name: hashlib.sha256(sim._build_system_prompt().encode("utf-8")).hexdigest()
-        for name, sim in simulators.items()
+        for name, sim in _RENDERINGS.items()
     }
 
 
@@ -78,11 +83,13 @@ def test_the_prompt_body_renders_what_its_generation_recorded() -> None:
 
     expected = _PROMPT_DIGESTS[_GENERATION]
     actual = _rendered_digests()
-    moved = sorted(name for name in actual if expected.get(name) != actual[name])
+    names = set(actual) | set(expected)
+    moved = sorted(name for name in names if expected.get(name) != actual.get(name))
 
     assert actual == expected, (
-        f"UserSimulator._build_system_prompt renders {', '.join(moved)} differently "
-        f"from what generation {_GENERATION} recorded. Either the prompt-body edit was "
+        f"generation {_GENERATION} and UserSimulator._build_system_prompt disagree on "
+        f"{', '.join(moved)} — a name only one of them carries is a manifest row keyed "
+        "by a rendering nothing builds. Either the prompt-body edit was "
         "unintended and belongs reverted, or it opens a new generation — then "
         "Trajectory.simulator_schema_version and a new _PROMPT_DIGESTS row move "
         "together. This manifest is hand-edited: --update-canon does not touch it."
