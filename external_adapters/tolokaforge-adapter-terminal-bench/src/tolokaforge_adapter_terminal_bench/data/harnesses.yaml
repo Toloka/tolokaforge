@@ -157,10 +157,23 @@ harnesses:
     env_model_vars: ["KIMI_MODEL_NAME"]
     # Static hardening: no telemetry, no auto-update, no color codes in
     # the stream. Every knob comes from harbor's kimi_code.py:107-113.
+    # `KIMI_MODEL_MAX_COMPLETION_TOKENS` caps the CLI's output-token
+    # reservation. Kimi's shipped default is the full model context
+    # (~131K on any release we've inspected), which is a marketing-
+    # inspired choice: it reserves the whole window as OUTPUT budget
+    # every request, so the input has to fit in whatever is left after.
+    # A model with a 131K context runs out of headroom before its first
+    # tool call; k2.7-code (262K) still fails on a working task after a
+    # few compaction attempts; only k3 (1M) fits without a cap, at a 5x
+    # per-token price. Setting the cap to 16384 restores a sensible
+    # reservation, lets the cheaper mid-context models complete, and
+    # doesn't lose real capacity — a coding task rarely needs more than
+    # a few thousand output tokens per turn.
     container_env:
       KIMI_DISABLE_TELEMETRY: "true"
       KIMI_CODE_NO_AUTO_UPDATE: "true"
       NO_COLOR: "true"
+      KIMI_MODEL_MAX_COMPLETION_TOKENS: "16384"
     # OpenRouter emits `moonshotai/kimi-k2.5`; the CLI wants bare
     # `kimi-k2.5`. Same shape as codex and gemini-cli.
     strip_vendor_namespace: true
