@@ -42,6 +42,37 @@ default:
     reasoning_via_extra_body: false
 
 presets:
+  # Cohere Command A+ (reached through a LiteLLM gateway's ``azure_ai`` route).
+  #
+  # Cohere's Chat API accepts only REQUIRED and NONE for tool_choice — there is
+  # no AUTO — and its documented behaviour when the parameter is OMITTED is
+  # "the model is free to choose whether to use the specified tools or not".
+  # That is what auto means, so dropping it reproduces the intended semantics
+  # natively rather than working around anything.
+  #
+  # What surfaces the problem is litellm refusing the parameter first
+  # (UnsupportedParamsError: azure_ai does not support parameters:
+  # ['tool_choice']), which reads as "this model cannot call tools" when every
+  # tool probe fails at once.
+  cohere_command_a_plus:
+    match:
+      - "azure_ai/cohere-command-a-plus*"
+      - "*cohere-command-a-plus*"
+    schema_sanitizer: strict
+    response_policy: array_dict_map
+    reasoning_codec: openai
+    params:
+      param_value_rules:
+        tool_choice:
+          auto:
+            action: drop
+            evidence: >-
+              2026-08-01, verified live: identical client, prompt and tools,
+              WITHOUT tool_choice the model returns a correct tool call; WITH
+              tool_choice='auto' the call never leaves litellm
+              (UnsupportedParamsError on the azure_ai route). Cohere's Chat API
+              has no AUTO: https://docs.cohere.com/reference/chat
+
   # Claude 4.8 (Opus + Sonnet) — same adaptive-thinker contract as 4.7:
   # ignores ``reasoning_effort``, requires the canonical litellm ``thinking=``
   # kwarg + explicit ``budget_tokens``. Listed FIRST so first-match-wins
