@@ -545,6 +545,12 @@ PROVIDER_ENV_KEYS: frozenset[str] = frozenset(
         # OpenRouter-shaped variable still fails validate_provider_env_keys.
         "OPENROUTER_API_KEY",
         "OPENROUTER_BASE_URL",
+        # Kimi Code CLI reads ``KIMI_MODEL_API_KEY`` / ``KIMI_MODEL_BASE_URL``
+        # natively (harbor ``gemini_cli.py``-analogous naming for Moonshot's
+        # CLI). No pre-existing OpenRouter alias name covers this — the CLI's
+        # own credentials-loader looks up these two names verbatim.
+        "KIMI_MODEL_API_KEY",
+        "KIMI_MODEL_BASE_URL",
     }
 )
 """Environment variables a harness CLI may be given inside the task container.

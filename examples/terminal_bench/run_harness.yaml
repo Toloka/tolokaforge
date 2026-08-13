@@ -49,14 +49,16 @@ evaluation:
       task_ids: ["fix-billing-holds"]
       agent_harness: "claude-code"
       # Passed to the CLI with any `openrouter/` prefix stripped: the CLI
-      # reaches OpenRouter through ANTHROPIC_BASE_URL below, not through
-      # litellm, and the prefix would make it pick its direct-vendor handler.
+      # reaches OpenRouter through ANTHROPIC_BASE_URL, not through litellm,
+      # and the prefix would make it pick its direct-vendor handler.
       agent_model: "openrouter/anthropic/claude-sonnet-4-6"
-      # Resolved via SecretManager — set these in `.env`, never inline. Values
-      # reach the container through the per-trial compose `.env` only.
-      # The CLI reads ANTHROPIC_API_KEY directly and ANTHROPIC_BASE_URL redirects
-      # its requests to OpenRouter's Anthropic-shaped endpoint. The OpenRouter
-      # key is the API key from claude-code's perspective — no separate token.
-      agent_provider_env:
-        ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
-        ANTHROPIC_BASE_URL: "${secret:ANTHROPIC_BASE_URL}"
+      # `agent_provider_env` is deliberately absent. The shipped
+      # `HarnessSpec.provider_env` for `claude-code` (see
+      # ../../external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml)
+      # supplies the envelope: `ANTHROPIC_API_KEY: ${secret:OPENROUTER_API_KEY}`
+      # + `ANTHROPIC_BASE_URL: https://openrouter.ai/api`. Declaring the block
+      # here would REPLACE the shipped default rather than adding to it — a
+      # run swapping to `agent_harness: codex` or `kimi-code` would then keep
+      # the Anthropic values and 401 on every provider call. Uncomment (and
+      # tailor per your CLI) only if you want to override the shipped
+      # defaults for a specific run.

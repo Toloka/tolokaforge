@@ -178,20 +178,23 @@ harnesses:
     # Pinned as of the research pass. Bump to a newer release with an
     # ADR entry; the artifact records whatever install-harness.sh landed on.
     version: "0.15.14"
-    argv_prefix: ["opencode"]
+    # `run` is opencode's sub-command that reads the instruction, and every
+    # subsequent flag (including `--model`) is parsed as an option of `run`
+    # — putting `--model` between `opencode` and `run` makes the CLI drop
+    # to its usage banner with exit 1. Keep the sub-command adjacent to the
+    # executable in argv_prefix so model_flag inserts after it.
+    argv_prefix: ["opencode", "run"]
     # opencode expects `--model=<name>` (equals form). See the
     # model_flag_style knob just below.
     model_flag: "--model"
     model_flag_style: "equals"
     # Flags before `--permission-*`: none; opencode has no equivalent.
-    # `run` is the sub-command that reads the instruction. `--format=json`
-    # emits the JSON stream we record. `--thinking` matches harbor's
-    # invocation to keep thinking blocks in the stream (parity policy).
-    # `--dangerously-skip-permissions` is the equivalent of claude-code's
-    # bypass. `--` separates the instruction from CLI flags so any
-    # leading dash in the prompt is treated as text, not a flag.
+    # `--format=json` emits the JSON stream we record. `--thinking` matches
+    # harbor's invocation to keep thinking blocks in the stream (parity
+    # policy). `--dangerously-skip-permissions` is the equivalent of
+    # claude-code's bypass. `--` separates the instruction from CLI flags
+    # so any leading dash in the prompt is treated as text, not a flag.
     argv_suffix:
-      - "run"
       - "--format=json"
       - "--thinking"
       - "--dangerously-skip-permissions"
