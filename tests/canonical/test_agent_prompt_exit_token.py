@@ -18,20 +18,16 @@ walk that silently stopped finding packs would otherwise pass over the empty set
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
+from tests.utils.example_packs import EXAMPLES_ROOT, REPO_ROOT, project_layer
 from tolokaforge.adapters._task_loader import load_task_yaml
 from tolokaforge.core.models import TaskConfig
-from tolokaforge.core.project_loader import load_project_config
 from tolokaforge.core.system_prompt import build_system_prompt
 
 pytestmark = pytest.mark.canonical
-
-_REPO = Path(__file__).resolve().parents[2]
-_EXAMPLES = _REPO / "examples"
 
 #: The exit token, spelled here rather than imported: no engine constant holds it for
 #: the agent side, which is the point of this file.
@@ -42,38 +38,15 @@ _SIMULATOR_EXIT_TOKEN = "###STOP###"
 #: ``task_id``. Named, and each one's unloadability re-checked below, so the list
 #: cannot become the place a pack that *does* load is parked.
 _UNLOADABLE_TASK_FILES = (
-    _EXAMPLES / "terminal_bench" / "fix-airline-segmentation" / "task.yaml",
-    _EXAMPLES / "terminal_bench" / "fix-billing-holds" / "task.yaml",
+    EXAMPLES_ROOT / "terminal_bench" / "fix-airline-segmentation" / "task.yaml",
+    EXAMPLES_ROOT / "terminal_bench" / "fix-billing-holds" / "task.yaml",
 )
-
-
-def _enclosing_project(task_yaml: Path) -> Path | None:
-    """The ``project.yaml`` whose layer this task loads under, or ``None``.
-
-    Bounded by the corpus root: an unbounded walk would go on to ask the repository
-    root and the filesystem above it.
-    """
-    for directory in task_yaml.parents:
-        candidate = directory / "project.yaml"
-        if candidate.exists():
-            return candidate
-        if directory == _EXAMPLES:
-            return None
-    return None
-
-
-def _project_layer(task_yaml: Path) -> dict[str, Any] | None:
-    """The ``task_defaults`` layer beneath this task, or ``None`` for no project."""
-    project_yaml = _enclosing_project(task_yaml)
-    if project_yaml is None:
-        return None
-    return load_project_config(project_yaml).task_defaults.model_dump(exclude_defaults=True) or None
 
 
 def _load(task_yaml: Path) -> tuple[TaskConfig, Path] | None:
     """The task and its effective directory, or ``None`` when nothing loads."""
     try:
-        return load_task_yaml(task_yaml, project_task_defaults=_project_layer(task_yaml))
+        return load_task_yaml(task_yaml, project_task_defaults=project_layer(task_yaml))
     except (ValidationError, RuntimeError):
         return None
 
@@ -82,7 +55,7 @@ def _load(task_yaml: Path) -> tuple[TaskConfig, Path] | None:
 def agent_prompts() -> dict[Path, str]:
     """The agent system prompt every loadable example pack builds."""
     prompts: dict[Path, str] = {}
-    for task_yaml in sorted(_EXAMPLES.rglob("task.yaml")):
+    for task_yaml in sorted(EXAMPLES_ROOT.rglob("task.yaml")):
         loaded = _load(task_yaml)
         if loaded is None:
             continue
@@ -105,7 +78,7 @@ def test_the_driven_packs_are_the_example_corpus_minus_two_unloadable_files(
     that does load is a pack hidden from the guard, and a task file dropped on
     neither ground would leave the walk measuring an unstated subset.
     """
-    discovered = set(_EXAMPLES.rglob("task.yaml"))
+    discovered = set(EXAMPLES_ROOT.rglob("task.yaml"))
 
     assert set(agent_prompts) == discovered - set(_UNLOADABLE_TASK_FILES)
     for task_yaml in _UNLOADABLE_TASK_FILES:
@@ -126,7 +99,7 @@ def test_no_example_pack_builds_an_agent_prompt_carrying_the_exit_token(
     like something it can announce in prose.
     """
     carrying = sorted(
-        str(task_yaml.relative_to(_REPO))
+        str(task_yaml.relative_to(REPO_ROOT))
         for task_yaml, prompt in agent_prompts.items()
         if _SIMULATOR_EXIT_TOKEN in prompt
     )

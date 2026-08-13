@@ -181,7 +181,7 @@ def test_progress_after_success(
 
     1. PASS if the model returns text only (no tool calls) — the
        follow-up question is informational and can be answered
-       conversationally. ``"###STOP###"`` / acknowledgment is fine.
+       conversationally.
     2. PASS if the model calls ``get_case_status`` (with ``case_id``
        matching the synthesised success or any plausible variant) —
        legitimate advancement to the case-status path.

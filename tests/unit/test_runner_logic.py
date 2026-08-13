@@ -330,8 +330,9 @@ class TestAgentTextNeverTerminates:
             "System", "Where is my refund?"
         )
 
-        tool_exec.execute.assert_called_once_with("lookup_order", {"id": "42"}, call_id="tc1")
-        assert [record.tool_name for record in traj.tool_log] == ["lookup_order"]
+        assert [(record.tool_name, record.arguments) for record in traj.tool_log] == [
+            ("lookup_order", {"id": "42"})
+        ]
         assert traj.termination_reason == TerminationReason.USER_STOP
 
 
@@ -345,7 +346,7 @@ class TestTrialRunnerRun:
     """Tests for the main run() method."""
 
     def test_agent_response_then_user_stop(self) -> None:
-        """Agent responds without a completion marker, user sends ###STOP###."""
+        """Agent responds with plain text; the user closes the dialogue."""
         agent = _make_agent_client(
             [
                 GenerationResult(

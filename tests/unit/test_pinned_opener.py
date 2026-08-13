@@ -102,7 +102,7 @@ class TestPinnedOpener:
         assert simulator.dispatches == 1
         assert trajectory.first_user_message_source is FirstUserMessageSource.PINNED
 
-    def test_unset_opener_is_generated_by_one_simulator_dispatch(self) -> None:
+    def test_unset_opener_is_generated_by_a_simulator_dispatch(self) -> None:
         task = TaskConfig(task_id="unset-opener-task", description="d")
         simulator = _CountingSimulator(GENERATED_OPENER)
 

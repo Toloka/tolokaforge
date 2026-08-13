@@ -301,6 +301,11 @@ and no counterparty exists to ask it for more — the `agent_only` shape (see
 is closed by its user, so nothing an agent writes ends one: the trial runs until
 the simulator stops it or the turn budget does.
 
+That makes the exit condition load-bearing for cost as well as for grading. A
+conversational pack whose exit condition never fires now runs to `max_turns` every
+time — check the termination-reason distribution on a pack's first calibration
+run.
+
 ## Browser vs Mobile Tool
 
 Use `browser` for full web browsing tasks (URL navigation, search). Use `mobile` for phone app tasks (no URL bar, mobile viewport).

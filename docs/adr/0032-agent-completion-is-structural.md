@@ -26,9 +26,10 @@ An agent therefore met that check only by coincidence — most plausibly by quot
 instruction back at the user ("reply with `###STOP###` and I'll close the ticket"),
 which ended the trial the agent was still working. Because the termination policy runs
 before tool execution, a tool call sharing that turn was dropped unexecuted and
-unrecorded. Under `agent_only` the marker contributed nothing either:
-`AgentOnlyTurnPolicy` already terminates on the first tool-call-free agent turn, which
-is strictly earlier than any marker could fire.
+unrecorded — under either interaction mode, since that policy is the runner's, not the
+turn policy's. Under `agent_only` the marker's only reachable effect was that drop: a
+tool-call-free turn is already terminated by `AgentOnlyTurnPolicy` under the same
+reason, and a tool-call turn was cut short with its call thrown away.
 
 So the enum member documented as "agent signalled task completion" described something
 no shipped configuration could produce, while the code claiming to produce it ended
@@ -66,12 +67,12 @@ We adopt **Option 3**. `TerminationReason.AGENT_DONE` means exactly one thing:
 > The agent had no further action to take, and no counterparty could ask it for more.
 
 That condition is decided by the component that owns turn choreography, never by
-reading assistant prose. It has exactly two producers:
-
-- `AgentOnlyTurnPolicy.next_actor` — the agent took a turn with no tool calls, and the
-  shape has no user party. Definitional, and already implemented.
-- `_SubmitReportTermination` in `tolokaforge/core/grading/judge.py` — the judge called
-  `submit_report`, an explicit tool call.
+reading assistant prose. `AgentOnlyTurnPolicy.next_actor` is the only producer that
+reaches a trajectory: the agent took a turn with no tool calls, and the shape has no
+user party. Definitional, and already implemented. The judge loop terminates on
+`submit_report` under the same reason internally (`_SubmitReportTermination` in
+`tolokaforge/core/grading/judge.py`), which no consumer reads — a `JudgeResult` carries
+no termination field, and the judge's success path discards the `LoopOutcome`.
 
 `TrialRunner._is_done` and `_AGENT_DONE_MARKERS` are deleted; the agent's termination
 policy keeps stuck detection and returns `None` otherwise. Under `conversational` the
@@ -89,7 +90,7 @@ agent prompt and fails if any carries the token.
 
 - The signal cannot be forged by quoting, cannot be missed for want of an instruction,
   and cannot swallow a tool call.
-- `AGENT_DONE`'s two producers are both structural or explicit, so the enum member's
+- The one producer a trajectory can carry is structural, so the enum member's
   documented meaning is the one the code produces.
 - The turn policy is the single owner of "who speaks next, and whether anyone can".
 
@@ -102,6 +103,15 @@ agent prompt and fails if any carries the token.
 - **Conversational difficulty is re-baselined.** A trial that used to end early on a
   coincidental token match now runs on, taking more turns and more tokens; it ends
   `user_stop` or `max_turns`, both already graded.
+- **`agent_only` is not untouched either, though no shipped run moves.** A text-only
+  turn behaves exactly as before — the structural path terminates it under the same
+  reason. A turn carrying *both* a tool call and the token used to terminate with the
+  call dropped; that call now executes, is recorded, and the agent gets the turn its
+  results earn, so such a trial ends a turn or more later. Driven both ways:
+  before, `agent_done` with an empty tool log after one assistant turn; after,
+  `agent_done` with the call recorded `success` after two. No `task.yaml` in the tree
+  sets `interaction_mode: agent_only`, so this is a change to a shape nothing ships
+  yet.
 - **`agent_only` still calls a do-nothing trial `AGENT_DONE`.** An agent whose first
   turn is text-only terminates with zero tool calls. `AGENT_DONE` remains truthful
   about "no further action" and silent about "any action at all"; the activity lower

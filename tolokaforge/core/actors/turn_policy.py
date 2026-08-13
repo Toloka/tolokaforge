@@ -26,9 +26,9 @@ agent turn that emits no tool calls. The sibling
 migration-bench-style tasks: the caller must supply ``initial_user_message``
 (fail-loud otherwise), and no user turn is ever dispatched — the agent runs
 until it takes a turn without calling a tool, or to ``max_turns`` or
-``episode_timeout_s``. Both are
-registered via the ``tolokaforge.turn_policies`` entry-point group and
-looked up by ``TaskConfig.interaction_mode``.
+``episode_timeout_s``. Both are registered via the
+``tolokaforge.turn_policies`` entry-point group and looked up by
+``TaskConfig.interaction_mode``.
 """
 
 from __future__ import annotations
@@ -107,14 +107,14 @@ class TurnPolicy(Protocol):
     * :class:`ActorTurn` — dispatch this actor's ``reply`` and append
       the resulting message. The historical two-party path.
     * :class:`TerminationDecision` — end the trial with the given reason.
-      Used by the agent-monologue shape when the agent falls silent
-      (a turn with no tool calls): the API-level
-      constraint that a conversation must end with a ``user`` message
-      makes a follow-up agent turn illegal on some providers
-      (Anthropic ``opus-4-6`` rejects the prefill), and — as importantly
-      — an agent that emits no tool call has no further action to take.
-      Terminating here matches the natural MCP-CLI shape where a
-      text-only assistant turn is the last turn.
+      Used by the agent-monologue shape when the agent falls silent (a
+      turn with no tool calls): the API-level constraint that a
+      conversation must end with a ``user`` message makes a follow-up
+      agent turn illegal on some providers (Anthropic ``opus-4-6``
+      rejects the prefill), and — as importantly — an agent that emits
+      no tool call has no further action to take. Terminating here
+      matches the natural MCP-CLI shape where a text-only assistant
+      turn is the last turn.
     * ``None`` — no actor speaks this iteration; the loop advances to
       the next agent turn. Reserved for future policy variants that
       may want to skip a turn without terminating; not exercised by
