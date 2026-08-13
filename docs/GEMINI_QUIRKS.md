@@ -154,9 +154,10 @@ on the `providers.gemini` overlay. Per AGENTS.md rule #1, the harness
 
 ```
 ValueError: ReasoningConfig(effort_hint='medium') is declared unsupported
-for this provider+model combination (unsupported_effort_levels=['medium']).
-Use one of ['low', 'high', 'xhigh'], or route through a transport that
-supports this effort level (e.g. OpenRouter rather than the direct provider).
+for this provider+model combination (refused: ['medium']). Evidence:
+declared via the unsupported_effort_levels shorthand. Use one of
+['low', 'high', 'xhigh'], or route through a transport that supports this
+effort level (e.g. OpenRouter rather than the direct provider).
 ```
 
 ### 1.6 Nullable + optional Pydantic fields are treated as opt-in

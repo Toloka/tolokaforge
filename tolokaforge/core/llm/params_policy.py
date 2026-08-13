@@ -56,7 +56,8 @@ See [`docs/LLM_LAYER.md`](../../../docs/LLM_LAYER.md) § ``params_policy``.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar
+from dataclasses import dataclass
+from typing import Any, ClassVar, Final
 
 from tolokaforge.core.llm.reasoning import ReasoningConfig
 
@@ -104,6 +105,19 @@ class ParamsPolicy(ABC):
         reasoning: ReasoningConfig | None,
     ) -> dict[str, Any]: ...
 
+    def rule_for(self, param: str, value: str | None) -> str | None:
+        """Declared action for ``value`` of ``param``; ``None`` when unruled.
+
+        Concrete on the base rather than abstract: ``LLMClient`` asks every
+        params policy about ``tool_choice``, and a policy that declares no
+        value gaps should not have to implement a method to say so.
+        """
+        return None
+
+    def rule_evidence(self, param: str, value: str | None) -> str | None:
+        """Evidence behind a declared value gap; ``None`` when unruled."""
+        return None
+
 
 #: Deprecated alias for :class:`ParamsPolicy`. Kept as a class-identity
 #: alias (``ParamPolicy is ParamsPolicy`` remains true) so
@@ -132,6 +146,118 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+@dataclass(frozen=True)
+class _ValueRule:
+    """One declared value gap: what to do, and the evidence it rests on."""
+
+    action: str
+    evidence: str
+
+
+def _normalise_value_rules(
+    raw: dict[str, dict[str, dict[str, str]]] | None,
+) -> dict[tuple[str, str], _ValueRule]:
+    """Validate and flatten a ``param_value_rules`` block.
+
+    Every rejection here is a preset that would otherwise look like it does
+    something and quietly do nothing, so all of them raise rather than warn.
+    """
+    rules: dict[tuple[str, str], _ValueRule] = {}
+    if raw is not None and not isinstance(raw, dict):
+        raise ValueError(
+            f"param_value_rules: expected a mapping of parameter -> value -> "
+            f"rule, got {type(raw).__name__}."
+        )
+    for param, values in (raw or {}).items():
+        if param not in SUPPORTED_ACTIONS:
+            raise ValueError(
+                f"param_value_rules: {param!r} is not a rulable parameter "
+                f"(known: {sorted(SUPPORTED_ACTIONS)}). A rule on a parameter "
+                f"the engine never sends would silently do nothing."
+            )
+        if not isinstance(values, dict):
+            raise ValueError(
+                f"param_value_rules[{param!r}]: expected a mapping of "
+                f"value -> rule, got {type(values).__name__}."
+            )
+        for value, spec in values.items():
+            if not isinstance(spec, dict):
+                raise ValueError(
+                    f"param_value_rules[{param!r}][{value!r}]: expected a "
+                    f"mapping with 'action' and 'evidence', got "
+                    f"{type(spec).__name__}."
+                )
+            action = str(spec.get("action", "")).lower()
+            # Per-parameter, not global: an action is legal only where a consult
+            # site implements it. A globally-valid action would type-check and
+            # then do nothing wherever nobody wired it up.
+            if action not in SUPPORTED_ACTIONS[param]:
+                raise ValueError(
+                    f"param_value_rules[{param!r}][{value!r}]: action "
+                    f"{spec.get('action')!r} is not implemented for {param!r} "
+                    f"(supported: {sorted(SUPPORTED_ACTIONS[param])}). An action "
+                    f"with no consult site would be accepted here and then "
+                    f"silently ignored on the wire."
+                )
+            evidence = str(spec.get("evidence", "")).strip()
+            if not evidence:
+                raise ValueError(
+                    f"param_value_rules[{param!r}][{value!r}]: 'evidence' is "
+                    f"required. A value gap is a claim about a provider on a "
+                    f"date; without the claim written down nobody can tell "
+                    f"later whether it still holds."
+                )
+            normalised_value = str(value).lower()
+            if action == "drop" and OMISSION_EQUIVALENT_VALUE.get(param) != normalised_value:
+                equivalent = OMISSION_EQUIVALENT_VALUE.get(param)
+                detail = (
+                    f"only {equivalent!r} may be dropped for {param!r}"
+                    if equivalent
+                    else f"no value of {param!r} may be dropped"
+                )
+                raise ValueError(
+                    f"param_value_rules[{param!r}][{value!r}]: action 'drop' is "
+                    f"refused because omitting {param!r} is not documented as "
+                    f"equivalent to {value!r} ({detail}). Dropping it would "
+                    f"change what was asked without saying so; use 'reject'."
+                )
+            rules[(param, normalised_value)] = _ValueRule(action=action, evidence=evidence)
+    return rules
+
+
+#: The declared contract, as ONE table: which parameters may carry a rule, and
+#: which actions are actually implemented for each. Three separate constants
+#: (rulable params, valid actions, drop-legality) could describe a cell nobody
+#: had wired up — ``tool_choice: reject`` type-checked, constructed cleanly and
+#: then did nothing, because the client only ever tested for ``drop``. A single
+#: table cannot express an unimplemented cell.
+#:
+#: An action appears here only when a consult site exists:
+#:
+#: * ``reasoning_effort: reject`` — ``GenerationParams._emit_effort_kwargs``
+#:   raises before the request is built. ``drop`` is absent on purpose: omitting
+#:   the parameter yields the provider's default budget, not the level asked
+#:   for, so dropping it would change the measurement without saying so.
+#: * ``tool_choice: drop`` — ``LLMClient._build_kwargs`` omits the parameter.
+#:   Legal because omission is how the OpenAI-shaped envelope says "the model
+#:   decides", which is what ``auto`` names; Cohere's Chat API has no ``AUTO``
+#:   at all and documents omission as its equivalent
+#:   (https://docs.cohere.com/reference/chat). ``reject`` is absent because no
+#:   site raises on it — add the site first, then the cell.
+#:
+#: Adding a parameter means adding a consult site wherever it is attached, so
+#: this table stays honest by construction: an entry without a site is a cell
+#: that silently does nothing, which is what it exists to prevent.
+SUPPORTED_ACTIONS: Final[dict[str, frozenset[str]]] = {
+    "reasoning_effort": frozenset({"reject"}),
+    "tool_choice": frozenset({"drop"}),
+}
+
+#: Values whose omission the provider documents as equivalent to sending them.
+#: Consulted only for ``drop``: dropping any other value changes the request.
+OMISSION_EQUIVALENT_VALUE: Final[dict[str, str]] = {"tool_choice": "auto"}
+
+
 class GenerationParams(ParamsPolicy):
     """Adapts generation kwargs based on model constraints.
 
@@ -148,6 +274,7 @@ class GenerationParams(ParamsPolicy):
             "drop_sampling_when_thinking",
             "reasoning_budget_default",
             "unsupported_effort_levels",
+            "param_value_rules",
         }
     )
 
@@ -160,6 +287,7 @@ class GenerationParams(ParamsPolicy):
         drop_sampling_when_thinking: bool = False,
         reasoning_budget_default: int | None = None,
         unsupported_effort_levels: frozenset[str] | list[str] | tuple[str, ...] | None = None,
+        param_value_rules: dict[str, dict[str, dict[str, str]]] | None = None,
     ):
         self._fixed_temperature = fixed_temperature
         self._supports_seed = supports_seed
@@ -181,6 +309,23 @@ class GenerationParams(ParamsPolicy):
         self._unsupported_effort_levels: frozenset[str] = frozenset(
             e.lower() for e in (unsupported_effort_levels or ())
         )
+        # ``param_value_rules`` is the general form of the line above: "this
+        # provider or model will not take value V of parameter P, and here is
+        # what to do about it". ``unsupported_effort_levels`` is the same
+        # statement for one parameter, kept working and folded in below so
+        # shipped presets and operator overlays do not have to move at once.
+        self._param_value_rules: dict[tuple[str, str], _ValueRule] = _normalise_value_rules(
+            param_value_rules
+        )
+        for level in self._unsupported_effort_levels:
+            key = ("reasoning_effort", level)
+            self._param_value_rules.setdefault(
+                key,
+                _ValueRule(
+                    action="reject",
+                    evidence="declared via the unsupported_effort_levels shorthand",
+                ),
+            )
 
     def adapt(
         self,
@@ -278,25 +423,43 @@ class GenerationParams(ParamsPolicy):
             )
         return budget
 
+    def rule_for(self, param: str, value: str | None) -> str | None:
+        """The declared action for ``value`` of ``param``, or ``None``.
+
+        Read by every site that attaches a rulable parameter — the effort path
+        below, and ``LLMClient._build_kwargs`` for ``tool_choice``. Returning
+        the action rather than acting keeps the decision where the parameter is
+        known: only the caller can say what refusing or omitting means there.
+        """
+        if value is None:
+            return None
+        rule = self._param_value_rules.get((param, value.lower()))
+        return rule.action if rule else None
+
+    def rule_evidence(self, param: str, value: str | None) -> str | None:
+        """The evidence recorded for a declared value gap, for error messages."""
+        if value is None:
+            return None
+        rule = self._param_value_rules.get((param, value.lower()))
+        return rule.evidence if rule else None
+
     def _emit_effort_kwargs(self, kwargs: dict[str, Any], effort_hint: str | None) -> None:
         """Emit provider-flavoured effort kwargs for adaptive / fallback modes."""
         if effort_hint is None:
             return
         effort = effort_hint.lower()
-        if effort in self._unsupported_effort_levels:
-            supported = (
-                ("low", "medium", "high", "xhigh")
-                if not self._unsupported_effort_levels
-                else tuple(
-                    e
-                    for e in ("low", "medium", "high", "xhigh")
-                    if e not in self._unsupported_effort_levels
-                )
-            )
+        if self.rule_for("reasoning_effort", effort) == "reject":
+            # Derive both the refused set and the remaining choices from the
+            # rules, not from the legacy field: a rejection declared through
+            # `param_value_rules` would otherwise report an empty
+            # `unsupported_effort_levels` and read as a bug in the engine.
+            refused = {v for (param, v) in self._param_value_rules if param == "reasoning_effort"}
+            supported = tuple(e for e in ("low", "medium", "high", "xhigh") if e not in refused)
+            evidence = self.rule_evidence("reasoning_effort", effort)
             raise ValueError(
                 f"ReasoningConfig(effort_hint={effort!r}) is declared "
                 f"unsupported for this provider+model combination "
-                f"(unsupported_effort_levels={sorted(self._unsupported_effort_levels)}). "
+                f"(refused: {sorted(refused)}). Evidence: {evidence}. "
                 f"Use one of {list(supported)!r}, or route through a transport "
                 f"that supports this effort level (e.g. OpenRouter rather than "
                 f"the direct provider, when available). See "

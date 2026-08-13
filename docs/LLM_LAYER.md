@@ -1113,6 +1113,72 @@ that silently drop `additionalProperties` parameters).
 
 ## `params_policy`
 
+### Declaring a value a route will not take: `param_value_rules`
+
+Providers refuse individual *values* of parameters we send, for two unrelated
+reasons, and the response differs by reason:
+
+```yaml
+params:
+  param_value_rules:
+    tool_choice:
+      auto:
+        action: drop
+        evidence: "2026-08-12, Cohere Chat API: no AUTO; omission is its documented equal"
+    reasoning_effort:
+      medium:
+        action: reject
+        evidence: "2026-05-21, litellm 1.83.14: empty response with tool calls, BerriAI/litellm#19403"
+```
+
+- **`drop`** omits the parameter. Legal *only* for the one value whose omission
+  the provider documents as equivalent to sending it — `OMISSION_EQUIVALENT_VALUE`
+  in [`params_policy.py`](../tolokaforge/core/llm/params_policy.py) is that list,
+  and today it holds exactly `tool_choice: auto`. Dropping anything else changes
+  what the model was asked to do, so it is refused at construction.
+
+Which actions exist is **per parameter**, declared in one table,
+`SUPPORTED_ACTIONS`. An action appears there only when a consult site actually
+implements it: `reasoning_effort` supports `reject` (the effort path raises),
+`tool_choice` supports `drop` (the client omits it). Declaring a combination
+with no site — `tool_choice: reject`, say — is refused at construction rather
+than accepted and silently ignored on the wire. Adding a parameter therefore
+means adding its consult site first, then its row.
+
+Rules merge per parameter and per value across `default:` → preset →
+`providers:` → operator overlay. A shallow merge would let an overlay declaring
+one rule delete every other rule, disarming a guard nobody touched.
+- **`reject`** refuses to build the request and names the remaining choices plus
+  the evidence. This is the right answer when there is no equivalent, e.g. a
+  transport defect: the caller picks the workaround (another value, another
+  route, or waiting for the upstream fix).
+- There is deliberately **no `override`**. Sending a different value than asked
+  always changes the measurement, and a run that silently deviates produces a
+  leaderboard row that looks comparable and is not. If a deviation is wanted it
+  belongs in the operator's run config, where it is recorded and can be
+  footnoted.
+
+`evidence` is required. A value gap is a claim about a provider on a date; the
+Gemini entry above is already conditional on an upstream bug being open, and
+without the date nobody can tell when to re-check it.
+
+The block is legal wherever a `params:` block is, which is what makes it
+reusable across layers: under `providers:` it describes a **route** (the Gemini
+entry — the OpenRouter route is unaffected and carries no rule), under a preset
+it describes a **model** (the Cohere entry — true on every route because it is
+the vendor's API contract). Choosing the layer is choosing what the claim is
+about.
+
+`unsupported_effort_levels: ["medium"]` is the older shorthand for a
+`reasoning_effort` rejection, and is what the shipped Gemini declaration still
+uses. It works and folds into the same rules, so shipped overlays keep running;
+new declarations should use `param_value_rules` so the evidence has somewhere
+to live. Migrating the bundled declaration is deliberately a separate change:
+it would make the models wheel require an engine that understands the new key,
+which means raising `minimum_engine_version` in the same release.
+
+### Base class
+
 Generation-parameter adaptation. `ParamsPolicy` is the abstract base class;
 every subclass declares `KNOWN_KEYS: ClassVar[frozenset[str]]` enumerating
 the construction kwargs it accepts. The overlay validator reads the union of

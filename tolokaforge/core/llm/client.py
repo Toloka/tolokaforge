@@ -1766,7 +1766,15 @@ class LLMClient:
 
         if tools:
             kwargs["tools"] = tools
-            if tool_choice:
+            # A preset or provider may declare that this route has no word for
+            # the value we are about to send. `drop` is only ever legal where
+            # omission is the provider's documented spelling of that same value
+            # (see params_policy.OMISSION_EQUIVALENT_VALUE), so suppressing it
+            # changes nothing about what the model was asked to do — while
+            # sending it would fail the call outright on a route that refuses
+            # the parameter.
+            dropped = self.capabilities.params_policy.rule_for("tool_choice", tool_choice) == "drop"
+            if tool_choice and not dropped:
                 kwargs["tool_choice"] = tool_choice
 
         kwargs["messages"] = self._convert_messages(system, messages)
