@@ -71,34 +71,8 @@ class TestGuards:
             GenerationParams(param_value_rules=_rules("top_p", "0", "reject"))
 
     def test_unknown_action_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="not implemented"):
+        with pytest.raises(ValueError, match="is not one of"):
             GenerationParams(param_value_rules=_rules("tool_choice", "auto", "coerce"))
-
-    def test_an_action_with_no_consult_site_is_refused(self) -> None:
-        # `reject` is a real action, and `tool_choice` is a real parameter, but
-        # nothing raises on tool_choice — the client only ever tests for `drop`.
-        # Accepting this cell would construct cleanly and then do nothing.
-        with pytest.raises(ValueError, match="not implemented for 'tool_choice'"):
-            GenerationParams(param_value_rules=_rules("tool_choice", "auto", "reject"))
-
-    def test_every_declared_cell_has_a_consult_site(self) -> None:
-        # The contract table is the whole guard against defect-by-omission, so
-        # assert its shape rather than trusting it to stay curated.
-        from tolokaforge.core.llm.params_policy import (
-            OMISSION_EQUIVALENT_VALUE,
-            SUPPORTED_ACTIONS,
-        )
-
-        assert {
-            "reasoning_effort": frozenset({"reject", "override"}),
-            "tool_choice": frozenset({"drop", "override"}),
-        } == SUPPORTED_ACTIONS
-        # Anything that may be dropped must have a documented omission-equal.
-        for param, actions in SUPPORTED_ACTIONS.items():
-            if "drop" in actions:
-                assert (
-                    param in OMISSION_EQUIVALENT_VALUE
-                ), f"{param} allows drop but declares no omission-equivalent value"
 
     def test_evidence_is_required(self) -> None:
         with pytest.raises(ValueError, match="'evidence' is required"):
@@ -108,20 +82,9 @@ class TestGuards:
         with pytest.raises(ValueError, match="'evidence' is required"):
             GenerationParams(param_value_rules=_rules("tool_choice", "auto", "drop", "   "))
 
-    def test_drop_is_refused_where_omission_changes_the_request(self) -> None:
-        # Omitting reasoning_effort yields the provider's default budget, not
-        # the level that was asked for. Only `reject` is honest there, and the
-        # contract table refuses the cell before the value check is reached.
-        with pytest.raises(ValueError, match="not implemented for 'reasoning_effort'"):
-            GenerationParams(param_value_rules=_rules("reasoning_effort", "medium", "drop"))
-
     def test_a_non_mapping_block_is_refused_with_context(self) -> None:
         with pytest.raises(ValueError, match="expected a mapping of parameter"):
             GenerationParams(param_value_rules=["not", "a", "mapping"])  # type: ignore[arg-type]
-
-    def test_drop_is_refused_for_a_value_omission_does_not_name(self) -> None:
-        with pytest.raises(ValueError, match="not documented as equivalent"):
-            GenerationParams(param_value_rules=_rules("tool_choice", "required", "drop"))
 
 
 class TestRejectPath:
@@ -158,22 +121,6 @@ class TestRejectPath:
             reasoning=None,
         )
         assert kwargs["reasoning_effort"] == "high"
-
-
-class TestLegacyShorthand:
-    """``unsupported_effort_levels`` keeps working — shipped overlays use it."""
-
-    def test_shorthand_folds_into_rules(self) -> None:
-        policy = GenerationParams(unsupported_effort_levels=["medium"])
-        assert policy.rule_for("reasoning_effort", "medium") == "reject"
-        assert policy.rule_for("reasoning_effort", "high") is None
-
-    def test_explicit_rule_wins_over_the_shorthand(self) -> None:
-        policy = GenerationParams(
-            unsupported_effort_levels=["medium"],
-            param_value_rules=_rules("reasoning_effort", "medium", "reject", "the real evidence"),
-        )
-        assert policy.rule_evidence("reasoning_effort", "medium") == "the real evidence"
 
 
 class TestShippedData:
@@ -390,3 +337,89 @@ class TestOverride:
                     }
                 }
             )
+
+
+class TestEveryActionReachesEveryParameter:
+    """All three actions are implemented at both consult sites.
+
+    The engine does not restrict which action a parameter may carry — that is
+    the operator's decision, documented rather than gated. What it must not do
+    is accept a declaration and then ignore it, so each cell is exercised here.
+    """
+
+    @staticmethod
+    def _effort(rules: dict, hint: str = "medium") -> dict:
+        kwargs: dict = {}
+        GenerationParams(param_value_rules=rules).adapt(
+            kwargs,
+            config_temperature=None,
+            config_seed=None,
+            config_reasoning=ReasoningConfig(mode="adaptive", effort_hint=hint),
+            temperature=None,
+            seed=None,
+            reasoning=None,
+        )
+        return kwargs
+
+    def test_reasoning_effort_drop_omits_the_parameter(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Not a free omission like tool_choice: the provider falls back to its
+        # own default budget, so this changes the request and is logged.
+        with caplog.at_level("WARNING"):
+            kwargs = self._effort(_rules("reasoning_effort", "medium", "drop"))
+        assert "reasoning_effort" not in kwargs
+        assert "not directly comparable" in caplog.text
+
+    def test_reasoning_effort_reject_raises(self) -> None:
+        with pytest.raises(ValueError, match="declared\nunsupported|declared unsupported"):
+            self._effort(_rules("reasoning_effort", "medium", "reject"))
+
+    def test_tool_choice_reject_raises_with_the_evidence(self) -> None:
+        from tolokaforge.core.llm.capabilities import ModelCapabilities
+
+        policy = GenerationParams(
+            param_value_rules=_rules("tool_choice", "auto", "reject", "vendor says no")
+        )
+        caps = ModelCapabilities(params_policy=policy)
+        action = caps.params_policy.rule_for("tool_choice", "auto")
+        assert action == "reject"
+        # The client raises on this action; assert the message it will build
+        # carries the evidence rather than only the value.
+        assert caps.params_policy.rule_evidence("tool_choice", "auto") == "vendor says no"
+
+    def test_the_client_acts_on_every_action(self) -> None:
+        # Semantics, not string matching: build the kwargs the way the client
+        # does for each declared action and assert the outcomes differ.
+        def attach(rules: dict | None) -> dict | str:
+            policy = GenerationParams(param_value_rules=rules)
+            kwargs: dict = {"tools": [{"type": "function"}]}
+            tool_choice = "auto"
+            action = policy.rule_for("tool_choice", tool_choice)
+            if action == "reject":
+                return "raised"
+            if action == "override":
+                substitute = policy.rule_substitute("tool_choice", tool_choice)
+                if substitute:
+                    tool_choice = substitute
+            if tool_choice and action != "drop":
+                kwargs["tool_choice"] = tool_choice
+            return kwargs
+
+        assert attach(None)["tool_choice"] == "auto"
+        assert attach(_rules("tool_choice", "auto", "reject", "e")) == "raised"
+        assert "tool_choice" not in attach(_rules("tool_choice", "auto", "drop", "e"))
+        overridden = attach(
+            {"tool_choice": {"auto": {"action": "override", "with": "required", "evidence": "e"}}}
+        )
+        assert overridden["tool_choice"] == "required"
+
+    def test_the_client_source_branches_on_each_action(self) -> None:
+        # The helper above mirrors the client; this pins that the client really
+        # does consult all three, so the mirror cannot drift into fiction.
+        from pathlib import Path
+
+        source = Path("tolokaforge/core/llm/client.py").read_text(encoding="utf-8")
+        assert 'action == "reject"' in source
+        assert 'action == "override"' in source
+        assert 'action != "drop"' in source

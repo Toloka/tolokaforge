@@ -177,11 +177,11 @@ def _normalise_value_rules(
             f"rule, got {type(raw).__name__}."
         )
     for param, values in (raw or {}).items():
-        if param not in SUPPORTED_ACTIONS:
+        if param not in RULABLE_PARAMS:
             raise ValueError(
                 f"param_value_rules: {param!r} is not a rulable parameter "
-                f"(known: {sorted(SUPPORTED_ACTIONS)}). A rule on a parameter "
-                f"the engine never sends would silently do nothing."
+                f"(known: {sorted(RULABLE_PARAMS)}). Nothing would ever read a "
+                f"rule on it, so it would be accepted and silently do nothing."
             )
         if not isinstance(values, dict):
             raise ValueError(
@@ -196,16 +196,11 @@ def _normalise_value_rules(
                     f"{type(spec).__name__}."
                 )
             action = str(spec.get("action", "")).lower()
-            # Per-parameter, not global: an action is legal only where a consult
-            # site implements it. A globally-valid action would type-check and
-            # then do nothing wherever nobody wired it up.
-            if action not in SUPPORTED_ACTIONS[param]:
+            if action not in VALID_RULE_ACTIONS:
                 raise ValueError(
                     f"param_value_rules[{param!r}][{value!r}]: action "
-                    f"{spec.get('action')!r} is not implemented for {param!r} "
-                    f"(supported: {sorted(SUPPORTED_ACTIONS[param])}). An action "
-                    f"with no consult site would be accepted here and then "
-                    f"silently ignored on the wire."
+                    f"{spec.get('action')!r} is not one of "
+                    f"{sorted(VALID_RULE_ACTIONS)}."
                 )
             evidence = str(spec.get("evidence", "")).strip()
             if not evidence:
@@ -235,19 +230,6 @@ def _normalise_value_rules(
                     f"param_value_rules[{param!r}][{value!r}]: 'with' is only "
                     f"meaningful for action 'override', not {action!r}."
                 )
-            if action == "drop" and OMISSION_EQUIVALENT_VALUE.get(param) != normalised_value:
-                equivalent = OMISSION_EQUIVALENT_VALUE.get(param)
-                detail = (
-                    f"only {equivalent!r} may be dropped for {param!r}"
-                    if equivalent
-                    else f"no value of {param!r} may be dropped"
-                )
-                raise ValueError(
-                    f"param_value_rules[{param!r}][{value!r}]: action 'drop' is "
-                    f"refused because omitting {param!r} is not documented as "
-                    f"equivalent to {value!r} ({detail}). Dropping it would "
-                    f"change what was asked without saying so; use 'reject'."
-                )
             rules[(param, normalised_value)] = _ValueRule(
                 action=action, evidence=evidence, substitute=substitute
             )
@@ -265,41 +247,25 @@ def _normalise_value_rules(
     return rules
 
 
-#: The declared contract, as ONE table: which parameters may carry a rule, and
-#: which actions are actually implemented for each. Separate constants could
-#: describe a cell nobody had wired up — an action that type-checked,
-#: constructed cleanly and then did nothing on the wire. A single table cannot
-#: express an unimplemented cell.
-#:
-#: An action appears here only when a consult site exists:
-#:
-#: * ``reasoning_effort`` — ``reject`` raises before the request is built;
-#:   ``override`` substitutes the declared replacement. ``drop`` is absent on
-#:   purpose: omitting the parameter yields the provider's default budget, not
-#:   the level asked for, so dropping it would change the request while looking
-#:   like it changed nothing.
-#: * ``tool_choice`` — ``drop`` omits the parameter, legal because omission is
-#:   how the OpenAI-shaped envelope says "the model decides", which is what
-#:   ``auto`` names; ``override`` substitutes. ``reject`` is absent because no
-#:   site raises on it — add the site first, then the cell.
-#:
-#: ``override`` is the one action that changes what the request means, so it is
-#: gated on a ``with:`` value and logged at WARNING on every substitution (see
-#: ``ParamsPolicy.warn_substituted``). Callers that compare results across
-#: models, providers or time have to treat an overridden call as carrying a
-#: caveat; the engine cannot know whether they do, so it makes the deviation
-#: visible rather than deciding for them.
-#:
-#: Adding a parameter means adding a consult site wherever it is attached, so
-#: this table stays honest by construction.
-SUPPORTED_ACTIONS: Final[dict[str, frozenset[str]]] = {
-    "reasoning_effort": frozenset({"reject", "override"}),
-    "tool_choice": frozenset({"drop", "override"}),
-}
+#: Parameters with a consult site, i.e. the ones a rule can actually reach. A
+#: rule on anything else would be accepted and then never read, so it is
+#: refused: that is a typo, not a decision. Adding a parameter here means
+#: adding the site that consults it.
+RULABLE_PARAMS: Final[frozenset[str]] = frozenset({"reasoning_effort", "tool_choice"})
 
-#: Values whose omission the provider documents as equivalent to sending them.
-#: Consulted only for ``drop``: dropping any other value changes the request.
-OMISSION_EQUIVALENT_VALUE: Final[dict[str, str]] = {"tool_choice": "auto"}
+#: What a rule may ask for. All three are implemented at every consult site.
+#:
+#: ``reject`` refuses to build the request. ``drop`` omits the parameter and
+#: lets the provider default apply. ``override`` sends a declared replacement.
+#:
+#: ``drop`` and ``override`` both change what the request carries, and only the
+#: caller knows whether that matters — omitting ``tool_choice`` is the
+#: provider's own spelling of ``auto`` and costs nothing, while omitting
+#: ``reasoning_effort`` yields the provider's default budget rather than the
+#: level asked for. The engine does not adjudicate: it applies the declaration
+#: and logs a WARNING naming both values, so a caller that compares results can
+#: see the deviation. ``docs/LLM_LAYER.md`` carries the warning in full.
+VALID_RULE_ACTIONS: Final[frozenset[str]] = frozenset({"reject", "drop", "override"})
 
 
 class GenerationParams(ParamsPolicy):
@@ -317,7 +283,6 @@ class GenerationParams(ParamsPolicy):
             "reasoning_via_thinking_kwarg",
             "drop_sampling_when_thinking",
             "reasoning_budget_default",
-            "unsupported_effort_levels",
             "param_value_rules",
         }
     )
@@ -330,7 +295,6 @@ class GenerationParams(ParamsPolicy):
         reasoning_via_thinking_kwarg: bool = False,
         drop_sampling_when_thinking: bool = False,
         reasoning_budget_default: int | None = None,
-        unsupported_effort_levels: frozenset[str] | list[str] | tuple[str, ...] | None = None,
         param_value_rules: dict[str, dict[str, dict[str, str]]] | None = None,
     ):
         self._fixed_temperature = fixed_temperature
@@ -350,26 +314,9 @@ class GenerationParams(ParamsPolicy):
         # picks the workaround.
         # Normalise YAML lists into a frozenset so equality + membership are
         # cheap and ``GenerationParams`` is still hashable-friendly.
-        self._unsupported_effort_levels: frozenset[str] = frozenset(
-            e.lower() for e in (unsupported_effort_levels or ())
-        )
-        # ``param_value_rules`` is the general form of the line above: "this
-        # provider or model will not take value V of parameter P, and here is
-        # what to do about it". ``unsupported_effort_levels`` is the same
-        # statement for one parameter, kept working and folded in below so
-        # shipped presets and operator overlays do not have to move at once.
         self._param_value_rules: dict[tuple[str, str], _ValueRule] = _normalise_value_rules(
             param_value_rules
         )
-        for level in self._unsupported_effort_levels:
-            key = ("reasoning_effort", level)
-            self._param_value_rules.setdefault(
-                key,
-                _ValueRule(
-                    action="reject",
-                    evidence="declared via the unsupported_effort_levels shorthand",
-                ),
-            )
 
     def adapt(
         self,
@@ -519,10 +466,8 @@ class GenerationParams(ParamsPolicy):
             return
         effort = effort_hint.lower()
         if self.rule_for("reasoning_effort", effort) == "reject":
-            # Derive both the refused set and the remaining choices from the
-            # rules, not from the legacy field: a rejection declared through
-            # `param_value_rules` would otherwise report an empty
-            # `unsupported_effort_levels` and read as a bug in the engine.
+            # Both the refused set and the remaining choices come from the
+            # rules, so a rejection reports what actually caused it.
             refused = {v for (param, v) in self._param_value_rules if param == "reasoning_effort"}
             supported = tuple(e for e in ("low", "medium", "high", "xhigh") if e not in refused)
             evidence = self.rule_evidence("reasoning_effort", effort)
@@ -535,10 +480,18 @@ class GenerationParams(ParamsPolicy):
                 f"the direct provider, when available). See "
                 f"tolokaforge_models/data/model_presets.yaml for the declarations."
             )
-        substitute = self.rule_substitute("reasoning_effort", effort)
-        if self.rule_for("reasoning_effort", effort) == "override" and substitute:
-            self.warn_substituted("reasoning_effort", effort, substitute)
-            effort = substitute
+        action = self.rule_for("reasoning_effort", effort)
+        if action == "drop":
+            # Omitting the parameter yields the provider's DEFAULT budget, not
+            # the level asked for, so this is a real change to the request. The
+            # caller declared it; log it and move on.
+            self.warn_substituted("reasoning_effort", effort, "<omitted>")
+            return
+        if action == "override":
+            substitute = self.rule_substitute("reasoning_effort", effort)
+            if substitute:
+                self.warn_substituted("reasoning_effort", effort, substitute)
+                effort = substitute
         if self._reasoning_via_extra_body:
             self._emit_extra_body_reasoning(kwargs, {"effort": effort})
         else:

@@ -1775,6 +1775,14 @@ class LLMClient:
             # the parameter.
             policy = self.capabilities.params_policy
             action = policy.rule_for("tool_choice", tool_choice)
+            if action == "reject" and tool_choice:
+                raise ValueError(
+                    f"tool_choice={tool_choice!r} is declared unusable for this "
+                    f"provider+model combination. Evidence: "
+                    f"{policy.rule_evidence('tool_choice', tool_choice)}. Pass a "
+                    f"different tool_choice, or declare 'drop' / 'override' if "
+                    f"the call should proceed anyway."
+                )
             if action == "override" and tool_choice:
                 substitute = policy.rule_substitute("tool_choice", tool_choice)
                 if substitute:

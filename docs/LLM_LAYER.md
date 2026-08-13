@@ -1134,20 +1134,23 @@ params:
       #   with: low
 ```
 
-- **`drop`** omits the parameter. Legal *only* for the one value whose omission
-  the provider documents as equivalent to sending it — `OMISSION_EQUIVALENT_VALUE`
-  in [`params_policy.py`](../tolokaforge/core/llm/params_policy.py) is that list,
-  and today it holds exactly `tool_choice: auto`. Dropping anything else changes
-  what the model was asked to do, so it is refused at construction.
+- **`drop`** omits the parameter and lets the provider's default apply.
+  Whether that is free depends on the parameter: omitting `tool_choice` is how
+  the OpenAI-shaped envelope says "the model decides", which is exactly what
+  `auto` names, so dropping it costs nothing. Omitting `reasoning_effort`, by
+  contrast, yields the provider's default budget rather than the level asked
+  for — the same warning as `override` applies.
 
-Which actions exist is **per parameter**, declared in one table,
-`SUPPORTED_ACTIONS`. An action appears there only when a consult site actually
-implements it: `reasoning_effort` supports `reject` and `override` (the effort
-path raises or substitutes), `tool_choice` supports `drop` and `override` (the
-client omits or substitutes). Declaring a combination with no site — say
-`tool_choice: reject`, which nothing raises on — is refused at construction
-rather than accepted and silently ignored on the wire. Adding a parameter
-therefore means adding its consult site first, then its row.
+**All three actions work on every rulable parameter.** The engine does not
+decide which combination is sensible — that is a configuration choice, and the
+operator making it knows their own tolerance for a changed request. What the
+engine guarantees is that a declaration is never accepted and then ignored:
+each action has a consult site for each parameter.
+
+`RULABLE_PARAMS` lists the parameters a rule can reach. A rule on anything else
+is refused, because nothing would ever read it — that is a typo, not a choice.
+Adding a parameter means adding the site that consults it, which is an engine
+change.
 
 An `override` whose `with:` value is itself ruled in the same block is refused:
 substituting into another declared gap would send a value the block already
@@ -1192,13 +1195,12 @@ it describes a **model** (the Cohere entry — true on every route because it is
 the vendor's API contract). Choosing the layer is choosing what the claim is
 about.
 
-`unsupported_effort_levels: ["medium"]` is the older shorthand for a
-`reasoning_effort` rejection, and is what the shipped Gemini declaration still
-uses. It works and folds into the same rules, so shipped overlays keep running;
-new declarations should use `param_value_rules` so the evidence has somewhere
-to live. Migrating the bundled declaration is deliberately a separate change:
-it would make the models wheel require an engine that understands the new key,
-which means raising `minimum_engine_version` in the same release.
+`unsupported_effort_levels` was the older shorthand for a `reasoning_effort`
+rejection. It is **removed**: it carried no evidence, covered one parameter, and
+had no way to say anything but "refuse". The shipped Gemini declaration is
+migrated. An operator overlay still using the old key now fails loud at
+construction with an unknown-kwarg `TypeError`, which is the intended way to
+find it.
 
 ### Base class
 
