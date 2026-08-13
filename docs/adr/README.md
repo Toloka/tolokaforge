@@ -63,3 +63,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0030](0030-tolokaforge-models-split.md) | Model data as a second PyPI wheel — `tolokaforge-models` from the same monorepo | Proposed |
 | [0031](0031-pull-vs-build-default-for-service-images.md) | Wheel consumers pull published images by default — `docker.image_source` policy | Proposed |
 | [0032](0032-agent-completion-is-structural.md) | The agent's completion is structural; `###STOP###` is the user simulator's | Accepted |
+| [0033](0033-idle-turn-heuristic-deleted.md) | Whether an agent must act is a per-task assertion, not a stuck heuristic | Accepted |

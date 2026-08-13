@@ -33,7 +33,7 @@ not checked in).
 | Nullable + optional Pydantic fields treated as opt-in | All Gemini, **most strict in Pro 3.1** | Intrinsic — measured by eval |
 | Doubled-prefix tool name mangling (`a_a_foo` → `a:a_foo`) | Pro 3.1 | Known_unsupported `TOOL_NAME_DISCIPLINE` |
 | Lexical tool invention (`knowledge_base_search_policy`) | Pro 3.1 | Known_unsupported `LEXICAL_TOOL_INVENTION` |
-| Reasoning runaways at `max_tokens` ceiling | Flash 3.5 | Open: [#147](https://github.com/Toloka/tolokaforge/issues/147) |
+| Reasoning runaways at `max_tokens` ceiling | Flash 3.5 | Undetected — open: [#1142](https://github.com/Toloka/tolokaforge/issues/1142) |
 | Over-eager workflow completion on multi-step tasks | Flash 3.5 | Intrinsic — visible on `ots_bank_hr_d365` |
 
 ## 1. Common quirks across the Gemini family
@@ -327,9 +327,13 @@ codec fix in §1.2 correctly preserves reasoning across turns, which
 lets Flash 3.5 sustain longer thinking chains than it could pre-fix —
 this is the operational side-effect.
 
-**Harness response**: open issue
-[#147](https://github.com/Toloka/tolokaforge/issues/147)
-proposes a stuck-detector rule for this pattern. Tracking issue
+**Harness response**: nothing detects this pattern. The stuck detector
+reads two conditions — the identical tool call issued over and over, and
+repeated phrasing — and a run of reasoning-only calls at the `max_tokens`
+ceiling is neither: it is typed evidence (`finish_reason`, reasoning-only
+output), not a turn count. Open issue
+[#1142](https://github.com/Toloka/tolokaforge/issues/1142)
+carries it. Tracking issue
 [#148](https://github.com/Toloka/tolokaforge/issues/148)
 adds a composable per-call reasoning ceiling. Neither shipped yet.
 
@@ -470,8 +474,8 @@ logistics: $1.86 / pass → $0.41 / pass — 4.5× more efficient).
 
 - Investigation report: [`plans/gemini_31_pro_ots_investigation_20260521.md`](../plans/gemini_31_pro_ots_investigation_20260521.md) (local, gitignored)
 - Open issues:
-  [#147](https://github.com/Toloka/tolokaforge/issues/147)
-  (stuck detector),
+  [#1142](https://github.com/Toloka/tolokaforge/issues/1142)
+  (the reasoning-only stall, undetected today),
   [#148](https://github.com/Toloka/tolokaforge/issues/148)
   (composable reasoning ceiling),
   [#149](https://github.com/Toloka/tolokaforge/issues/149)

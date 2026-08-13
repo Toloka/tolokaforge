@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from tolokaforge.core.deprecations import source_context
 from tolokaforge.core.models import (
     ActorSpec,
     GradingCombineConfig,
@@ -86,13 +87,26 @@ class TestTaskDefaultsFields:
         sh = StuckHeuristicsDefaults()
         assert sh.enabled is True
         assert sh.max_repeated_tool_calls == 5
-        assert sh.max_idle_turns == 3
 
     def test_stuck_heuristics_reject_non_positive_counts(self) -> None:
         with pytest.raises(ValidationError):
             StuckHeuristicsDefaults(max_repeated_tool_calls=0)
-        with pytest.raises(ValidationError):
-            StuckHeuristicsDefaults(max_idle_turns=0)
+
+    def test_retired_max_idle_turns_loads_and_says_so(self) -> None:
+        """The models ignore unknown keys, so a retired one has to be answered
+        deliberately: the block still loads, the knob is gone, and the author is
+        told what to declare instead rather than losing the declaration in
+        silence."""
+        with pytest.warns(DeprecationWarning) as caught:
+            with source_context(Path("project.yaml")):
+                sh = StuckHeuristicsDefaults(max_repeated_tool_calls=5, max_idle_turns=3)
+
+        assert not hasattr(sh, "max_idle_turns")
+        assert len(caught) == 1, [str(w.message) for w in caught]
+        message = str(caught[0].message)
+        assert "max_idle_turns in project.yaml" in message
+        assert "ADR-0033" in message
+        assert "transcript_rules" in message
 
     def test_grading_defaults_wraps_combine(self) -> None:
         gd = GradingDefaults(

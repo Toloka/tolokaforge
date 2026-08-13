@@ -35,12 +35,22 @@ class TestStuckDetectorNotStuck:
         messages: list[Message] = []
         assert detector.is_stuck(messages, logs) is False
 
-    def test_not_stuck_active_turns(self) -> None:
-        """Assistant messages that all carry tool_calls should not be idle."""
+    def test_not_stuck_working_dialogue(self) -> None:
+        """An agent acting on every turn, in the alternating shape the loop
+        produces, is not stuck."""
         detector = StuckDetector()
-        tc = [ToolCall(id="1", name="search", arguments={})]
-        messages = [_assistant_msg(f"step {i}", tool_calls=tc) for i in range(15)]
-        assert detector.is_stuck(messages, []) is False
+        messages: list[Message] = []
+        logs: list[RecordedToolCall] = []
+        for i in range(15):
+            messages.append(Message(role=MessageRole.USER, content=f"question {i}"))
+            messages.append(
+                _assistant_msg(
+                    f"reading record {i}",
+                    tool_calls=[ToolCall(id=str(i), name="search", arguments={"record": i})],
+                )
+            )
+            logs.append(_tool_log("search", {"record": i}))
+        assert detector.is_stuck(messages, logs) is False
 
     def test_not_stuck_unique_content(self) -> None:
         """Unique assistant messages should not trigger looping detection."""
@@ -109,41 +119,6 @@ class TestRepeatedToolCalls:
 
 
 # ---------------------------------------------------------------------------
-# _has_idle_turns
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestIdleTurns:
-    """Tests for the idle-turns heuristic."""
-
-    def test_stuck_idle_turns(self) -> None:
-        """Many assistant messages without tool calls → stuck."""
-        detector = StuckDetector(max_idle_turns=5)
-        messages = [_assistant_msg(f"thinking {i}") for i in range(6)]
-        assert detector._has_idle_turns(messages) is True
-
-    def test_not_stuck_active_turns(self) -> None:
-        """Messages with tool calls should not count as idle."""
-        detector = StuckDetector(max_idle_turns=5)
-        tc = [ToolCall(id="1", name="search", arguments={})]
-        messages = [_assistant_msg(f"step {i}", tool_calls=tc) for i in range(6)]
-        assert detector._has_idle_turns(messages) is False
-
-    def test_below_idle_threshold(self) -> None:
-        """Fewer messages than threshold → not stuck."""
-        detector = StuckDetector(max_idle_turns=5)
-        messages = [_assistant_msg("thinking") for _ in range(4)]
-        assert detector._has_idle_turns(messages) is False
-
-    def test_user_messages_not_counted(self) -> None:
-        """Non-assistant messages should not count toward idle turns."""
-        detector = StuckDetector(max_idle_turns=5)
-        messages = [Message(role=MessageRole.USER, content=f"question {i}") for i in range(6)]
-        assert detector._has_idle_turns(messages) is False
-
-
-# ---------------------------------------------------------------------------
 # _has_looping_content
 # ---------------------------------------------------------------------------
 
@@ -201,20 +176,13 @@ class TestCustomThresholds:
     """Verify that constructor parameters control detection sensitivity."""
 
     def test_custom_thresholds(self) -> None:
-        """StuckDetector with low thresholds should detect stuck earlier."""
-        detector = StuckDetector(max_repeated_tool_calls=2, max_idle_turns=2)
-
-        # 2 identical tool calls → stuck with threshold=2
+        """StuckDetector with a low threshold should detect stuck earlier."""
+        detector = StuckDetector(max_repeated_tool_calls=2)
         logs = [_tool_log("search", {"q": "x"})] * 2
         assert detector.is_stuck([], logs) is True
 
-        # 2 idle assistant turns → stuck with threshold=2
-        messages = [_assistant_msg("idle") for _ in range(2)]
-        assert detector.is_stuck(messages, []) is True
-
     def test_high_thresholds_avoid_false_positives(self) -> None:
         """High thresholds should tolerate more repetition."""
-        detector = StuckDetector(max_repeated_tool_calls=100, max_idle_turns=100)
+        detector = StuckDetector(max_repeated_tool_calls=100)
         logs = [_tool_log("search", {"q": "x"})] * 20
-        messages = [_assistant_msg("idle") for _ in range(20)]
-        assert detector.is_stuck(messages, logs) is False
+        assert detector.is_stuck([], logs) is False

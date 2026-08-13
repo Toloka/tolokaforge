@@ -89,7 +89,6 @@ task_defaults:
   stuck_heuristics:
     enabled: true
     max_repeated_tool_calls: 5
-    max_idle_turns: 3
 
 # ── Run defaults — base for every run config ────────────────────
 # Applied to every run under run_configs/; a run_configs/<name>.yaml

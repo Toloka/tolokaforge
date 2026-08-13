@@ -721,7 +721,6 @@ task_defaults:
   stuck_heuristics:
     enabled: true
     max_repeated_tool_calls: 5
-    max_idle_turns: 3
   continue_prompt: "Continue."
 
 # ── Run defaults — base for every run config ────────────────────

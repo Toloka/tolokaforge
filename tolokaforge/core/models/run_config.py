@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from tolokaforge.core.deprecations import coerce_task_packs_alias
+from tolokaforge.core.deprecations import coerce_task_packs_alias, drop_retired_max_idle_turns
 from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.core.models.model_config import ModelConfig
 
@@ -359,7 +359,11 @@ class StuckHeuristics(BaseModel):
 
     enabled: bool = True
     max_repeated_tool_calls: int = 10
-    max_idle_turns: int = 12
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_keys(cls, data: Any) -> Any:
+        return drop_retired_max_idle_turns(data)
 
 
 class TypeSenseConfig(BaseModel):

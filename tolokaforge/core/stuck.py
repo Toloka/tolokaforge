@@ -10,13 +10,8 @@ from tolokaforge.core.models import Message, MessageRole, RecordedToolCall
 class StuckDetector:
     """Detect when agent is stuck in a loop"""
 
-    def __init__(
-        self,
-        max_repeated_tool_calls: int = 10,
-        max_idle_turns: int = 12,
-    ):
+    def __init__(self, max_repeated_tool_calls: int = 10):
         self.max_repeated_tool_calls = max_repeated_tool_calls
-        self.max_idle_turns = max_idle_turns
         self.logger = get_logger("stuck_detector")
 
     def is_stuck(self, messages: list[Message], tool_calls: Sequence[RecordedToolCall]) -> bool:
@@ -33,11 +28,6 @@ class StuckDetector:
         # Check repeated tool calls
         if self._has_repeated_tool_calls(tool_calls):
             self.logger.debug("Stuck detected - repeated tool calls", logs_count=len(tool_calls))
-            return True
-
-        # Check idle turns (no tool calls for extended period)
-        if self._has_idle_turns(messages):
-            self.logger.debug("Stuck detected - idle turns", messages_count=len(messages))
             return True
 
         # Check looping content
@@ -66,23 +56,6 @@ class StuckDetector:
         most_common_count = counts.most_common(1)[0][1] if counts else 0
 
         return most_common_count >= self.max_repeated_tool_calls
-
-    def _has_idle_turns(self, messages: list[Message]) -> bool:
-        """Check for too many turns without tool calls"""
-        if len(messages) < self.max_idle_turns:
-            return False
-
-        # Look at recent messages
-        recent_messages = messages[-self.max_idle_turns :]
-
-        # Count assistant messages without tool calls
-        idle_count = 0
-        for msg in recent_messages:
-            if msg.role == MessageRole.ASSISTANT:
-                if not msg.tool_calls or len(msg.tool_calls) == 0:
-                    idle_count += 1
-
-        return idle_count >= self.max_idle_turns
 
     def _has_looping_content(self, messages: list[Message]) -> bool:
         """Check for repeating content patterns indicating actual looping"""

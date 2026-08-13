@@ -151,18 +151,6 @@ def _script_varied_prose(turn: int) -> GenerationResult:
 _DRIVING_CASES: dict[str, Callable[[int], GenerationResult]] = {
     "_has_repeated_tool_calls": _script_repeated_tool_call,
     "_has_looping_content": _script_looping_content,
-    "_has_idle_turns": _script_varied_prose,
-}
-
-_UNSATISFIABLE = {
-    "_has_idle_turns": pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason=(
-            "the window counts messages and the threshold counts assistant turns; "
-            "the ceiling is floor(N/2), so no configuration at or above 2 can reach it"
-        ),
-    )
 }
 
 
@@ -296,10 +284,7 @@ def test_the_shipped_configuration_set_is_read_from_the_tree() -> None:
     assert _SHIPPED_CONFIGURATIONS, "no shipped configuration was discovered from any source"
 
 
-@pytest.mark.parametrize(
-    "heuristic",
-    [pytest.param(name, marks=_UNSATISFIABLE.get(name, ())) for name in sorted(_DRIVING_CASES)],
-)
+@pytest.mark.parametrize("heuristic", sorted(_DRIVING_CASES))
 def test_each_heuristic_fires_at_every_shipped_configuration(heuristic: str) -> None:
     reached = {
         label: _drive(_DRIVING_CASES[heuristic], thresholds)

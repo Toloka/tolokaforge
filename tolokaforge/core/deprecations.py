@@ -182,6 +182,32 @@ def coerce_task_packs_alias(values: Any) -> Any:
     return values
 
 
+def drop_retired_max_idle_turns(data: Any) -> Any:
+    """Drop ``stuck_heuristics.max_idle_turns`` from a block that declares it,
+    and warn.
+
+    Both stuck-heuristics models ignore unknown keys, so the field's removal
+    would otherwise drop an author's declaration without a word. Strict
+    rejection deferred to a future release (tracked in #533).
+    """
+    if not isinstance(data, dict) or "max_idle_turns" not in data:
+        return data
+    data.pop("max_idle_turns")
+    warn_deprecated(
+        legacy="stuck_heuristics.max_idle_turns",
+        canonical="transcript_rules in the task's grading.yaml",
+        detail=(
+            "The idle-turn heuristic this key configured is deleted: its window "
+            "counted messages while its threshold counted assistant turns, so it "
+            "could not fire at any threshold above 1 (ADR-0033). Whether an agent "
+            "must act is a per-task question — declare "
+            "`transcript_rules.tool_expectations.required_tools` or "
+            "`transcript_rules.min_assistant_turns` in the task's grading.yaml."
+        ),
+    )
+    return data
+
+
 def coerce_flat_stack_fields(data: Any) -> Any:
     """Accept flat ``compose_file`` / ``runner_service`` at an
     :class:`~tolokaforge.runner.models.EnvironmentPatch` top level and
