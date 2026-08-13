@@ -62,3 +62,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0029](0029-build-check-builtin-tool.md) | `build_check` as a generic peer-service HTTP probe in core | Accepted |
 | [0030](0030-tolokaforge-models-split.md) | Model data as a second PyPI wheel — `tolokaforge-models` from the same monorepo | Proposed |
 | [0031](0031-pull-vs-build-default-for-service-images.md) | Wheel consumers pull published images by default — `docker.image_source` policy | Proposed |
+| [0032](0032-agent-completion-is-structural.md) | The agent's completion is structural; `###STOP###` is the user simulator's | Accepted |

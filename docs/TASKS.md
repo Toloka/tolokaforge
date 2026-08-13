@@ -280,6 +280,27 @@ the site has no cold storage or specialist only when asked, and never names the
 policy-correct resolution — so the agent must reconcile four services plus a
 policy corpus to derive it.
 
+### `###STOP###` is the simulator's token, not the agent's
+
+The exit token belongs to the **user simulator**. The engine reads it from
+simulator output only — a dispatched user reply that is the bare token ends the
+trial with `TerminationReason.USER_STOP`, and one that glues substantive text to
+it delivers that text first and stops on the next turn. The opening turn is the
+exception: a bootstrap reply carrying the token seeds it literally, rather than
+ending a trial before the agent has spoken. Write it into the
+`backstory` (or a scripted flow), never into a task's agent-facing prompt: the
+agent is never asked for the token and its output is never checked for it, so a
+prompt that instructed it would promise a signal nothing consumes.
+[`tests/canonical/test_agent_prompt_exit_token.py`](../tests/canonical/test_agent_prompt_exit_token.py)
+builds every example pack's agent system prompt and fails if one carries it.
+
+The agent's own completion is **structural**, not a phrase it emits: a trial ends
+with `TerminationReason.AGENT_DONE` when the agent takes a turn with no tool calls
+and no counterparty exists to ask it for more — the `agent_only` shape (see
+[ADR-0032](adr/0032-agent-completion-is-structural.md)). A `conversational` task
+is closed by its user, so nothing an agent writes ends one: the trial runs until
+the simulator stops it or the turn budget does.
+
 ## Browser vs Mobile Tool
 
 Use `browser` for full web browsing tasks (URL navigation, search). Use `mobile` for phone app tasks (no URL bar, mobile viewport).

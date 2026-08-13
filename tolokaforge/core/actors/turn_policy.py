@@ -112,9 +112,9 @@ class TurnPolicy(Protocol):
       constraint that a conversation must end with a ``user`` message
       makes a follow-up agent turn illegal on some providers
       (Anthropic ``opus-4-6`` rejects the prefill), and — as importantly
-      — an agent that emits neither a tool call nor a stop signal has
-      no further action to take. Terminating here matches the natural
-      MCP-CLI shape where a text-only assistant turn is the last turn.
+      — an agent that emits no tool call has no further action to take.
+      Terminating here matches the natural MCP-CLI shape where a
+      text-only assistant turn is the last turn.
     * ``None`` — no actor speaks this iteration; the loop advances to
       the next agent turn. Reserved for future policy variants that
       may want to skip a turn without terminating; not exercised by
