@@ -280,9 +280,23 @@ otherwise) can supply — codex reads `openai_base_url` from
 `$CODEX_HOME/config.toml` and its API key from `$CODEX_HOME/auth.json`,
 and honours neither env var alone. `HarnessSpec.config_files` maps a
 container path to a Jinja template; each file is written by the shell
-chain that runs before the CLI. A path may be rooted at a `$VAR`
-(`${CODEX_HOME:-$HOME/.codex}/config.toml`) so a harness need not assume
-the container's user. Templates render against four variables and no
+chain that runs before the CLI. A path is one of three things:
+
+- an absolute path (`/root/.grok/config.toml`);
+- a `${HOME}` or `${CONFIG_HOME}` construct, which the adapter's
+  `PathResolver` answers while assembling the command. The shipped
+  `LinuxRootResolver` reads them as `/root` and `/root/.config`; an embedder
+  driving the adapter from Python passes its runtime's own answer as
+  `TerminalBenchAdapter(params, path_resolver=…)`. These two names are the
+  *adapter's* answer, not the container's — a container that changed its user
+  would not change them;
+- any other `$VAR`-rooted reference
+  (`${CODEX_HOME:-$HOME/.codex}/config.toml`), which reaches the container
+  verbatim and is expanded by the container's own shell — so a harness need
+  not assume the container's user, and a variable the resolver does not know
+  keeps the container's answer.
+
+Templates render against four variables and no
 others — `model` (as the CLI receives it), `provider` (the routing prefix
 the run config's model named), `base_url` (the provider envelope's
 `*_BASE_URL` value, after any run-config override), and `api_key_env`

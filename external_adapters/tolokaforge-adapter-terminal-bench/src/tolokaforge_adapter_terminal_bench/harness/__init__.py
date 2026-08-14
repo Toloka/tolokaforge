@@ -26,10 +26,15 @@ import yaml
 from jinja2 import Environment, StrictUndefined, TemplateSyntaxError
 from jinja2.meta import find_undeclared_variables
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
 from tolokaforge.core.plugin_registry import discover_entry_points
+
+from .path_resolvers import DEFAULT_PATH_RESOLVER, LinuxRootResolver
+from .protocols import PathResolver
 
 __all__ = [
     "CONFIG_TEMPLATE_VARIABLES",
+    "DEFAULT_PATH_RESOLVER",
     "ENGINE_LOOP",
     "HARNESSES",
     "HARNESS_REGISTRY_ENTRY_POINT_GROUP",
@@ -40,6 +45,8 @@ __all__ = [
     "PROVIDER_ENV_KEYS",
     "SHIPPED_REGISTRY_FILE",
     "HarnessSpec",
+    "LinuxRootResolver",
+    "PathResolver",
     "accepted_harnesses",
     "discover_plugin_harness_registries",
     "harness_command",
@@ -167,13 +174,18 @@ class HarnessSpec(BaseModel):
     load-time error, since a silently empty substitution would surface as a
     provider auth failure many layers from the typo.
 
-    The path may start with ``$`` (``${CODEX_HOME:-$HOME/.codex}/config.toml``)
-    so a harness need not assume the container's user. Both path and content
-    are written through a double-quoted ``printf``, so ``$VAR`` references
-    expand inside the container: that is how a credential reaches the file
-    without the assembled command — which is recorded on
-    ``TaskDescription.metadata`` — ever carrying its value. A template must
-    therefore not carry a literal ``$`` it does not want expanded."""
+    A path is an absolute one, a
+    :data:`~.protocols.PATH_CONSTRUCT_PATTERN` construct over the vocabulary
+    the run's :class:`~.protocols.PathResolver` knows (``${HOME}`` /
+    ``${CONFIG_HOME}`` under the shipped
+    :class:`~.path_resolvers.LinuxRootResolver`), or any other ``$``-rooted
+    reference — which reaches the container verbatim, so a harness need not
+    assume the container's user. Both path and content are written through a
+    double-quoted ``printf``, so those references expand inside the container:
+    that is how a credential reaches the file without the assembled command —
+    which is recorded on ``TaskDescription.metadata`` — ever carrying its
+    value. A template must therefore not carry a literal ``$`` it does not want
+    expanded."""
 
     flags_pre_permission: tuple[str, ...] = ()
     """Flags inserted between the CLI executable and the model flag / argv
@@ -518,7 +530,7 @@ class _RegistryMeta(BaseModel):
     provider_env_keys: frozenset[str]
 
     @model_validator(mode="after")
-    def _every_entry_is_a_non_blank_string(self) -> "_RegistryMeta":
+    def _every_entry_is_a_non_blank_string(self) -> _RegistryMeta:
         for value in self.openrouter_vendor_namespaces:
             if not value or value.strip() != value:
                 raise ValueError(
@@ -703,6 +715,8 @@ def harness_command(
     model: str,
     registry: Mapping[str, HarnessSpec] = HARNESSES,
     provider_env: Mapping[str, str] | None = None,
+    *,
+    path_resolver: PathResolver | None = None,
 ) -> str:
     """Shell command that runs *agent_harness* against *instruction*.
 
@@ -712,6 +726,12 @@ def harness_command(
     harness's own :attr:`HarnessSpec.provider_env`, and only its ``*_BASE_URL``
     value is ever read — a credential reaches a config file by name, through
     the container's environment, never through this command.
+
+    *path_resolver* answers where each :attr:`HarnessSpec.config_files` key
+    lands in the runtime this command will run in, defaulting to
+    :data:`~.path_resolvers.DEFAULT_PATH_RESOLVER`. File *contents* never go
+    through it: their template vocabulary is closed and already
+    runtime-neutral.
 
     Assembly order (blank pieces drop out):
 
@@ -746,8 +766,11 @@ def harness_command(
         variables = _config_template_variables(
             resolved_model, model, spec.provider_env if provider_env is None else provider_env
         )
+        resolver = DEFAULT_PATH_RESOLVER if path_resolver is None else path_resolver
         preamble_parts.extend(
-            _config_file_write(path, _TEMPLATES.from_string(template).render(variables))
+            _config_file_write(
+                resolver.resolve(path), _TEMPLATES.from_string(template).render(variables)
+            )
             for path, template in spec.config_files.items()
         )
     for var in spec.env_model_vars:

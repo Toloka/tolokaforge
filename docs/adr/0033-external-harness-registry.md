@@ -117,7 +117,10 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
   - `config_files: dict[str, str]` — container path to Jinja template for
     CLIs configured by file. Rendered per trial against a closed variable
     set (`model`, `provider`, `base_url`, `api_key_env`); an undeclared
-    name is refused at load.
+    name is refused at load. A path is absolute, a `${HOME}` /
+    `${CONFIG_HOME}` construct the run's `PathResolver` answers (shipped
+    default `LinuxRootResolver` → `/root`, `/root/.config`), or any other
+    `$VAR` reference, left verbatim for the container's own shell.
   - `container_env: dict[str, str]` — compose environment lines the
     agent service always carries.
   - `strip_vendor_namespace: bool` — whether to strip a `vendor/` prefix
