@@ -10,6 +10,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from tests.utils.harness_plugins import (
+    FakeEntryPoint,
+    build_plugin,
+    bundle_yaml,
+    install_plugins,
+)
 from tolokaforge.docker.policy import Capability
 from tolokaforge.docker.stacks.core import core_stack
 from tolokaforge.runner.models import (
@@ -2554,29 +2560,6 @@ class TestHarnessPresetsFileOverlay:
         assert self._adapter(fixture_dir, tmp_path, None).harnesses == HARNESSES
 
 
-class _FakeDistribution:
-    def __init__(self, name: str, version: str) -> None:
-        self.name = name
-        self.version = version
-
-
-class _FakeEntryPoint:
-    """Stand-in for a plugin's ``importlib.metadata`` entry point.
-
-    ``importlib.metadata.EntryPoint`` refuses attribute assignment, so a test
-    cannot bind a fabricated distribution to a real one. ``dist`` is ``None``
-    for a programmatically registered entry point.
-    """
-
-    def __init__(self, name: str, distribution: _FakeDistribution | None, module) -> None:
-        self.name = name
-        self.dist = distribution
-        self._module = module
-
-    def load(self):
-        return self._module
-
-
 class TestHarnessRegistryPluginDiscovery:
     """A pip-installed bundle contributes harnesses without an adapter release."""
 
@@ -2599,54 +2582,19 @@ class TestHarnessRegistryPluginDiscovery:
     @pytest.fixture
     def plugin(self, tmp_path, monkeypatch):
         """Build an importable plugin package shipping a registry YAML."""
-        import importlib
-        import sys
 
         def _build(
             package: str,
             distribution: str | None,
             harnesses: str,
             version: str = "1.0.0",
-        ) -> _FakeEntryPoint:
-            root = tmp_path / package
-            (root / package).mkdir(parents=True)
-            (root / package / "__init__.py").write_text("")
-            (root / package / "harnesses.yaml").write_text(harnesses)
-            monkeypatch.syspath_prepend(str(root))
-            monkeypatch.delitem(sys.modules, package, raising=False)
-            dist = None if distribution is None else _FakeDistribution(distribution, version)
-            return _FakeEntryPoint(package, dist, importlib.import_module(package))
+        ) -> FakeEntryPoint:
+            return build_plugin(tmp_path, monkeypatch, package, distribution, harnesses, version)
 
         return _build
 
-    @staticmethod
-    def _install(monkeypatch, *entry_points):
-        """Make *entry_points* the installed set for the harness-registry group."""
-        import importlib.metadata
-
-        from tolokaforge_adapter_terminal_bench.harness import (
-            HARNESS_REGISTRY_ENTRY_POINT_GROUP,
-        )
-
-        real = importlib.metadata.entry_points
-
-        def _entry_points(**kwargs):
-            if kwargs.get("group") == HARNESS_REGISTRY_ENTRY_POINT_GROUP:
-                return list(entry_points)
-            return real(**kwargs)
-
-        monkeypatch.setattr(importlib.metadata, "entry_points", _entry_points)
-
-    @staticmethod
-    def _bundle(name: str, version: str) -> str:
-        return (
-            "harnesses:\n"
-            f"  {name}:\n"
-            f"    install_source: '@acme/{name}'\n"
-            f"    version: '{version}'\n"
-            f"    argv_prefix: [{name}]\n"
-            f"    argv_suffix: ['--go']\n"
-        )
+    _install = staticmethod(install_plugins)
+    _bundle = staticmethod(bundle_yaml)
 
     def test_nothing_installed_contributes_nothing(self):
         """The common case: no plugin, no change to what the adapter ships."""

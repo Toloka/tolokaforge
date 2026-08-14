@@ -67,6 +67,9 @@ from tolokaforge_adapter_terminal_bench.harness import (
     validate_harness,
     validate_provider_env_keys,
 )
+from tolokaforge_adapter_terminal_bench.harness.fingerprint import (
+    compute_harness_fingerprint,
+)
 from tolokaforge_adapter_terminal_bench.task_parser import (
     TerminalBenchTask,
     discover_tasks,
@@ -217,6 +220,14 @@ class TerminalBenchAdapter(BaseAdapter):
     def harness_spec(self) -> HarnessSpec | None:
         """This run's harness spec. ``None`` under the engine loop, which runs no CLI."""
         return self.harnesses.get(self.agent_harness)
+
+    def fingerprint(self) -> dict[str, Any]:
+        """The harness registry this run resolved, under a ``harness`` namespace."""
+        return {
+            "harness": compute_harness_fingerprint(
+                self._resolved_registry, self.agent_harness
+            ).model_dump(mode="json")
+        }
 
     # -- discovery ------------------------------------------------------------
 

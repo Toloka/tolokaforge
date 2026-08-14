@@ -425,6 +425,47 @@ runtime consumes this YAML unforked by supplying its own resolver. An absolute
 `/root/...` path stays valid and resolves to itself, so an overlay writing one
 needs no change.
 
+### What a run records about its registry
+
+Because the effective registry is composed from three layers, two runs of the
+same config on two machines can drive different CLI versions. So the adapter
+reports what it resolved: `engine_run_state.json` carries it under
+`adapter_fingerprints["terminal_bench"]["harness"]` (see
+[`docs/OUTPUT_FORMAT.md`](../../docs/OUTPUT_FORMAT.md) §
+`engine_run_state.json`). Every field is read off the registry the run
+composed.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `resolved_sha256` | 64-hex string | Digest over the post-plugin, post-overlay registry — the specs that actually drove the run. |
+| `shipped_sha256` | 64-hex string | Digest over the shipped `data/harnesses.yaml` alone. |
+| `agent_harness` | string | The harness this run selected (`engine-loop` when no CLI drives the trial). |
+| `agent_harness_version` | string \| null | The effective spec's pinned version — `null` under the engine loop. |
+| `overlay_file` | string \| null | Resolved absolute path of the `harness_presets_file` overlay. |
+| `plugin_bundles` | list | `{distribution, version, harnesses[]}` per installed registry bundle, ordered by distribution. |
+
+`resolved_sha256 == shipped_sha256` exactly when neither a bundle nor an
+overlay changed anything. An overlay or a plugin that alters any spec moves
+`resolved_sha256`; `shipped_sha256` moves only when this repo's own registry
+changes, so it is the fixed reference point the other digest is read against.
+Both digests hash the *parsed* specs, so reformatting the YAML or editing a
+comment leaves them where they are. `data/registry_meta.yaml` is outside both:
+it is shipped-only rather than layerable, and folding it in would blur what
+`shipped == resolved` means.
+
+Two things this payload's names do not mean:
+
+- `overlay_file` is the **registry** overlay (`harness_presets_file`, the
+  YAML declaring harness specs). It is unrelated to `engine_run_state.json`'s
+  top-level `presets_file`, which is the engine's *model-preset* overlay.
+- `agent_harness_version` is the same value the per-trial
+  `metadata["agent_harness_version"]` carries — both read `HarnessSpec.version`
+  off the effective registry (the CLI-version row in [Harness parity
+  policy](#harness-parity-policy) above), so they cannot disagree. They differ
+  in *presence*, not value: under `engine-loop` the per-trial key is absent,
+  because that surface uses absence to say "no CLI ran", while the run-level
+  field is an explicit `null` in a fixed-shape record.
+
 ### Trial-level timeout
 
 Under harness mode the whole trial runs inside a single `docker exec`, so the

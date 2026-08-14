@@ -102,7 +102,7 @@ the adapter-side inputs that drove the trials.
 
 Written via [`tolokaforge.core.engine_run_state.write_engine_run_state`](../tolokaforge/core/engine_run_state.py) with the fingerprint computed by [`tolokaforge.core.model_data_fingerprint.compute_models_fingerprint`](../tolokaforge/core/model_data_fingerprint.py); the on-disk shape is locked by the `ModelsFingerprint` Pydantic model (`extra="forbid"`). See [`docs/adr/0030-tolokaforge-models-split.md`](adr/0030-tolokaforge-models-split.md) § "Fingerprinting for auditability" for the wheel-split context.
 
-`adapter_fingerprints` is populated from [`BaseAdapter.fingerprint()`](../tolokaforge/adapters/base.py) — see [`docs/ADAPTER_INTERFACE.md`](ADAPTER_INTERFACE.md) § Optional Methods for the seam an adapter overrides to report one.
+`adapter_fingerprints` is populated from [`BaseAdapter.fingerprint()`](../tolokaforge/adapters/base.py) — see [`docs/ADAPTER_INTERFACE.md`](ADAPTER_INTERFACE.md) § Optional Methods for the seam an adapter overrides to report one. For the `terminal_bench` namespace, that adapter's [README](../external_adapters/tolokaforge-adapter-terminal-bench/README.md) § "What a run records about its registry" documents its payload.
 
 ## `LIMIT_HIT.json`
 
