@@ -540,7 +540,9 @@ class TrialRunner:
             end_ts=end_ts,
             status=status,
             termination_reason=termination_reason,
+            first_user_message_source=self._first_user_message_source,
             messages=self.messages,
+            user_reply_guard_events=list(self._user_reply_guard_events),
             metrics=self.metrics,
             tool_log=list(recorded_calls),
         )
