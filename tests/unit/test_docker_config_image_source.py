@@ -11,8 +11,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.core.models.run_config import RunConfig
-from tolokaforge.docker.config import DockerConfig
 
 pytestmark = pytest.mark.unit
 

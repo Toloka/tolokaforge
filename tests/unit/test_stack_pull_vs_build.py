@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.docker.config import DockerConfig
+from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.docker.image import Image, ImagePullError
 from tolokaforge.docker.stack import EngineStack, ServiceDefinition
 

@@ -32,8 +32,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.docker import stacks as stacks_module
-from tolokaforge.docker.config import DockerConfig
 
 pytestmark = pytest.mark.unit
 

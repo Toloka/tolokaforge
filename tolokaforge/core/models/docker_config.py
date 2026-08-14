@@ -1,10 +1,13 @@
-"""Configuration module for Docker Foundation Layer.
+"""DockerConfig - the ``docker:`` block of ``run_config.yaml``.
 
-Provides the DockerConfig Pydantic model for configuring Docker operations.
-No environment variables are read - all configuration is passed programmatically.
+Pure pydantic, no Docker SDK import. It lives under ``core/models`` rather
+than beside the Docker foundation layer because :class:`RunConfig` carries
+it as a field, and ``core/models`` ships in the runner subset while
+``tolokaforge/docker`` is base-wheel only. See ADR-0025 and
+:mod:`tolokaforge.core._runner_subset`.
 
 Example:
-    >>> from tolokaforge.docker.config import DockerConfig
+    >>> from tolokaforge.core.models.docker_config import DockerConfig
     >>> config = DockerConfig(wait_timeout_s=60.0, wait_poll_s=0.5)
     >>> config.wait_timeout_s
     60.0
@@ -16,9 +19,6 @@ import logging
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
-
-logger = logging.getLogger(__name__)
-
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
@@ -154,7 +154,10 @@ class DockerConfig(BaseModel):
         docker_logger = logging.getLogger("tolokaforge.docker")
         level = getattr(logging, self.log_level)
         docker_logger.setLevel(level)
-        logger.debug("Docker logging configured to level %s", self.log_level)
+        # Emitted through the logger just configured, not this module's own:
+        # this module lives outside the tolokaforge.docker hierarchy, so a
+        # record from __name__ would fall outside the level this call sets.
+        docker_logger.debug("Docker logging configured to level %s", self.log_level)
 
     def with_timeout(self, wait_timeout_s: float) -> DockerConfig:
         """Return a new config with the specified wait timeout.

@@ -12,7 +12,7 @@ Example:
 
 from __future__ import annotations
 
-from tolokaforge.docker.config import DockerConfig
+from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.docker.policy import Capability, ResourcePolicy
 from tolokaforge.docker.ports import PortConfig
 from tolokaforge.docker.stack import EngineStack, ServiceDefinition
