@@ -35,7 +35,7 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import yaml
 
@@ -44,10 +44,15 @@ import yaml
 # a Pydantic validator on the synthesised compose file.
 from tolokaforge.runner.models import _FLOATING_IMAGE_TAGS
 from tolokaforge_adapter_terminal_bench.harness import (
+    DEFAULT_PATH_RESOLVER,
     ENGINE_LOOP,
     HARNESSES,
     INSTALL_SCRIPT,
+    PATH_CONSTRUCT_PATTERN,
     HarnessSpec,
+    PathResolver,
+    SkillDelivery,
+    SkillsBundle,
     provider_env_input,
     validate_harness,
 )
@@ -105,6 +110,8 @@ def materialise_task_environment(
     provider_env_keys: Sequence[str] = (),
     runner_image: str = "tolokaforge-runner:local",
     db_service_image: str = "tolokaforge-db-service:local",
+    path_resolver: PathResolver | None = None,
+    skill_delivery: SkillDelivery | None = None,
 ) -> MaterialisedEnvironment:
     """Copy the task pack into a staging directory and emit a synthesised compose file.
 
@@ -144,6 +151,11 @@ def materialise_task_environment(
             compose file, the staging digest, or the image.
         runner_image: Pinned image for the injected ``runner`` service.
         db_service_image: Pinned image for the injected ``db-service``.
+        path_resolver: Answers the runtime's filesystem conventions for the
+            harness's ``skills_dir_target``. Defaults to
+            :data:`~tolokaforge_adapter_terminal_bench.harness.DEFAULT_PATH_RESOLVER`.
+        skill_delivery: Puts the task's skills bundle where the CLI reads it.
+            Defaults to :data:`DEFAULT_SKILL_DELIVERY`, an image-layer ``COPY``.
 
     Raises:
         ValueError: If ``image_tag`` is a floating tag; if ``agent_harness``
@@ -231,8 +243,18 @@ def materialise_task_environment(
             staging_dir,
             base_image=_agent_image(meta.task_id, image_registry, image_tag),
             spec=harness_spec,
-            skills_dir=skills_dir,
         )
+        if skills_dir is not None:
+            resolver = DEFAULT_PATH_RESOLVER if path_resolver is None else path_resolver
+            delivery = DEFAULT_SKILL_DELIVERY if skill_delivery is None else skill_delivery
+            delivery.deliver(
+                SkillsBundle(
+                    task_dir=meta.task_dir,
+                    source_rel=skills_dir,
+                    target=resolver.resolve(harness_spec.skills_dir_target),
+                    staging_dir=staging_dir,
+                )
+            )
     compose_file = staging_dir / _SYNTHESISED_COMPOSE_FILENAME
     compose_file.write_text(yaml.safe_dump(synthesised, sort_keys=False))
 
@@ -360,19 +382,19 @@ def _write_staging(task_dir: Path, staging_dir: Path) -> None:
     (staging_dir / "_logs" / "agent").mkdir(parents=True, exist_ok=True)
 
 
-def _write_harness_build_context(
-    staging_dir: Path, *, base_image: str, spec: HarnessSpec, skills_dir: str | None
-) -> None:
+def _write_harness_build_context(staging_dir: Path, *, base_image: str, spec: HarnessSpec) -> None:
     """Materialise the harness image layer's build context in the staging dir.
 
     The layer is one ``COPY`` of the install script plus one ``RUN`` of it
-    against *base_image*, installing the version the spec pins — followed by a
-    ``COPY`` of the task's own skills bundle when it ships one and the harness
-    reads skills. The install script lives under ``_harness/`` so a task pack
-    shipping its own ``install-harness.sh`` or ``harness.Dockerfile`` at its
-    root cannot collide with it, and a ``.dockerignore`` keeps the rest of the
-    staging tree (task sources, tests, log mountpoints) out of the layer's
-    build context — everything the layer copies has to be re-included by name.
+    against *base_image*, installing the version the spec pins. The install
+    script lives under ``_harness/`` so a task pack shipping its own
+    ``install-harness.sh`` or ``harness.Dockerfile`` at its root cannot collide
+    with it, and a ``.dockerignore`` keeps the rest of the staging tree (task
+    sources, tests, log mountpoints) out of the layer's build context —
+    everything the layer copies has to be re-included by name.
+
+    A :class:`~tolokaforge_adapter_terminal_bench.harness.SkillDelivery` may
+    append to either file afterwards; :class:`ImageLayerSkillDelivery` does.
     """
     harness_dir = staging_dir / _HARNESS_STAGING_DIR
     harness_dir.mkdir(exist_ok=True)
@@ -385,16 +407,43 @@ def _write_harness_build_context(
         f"RUN sh {_HARNESS_INSTALL_PATH} {spec.install_method} "
         f"{shlex.quote(spec.install_source)} {shlex.quote(spec.version)}",
     ]
-    context_includes = [install_script_path]
-    if skills_dir is not None:
-        bundle = os.path.normpath(skills_dir)
-        dockerfile.append(f"COPY {bundle}/. {spec.skills_dir_target}")
-        context_includes.extend([bundle, f"{bundle}/**"])
-
     (harness_dir / _HARNESS_DOCKERFILE_NAME).write_text("\n".join(dockerfile) + "\n")
-    (staging_dir / ".dockerignore").write_text(
-        "\n".join(["*", *(f"!{path}" for path in context_includes)]) + "\n"
-    )
+    (staging_dir / ".dockerignore").write_text(f"*\n!{install_script_path}\n")
+
+
+@dataclass(frozen=True)
+class ImageLayerSkillDelivery:
+    """Deliver the bundle as one more layer on the harness image.
+
+    Appends a ``COPY`` to the generated ``_harness/harness.Dockerfile`` and the
+    matching exceptions to the staging ``.dockerignore``, after the CLI install
+    — so editing a bundle invalidates the copy layer without reinstalling the
+    CLI. The staging layout is therefore part of this implementation's
+    contract, and of no other's: a delivery that uploads to a running sandbox
+    ignores it entirely.
+    """
+
+    def deliver(self, bundle: SkillsBundle) -> None:
+        construct = PATH_CONSTRUCT_PATTERN.search(bundle.target)
+        if construct is not None:
+            raise ValueError(
+                f"terminal-bench adapter: skills_dir_target {bundle.target!r} still "
+                f"carries {construct.group(0)!r} after the run's PathResolver ran. Docker "
+                "expands a `COPY` destination from the image's own `ENV`, which is neither "
+                "the resolver's answer nor the container shell's, so the bundle would land "
+                "where the CLI does not look while the trial still recorded it. Name the "
+                "variable in the resolver's vocabulary, or write the target absolute."
+            )
+        source = os.path.normpath(bundle.source_rel)
+        dockerfile = bundle.staging_dir / _HARNESS_STAGING_DIR / _HARNESS_DOCKERFILE_NAME
+        with dockerfile.open("a") as handle:
+            handle.write(f"COPY {source}/. {bundle.target}\n")
+        with (bundle.staging_dir / ".dockerignore").open("a") as handle:
+            handle.write(f"!{source}\n!{source}/**\n")
+
+
+DEFAULT_SKILL_DELIVERY: Final[SkillDelivery] = ImageLayerSkillDelivery()
+"""The delivery every adapter surface falls back to when a caller names none."""
 
 
 def _agent_image(task_id: str, image_registry: str | None, image_tag: str) -> str:

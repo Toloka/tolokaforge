@@ -145,7 +145,15 @@ Because the layered image tag carries the harness name and its pinned version,
 switching harnesses or bumping a CLI can never reuse a stale cached image — and
 the harness is part of the staging digest, so each gets its own staging
 directory. A `.dockerignore` in the staging dir keeps the task sources, tests,
-and log mountpoints out of the layer's build context.
+and log mountpoints out of the layer's build context; everything the layer
+copies is re-included there by name.
+
+Nothing else is in that Dockerfile by default. A task pack's skills bundle
+reaches it only because the adapter's shipped `SkillDelivery` —
+`ImageLayerSkillDelivery` — appends its own `COPY` and `.dockerignore`
+exceptions after the CLI install, so editing a bundle invalidates the copy
+layer without reinstalling the CLI. A run driving the adapter with a different
+delivery gets a harness image with no skills in it.
 
 `describe_environment_identity` records `{agent}-base` among the trial's
 services even though the compose profile keeps it out of `up` — it is a
@@ -245,7 +253,7 @@ somewhere else, so a per-harness policy is one entry to read.
 | Model-name form | Whether a leading `vendor/` namespace is dropped before the model reaches the CLI. Codex and gemini-cli catalogs use bare names; a namespaced string makes them drop OpenRouter routing for the vendor's default endpoint. | `HarnessSpec.strip_vendor_namespace` |
 | Model-flag form | Whether the model flag and its value are two argv words (`--model gpt-5`) or one (`--model=gpt-5`). A CLI parsing its flags strictly accepts only one of the two. | `HarnessSpec.model_flag_style` |
 | File-based configuration | Files the CLI reads its configuration from, rendered per trial. | `HarnessSpec.config_files` |
-| Skills | Where a task pack's own `harness_skills_dir` bundle is copied in the image layer. Unset means the harness installs no skills; the operator's `~/.claude/skills` is never a source. | `HarnessSpec.skills_dir_target` |
+| Skills | Where a task pack's own `harness_skills_dir` bundle lands — absolute, or rooted at a `${HOME}` / `${CONFIG_HOME}` construct the adapter's `PathResolver` answers. *How* it gets there is the adapter's `SkillDelivery`; the shipped answer is an image-layer `COPY`. Unset means the harness installs no skills; the operator's `~/.claude/skills` is never a source. | `HarnessSpec.skills_dir_target` |
 
 **Operator skills are deliberately not aligned.** The out-of-tree host we
 compared against copies the operator's `~/.claude/skills/` into the
@@ -257,9 +265,9 @@ never reads the operator's home directory. The delta this creates is the
 *right* delta — stable across machines and dates.
 
 A task that genuinely needs domain skills ships them itself. Its
-`task.yaml` declares `harness_skills_dir: <task-relative path>`, and the
-harness image layer copies that directory to the CLI's skills path —
-`HarnessSpec.skills_dir_target`, `/root/.claude/skills/` for claude-code.
+`task.yaml` declares `harness_skills_dir: <task-relative path>`, and that
+directory reaches the CLI's skills path — `HarnessSpec.skills_dir_target`,
+`/root/.claude/skills/` for claude-code.
 This keeps every property the smuggled version loses: the bundle is
 versioned with the tests it is scored against, it shows up in a `git
 diff` on the task pack, and its content hash is recorded on the trial
@@ -274,6 +282,21 @@ a pack that ships them still runs under it, without them and with a
 warning, so one task stays comparable across harnesses. The bundle hash
 is written only when the bundle actually reached the image, so an absent
 key reads as "this agent had no skills" and never as "unknown".
+
+`skills_dir_target` says *where* the bundle lands; `SkillDelivery` says
+*how* it gets there. The shipped `ImageLayerSkillDelivery` appends a `COPY`
+to the generated harness Dockerfile, so the bundle rides the image; an
+embedder driving a different runtime passes its own as
+`TerminalBenchAdapter(params, skill_delivery=…)` and the image stops
+carrying skills at all. The target it receives has already been through
+the run's `PathResolver`, and `ImageLayerSkillDelivery` refuses one that
+still carries a `${…}` construct: Docker expands a `COPY` destination from
+the *image's* own `ENV`, so a base image declaring `ENV HOME=/home/agent`
+would answer a question the resolver was asked. That case is foreclosed
+deliberately — letting Docker place the skills while the resolver places
+the config files would give one harness two different homes. A runtime
+that wants image-`ENV` semantics supplies a `PathResolver` returning those
+paths, and stays the single authority on where its CLI lives.
 
 Some CLIs need file-based configuration that no env var (compose or
 otherwise) can supply — codex reads `openai_base_url` from

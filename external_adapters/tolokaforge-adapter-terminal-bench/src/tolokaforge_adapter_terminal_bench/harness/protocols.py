@@ -13,11 +13,15 @@ consume the *same* registry data.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Final, Protocol, runtime_checkable
 
 __all__ = [
     "PATH_CONSTRUCT_PATTERN",
     "PathResolver",
+    "SkillDelivery",
+    "SkillsBundle",
 ]
 
 PATH_CONSTRUCT_PATTERN: Final[re.Pattern[str]] = re.compile(
@@ -58,3 +62,45 @@ class PathResolver(Protocol):
     """
 
     def resolve(self, path: str) -> str: ...
+
+
+@dataclass(frozen=True)
+class SkillsBundle:
+    """A task pack's skills bundle, ready to reach a harness runtime."""
+
+    task_dir: Path
+    """Absolute path to the task-pack root the bundle ships inside."""
+
+    source_rel: str
+    """Bundle directory relative to :attr:`task_dir` — the task's
+    ``harness_skills_dir``."""
+
+    target: str
+    """Absolute directory inside the runtime the CLI reads skills from,
+    already through the run's :class:`PathResolver`."""
+
+    staging_dir: Path
+    """Absolute path to the materialised trial substrate."""
+
+
+@runtime_checkable
+class SkillDelivery(Protocol):
+    """Put a task pack's skills bundle where the CLI will read it.
+
+    Four clauses an implementation is written against:
+
+    - :meth:`deliver` is called **at most once per materialised task**, and
+      only when the task ships a bundle *and* the selected harness declares a
+      ``skills_dir_target``.
+    - It is called **after** the harness build context exists at
+      ``staging_dir/_harness/`` and **before** the synthesised compose file is
+      written, so an implementation may contribute to either.
+    - :attr:`SkillsBundle.target` has been through the run's
+      :class:`PathResolver`. Delivery never resolves paths; the two seams
+      compose in exactly one direction.
+    - Raising aborts materialisation. A delivery that cannot place the bundle
+      must not return quietly — a trial whose agent had no skills must never
+      read back as one that did.
+    """
+
+    def deliver(self, bundle: SkillsBundle) -> None: ...

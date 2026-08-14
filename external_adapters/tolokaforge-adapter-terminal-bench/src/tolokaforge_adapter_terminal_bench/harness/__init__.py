@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from tolokaforge.core.plugin_registry import discover_entry_points
 
 from .path_resolvers import DEFAULT_PATH_RESOLVER, LinuxRootResolver
-from .protocols import PathResolver
+from .protocols import PATH_CONSTRUCT_PATTERN, PathResolver, SkillDelivery, SkillsBundle
 
 __all__ = [
     "CONFIG_TEMPLATE_VARIABLES",
@@ -40,6 +40,7 @@ __all__ = [
     "HARNESS_REGISTRY_ENTRY_POINT_GROUP",
     "INSTALL_SCRIPT",
     "OPENROUTER_PREFIX",
+    "PATH_CONSTRUCT_PATTERN",
     "PLUGIN_REGISTRY_RESOURCE",
     "PROVIDER_ENV_INPUT_PREFIX",
     "PROVIDER_ENV_KEYS",
@@ -47,6 +48,8 @@ __all__ = [
     "HarnessSpec",
     "LinuxRootResolver",
     "PathResolver",
+    "SkillDelivery",
+    "SkillsBundle",
     "accepted_harnesses",
     "discover_plugin_harness_registries",
     "harness_command",
@@ -221,8 +224,17 @@ class HarnessSpec(BaseModel):
     :data:`PROVIDER_ENV_KEYS` (a run-config would then shadow this)."""
 
     skills_dir_target: str | None = None
-    """Absolute container directory a task pack's skills bundle is copied into
-    during the harness image build, or ``None`` for a CLI that reads no skills.
+    """Runtime directory a task pack's skills bundle is delivered to, or
+    ``None`` for a CLI that reads no skills.
+
+    Either an absolute path or one rooted at a ``${HOME}`` /
+    ``${CONFIG_HOME}`` construct the run's
+    :class:`~tolokaforge_adapter_terminal_bench.harness.protocols.PathResolver`
+    answers before
+    :class:`~tolokaforge_adapter_terminal_bench.harness.protocols.SkillDelivery`
+    sees it. Unlike a :attr:`config_files` key it may *not* be rooted at a
+    brace-less ``$VAR``: no shell reads this path, so nothing would expand it
+    the way the resolver does.
 
     The parity policy refuses the operator's own ``~/.claude/skills``: what a
     benchmark agent can read has to be versioned with the task rather than with
@@ -280,13 +292,17 @@ class HarnessSpec(BaseModel):
     @model_validator(mode="after")
     def _skills_target_is_an_absolute_path(self) -> HarnessSpec:
         """Refuse a target the image build would resolve somewhere unintended."""
-        if self.skills_dir_target is not None and not self.skills_dir_target.startswith("/"):
-            raise ValueError(
-                f"skills_dir_target {self.skills_dir_target!r} is relative; a Dockerfile "
-                "`COPY` target resolves against the image's WORKDIR, so give the absolute "
-                "path the CLI reads skills from. `~` is not expanded either."
-            )
-        return self
+        target = self.skills_dir_target
+        if target is None or target.startswith("/") or PATH_CONSTRUCT_PATTERN.match(target):
+            return self
+        raise ValueError(
+            f"skills_dir_target {target!r} is neither absolute nor rooted at a "
+            "`${VAR}` construct the run's PathResolver answers. A Dockerfile `COPY` "
+            "target resolves against the image's WORKDIR, and Docker expands neither "
+            "`~` nor a brace-less `$VAR` the way a shell would — `$HOME/.claude/skills/` "
+            "would be read off the image's own `ENV`, which is nobody's answer. Give the "
+            "absolute path the CLI reads skills from, or `${HOME}/...`."
+        )
 
     @model_validator(mode="after")
     def _install_source_fits_the_method(self) -> HarnessSpec:

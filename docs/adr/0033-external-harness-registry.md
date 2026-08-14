@@ -247,8 +247,11 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
 - **Task-pack skills bundle** — landed. A task pack declares
   `harness_skills_dir: <task-relative path>` in its `task.yaml`, and
   `HarnessSpec.skills_dir_target` names where a harness wants such a
-  bundle (`/root/.claude/skills/` for claude-code; unset means the
-  harness installs none). The image layer copies the directory, and
+  bundle — absolute, or rooted at a `${HOME}` / `${CONFIG_HOME}` construct
+  the run's `PathResolver` answers (`/root/.claude/skills/` for
+  claude-code; unset means the harness installs none). *How* the bundle
+  travels is the run's `SkillDelivery`; the shipped
+  `ImageLayerSkillDelivery` copies the directory into the image layer, and
   `TaskDescription.metadata["harness_skills_bundle_sha"]` records its
   content hash — the reproducible, auditable replacement for the
   operator-environment contamination the out-of-tree host smuggles. The
