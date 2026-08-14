@@ -1,0 +1,99 @@
+"""Unit tests for :mod:`tolokaforge.core.redaction`.
+
+Two contracts: the key-name vocabulary both redaction surfaces share, and the
+recursion :class:`SensitiveKeyRedaction` applies over an argument mapping.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from tolokaforge.core.redaction import (
+    REDACTED_PLACEHOLDER,
+    NoRedaction,
+    SensitiveKeyRedaction,
+    key_is_sensitive,
+)
+
+pytestmark = pytest.mark.unit
+
+
+class TestSensitiveKeyVocabulary:
+    """The vocabulary as measured, not as the constants read.
+
+    ``session_id`` sits in the exact-token set yet answers ``False``: the
+    matcher tests whole non-alphanumeric-delimited parts, and neither
+    ``session`` nor ``id`` is in either set. It is locked ``False`` because that
+    is what the engine does today — #1158 is the repair, and until it lands a
+    test claiming otherwise would be fiction.
+    """
+
+    @pytest.mark.parametrize(
+        ("key", "sensitive"),
+        [
+            ("password", True),
+            ("api_key", True),
+            ("apikey", True),
+            ("API_KEY", True),
+            ("authorization", True),
+            ("credential", True),
+            ("user_secret", True),
+            ("token", True),
+            ("bearer", True),
+            ("api_token", True),
+            ("bearer_token", True),
+            ("access_token", True),
+            ("refresh_token", True),
+            ("session_id", False),
+            ("max_tokens", False),
+            ("total_tokens", False),
+            ("prompt_tokens", False),
+            ("url", False),
+            ("user_id", False),
+        ],
+    )
+    def test_key_is_sensitive_matches_the_measured_table(self, key: str, sensitive: bool) -> None:
+        assert key_is_sensitive(key) is sensitive
+
+
+class TestSensitiveKeyRedaction:
+    def test_credential_named_value_is_replaced(self) -> None:
+        result = SensitiveKeyRedaction().redact_arguments({"api_token": "sk-live-abc123"})
+
+        assert result == {"api_token": REDACTED_PLACEHOLDER}
+
+    def test_ordinary_value_is_left_alone(self) -> None:
+        result = SensitiveKeyRedaction().redact_arguments({"url": "https://api.example/v1"})
+
+        assert result == {"url": "https://api.example/v1"}
+
+    def test_nested_mapping_is_reached(self) -> None:
+        result = SensitiveKeyRedaction().redact_arguments(
+            {"body": {"api_key": "sk-live-abc123", "query": "orders"}}
+        )
+
+        assert result == {"body": {"api_key": REDACTED_PLACEHOLDER, "query": "orders"}}
+
+    def test_mapping_inside_a_list_is_reached(self) -> None:
+        result = SensitiveKeyRedaction().redact_arguments(
+            {"headers": [{"api_key": "sk-live-abc123"}, {"accept": "application/json"}]}
+        )
+
+        assert result == {
+            "headers": [{"api_key": REDACTED_PLACEHOLDER}, {"accept": "application/json"}]
+        }
+
+    def test_the_input_mapping_is_not_mutated(self) -> None:
+        """The writer redacts a trajectory the run still holds in memory."""
+        arguments = {"body": {"api_key": "sk-live-abc123"}}
+
+        SensitiveKeyRedaction().redact_arguments(arguments)
+
+        assert arguments == {"body": {"api_key": "sk-live-abc123"}}
+
+
+class TestNoRedaction:
+    def test_credential_named_value_survives(self) -> None:
+        result = NoRedaction().redact_arguments({"api_token": "sk-live-abc123"})
+
+        assert result == {"api_token": "sk-live-abc123"}

@@ -7,14 +7,17 @@ The helper is the single choke point for two policies:
    raise ``KeyError`` at record construction.
 2. Redact values under keys naming a credential (``password``, ``secret``,
    ``token``, ``api_key``, …) so a caller passing sensitive data in the
-   context dict cannot leak it into the log stream.
+   context dict cannot leak it into the log stream. The vocabulary is
+   :mod:`tolokaforge.core.redaction`'s, shared with the artifact writer —
+   these cases lock what the log path does with it.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from tolokaforge.core.logging import _REDACTED, StructuredLogger
+from tolokaforge.core.logging import StructuredLogger
+from tolokaforge.core.redaction import REDACTED_PLACEHOLDER
 
 pytestmark = pytest.mark.unit
 
@@ -41,6 +44,7 @@ class TestSensitiveKeyRedaction:
             "API_KEY",
             "token",
             "access_token",
+            "api_token",
             "authorization",
             "user_secret",
             "credential",
@@ -51,7 +55,7 @@ class TestSensitiveKeyRedaction:
     def test_sensitive_key_value_is_redacted(self, key: str) -> None:
         result = StructuredLogger._sanitize_extra({key: "sk-abc123"})
 
-        assert result[key] == _REDACTED
+        assert result[key] == REDACTED_PLACEHOLDER
 
     @pytest.mark.parametrize(
         "key",
@@ -84,11 +88,11 @@ class TestSensitiveKeyRedaction:
         """
         result = StructuredLogger._sanitize_extra({"module": "cli", "password": "hunter2"})
 
-        assert result == {"ctx_module": "cli", "password": _REDACTED}
+        assert result == {"ctx_module": "cli", "password": REDACTED_PLACEHOLDER}
 
     def test_redaction_replaces_the_value_completely(self) -> None:
         """The redacted marker does not contain the original value."""
         result = StructuredLogger._sanitize_extra({"api_key": "sk-real-token-1234"})
 
         assert "sk-real-token" not in result["api_key"]
-        assert result["api_key"] == _REDACTED
+        assert result["api_key"] == REDACTED_PLACEHOLDER

@@ -78,6 +78,7 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     "tolokaforge/core/model_data.py",
     "tolokaforge/core/netpolicy_constants.py",
     "tolokaforge/core/pricing.py",
+    "tolokaforge/core/redaction.py",
     "tolokaforge/core/run_display_events.py",
     "tolokaforge/core/tool_call_ids.py",
     "tolokaforge/core/trial.py",
