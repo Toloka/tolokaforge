@@ -789,17 +789,15 @@ initial user prompt precedes the first assistant message and carries index 0.
   - *Attempted and rejected.* An unknown tool name or schema-invalid arguments are
     recorded, so the call emits a normal pair carrying `tool_not_found` /
     `invalid_arguments` and a `status` matcher counts it.
-  - *`trial_not_found`.* The two substrates differ, and the difference is declared
-    rather than implied. The runner's own trial-context recorder has no trial to
-    record into, so runner-side the call emits a `tool_call` with no `tool_result`,
-    indistinguishable from the never-attempted case. **Core-side it is recorded.**
-    Since the caller records, `GrpcRunnerClient` builds a `ToolResult` whose status
-    the proto does not map (`RECORDED_STATUS_BY_PROTO` has no entry for
-    `TRIAL_NOT_FOUND`), and `resolve_tool_status` then resolves a failed result to
-    `error` — so the call emits a normal pair and a `status` matcher sees `error`.
-    Either way it is a harness fault for which no grading verdict is meaningful, so
-    a constraint should not depend on which shape it takes. Whether `error` is the
-    right status for a call that never reached a tool is #727.
+  - *`trial_not_found`, an instance of the first state.* The runner holds no
+    registration for the trial, so the call reached no tool on either substrate:
+    runner-side there is no trial context to record into, and core-side
+    `GrpcRunnerClient` raises `TrialNotRegisteredError` rather than building a
+    `ToolResult`. Both emit a `tool_call` with no `tool_result`. The trial ends
+    there, with `termination_reason: trial_lost` and outcome class
+    `harness_error`, and it is not graded — see § Retryability and countability in
+    [`RUNNER.md`](RUNNER.md). It is a harness fault for which no grading verdict is
+    meaningful, and no `status` matcher can read it as the agent's tool failing.
 - **G5 — where both views describe one call, the record wins.** The two views word
   the same failure differently: the `role: tool` message carries `Error: <text>`,
   while the record carries that text alone, untruncated. So `result` and `status`
@@ -2768,7 +2766,6 @@ evaluator.
 | limit | owner |
 |---|---|
 | An `args` path is checked only at its first segment, so a typo below it is reported as unchecked rather than caught | #765 |
-| A harness-side `TRIAL_NOT_FOUND` is recorded as a tool error, so a `status` matcher reads it as the agent's failure | #727 |
 
 Wall-clock time is not on the list: `latency_seconds` is deliberately unmatchable
 and stays so, because it is not compared across substrates.

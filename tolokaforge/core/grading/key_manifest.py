@@ -262,13 +262,6 @@ implementations kept in step, and the block crosses the adapter as the same clas
 — there is no per-key translation for either to drift through.
 """
 
-_TRACE_CHECKS_EVIDENCE_LIMITS = (
-    "one declared limit on the evidence a matcher may read, so it does not surface as "
-    "undeclared drift. #727: a TRIAL_NOT_FOUND harness fault is recorded as a tool "
-    "error, so a status predicate reading error can select a call whose failure was "
-    "not the agent's"
-)
-
 _TRACE_CHECKS_ALTERNATIVES_NARROWING = (
     "the alternative routes a pack declares, each scored as a whole against the "
     "shared constraints plus its own. An entry carries one runner_field, and the "
@@ -277,7 +270,7 @@ _TRACE_CHECKS_ALTERNATIVES_NARROWING = (
     "by this key rather than by its own "
     "— #772 narrows the ledger's populated-implies-accounted guarantee there. The "
     "parity claim is untouched: one function reads a TraceConstraint identically "
-    "whichever list it came from. "
+    "whichever list it came from."
 )
 
 _TRACE_CHECKS_FAMILY_ROOT_REASON = (
@@ -285,7 +278,7 @@ _TRACE_CHECKS_FAMILY_ROOT_REASON = (
     "leaves live under, and every score under it is a leaf's. CONFIG_INPUT is what "
     "that is — the root shapes nothing and scores nothing of its own — and the "
     "differential its enforcement claims is the family's, run by the leaves' own "
-    "fixture packs. " + _TRACE_CHECKS_EVIDENCE_LIMITS
+    "fixture packs."
 )
 
 
@@ -329,7 +322,6 @@ def _trace_constraint_kind_key(kind: str) -> GradingKey:
         runner_element_path=f"require.{kind}",
         core_evaluator=_TRACE_CHECKS_EVALUATOR,
         runner_evaluator=_TRACE_CHECKS_EVALUATOR,
-        reason=_TRACE_CHECKS_EVIDENCE_LIMITS,
     )
 
 
@@ -606,7 +598,6 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_field="TraceChecksConfig.constraints",
         core_evaluator=_TRACE_CHECKS_EVALUATOR,
         runner_evaluator=_TRACE_CHECKS_EVALUATOR,
-        reason=_TRACE_CHECKS_EVIDENCE_LIMITS,
     ),
     GradingKey(
         author_key="trace_checks.alternatives",
@@ -617,37 +608,36 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_field="TraceChecksConfig.alternatives",
         core_evaluator=_TRACE_CHECKS_EVALUATOR,
         runner_evaluator=_TRACE_CHECKS_EVALUATOR,
-        reason=_TRACE_CHECKS_ALTERNATIVES_NARROWING + _TRACE_CHECKS_EVIDENCE_LIMITS,
+        reason=_TRACE_CHECKS_ALTERNATIVES_NARROWING,
     ),
     *(_trace_constraint_kind_key(kind) for kind in _TRACE_CONSTRAINT_MANIFEST_KINDS),
     _trace_constraint_field_key(
         "weight",
         "the share of the component score a constraint carries, which both substrates "
-        "fold by the same weighted fraction. " + _TRACE_CHECKS_EVIDENCE_LIMITS,
+        "fold by the same weighted fraction.",
     ),
     _trace_constraint_field_key(
         "on_missing",
         "what an anchor that matched nothing decides, which is a policy over the "
-        "constraint's verdict rather than a check of its own. " + _TRACE_CHECKS_EVIDENCE_LIMITS,
+        "constraint's verdict rather than a check of its own.",
     ),
     _trace_constraint_field_key(
         "severity",
         "whether a constraint carries a share of the component or is a gate that must "
         "hold, which decides whether it enters the weighted average at all and whether "
-        "its violation takes the component to 0.0. " + _TRACE_CHECKS_EVIDENCE_LIMITS,
+        "its violation takes the component to 0.0.",
     ),
     _trace_constraint_field_key(
         "within",
         "the inclusive turn window every matcher in a constraint is restricted to, "
-        "which narrows what the kinds select. " + _TRACE_CHECKS_EVIDENCE_LIMITS,
+        "which narrows what the kinds select.",
     ),
     _trace_constraint_field_key(
         "bind",
         "the values a constraint draws out of one event, which every matcher in its "
         "require tree then resolves a binding reference against — so the kinds are "
         "read once per candidate assignment rather than once, and the policy for a "
-        "binder that yielded none decides the constraint on its own. "
-        + _TRACE_CHECKS_EVIDENCE_LIMITS,
+        "binder that yielded none decides the constraint on its own.",
     ),
     GradingKey(
         author_key="llm_judge",

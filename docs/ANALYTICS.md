@@ -93,10 +93,9 @@ The counts that say which is which sit in the same row:
 - `measured_trials`: the attempts inside that denominator — **the denominator of
   every rate below except `avg_score`**
 - `scored_trials`: the measured attempts that produced a grade — **`avg_score`'s
-  denominator**, and the weight `avg_score_micro` uses. A `harness_error` trial
-  never reaches grading and an `ungradeable` one reaches it and comes back
-  without a verdict, so `scored_trials < measured_trials` on any run that hit
-  either
+  denominator**, and the weight `avg_score_micro` uses. An `ungradeable` trial
+  reaches grading and comes back without a verdict, and a `trial_lost` one is not
+  graded at all, so `scored_trials < measured_trials` on any run that hit either
 - `infrastructure_aborts`: per reason, the attempts excluded from that
   denominator (`{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`). All
   three keys are always present, so a zero is distinguishable from a missing key
@@ -112,7 +111,11 @@ The counts that say which is which sit in the same row:
   it was counted as: `{"max_turns": {"class": "measured", "count": 7}}`. An
   ungradeable attempt terminates the way a graded one does, so its row is keyed
   `ungradeable_<reason>` — `{"ungradeable_agent_done": {"class": "ungradeable",
-  "count": 1}}` — which keeps one key mapping to exactly one class
+  "count": 1}}` — which keeps one key mapping to exactly one class. A trial the
+  runner lost is keyed `trial_lost` with class `harness_error`; a runner lost
+  *after* the trial's last tool call is not that row, because the agent finished
+  and it was grading that refused — that attempt lands under
+  `ungradeable_<reason>`, which is the honest reading of it
 
 `measured_trials + sum(infrastructure_aborts.values()) == total_trials`, and
 `0 <= scored_trials <= measured_trials`, and — a trial being classified once, so
