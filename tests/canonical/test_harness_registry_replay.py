@@ -1,13 +1,11 @@
-"""Acceptance test — fraction of harness-touching commits that would land
-Bucket A under the `tolokaforge-harnesses` split proposed in the harness
-detachment plan (mirrors ADR-0030's models-wheel replay).
+"""Acceptance test — fraction of harness-touching commits that ship as
+pure DATA (Bucket A) vs. CODE (Bucket B).
 
-See the detachment plan at
-``~/.claude/plans/toloka-tolokaforge/harnesses-detachment-2026-08-14.md`` for
-the target this test reports against, and
-:mod:`automation.harness_bucket_classifier` for the Bucket A / Bucket B
-classifier.
-"""
+Measures data-vs-code migration progress on the coding-harness surface.
+The higher the Bucket-A fraction, the more of the surface is expressible
+as YAML edits an operator can make without an adapter release.
+
+See :mod:`automation.harness_bucket_classifier` for the classifier."""
 
 from __future__ import annotations
 

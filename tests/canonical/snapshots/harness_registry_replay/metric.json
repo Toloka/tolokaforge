@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 6,
+  "bucket_b_count": 7,
   "commits": [
     {
       "adapter_paths": [
@@ -1356,6 +1356,23 @@
         "tolokaforge/runner/compose_naming.py",
         "tolokaforge/runner/models.py",
         "tolokaforge/runner/tool_factory.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
+        "tests/unit/test_terminal_bench.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-14",
+      "pr": 1174,
+      "reason": "2 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "a7e4a60a88e1ce48da97f8d1c35fd09a33ea295f",
+      "subject": "feat(tbench): move _VENDOR_NAMESPACE_PREFIXES + PROVIDER_ENV_KEYS to data/registry_meta.yaml (#1174)",
+      "touched_files": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/registry_meta.yaml",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
+        "tests/unit/test_terminal_bench.py"
       ]
     },
     {

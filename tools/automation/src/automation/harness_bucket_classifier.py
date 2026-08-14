@@ -1,18 +1,18 @@
-"""Bucket A/B classifier for the coding-harness registry taxonomy.
+"""Data-vs-code taxonomy classifier for the coding-harness surface.
 
-Analog of :mod:`automation.bucket_classifier` for coding-harness commits.
-Reads the set of files a commit touched and decides whether the change is
-Bucket A (data / example config / doc content only, would ship without
-requiring a ``tolokaforge-adapter-terminal-bench`` release under the
-`tolokaforge-harnesses` split proposed in the detachment plan) or Bucket B
-(any touched file falls outside the Bucket-A allow-list — Python or shell
+Analog of :mod:`automation.bucket_classifier` for coding-harness
+commits. Reads the set of files a commit touched and decides whether
+the change is Bucket A (data / example config / doc only — the
+extension surface a plugin bundle would exercise) or Bucket B (any
+touched file falls outside the Bucket-A allow-list — Python or shell
 that lives in the adapter or in a test that exercises adapter code).
 
-The primitive is the sole source of truth for the harness bucket split and
-feeds one caller today:
+The primitive measures progress in migrating the harness surface from
+code to data — an ongoing hygiene metric independent of any future
+packaging decision. It feeds one caller today:
 
 - ``tests/canonical/test_harness_registry_replay.py`` — replays every
-  ``^(feat|fix|refactor)(tbench):.*harness`` commit reachable from HEAD and
+  commit reachable from HEAD that touched the harness surface and
   asserts the historical distribution against a canonical snapshot.
 
 Never opens a git repository and never reads any of the files it
@@ -43,8 +43,8 @@ BUCKET_A_ALLOWED_FILES: frozenset[str] = frozenset(
 
 
 BUCKET_A_ALLOWED_PREFIXES: tuple[str, ...] = (
-    # Shipped YAML data (harnesses.yaml today; registry_meta.yaml when
-    # Stage 2 lands; anything else the wheel ships under data/ later).
+    # Shipped YAML data (harnesses.yaml, registry_meta.yaml, and
+    # anything else the adapter ships under data/ later).
     "external_adapters/tolokaforge-adapter-terminal-bench/src/"
     "tolokaforge_adapter_terminal_bench/data/",
     # The two canonical-snapshot trees the harness surface pins. Regenerating
