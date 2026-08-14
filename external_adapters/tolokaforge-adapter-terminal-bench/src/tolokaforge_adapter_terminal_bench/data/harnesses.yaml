@@ -133,6 +133,16 @@ harnesses:
     # SecretManager fails at trial start (loudly), which is the right shape:
     # a run measuring a model against a laptop the operator can't
     # authenticate would silently degrade to the baseline container score.
+    #
+    # Alternative — LiteLLM gateway: a team that hosts a LiteLLM gateway
+    # with a Google credential can route gemini-cli through it and avoid
+    # distributing Google keys to operator laptops. gemini-cli's
+    # `AuthType.GATEWAY` mode (activated by `GOOGLE_GEMINI_BASE_URL`)
+    # keeps emitting `generateContent` requests but sends them to the
+    # gateway's Gemini passthrough at `{base}/gemini/v1beta/models/…`.
+    # A worked overlay ships at
+    # `examples/terminal_bench/gemini_litellm_overlay.yaml`; see
+    # `README.md` § Routing options for the general pattern.
     provider_env:
       GEMINI_API_KEY: "${secret:GEMINI_API_KEY}"
 

@@ -192,11 +192,10 @@ complete working config.
 Values resolve through `expand_secret_refs`, so a run config names a
 credential rather than carrying it. A value containing a newline or a `$` is
 refused: each becomes one line of the per-trial `.env`, where a newline splits
-the line and a `$` starts an interpolation. Keys are checked against an
-allow-list —
-`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
-`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `GOOGLE_API_KEY` — and anything else is
-refused naming the accepted set.
+the line and a `$` starts an interpolation. Keys are checked against
+`PROVIDER_ENV_KEYS` — a closed allow-list covering the Anthropic, OpenAI,
+Google/Gemini, OpenRouter, Kimi, and LiteLLM name families — and anything
+outside it is refused naming the accepted set.
 
 The path from config to container:
 
@@ -219,6 +218,41 @@ happens to hold silently replace the declared value. That puts a real
 production key inside a benchmark container and into its trial artifacts.
 Nothing sets the prefixed name by accident, so the container's environment is
 exactly what the run config declared.
+
+### Routing options — OpenRouter, LiteLLM, or a mix
+
+`HarnessSpec.provider_env` names CLI-native env vars (`ANTHROPIC_BASE_URL`,
+`OPENAI_BASE_URL`, …); its values name literal URLs and credential keys. The
+adapter has no opinion on which gateway or vendor those URLs belong to — an
+overlay swaps the whole `provider_env` block, and the CLI reads whatever it
+was handed. That leaves the operator free to choose:
+
+**OpenRouter (the shipped default).** Every shipped harness ships a
+`provider_env` that targets `openrouter.ai/api` (Anthropic-compat surface for
+claude-code / opencode, OpenAI-compat surface for codex / grok-build /
+kimi-code). One credential — `OPENROUTER_API_KEY` — covers all five. gemini-cli
+is the one exception: its wire protocol (Google's `generateContent`) is not on
+OpenRouter's surface, so the shipped default targets Google directly and
+`GEMINI_API_KEY` is required.
+
+**LiteLLM (operator overlay).** A team-hosted LiteLLM gateway centralises
+credentials at the gateway and can serve wire protocols OpenRouter does not —
+most notably Google's `generateContent`, via LiteLLM's Gemini passthrough at
+`{base}/gemini/v1beta/models/…`. The route is a `harness_presets_file` overlay
+that whole-replaces the harness entry with a LiteLLM-flavoured `provider_env`
+and `container_env`. A worked example ships at
+[`examples/terminal_bench/gemini_litellm_overlay.yaml`](../../examples/terminal_bench/gemini_litellm_overlay.yaml)
+for gemini-cli.
+
+**Per-harness split.** Because each harness's `provider_env` resolves
+independently, one run can leave four harnesses on OpenRouter and route
+gemini-cli through LiteLLM by naming a `harness_presets_file` that only
+overlays the gemini-cli entry — the other five stay as shipped. This is the
+current recommended shape.
+
+`LITELLM_API_KEY`, `LITELLM_BASE_URL`, and `GOOGLE_GEMINI_BASE_URL` are in
+`PROVIDER_ENV_KEYS`, so switching a harness to LiteLLM does not need an
+adapter release — it is a data-only change on the overlay side.
 
 ### Harness parity policy
 

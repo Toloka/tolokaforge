@@ -539,6 +539,23 @@ PROVIDER_ENV_KEYS: frozenset[str] = frozenset(
         # CLI's own credentials-loader looks up these two names verbatim.
         "KIMI_MODEL_API_KEY",
         "KIMI_MODEL_BASE_URL",
+        # gemini-cli's ``AuthType.GATEWAY`` mode reads ``GOOGLE_GEMINI_BASE_URL``
+        # to route ``generateContent`` requests away from Google's own
+        # endpoint at ``generativelanguage.googleapis.com``. Widening the
+        # allow-list here lets an overlay point gemini-cli at a LiteLLM
+        # passthrough (or any Gemini-schema-serving gateway) without touching
+        # the shipped default — see ``examples/terminal_bench/
+        # gemini_litellm_overlay.yaml``.
+        "GOOGLE_GEMINI_BASE_URL",
+        # LiteLLM as a first-class routing surface. ``LITELLM_API_KEY`` is
+        # the virtual key a team-hosted LiteLLM gateway issues, and
+        # ``LITELLM_BASE_URL`` names the gateway's base URL. Their presence
+        # in the allow-list is what makes a "route through LiteLLM" overlay
+        # a data-only change on any harness whose CLI accepts alternate
+        # endpoint URLs — no adapter code moves. See ``README.md``
+        # § Routing options.
+        "LITELLM_API_KEY",
+        "LITELLM_BASE_URL",
     }
 )
 """Environment variables a harness CLI may be given inside the task container.

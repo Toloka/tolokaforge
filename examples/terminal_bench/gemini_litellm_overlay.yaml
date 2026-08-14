@@ -1,0 +1,65 @@
+# harness_presets_file overlay — route gemini-cli via a LiteLLM gateway
+#
+# The shipped gemini-cli entry in ``data/harnesses.yaml`` targets Google's
+# ``generativelanguage.googleapis.com`` endpoint and needs a real
+# ``GEMINI_API_KEY`` (Google AI Studio or Vertex SA). That's the honest
+# default: the CLI speaks Google's native ``generateContent`` schema and no
+# OpenAI-compat surface can proxy it.
+#
+# This overlay is the alternative when a team runs a LiteLLM gateway with
+# Google credentials centralised at the gateway side. gemini-cli's
+# ``AuthType.GATEWAY`` mode (triggered by ``GOOGLE_GEMINI_BASE_URL``) keeps
+# emitting ``generateContent`` requests but sends them to the gateway URL;
+# LiteLLM's Gemini passthrough at ``{base}/gemini/v1beta/models/…`` serves
+# them and forwards to Google using the gateway's own credential.
+#
+# Apply this file via the run config's harness-adapter params:
+#
+#   evaluation:
+#     harness_adapter:
+#       type: terminal_bench
+#       params:
+#         agent_harness: gemini-cli
+#         harness_presets_file: examples/terminal_bench/gemini_litellm_overlay.yaml
+#
+# ADR-0033 does whole-entry replacement, so this file redeclares every
+# HarnessSpec field the shipped default carries — a partial overlay would
+# drop the fields it doesn't restate.
+#
+# Two operator env vars need to be set:
+#
+#   ``LITELLM_API_KEY``   the virtual key or master key the gateway issues.
+#   ``LITELLM_BASE_URL``  the gateway URL, e.g. ``https://litellm.example/`` —
+#                         the ``/gemini`` suffix in the URL below is the
+#                         passthrough's own path, NOT part of the base URL.
+#
+# Both keys are in ``PROVIDER_ENV_KEYS`` (allow-listed by the adapter), so
+# no adapter code change is needed to run this overlay.
+
+harnesses:
+  gemini-cli:
+    install_method: "npm"
+    install_source: "@google/gemini-cli"
+    version: "0.55.1"
+    argv_prefix: ["gemini"]
+    argv_suffix: ["--yolo", "--prompt"]
+    strip_vendor_namespace: true
+    # ``GEMINI_CLI_TRUST_WORKSPACE=true`` prevents ``--yolo`` from silently
+    # falling back to "default" mode in a non-git workspace and blocking
+    # every tool call. ``GOOGLE_GEMINI_BASE_URL`` activates GATEWAY mode.
+    container_env:
+      GEMINI_CLI_TRUST_WORKSPACE: "true"
+      GOOGLE_GEMINI_BASE_URL: "${secret:LITELLM_BASE_URL}/gemini"
+    # Headless ``--prompt`` mode 400s with "Invalid auth method selected"
+    # without a pre-pinned ``selectedType``. GATEWAY mode requires
+    # ``"gateway"`` here — the shipped default ships ``"gemini-api-key"``
+    # for the direct-to-Google path.
+    config_files:
+      "/root/.gemini/settings.json": |-
+        {"security":{"auth":{"selectedType":"gateway"}},"experimental":{"skills":true}}
+    # ``GEMINI_API_KEY`` is what gemini-cli reads for the ``x-goog-api-key``
+    # header it sends to the gateway. LITELLM_API_KEY is the credential
+    # the gateway expects — the header value is a virtual key, not a
+    # Google credential.
+    provider_env:
+      GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"

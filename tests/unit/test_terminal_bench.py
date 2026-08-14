@@ -2341,6 +2341,50 @@ class TestHarnessProviderEnvOverlay:
             self._adapter(fixture_dir, tmp_path)
 
 
+class TestProviderEnvKeysAllowList:
+    """``PROVIDER_ENV_KEYS`` is a closed allow-list; every forwarded value
+    lands in the per-trial compose ``.env`` and then in the container, so
+    additions and removals are explicit contract changes and get pinned
+    here rather than surfacing as a snapshot diff.
+
+    The set is a routing-neutral surface: it names what a CLI can receive,
+    not what gateway or provider anything talks to. The two LiteLLM keys
+    and ``GOOGLE_GEMINI_BASE_URL`` are here to make routing-via-LiteLLM a
+    data-only overlay on any CLI whose native env-var names honour an
+    alternate base URL — see ``README.md`` § Routing options."""
+
+    def test_the_shipped_allow_list_is_pinned(self):
+        from tolokaforge_adapter_terminal_bench.harness import PROVIDER_ENV_KEYS
+
+        assert (
+            frozenset(
+                {
+                    "ANTHROPIC_API_KEY",
+                    "ANTHROPIC_AUTH_TOKEN",
+                    "ANTHROPIC_BASE_URL",
+                    "OPENAI_API_KEY",
+                    "OPENAI_BASE_URL",
+                    "GOOGLE_API_KEY",
+                    "GEMINI_API_KEY",
+                    "GOOGLE_GEMINI_BASE_URL",
+                    "OPENROUTER_API_KEY",
+                    "OPENROUTER_BASE_URL",
+                    "KIMI_MODEL_API_KEY",
+                    "KIMI_MODEL_BASE_URL",
+                    "LITELLM_API_KEY",
+                    "LITELLM_BASE_URL",
+                }
+            )
+            == PROVIDER_ENV_KEYS
+        )
+
+    def test_a_key_outside_the_allow_list_is_refused(self):
+        from tolokaforge_adapter_terminal_bench.harness import validate_provider_env_keys
+
+        with pytest.raises(ValueError, match="not forwardable"):
+            validate_provider_env_keys(["MY_CUSTOM_TOKEN"])
+
+
 class TestHarnessPresetsFileOverlay:
     """An operator ships harness entries without an adapter release."""
 
@@ -2438,6 +2482,28 @@ class TestHarnessPresetsFileOverlay:
         from tolokaforge_adapter_terminal_bench.harness import HARNESSES
 
         assert self._adapter(fixture_dir, tmp_path, None).harnesses == HARNESSES
+
+    def test_shipped_gemini_litellm_overlay_resolves(self, fixture_dir, tmp_path, monkeypatch):
+        """The shipped overlay example at
+        ``examples/terminal_bench/gemini_litellm_overlay.yaml`` is the sanctioned
+        path to route gemini-cli via a LiteLLM gateway. It must resolve into a
+        valid ``HarnessSpec`` — a stale field name or a missed allow-list widen
+        surfaces here rather than as a load-time crash on the operator's
+        machine."""
+        monkeypatch.setenv("LITELLM_API_KEY", "sk-litellm-test")
+        monkeypatch.setenv("LITELLM_BASE_URL", "https://litellm.example.test")
+        examples_dir = Path(__file__).parent.parent.parent / "examples" / "terminal_bench"
+        overlay = examples_dir / "gemini_litellm_overlay.yaml"
+        adapter = self._adapter(
+            fixture_dir, tmp_path, overlay, agent_harness="gemini-cli", agent_model="gemini-3-pro"
+        )
+        spec = adapter.harnesses["gemini-cli"]
+        assert spec.container_env["GEMINI_CLI_TRUST_WORKSPACE"] == "true"
+        assert spec.container_env["GOOGLE_GEMINI_BASE_URL"] == ("${secret:LITELLM_BASE_URL}/gemini")
+        assert spec.provider_env == {"GEMINI_API_KEY": "${secret:LITELLM_API_KEY}"}
+        # The resolved envelope on the adapter has secrets expanded — this is
+        # what the trial container actually sees.
+        assert adapter.agent_provider_env == {"GEMINI_API_KEY": "sk-litellm-test"}
 
 
 class _FakeDistribution:
