@@ -19,12 +19,13 @@ for the per-trial YAML files that make up a trial bundle:
 * ``tools_schemas.yaml`` — post-policy tool list, what the provider saw
 * ``prompts.yaml`` — per-trial agent + user-simulator system prompts
 
-Every mapping-shaped artifact — the task snapshot, the tool-call arguments in
-the message trace and in the record, the env snapshot, each tool schema — goes
-through the redaction policy on its way to disk. ``prompts.yaml``, ``grade.yaml``
-and ``logs.yaml`` are rendered prose or already sanitised at source, so they are
-written as the run produced them; see
-[`docs/SECURITY.md`](../../../docs/SECURITY.md) for that boundary.
+Every mapping-shaped artifact — the task snapshot, the tool-call arguments in the
+message trace and in the record, the env snapshot, each tool schema, the verdict's
+diff and check details, each log record — goes through the redaction policy on its
+way to disk. ``prompts.yaml`` is rendered prose with no key to match on and is
+written as the run produced it, as are the prose fields inside the artifacts the
+policy rewrites; see [`docs/SECURITY.md`](../../../docs/SECURITY.md) for that
+boundary.
 
 Every artifact is YAML, every artifact is per-trial — a trial bundle is
 self-contained, no sidecar lookup needed for audit. Disk overhead is
@@ -191,9 +192,9 @@ def refuse_redacted_bundle(trial_dir: Path) -> None:
     stamp = bundle_redaction(trial_dir)
     if stamp is None:
         return
-    # Either list can be empty: the judge-replay path withholds the judge sidecars
-    # and writes no mapping-shaped artifact at all, so a stamp naming only
-    # ``omitted`` is a bundle this refusal still has to describe.
+    # Either list can be empty: the stamp is read back off a bundle, so one that
+    # names only what it withheld — or names nothing at all — is a bundle this
+    # refusal still has to describe rather than refuse in an empty sentence.
     did: list[str] = []
     if stamp.artifacts:
         did.append(f"rewrote {', '.join(stamp.artifacts)}")

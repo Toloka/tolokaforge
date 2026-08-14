@@ -31,13 +31,10 @@ What each claim carries:
 mapping-shaped artifacts — the sites a key-name rule can reach — and names the
 one it cannot. ``prompts.yaml`` is rendered prose: a system prompt is text, there
 is no key to match on, so the credential planted in it survives both policies and
-the scan lists it. Judge prose — ``Grade.reasons`` and
-``CriterionResult.justification`` — is the same shape; the judge is stubbed here,
-so this file's green says nothing about it. ``logs.yaml`` is outside the write
-policy for the opposite reason: its context keys are sanitised at source by the
-same vocabulary, which is why the planted log line here carries the credential
-under a credential-*named* key — a value quoted in a log message would survive.
-All three are #1157's.
+the scan lists it. The prose *fields* of rewritten files are the same shape —
+``Grade.reasons``, ``CriterionResult.justification``, a log record's ``message``
+— and nothing plants the credential in one here, so the scan's absence says
+nothing about them. Both are #1157's.
 """
 
 from __future__ import annotations
@@ -72,6 +69,7 @@ from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
+    CustomCheckDetail,
     Grade,
     GradeComponents,
     JudgeInputs,
@@ -169,9 +167,10 @@ def _recorded_trajectory() -> Trajectory:
     below.
 
     Every argument-derived site a bundle has carries the credential: the recorded
-    call, the message trace, the final env snapshot, the judge transcript and the
-    judge's structured inputs. The whole-bundle scan is only a lock over the files
-    that actually hold one.
+    call, the message trace, the final env snapshot, the verdict's own mappings —
+    the diffed rows in ``state_diff`` and what a custom check recorded — the judge
+    transcript and the judge's structured inputs. The whole-bundle scan is only a
+    lock over the files that actually hold one.
     """
     recorder = TrialToolCallRecorder()
     arguments = {"id": "O-1", "url": _URL, "api_token": _SECRET, "body": {"api_key": _SECRET}}
@@ -208,6 +207,14 @@ def _recorded_trajectory() -> Trajectory:
             binary_pass=True,
             score=1.0,
             components=GradeComponents(llm_judge=1.0),
+            state_diff={"session": {"api_token": _SECRET}},
+            custom_checks_details=[
+                CustomCheckDetail(
+                    check_name="webhook_called",
+                    status="passed",
+                    details={"request": {"authorization": f"Bearer {_SECRET}"}},
+                )
+            ],
             judge_status=JudgeStatus.COMPLETED,
             judge_transcript=[
                 {"role": "user", "content": f"  -> tool_call get_order(api_token={_SECRET})"}
@@ -226,9 +233,9 @@ def _write_bundle(trial_root: Path, policy: RedactionPolicy, trajectory: Traject
     Every artifact the phase writes is fed the credential first, each in the shape
     that artifact carries one: a credential-named key in the task snapshot and in a
     tool schema, and rendered prose in the agent's system prompt. The trial's logger
-    is handed it under a credential-named context key, which the log path sanitises
-    at source — ``logs.yaml`` is written from what that already redacted, never
-    through the write policy.
+    is handed it twice — once under a top-level credential-named context key, which
+    the log path redacts at source, and once nested inside a mapping-valued context,
+    which only the write policy reaches.
     """
     conductor = make_conductor(
         make_run_config(trial_root / "results"),
@@ -238,7 +245,9 @@ def _write_bundle(trial_root: Path, policy: RedactionPolicy, trajectory: Traject
     )
     conductor.agent_client.capabilities.schema_sanitizer.sanitize.return_value = _TOOLS_SCHEMAS
     runner = replace(runner_stub(), effective_system_prompt=f"Authenticate with {_SECRET}.")
-    runner.logger.info("tool.request", tool="get_order", api_token=_SECRET)
+    runner.logger.info(
+        "tool.request", tool="get_order", api_token=_SECRET, payload={"api_token": _SECRET}
+    )
     setup = make_setup(trial_root, _TASK_ID, 0)
     conductor._write_artifacts(
         make_trial_spec(trial_id=f"{_TASK_ID}:0", task_id=_TASK_ID),
@@ -279,6 +288,17 @@ def _task_snapshot(bundle: Path) -> dict[str, Any]:
 
 def _tools_schemas(bundle: Path) -> list[dict[str, Any]]:
     return yaml.safe_load((bundle / "tools_schemas.yaml").read_text(encoding="utf-8"))
+
+
+def _grade(bundle: Path) -> dict[str, Any]:
+    return yaml.safe_load((bundle / "grade.yaml").read_text(encoding="utf-8"))
+
+
+def _logged_context(bundle: Path) -> dict[str, Any]:
+    """The context of the log record :func:`_write_bundle` planted."""
+    logs = yaml.safe_load((bundle / "logs.yaml").read_text(encoding="utf-8"))
+    (planted,) = [entry for entry in logs["logs"] if entry["message"] == "tool.request"]
+    return planted["context"]
 
 
 class TestLiveGradingIsUnaffected:
@@ -331,6 +351,12 @@ class TestTheDefaultWritesWhatTheAgentSent:
         assert (
             _tools_schemas(bundle)[0]["parameters"]["properties"]["api_token"]["default"] == _SECRET
         )
+        assert _grade(bundle)["state_diff"]["session"]["api_token"] == _SECRET
+        assert (
+            _grade(bundle)["custom_checks_details"][0]["details"]["request"]["authorization"]
+            == f"Bearer {_SECRET}"
+        )
+        assert _logged_context(bundle)["payload"]["api_token"] == _SECRET
 
     def test_the_bundle_carries_no_stamp_and_withholds_nothing(self, tmp_path: Path) -> None:
         bundle = _write_bundle(tmp_path, NoRedaction(), _recorded_trajectory())
@@ -372,6 +398,37 @@ class TestARedactingPolicyRewritesAndStamps:
         assert properties["api_token"] == REDACTED_PLACEHOLDER
         assert properties["id"] == {"type": "string"}
 
+    def test_the_verdict_s_own_mappings_are_rewritten_too(self, tmp_path: Path) -> None:
+        """The rows the runner diffed and whatever a pack's check recorded are
+        mappings the writer puts on disk, so the same rule reaches them. The
+        verdict itself — the score, the per-check outcome — has to survive it,
+        or the file stops saying what the trial was graded."""
+        grade = _grade(_write_bundle(tmp_path, SensitiveKeyRedaction(), _recorded_trajectory()))
+
+        assert grade["state_diff"] == {"session": {"api_token": REDACTED_PLACEHOLDER}}
+        (check,) = grade["custom_checks_details"]
+        assert check["details"] == {"request": {"authorization": REDACTED_PLACEHOLDER}}
+        assert check["check_name"] == "webhook_called"
+        assert grade["score"] == 1.0
+        assert grade["binary_pass"] is True
+
+    def test_the_write_policy_reaches_what_the_log_path_left_nested(self, tmp_path: Path) -> None:
+        """``_sanitize_extra`` reads a context's top-level keys and does not
+        descend, so it redacts the credential-named key under both policies and
+        leaves the one inside a mapping-valued context to the write policy."""
+        plain = _logged_context(
+            _write_bundle(tmp_path / "plain", NoRedaction(), _recorded_trajectory())
+        )
+        redacted = _logged_context(
+            _write_bundle(tmp_path / "redacted", SensitiveKeyRedaction(), _recorded_trajectory())
+        )
+
+        assert plain["api_token"] == REDACTED_PLACEHOLDER
+        assert plain["payload"]["api_token"] == _SECRET
+        assert redacted["api_token"] == REDACTED_PLACEHOLDER
+        assert redacted["payload"]["api_token"] == REDACTED_PLACEHOLDER
+        assert redacted["tool"] == "get_order"
+
     def test_the_stamp_names_the_policy_and_every_rewritten_artifact(self, tmp_path: Path) -> None:
         bundle = _write_bundle(tmp_path, SensitiveKeyRedaction(), _recorded_trajectory())
 
@@ -381,6 +438,8 @@ class TestARedactingPolicyRewritesAndStamps:
         assert stamp.policy is RedactionPolicyName.SENSITIVE_KEYS
         assert stamp.artifacts == [
             "env.yaml",
+            "grade.yaml",
+            "logs.yaml",
             "task.yaml",
             "tool_log.yaml",
             "tools_schemas.yaml",
@@ -432,27 +491,16 @@ class TestTheJudgeSidecarsAreWithheldAndDeclared:
 
         assert carrying == [
             "env.yaml",
+            "grade.yaml",
             "judge_inputs.yaml",
             "judge_trajectory.yaml",
+            "logs.yaml",
             "prompts.yaml",
             "task.yaml",
             "tool_log.yaml",
             "tools_schemas.yaml",
             "trajectory.yaml",
         ]
-
-    def test_the_log_path_redacts_its_own_context_before_the_bundle_is_written(
-        self, tmp_path: Path
-    ) -> None:
-        """``logs.yaml`` is out of the write policy's reach by design — the same
-        vocabulary is applied where the context key is logged. A credential quoted
-        in a log *message* would survive both, which is #1157's."""
-        bundle = _write_bundle(tmp_path, NoRedaction(), _recorded_trajectory())
-
-        logs = yaml.safe_load((bundle / "logs.yaml").read_text(encoding="utf-8"))
-
-        (planted,) = [entry for entry in logs["logs"] if entry["message"] == "tool.request"]
-        assert planted["context"]["api_token"] == REDACTED_PLACEHOLDER
 
     def test_a_trial_the_judge_left_no_sidecar_for_withholds_nothing(self, tmp_path: Path) -> None:
         """The empty ``omitted`` is what keeps "no judge ran" apart from "withheld"."""
@@ -492,6 +540,8 @@ class TestOneWriterTwoTrials:
         assert first_stamp is not None and second_stamp is not None
         assert first_stamp.artifacts == [
             "env.yaml",
+            "grade.yaml",
+            "logs.yaml",
             "task.yaml",
             "tool_log.yaml",
             "trajectory.yaml",
@@ -628,12 +678,15 @@ class TestTheStampBelongsToTheWriterNotToWriteMetrics:
     """A caller that never writes ``metrics.yaml`` still leaves a stamped bundle.
 
     Judge replay is that caller: :func:`_write_replay_artifacts` writes a grade and
-    a provenance file into a fresh directory. Under a redacting policy it withholds
-    both judge sidecars, and a bundle that withheld them while declaring nothing
-    would read as a faithful replay of a judge that produced no transcript.
+    a provenance file into a fresh directory. Under a redacting policy it rewrites
+    the grade and withholds both judge sidecars, and a bundle that did that while
+    declaring nothing would read as a faithful replay of a judge that produced no
+    transcript.
     """
 
-    def test_the_replay_bundle_is_stamped_and_names_what_it_withheld(self, tmp_path: Path) -> None:
+    def test_the_replay_bundle_is_stamped_with_what_it_rewrote_and_withheld(
+        self, tmp_path: Path
+    ) -> None:
         dest = tmp_path / "replays" / "canon" / _TASK_ID / "0"
 
         _write_replay_artifacts(
@@ -646,11 +699,13 @@ class TestTheStampBelongsToTheWriterNotToWriteMetrics:
         stamp = bundle_redaction(dest)
         assert stamp is not None
         assert stamp.policy is RedactionPolicyName.SENSITIVE_KEYS
-        assert stamp.artifacts == []
+        assert stamp.artifacts == ["grade.yaml"]
         assert stamp.omitted == ["judge_inputs.yaml", "judge_trajectory.yaml"]
 
     def test_the_offline_reader_refuses_that_replay_bundle(self, tmp_path: Path) -> None:
-        """Naming no rewritten artifact must not read as nothing to refuse."""
+        """A bundle that carries no tool-call record at all must still be refused
+        by the reader every offline command goes through, rather than read as a
+        trial that called nothing."""
         dest = tmp_path / "replays" / "canon" / _TASK_ID / "0"
 
         _write_replay_artifacts(

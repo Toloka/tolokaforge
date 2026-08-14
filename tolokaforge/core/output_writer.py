@@ -53,6 +53,9 @@ a task definition an adapter reads, and shares nothing but the name."""
 GRADE_FILENAME = "grade.yaml"
 """The trial's verdict. Absent where nothing graded the trial."""
 
+LOGS_FILENAME = "logs.yaml"
+"""The trial's structured log records."""
+
 TOOLS_SCHEMAS_FILENAME = "tools_schemas.yaml"
 """The trial's declared tool surface, in the dialect the provider was handed."""
 
@@ -349,7 +352,13 @@ class OutputWriter:
             )
 
     def write_grade(self, grade: Grade):
-        """Write grade.yaml with grading results (+ judge_trajectory.yaml sidecar).
+        """Write grade.yaml with grading results, through the policy (+ sidecars).
+
+        The verdict carries mappings the run did not compose: ``state_diff`` is the
+        environment rows the runner diffed and ``custom_checks_details[].details``
+        whatever a pack's check recorded, so the same key-name rule reaches them.
+        The judge's prose — ``reasons`` and each criterion's justification — quotes
+        values under no key at all and is left as written (#1157).
 
         ``grade.yaml`` carries the per-criterion breakdown, the ``judge_status``,
         and the judge's token usage / cost (``judge_usage``) so a reviewer sees
@@ -367,7 +376,9 @@ class OutputWriter:
         """
         # Keep the transcript and the judge's structured inputs out of grade.yaml;
         # each lands in its own sidecar.
-        grade_payload = grade.model_dump(mode="json", exclude={"judge_transcript", "judge_inputs"})
+        grade_payload = self.redaction.redact_mapping(
+            grade.model_dump(mode="json", exclude={"judge_transcript", "judge_inputs"})
+        )
         with open(self.output_dir / GRADE_FILENAME, "w") as f:
             yaml.dump(
                 grade_payload,
@@ -376,6 +387,7 @@ class OutputWriter:
                 allow_unicode=True,
                 sort_keys=False,
             )
+        self._note_rewritten(GRADE_FILENAME)
 
         # Sidecar: the judge's own message transcript, only when a judge ran and
         # captured a non-empty one. Absent file ⇒ either no judge transcript for
@@ -412,12 +424,19 @@ class OutputWriter:
             yaml.dump(payload, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     def write_logs(self, logger: StructuredLogger):
-        """Write logs.yaml from structured logger
+        """Write logs.yaml from structured logger, through the policy
+
+        A record's context is sanitised where it is logged, but that walk reads
+        top-level keys only, and production code logs mapping-valued context —
+        a tool call's arguments, a golden action's kwargs — so a credential one
+        level down reaches the bundle unless the policy runs here too. A record's
+        ``message`` is prose and is left as written (#1157).
 
         Args:
             logger: StructuredLogger instance with collected logs
         """
-        logger.save_to_file(self.output_dir / "logs.yaml")
+        logger.save_to_file(self.output_dir / LOGS_FILENAME, self.redaction)
+        self._note_rewritten(LOGS_FILENAME)
 
     def write_tools_schemas(self, schemas: list[dict[str, Any]]):
         """Write tools_schemas.yaml — the trial's declared tool surface, through the policy

@@ -4,9 +4,15 @@
 credential". :meth:`StructuredLogger._sanitize_extra`
 (:mod:`tolokaforge.core.logging`) asks it per log-context key; the policies here
 ask it per key of every mapping the writer puts on disk — tool-call arguments,
-the final environment snapshot, the task snapshot, the tool schemas — and hand
-back a mapping whose credential-named values have been replaced. One vocabulary,
-so widening it is a single edit rather than two lists drifting apart.
+the final environment snapshot, the task snapshot, the tool schemas, the verdict,
+each log record — and hand back a mapping whose credential-named values have been
+replaced. One vocabulary, so widening it is a single edit rather than two lists
+drifting apart.
+
+The log path's walk is deliberately shallow — it reads a context's top-level keys
+and does not descend, so a console line stays a cheap thing to emit. Callers do
+log mapping-valued context, and the write-time policy is what reaches a credential
+nested inside one on its way into a bundle.
 
 The rule reads names, never values, so a credential that travels under an
 innocuous key — or back out through a tool's own output — is outside it by

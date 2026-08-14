@@ -22,7 +22,12 @@ from typing import Any, TextIO
 
 import yaml
 
-from tolokaforge.core.redaction import REDACTED_PLACEHOLDER, key_is_sensitive
+from tolokaforge.core.redaction import (
+    REDACTED_PLACEHOLDER,
+    NoRedaction,
+    RedactionPolicy,
+    key_is_sensitive,
+)
 
 
 class LogFormat(str, Enum):
@@ -370,15 +375,21 @@ class StructuredLogger:
         """
         self._log("ERROR", message, context, **kwargs)
 
-    def save_to_file(self, path: Path):
+    def save_to_file(self, path: Path, redaction: RedactionPolicy = NoRedaction()):
         """Save collected logs to YAML file
 
         Args:
             path: Output file path
+            redaction: Applied to each record on its way out; the default writes
+                them as collected. A trial bundle passes its writer's policy,
+                which is what reaches a credential nested inside a record's
+                context — `_sanitize_extra` reads top-level keys only. The
+                collected records themselves are left untouched.
         """
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        output = {"trial_id": self.name, "total_logs": len(self.logs), "logs": self.logs}
+        records = [redaction.redact_mapping(entry) for entry in self.logs]
+        output = {"trial_id": self.name, "total_logs": len(records), "logs": records}
 
         with open(path, "w") as f:
             yaml.dump(output, f, default_flow_style=False, allow_unicode=True, sort_keys=False)

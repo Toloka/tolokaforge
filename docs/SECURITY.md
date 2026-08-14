@@ -91,8 +91,8 @@ engine's single answer to "does this key name a credential" — substring marker
 anywhere in the lowercased key, plus exact tokens (`token`, `bearer`) matched per
 non-alphanumeric-delimited part, so `bearer_token` is a credential and
 `max_tokens` is telemetry. Two callers ask it: `StructuredLogger._sanitize_extra`
-per log-context key, and the artifact-write policies per key of every mapping the
-writer puts on disk. Widening the vocabulary is therefore one edit rather than two
+per top-level log-context key, and the artifact-write policies per key of every
+mapping the writer puts on disk, at every nesting level. Widening the vocabulary is therefore one edit rather than two
 lists drifting apart.
 
 **Two policies.** `NoRedaction` writes what the agent sent.
@@ -101,12 +101,16 @@ every nesting level, descending into nested mappings and into mappings inside
 lists — a trace-check matcher addresses `body.query`-style paths, so a shallow
 rule would leave a credential one level down in the clear.
 
-**A redacting policy rewrites five files and withholds two.** Every mapping the
+**A redacting policy rewrites seven files and withholds two.** Every mapping the
 rule can read is rewritten: the tool-call arguments in `trajectory.yaml` and
 `tool_log.yaml`, the final environment snapshot in `env.yaml`, the task snapshot
 in `task.yaml` (its `policies` and resolved `grading_config` are free-form blocks
-a pack fills), and each tool schema in `tools_schemas.yaml` (a declared default or
-pinned header can name a credential). The two judge
+a pack fills), each tool schema in `tools_schemas.yaml` (a declared default or
+pinned header can name a credential), the verdict in `grade.yaml` (`state_diff`
+is the environment rows the runner diffed and `custom_checks_details[].details`
+whatever a pack's check recorded), and every record in `logs.yaml` (context keys
+are sanitised where they are logged, but that walk reads top-level keys only and
+callers do log mapping-valued context). The two judge
 sidecars — `judge_trajectory.yaml` and `judge_inputs.yaml` — are withheld
 entirely rather than rewritten, because both render the agent's arguments into
 prose (the transcript quotes the calls, `state_diff_text` the values) that a
@@ -149,19 +153,16 @@ Exposing an enablement knob is #1171.
   existing value-based mechanism — a process-global scrub of resolved secret
   values on every log record — and keeps its own placeholder rather than being
   merged into this key-name vocabulary while that design is open.
-- **Three written artifacts a redacting policy leaves untouched — and they are all
-  three**, every other file in a bundle being either rewritten or withheld:
-  - `prompts.yaml`. A system prompt is rendered prose: a task that puts a
-    credential into its prompt puts it inside a sentence, and there is no key to
-    match on. The file is written as the run composed it.
-  - `grade.yaml`. Its judge prose (`Grade.reasons`,
-    `CriterionResult.justification`) can quote whatever the judge was shown — the
-    same shape, and so written as the judge produced it. The judge's two structured
-    sidecars are withheld instead, which is a different mechanism, not a rewrite.
-  - `logs.yaml`. Its context keys are already sanitised where they are logged, by
-    this same vocabulary (`StructuredLogger._sanitize_extra`), so a second pass at
-    write time would rewrite nothing. What survives that is a value quoted in a log
-    *message* rather than carried under a key — the same value-based gap, #1157's.
+- **One written artifact a redacting policy leaves untouched, and it is the only
+  one**, every other file in a bundle being either rewritten or withheld:
+  `prompts.yaml`. A system prompt is rendered prose: a task that puts a credential
+  into its prompt puts it inside a sentence, and there is no key to match on. The
+  file is written as the run composed it.
+- **Prose fields inside the files that are rewritten.** A rewritten file is not a
+  clean one: `grade.yaml`'s judge prose (`Grade.reasons`,
+  `CriterionResult.justification`) and a log record's `message` in `logs.yaml`
+  quote whatever the judge or the caller was shown, under no key the rule can
+  read. They are written as produced, and are the same value-based gap, #1157's.
 - Two vocabulary entries are inert. Because exact tokens match per key part,
   `access_token` and `refresh_token` are redundant (both already match via the
   bare `token` part) and `session_id` matches nothing. Repairing that changes what
@@ -207,7 +208,7 @@ The agent never sees grading criteria or expected outputs:
 | Side-channel attacks | Not mitigated |
 | Agent exfiltrating data via LLM output | The orchestrator relays model output; no content filtering |
 | Sensitive data in written tool-call arguments | Recorded verbatim on both substrates — see § Tool Call Arguments for why the grader's input must not be rewritten. A redacting artifact-write policy covers what a key name declares, and is off by default because a redacted bundle cannot be graded offline (§ Artifact-Write Redaction); enabling it from a run config is #1171 |
-| Sensitive values under innocuous keys, in tool output, or quoted in prose (system prompts, judge prose, log messages) | Outside a key-name rule by construction, so a redacting policy leaves `prompts.yaml`, `grade.yaml` and `logs.yaml` as written. The value-based scrub that would reach them exists for log records only (`tolokaforge.secrets.log_filter`) and is not applied at artifact-write time; tracked in #1157 |
+| Sensitive values under innocuous keys, in tool output, or quoted in prose (system prompts, judge prose, log messages) | Outside a key-name rule by construction, so a redacting policy leaves `prompts.yaml` as written, and leaves the prose fields of the files it rewrites (`grade.yaml`'s reasons and justifications, a `logs.yaml` record's message) as written too. The value-based scrub that would reach them exists for log records only (`tolokaforge.secrets.log_filter`) and is not applied at artifact-write time; tracked in #1157 |
 
 
 ## Testing

@@ -26,10 +26,10 @@ bumped and this document is updated in the same commit.
             ├── tool_log.yaml               ← the trial's ordered tool-call record
             ├── env.yaml                    ← final env state (through the redaction policy)
             ├── metrics.yaml
-            ├── grade.yaml                  ← only when the trial produced a grade
+            ├── grade.yaml                  ← only when the trial produced a grade (through the redaction policy)
             ├── judge_trajectory.yaml       ← rubric-judge transcript (when an LLM judge ran; withheld under a redacting policy)
             ├── judge_inputs.yaml           ← rubric-judge structured inputs for replay (when an LLM judge ran; withheld under a redacting policy)
-            ├── logs.yaml
+            ├── logs.yaml                   ← structured trial logs (through the redaction policy)
             ├── prompts.yaml                ← agent + user-sim system prompts
             ├── tools_schemas.yaml          ← post-policy tool list (through the redaction policy)
             └── services/                   ← per-service compose logs (on trial-body or graded failure)
@@ -642,7 +642,8 @@ table):
 ### `redaction` — the bundle's own account of what a policy rewrote
 
 Every mapping the writer puts on disk — tool-call arguments, the final environment
-snapshot, the task snapshot, the tool schemas — passes through a redaction policy
+snapshot, the task snapshot, the tool schemas, the verdict's diff and check
+details, each structured log record — passes through a redaction policy
 ([`tolokaforge/core/redaction.py`](../tolokaforge/core/redaction.py)) on its way
 to disk. The default policy rewrites nothing and this key is **absent** — which is
 what every bundle a shipped run produces carries, since no run config selects
@@ -654,6 +655,8 @@ redaction:
   policy: sensitive_keys
   artifacts:
     - env.yaml
+    - grade.yaml
+    - logs.yaml
     - task.yaml
     - tool_log.yaml
     - tools_schemas.yaml
@@ -678,9 +681,8 @@ withholds anything, the writer puts the stamp here — creating `metrics.yaml`
 where the caller writes no metrics of its own, which is what judge replay does
 when it writes a grade and its provenance into a replay directory. Such a file
 carries the stamp and **no `schema_version`**, since no metrics were composed for
-it. A bundle whose `artifacts` list is empty and whose `omitted` list is not is
-that case: nothing was rewritten because no mapping-shaped artifact was
-written, and the judge sidecars were withheld. Where the stamp cannot be written
+it — its `artifacts` names `grade.yaml`, the one file that path writes through the
+policy, and its `omitted` names both judge sidecars. Where the stamp cannot be written
 at all, the writer removes the artifacts it rewrote rather than leave them reading
 as faithful ones.
 
@@ -1097,6 +1099,15 @@ Score scale: `0.0` ≤ `score` ≤ `1.0`. `binary_pass` is the harness-level
 pass/fail; `score` is a fractional pass rate (used for tasks with partial
 credit).
 
+A redacting artifact-write policy reaches the mappings the verdict carries —
+`state_diff` holds the environment rows the runner diffed and
+`custom_checks_details[].details` whatever a pack's check recorded — replacing
+credential-named values at every nesting level and naming the file in
+`metrics.yaml`'s [`redaction`
+stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote). The judge's
+prose (`reasons`, each criterion's `justification`) is written as the judge
+produced it: a key-name rule has no key to read there.
+
 ### Trace-check verdicts
 
 `trace_check_results` carries one entry per constraint in the decision set that
@@ -1375,6 +1386,13 @@ Structured trial-level logs emitted by
 [`StructuredLogger`](../tolokaforge/core/logging.py). One object per
 log call; `context` carries arbitrary key/value pairs the call site
 attached.
+
+A context's top-level credential-named keys are replaced where the call is
+logged, whatever policy wrote the bundle. A redacting artifact-write policy runs
+over each record on top of that, which is what reaches a credential nested inside
+a mapping-valued context, and names the file in `metrics.yaml`'s [`redaction`
+stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote). A record's
+`message` is prose and is written as the call site composed it.
 
 ## `replays/{replay_id}/`
 

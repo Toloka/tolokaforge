@@ -209,6 +209,8 @@ logs:
 
 Timestamps are UTC ISO-8601 with microsecond precision — a distinct shape from the console line's `HH:MM:SS.mmm`. The on-disk YAML keys `{timestamp, level, module, message, context}` are a separate contract from the JSON-on-the-wire keys `{ts, level, logger, message, extra}`; see [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § `logs.yaml`.
 
+`save_to_file` takes the redaction policy to apply to each record on its way out, defaulting to `NoRedaction` — the records as collected. A trial bundle passes the writer's policy, which is what reaches a credential nested inside a mapping-valued context: the redaction applied where a call is logged reads top-level context keys only. See [`docs/SECURITY.md`](SECURITY.md) § Artifact-Write Redaction.
+
 ## Logger Registry
 
 The logging module maintains a global registry of loggers to avoid duplicates:
