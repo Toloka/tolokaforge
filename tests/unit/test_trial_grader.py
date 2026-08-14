@@ -114,18 +114,22 @@ class TestAutoFailBranches:
         assert logger.info.call_args.kwargs["termination_reason"] == "stuck_detected"
 
 
-class TestInfrastructureAbortProducesNoGrade:
-    """A trial the infrastructure killed is not graded at all.
+class TestNoVerdictProducesNoGrade:
+    """A trial no verdict can be computed for is not graded at all.
 
     ``None`` rather than ``Grade(score=0.0)``: ``Grade.score`` is a required
-    ``[0, 1]`` float, so any grade for a trial that never ran has to carry a
-    number that describes work nobody did. Absence cannot be misread as zero,
-    and a consumer that forgets to branch fails loudly instead of quietly
-    reporting a model failure.
+    ``[0, 1]`` float, so any grade here has to carry a number describing work
+    nobody did. Absence cannot be misread as zero, and a consumer that forgets to
+    branch fails loudly instead of quietly reporting a model failure.
+
+    Two conditions answer that way, and they are not the same condition. A trial
+    the infrastructure killed never ran, and leaves the denominator as well. A
+    trial whose runner lost it *did* run and is counted — as our defect — but the
+    party that would compute its verdict is the one that lost it.
     """
 
     @pytest.mark.parametrize("cell", outcome_cells())
-    def test_none_exactly_for_the_abort_cells(self, cell) -> None:
+    def test_none_exactly_for_the_abort_and_lost_cells(self, cell) -> None:
         status, reason, outcome_class, _ = cell
         backend = _StubBackend()
         grader, _ = _make_grader(backend)
@@ -136,7 +140,10 @@ class TestInfrastructureAbortProducesNoGrade:
             "sysprompt",
         )
 
-        if outcome_class is TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+        if (
+            outcome_class is TrialOutcomeClass.INFRASTRUCTURE_ABORT
+            or reason is TerminationReason.TRIAL_LOST
+        ):
             assert grade is None
             assert backend.calls == [], "an ungraded trial must not reach the runner"
         else:

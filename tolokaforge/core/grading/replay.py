@@ -59,6 +59,7 @@ from tolokaforge.core.models import (
     JudgeStatus,
     JudgeUsage,
     ModelConfig,
+    TerminationReason,
     Trajectory,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
@@ -771,9 +772,10 @@ def _write_replay_artifacts(
 def _no_grade_reason(trial_dir: Path) -> str:
     """One sentence saying which grade-less shape the bundle at *trial_dir* is.
 
-    Derived from the recorded trajectory through :func:`classify_trial_outcome`, so
-    the skip is named in the vocabulary of the run that wrote the bundle rather than
-    by a second classifier. The sentence names the outcome class, not the
+    Derived from the recorded trajectory — through :func:`classify_trial_outcome`,
+    and through the termination reason where one names a grade-less shape of its
+    own — so the skip is named in the vocabulary of the run that wrote the bundle
+    rather than by a second classifier. The sentence names the shape, not the
     operational cause — for a provision failure that is ``error_reason`` in the same
     bundle's ``metrics.yaml``, which replay does not read.
 
@@ -800,6 +802,11 @@ def _no_grade_reason(trial_dir: Path) -> str:
         return (
             "the trial was aborted before it was measured "
             f"(termination_reason: {termination}), {tail}"
+        )
+    if trajectory.termination_reason is TerminationReason.TRIAL_LOST:
+        return (
+            "the run measured this trial and the runner lost its registration before a "
+            f"verdict could be computed (termination_reason: {termination}), {tail}"
         )
     return (
         f"the run recorded no grade for a trial it classified {outcome.value} "

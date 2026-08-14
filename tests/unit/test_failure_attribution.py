@@ -39,16 +39,17 @@ _ABORT = TrialOutcomeClass.INFRASTRUCTURE_ABORT
 _UNGRADEABLE = TrialOutcomeClass.UNGRADEABLE
 
 # Every ``TrialStatus`` x (``TerminationReason`` | None) cell of a trial whose
-# grading produced a verdict, with both answers written out: what the trial is
+# grading did not refuse, with both answers written out: what the trial is
 # counted as, and whether it is retried. The cross-product is the point — over
 # the handful of pairs a reader expects, any default looks like any other, so a
 # test restricted to them proves the table's scope and never its truth.
 #
-# The two columns disagree in three reachable cells — ``(error, api_error)``,
-# ``(error, error)`` and ``(timeout, timeout)`` are retried *and* counted — and
-# that is the design, not a defect: whether an attempt is worth repeating and
-# whether it measured the agent are different questions. Deriving either column
-# from the other is what this table exists to prevent.
+# The two columns disagree in four reachable cells — ``(error, api_error)``,
+# ``(error, error)``, ``(error, trial_lost)`` and ``(timeout, timeout)`` are
+# retried *and* counted — and that is the design, not a defect: whether an
+# attempt is worth repeating and whether it measured the agent are different
+# questions. Deriving either column from the other is what this table exists to
+# prevent.
 _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeClass, bool], ...] = (
     (TrialStatus.COMPLETED, TerminationReason.AGENT_DONE, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.USER_STOP, _MEASURED, False),
@@ -60,6 +61,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.COMPLETED, TerminationReason.API_TIMEOUT, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.COMPLETED, TerminationReason.PROVISION_ERROR, _ABORT, False),
+    (TrialStatus.COMPLETED, TerminationReason.TRIAL_LOST, _HARNESS, False),
     (TrialStatus.COMPLETED, None, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.AGENT_DONE, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.USER_STOP, _MEASURED, False),
@@ -71,6 +73,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.FAILED, TerminationReason.API_TIMEOUT, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.FAILED, TerminationReason.PROVISION_ERROR, _ABORT, False),
+    (TrialStatus.FAILED, TerminationReason.TRIAL_LOST, _HARNESS, False),
     (TrialStatus.FAILED, None, _HARNESS, False),
     (TrialStatus.TIMEOUT, TerminationReason.AGENT_DONE, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.USER_STOP, _MEASURED, True),
@@ -82,6 +85,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.TIMEOUT, TerminationReason.API_TIMEOUT, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.PROVISION_ERROR, _ABORT, False),
+    (TrialStatus.TIMEOUT, TerminationReason.TRIAL_LOST, _HARNESS, True),
     (TrialStatus.TIMEOUT, None, _HARNESS, True),
     (TrialStatus.ERROR, TerminationReason.AGENT_DONE, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.USER_STOP, _MEASURED, True),
@@ -93,6 +97,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.ERROR, TerminationReason.API_TIMEOUT, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.PROVISION_ERROR, _ABORT, False),
+    (TrialStatus.ERROR, TerminationReason.TRIAL_LOST, _HARNESS, True),
     (TrialStatus.ERROR, None, _HARNESS, True),
 )
 
@@ -177,7 +182,7 @@ class TestOutcomeClassificationCrossProduct:
             for ungradeable in (False, True)
         }
         assert cells == expected
-        assert len(_OUTCOME_CELLS) == len(expected) == 88
+        assert len(_OUTCOME_CELLS) == len(expected) == 96
 
     def test_the_class_column_exhausts_the_declared_vocabulary(self) -> None:
         """The table is hand-maintained and the enum is declared in production,
@@ -253,6 +258,7 @@ class TestRetryabilityIsIndependentOfCountability:
         }
         assert (TrialStatus.ERROR, TerminationReason.API_ERROR) in disagreements
         assert (TrialStatus.ERROR, TerminationReason.ERROR) in disagreements
+        assert (TrialStatus.ERROR, TerminationReason.TRIAL_LOST) in disagreements
         assert (TrialStatus.TIMEOUT, TerminationReason.TIMEOUT) in disagreements
 
 
@@ -308,6 +314,27 @@ def test_provision_error_classification():
     summary = summarize_failure_attributions([attribution])
     assert summary["total_failed_attempts"] == 1
     assert summary["by_failure_class"]["provision_failure"] == 1
+
+
+def test_a_lost_trial_is_attributed_to_the_substrate_not_to_the_model() -> None:
+    """The misattribution this reason exists to end, one artifact over: a lost
+    trial has no failed tool call to scan — the call that hit the fault reached
+    no tool and was never recorded — so without its own branch it falls all the
+    way through to ``model_reasoning`` at confidence 0.5, and
+    ``failure_attribution.json`` reports a substrate fault as the agent's
+    reasoning."""
+    traj = _base_trajectory()
+    traj.status = TrialStatus.ERROR
+    traj.termination_reason = TerminationReason.TRIAL_LOST
+
+    attribution = attribute_failure(traj)
+
+    assert attribution["failure_class"] == "infrastructure"
+    assert attribution["deterministic"] is True
+    assert attribution["confidence"] == 1.0
+    assert attribution["evidence"] == [
+        {"kind": "termination_reason", "value": "trial_lost", "status": "error"}
+    ]
 
 
 def test_a_grading_refusal_is_attributed_to_us_not_to_the_model(real_refusal: str) -> None:

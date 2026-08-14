@@ -340,6 +340,10 @@ class ToolExecuting(Protocol):
     :class:`ToolRegistry`, and
     :class:`~tolokaforge.core.docker_adapter.DockerRunnerAdapter` forwards it
     to the runner container over gRPC under a bound executor identity.
+
+    A call that reached no tool at all raises rather than returning a failed
+    result — see :meth:`~tolokaforge.core.runtime.RuntimeBackend.execute_tool`
+    for the one condition that does so.
     """
 
     def execute(self, tool_name: str, arguments: dict[str, Any], *, call_id: str) -> ToolResult: ...

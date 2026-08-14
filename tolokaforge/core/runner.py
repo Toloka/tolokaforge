@@ -46,6 +46,7 @@ from tolokaforge.core.run_display_events import (
 )
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
+from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
 
 
@@ -369,9 +370,16 @@ class TrialRunner:
                     self._effective_system_prompt_captured = True
 
             except Exception as e:
-                # Catch-all for initialization errors (first-user-message generation)
+                # Catch-all for initialization errors (first-user-message generation).
+                # The simulator's opening tool calls run here, before the loop and
+                # its classifier, so the one reason a tool call can end the trial
+                # under is named here too.
                 status = TrialStatus.ERROR
-                termination_reason = TerminationReason.ERROR
+                termination_reason = (
+                    TerminationReason.TRIAL_LOST
+                    if isinstance(e, TrialNotRegisteredError)
+                    else TerminationReason.ERROR
+                )
                 self.logger.error(
                     "Trial initialization error", error=str(e), error_type=type(e).__name__
                 )
