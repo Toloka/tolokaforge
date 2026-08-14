@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 2,
-  "bucket_b_count": 9,
+  "bucket_b_count": 11,
   "commits": [
     {
       "adapter_paths": [
@@ -1360,6 +1360,23 @@
     },
     {
       "adapter_paths": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
+        "tests/unit/test_harness_skill_delivery.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-14",
+      "pr": null,
+      "reason": "2 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "3b044fa296463b26fee61101e65aefd9079a80ab",
+      "subject": "fix(tbench): key the skills hash on delivery handoff, not image arrival",
+      "touched_files": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
+        "tests/unit/test_harness_skill_delivery.py"
+      ]
+    },
+    {
+      "adapter_paths": [
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
@@ -1382,6 +1399,36 @@
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/protocols.py",
         "tests/unit/test_harness_skill_delivery.py",
         "tests/unit/test_terminal_bench.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/path_resolvers.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/protocols.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/task_parser.py",
+        "tests/data/terminal_bench_tasks/echo-hello-skills/skills/README.md",
+        "tests/unit/test_harness_path_resolver.py",
+        "tests/unit/test_harness_skill_delivery.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-14",
+      "pr": null,
+      "reason": "8 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "831f13ff534dfdc5398606bd7789bf9a60893525",
+      "subject": "fix(tbench): the staging digest carries both harness seams",
+      "touched_files": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/path_resolvers.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/protocols.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/task_parser.py",
+        "tests/data/terminal_bench_tasks/echo-hello-skills/skills/README.md",
+        "tests/unit/test_harness_path_resolver.py",
+        "tests/unit/test_harness_skill_delivery.py"
       ]
     },
     {
