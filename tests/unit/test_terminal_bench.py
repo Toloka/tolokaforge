@@ -1336,15 +1336,32 @@ class TestHarnessCommand:
         settings.json emission but never pipes the instruction — every
         stdin marker (``|`` between pipeline stages, ``&& printf %s
         "$INSTRUCTION" | cli``) must be absent."""
+        import shlex
+
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
         command = harness_command("gemini-cli", "go", "google/gemini-2.5-flash")
         # No stdin pipe into the CLI itself. The `printf ... > file` in the
         # preamble writes settings.json to disk (redirect, not pipe).
         assert " | gemini" not in command
-        assert command.rstrip().endswith(
-            " go"
-        ), "instruction must sit as the trailing positional argv token"
+        _, _, cli = command.rpartition(" && ")
+        argv = shlex.split(cli)
+        assert argv[-1] == "go", "instruction must sit as the trailing positional argv token"
+
+    def test_gemini_writes_settings_json_before_the_cli(self):
+        """gemini-cli's headless ``--prompt`` mode 400s without a pre-pinned
+        ``security.auth.selectedType`` in ``~/.gemini/settings.json`` — the
+        CLI's auth auto-detection breaks in non-interactive mode. The
+        preamble emits the file with ``gemini-api-key`` selected before the
+        CLI runs; without it, gemini reaches the model call and dies."""
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        preamble, sep, _ = harness_command(
+            "gemini-cli", "do it", "google/gemini-2.5-flash"
+        ).rpartition(" && ")
+        assert sep, "gemini-cli must chain a preamble before the CLI"
+        assert "/root/.gemini/settings.json" in preamble
+        assert "gemini-api-key" in preamble
 
     def test_instruction_is_one_shell_argument(self):
         import shlex

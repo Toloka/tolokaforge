@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+from tolokaforge_adapter_terminal_bench.harness import HARNESSES
 
 pytestmark = [pytest.mark.canonical, pytest.mark.usefixtures("env_backed_secrets")]
 
@@ -166,24 +167,38 @@ class TestTerminalBenchHarnessModeCanon:
         assert "ANTHROPIC_BASE_URL=${TBENCH_PROVIDER_ANTHROPIC_BASE_URL}" in agent_env
         assert "sk-openrouter-test" not in env.compose_file.read_text()
 
-    def test_synthesised_compose_carries_container_env(self, tbench_harness_adapter):
+    @pytest.mark.parametrize(
+        "harness_name",
+        sorted(name for name, spec in HARNESSES.items() if spec.container_env),
+    )
+    def test_synthesised_compose_carries_container_env(self, harness_name, test_data_dir, tmp_path):
         """``HarnessSpec.container_env`` must reach the agent service's env
-        block — every static hardening key claude-code declares (``IS_SANDBOX``,
-        ``CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC``) has to survive the
-        synthesis pass. This is a direct behavioural pin so a regression here
-        is not merely a snapshot diff."""
+        block — every static hardening key each harness declares
+        (claude-code's ``IS_SANDBOX``, gemini-cli's
+        ``GEMINI_CLI_TRUST_WORKSPACE``, kimi's telemetry disables, etc.) has
+        to survive the synthesis pass. Parametrised across every shipped
+        harness with a non-empty ``container_env`` so a regression on any
+        one entry is caught here, not on a real matrix cell."""
         import yaml
-        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
 
-        env = tbench_harness_adapter._environment("echo-hello")
+        tbench_tasks_dir = test_data_dir / "terminal_bench_tasks"
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(tbench_tasks_dir),
+                "staging_root": str(tmp_path / f"staging-{harness_name}"),
+                "agent_harness": harness_name,
+                "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
+            }
+        )
+        env = adapter._environment("echo-hello")
         with env.compose_file.open() as f:
             compose = yaml.safe_load(f)
         agent_env = compose["services"]["main"]["environment"]
         assert isinstance(agent_env, list)
-        for key, value in HARNESSES["claude-code"].container_env.items():
+        for key, value in HARNESSES[harness_name].container_env.items():
             assert (
                 f"{key}={value}" in agent_env
-            ), f"container_env pair {key}={value!r} missing from synthesised compose"
+            ), f"{harness_name}: container_env pair {key}={value!r} missing from synthesised compose"
 
 
 class TestTerminalBenchSkillsBundleCanon:

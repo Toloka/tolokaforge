@@ -56,6 +56,12 @@ def env_backed_secrets(monkeypatch):
     from tolokaforge.secrets.providers import EnvProvider
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter-test")
+    # gemini-cli's shipped provider_env references ${secret:GEMINI_API_KEY} —
+    # its wire protocol (`generateContent`) is not spoken by OpenRouter, so
+    # the harness cannot share the OpenRouter key. Seed a placeholder so
+    # adapters for gemini can construct in tests. The value is never
+    # asserted on; only the resolution path is exercised.
+    monkeypatch.setenv("GEMINI_API_KEY", "google-ai-studio-test")
     monkeypatch.setattr(
         "tolokaforge.secrets.manager._default_manager", SecretManager([EnvProvider()])
     )
