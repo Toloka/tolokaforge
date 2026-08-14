@@ -696,7 +696,10 @@ class Orchestrator:
                 "Ensure load_tasks() has run successfully."
             )
         trial_grader = load_trial_grader(self.adapter.trial_grader_name)(
-            TrialGraderContext(runtime_backend=runtime_backend, logger=self.logger)
+            TrialGraderContext(
+                runner_address=getattr(runtime_backend, "runner_address", ""),
+                logger=self.logger,
+            )
         )
 
         ctx = ConductorContext(

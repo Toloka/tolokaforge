@@ -57,12 +57,12 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
-from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.trial import TrialSpec
 
 if TYPE_CHECKING:
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.plugin_registry import TrialGraderContext
+    from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 
 __all__ = [
     "GradingFailedError",
@@ -137,14 +137,32 @@ class RunnerRPCTrialGrader:
     ran, and raises :class:`GradingFailedError` when the RPC could not
     produce a verdict.
 
-    Instantiated per-run with a bound ``runtime_backend`` and the
-    per-run :class:`StructuredLogger`. The orchestrator constructs one
-    and injects it into every conductor.
+    Built per-run from a :class:`TrialGraderContext` — a *serialisable*
+    configuration (``runner_address`` + logger). The grader owns its own
+    :class:`~tolokaforge.core.shared_stack_runtime.GrpcRunnerClient` bound
+    to that address, so it stays independent of the orchestrator's runtime
+    backend — the seam that lets a future grader run on a different machine.
+
+    Tests may pass a ``runner_client`` directly to bypass real gRPC; the
+    stub must expose a ``grade_trial(trial_id, llm_messages_json, ...)``
+    method returning the same dict shape as
+    :meth:`GrpcRunnerClient.grade_trial`.
     """
 
-    def __init__(self, runtime_backend: RuntimeBackend, logger: StructuredLogger) -> None:
-        self.runtime_backend = runtime_backend
+    def __init__(
+        self,
+        runner_address: str,
+        logger: StructuredLogger,
+        *,
+        runner_client: GrpcRunnerClient | None = None,
+    ) -> None:
+        self.runner_address = runner_address
         self.logger = logger
+        if runner_client is None:
+            from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient as _Client
+
+            runner_client = _Client(runner_address=runner_address)
+        self.runner_client = runner_client
 
     def grade(
         self,
@@ -195,7 +213,7 @@ class RunnerRPCTrialGrader:
             )
 
         llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
-        grade_result = self.runtime_backend.grade_trial(
+        grade_result = self.runner_client.grade_trial(
             trial_id=spec.trial_id,
             llm_messages_json=llm_messages_json,
             termination_reason=(
@@ -388,4 +406,4 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
 
 def runner_rpc_trial_grader_factory(ctx: TrialGraderContext) -> RunnerRPCTrialGrader:
     """Build a :class:`RunnerRPCTrialGrader` from a grader context."""
-    return RunnerRPCTrialGrader(runtime_backend=ctx.runtime_backend, logger=ctx.logger)
+    return RunnerRPCTrialGrader(runner_address=ctx.runner_address, logger=ctx.logger)

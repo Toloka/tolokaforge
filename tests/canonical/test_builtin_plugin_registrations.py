@@ -94,8 +94,21 @@ def test_runtime_backend_names_resolve_to_their_class(name: str, expected_cls: t
 
 
 def test_trial_grader_name_resolves_to_its_class() -> None:
-    ctx = TrialGraderContext(runtime_backend=MagicMock(), logger=MagicMock())
-    grader = load_trial_grader("runner_rpc")(ctx)
+    import tolokaforge.core.shared_stack_runtime as ssr
+
+    # The built-in ``runner_rpc`` factory constructs a ``GrpcRunnerClient``
+    # from ``ctx.runner_address``; stub the client to avoid a real socket.
+    class _StubClient:
+        def __init__(self, runner_address: str) -> None:
+            self.runner_address = runner_address
+
+    original = ssr.GrpcRunnerClient
+    ssr.GrpcRunnerClient = _StubClient  # type: ignore[misc,assignment]
+    try:
+        ctx = TrialGraderContext(runner_address="stub:0", logger=MagicMock())
+        grader = load_trial_grader("runner_rpc")(ctx)
+    finally:
+        ssr.GrpcRunnerClient = original  # type: ignore[misc]
     assert isinstance(grader, RunnerRPCTrialGrader)
 
 

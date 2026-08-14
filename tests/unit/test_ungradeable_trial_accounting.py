@@ -150,8 +150,9 @@ def refusing_grader(runner_service, mock_grpc_context, collided_task_id: str):
         trial_id=f"{collided_task_id}:0",
     )
     return RunnerRPCTrialGrader(
-        runtime_backend=ServicerBackend(runner_service, mock_grpc_context),
+        runner_address="in-process-servicer:0",
         logger=StructuredLogger("test-ungradeable-grader"),
+        runner_client=ServicerBackend(runner_service, mock_grpc_context),
     )
 
 
