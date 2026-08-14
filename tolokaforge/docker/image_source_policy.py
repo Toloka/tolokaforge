@@ -56,7 +56,7 @@ def resolve_image_source(
 
     Args:
         request: The tri-valued input, from
-            :attr:`tolokaforge.docker.config.DockerConfig.image_source`.
+            :attr:`tolokaforge.core.models.docker_config.DockerConfig.image_source`.
         is_wheel_install: ``True`` when the running engine is a
             ``pip install``-ed wheel (no ``pyproject.toml`` alongside
             :func:`tolokaforge.docker.builder.repo_root`), ``False`` for

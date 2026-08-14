@@ -6,6 +6,8 @@ Per-concern submodules hold the actual definitions:
 - :mod:`.grade` — :class:`Grade` and the rubric-judge audit records
 - :mod:`.trajectory` — :class:`Trajectory`, :class:`Message`,
   :class:`Metrics`, and the rate-limit probe accounting rows
+- :mod:`.docker_config` — :class:`DockerConfig`, the ``docker:`` block
+  ``RunConfig`` carries
 - :mod:`.model_config` — :class:`ModelConfig` +
   :class:`OpenRouterConfig`
 - :mod:`.run_config` — :class:`RunConfig` and every orchestrator /

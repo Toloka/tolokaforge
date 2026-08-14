@@ -315,8 +315,10 @@ run-start crash trace.
     (v0.18.0) that made the published images available in the shape
     this ADR relies on.
 - Related code:
-  - `tolokaforge/docker/config.py` — `DockerConfig.image_source`,
-    `ImageSource` literal.
+  - `tolokaforge/core/models/docker_config.py` — `DockerConfig.image_source`,
+    `ImageSource` literal. Lives under `core/models` rather than beside the
+    Docker layer because `RunConfig` carries it and ships in the runner
+    subset.
   - `tolokaforge/docker/image.py` — `Image.pull`, `ImagePullError`,
     `_cached_image_matches_platform`.
   - `tolokaforge/docker/image_source_policy.py` —

@@ -80,7 +80,7 @@ Example:
     >>> container.destroy()
 """
 
-from tolokaforge.docker.config import DockerConfig
+from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.docker.container import Container, ContainerStatus, ExecResult
 from tolokaforge.docker.health import HealthProbe, HealthProbeError, ProbeResult
 from tolokaforge.docker.image import Image

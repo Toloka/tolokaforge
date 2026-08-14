@@ -222,6 +222,15 @@ def test_start_service_wires_component_id_on_reused_container(
         "_try_reuse_existing",
         lambda self, container_name, svc: spy_existing,
     )
+    # Reuse is gated on an image-identity check that queries the daemon. There
+    # is none here, and an unverifiable image is destroyed by design (see
+    # tests/unit/test_stack_container_reuse_tag_ordering.py), so report a match
+    # to reach the reuse path this test is about.
+    monkeypatch.setattr(
+        EngineStack,
+        "_inspect_running_image",
+        lambda self, container_name: ([stack._images[svc.name].full_tag], "img-reuse"),
+    )
     monkeypatch.setattr(
         stack_mod.Container,
         "create",

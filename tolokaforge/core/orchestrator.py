@@ -1786,7 +1786,7 @@ class Orchestrator:
                 # ``image_source='auto'``, so an operator setting
                 # ``--image-source build`` on a wheel install would still
                 # get a silent pull.
-                from tolokaforge.docker.config import DockerConfig
+                from tolokaforge.core.models.docker_config import DockerConfig
 
                 docker_config = self.config.docker or DockerConfig()
                 service_stack = stack_factory(config=docker_config, **core_stack_kwargs)
