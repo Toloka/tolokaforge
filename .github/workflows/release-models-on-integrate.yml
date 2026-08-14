@@ -1,0 +1,62 @@
+name: Release tolokaforge-models on integrate
+
+# Closes the loop ADR-0030 opened: once a model integration lands on main, the
+# models wheel releases itself. Without this the split still leaves a human in
+# the release path, and "one engine version absorbs any number of model
+# integrations" only holds on paper — a consumer cannot pick a model up until
+# somebody remembers to cut `models-vX.Y.Z` by hand.
+#
+# Trigger is deliberately narrow: an `integrate:` commit that touched the models
+# wheel. A hand edit to `tolokaforge_models/` (fixing a price, editing a
+# docstring) does NOT release — that stays the manual `workflow_dispatch` on
+# `release-models.yml`, so routine maintenance does not consume version numbers.
+#
+# Increment is `minor` rather than `auto`: `integrate:` is not a Conventional
+# Commit type, so `auto` has nothing to derive from. Minor also keeps the patch
+# axis free for fixing a model that shipped wrong (bad price, over-broad preset)
+# without it reading as a new model.
+#
+# Test branches never reach here — this fires on pushes to `main` only, and the
+# arena's disposable `test/*` / `observe-*` integration branches are never
+# merged out.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tolokaforge_models/**"
+
+# Deliberately `write`, not the `contents: read` a permissions linter suggests by
+# default. Permissions can only be maintained or reduced down a reusable-workflow
+# chain, never elevated, so a caller granting `read` would cap the called
+# workflow below the `contents: write` it declares for pushing the bump commit
+# and tag. This is the minimum that lets `release-models.yml` run, not a widening:
+# without a block at all the job would inherit whatever the repository default is.
+permissions:
+  contents: write
+
+# No `concurrency` here on purpose. `release-models.yml` already declares
+# `group: release-models`, which serializes the lane for every entry point.
+# Repeating the same group on a caller of a reusable workflow makes the caller
+# and the job it is waiting on contend for one slot, which GitHub warns against
+# and which can wedge the run rather than queue it.
+#
+# Note the callee's `cancel-in-progress: false` bounds the lane at one running
+# plus one pending: a third arrival cancels the pending one. Model releases are
+# additive and the next integration re-cuts anyway, so a dropped middle release
+# costs a version number, not a model. If that stops being true, the callee
+# wants `queue: max`, not a second group here.
+
+jobs:
+  release:
+    # `head_commit` is the tip of the push. A squash-merged integration PR
+    # carries the `integrate: <slug>` subject through to main, which is the same
+    # prefix `tests/canonical/test_models_wheel_replay.py` walks, so the release
+    # trigger and the acceptance metric agree on what an integration is.
+    # Quoted: the `: ` inside the literal would otherwise read as a YAML mapping.
+    if: "startsWith(github.event.head_commit.message, 'integrate: ')"
+    uses: ./.github/workflows/release-models.yml
+    with:
+      bump: minor
+      dry_run: false
+    secrets: inherit

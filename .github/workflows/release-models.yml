@@ -1,7 +1,7 @@
 name: Release tolokaforge-models (cz bump)
 
-# Human-initiated release for the `tolokaforge-models` wheel — orthogonal to
-# the engine's own `Release (cz bump)` workflow. Runs `cz bump` against the
+# Release for the `tolokaforge-models` wheel — orthogonal to the engine's own
+# `Release (cz bump)` workflow. Runs `cz bump` against the
 # per-project commitizen config in `tolokaforge_models/pyproject.toml`,
 # regenerates `tolokaforge_models/CHANGELOG.md` from the Conventional Commit
 # history scoped to that project, commits, and pushes a `models-vX.Y.Z`
@@ -9,6 +9,14 @@ name: Release tolokaforge-models (cz bump)
 # `publish-tolokaforge-models.yml` (PyPI trusted publishing + GitHub Release).
 # No engine files are touched — the engine's `pyproject.toml`, `CHANGELOG.md`,
 # and `vX.Y.Z` tag axis are all independent.
+#
+# Two entry points, one body:
+#   * `workflow_dispatch` — a human cuts a release by hand.
+#   * `workflow_call` — `release-models-on-integrate.yml` calls it after an
+#     `integrate:` commit lands on main, so a model onboarding publishes itself
+#     without anyone in the release path (ADR-0030's independent-cadence goal).
+# `workflow_call` inputs cannot be `type: choice`, so the shared `bump` value is
+# a plain string there and validated in the body instead.
 #
 # See `docs/RELEASING.md` ("Cutting a tolokaforge-models release").
 
@@ -30,6 +38,21 @@ on:
         required: false
         default: false
         type: boolean
+  workflow_call:
+    inputs:
+      bump:
+        description: "Version increment: auto | patch | minor | major"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run (compute the bump + changelog, do not commit/tag/push)"
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      RELEASE_SSH_KEY:
+        description: "Deploy key allowed to bypass the main branch ruleset"
+        required: true
 
 # Independent of the engine's `release` group — the two wheels release on
 # separate cadences and must be free to run in parallel.
@@ -73,14 +96,23 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      # `workflow_call` hands `bump` through as a free-form string (choice is
+      # dispatch-only), so validate here rather than trusting the caller. An
+      # unrecognised value must fail the release, not silently fall through to
+      # `auto` and cut an unintended version.
       - name: Compute increment argument
         id: incr
+        env:
+          BUMP: ${{ inputs.bump }}
         run: |
-          if [ "${{ inputs.bump }}" = "auto" ]; then
-            echo "arg=" >> "$GITHUB_OUTPUT"
-          else
-            echo "arg=--increment ${{ inputs.bump }}" >> "$GITHUB_OUTPUT"
-          fi
+          case "$BUMP" in
+            auto)                 echo "arg=" >> "$GITHUB_OUTPUT" ;;
+            patch|minor|major)    echo "arg=--increment $BUMP" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "::error::unknown bump increment '$BUMP' (expected auto|patch|minor|major)"
+              exit 1
+              ;;
+          esac
 
       # Working directory is `tolokaforge_models/` so commitizen reads the
       # per-project `[tool.commitizen]` block and its relative paths

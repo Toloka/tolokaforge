@@ -7,16 +7,16 @@ Bucket-A allow-list). Never opens a git repository and never reads any
 of the files it classifies; the input is a plain iterable of path
 strings.
 
-The primitive is the sole source of truth for the ADR-0030 taxonomy and
-is shared by two callers:
+The primitive is the sole source of truth for the ADR-0030 bucket split
+and is shared by two callers:
 
 - ``tests/canonical/test_models_wheel_replay.py`` — replays every
   ``^integrate: `` commit reachable from HEAD and asserts the historical
   distribution against a canonical snapshot.
 - ``.github/workflows/integrate-model.yml`` — invokes
-  ``automation classify-paths --paths-from-cached`` at finalize time to
-  tag the auto-integration commit and Slack notification with the
-  bucket.
+  ``automation classify-paths --paths-from-cached`` at finalize time as a
+  commit gate: Bucket A commits, with the subject and the Slack message
+  naming the bucket; Bucket B is refused and routed to needs-human.
 """
 
 from __future__ import annotations

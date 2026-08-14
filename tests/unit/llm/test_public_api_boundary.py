@@ -13,11 +13,11 @@ runtime checks:
 * **Test 3 (private-attr reach)** — no ``self._x`` / ``cls._x`` /
   ``super()._x`` where ``_x`` is a base-class method name and not
   locally defined by the subclass.
-* **Test 4 (registry audit)** — every class in
-  :data:`tolokaforge.core.llm.presets._POLICY_REGISTRIES` that inherits
-  from another in-registry class appears in :data:`PER_MODEL_SUBCLASSES`,
-  so a new per-model subclass added to a preset registry cannot slip past
-  unlisted.
+* **Test 4 (boundary direction)** — no class registered from
+  ``tolokaforge.core.llm.*`` extends another in-registry class. That shape
+  is a per-model subclass on the engine side of the boundary, exactly what
+  the auto-integration would recreate if a resolve agent wrote into an
+  engine module.
 
 Tests 1-3 parse the subclass' host-module source via :mod:`ast`; no runtime
 import of the subclass is required. Test 4 walks the registries at import
@@ -25,7 +25,7 @@ time.
 
 Entries in :data:`PER_MODEL_SUBCLASSES` name concrete-module dotted paths in
 :mod:`tolokaforge_models.policies` (e.g. ``tolokaforge_models.policies.gemini``)
-where the eight per-model subclasses actually live; the engine's public shim
+where the per-model subclasses actually live; the engine's public shim
 in ``tolokaforge.core.llm.__init__.py`` still resolves them for a one-release
 deprecation window but is not the boundary the AST walk audits.
 """
@@ -44,33 +44,55 @@ pytestmark = pytest.mark.unit
 
 
 #: Per-model subclasses and composite helpers under the boundary guardrail.
-#: Two shapes qualify:
+#: Two shapes qualify: subclasses of a concrete engine base registered in a
+#: ``_POLICY_REGISTRIES`` slot, and composite helpers that inherit only from
+#: ``object`` and wire up other policy instances internally.
 #:
-#: (a) subclasses of a concrete engine base already registered in a
-#:     ``_POLICY_REGISTRIES`` slot (``StrictSchema``, ``DictMapHints``,
-#:     ``OpenAIReasoningCodec``, ``ArrayDictMapResponse``, ...);
-#: (b) composite helper classes registered in ``_POLICY_REGISTRIES`` that
-#:     inherit only from ``object`` and wire up other in-tree policy
-#:     instances internally (``JsonRecursiveCoerceResponse``,
-#:     ``ItemRecursiveUnwrapResponse``, ``MinimaxM3TagRecoveryResponse``).
+#: The set is DERIVED from the merged ``_POLICY_REGISTRIES`` at collection time,
+#: not hand-maintained. A hand-maintained list would make every models-wheel
+#: class an engine-repo edit to add it — which is Bucket B under
+#: ``bucket_classifier.py`` and would put the auto-integration pipeline back on
+#: the engine release axis for exactly the integrations ADR-0030 moved off it.
+#: Registration via the ``tolokaforge.policies`` entry-point group is mandatory
+#: for a class to be usable at all, so the registries are a complete source.
 #:
-#: Test 4 below is the authoritative audit for BOTH shapes: it walks
-#: ``_POLICY_REGISTRIES`` at runtime and asserts that every registered class
-#: NOT under ``tolokaforge.core.llm.*`` (i.e. every per-model class the models
-#: wheel contributes) appears here. Composites inheriting only from ``object``
-#: (shape b) are covered by the same walk — a registered class must be listed
-#: regardless of ancestor shape. The manual-add caveat applied to the older
-#: filter shape (ancestor-gated) and no longer stands.
-PER_MODEL_SUBCLASSES: Final[tuple[tuple[str, str], ...]] = (
-    ("tolokaforge_models.policies.gemini", "GeminiSchema"),
-    ("tolokaforge_models.policies.gemini", "GeminiRecursiveSchema"),
-    ("tolokaforge_models.policies.gemini", "ScalarArrayDictMapResponse"),
-    ("tolokaforge_models.policies.inkling", "RefResolvingDictMapHints"),
-    ("tolokaforge_models.policies.minimax", "MinimaxM3TagRecoveryResponse"),
-    ("tolokaforge_models.policies.minimax", "JsonRecursiveCoerceResponse"),
-    ("tolokaforge_models.policies.minimax", "ItemRecursiveUnwrapResponse"),
-    ("tolokaforge_models.policies.deepseek", "OpenAISummaryReplayReasoningCodec"),
-)
+#: Derivation is by MODULE, not by registered class. Shape (b) composites are
+#: composed into a registered class rather than registered themselves, so a
+#: registry-only walk cannot see them — and ``resolve_agent.md`` holds exactly
+#: that composition up as the pattern to copy, so unregistered per-model code is
+#: the expected case, not an exception worth hardcoding. Taking every public
+#: class defined in a contributing module audits the composites for free and
+#: keeps growing on its own as new families land.
+def _derive_per_model_subclasses() -> tuple[tuple[str, str], ...]:
+    """Every public class defined in a module that contributes a registered policy.
+
+    A models-wheel module earns its place by registering at least one class
+    through the ``tolokaforge.policies`` entry-point group (mandatory — an
+    unregistered class could not be named by a preset). Everything public that
+    module defines then ships to the same consumers under the same boundary
+    rules, so it is audited too.
+    """
+    presets = importlib.import_module("tolokaforge.core.llm.presets")
+    contributing_modules = {
+        cls.__module__
+        for registry in presets._POLICY_REGISTRIES.values()
+        for cls in registry.values()
+        if not cls.__module__.startswith("tolokaforge.core.llm.")
+    }
+    found: set[tuple[str, str]] = set()
+    for module_dotted in contributing_modules:
+        module = importlib.import_module(module_dotted)
+        for name, obj in vars(module).items():
+            if name.startswith("_") or not inspect.isclass(obj):
+                continue
+            # Imported symbols keep their defining module; only classes this
+            # module actually defines are its responsibility.
+            if obj.__module__ == module_dotted:
+                found.add((module_dotted, name))
+    return tuple(sorted(found))
+
+
+PER_MODEL_SUBCLASSES: Final[tuple[tuple[str, str], ...]] = _derive_per_model_subclasses()
 
 #: Engine slot Protocols — the abstract slot definitions. They never appear in
 #: ``_POLICY_REGISTRIES`` (only concrete classes are registered), but Test 4
@@ -191,10 +213,29 @@ def _base_method_names(base_cls: type[Any]) -> set[str]:
     }
 
 
-def test_per_model_subclasses_is_populated() -> None:
-    assert PER_MODEL_SUBCLASSES, (
-        "PER_MODEL_SUBCLASSES must enumerate at least one subclass — an empty "
-        "list disables the boundary guardrail."
+def test_per_model_subclasses_covers_every_contributing_module() -> None:
+    """Each module that registers a policy must appear in the derived set.
+
+    A count floor would pass on a partial derivation that still cleared it, and
+    would fail on a legitimately retired family with a constant edit as the only
+    repair. Coverage of the registries is the property actually worth locking.
+    """
+    presets = importlib.import_module("tolokaforge.core.llm.presets")
+    contributing = {
+        cls.__module__
+        for registry in presets._POLICY_REGISTRIES.values()
+        for cls in registry.values()
+        if not cls.__module__.startswith("tolokaforge.core.llm.")
+    }
+    assert contributing, (
+        "no module outside tolokaforge.core.llm registers a policy — either the "
+        "models wheel is not installed or entry-point loading broke, and the "
+        "boundary guardrail below would silently audit nothing"
+    )
+    audited = {module for module, _ in PER_MODEL_SUBCLASSES}
+    assert contributing <= audited, (
+        "modules register a policy but contribute no audited class: "
+        f"{sorted(contributing - audited)}"
     )
 
 
@@ -301,53 +342,47 @@ def _classify_receiver(node: ast.expr) -> str | None:
     return None
 
 
-def test_per_model_subclasses_covers_registered_non_base_classes() -> None:
-    """Every registered per-model class that lives outside the engine base
-    modules must appear in :data:`PER_MODEL_SUBCLASSES`, whether it inherits
-    from an in-registry slot base or is a composite inheriting only from
-    ``object``.
+def test_no_per_model_subclass_is_registered_engine_side() -> None:
+    """No per-model policy class may live under ``tolokaforge.core.llm.*``.
 
-    Filter shape: engine-owned base classes and slot Protocols
-    (``StrictSchema``, ``DictMapHints``, ``ArrayDictMapResponse``, …) live
-    under ``tolokaforge.core.llm.*`` and stay engine-side; the AST audit
-    does not run against them because they define the abstract surface,
-    not implement it. Every OTHER registered class — the per-model
-    subclasses and composites the models wheel ships — must be enumerated
-    here so tests 1-3 audit each one.
+    :data:`PER_MODEL_SUBCLASSES` is derived from the registries, so "is it
+    listed" is not a question worth asking. The invariant that still
+    needs guarding is the direction of the boundary: per-model policy code
+    belongs in the models wheel, and the engine LLM package holds only slot
+    Protocols and the concrete *bases* those per-model classes extend.
 
-    Composite classes (shape (b) in the module docstring) inherit only
-    from ``object`` and wire up sibling policy instances internally. They
-    have no in-registry ancestor, so the older "must inherit from a
-    registered base" filter would silently exempt them. This walk requires
-    every non-engine class to be listed regardless of ancestor shape.
+    A class registered from ``tolokaforge.core.llm.*`` that itself inherits
+    from another registered class is a per-model subclass sitting on the
+    wrong side. That is the shape this guard forbids, and it is what the auto
+    integration would recreate if a resolve agent wrote a new adapter into an
+    engine module. `.github/workflows/integrate-model.yml` refuses to commit
+    that tree; this test is the same rule enforced against the merged
+    registries, so a hand-written engine-side subclass cannot slip past
+    either.
+
+    Engine-side classes that inherit only from ``object`` or from a slot
+    Protocol are bases, not per-model adaptations, and are left alone.
     """
     presets = importlib.import_module("tolokaforge.core.llm.presets")
-    listed = set(PER_MODEL_SUBCLASSES)
-    missing: list[str] = []
+    offenders: list[str] = []
     for slot, registry in presets._POLICY_REGISTRIES.items():
         registered = set(registry.values())
         for cls in registry.values():
-            # Engine-owned base classes and slot Protocols are the abstract
-            # surface — skip them. Everything else must be enumerated.
-            if cls.__module__.startswith("tolokaforge.core.llm."):
+            if not cls.__module__.startswith("tolokaforge.core.llm."):
                 continue
             if cls.__name__ in _SLOT_PROTOCOLS:
                 continue
-            key = (cls.__module__, cls.__name__)
-            if key not in listed:
-                in_slot_ancestors = [
-                    base for base in cls.__mro__[1:] if base is not object and base in registered
-                ]
-                shape = (
-                    f"inherits from registered slot base(s) "
-                    f"{[b.__name__ for b in in_slot_ancestors]!r}"
-                    if in_slot_ancestors
-                    else "is a composite (inherits only from object)"
+            in_slot_ancestors = [
+                base for base in cls.__mro__[1:] if base is not object and base in registered
+            ]
+            if in_slot_ancestors:
+                offenders.append(
+                    f"{slot}: {cls.__module__}.{cls.__name__} extends registered "
+                    f"base(s) {[b.__name__ for b in in_slot_ancestors]!r} but lives "
+                    f"in the engine LLM package. Per-model policy classes belong in "
+                    f"tolokaforge_models/src/tolokaforge_models/policies/<family>.py, "
+                    f"registered via the `tolokaforge.policies` entry-point group. "
+                    f"If this really is a new engine base, it must not be a subclass "
+                    f"of another registered class."
                 )
-                missing.append(
-                    f"{slot}: {cls.__module__}.{cls.__name__} {shape} "
-                    f"but is not in PER_MODEL_SUBCLASSES. Add it to the "
-                    f"list so tests 1-3 audit it against the engine's "
-                    f"public API boundary."
-                )
-    assert not missing, "\n".join(missing)
+    assert not offenders, "\n".join(offenders)
