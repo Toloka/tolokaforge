@@ -240,7 +240,7 @@ class HarnessSpec(BaseModel):
     benchmark agent can read has to be versioned with the task rather than with
     the laptop the eval ran on. A task declaring
     :attr:`~tolokaforge_adapter_terminal_bench.task_parser.TerminalBenchTask.harness_skills_dir`
-    gets that directory copied here, and the bundle's content hash is recorded
+    gets that directory delivered here, and the bundle's content hash is recorded
     on the trial artifact. Left ``None``, the harness installs no skills and a
     pack shipping them still runs — without them."""
 

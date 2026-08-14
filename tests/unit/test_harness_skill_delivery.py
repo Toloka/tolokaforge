@@ -161,3 +161,16 @@ class TestTheTwoSeamsCompose:
         assert "COPY skills/. /home/agent/.claude/skills/" in _harness_dockerfile(
             _staging_dir(injected)
         )
+
+    def test_two_deliveries_over_one_staging_root_keep_their_own_build_contexts(self, tmp_path):
+        """Same target, same resolver, different delivery: one Dockerfile copies
+        the bundle and the other does not, so the delivery is part of the staging
+        directory's identity too."""
+        shipped = _adapter(tmp_path, "echo-hello-skills", "claude-code")
+        injected = _adapter(
+            tmp_path, "echo-hello-skills", "claude-code", skill_delivery=_RecordingDelivery()
+        )
+
+        assert _staging_dir(shipped) != _staging_dir(injected)
+        assert "COPY skills/." in _harness_dockerfile(_staging_dir(shipped))
+        assert "COPY skills/." not in _harness_dockerfile(_staging_dir(injected))

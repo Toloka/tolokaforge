@@ -281,8 +281,10 @@ the pack would reintroduce exactly the host contamination the policy
 rejects. A harness leaving `skills_dir_target` unset installs no skills:
 a pack that ships them still runs under it, without them and with a
 warning, so one task stays comparable across harnesses. The bundle hash
-is written only when the bundle actually reached the image, so an absent
-key reads as "this agent had no skills" and never as "unknown".
+is written only when a bundle was handed to the run's `SkillDelivery`, so
+an absent key reads as "this agent had no skills" and never as "unknown".
+That the bundle then arrives is the delivery's contract: one that cannot
+place it raises.
 
 `skills_dir_target` says *where* the bundle lands; `SkillDelivery` says
 *how* it gets there. The shipped `ImageLayerSkillDelivery` appends a `COPY`
