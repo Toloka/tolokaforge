@@ -202,11 +202,14 @@ class TestThroughputProperty:
 
 
 class TestFactoryAndRegistration:
-    def test_factory_builds_grader_with_inmemory_broker(self) -> None:
+    def test_factory_raises_until_broker_wiring_lands(self) -> None:
+        """The registered ``queue`` factory raises loudly instead of building
+        an unusable grader (broker no one is listening to). Once the context
+        carries broker-selection configuration and a worker pool is
+        provisioned, this test flips to construct a working grader."""
         ctx = TrialGraderContext(runner_address="stub:0", logger=MagicMock())
-        grader = queue_trial_grader_factory(ctx)
-        assert isinstance(grader, QueueTrialGrader)
-        assert isinstance(grader.broker, InMemoryGradeBroker)
+        with pytest.raises(NotImplementedError, match="not yet wired"):
+            queue_trial_grader_factory(ctx)
 
     def test_registered_under_queue_entry_point(self) -> None:
         factory = load_trial_grader("queue")

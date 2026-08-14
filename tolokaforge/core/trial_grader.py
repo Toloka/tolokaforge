@@ -415,8 +415,15 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
 
 
 def runner_rpc_trial_grader_factory(ctx: TrialGraderContext) -> RunnerRPCTrialGrader:
-    """Build a :class:`RunnerRPCTrialGrader` from a grader context."""
-    return RunnerRPCTrialGrader(runner_address=ctx.runner_address, logger=ctx.logger)
+    """Build a :class:`RunnerRPCTrialGrader` from a grader context.
+
+    Accepts ``ctx.runner_address is None`` at construction so orchestrator
+    fixtures paired with an in-memory backend can still build the grader
+    without touching the network — the misconfiguration surfaces when
+    :meth:`RunnerRPCTrialGrader.grade` is first called against the empty
+    address (see the loud-failure branch inside ``RunnerRPCTrialGrader``).
+    """
+    return RunnerRPCTrialGrader(runner_address=ctx.runner_address or "", logger=ctx.logger)
 
 
 JudgeGradeFn = Callable[[TrialSpec, Trajectory, str], "Grade | None"]
@@ -627,8 +634,8 @@ class GraderRPCTrialGrader:
             ),
         )
 
-        if not (grade_result["success"] and grade_result["grade"]):
-            error_msg = grade_result.get("error", "Unknown grading error")
+        if not grade_result["success"]:
+            error_msg = grade_result.get("error") or "Unknown grading error"
             self.logger.error(
                 "Grader service RPC failed",
                 task_id=task_id,
@@ -636,6 +643,17 @@ class GraderRPCTrialGrader:
                 error=error_msg,
             )
             raise GradingFailedError(f"Grading failed for trial {spec.trial_id!r}: {error_msg}")
+
+        if grade_result.get("no_verdict"):
+            # The wire distinguishes "nothing to grade" (no verdict) from a
+            # grading failure — the ``TrialGrader`` Protocol returns ``None``
+            # for the former and raises ``GradingFailedError`` for the latter.
+            self.logger.info(
+                "Grader service produced no verdict",
+                task_id=task_id,
+                trial_index=trial_idx,
+            )
+            return None
 
         grade = _parse_grade_result(grade_result["grade"])
         self.logger.info(
@@ -651,14 +669,22 @@ class GraderRPCTrialGrader:
 def grader_rpc_trial_grader_factory(ctx: TrialGraderContext) -> GraderRPCTrialGrader:
     """Build a :class:`GraderRPCTrialGrader` from a grader context.
 
-    Reads ``ctx.runner_address`` as the grader-service address — the context
-    field is intentionally reused: on the current wire the grader listens on
-    a companion port to the runner and the address string carries whichever
-    of the two the operator wants to dial. A follow-up will introduce a
-    distinct ``grader_address`` context field when the grader service moves
-    to a truly separate host.
+    Uses ``ctx.grader_address`` when set (grader service on a distinct host)
+    and falls back to ``ctx.runner_address`` when the operator has not split
+    the two — single-address single-host deployments continue to work.
+
+    Fails loud when neither field is set (in-memory backend + grader_rpc is
+    a misconfiguration that would otherwise surface as a 30 s connect hang).
     """
-    return GraderRPCTrialGrader(grader_address=ctx.runner_address, logger=ctx.logger)
+    address = ctx.grader_address if ctx.grader_address is not None else ctx.runner_address
+    if address is None:
+        raise ValueError(
+            "grader_rpc trial grader requires either ``grader_address`` or "
+            "``runner_address`` on the grader context (got None on both). "
+            "Pair a network-reachable backend with the grader_rpc grader, or "
+            "select a grader that does not need an address."
+        )
+    return GraderRPCTrialGrader(grader_address=address, logger=ctx.logger)
 
 
 class QueueTrialGrader:
@@ -782,19 +808,26 @@ class QueueTrialGrader:
         return grade
 
 
-def queue_trial_grader_factory(ctx: TrialGraderContext) -> QueueTrialGrader:
-    """Build a :class:`QueueTrialGrader` from a grader context.
+def queue_trial_grader_factory(ctx: TrialGraderContext) -> QueueTrialGrader:  # noqa: ARG001
+    """Registered ``queue`` factory. Fails loud until a broker + workers are wired.
 
-    The factory instantiates an in-memory reference broker
-    (:class:`~tolokaforge.grader.queue.InMemoryGradeBroker`) which is
-    useful for tests and single-machine deployments. A Redis Streams or
-    RabbitMQ backend plugs in via a follow-up context field carrying
-    broker-selection configuration.
+    The context has no broker-selection field yet and no consumer pool is
+    provisioned by the engine, so a real ``grade: queue`` selection would
+    publish to a broker no one is listening to and hang for
+    ``QueueTrialGrader.DEFAULT_TIMEOUT_S`` before failing. Raising here
+    surfaces the misconfiguration at orchestrator startup, before any trial
+    dispatches, and points the operator at the follow-up that will thread
+    broker configuration through the context.
+
+    Tests construct :class:`QueueTrialGrader` directly with a broker + a
+    controlled worker pool — see ``tests/canonical/test_queue_trial_grader.py``.
     """
-    from tolokaforge.grader.queue import InMemoryGradeBroker
-
-    broker = InMemoryGradeBroker()
-    return QueueTrialGrader(broker=broker, logger=ctx.logger)
+    raise NotImplementedError(
+        "``queue`` trial grader is registered but not yet wired to a broker + "
+        "worker pool at the engine layer. Instantiate ``QueueTrialGrader`` "
+        "directly with your own ``GradeBroker`` for now; the factory will land "
+        "once ``TrialGraderContext`` carries broker-selection configuration."
+    )
 
 
 def judge_backed_trial_grader_factory(ctx: TrialGraderContext) -> JudgeBackedTrialGrader:

@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING
 from tolokaforge.core.models import (
     Grade,
     JudgeStatus,
+    TraceChecksSummary,
+    TraceConstraintResult,
 )
 from tolokaforge.grader import grader_pb2, grader_pb2_grpc
 
@@ -70,15 +72,24 @@ def _grade_to_wire(grade: Grade) -> grader_pb2.Grade:
     wire = grader_pb2.Grade(
         binary_pass=grade.binary_pass,
         score=grade.score,
-        reasons=grade.reasons or "",
+        reasons=grade.reasons or "" if isinstance(grade.reasons, str) else "",
         judge_status=_judge_status_to_wire(grade.judge_status),
     )
+    if grade.state_diff is not None:
+        # ``Grade.state_diff`` is the parsed dict; the wire carries it JSON-
+        # encoded so downstream consumers can lazy-decode. Symmetric with
+        # runner.Grade.state_diff_json which the ``_parse_grade_result`` mapper
+        # deserialises on receipt.
+        wire.state_diff_json = json.dumps(grade.state_diff)
     if grade.components is not None:
         wire.components.state_checks = _sentinel(grade.components.state_checks)
         wire.components.transcript_rules = _sentinel(grade.components.transcript_rules)
         wire.components.llm_judge = _sentinel(grade.components.llm_judge)
         wire.components.custom_checks = _sentinel(grade.components.custom_checks)
-        wire.components.trace_checks = _sentinel(grade.components.trace_checks)
+        # ``trace_checks`` uses proto ``optional`` presence, not the -1.0
+        # sentinel — set it only when the source Grade actually carries one.
+        if grade.components.trace_checks is not None:
+            wire.components.trace_checks = grade.components.trace_checks
     if grade.custom_checks_details:
         wire.custom_checks.extend(
             grader_pb2.CustomCheckResult(
@@ -97,7 +108,76 @@ def _grade_to_wire(grade: Grade) -> grader_pb2.Grade:
             )
             for c in grade.criterion_results
         )
+    _populate_judge_report(wire, grade)
+    if grade.trace_check_results:
+        wire.trace_checks.extend(_trace_constraint_to_wire(r) for r in grade.trace_check_results)
+    if grade.trace_checks_summary is not None:
+        _populate_trace_checks_summary(wire, grade.trace_checks_summary)
     return wire
+
+
+def _populate_judge_report(wire: grader_pb2.Grade, grade: Grade) -> None:
+    """Populate the ``JudgeReport`` sub-message from every field a live
+    :class:`Grade` may carry. The wire ships every judge-side audit field so
+    an offline replay reads the same shape a runner-RPC grade would.
+    """
+    usage = grade.judge_usage
+    kb = grade.judge_kb_gating
+    inputs = grade.judge_inputs
+    transcript = grade.judge_transcript
+    custom_prompt = grade.judge_custom_prompt
+    include_agent_prompt = grade.judge_agent_prompt_included
+    if all(
+        value is None
+        for value in (usage, kb, inputs, transcript, custom_prompt, include_agent_prompt)
+    ):
+        return
+    report = wire.judge_report
+    if usage is not None:
+        report.calls = usage.calls
+        report.prompt_tokens = usage.prompt_tokens
+        report.completion_tokens = usage.completion_tokens
+        report.reasoning_tokens = usage.reasoning_tokens
+        report.cost_usd = usage.cost_usd
+        report.tool_calls = usage.tool_calls
+        report.consistency_rejections = usage.consistency_rejections
+    if transcript is not None:
+        report.transcript_json = json.dumps(transcript)
+    if kb is not None:
+        report.knowledge_search_disabled = kb.knowledge_search_disabled
+        report.kb_tools_offered.extend(kb.offered)
+        report.kb_tools_withheld.extend(kb.withheld)
+    if inputs is not None:
+        if inputs.state_diff_text is not None:
+            report.state_diff_text = inputs.state_diff_text
+        report.read_tools_offered.extend(inputs.read_tools_offered)
+    if custom_prompt is not None:
+        report.custom_system_prompt = custom_prompt
+    if include_agent_prompt is not None:
+        report.include_agent_system_prompt = include_agent_prompt
+
+
+def _trace_constraint_to_wire(r: TraceConstraintResult) -> grader_pb2.TraceConstraintResult:
+    return grader_pb2.TraceConstraintResult(
+        id=r.id,
+        kind=r.kind,
+        passed=r.passed,
+        weight=r.weight,
+        message=r.message,
+        matched_positions=list(r.matched_positions),
+        severity=r.severity,
+        undecided=r.undecided,
+    )
+
+
+def _populate_trace_checks_summary(wire: grader_pb2.Grade, summary: TraceChecksSummary) -> None:
+    wire.trace_checks_summary.winning_path = summary.winning_path
+    wire.trace_checks_summary.gate_failed = summary.gate_failed
+    wire.trace_checks_summary.failed_gate_ids.extend(summary.failed_gate_ids)
+    wire.trace_checks_summary.paths.extend(
+        grader_pb2.TracePathResult(id=p.id, score=p.score, gate_failed=p.gate_failed)
+        for p in summary.paths
+    )
 
 
 def _sentinel(value: float | None) -> float:
@@ -157,11 +237,15 @@ class GraderServiceImpl(grader_pb2_grpc.GraderServiceServicer):
             )
             return grader_pb2.GradeResponse(success=False, error=str(exc))
         if grade is None:
+            # "Nothing to grade" — a trial the agent never got to run. Distinct
+            # from a grading failure: the wire carries ``no_verdict=True`` so
+            # the caller returns ``None`` at the ``TrialGrader`` seam rather
+            # than raising ``GradingFailedError``.
             self.logger.info(
                 "Grader service produced no verdict",
                 trial_id=request.trial_id,
             )
-            return grader_pb2.GradeResponse(success=False, error="no verdict")
+            return grader_pb2.GradeResponse(success=True, no_verdict=True)
         self.logger.info(
             "Grader service produced a Grade",
             trial_id=request.trial_id,
@@ -170,9 +254,9 @@ class GraderServiceImpl(grader_pb2_grpc.GraderServiceServicer):
         )
         return grader_pb2.GradeResponse(success=True, grade=_grade_to_wire(grade))
 
-    def HealthCheck(  # noqa: N802
+    def HealthCheck(  # noqa: N802 — matches the generated stub method name
         self,
-        request: grader_pb2.HealthCheckRequest,  # noqa: ARG002
-        context: object,  # noqa: ARG002
+        request: grader_pb2.HealthCheckRequest,  # noqa: ARG002 — proto contract requires the arg; unused by this impl
+        context: object,  # noqa: ARG002 — gRPC context, unused by this impl
     ) -> grader_pb2.HealthCheckResponse:
         return grader_pb2.HealthCheckResponse(status=grader_pb2.HealthCheckResponse.SERVING)

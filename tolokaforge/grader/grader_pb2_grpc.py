@@ -63,19 +63,20 @@ class GraderServiceServicer:
     def Grade(self, request, context):
         """Compute a Grade for a completed trial.
 
-        Stateless per call: the caller provides everything the grader needs to
-        produce a verdict (the transcript encoded as LLM messages, the trial's
-        termination reason, and — for a future extension carrying rubric config
-        — the task_config JSON). The grader is expected to be reachable at a
-        different address from the runner service; the wire types are decoupled
-        from runner.proto so the two services can rev on their own cadence.
+        Stateless per call: the caller provides everything the grader needs.
+        The response carries three distinct outcomes — a failure
+        (success=false), a "nothing to grade" verdict (success=true,
+        no_verdict=true), or a computed grade (success=true, no_verdict=false,
+        grade set). This mirrors the ``TrialGrader.grade`` Protocol's tri-state
+        return, so a grader-service caller and an in-process grader answer the
+        same call with the same outcome for the same input.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
 
     def HealthCheck(self, request, context):
-        """Health check — same shape as runner.HealthCheck for operational parity."""
+        """Health check."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")

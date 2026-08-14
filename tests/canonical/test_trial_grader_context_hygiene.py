@@ -53,11 +53,13 @@ class TestTrialGraderContextShape:
                 "grader context must not carry live runtime-backend instances."
             )
 
-    def test_runner_address_is_a_string(self) -> None:
-        """The address must be serialisable — a plain ``str``, not a wrapper
-        object with a runtime binding."""
+    def test_runner_address_is_a_string_or_none(self) -> None:
+        """The address must be serialisable — a plain ``str`` (or ``None`` when
+        the backend has no runner surface), not a wrapper object with a
+        runtime binding. Downstream graders that read the field are
+        responsible for the None-branch."""
         types_by_name = _resolved_types()
-        assert types_by_name["runner_address"] is str
+        assert types_by_name["runner_address"] == (str | None)
 
     def test_construction_with_unknown_kwarg_fails_loud(self) -> None:
         """Frozen dataclass — a stray ``runtime_backend=`` from stale code
