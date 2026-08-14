@@ -177,6 +177,10 @@ runner_rpc = "tolokaforge.core.trial_grader:runner_rpc_trial_grader_factory"
 # shapes (not just runner-RPC-with-different-transport). Ships with an unwired
 # default judge dispatch — see JudgeBackedTrialGrader docstring and ADR-0035.
 judge_only = "tolokaforge.core.trial_grader:judge_backed_trial_grader_factory"
+# Third impl — dials the standalone tolokaforge.grader service (ADR-0035 P2).
+# Same call shape as runner_rpc, but bound to the grader service's address
+# instead of the runner's; enables independent deploy and independent scale.
+grader_rpc = "tolokaforge.core.trial_grader:grader_rpc_trial_grader_factory"
 
 [project.entry-points."tolokaforge.conductors"]
 in_process = "tolokaforge.core.conductor:in_process_conductor_factory"
