@@ -11,15 +11,19 @@ not already lock.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
 from tolokaforge_adapter_terminal_bench.harness import (
     ENGINE_LOOP,
     HARNESSES,
+    HarnessSpec,
     resolve_effective_registry,
 )
 from tolokaforge_adapter_terminal_bench.harness.fingerprint import (
+    _digest,
     compute_harness_fingerprint,
 )
 
@@ -45,7 +49,29 @@ def _overlay(tmp_path: Path, name: str, version: str) -> Path:
     return overlay
 
 
-def test_the_same_inputs_give_the_same_digests(tmp_path: Path) -> None:
+def test_the_digest_recipe_is_the_models_fingerprint_recipe() -> None:
+    """Both fingerprints on a run bundle canonicalise the same way.
+
+    The probe carries a non-ASCII character and a nested mapping, so flipping
+    ``ensure_ascii`` or ``separators`` in either module moves this digest
+    instead of silently changing what one of the two shas means.
+    """
+    probe = {
+        "probe-cli": HarnessSpec(
+            install_source="@acme/probe-cli",
+            version="1.0.0",
+            argv_prefix=("probe-cli",),
+            argv_suffix=("--go",),
+            config_files={"/etc/probe.toml": "note = 'café'"},
+        )
+    }
+    payload = {name: spec.model_dump(mode="json") for name, spec in probe.items()}
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+
+    assert _digest(probe) == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def test_the_same_inputs_give_the_same_digests() -> None:
     """Two computes agree, and so does a second resolution of the same layers —
     otherwise the digest would measure the resolution rather than its inputs."""
     first = compute_harness_fingerprint(resolve_effective_registry(), "claude-code")

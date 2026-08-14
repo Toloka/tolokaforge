@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
@@ -55,12 +56,12 @@ class HarnessFingerprint(BaseModel):
     overlay_file: str | None
     """Resolved absolute path of the ``harness_presets_file`` overlay."""
 
-    plugin_bundles: tuple[PluginBundle, ...] = ()
+    plugin_bundles: tuple[PluginBundle, ...]
     """The installed registry plugins that contributed, ordered by
     distribution."""
 
 
-def _digest(registry: dict[str, HarnessSpec]) -> str:
+def _digest(registry: Mapping[str, HarnessSpec]) -> str:
     """Digest over *registry*'s parsed content.
 
     The recipe is the one

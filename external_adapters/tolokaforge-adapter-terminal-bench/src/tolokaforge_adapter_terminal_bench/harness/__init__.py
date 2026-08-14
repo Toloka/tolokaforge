@@ -451,7 +451,7 @@ class PluginBundle(BaseModel):
 class PluginDiscovery:
     """What the installed registry plugins contributed, and who contributed it."""
 
-    harnesses: dict[str, HarnessSpec]
+    harnesses: Mapping[str, HarnessSpec]
     bundles: tuple[PluginBundle, ...]
 
 
@@ -459,7 +459,7 @@ class PluginDiscovery:
 class ResolvedHarnessRegistry:
     """The registry one adapter runs on, and which layers composed it."""
 
-    harnesses: dict[str, HarnessSpec]
+    harnesses: Mapping[str, HarnessSpec]
     plugin_bundles: tuple[PluginBundle, ...]
     overlay_file: Path | None
 
