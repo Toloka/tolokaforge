@@ -2111,18 +2111,44 @@ class TestHarnessSkillsBundle:
         metadata = adapter.to_task_description("echo-hello-skills").metadata
         assert "harness_skills_bundle_sha" not in metadata
 
-    def test_a_relative_skills_target_is_refused_at_registry_load(self):
-        """A ``COPY`` target resolving against WORKDIR is not a skills path."""
+    @staticmethod
+    def _spec_with_target(target: str):
         from tolokaforge_adapter_terminal_bench.harness import HarnessSpec
 
+        return HarnessSpec(
+            install_source="cli",
+            version="1.0.0",
+            argv_prefix=("cli",),
+            argv_suffix=(),
+            skills_dir_target=target,
+        )
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "~/.claude/skills/",
+            "$HOME/.claude/skills/",
+            ".claude/skills/",
+        ],
+    )
+    def test_a_target_nothing_will_expand_is_refused_at_registry_load(self, target):
+        """Only two shapes are a skills path: absolute, or rooted at a
+        ``${VAR}`` construct the resolver answers.
+
+        A brace-less ``$HOME/...`` is the case worth naming: it is legal in a
+        ``config_files`` key, because a shell writes that file. Nothing expands
+        it here — the resolver leaves it alone and Docker would read it off the
+        image's own ``ENV``, so the bundle would land somewhere the CLI never
+        looks and the trial would still record skills.
+        """
         with pytest.raises(ValueError, match="skills_dir_target"):
-            HarnessSpec(
-                install_source="cli",
-                version="1.0.0",
-                argv_prefix=("cli",),
-                argv_suffix=(),
-                skills_dir_target="~/.claude/skills/",
-            )
+            self._spec_with_target(target)
+
+    def test_a_construct_rooted_target_is_accepted(self):
+        """The resolver answers it before delivery sees it."""
+        assert self._spec_with_target("${HOME}/.claude/skills/").skills_dir_target == (
+            "${HOME}/.claude/skills/"
+        )
 
 
 class TestTerminalBenchAdapterHarnessImageBuilds:

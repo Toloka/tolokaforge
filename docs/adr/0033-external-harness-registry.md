@@ -117,7 +117,10 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
   - `config_files: dict[str, str]` — container path to Jinja template for
     CLIs configured by file. Rendered per trial against a closed variable
     set (`model`, `provider`, `base_url`, `api_key_env`); an undeclared
-    name is refused at load.
+    name is refused at load. A path is absolute, a `${HOME}` /
+    `${CONFIG_HOME}` construct the run's `PathResolver` answers (shipped
+    default `LinuxRootResolver` → `/root`, `/root/.config`), or any other
+    `$VAR` reference, left verbatim for the container's own shell.
   - `container_env: dict[str, str]` — compose environment lines the
     agent service always carries.
   - `strip_vendor_namespace: bool` — whether to strip a `vendor/` prefix
@@ -244,8 +247,11 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
 - **Task-pack skills bundle** — landed. A task pack declares
   `harness_skills_dir: <task-relative path>` in its `task.yaml`, and
   `HarnessSpec.skills_dir_target` names where a harness wants such a
-  bundle (`/root/.claude/skills/` for claude-code; unset means the
-  harness installs none). The image layer copies the directory, and
+  bundle — absolute, or rooted at a `${HOME}` / `${CONFIG_HOME}` construct
+  the run's `PathResolver` answers (`${HOME}/.claude/skills/` for
+  claude-code; unset means the harness installs none). *How* the bundle
+  travels is the run's `SkillDelivery`; the shipped
+  `ImageLayerSkillDelivery` copies the directory into the image layer, and
   `TaskDescription.metadata["harness_skills_bundle_sha"]` records its
   content hash — the reproducible, auditable replacement for the
   operator-environment contamination the out-of-tree host smuggles. The

@@ -145,7 +145,15 @@ Because the layered image tag carries the harness name and its pinned version,
 switching harnesses or bumping a CLI can never reuse a stale cached image — and
 the harness is part of the staging digest, so each gets its own staging
 directory. A `.dockerignore` in the staging dir keeps the task sources, tests,
-and log mountpoints out of the layer's build context.
+and log mountpoints out of the layer's build context; everything the layer
+copies is re-included there by name.
+
+Nothing else is in that Dockerfile by default. A task pack's skills bundle
+reaches it only because the adapter's shipped `SkillDelivery` —
+`ImageLayerSkillDelivery` — appends its own `COPY` and `.dockerignore`
+exceptions after the CLI install, so editing a bundle invalidates the copy
+layer without reinstalling the CLI. A run driving the adapter with a different
+delivery gets a harness image with no skills in it.
 
 `describe_environment_identity` records `{agent}-base` among the trial's
 services even though the compose profile keeps it out of `up` — it is a
@@ -245,7 +253,7 @@ somewhere else, so a per-harness policy is one entry to read.
 | Model-name form | Whether a leading `vendor/` namespace is dropped before the model reaches the CLI. Codex and gemini-cli catalogs use bare names; a namespaced string makes them drop OpenRouter routing for the vendor's default endpoint. | `HarnessSpec.strip_vendor_namespace` |
 | Model-flag form | Whether the model flag and its value are two argv words (`--model gpt-5`) or one (`--model=gpt-5`). A CLI parsing its flags strictly accepts only one of the two. | `HarnessSpec.model_flag_style` |
 | File-based configuration | Files the CLI reads its configuration from, rendered per trial. | `HarnessSpec.config_files` |
-| Skills | Where a task pack's own `harness_skills_dir` bundle is copied in the image layer. Unset means the harness installs no skills; the operator's `~/.claude/skills` is never a source. | `HarnessSpec.skills_dir_target` |
+| Skills | Where a task pack's own `harness_skills_dir` bundle lands — absolute, or rooted at a `${HOME}` / `${CONFIG_HOME}` construct the adapter's `PathResolver` answers. *How* it gets there is the adapter's `SkillDelivery`; the shipped answer is an image-layer `COPY`. Unset means the harness installs no skills; the operator's `~/.claude/skills` is never a source. | `HarnessSpec.skills_dir_target` |
 
 **Operator skills are deliberately not aligned.** The out-of-tree host we
 compared against copies the operator's `~/.claude/skills/` into the
@@ -257,9 +265,10 @@ never reads the operator's home directory. The delta this creates is the
 *right* delta — stable across machines and dates.
 
 A task that genuinely needs domain skills ships them itself. Its
-`task.yaml` declares `harness_skills_dir: <task-relative path>`, and the
-harness image layer copies that directory to the CLI's skills path —
-`HarnessSpec.skills_dir_target`, `/root/.claude/skills/` for claude-code.
+`task.yaml` declares `harness_skills_dir: <task-relative path>`, and that
+directory reaches the CLI's skills path — `HarnessSpec.skills_dir_target`,
+`${HOME}/.claude/skills/` for claude-code, which the shipped
+`LinuxRootResolver` places at `/root/.claude/skills/`.
 This keeps every property the smuggled version loses: the bundle is
 versioned with the tests it is scored against, it shows up in a `git
 diff` on the task pack, and its content hash is recorded on the trial
@@ -272,17 +281,49 @@ the pack would reintroduce exactly the host contamination the policy
 rejects. A harness leaving `skills_dir_target` unset installs no skills:
 a pack that ships them still runs under it, without them and with a
 warning, so one task stays comparable across harnesses. The bundle hash
-is written only when the bundle actually reached the image, so an absent
-key reads as "this agent had no skills" and never as "unknown".
+is written only when a bundle was handed to the run's `SkillDelivery`, so
+an absent key reads as "this agent had no skills" and never as "unknown".
+That the bundle then arrives is the delivery's contract: one that cannot
+place it raises.
+
+`skills_dir_target` says *where* the bundle lands; `SkillDelivery` says
+*how* it gets there. The shipped `ImageLayerSkillDelivery` appends a `COPY`
+to the generated harness Dockerfile, so the bundle rides the image; an
+embedder driving a different runtime passes its own as
+`TerminalBenchAdapter(params, skill_delivery=…)` and the image stops
+carrying skills at all. The target it receives has already been through
+the run's `PathResolver`, and `ImageLayerSkillDelivery` refuses one that
+still carries a `${…}` construct: Docker expands a `COPY` destination from
+the *image's* own `ENV`, so a base image declaring `ENV HOME=/home/agent`
+would answer a question the resolver was asked. That case is foreclosed
+deliberately — letting Docker place the skills while the resolver places
+the config files would give one harness two different homes. A runtime
+that wants image-`ENV` semantics supplies a `PathResolver` returning those
+paths, and stays the single authority on where its CLI lives.
 
 Some CLIs need file-based configuration that no env var (compose or
 otherwise) can supply — codex reads `openai_base_url` from
 `$CODEX_HOME/config.toml` and its API key from `$CODEX_HOME/auth.json`,
 and honours neither env var alone. `HarnessSpec.config_files` maps a
 container path to a Jinja template; each file is written by the shell
-chain that runs before the CLI. A path may be rooted at a `$VAR`
-(`${CODEX_HOME:-$HOME/.codex}/config.toml`) so a harness need not assume
-the container's user. Templates render against four variables and no
+chain that runs before the CLI. A path is one of three things:
+
+- an absolute path (`/etc/mycli/config.toml`), which every resolver returns
+  unchanged;
+- a `${HOME}` or `${CONFIG_HOME}` construct, which the adapter's
+  `PathResolver` answers while assembling the command. The shipped
+  `LinuxRootResolver` reads them as `/root` and `/root/.config`; an embedder
+  driving the adapter from Python passes its runtime's own answer as
+  `TerminalBenchAdapter(params, path_resolver=…)`. These two names are the
+  *adapter's* answer, not the container's — a container that changed its user
+  would not change them;
+- any other `$VAR`-rooted reference
+  (`${CODEX_HOME:-$HOME/.codex}/config.toml`), which reaches the container
+  verbatim and is expanded by the container's own shell — so a harness need
+  not assume the container's user, and a variable the resolver does not know
+  keeps the container's answer.
+
+Templates render against four variables and no
 others — `model` (as the CLI receives it), `provider` (the routing prefix
 the run config's model named), `base_url` (the provider envelope's
 `*_BASE_URL` value, after any run-config override), and `api_key_env`
@@ -373,6 +414,16 @@ evaluation:
 The three layers compose lowest to highest — shipped YAML, then installed
 plugin bundles, then the overlay — with whole-entry replacement at each
 transition.
+
+Every layer writes its `config_files` keys and its `skills_dir_target` against
+the same path vocabulary: `${HOME}` and `${CONFIG_HOME}` are the *adapter's*
+answers, supplied by the run's `PathResolver`, and any other `${VAR}`
+construct is left for the container's own shell. The shipped entries use the
+vocabulary — claude-code's skills land at `${HOME}/.claude/skills/`,
+opencode's config at `${CONFIG_HOME}/opencode/opencode.json` — so a second
+runtime consumes this YAML unforked by supplying its own resolver. An absolute
+`/root/...` path stays valid and resolves to itself, so an overlay writing one
+needs no change.
 
 ### Trial-level timeout
 

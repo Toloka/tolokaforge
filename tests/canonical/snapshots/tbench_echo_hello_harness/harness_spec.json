@@ -32,7 +32,7 @@
     "ANTHROPIC_API_KEY": "${secret:OPENROUTER_API_KEY}",
     "ANTHROPIC_BASE_URL": "https://openrouter.ai/api"
   },
-  "skills_dir_target": "/root/.claude/skills/",
+  "skills_dir_target": "${HOME}/.claude/skills/",
   "strip_vendor_namespace": false,
   "version": "2.1.231"
 }

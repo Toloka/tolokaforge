@@ -26,20 +26,30 @@ import yaml
 from jinja2 import Environment, StrictUndefined, TemplateSyntaxError
 from jinja2.meta import find_undeclared_variables
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
 from tolokaforge.core.plugin_registry import discover_entry_points
+
+from .path_resolvers import DEFAULT_PATH_RESOLVER, LinuxRootResolver
+from .protocols import PATH_CONSTRUCT_PATTERN, PathResolver, SkillDelivery, SkillsBundle
 
 __all__ = [
     "CONFIG_TEMPLATE_VARIABLES",
+    "DEFAULT_PATH_RESOLVER",
     "ENGINE_LOOP",
     "HARNESSES",
     "HARNESS_REGISTRY_ENTRY_POINT_GROUP",
     "INSTALL_SCRIPT",
     "OPENROUTER_PREFIX",
+    "PATH_CONSTRUCT_PATTERN",
     "PLUGIN_REGISTRY_RESOURCE",
     "PROVIDER_ENV_INPUT_PREFIX",
     "PROVIDER_ENV_KEYS",
     "SHIPPED_REGISTRY_FILE",
     "HarnessSpec",
+    "LinuxRootResolver",
+    "PathResolver",
+    "SkillDelivery",
+    "SkillsBundle",
     "accepted_harnesses",
     "discover_plugin_harness_registries",
     "harness_command",
@@ -167,13 +177,18 @@ class HarnessSpec(BaseModel):
     load-time error, since a silently empty substitution would surface as a
     provider auth failure many layers from the typo.
 
-    The path may start with ``$`` (``${CODEX_HOME:-$HOME/.codex}/config.toml``)
-    so a harness need not assume the container's user. Both path and content
-    are written through a double-quoted ``printf``, so ``$VAR`` references
-    expand inside the container: that is how a credential reaches the file
-    without the assembled command — which is recorded on
-    ``TaskDescription.metadata`` — ever carrying its value. A template must
-    therefore not carry a literal ``$`` it does not want expanded."""
+    A path is an absolute one, a
+    :data:`~.protocols.PATH_CONSTRUCT_PATTERN` construct over the vocabulary
+    the run's :class:`~.protocols.PathResolver` knows (``${HOME}`` /
+    ``${CONFIG_HOME}`` under the shipped
+    :class:`~.path_resolvers.LinuxRootResolver`), or any other ``$``-rooted
+    reference — which reaches the container verbatim, so a harness need not
+    assume the container's user. Both path and content are written through a
+    double-quoted ``printf``, so those references expand inside the container:
+    that is how a credential reaches the file without the assembled command —
+    which is recorded on ``TaskDescription.metadata`` — ever carrying its
+    value. A template must therefore not carry a literal ``$`` it does not want
+    expanded."""
 
     flags_pre_permission: tuple[str, ...] = ()
     """Flags inserted between the CLI executable and the model flag / argv
@@ -209,14 +224,23 @@ class HarnessSpec(BaseModel):
     :data:`PROVIDER_ENV_KEYS` (a run-config would then shadow this)."""
 
     skills_dir_target: str | None = None
-    """Absolute container directory a task pack's skills bundle is copied into
-    during the harness image build, or ``None`` for a CLI that reads no skills.
+    """Runtime directory a task pack's skills bundle is delivered to, or
+    ``None`` for a CLI that reads no skills.
+
+    Either an absolute path or one rooted at a ``${HOME}`` /
+    ``${CONFIG_HOME}`` construct the run's
+    :class:`~tolokaforge_adapter_terminal_bench.harness.protocols.PathResolver`
+    answers before
+    :class:`~tolokaforge_adapter_terminal_bench.harness.protocols.SkillDelivery`
+    sees it. Unlike a :attr:`config_files` key it may *not* be rooted at a
+    brace-less ``$VAR``: no shell reads this path, so nothing would expand it
+    the way the resolver does.
 
     The parity policy refuses the operator's own ``~/.claude/skills``: what a
     benchmark agent can read has to be versioned with the task rather than with
     the laptop the eval ran on. A task declaring
     :attr:`~tolokaforge_adapter_terminal_bench.task_parser.TerminalBenchTask.harness_skills_dir`
-    gets that directory copied here, and the bundle's content hash is recorded
+    gets that directory delivered here, and the bundle's content hash is recorded
     on the trial artifact. Left ``None``, the harness installs no skills and a
     pack shipping them still runs — without them."""
 
@@ -266,15 +290,19 @@ class HarnessSpec(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _skills_target_is_an_absolute_path(self) -> HarnessSpec:
-        """Refuse a target the image build would resolve somewhere unintended."""
-        if self.skills_dir_target is not None and not self.skills_dir_target.startswith("/"):
-            raise ValueError(
-                f"skills_dir_target {self.skills_dir_target!r} is relative; a Dockerfile "
-                "`COPY` target resolves against the image's WORKDIR, so give the absolute "
-                "path the CLI reads skills from. `~` is not expanded either."
-            )
-        return self
+    def _skills_target_is_resolvable(self) -> HarnessSpec:
+        """Refuse a target no resolver and no build step would place."""
+        target = self.skills_dir_target
+        if target is None or target.startswith("/") or PATH_CONSTRUCT_PATTERN.match(target):
+            return self
+        raise ValueError(
+            f"skills_dir_target {target!r} is neither absolute nor rooted at a "
+            "`${VAR}` construct the run's PathResolver answers. A Dockerfile `COPY` "
+            "target resolves against the image's WORKDIR, and Docker expands neither "
+            "`~` nor a brace-less `$VAR` the way a shell would — `$HOME/.claude/skills/` "
+            "would be read off the image's own `ENV`, which is nobody's answer. Give the "
+            "absolute path the CLI reads skills from, or `${HOME}/...`."
+        )
 
     @model_validator(mode="after")
     def _install_source_fits_the_method(self) -> HarnessSpec:
@@ -518,7 +546,7 @@ class _RegistryMeta(BaseModel):
     provider_env_keys: frozenset[str]
 
     @model_validator(mode="after")
-    def _every_entry_is_a_non_blank_string(self) -> "_RegistryMeta":
+    def _every_entry_is_a_non_blank_string(self) -> _RegistryMeta:
         for value in self.openrouter_vendor_namespaces:
             if not value or value.strip() != value:
                 raise ValueError(
@@ -703,6 +731,8 @@ def harness_command(
     model: str,
     registry: Mapping[str, HarnessSpec] = HARNESSES,
     provider_env: Mapping[str, str] | None = None,
+    *,
+    path_resolver: PathResolver | None = None,
 ) -> str:
     """Shell command that runs *agent_harness* against *instruction*.
 
@@ -712,6 +742,12 @@ def harness_command(
     harness's own :attr:`HarnessSpec.provider_env`, and only its ``*_BASE_URL``
     value is ever read — a credential reaches a config file by name, through
     the container's environment, never through this command.
+
+    *path_resolver* answers where each :attr:`HarnessSpec.config_files` key
+    lands in the runtime this command will run in, defaulting to
+    :data:`~.path_resolvers.DEFAULT_PATH_RESOLVER`. File *contents* never go
+    through it: their template vocabulary is closed and already
+    runtime-neutral.
 
     Assembly order (blank pieces drop out):
 
@@ -746,8 +782,11 @@ def harness_command(
         variables = _config_template_variables(
             resolved_model, model, spec.provider_env if provider_env is None else provider_env
         )
+        resolver = DEFAULT_PATH_RESOLVER if path_resolver is None else path_resolver
         preamble_parts.extend(
-            _config_file_write(path, _TEMPLATES.from_string(template).render(variables))
+            _config_file_write(
+                resolver.resolve(path), _TEMPLATES.from_string(template).render(variables)
+            )
             for path, template in spec.config_files.items()
         )
     for var in spec.env_model_vars:
