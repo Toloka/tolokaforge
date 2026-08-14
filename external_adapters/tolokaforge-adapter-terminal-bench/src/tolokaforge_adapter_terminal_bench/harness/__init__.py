@@ -19,6 +19,7 @@ import logging
 import re
 import shlex
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -48,6 +49,9 @@ __all__ = [
     "HarnessSpec",
     "LinuxRootResolver",
     "PathResolver",
+    "PluginBundle",
+    "PluginDiscovery",
+    "ResolvedHarnessRegistry",
     "SkillDelivery",
     "SkillsBundle",
     "accepted_harnesses",
@@ -422,7 +426,45 @@ disk. Same shape as :data:`SHIPPED_REGISTRY_FILE`'s ``harnesses:`` mapping.
 """
 
 
-def discover_plugin_harness_registries() -> dict[str, HarnessSpec]:
+class PluginBundle(BaseModel):
+    """One installed registry plugin and the harness names it declared.
+
+    Pydantic rather than a dataclass: this value is written verbatim into the
+    run bundle, so it crosses a serialisation boundary.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    distribution: str
+    """Installing distribution's name, or the entry-point name when the entry
+    point carries no distribution."""
+
+    version: str | None
+    """The distribution's version. ``None`` for a programmatically registered
+    entry point, which has no distribution to read one off."""
+
+    harnesses: tuple[str, ...]
+    """Harness names this bundle declared, sorted."""
+
+
+@dataclass(frozen=True)
+class PluginDiscovery:
+    """What the installed registry plugins contributed, and who contributed it."""
+
+    harnesses: dict[str, HarnessSpec]
+    bundles: tuple[PluginBundle, ...]
+
+
+@dataclass(frozen=True)
+class ResolvedHarnessRegistry:
+    """The registry one adapter runs on, and which layers composed it."""
+
+    harnesses: dict[str, HarnessSpec]
+    plugin_bundles: tuple[PluginBundle, ...]
+    overlay_file: Path | None
+
+
+def discover_plugin_harness_registries() -> PluginDiscovery:
     """Registry union of every installed :data:`HARNESS_REGISTRY_ENTRY_POINT_GROUP` plugin.
 
     Each entry point is loaded to its package, whose
@@ -430,8 +472,9 @@ def discover_plugin_harness_registries() -> dict[str, HarnessSpec]:
     :func:`load_harness_registry` — so a plugin's typo is refused with the same
     message an operator overlay's would be, naming the file and the harness key.
 
-    Returns an empty mapping when nothing is installed, which is the common
-    case and the one that must stay free of surprises: no plugin, no change.
+    Returns an empty registry and no bundles when nothing is installed, which is
+    the common case and the one that must stay free of surprises: no plugin, no
+    change.
 
     Raises:
         ValueError: two installed plugins declare the same harness name. There
@@ -440,35 +483,49 @@ def discover_plugin_harness_registries() -> dict[str, HarnessSpec]:
             both distributions rather than resolved by install order.
     """
     registry: dict[str, HarnessSpec] = {}
-    provenance: dict[str, str] = {}
+    declared_by: dict[str, str] = {}
+    bundles: list[PluginBundle] = []
     installed = discover_entry_points(HARNESS_REGISTRY_ENTRY_POINT_GROUP)
     for name, entry_point in sorted(installed.items()):
         distribution = entry_point.dist.name if entry_point.dist is not None else name
+        version = entry_point.dist.version if entry_point.dist is not None else None
         resource = importlib.resources.files(entry_point.load()) / PLUGIN_REGISTRY_RESOURCE
         with importlib.resources.as_file(resource) as path:
             bundle = load_harness_registry(path)
         for harness_name in sorted(bundle):
-            owner = provenance.get(harness_name)
+            owner = declared_by.get(harness_name)
             if owner is not None:
                 raise ValueError(
                     f"terminal-bench adapter: harness {harness_name!r} is declared by two "
                     f"installed registry plugins, {owner!r} and {distribution!r}. Uninstall "
                     "one, or rename the harness in one of the bundles."
                 )
-            provenance[harness_name] = distribution
+            declared_by[harness_name] = distribution
         registry.update(bundle)
+        bundles.append(
+            PluginBundle(
+                distribution=distribution, version=version, harnesses=tuple(sorted(bundle))
+            )
+        )
         logger.info(
             "terminal-bench adapter: harness registry plugin %s contributed %s",
             distribution,
             sorted(bundle),
         )
-    return registry
+    return PluginDiscovery(
+        harnesses=registry,
+        bundles=tuple(sorted(bundles, key=lambda entry: entry.distribution)),
+    )
 
 
 def resolve_effective_registry(
     presets_file: str | None = None, *, discover_plugins: bool = True
-) -> dict[str, HarnessSpec]:
+) -> ResolvedHarnessRegistry:
     """The registry one adapter runs on, composed from all three sources.
+
+    The result carries both the composed registry and the layers that composed
+    it, from the one resolution pass that runs: a second pass could disagree
+    with the registry the adapter is actually using.
 
     Precedence, lowest to highest, whole-entry replacement at each transition::
 
@@ -497,9 +554,10 @@ def resolve_effective_registry(
             two installed plugins collide.
     """
     registry = dict(HARNESSES)
+    bundles: tuple[PluginBundle, ...] = ()
     if discover_plugins:
-        plugins = discover_plugin_harness_registries()
-        shadowed = sorted(set(plugins) & set(HARNESSES))
+        discovery = discover_plugin_harness_registries()
+        shadowed = sorted(set(discovery.harnesses) & set(HARNESSES))
         if shadowed:
             logger.warning(
                 "terminal-bench adapter: installed registry plugin(s) replace shipped "
@@ -507,10 +565,15 @@ def resolve_effective_registry(
                 "for those names are not what runs.",
                 shadowed,
             )
-        registry.update(plugins)
+        registry.update(discovery.harnesses)
+        bundles = discovery.bundles
+    overlay_file: Path | None = None
     if presets_file:
-        registry.update(load_harness_registry(Path(presets_file).expanduser().resolve()))
-    return registry
+        overlay_file = Path(presets_file).expanduser().resolve()
+        registry.update(load_harness_registry(overlay_file))
+    return ResolvedHarnessRegistry(
+        harnesses=registry, plugin_bundles=bundles, overlay_file=overlay_file
+    )
 
 
 INSTALL_SCRIPT = Path(__file__).parent / "install-harness.sh"

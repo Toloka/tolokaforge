@@ -2555,20 +2555,22 @@ class TestHarnessPresetsFileOverlay:
 
 
 class _FakeDistribution:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, version: str) -> None:
         self.name = name
+        self.version = version
 
 
 class _FakeEntryPoint:
     """Stand-in for a plugin's ``importlib.metadata`` entry point.
 
     ``importlib.metadata.EntryPoint`` refuses attribute assignment, so a test
-    cannot bind a fabricated distribution to a real one.
+    cannot bind a fabricated distribution to a real one. ``dist`` is ``None``
+    for a programmatically registered entry point.
     """
 
-    def __init__(self, name: str, distribution: str, module) -> None:
+    def __init__(self, name: str, distribution: _FakeDistribution | None, module) -> None:
         self.name = name
-        self.dist = _FakeDistribution(distribution)
+        self.dist = distribution
         self._module = module
 
     def load(self):
@@ -2600,14 +2602,20 @@ class TestHarnessRegistryPluginDiscovery:
         import importlib
         import sys
 
-        def _build(package: str, distribution: str, harnesses: str) -> _FakeEntryPoint:
-            root = tmp_path / distribution
+        def _build(
+            package: str,
+            distribution: str | None,
+            harnesses: str,
+            version: str = "1.0.0",
+        ) -> _FakeEntryPoint:
+            root = tmp_path / package
             (root / package).mkdir(parents=True)
             (root / package / "__init__.py").write_text("")
             (root / package / "harnesses.yaml").write_text(harnesses)
             monkeypatch.syspath_prepend(str(root))
             monkeypatch.delitem(sys.modules, package, raising=False)
-            return _FakeEntryPoint(package, distribution, importlib.import_module(package))
+            dist = None if distribution is None else _FakeDistribution(distribution, version)
+            return _FakeEntryPoint(package, dist, importlib.import_module(package))
 
         return _build
 
@@ -2646,21 +2654,87 @@ class TestHarnessRegistryPluginDiscovery:
             discover_plugin_harness_registries,
         )
 
-        assert discover_plugin_harness_registries() == {}
+        discovered = discover_plugin_harness_registries()
+        assert discovered.harnesses == {}
+        assert discovered.bundles == ()
+
+    def test_baseline_resolution_names_no_plugin_and_no_overlay(self):
+        """A run with nothing installed and no overlay says so, rather than
+        leaving a reader to infer it from a registry that happens to match."""
+        from tolokaforge_adapter_terminal_bench.harness import (
+            HARNESSES,
+            resolve_effective_registry,
+        )
+
+        resolved = resolve_effective_registry()
+        assert resolved.harnesses == HARNESSES
+        assert resolved.plugin_bundles == ()
+        assert resolved.overlay_file is None
 
     def test_installed_bundle_is_loaded_from_its_packaged_yaml(self, monkeypatch, plugin):
+        from tolokaforge_adapter_terminal_bench.harness import (
+            PluginBundle,
+            discover_plugin_harness_registries,
+        )
+
+        self._install(
+            monkeypatch,
+            plugin(
+                "acme_harnesses",
+                "acme-tbench-harnesses",
+                self._bundle("acme-cli", "4.5.6"),
+                version="2.3.4",
+            ),
+        )
+        discovered = discover_plugin_harness_registries()
+        assert list(discovered.harnesses) == ["acme-cli"]
+        assert discovered.harnesses["acme-cli"].version == "4.5.6"
+        assert discovered.harnesses["acme-cli"].argv_prefix == ("acme-cli",)
+        assert discovered.bundles == (
+            PluginBundle(
+                distribution="acme-tbench-harnesses",
+                version="2.3.4",
+                harnesses=("acme-cli",),
+            ),
+        )
+
+    def test_bundles_are_ordered_by_distribution(self, monkeypatch, plugin):
+        """Distribution order, not entry-point order: the two disagree here,
+        and the recorded order must not depend on how a plugin names its
+        package."""
         from tolokaforge_adapter_terminal_bench.harness import (
             discover_plugin_harness_registries,
         )
 
         self._install(
             monkeypatch,
-            plugin("acme_harnesses", "acme-tbench-harnesses", self._bundle("acme-cli", "4.5.6")),
+            plugin("acme_harnesses", "zeta-harnesses", self._bundle("acme-cli", "4.5.6")),
+            plugin("globex_harnesses", "alpha-harnesses", self._bundle("globex-cli", "7.8.9")),
         )
         discovered = discover_plugin_harness_registries()
-        assert list(discovered) == ["acme-cli"]
-        assert discovered["acme-cli"].version == "4.5.6"
-        assert discovered["acme-cli"].argv_prefix == ("acme-cli",)
+        assert [bundle.distribution for bundle in discovered.bundles] == [
+            "alpha-harnesses",
+            "zeta-harnesses",
+        ]
+        assert [bundle.harnesses for bundle in discovered.bundles] == [
+            ("globex-cli",),
+            ("acme-cli",),
+        ]
+
+    def test_entry_point_without_a_distribution_reports_no_version(self, monkeypatch, plugin):
+        """A programmatically registered entry point has no distribution to
+        read a version off, and a fabricated one would be a lie."""
+        from tolokaforge_adapter_terminal_bench.harness import (
+            discover_plugin_harness_registries,
+        )
+
+        self._install(
+            monkeypatch,
+            plugin("acme_harnesses", None, self._bundle("acme-cli", "4.5.6")),
+        )
+        (bundle,) = discover_plugin_harness_registries().bundles
+        assert bundle.distribution == "acme_harnesses"
+        assert bundle.version is None
 
     def test_two_plugins_claiming_one_harness_name_are_refused(self, monkeypatch, plugin):
         """No safe pick: the two bundles disagree about what the name installs
@@ -2693,7 +2767,7 @@ class TestHarnessRegistryPluginDiscovery:
             monkeypatch,
             plugin("acme_harnesses", "acme-tbench-harnesses", self._bundle("codex", "9.9.9")),
         )
-        effective = resolve_effective_registry()
+        effective = resolve_effective_registry().harnesses
         assert effective["codex"].version == "9.9.9"
         assert effective["codex"].config_files == {}
         assert HARNESSES["codex"].config_files != {}
@@ -2708,8 +2782,22 @@ class TestHarnessRegistryPluginDiscovery:
         )
         overlay = tmp_path / "harness_presets.yaml"
         overlay.write_text(self._bundle("acme-cli", "0.0.0-overlay"))
-        effective = resolve_effective_registry(str(overlay))
-        assert effective["acme-cli"].version == "0.0.0-overlay"
+        resolved = resolve_effective_registry(str(overlay))
+        assert resolved.harnesses["acme-cli"].version == "0.0.0-overlay"
+        assert resolved.overlay_file == overlay.resolve()
+
+    def test_relative_overlay_is_recorded_as_its_resolved_path(self, monkeypatch, tmp_path):
+        """The recorded overlay must name one file whatever directory the run
+        started in, so a relative argument is recorded resolved."""
+        from tolokaforge_adapter_terminal_bench.harness import resolve_effective_registry
+
+        overlay = tmp_path / "harness_presets.yaml"
+        overlay.write_text(self._bundle("acme-cli", "4.5.6"))
+        monkeypatch.chdir(tmp_path)
+        recorded = resolve_effective_registry("harness_presets.yaml").overlay_file
+        assert recorded is not None
+        assert recorded.is_absolute()
+        assert recorded == overlay.resolve()
 
     def test_disable_harness_plugins_bypasses_discovery(self, monkeypatch, tmp_path):
         """An audit run pins the registry to what the adapter ships, whatever
@@ -2718,12 +2806,18 @@ class TestHarnessRegistryPluginDiscovery:
         import importlib.metadata
 
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
-        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+        from tolokaforge_adapter_terminal_bench.harness import (
+            HARNESSES,
+            resolve_effective_registry,
+        )
 
         def _refuse(**kwargs):
             raise AssertionError(f"entry-point discovery ran for group {kwargs.get('group')!r}")
 
         monkeypatch.setattr(importlib.metadata, "entry_points", _refuse)
+        resolved = resolve_effective_registry(discover_plugins=False)
+        assert resolved.harnesses == HARNESSES
+        assert resolved.plugin_bundles == ()
         adapter = TerminalBenchAdapter(
             {
                 "terminal_bench_dir": str(self._TASKS_DIR),

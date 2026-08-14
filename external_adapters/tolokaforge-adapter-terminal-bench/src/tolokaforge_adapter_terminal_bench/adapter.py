@@ -59,6 +59,7 @@ from tolokaforge_adapter_terminal_bench.harness import (
     ENGINE_LOOP,
     HarnessSpec,
     PathResolver,
+    ResolvedHarnessRegistry,
     SkillDelivery,
     harness_command,
     provider_env_input,
@@ -180,10 +181,11 @@ class TerminalBenchAdapter(BaseAdapter):
             params.get("network_policy", NetworkPolicy.FULL_INTERNET.value)
         )
         self.prebuild_images: bool = params.get("prebuild_images", True)
-        self.harnesses: dict[str, HarnessSpec] = resolve_effective_registry(
+        self._resolved_registry: ResolvedHarnessRegistry = resolve_effective_registry(
             params.get("harness_presets_file"),
             discover_plugins=not params.get("disable_harness_plugins", False),
         )
+        self.harnesses: dict[str, HarnessSpec] = self._resolved_registry.harnesses
         self.agent_harness: str = validate_harness(
             params.get("agent_harness", ENGINE_LOOP), self.harnesses
         )
