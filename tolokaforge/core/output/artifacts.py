@@ -13,7 +13,8 @@ for the nine per-trial YAML files that make up a trial bundle:
   rubric breakdown, judge_status + judge usage (omitted when the trial
   has no grade)
 * ``judge_trajectory.yaml`` — the rubric judge's own message transcript
-  (sidecar; written only when an LLM judge ran and captured one)
+  (sidecar; written when an LLM judge ran and captured one, and withheld
+  under a redacting policy — the stamp in ``metrics.yaml`` names which)
 * ``logs.yaml`` — structured trial logs
 * ``tools_schemas.yaml`` — post-policy tool list, what the provider saw
 * ``prompts.yaml`` — per-trial agent + user-simulator system prompts
@@ -49,7 +50,7 @@ from pydantic import ValidationError
 
 from tolokaforge.core.models import RecordedToolCall
 from tolokaforge.core.output_writer import METRICS_FILENAME, TOOL_LOG_FILENAME, OutputWriter
-from tolokaforge.core.redaction import RedactionStamp
+from tolokaforge.core.redaction import NoRedaction, RedactionPolicy, RedactionStamp
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from tolokaforge.core.logging import StructuredLogger
@@ -346,9 +347,12 @@ class FileArtifactWriter:
     self-contained audit.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, redaction: RedactionPolicy = NoRedaction()) -> None:
         # Cache per-trial :class:`OutputWriter` instances — creating one
         # ``mkdir -p``s the trial directory, cheap but pointless to repeat.
+        # The policy is handed to each: the accumulated rewritten set belongs to
+        # one trial, and this writer is shared across the whole run.
+        self._redaction = redaction
         self._trial_writers: dict[Path, OutputWriter] = {}
 
     # ------------------------------------------------------------------
@@ -358,7 +362,7 @@ class FileArtifactWriter:
     def _writer(self, trial_dir: Path) -> OutputWriter:
         key = Path(trial_dir).resolve()
         if key not in self._trial_writers:
-            self._trial_writers[key] = OutputWriter(trial_dir)
+            self._trial_writers[key] = OutputWriter(trial_dir, redaction=self._redaction)
         return self._trial_writers[key]
 
     # ------------------------------------------------------------------

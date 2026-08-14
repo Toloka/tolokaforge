@@ -11,6 +11,12 @@ import yaml
 
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import Grade, ToolExecutionStatus, Trajectory
+from tolokaforge.core.redaction import (
+    NoRedaction,
+    RedactionPolicy,
+    RedactionPolicyName,
+    RedactionStamp,
+)
 
 TRIAL_BUNDLE_SCHEMA_VERSION = 4
 """The per-trial bundle generation stamped into ``metrics.yaml``.
@@ -33,6 +39,13 @@ METRICS_FILENAME = "metrics.yaml"
 """The bundle's header — what it carries, alongside the metrics themselves.
 :func:`tolokaforge.core.output.artifacts.bundle_redaction` reads its
 ``redaction`` key."""
+
+TRAJECTORY_FILENAME = "trajectory.yaml"
+"""The bundle's message trace."""
+
+JUDGE_TRAJECTORY_FILENAME = "judge_trajectory.yaml"
+"""The rubric judge's own transcript. Withheld under a redacting policy — it
+renders the agent's arguments into prose a key-name rule cannot reach."""
 
 
 def _represent_multiline_str(dumper, data):
@@ -62,14 +75,47 @@ class OutputWriter:
     - logs.yaml: Structured trial logs
     """
 
-    def __init__(self, output_dir: Path):
+    def __init__(self, output_dir: Path, redaction: RedactionPolicy = NoRedaction()):
         """Initialize output writer
 
         Args:
             output_dir: Directory to write output files
+            redaction: Applied to tool-call arguments on their way to disk.
+                The default writes what the agent sent. Anything else rewrites
+                the bundle, which stamps itself so no offline command grades it.
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.redaction = redaction
+        # Trial-scoped: one writer per trial directory, so a second trial's
+        # stamp cannot name the first trial's artifacts.
+        self._rewritten: set[str] = set()
+
+    @property
+    def _redacting(self) -> bool:
+        return self.redaction.name is not RedactionPolicyName.NONE
+
+    def _note_rewritten(self, artifact: str) -> None:
+        """Record that *artifact* was written with the policy applied.
+
+        Accumulated rather than declared statically: the provision-failure path
+        writes no ``tool_log.yaml``, and a stamp naming a file the bundle lacks
+        is a stamp a reader cannot check.
+        """
+        if self._redacting:
+            self._rewritten.add(artifact)
+
+    def _withheld(self, trajectory: Trajectory) -> list[str]:
+        """The artifacts this policy suppresses rather than rewrites.
+
+        Derived from the trajectory, not from what is already on disk:
+        ``write_metrics`` runs before ``write_grade``, so the sidecar's absence
+        is not yet observable when the stamp is built. ``grade`` is ``None`` on
+        the provision-failure path, which never reaches ``write_grade`` at all.
+        """
+        if self._redacting and trajectory.grade and trajectory.grade.judge_transcript:
+            return [JUDGE_TRAJECTORY_FILENAME]
+        return []
 
     def write_task_info(self, task_config: dict[str, Any]):
         """Write task.yaml — the caller's task snapshot, serialised whole
@@ -119,14 +165,27 @@ class OutputWriter:
                 if trajectory.first_user_message_source
                 else None
             ),
-            "messages": [msg.model_dump(mode="json") for msg in trajectory.messages],
+            "messages": self._redacted_messages(trajectory),
             "user_reply_guard_events": [
                 event.model_dump(mode="json") for event in trajectory.user_reply_guard_events
             ],
         }
 
-        with open(self.output_dir / "trajectory.yaml", "w") as f:
+        with open(self.output_dir / TRAJECTORY_FILENAME, "w") as f:
             yaml.dump(traj_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        self._note_rewritten(TRAJECTORY_FILENAME)
+
+    def _redacted_messages(self, trajectory: Trajectory) -> list[dict[str, Any]]:
+        """The message trace as it goes to disk, arguments through the policy.
+
+        The policy runs over the dumped mapping, never over the model: the run
+        still holds this trajectory, and the grader has already read it.
+        """
+        dumped = [message.model_dump(mode="json") for message in trajectory.messages]
+        for message in dumped:
+            for call in message.get("tool_calls") or []:
+                call["arguments"] = self.redaction.redact_arguments(call["arguments"])
+        return dumped
 
     def write_tool_log(self, trajectory: Trajectory):
         """Write tool_log.yaml — the trial's tool-call record, in ``sequence`` order.
@@ -143,13 +202,15 @@ class OutputWriter:
         Args:
             trajectory: Trajectory object carrying the tool-call record
         """
-        record = [
-            call.model_dump(mode="json")
-            for call in sorted(trajectory.tool_log, key=lambda call: call.sequence)
-        ]
+        record = []
+        for call in sorted(trajectory.tool_log, key=lambda call: call.sequence):
+            dumped = call.model_dump(mode="json")
+            dumped["arguments"] = self.redaction.redact_arguments(dumped["arguments"])
+            record.append(dumped)
 
         with open(self.output_dir / TOOL_LOG_FILENAME, "w", encoding="utf-8") as f:
             yaml.dump(record, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        self._note_rewritten(TOOL_LOG_FILENAME)
 
     def write_env_state(self, env_state: dict[str, Any]):
         """Write env.yaml with final environment state
@@ -195,6 +256,13 @@ class OutputWriter:
             {"tool_name": name, **stats} for name, stats in sorted(tool_usage.items())
         ]
 
+        if self._redacting:
+            metrics_data["redaction"] = RedactionStamp(
+                policy=self.redaction.name,
+                artifacts=sorted(self._rewritten),
+                omitted=self._withheld(trajectory),
+            ).model_dump(mode="json")
+
         with open(self.output_dir / METRICS_FILENAME, "w") as f:
             yaml.dump(
                 metrics_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False
@@ -227,11 +295,13 @@ class OutputWriter:
             )
 
         # Sidecar: the judge's own message transcript, only when a judge ran and
-        # captured a non-empty one. Absent file ⇒ no judge transcript for this
-        # trial (gate on truthiness, not ``is not None`` — an empty transcript is
-        # not worth a sidecar).
-        if grade.judge_transcript:
-            with open(self.output_dir / "judge_trajectory.yaml", "w") as f:
+        # captured a non-empty one. Absent file ⇒ either no judge transcript for
+        # this trial, or a redacting policy withheld it; ``metrics.yaml``'s
+        # redaction stamp is the discriminator, and names it under ``omitted``.
+        # Gate on truthiness, not ``is not None`` — an empty transcript is not
+        # worth a sidecar.
+        if grade.judge_transcript and not self._redacting:
+            with open(self.output_dir / JUDGE_TRAJECTORY_FILENAME, "w") as f:
                 yaml.dump(
                     {"messages": grade.judge_transcript},
                     f,
