@@ -1,8 +1,8 @@
-"""Unit test for the harness-registry Bucket A/B classifier.
+"""Unit test for the harness-registry data-vs-code classifier.
 
-Locks the path taxonomy independently of any git state — same discipline
-as ``tests/unit/test_models_wheel_replay_classifier.py`` for the
-models-wheel classifier."""
+Locks the path taxonomy (data → Bucket A, code → Bucket B) independently
+of any git state — same discipline as
+``tests/unit/test_models_wheel_replay_classifier.py``."""
 
 from __future__ import annotations
 

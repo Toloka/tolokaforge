@@ -16,8 +16,11 @@ multi-turn docs`` is a harness commit by any reasonable read but has
 no ``harness`` token in the subject). A path-based filter is the only
 one that captures both without an ever-growing subject regex.
 
-Analog of :mod:`tests.canonical._models_wheel_replay.git_walk` for the
-harness surface. Same subprocess primitives, same field separator.
+Same subprocess primitives + field separator as
+:mod:`tests.canonical._models_wheel_replay.git_walk`; the differences
+are the path-based filter (paragraph above) and the return shape
+(harness commits are heterogeneous, so there is no "one integration =
+one model slug" invariant).
 """
 
 from __future__ import annotations
@@ -40,12 +43,12 @@ _LOG_FORMAT = f"%H{_FIELD_SEP}%cs{_FIELD_SEP}%s"
 #
 # Kept deliberately tight so pre-harness commits that touched other bits
 # of the tbench adapter (``adapter.py``, ``task_parser.py``, etc.) do
-# not dilute the metric. The surface is exactly the files a future
-# ``tolokaforge-harnesses`` wheel would carry (data + harness/ + install
-# script), the compose-synthesis file that hosts the skill-delivery
-# logic Stage 3 factors out, the adapter README that documents the
-# harness surface, the two harness-mode canonical snapshot trees, the
-# harness-mode examples, and the two harness ADRs.
+# not dilute the metric. The surface is exactly the harness-touching
+# files: shipped data under ``data/``, the ``harness/`` Python module,
+# the compose-synthesis file that hosts the skill-delivery logic, the
+# adapter README that documents the harness surface, the two
+# harness-mode canonical snapshot trees, the harness-mode examples, and
+# the two harness ADRs.
 HARNESS_SURFACE_PATHS: tuple[str, ...] = (
     "external_adapters/tolokaforge-adapter-terminal-bench/src/"
     "tolokaforge_adapter_terminal_bench/data/",
