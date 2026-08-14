@@ -267,7 +267,8 @@ never reads the operator's home directory. The delta this creates is the
 A task that genuinely needs domain skills ships them itself. Its
 `task.yaml` declares `harness_skills_dir: <task-relative path>`, and that
 directory reaches the CLI's skills path — `HarnessSpec.skills_dir_target`,
-`/root/.claude/skills/` for claude-code.
+`${HOME}/.claude/skills/` for claude-code, which the shipped
+`LinuxRootResolver` places at `/root/.claude/skills/`.
 This keeps every property the smuggled version loses: the bundle is
 versioned with the tests it is scored against, it shows up in a `git
 diff` on the task pack, and its content hash is recorded on the trial
@@ -305,7 +306,8 @@ and honours neither env var alone. `HarnessSpec.config_files` maps a
 container path to a Jinja template; each file is written by the shell
 chain that runs before the CLI. A path is one of three things:
 
-- an absolute path (`/root/.grok/config.toml`);
+- an absolute path (`/etc/mycli/config.toml`), which every resolver returns
+  unchanged;
 - a `${HOME}` or `${CONFIG_HOME}` construct, which the adapter's
   `PathResolver` answers while assembling the command. The shipped
   `LinuxRootResolver` reads them as `/root` and `/root/.config`; an embedder
@@ -410,6 +412,16 @@ evaluation:
 The three layers compose lowest to highest — shipped YAML, then installed
 plugin bundles, then the overlay — with whole-entry replacement at each
 transition.
+
+Every layer writes its `config_files` keys and its `skills_dir_target` against
+the same path vocabulary: `${HOME}` and `${CONFIG_HOME}` are the *adapter's*
+answers, supplied by the run's `PathResolver`, and any other `${VAR}`
+construct is left for the container's own shell. The shipped entries use the
+vocabulary — claude-code's skills land at `${HOME}/.claude/skills/`,
+opencode's config at `${CONFIG_HOME}/opencode/opencode.json` — so a second
+runtime consumes this YAML unforked by supplying its own resolver. An absolute
+`/root/...` path stays valid and resolves to itself, so an overlay copied from
+an earlier shipped entry keeps working with nothing to migrate.
 
 ### Trial-level timeout
 

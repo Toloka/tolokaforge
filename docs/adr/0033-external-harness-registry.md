@@ -248,7 +248,7 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
   `harness_skills_dir: <task-relative path>` in its `task.yaml`, and
   `HarnessSpec.skills_dir_target` names where a harness wants such a
   bundle — absolute, or rooted at a `${HOME}` / `${CONFIG_HOME}` construct
-  the run's `PathResolver` answers (`/root/.claude/skills/` for
+  the run's `PathResolver` answers (`${HOME}/.claude/skills/` for
   claude-code; unset means the harness installs none). *How* the bundle
   travels is the run's `SkillDelivery`; the shipped
   `ImageLayerSkillDelivery` copies the directory into the image layer, and

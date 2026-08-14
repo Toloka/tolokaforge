@@ -47,7 +47,10 @@ harnesses:
     # `CLAUDE_CONFIG_DIR` names the directory the CLI discovers skills under.
     # It matches the default for the container's root user, stated rather than
     # inherited so `skills_dir_target` below and the CLI's search path cannot
-    # drift apart when a task image sets `HOME` elsewhere.
+    # drift apart when a task image sets `HOME` elsewhere. It is a literal
+    # rather than a `${HOME}` construct because compose interpolates `${...}`
+    # in the `environment:` block against the *invoking* shell, which would
+    # substitute the operator's host home.
     container_env:
       IS_SANDBOX: "1"
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
@@ -55,7 +58,7 @@ harnesses:
     # Where a task pack's own `harness_skills_dir` bundle is copied in the
     # image layer. Only a task that ships skills installs any; the operator's
     # `~/.claude/skills` is never a source (README, parity policy).
-    skills_dir_target: "/root/.claude/skills/"
+    skills_dir_target: "${HOME}/.claude/skills/"
     # Anthropic-shaped OpenRouter endpoint. `ANTHROPIC_BASE_URL` is a literal
     # URL (not a secret); the key value comes from the operator via the
     # `OPENROUTER_API_KEY` secret.
@@ -98,7 +101,9 @@ harnesses:
     # The reference vendor-CLI invocation writes both files too.
     # `CODEX_HOME` defaults to `$HOME/.codex`. The key is written as
     # a `$`-reference so it reaches the file from the container's environment
-    # rather than through the recorded command.
+    # rather than through the recorded command — it stays outside the
+    # `PathResolver` vocabulary on purpose, since only the container knows
+    # whether an operator set it, so the resolver defers the construct.
     config_files:
       "${CODEX_HOME:-$HOME/.codex}/config.toml": |
         openai_base_url = "{{ base_url }}"
@@ -265,7 +270,7 @@ harnesses:
     # `"unknown"`. Diagnostic signature of this misconfiguration:
     # `step_finish reason:"unknown"`, 0 tokens, ~3 s wall-clock.
     config_files:
-      "/root/.config/opencode/opencode.json": |-
+      "${CONFIG_HOME}/opencode/opencode.json": |-
         {"provider":{"anthropic":{"options":{"baseURL":"{{ base_url }}"}}}}
     provider_env:
       ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
@@ -330,7 +335,7 @@ harnesses:
     # targeting a different provider does a whole-entry replacement per
     # ADR 0033.
     config_files:
-      "/root/.grok/config.toml": |
+      "${HOME}/.grok/config.toml": |
         [cli]
         auto_update = false
 
