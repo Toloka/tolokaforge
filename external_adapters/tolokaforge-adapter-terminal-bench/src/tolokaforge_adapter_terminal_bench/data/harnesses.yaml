@@ -174,6 +174,22 @@ harnesses:
       KIMI_CODE_NO_AUTO_UPDATE: "true"
       NO_COLOR: "true"
       KIMI_MODEL_MAX_COMPLETION_TOKENS: "16384"
+    # NOTE on multi-turn iteration in `--prompt` mode: the CLI iterates
+    # while the model returns tool calls, and terminates normally the
+    # first time the model emits `end_turn` (no tool calls). There is
+    # NO env var, config key, or CLI flag that overrides this. The
+    # `applyPrintModeConfigDefaults` seed of `maxStepsPerTurn: 0` (see
+    # 0.28.1's `dist/main.mjs`) means "unlimited" — a positive TOML
+    # override only tightens the cap. The single escape hatch is a
+    # `Stop` hook (fires once per turn, exit 2 re-enters the loop),
+    # which is a nag pattern we deliberately do NOT ship.
+    #
+    # Practical consequence: models that iterate briefly on multi-file
+    # diagnostic tasks (empirically some smaller kimi variants — plans
+    # + a batch of parallel Reads + a single-space second turn) end the
+    # session at score ~= baseline-container. This is model behavior,
+    # not a CLI or tolokaforge misconfiguration. The shipped example
+    # uses `kimi-k3`, which does not exhibit the pattern.
     # OpenRouter emits `moonshotai/kimi-k2.5`; the CLI wants bare
     # `kimi-k2.5`. Same shape as codex and gemini-cli.
     strip_vendor_namespace: true
@@ -236,12 +252,24 @@ harnesses:
     # HarnessSpec.config_files. Default: OpenRouter's Anthropic-compat
     # surface (matches claude-code's routing). An operator targeting an
     # OpenAI or Gemini variant overlays this via harness_presets_file.
+    #
+    # `ANTHROPIC_BASE_URL` MUST end in `/v1`. opencode 1.x routes
+    # anthropic-provider traffic through `@ai-sdk/anthropic` (bundled;
+    # `packages/opencode/src/provider/provider.ts:110`), which composes
+    # the request URL as `${config.baseURL}/messages` — no `/v1` prepend.
+    # Anthropic's own OFFICIAL SDK (which claude-code uses) prepends
+    # `/v1` itself, so the same `openrouter.ai/api` string reaches
+    # `.../api/v1/messages` there. For opencode we must ship the `/v1`
+    # in the URL, or the SDK hits `.../api/messages` (404), no response
+    # comes back, and `deriveStepStopReason` falls to the default
+    # `"unknown"`. Diagnostic signature of this misconfiguration:
+    # `step_finish reason:"unknown"`, 0 tokens, ~3 s wall-clock.
     config_files:
       "/root/.config/opencode/opencode.json": |-
         {"provider":{"anthropic":{"options":{"baseURL":"{{ base_url }}"}}}}
     provider_env:
       ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
-      ANTHROPIC_BASE_URL: "https://openrouter.ai/api"
+      ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1"
 
   grok-build:
     # Grok Build's installer is a curl-piped shell script from x.ai — the
