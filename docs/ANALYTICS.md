@@ -216,7 +216,9 @@ Deterministic classes currently emitted:
 - `tool_execution`
 - `grader_contract`
 - `grading_failure`
+- `infrastructure`
 - `timeout_or_resource`
+- `provision_failure`
 
 Fallback class:
 
@@ -225,7 +227,10 @@ Fallback class:
 `grading_failure` is the attempt whose grading refused. It has its own class
 because the fallback would otherwise attribute it to `model_reasoning` — the
 agent blamed, in an artifact whose whole purpose is naming the right cause, for a
-fault of ours.
+fault of ours. A `trial_lost` attempt is attributed `infrastructure`
+deterministically for the same reason: the call that hit the fault reached no tool
+and was never recorded, so there is no failed call for the tool-log scan to find
+and the fallback would blame the agent for a substrate fault.
 
 Every attribution record also carries `outcome_class` (`measured` /
 `harness_error` / `infrastructure_abort` / `ungradeable`), so a reader of a single

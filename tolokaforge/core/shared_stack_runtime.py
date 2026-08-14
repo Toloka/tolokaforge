@@ -164,7 +164,11 @@ class RunnerClient(Protocol):
         executor: str = "agent",
         *,
         call_id: str,
-    ) -> ToolResult: ...
+    ) -> ToolResult:
+        """Execute one tool call, under
+        :meth:`~tolokaforge.core.runtime.RuntimeBackend.execute_tool`'s contract —
+        including its ``TrialNotRegisteredError``."""
+        ...
 
     def grade_trial(
         self,

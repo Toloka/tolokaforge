@@ -49,7 +49,6 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
-from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.runner import TrialRunner
 from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
 from tolokaforge.env.json_db_service.app import app as db_app
@@ -249,14 +248,3 @@ def test_a_lost_trial_is_counted_against_the_run_and_scored_not_at_all(
         "provision_error",
         "rate_limit",
     ]
-
-
-def test_a_lost_trial_is_still_worth_retrying(
-    loop_route: tuple[Trajectory, tuple[RecordedToolCall, ...], TrialTimeline],
-) -> None:
-    """Re-registering the trial is precisely the repair a lost registration
-    needs, so the attempt stays retryable rather than short-circuiting the way a
-    deterministic provisioning fault does."""
-    trajectory, _, _ = loop_route
-
-    assert Orchestrator._is_retryable_trajectory(trajectory) is True

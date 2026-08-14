@@ -236,6 +236,13 @@ class RuntimeBackend(Protocol):
         registry inside the runner service. ``call_id`` is the provider's
         tool-call id, which the runner records so the call can be joined to
         the tool result it produced.
+
+        Raises:
+            TrialNotRegisteredError: the runner holds no registration for
+                ``trial_id``, so the call reached no tool. Distinct from a
+                failed :class:`ToolResult`: there is no tool outcome to
+                record, and the trial ends here rather than the agent
+                seeing a tool of its own fail.
         """
         ...
 

@@ -789,7 +789,7 @@ initial user prompt precedes the first assistant message and carries index 0.
   - *Attempted and rejected.* An unknown tool name or schema-invalid arguments are
     recorded, so the call emits a normal pair carrying `tool_not_found` /
     `invalid_arguments` and a `status` matcher counts it.
-  - *`trial_not_found`, an instance of the first state.* The runner holds no
+  - *`trial_not_found`, which emits the first state's shape.* The runner holds no
     registration for the trial, so the call reached no tool on either substrate:
     runner-side there is no trial context to record into, and core-side
     `GrpcRunnerClient` raises `TrialNotRegisteredError` rather than building a
@@ -2759,9 +2759,9 @@ decide is unmeasurable whether or not it converts anything.
 
 ### Declared limits, and what owns each
 
-Named here so an author meets them in the docs rather than in a check that quietly
-does nothing. Each is a separate issue's to close; none is worked around in the
-evaluator.
+Named here so an author meets a limit in the docs rather than in a check that
+quietly does nothing. Each row is a separate issue's to close, and no row is worked
+around in the evaluator.
 
 | limit | owner |
 |---|---|
@@ -3640,6 +3640,14 @@ task the model failed. It produces **no `Grade` at all** — not a zero, not a
 status field — and it is excluded from every rate in `per_task_metrics.json` and
 `aggregate.json`.
 
+Those are two questions, and an abort is the case that answers both the same way.
+*Is there a verdict to compute?* decides whether the trial is graded. *Whose fault
+was the trial's end?* decides whether it leaves the denominator. A trial the runner
+lost — `trial_lost` — separates them: no verdict exists, because the party that
+would compute it is the one that lost the registration, but the fault is ours, so
+the trial is counted like any other failure of ours. Ungraded therefore never
+implies excluded, and the rest of this section answers the two questions in turn.
+
 This is the same rule as the errored judge one level up. An errored `llm_judge`
 component is left unscored and dropped from the weighted combine rather than read
 as `0.0` (see § Fail-loud: the ERRORED status); a trial that never ran is left
@@ -3670,6 +3678,7 @@ infrastructure:
 | `timeout` | measured | A declared wall-clock budget over agent actions, the same as `max_turns`. A thrashing agent hits it too, and excluding it would make thrashing vanish from the denominator |
 | `api_error` | measured | Produced by matching provider names in the message text, which also matches a context-window overflow (agent behaviour) and a 400 from a malformed tool schema (our bug) |
 | `error` | harness error | The classifier's fall-through, so usually a defect of ours. Counted — excluding our own bugs would hide them — and reported separately as `harness_errors` so a non-zero count is visible as a run-health signal. A user simulator whose every generation of one turn was flagged by a detector lands here: the reply guard refuses the turn rather than delivering it, and the trajectory's `user_reply_guard_events` carries the evidence (see [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md)) |
+| `trial_lost` | harness error | The runner no longer holds the trial the engine is running, so a tool call reached no tool. The exclusion bar is typed evidence that the *provider or the substrate* killed the trial, and a tool executing agent-supplied input that crashes the runner process is an agent-reachable route to this fault, so it is counted. It is the one counted reason that is **not graded**: the runner that would compute the verdict is the one that lost the trial, so no fabricated `0.0` enters `avg_score` |
 | `stuck_detected` | measured | The agent issued the identical tool call over and over, or repeated the same phrasing back at itself. It auto-fails with `score: 0.0`, and that verdict is correct. An agent that talks without acting is not this — that is a per-task question, asked by `transcript_rules` in the task's `grading.yaml` |
 | any reason, with `grading_error` set | ungradeable | Grading refused, so no verdict exists. Counted for the same reason a harness error is — the fault is ours — and reported separately as `ungradeable`. This is read **before** the reason, so a refusal is never traded for an exclusion |
 

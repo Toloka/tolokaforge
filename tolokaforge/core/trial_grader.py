@@ -117,9 +117,11 @@ class TrialGrader(Protocol):
         post-policy system prompt the judge receives as the agent's
         policy for rubric evaluation.
 
-        ``None`` is the answer for a trial the agent never got to run —
-        the absence is not representable as a score, so a caller that
-        forgets to branch fails instead of reading a fabricated zero.
+        ``None`` is the answer where no verdict can be computed: the agent
+        never got to run, or the party that would compute the verdict is
+        the one that lost the trial. The absence is not representable as a
+        score, so a caller that forgets to branch fails instead of reading
+        a fabricated zero.
 
         Raises:
             GradingFailedError: the trial was measured but grading could
