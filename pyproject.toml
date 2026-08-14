@@ -173,6 +173,10 @@ in_memory = "tolokaforge.core.runtime:in_memory_runtime_backend_factory"
 
 [project.entry-points."tolokaforge.trial_graders"]
 runner_rpc = "tolokaforge.core.trial_grader:runner_rpc_trial_grader_factory"
+# Second impl proves the plug-in seam accepts fundamentally different grader
+# shapes (not just runner-RPC-with-different-transport). Ships with an unwired
+# default judge dispatch — see JudgeBackedTrialGrader docstring and ADR-0035.
+judge_only = "tolokaforge.core.trial_grader:judge_backed_trial_grader_factory"
 
 [project.entry-points."tolokaforge.conductors"]
 in_process = "tolokaforge.core.conductor:in_process_conductor_factory"

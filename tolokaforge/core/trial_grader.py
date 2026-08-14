@@ -35,6 +35,7 @@ remote grader service, or route to an entirely different Judge component
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import ValidationError
@@ -66,8 +67,11 @@ if TYPE_CHECKING:
 
 __all__ = [
     "GradingFailedError",
+    "JudgeBackedTrialGrader",
+    "JudgeGradeFn",
     "RunnerRPCTrialGrader",
     "TrialGrader",
+    "judge_backed_trial_grader_factory",
 ]
 
 
@@ -407,3 +411,135 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
 def runner_rpc_trial_grader_factory(ctx: TrialGraderContext) -> RunnerRPCTrialGrader:
     """Build a :class:`RunnerRPCTrialGrader` from a grader context."""
     return RunnerRPCTrialGrader(runner_address=ctx.runner_address, logger=ctx.logger)
+
+
+JudgeGradeFn = Callable[[TrialSpec, Trajectory, str], "Grade | None"]
+"""The judge-backed grader's dispatch surface: given the trial's spec, its
+completed trajectory, and the agent's system prompt, return the :class:`Grade`
+the judge produced (or ``None`` when the trial produced nothing to grade).
+
+Kept as a plain ``Callable`` alias so the seam accepts any host-side wiring
+that reaches a judge: the offline replay path (``dx.cli.rejudge``), a
+JudgeBackedTrialGrader wrapping :class:`~tolokaforge.core.grading.judge.LLMJudge`
+directly, or a downstream package's judge integration.
+"""
+
+
+class JudgeBackedTrialGrader:
+    """:class:`TrialGrader` that invokes an injected judge callable directly,
+    without the runner's state / transcript / custom-check machinery.
+
+    The seam's second registered implementation (see ADR-0035, Decision 5):
+    a grader that dispatches to a judge rather than a runner-side RPC. Ships
+    as the plug-in shape for judge-only tasks (rubric-only fixtures, offline
+    replay); production integration with :class:`LLMJudge` is deferred as a
+    follow-up (see the milestone umbrella #1181).
+
+    The Protocol contract is unchanged: :meth:`grade` returns a :class:`Grade`,
+    or ``None`` when the trial produced nothing to grade. Auto-fail on
+    error / timeout / stuck-detected matches :class:`RunnerRPCTrialGrader` so
+    both implementations are drop-in swaps for the caller.
+    """
+
+    def __init__(self, judge_fn: JudgeGradeFn, logger: StructuredLogger) -> None:
+        self.judge_fn = judge_fn
+        self.logger = logger
+
+    def grade(
+        self,
+        spec: TrialSpec,
+        trajectory: Trajectory,
+        agent_system_prompt: str,
+    ) -> Grade | None:
+        task_id, trial_idx = _split_trial_id(spec.trial_id)
+
+        if classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+            self.logger.info(
+                "Trial aborted by infrastructure - not graded",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
+                termination_reason=(
+                    trajectory.termination_reason.value if trajectory.termination_reason else None
+                ),
+            )
+            return None
+
+        if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
+            self.logger.info(
+                "Trial did not complete successfully - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(llm_judge=0.0),
+                reasons=f"Trial failed with status: {trajectory.status.value}",
+            )
+
+        if trajectory.termination_reason == TerminationReason.STUCK_DETECTED:
+            self.logger.info(
+                "Trial stuck - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(llm_judge=0.0),
+                reasons="Agent got stuck (repeated actions without progress)",
+            )
+
+        grade = self.judge_fn(spec, trajectory, agent_system_prompt)
+        if grade is None:
+            self.logger.info(
+                "Judge returned no verdict",
+                task_id=task_id,
+                trial_index=trial_idx,
+            )
+        else:
+            self.logger.info(
+                "Grading via judge callable",
+                task_id=task_id,
+                trial_index=trial_idx,
+                score=grade.score,
+                binary_pass=grade.binary_pass,
+            )
+        return grade
+
+
+def _unwired_judge_fn(
+    spec: TrialSpec,  # noqa: ARG001 — Protocol arg accepted at the seam
+    trajectory: Trajectory,  # noqa: ARG001
+    agent_system_prompt: str,  # noqa: ARG001
+) -> Grade | None:
+    """Default judge dispatch for the ``judge_only`` entry point.
+
+    The factory has no way to receive a real judge instance through the current
+    ``TrialGraderContext`` — production wiring (offline-replay integration,
+    live :class:`~tolokaforge.core.grading.judge.LLMJudge` construction from
+    per-task rubric config) is deferred as a follow-up on the umbrella. Until
+    that ships, invoking the grader raises loud rather than degrading to a
+    silent zero score.
+    """
+    raise NotImplementedError(
+        "judge_only trial grader is registered but not yet wired to a production "
+        "judge. Inject a JudgeGradeFn callable via JudgeBackedTrialGrader(...) "
+        "directly, or wait for the follow-up that folds offline rejudge onto this "
+        "seam. See ADR-0035 and the grader-detachment umbrella."
+    )
+
+
+def judge_backed_trial_grader_factory(ctx: TrialGraderContext) -> JudgeBackedTrialGrader:
+    """Build a :class:`JudgeBackedTrialGrader` from a grader context.
+
+    The default judge dispatch raises :class:`NotImplementedError` until a
+    production judge is wired through the context (see the follow-up on the
+    grader-detachment umbrella). The class is directly constructible with a
+    real :data:`JudgeGradeFn` for tests and for the future offline-replay
+    integration.
+    """
+    return JudgeBackedTrialGrader(judge_fn=_unwired_judge_fn, logger=ctx.logger)
