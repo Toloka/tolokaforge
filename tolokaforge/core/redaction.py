@@ -3,9 +3,10 @@
 :func:`key_is_sensitive` is the engine's single answer to "does this key name a
 credential". :meth:`StructuredLogger._sanitize_extra`
 (:mod:`tolokaforge.core.logging`) asks it per log-context key; the policies here
-ask it per tool-call argument and hand back a mapping whose credential-named
-values have been replaced. One vocabulary, so widening it is a single edit
-rather than two lists drifting apart.
+ask it per key of every mapping the writer puts on disk — tool-call arguments,
+the final environment snapshot, the task snapshot, the tool schemas — and hand
+back a mapping whose credential-named values have been replaced. One vocabulary,
+so widening it is a single edit rather than two lists drifting apart.
 
 The rule reads names, never values, so a credential that travels under an
 innocuous key — or back out through a tool's own output — is outside it by
@@ -15,8 +16,11 @@ construction. Closing that is the value-based pass on #1157.
 descends into nested mappings and into mappings inside lists, without a depth
 cap: a trace-check matcher addresses ``body.query``-style paths, so a shallow
 rule would leave a credential one level down in the clear. The inputs are
-``dict[str, Any]`` parsed off the wire (gRPC and YAML), therefore acyclic by
-construction, and a guard would only mute a corruption that cannot occur.
+mappings parsed off the wire (gRPC and YAML), therefore acyclic by construction,
+and a guard would only mute a corruption that cannot occur. Nested keys need not
+be strings — an adapter's environment snapshot may key records by integer id —
+and a key that is not a string names nothing, so the walk descends past it
+instead of asking the vocabulary about it.
 
 **Known-inert entries in the exact set**, recorded so a reader does not mistake
 them for coverage: :func:`key_is_sensitive` matches exact tokens per
@@ -104,19 +108,19 @@ class RedactionPolicy(Protocol):
         """The name this policy stamps a bundle with."""
         ...
 
-    def redact_arguments(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        """Return *arguments* with credential-named values replaced."""
+    def redact_mapping(self, mapping: Mapping[str, Any]) -> dict[str, Any]:
+        """Return *mapping* with credential-named values replaced."""
         ...
 
 
 @dataclass(frozen=True)
 class NoRedaction:
-    """The default: arguments reach disk exactly as the agent sent them."""
+    """The default: a mapping reaches disk exactly as the run produced it."""
 
     name: ClassVar[RedactionPolicyName] = RedactionPolicyName.NONE
 
-    def redact_arguments(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        return dict(arguments)
+    def redact_mapping(self, mapping: Mapping[str, Any]) -> dict[str, Any]:
+        return dict(mapping)
 
 
 @dataclass(frozen=True)
@@ -125,13 +129,17 @@ class SensitiveKeyRedaction:
 
     name: ClassVar[RedactionPolicyName] = RedactionPolicyName.SENSITIVE_KEYS
 
-    def redact_arguments(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        return _redact_mapping(arguments)
+    def redact_mapping(self, mapping: Mapping[str, Any]) -> dict[str, Any]:
+        return _redact_mapping(mapping)
 
 
-def _redact_mapping(mapping: Mapping[str, Any]) -> dict[str, Any]:
+def _redact_mapping(mapping: Mapping[Any, Any]) -> dict[Any, Any]:
     return {
-        key: REDACTED_PLACEHOLDER if key_is_sensitive(key) else _redact_value(value)
+        key: (
+            REDACTED_PLACEHOLDER
+            if isinstance(key, str) and key_is_sensitive(key)
+            else _redact_value(value)
+        )
         for key, value in mapping.items()
     }
 

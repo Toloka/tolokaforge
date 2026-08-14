@@ -62,7 +62,12 @@ from tolokaforge.core.models import (
     Trajectory,
 )
 from tolokaforge.core.output.artifacts import RedactedBundleError, read_recorded_tool_log
-from tolokaforge.core.output_writer import METRICS_FILENAME, TRAJECTORY_FILENAME
+from tolokaforge.core.output_writer import (
+    GRADE_FILENAME,
+    METRICS_FILENAME,
+    TASK_FILENAME,
+    TRAJECTORY_FILENAME,
+)
 
 __all__ = [
     "TRACE_CHECKS_RESULT_FILENAME",
@@ -533,10 +538,10 @@ def recorded_task(bundle: Path) -> dict[str, Any]:
     module that need the trial's own account of what it was graded against: the
     differential reads the rubric each bundle recorded off it.
     """
-    task = _load_yaml_mapping(bundle / "task.yaml")
+    task = _load_yaml_mapping(bundle / TASK_FILENAME)
     if task is None:
         raise MissingTraceReplayInputError(
-            f"{bundle / 'task.yaml'} is missing or not a mapping, so nothing says what "
+            f"{bundle / TASK_FILENAME} is missing or not a mapping, so nothing says what "
             "the trial recorded here was graded against"
         )
     return task
@@ -578,14 +583,14 @@ def _resolve_trace_checks(
     declared = _declared_trace_checks(task)
     if declared is None:
         raise MissingTraceReplayInputError(
-            f"no trace_checks: {bundle / 'task.yaml'} declares no "
+            f"no trace_checks: {bundle / TASK_FILENAME} declares no "
             "grading_config.trace_checks and no override was supplied"
         )
     try:
         return TraceChecksConfig.model_validate(declared), ConstraintProvenance.RECORDED
     except ValidationError as exc:
         raise MissingTraceReplayInputError(
-            f"{bundle / 'task.yaml'} declares a trace_checks block that does not validate: {exc}"
+            f"{bundle / TASK_FILENAME} declares a trace_checks block that does not validate: {exc}"
         ) from exc
 
 
@@ -660,7 +665,7 @@ def _recorded_binary_pass(bundle: Path, grade: dict[str, Any]) -> bool | None:
     if recorded is None or isinstance(recorded, bool):
         return recorded
     raise MissingTraceReplayInputError(
-        f"{bundle / 'grade.yaml'} records binary_pass {recorded!r}, which is neither a "
+        f"{bundle / GRADE_FILENAME} records binary_pass {recorded!r}, which is neither a "
         "pass nor a fail, so the bundle cannot say what the live run concluded"
     )
 
@@ -678,7 +683,7 @@ def _recorded_constraints(bundle: Path, recorded: Any) -> tuple[TraceConstraintR
         return None
     if not isinstance(recorded, list):
         raise MissingTraceReplayInputError(
-            f"{bundle / 'grade.yaml'} holds {type(recorded).__name__} where the live run's "
+            f"{bundle / GRADE_FILENAME} holds {type(recorded).__name__} where the live run's "
             "per-constraint verdicts belong, so the bundle cannot say what it concluded"
         )
     return tuple(TraceConstraintResult.model_validate(item) for item in recorded)
@@ -693,7 +698,7 @@ def recorded_grade(bundle: Path) -> dict[str, Any] | None:
     anything other than a mapping is refused rather than folded into the ``None``: a
     bundle that cannot say what it concluded is not one nobody graded.
     """
-    return _carried_mapping(bundle / "grade.yaml")
+    return _carried_mapping(bundle / GRADE_FILENAME)
 
 
 def _recorded_grade(bundle: Path) -> _RecordedGrade:
@@ -709,7 +714,7 @@ def _recorded_grade(bundle: Path) -> _RecordedGrade:
         )
     except ValidationError as exc:
         raise MissingTraceReplayInputError(
-            f"{bundle / 'grade.yaml'} records trace-check verdicts that do not validate: {exc}"
+            f"{bundle / GRADE_FILENAME} records trace-check verdicts that do not validate: {exc}"
         ) from exc
 
 
@@ -734,7 +739,7 @@ def recorded_task_id(bundle: Path, task: dict[str, Any]) -> str:
     if isinstance(declared, str) and declared:
         return declared
     raise MissingTraceReplayInputError(
-        f"{bundle / 'task.yaml'} names no task_id, so nothing attributes the trial's "
+        f"{bundle / TASK_FILENAME} names no task_id, so nothing attributes the trial's "
         "verdicts to a task — and a constraint id is unique only inside one pack's "
         "block, so an unattributed verdict folds into whatever other pack reused the id"
     )
@@ -900,7 +905,7 @@ def _task_less_disposition(bundle: Path) -> TrialTraceReplayOutcome:
     termination = aborted_without_a_task_snapshot(bundle)
     if termination is None:
         raise MissingTraceReplayInputError(
-            f"{bundle / 'task.yaml'} is missing, so nothing says what the trial recorded "
+            f"{bundle / TASK_FILENAME} is missing, so nothing says what the trial recorded "
             "here was graded against"
         )
     return TrialTraceReplayOutcome(
@@ -924,7 +929,7 @@ def _replay_one_bundle(
     authoring: AuthoringReport | None,
 ) -> TrialTraceReplayOutcome:
     try:
-        if not (bundle / "task.yaml").exists():
+        if not (bundle / TASK_FILENAME).exists():
             return _task_less_disposition(bundle)
         task = recorded_task(bundle)
         if _classify_trace_trial(task, override) is TraceReplayEligibility.NOT_APPLICABLE:

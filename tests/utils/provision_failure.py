@@ -17,11 +17,12 @@ from tests.canonical._factories import make_task_config, make_trial_spec
 from tolokaforge.core.conductor import InMemoryConductor
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
+from tolokaforge.core.output_writer import METRICS_FILENAME, TRAJECTORY_FILENAME
 from tolokaforge.core.runtime import EnvHandle, InMemoryRuntimeBackend, ProvisionError
 from tolokaforge.core.trial import TrialSpec
 from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 
-PROVISION_FAILURE_FILES = ("metrics.yaml", "trajectory.yaml")
+PROVISION_FAILURE_FILES = (METRICS_FILENAME, TRAJECTORY_FILENAME)
 """Every file the writer produces for such a trial — the assertion a caller of
 :func:`write_provision_failure_bundle` makes when the *absence* of the rest is
 its subject."""
@@ -48,9 +49,13 @@ def provisioning_executor(
     output_dir: Path,
     artifact_writer: TrialArtifactWriter,
     *,
-    logger: StructuredLogger,
+    logger: StructuredLogger | MagicMock,
 ) -> ProvisioningTrialExecutor:
-    """The executor under test, with the conductor that is never reached."""
+    """The executor under test, with the conductor that is never reached.
+
+    A caller whose subject is *what the executor logged* passes a ``MagicMock``
+    here, so the annotation admits one rather than describing half the callers.
+    """
     return ProvisioningTrialExecutor(
         runtime_backend=backend,
         conductor=InMemoryConductor(),

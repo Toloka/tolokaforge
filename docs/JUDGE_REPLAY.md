@@ -205,6 +205,12 @@ trial:
   model / rubric / KB-gating / custom prompt came from the bundle or an override,
   and the fidelity mode.
 
+Under a redacting artifact-write policy both judge sidecars are withheld and a
+`metrics.yaml` appears carrying the redaction stamp alone — the writer's
+declaration that they were withheld rather than never produced (see
+[`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § `redaction`), which is what makes
+the replay bundle refusable in turn.
+
 The batch also writes one `replays/<replay_id>/replay_report.yaml` — the per-run
 comparison against the recorded originals. A batch that replayed **nothing**
 writes no report: there is no comparison to make, and the console carries that

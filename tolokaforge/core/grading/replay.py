@@ -69,7 +69,9 @@ from tolokaforge.core.output.artifacts import (
 )
 from tolokaforge.core.output_writer import (
     ENV_FILENAME,
+    GRADE_FILENAME,
     JUDGE_INPUTS_FILENAME,
+    TASK_FILENAME,
     TRAJECTORY_FILENAME,
 )
 from tolokaforge.runner.models import LLMJudgeConfig, Rubric
@@ -404,7 +406,7 @@ def classify_trial(trial_dir: Path) -> TrialEligibility:
     bundle that cannot say what the run concluded is a different state from one
     that says nothing was graded.
     """
-    grade = _carried_mapping(trial_dir / "grade.yaml")
+    grade = _carried_mapping(trial_dir / GRADE_FILENAME)
     if grade is None:
         return TrialEligibility.NO_GRADE
     status_value = grade.get("judge_status") or JudgeStatus.UNSPECIFIED.value
@@ -449,7 +451,7 @@ def _resolve_custom_prompt(
         return None, None
     if not isinstance(recorded, str) or not recorded.strip():
         raise MissingReplayInputError(
-            f"recorded customization.system_prompt in {trial_dir / 'task.yaml'} "
+            f"recorded customization.system_prompt in {trial_dir / TASK_FILENAME} "
             "is blank or not a string"
         )
     return recorded, ProvenanceSource.RECORDED
@@ -481,7 +483,7 @@ def _resolve_include_agent_system_prompt(
     if not isinstance(recorded, bool):
         raise MissingReplayInputError(
             f"recorded customization.include_agent_system_prompt in "
-            f"{trial_dir / 'task.yaml'} is not a bool"
+            f"{trial_dir / TASK_FILENAME} is not a bool"
         )
     return recorded, ProvenanceSource.RECORDED
 
@@ -574,8 +576,8 @@ def read_replay_inputs(
     """
     refuse_redacted_bundle(trial_dir)
 
-    task = _load_yaml(trial_dir / "task.yaml")
-    grade = _load_yaml(trial_dir / "grade.yaml")
+    task = _load_yaml(trial_dir / TASK_FILENAME)
+    grade = _load_yaml(trial_dir / GRADE_FILENAME)
     prompts = _load_yaml(trial_dir / "prompts.yaml")
     if prompts is None:
         raise MissingReplayInputError(
@@ -1157,7 +1159,7 @@ def build_replay_report(
         reasoning_tokens += result.usage.reasoning_tokens
         cost_usd += result.usage.cost_usd
 
-        original = _load_yaml(outcome.bundle / "grade.yaml") or {}
+        original = _load_yaml(outcome.bundle / GRADE_FILENAME) or {}
         comparison = _compare_trial(_bundle_key(outcome.bundle, source), original, result)
         trials.append(comparison)
 

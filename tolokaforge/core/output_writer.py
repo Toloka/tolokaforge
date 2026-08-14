@@ -46,6 +46,16 @@ TRAJECTORY_FILENAME = "trajectory.yaml"
 ENV_FILENAME = "env.yaml"
 """The trial's final environment state."""
 
+TASK_FILENAME = "task.yaml"
+"""The trial's task snapshot. Not the task pack's own ``task.yaml`` — that one is
+a task definition an adapter reads, and shares nothing but the name."""
+
+GRADE_FILENAME = "grade.yaml"
+"""The trial's verdict. Absent where nothing graded the trial."""
+
+TOOLS_SCHEMAS_FILENAME = "tools_schemas.yaml"
+"""The trial's declared tool surface, in the dialect the provider was handed."""
+
 JUDGE_TRAJECTORY_FILENAME = "judge_trajectory.yaml"
 """The rubric judge's own transcript. Withheld under a redacting policy — it
 renders the agent's arguments into prose a key-name rule cannot reach."""
@@ -80,6 +90,7 @@ class OutputWriter:
     - metrics.yaml: Performance metrics with tool usage breakdown
     - grade.yaml: Grading results with detailed diff
     - logs.yaml: Structured trial logs
+    - tools_schemas.yaml: The trial's declared tool surface
     """
 
     def __init__(self, output_dir: Path, redaction: RedactionPolicy = NoRedaction()):
@@ -87,8 +98,8 @@ class OutputWriter:
 
         Args:
             output_dir: Directory to write output files
-            redaction: Applied to tool-call arguments on their way to disk.
-                The default writes what the agent sent. Anything else rewrites
+            redaction: Applied to every mapping this writer puts on disk. The
+                default writes what the run produced. Anything else rewrites
                 the bundle, which stamps itself so no offline command grades it.
         """
         self.output_dir = Path(output_dir)
@@ -112,13 +123,29 @@ class OutputWriter:
         """
         if self._redacting:
             self._rewritten.add(artifact)
-            self._declare()
+            self._declare_or_discard()
 
     def _note_withheld(self, artifact: str) -> None:
         """Record that the policy suppressed *artifact* rather than rewriting it."""
         if self._redacting:
             self._omitted.add(artifact)
+            self._declare_or_discard()
+
+    def _declare_or_discard(self) -> None:
+        """Stamp the bundle, or take the artifacts the policy rewrote back off disk.
+
+        A bundle a policy rewrote is never left on disk without the stamp that
+        says so. Callers that treat the bundle write as best-effort diagnostics
+        swallow what it raises — ``ProvisioningTrialExecutor`` does — so a failed
+        stamp write would otherwise leave rewritten artifacts reading as faithful
+        ones. A missing bundle is a state every reader already handles.
+        """
+        try:
             self._declare()
+        except Exception:
+            for artifact in self._rewritten:
+                (self.output_dir / artifact).unlink(missing_ok=True)
+            raise
 
     def _declare(self) -> None:
         """Put the current stamp into ``metrics.yaml``, creating the file if needed.
@@ -141,7 +168,7 @@ class OutputWriter:
                 )
             metrics = carried
         metrics["redaction"] = self._stamp().model_dump(mode="json")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             yaml.dump(metrics, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     def _stamp(self) -> RedactionStamp:
@@ -152,15 +179,27 @@ class OutputWriter:
         )
 
     def write_task_info(self, task_config: dict[str, Any]):
-        """Write task.yaml — the caller's task snapshot, serialised whole
+        """Write task.yaml — the caller's task snapshot, through the policy
+
+        The snapshot carries whatever the pack declared, ``policies`` and the
+        resolved ``grading_config`` included, so the same key-name rule reaches
+        it — a task that configures an integration by credential names it under
+        a key the rule reads.
 
         Args:
             task_config: The trial's task snapshot. Every key is written, in
                 the caller's insertion order; the snapshot the conductor
                 composes is the sole definition of the file's shape.
         """
-        with open(self.output_dir / "task.yaml", "w") as f:
-            yaml.dump(task_config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        with open(self.output_dir / TASK_FILENAME, "w") as f:
+            yaml.dump(
+                self.redaction.redact_mapping(task_config),
+                f,
+                default_flow_style=False,
+                allow_unicode=True,
+                sort_keys=False,
+            )
+        self._note_rewritten(TASK_FILENAME)
 
     def write_trajectory(self, trajectory: Trajectory):
         """Write trajectory.yaml — message trace + status + metrics only.
@@ -218,7 +257,7 @@ class OutputWriter:
         dumped = [message.model_dump(mode="json") for message in trajectory.messages]
         for message in dumped:
             for call in message.get("tool_calls") or []:
-                call["arguments"] = self.redaction.redact_arguments(call["arguments"])
+                call["arguments"] = self.redaction.redact_mapping(call["arguments"])
         return dumped
 
     def write_tool_log(self, trajectory: Trajectory):
@@ -239,7 +278,7 @@ class OutputWriter:
         record = []
         for call in sorted(trajectory.tool_log, key=lambda call: call.sequence):
             dumped = call.model_dump(mode="json")
-            dumped["arguments"] = self.redaction.redact_arguments(dumped["arguments"])
+            dumped["arguments"] = self.redaction.redact_mapping(dumped["arguments"])
             record.append(dumped)
 
         with open(self.output_dir / TOOL_LOG_FILENAME, "w", encoding="utf-8") as f:
@@ -258,7 +297,7 @@ class OutputWriter:
         """
         with open(self.output_dir / ENV_FILENAME, "w") as f:
             yaml.dump(
-                self.redaction.redact_arguments(env_state),
+                self.redaction.redact_mapping(env_state),
                 f,
                 default_flow_style=False,
                 allow_unicode=True,
@@ -329,7 +368,7 @@ class OutputWriter:
         # Keep the transcript and the judge's structured inputs out of grade.yaml;
         # each lands in its own sidecar.
         grade_payload = grade.model_dump(mode="json", exclude={"judge_transcript", "judge_inputs"})
-        with open(self.output_dir / "grade.yaml", "w") as f:
+        with open(self.output_dir / GRADE_FILENAME, "w") as f:
             yaml.dump(
                 grade_payload,
                 f,
@@ -379,6 +418,28 @@ class OutputWriter:
             logger: StructuredLogger instance with collected logs
         """
         logger.save_to_file(self.output_dir / "logs.yaml")
+
+    def write_tools_schemas(self, schemas: list[dict[str, Any]]):
+        """Write tools_schemas.yaml — the trial's declared tool surface, through the policy
+
+        A tool schema is a mapping the same key-name rule reaches: a declared
+        default, an example, or a header a task pack pins can name a credential.
+
+        Args:
+            schemas: The post-policy tool list — what the provider was handed.
+                Overwritten unconditionally; the orchestrator creates the trial
+                directory fresh, so there is no stale-write concern.
+        """
+        redacted = [self.redaction.redact_mapping(schema) for schema in schemas]
+        with open(self.output_dir / TOOLS_SCHEMAS_FILENAME, "w", encoding="utf-8") as f:
+            yaml.safe_dump(
+                redacted,
+                f,
+                sort_keys=True,
+                allow_unicode=True,
+                default_flow_style=False,
+            )
+        self._note_rewritten(TOOLS_SCHEMAS_FILENAME)
 
     def write_all(
         self,

@@ -1,14 +1,13 @@
 """Trial artifact writer — Protocol + disk-backed implementation.
 
 The writer composes :class:`tolokaforge.core.output_writer.OutputWriter`
-for the nine per-trial YAML files that make up a trial bundle:
+for the per-trial YAML files that make up a trial bundle:
 
 * ``task.yaml`` — frozen task identity + resolved preset fingerprint
 * ``trajectory.yaml`` — full message trace incl. reasoning blocks
 * ``tool_log.yaml`` — the trial's ordered tool-call record (sidecar; the
   grader's view of what each call did, which the message view cannot carry)
-* ``env.yaml`` — final env state snapshot (through the redaction policy, as
-  the argument-carrying artifacts are)
+* ``env.yaml`` — final env state snapshot
 * ``metrics.yaml`` — usage / latency / tool-call metrics
 * ``grade.yaml`` — pass / fail + score components, per-criterion
   rubric breakdown, judge_status + judge usage (omitted when the trial
@@ -19,6 +18,13 @@ for the nine per-trial YAML files that make up a trial bundle:
 * ``logs.yaml`` — structured trial logs
 * ``tools_schemas.yaml`` — post-policy tool list, what the provider saw
 * ``prompts.yaml`` — per-trial agent + user-simulator system prompts
+
+Every mapping-shaped artifact — the task snapshot, the tool-call arguments in
+the message trace and in the record, the env snapshot, each tool schema — goes
+through the redaction policy on its way to disk. ``prompts.yaml``, ``grade.yaml``
+and ``logs.yaml`` are rendered prose or already sanitised at source, so they are
+written as the run produced them; see
+[`docs/SECURITY.md`](../../../docs/SECURITY.md) for that boundary.
 
 Every artifact is YAML, every artifact is per-trial — a trial bundle is
 self-contained, no sidecar lookup needed for audit. Disk overhead is
@@ -186,7 +192,7 @@ def refuse_redacted_bundle(trial_dir: Path) -> None:
     if stamp is None:
         return
     # Either list can be empty: the judge-replay path withholds the judge sidecars
-    # and writes no argument-carrying artifact at all, so a stamp naming only
+    # and writes no mapping-shaped artifact at all, so a stamp naming only
     # ``omitted`` is a bundle this refusal still has to describe.
     did: list[str] = []
     if stamp.artifacts:
@@ -302,7 +308,8 @@ class TrialArtifactWriter(Protocol):
         ``capabilities.schema_sanitizer.sanitize(...)`` returned, ie. exactly
         what the provider saw on the wire. Writing it inside the trial
         bundle alongside ``trajectory.yaml`` keeps every trial
-        self-contained for audit. No dedup, no cross-trial state.
+        self-contained for audit. No dedup, no cross-trial state. Each schema
+        goes through the redaction policy, as every mapping-shaped artifact does.
         """
         ...
 
@@ -399,6 +406,13 @@ class FileArtifactWriter:
     def write_logs(self, trial_dir: Path, logger: StructuredLogger) -> None:
         self._writer(trial_dir).write_logs(logger)
 
+    def write_tools_schemas(
+        self,
+        trial_dir: Path,
+        schemas: list[dict[str, Any]],
+    ) -> None:
+        self._writer(trial_dir).write_tools_schemas(schemas)
+
     # ------------------------------------------------------------------
     # Convenience wrapper matching the old OutputWriter.write_all
     # ------------------------------------------------------------------
@@ -414,41 +428,6 @@ class FileArtifactWriter:
         """Write task + trajectory + tool log + env + metrics + grade + logs."""
         writer = self._writer(trial_dir)
         writer.write_all(trajectory, task_snapshot, env_state, logger)
-
-    # ------------------------------------------------------------------
-    # tools_schemas — per-trial YAML inside the trial bundle
-    # ------------------------------------------------------------------
-
-    def write_tools_schemas(
-        self,
-        trial_dir: Path,
-        schemas: list[dict[str, Any]],
-    ) -> None:
-        """Write ``trial_dir/tools_schemas.yaml`` from *schemas*.
-
-        *schemas* is the post-policy tool list — what
-        ``capabilities.schema_sanitizer.sanitize(...)`` returned, ie. exactly
-        what the provider saw. Storing it inside the trial bundle keeps
-        every trial self-contained for audit (no cross-trial lookup),
-        matches the all-YAML convention of the rest of the bundle, and
-        lets tooling that already reads
-        ``trial_dir / "trajectory.yaml"`` pick up the schema with the
-        same loader.
-
-        Overwrites unconditionally — the trial directory is always created
-        fresh by the orchestrator, so there is no stale-write concern.
-        """
-        trial_dir = Path(trial_dir)
-        trial_dir.mkdir(parents=True, exist_ok=True)
-        target = trial_dir / "tools_schemas.yaml"
-        with open(target, "w", encoding="utf-8") as f:
-            yaml.safe_dump(
-                schemas,
-                f,
-                sort_keys=True,
-                allow_unicode=True,
-                default_flow_style=False,
-            )
 
     # ------------------------------------------------------------------
     # prompts — per-trial YAML inside the trial bundle

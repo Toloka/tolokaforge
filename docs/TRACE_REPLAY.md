@@ -193,8 +193,8 @@ call with it, and so is any binder reading one.
 So a discrimination verdict is only as good as the corpus behind it, and the report
 carries a run-level `evidence` block saying what the corpus was: how many bundles were
 read, how many carried a tool-call record, how many were skipped, how many carried no
-task snapshot, how many failed, how many were rejected as pre-call-id, and which schema
-stamps were seen (`unstamped` included). The task-less count is its own number rather
+task snapshot, how many failed, how many were rejected as pre-call-id, how many were
+refused as redacted, and which schema stamps were seen (`unstamped` included). The task-less count is its own number rather
 than part of `bundles_skipped`: what an aborted trial could not say about a pack and
 what a pack chose not to declare are two facts, and one number carrying both is a
 number nobody can act on. An operator reading `never_decided` needs to know whether the corpus is old

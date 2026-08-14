@@ -61,7 +61,9 @@ from tolokaforge.core.grading.trace_replay import (
 from tolokaforge.core.models import JudgeStatus, RecordedToolCall, ToolExecutionStatus
 from tolokaforge.core.output.artifacts import RedactedBundleError, read_recorded_tool_log
 from tolokaforge.core.output_writer import (
+    GRADE_FILENAME,
     METRICS_FILENAME,
+    TASK_FILENAME,
     TOOL_LOG_FILENAME,
     TRAJECTORY_FILENAME,
 )
@@ -84,7 +86,7 @@ __all__ = [
 #: The manifest a corpus directory carries, and what makes a directory one.
 CORPUS_MANIFEST_FILENAME = "corpus.yaml"
 #: Written for every admitted bundle — the admission rule guarantees all three.
-CORPUS_REQUIRED_FILES = ("task.yaml", TRAJECTORY_FILENAME, "grade.yaml")
+CORPUS_REQUIRED_FILES = (TASK_FILENAME, TRAJECTORY_FILENAME, GRADE_FILENAME)
 #: Written where the source bundle carries them. ``tool_log.yaml``'s absence changes
 #: what a constraint can read, so the manifest records it per bundle as well.
 CORPUS_CARRIED_FILES = ("tools_schemas.yaml", METRICS_FILENAME, TOOL_LOG_FILENAME)
@@ -289,7 +291,7 @@ def _discovered_bundles(sources: Sequence[Path]) -> list[Path]:
 
 def _classified(bundle: Path, *, criterion: str) -> CuratedBundle | RejectedTrial:
     """Admit *bundle* into the corpus of *criterion*, or name why it does not enter."""
-    if not (bundle / "task.yaml").exists():
+    if not (bundle / TASK_FILENAME).exists():
         return _rule_rejection(bundle, CurationRejection.MISSING_TASK_SNAPSHOT, "no task.yaml")
     grade = _read(bundle, recorded_grade)
     if grade is None:
@@ -396,7 +398,7 @@ def _recorded_agent_model(bundle: Path, task: Mapping[str, Any]) -> str:
     named = _named_model(task, "agent")
     if named is None:
         raise CurationError(
-            f"{bundle / 'task.yaml'} names no model_config.agent.name, so the corpus cannot "
+            f"{bundle / TASK_FILENAME} names no model_config.agent.name, so the corpus cannot "
             f"say which model produced the trial it would admit"
         )
     return named

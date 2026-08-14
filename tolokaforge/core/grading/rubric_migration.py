@@ -108,6 +108,7 @@ from tolokaforge.core.models import (
     TraceChecksResult,
     TraceConstraintSeverity,
 )
+from tolokaforge.core.output_writer import GRADE_FILENAME, TASK_FILENAME
 from tolokaforge.runner.grading import RunnerTrialVerdict, compose_runner_trial_verdict
 
 __all__ = [
@@ -936,21 +937,21 @@ def _refuse_a_recorded_grade_the_counterfactual_cannot_read(
     components = grade.get("components") or {}
     if not isinstance(components, Mapping):
         raise MissingTraceReplayInputError(
-            f"{bundle / 'grade.yaml'} holds {type(components).__name__} where the component "
+            f"{bundle / GRADE_FILENAME} holds {type(components).__name__} where the component "
             "scores belong, so nothing says what this trial scored"
         )
     for where, value in (("score", grade.get("score")), *sorted(components.items())):
         if value is None or isinstance(value, (int, float)):
             continue
         raise MissingTraceReplayInputError(
-            f"{bundle / 'grade.yaml'} records {where} as {value!r}, which is not a number, so "
+            f"{bundle / GRADE_FILENAME} records {where} as {value!r}, which is not a number, so "
             "the recomposition has nothing to check itself against"
         )
     try:
         _recorded_judge_verdicts(grade)
     except (TypeError, ValidationError) as exc:
         raise MissingTraceReplayInputError(
-            f"{bundle / 'grade.yaml'} records a criterion_results entry that does not read as "
+            f"{bundle / GRADE_FILENAME} records a criterion_results entry that does not read as "
             f"a judge verdict, so nothing says what the judge concluded on this trial: {exc}"
         ) from exc
 
@@ -1322,7 +1323,7 @@ def _declaring_task_files(task_id: str, roots: Sequence[Path]) -> list[Path]:
     return [
         task_file
         for root in roots
-        for task_file in sorted(Path(root).rglob("task.yaml"))
+        for task_file in sorted(Path(root).rglob(TASK_FILENAME))
         if _declares_task_id(task_file, task_id)
     ]
 
@@ -1750,7 +1751,7 @@ def _file_one_bundle(
         return UnreadableTrial(
             trial=str(bundle),
             reason=(
-                f"the rubric recorded in {bundle / 'task.yaml'} does not read as one, so nothing "
+                f"the rubric recorded in {bundle / TASK_FILENAME} does not read as one, so nothing "
                 f"says what shape the criterion had when this trial was graded: {exc}. Drop the "
                 "bundle from the corpus, or reconcile it against the tree that wrote it"
             ),
@@ -1792,7 +1793,7 @@ def _excluded_from_the_corpus(bundle: Path) -> CorpusExclusion:
     termination = aborted_without_a_task_snapshot(bundle)
     if termination is None:
         raise MissingTraceReplayInputError(
-            f"{bundle / 'task.yaml'} is missing, so nothing names the task whose "
+            f"{bundle / TASK_FILENAME} is missing, so nothing names the task whose "
             "migration this trial could speak to"
         )
     return CorpusExclusion(
@@ -1890,7 +1891,7 @@ def _read_the_corpus(source: Path) -> _CorpusReading:
     excluded: list[CorpusExclusion] = []
     for bundle in bundles:
         try:
-            if not (bundle / "task.yaml").exists():
+            if not (bundle / TASK_FILENAME).exists():
                 excluded.append(_excluded_from_the_corpus(bundle))
                 continue
             task_id = recorded_task_id(bundle, recorded_task(bundle))
@@ -2039,7 +2040,7 @@ def _task_id_declaring(sidecar: Path) -> str:
     Read raw for the reason :func:`_declaring_task_files` reads raw: the id is the lookup key,
     and the pack it selects is then loaded properly.
     """
-    task_file = sidecar.parent / "task.yaml"
+    task_file = sidecar.parent / TASK_FILENAME
     if not task_file.exists():
         raise ReconcileError(
             f"{sidecar} declares a migration and no task.yaml sits beside it, so no task_id "

@@ -14,30 +14,35 @@ What each claim carries:
    writer redacts a dump and never the model the grader reads.
 2. **The default writes what the agent sent** — no stamp, no withheld sidecar,
    the credential present in every artifact that carries one.
-3. **Under a redacting policy** the argument-carrying artifacts carry the
-   placeholder, ordinary arguments survive, and the stamp names what was rewritten.
-4. **Both judge sidecars are withheld and the stamp says so**, and the credential
-   appears in **no file in the bundle**.
+3. **Under a redacting policy** every mapping-shaped artifact carries the
+   placeholder, ordinary values survive, and the stamp names what was rewritten.
+4. **Both judge sidecars are withheld and the stamp says so**, and the only file
+   in the bundle still carrying the credential is the one declared out of reach.
 5. **Two trials through one writer** get their own stamps.
 6. **The provision-failure bundle** stamps only what it wrote, and the offline
    reader still refuses it.
-7. **The stamp is a property of the writer, not of ``write_metrics``** — the
+7. **A stamp that cannot be written takes the rewritten artifacts with it**, so
+   no caller's best-effort handler can leave a rewritten bundle unstamped.
+8. **The stamp is a property of the writer, not of ``write_metrics``** — the
    judge-replay path writes a grade and never a metrics file, and its bundle is
    stamped all the same.
 
 **Scope of the whole-bundle secret scan (claim 4).** It proves absence for the
-deterministic, argument-derived sites only. Judge prose — ``Grade.reasons`` and
-``CriterionResult.justification`` — can quote the transcript the judge was shown,
-and no key-name rule reaches prose; the judge is stubbed here, so this file's
-green says nothing about it. ``logs.yaml`` is likewise outside the write policy:
-its context keys are sanitised at source by the same vocabulary, which is why the
-planted log line here carries the credential under a credential-*named* key —
-a value quoted in a log message would survive, and that is the same declared gap.
-Both are #1157's.
+mapping-shaped artifacts — the sites a key-name rule can reach — and names the
+one it cannot. ``prompts.yaml`` is rendered prose: a system prompt is text, there
+is no key to match on, so the credential planted in it survives both policies and
+the scan lists it. Judge prose — ``Grade.reasons`` and
+``CriterionResult.justification`` — is the same shape; the judge is stubbed here,
+so this file's green says nothing about it. ``logs.yaml`` is outside the write
+policy for the opposite reason: its context keys are sanitised at source by the
+same vocabulary, which is why the planted log line here carries the credential
+under a credential-*named* key — a value quoted in a log message would survive.
+All three are #1157's.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -74,6 +79,7 @@ from tolokaforge.core.models import (
     Message,
     MessageRole,
     Metrics,
+    TaskConfig,
     ToolCall,
     ToolExecutionStatus,
     ToolExecutorIdentity,
@@ -87,9 +93,11 @@ from tolokaforge.core.output.artifacts import (
     bundle_redaction,
     read_recorded_tool_log,
 )
+from tolokaforge.core.output_writer import METRICS_FILENAME
 from tolokaforge.core.redaction import (
     REDACTED_PLACEHOLDER,
     NoRedaction,
+    RedactionPolicy,
     RedactionPolicyName,
     SensitiveKeyRedaction,
 )
@@ -123,6 +131,34 @@ _TRACE_CHECKS = TraceChecksConfig.model_validate(
         ]
     }
 )
+
+
+#: The trial's declared tool surface, with the credential where a schema can carry
+#: one: a pinned default on a credential-named parameter.
+_TOOLS_SCHEMAS = [
+    {
+        "name": "get_order",
+        "description": "Read one order.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "api_token": {"type": "string", "default": _SECRET},
+            },
+        },
+    }
+]
+
+
+def _task_config() -> TaskConfig:
+    """The pack the trial ran, carrying the credential in its free-form ``policies``.
+
+    That block is copied verbatim into the task snapshot, so it is where a task
+    that configures an integration by credential puts one.
+    """
+    return make_task_config(task_id=_TASK_ID).model_copy(
+        update={"policies": {"webhook": {"api_token": _SECRET}}}
+    )
 
 
 def _recorded_trajectory() -> Trajectory:
@@ -184,12 +220,15 @@ def _recorded_trajectory() -> Trajectory:
     )
 
 
-def _write_bundle(trial_root: Path, policy: Any, trajectory: Trajectory) -> Path:
+def _write_bundle(trial_root: Path, policy: RedactionPolicy, trajectory: Trajectory) -> Path:
     """Drive the production artifact-write phase under *policy*; return the bundle.
 
-    The trial's logger is handed the credential under a credential-named context
-    key, which the log path sanitises at source. ``logs.yaml`` is written from
-    what that already redacted, never through the write policy.
+    Every artifact the phase writes is fed the credential first, each in the shape
+    that artifact carries one: a credential-named key in the task snapshot and in a
+    tool schema, and rendered prose in the agent's system prompt. The trial's logger
+    is handed it under a credential-named context key, which the log path sanitises
+    at source — ``logs.yaml`` is written from what that already redacted, never
+    through the write policy.
     """
     conductor = make_conductor(
         make_run_config(trial_root / "results"),
@@ -197,12 +236,13 @@ def _write_bundle(trial_root: Path, policy: Any, trajectory: Trajectory) -> Path
         MagicMock(),
         artifact_writer=FileArtifactWriter(redaction=policy),
     )
-    runner = runner_stub()
+    conductor.agent_client.capabilities.schema_sanitizer.sanitize.return_value = _TOOLS_SCHEMAS
+    runner = replace(runner_stub(), effective_system_prompt=f"Authenticate with {_SECRET}.")
     runner.logger.info("tool.request", tool="get_order", api_token=_SECRET)
     setup = make_setup(trial_root, _TASK_ID, 0)
     conductor._write_artifacts(
         make_trial_spec(trial_id=f"{_TASK_ID}:0", task_id=_TASK_ID),
-        make_task_config(task_id=_TASK_ID),
+        _task_config(),
         setup,
         trajectory,
         runner,
@@ -233,6 +273,14 @@ def _env_state(bundle: Path) -> dict[str, Any]:
     return yaml.safe_load((bundle / "env.yaml").read_text(encoding="utf-8"))
 
 
+def _task_snapshot(bundle: Path) -> dict[str, Any]:
+    return yaml.safe_load((bundle / "task.yaml").read_text(encoding="utf-8"))
+
+
+def _tools_schemas(bundle: Path) -> list[dict[str, Any]]:
+    return yaml.safe_load((bundle / "tools_schemas.yaml").read_text(encoding="utf-8"))
+
+
 class TestLiveGradingIsUnaffected:
     """The claim the whole layering exists for."""
 
@@ -241,7 +289,7 @@ class TestLiveGradingIsUnaffected:
         [(NoRedaction(), "default"), (SensitiveKeyRedaction(), "redacting")],
     )
     def test_the_constraint_passes_after_the_bundle_is_written(
-        self, tmp_path: Path, policy: Any, label: str
+        self, tmp_path: Path, policy: RedactionPolicy, label: str
     ) -> None:
         """Scored *after* the write, so a writer that reached the grader's input —
         by mutating the trajectory, or by redacting at record time — reds here."""
@@ -273,12 +321,16 @@ class TestLiveGradingIsUnaffected:
 
 
 class TestTheDefaultWritesWhatTheAgentSent:
-    def test_every_argument_carrying_artifact_holds_the_credential(self, tmp_path: Path) -> None:
+    def test_every_mapping_shaped_artifact_holds_the_credential(self, tmp_path: Path) -> None:
         bundle = _write_bundle(tmp_path, NoRedaction(), _recorded_trajectory())
 
         assert _tool_log(bundle)[0]["arguments"]["api_token"] == _SECRET
         assert _trajectory_tool_calls(bundle)[0]["arguments"]["api_token"] == _SECRET
         assert _env_state(bundle)["session"]["api_token"] == _SECRET
+        assert _task_snapshot(bundle)["policies"]["webhook"]["api_token"] == _SECRET
+        assert (
+            _tools_schemas(bundle)[0]["parameters"]["properties"]["api_token"]["default"] == _SECRET
+        )
 
     def test_the_bundle_carries_no_stamp_and_withholds_nothing(self, tmp_path: Path) -> None:
         bundle = _write_bundle(tmp_path, NoRedaction(), _recorded_trajectory())
@@ -308,6 +360,18 @@ class TestARedactingPolicyRewritesAndStamps:
             "session": {"api_token": REDACTED_PLACEHOLDER},
         }
 
+    def test_the_task_snapshot_and_the_tool_schemas_are_rewritten_too(self, tmp_path: Path) -> None:
+        """Both are mappings the writer puts on disk, so the same rule reaches them."""
+        bundle = _write_bundle(tmp_path, SensitiveKeyRedaction(), _recorded_trajectory())
+
+        assert _task_snapshot(bundle)["policies"] == {
+            "webhook": {"api_token": REDACTED_PLACEHOLDER}
+        }
+        assert _task_snapshot(bundle)["task_id"] == _TASK_ID
+        properties = _tools_schemas(bundle)[0]["parameters"]["properties"]
+        assert properties["api_token"] == REDACTED_PLACEHOLDER
+        assert properties["id"] == {"type": "string"}
+
     def test_the_stamp_names_the_policy_and_every_rewritten_artifact(self, tmp_path: Path) -> None:
         bundle = _write_bundle(tmp_path, SensitiveKeyRedaction(), _recorded_trajectory())
 
@@ -315,7 +379,13 @@ class TestARedactingPolicyRewritesAndStamps:
 
         assert stamp is not None
         assert stamp.policy is RedactionPolicyName.SENSITIVE_KEYS
-        assert stamp.artifacts == ["env.yaml", "tool_log.yaml", "trajectory.yaml"]
+        assert stamp.artifacts == [
+            "env.yaml",
+            "task.yaml",
+            "tool_log.yaml",
+            "tools_schemas.yaml",
+            "trajectory.yaml",
+        ]
 
 
 class TestTheJudgeSidecarsAreWithheldAndDeclared:
@@ -329,12 +399,16 @@ class TestTheJudgeSidecarsAreWithheldAndDeclared:
         assert stamp is not None
         assert stamp.omitted == ["judge_inputs.yaml", "judge_trajectory.yaml"]
 
-    def test_no_file_in_the_bundle_carries_the_credential(self, tmp_path: Path) -> None:
-        """Scans every written file, so an argument-carrying artifact added later
-        fails here rather than shipping beside a stamp that says otherwise. Every
-        file the trial produces is fed the credential first (see
-        :func:`_recorded_trajectory` and :func:`_write_bundle`), so an empty result
-        is absence rather than a bundle that never held one."""
+    def test_the_only_file_still_carrying_the_credential_is_the_declared_one(
+        self, tmp_path: Path
+    ) -> None:
+        """Scans every written file, so a mapping-shaped artifact added later fails
+        here rather than shipping beside a stamp that says otherwise. ``prompts.yaml``
+        is the declared exception and is asserted by name: a system prompt is rendered
+        prose with no key to match on, so the policy leaves it as written (#1157's).
+        Every file the trial produces is fed the credential first (see
+        :func:`_recorded_trajectory` and :func:`_write_bundle`), so each absence here
+        is absence rather than a file that never held one."""
         bundle = _write_bundle(tmp_path, SensitiveKeyRedaction(), _recorded_trajectory())
 
         carrying = [
@@ -343,7 +417,7 @@ class TestTheJudgeSidecarsAreWithheldAndDeclared:
             if path.is_file() and _SECRET in path.read_text(encoding="utf-8", errors="replace")
         ]
 
-        assert carrying == []
+        assert carrying == ["prompts.yaml"]
 
     def test_the_default_bundle_is_the_control_the_scan_needs(self, tmp_path: Path) -> None:
         """Which files the scan above proves anything about. Without this a fixture
@@ -360,7 +434,10 @@ class TestTheJudgeSidecarsAreWithheldAndDeclared:
             "env.yaml",
             "judge_inputs.yaml",
             "judge_trajectory.yaml",
+            "prompts.yaml",
+            "task.yaml",
             "tool_log.yaml",
+            "tools_schemas.yaml",
             "trajectory.yaml",
         ]
 
@@ -413,7 +490,12 @@ class TestOneWriterTwoTrials:
         first_stamp = bundle_redaction(first)
         second_stamp = bundle_redaction(second)
         assert first_stamp is not None and second_stamp is not None
-        assert first_stamp.artifacts == ["env.yaml", "tool_log.yaml", "trajectory.yaml"]
+        assert first_stamp.artifacts == [
+            "env.yaml",
+            "task.yaml",
+            "tool_log.yaml",
+            "trajectory.yaml",
+        ]
         assert second_stamp.artifacts == ["trajectory.yaml"]
 
 
@@ -457,6 +539,62 @@ class TestTheProvisionFailureBundleStampsWhatItWrote:
 
         with pytest.raises(RedactedBundleError, match="sensitive_keys"):
             read_recorded_tool_log(bundle)
+
+
+class TestAStampThatCannotBeWrittenTakesTheRewrittenArtifactsWithIt:
+    """A redacting writer never leaves on disk an artifact it rewrote and did not stamp.
+
+    The provision-failure path treats its whole bundle write as best-effort
+    diagnostics — it logs what the write raises and returns the synthesized
+    ``ProvisionError`` result regardless — so a stamp write that fails would
+    otherwise leave a rewritten ``trajectory.yaml`` behind, reading as a faithful
+    record of what the agent sent. A bundle that is missing is a state every reader
+    already handles.
+    """
+
+    def test_the_rewritten_trajectory_is_gone_and_the_failure_is_reported(
+        self, tmp_path: Path
+    ) -> None:
+        bundle = tmp_path / "trials" / _TASK_ID / "0"
+        # A directory where the header belongs: the stamp write fails on a real
+        # filesystem state rather than on a patched writer.
+        (bundle / METRICS_FILENAME).mkdir(parents=True)
+        logger = MagicMock()
+        executor = provisioning_executor(
+            FailProvisionBackend("no capacity"),
+            tmp_path,
+            FileArtifactWriter(redaction=SensitiveKeyRedaction()),
+            logger=logger,
+        )
+
+        executor.execute(
+            make_trial_spec(trial_id=f"{_TASK_ID}:0", task_id=_TASK_ID),
+            make_task_config(task_id=_TASK_ID),
+        )
+
+        assert [path.name for path in bundle.iterdir() if path.is_file()] == []
+        assert "Writing provision-failure bundle failed; continuing" in [
+            call.args[0] for call in logger.warning.call_args_list
+        ]
+
+    def test_the_default_policy_keeps_the_bundle_it_wrote(self, tmp_path: Path) -> None:
+        """Nothing was rewritten, so there is nothing a missing stamp misrepresents —
+        and the same unwritable header must not cost a faithful bundle its trajectory."""
+        bundle = tmp_path / "trials" / _TASK_ID / "0"
+        (bundle / METRICS_FILENAME).mkdir(parents=True)
+        executor = provisioning_executor(
+            FailProvisionBackend("no capacity"),
+            tmp_path,
+            FileArtifactWriter(),
+            logger=MagicMock(),
+        )
+
+        executor.execute(
+            make_trial_spec(trial_id=f"{_TASK_ID}:0", task_id=_TASK_ID),
+            make_task_config(task_id=_TASK_ID),
+        )
+
+        assert [path.name for path in bundle.iterdir() if path.is_file()] == ["trajectory.yaml"]
 
 
 def _replay_result() -> JudgeResult:

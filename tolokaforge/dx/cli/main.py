@@ -72,7 +72,7 @@ from tolokaforge.core.orchestrator import (
     resolve_run_directory,
 )
 from tolokaforge.core.output.artifacts import RedactedBundleError
-from tolokaforge.core.output_writer import METRICS_FILENAME
+from tolokaforge.core.output_writer import GRADE_FILENAME, METRICS_FILENAME
 from tolokaforge.core.project_loader import (
     construct_config,
     find_project_yaml,
@@ -1632,7 +1632,7 @@ def analyze(trajectory: str):
                 metrics = yaml.safe_load(f)
 
     if grade is None:
-        grade_path = traj_path.parent / "grade.yaml"
+        grade_path = traj_path.parent / GRADE_FILENAME
         if grade_path.exists():
             with open(grade_path) as f:
                 grade = yaml.safe_load(f)
