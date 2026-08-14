@@ -28,7 +28,13 @@ import pytest
 
 from tests.utils.docker_helpers import is_docker_daemon_available
 
-IMAGE_COMPONENTS: tuple[str, ...] = ("runner", "db-service", "rag-service", "mock-web")
+IMAGE_COMPONENTS: tuple[str, ...] = (
+    "runner",
+    "db-service",
+    "rag-service",
+    "mock-web",
+    "grader",
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 COMPOSE_FILE = REPO_ROOT / "deploy" / "standalone" / "docker-compose.yaml"
