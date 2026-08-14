@@ -49,12 +49,14 @@ def _overlay(tmp_path: Path, name: str, version: str) -> Path:
     return overlay
 
 
-def test_the_digest_recipe_is_the_models_fingerprint_recipe() -> None:
-    """Both fingerprints on a run bundle canonicalise the same way.
+def test_the_digest_recipe_is_pinned_to_the_models_fingerprint_canonicalisation() -> None:
+    """The harness digest canonicalises the way ``compute_models_fingerprint`` does.
 
     The probe carries a non-ASCII character and a nested mapping, so flipping
-    ``ensure_ascii`` or ``separators`` in either module moves this digest
-    instead of silently changing what one of the two shas means.
+    ``ensure_ascii``, ``separators`` or ``sort_keys`` here moves this digest
+    instead of silently changing what ``resolved_sha256`` means. The models
+    side canonicalises inline and exports no shared helper, so this pins one
+    end only: a change there will not fail here.
     """
     probe = {
         "probe-cli": HarnessSpec(

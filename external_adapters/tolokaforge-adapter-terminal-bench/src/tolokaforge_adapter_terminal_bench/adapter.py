@@ -12,6 +12,7 @@ bash tool only ``docker exec``s into the already-running agent container.
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -188,7 +189,7 @@ class TerminalBenchAdapter(BaseAdapter):
             params.get("harness_presets_file"),
             discover_plugins=not params.get("disable_harness_plugins", False),
         )
-        self.harnesses: dict[str, HarnessSpec] = self._resolved_registry.harnesses
+        self.harnesses: Mapping[str, HarnessSpec] = self._resolved_registry.harnesses
         self.agent_harness: str = validate_harness(
             params.get("agent_harness", ENGINE_LOOP), self.harnesses
         )
