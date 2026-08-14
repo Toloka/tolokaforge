@@ -497,56 +497,84 @@ deliberately blank vendor key, and fails with a 401. So a vendor harness gets
 the prefix stripped, while the engine loop keeps it (litellm needs it).
 """
 
-_VENDOR_NAMESPACE_PREFIXES: tuple[str, ...] = (
-    "anthropic/",
-    "openai/",
-    "google/",
-    "x-ai/",
-    "meta-llama/",
-    "moonshotai/",
-    "qwen/",
-    "deepseek/",
+SHIPPED_REGISTRY_META_FILE: Path = (
+    Path(__file__).resolve().parent.parent / "data" / "registry_meta.yaml"
 )
-"""OpenRouter ``vendor/`` namespaces that :func:`harness_model` drops from the
-model name for harnesses declaring ``strip_vendor_namespace=True``. A new
-OpenRouter namespace would surface as the same "metadata not found" warning
-the field's docstring cites."""
+"""Registry-wide catalog file: OpenRouter vendor namespaces + the closed
+allow-list of provider env-var names. Ships as data so a new namespace or
+env-var name is a YAML edit rather than a Python constant edit."""
 
-PROVIDER_ENV_KEYS: frozenset[str] = frozenset(
-    {
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_BASE_URL",
-        "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
-        "GOOGLE_API_KEY",
-        # gemini-cli reads ``GEMINI_API_KEY`` natively (Google's own name for
-        # a Google-AI-Studio key). ``GOOGLE_API_KEY`` was previously the only
-        # Google-shaped key here, but it's the name Vertex uses; gemini-cli
-        # itself insists on ``GEMINI_API_KEY``. Both are here to accept
-        # whichever a run config declares.
-        "GEMINI_API_KEY",
-        # OpenRouter as its own named provider surface — Grok Build reads
-        # ``env_key = "OPENROUTER_API_KEY"`` from its config.toml when
-        # routing via OpenRouter rather than through the OpenAI-compat
-        # slot. Adding the two names doesn't reduce safety (the set
-        # stays a closed allow-list); a harness declaring an unknown
-        # OpenRouter-shaped variable still fails validate_provider_env_keys.
-        "OPENROUTER_API_KEY",
-        "OPENROUTER_BASE_URL",
-        # Kimi Code CLI reads ``KIMI_MODEL_API_KEY`` / ``KIMI_MODEL_BASE_URL``
-        # natively. No pre-existing OpenRouter alias name covers this — the
-        # CLI's own credentials-loader looks up these two names verbatim.
-        "KIMI_MODEL_API_KEY",
-        "KIMI_MODEL_BASE_URL",
-    }
-)
+
+class _RegistryMeta(BaseModel):
+    """Loader-shape for ``data/registry_meta.yaml``.
+
+    Kept private: no caller outside this module needs the model itself,
+    only :data:`_VENDOR_NAMESPACE_PREFIXES` and :data:`PROVIDER_ENV_KEYS`
+    populated from it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    openrouter_vendor_namespaces: tuple[str, ...]
+    provider_env_keys: frozenset[str]
+
+    @model_validator(mode="after")
+    def _every_entry_is_a_non_blank_string(self) -> "_RegistryMeta":
+        for value in self.openrouter_vendor_namespaces:
+            if not value or value.strip() != value:
+                raise ValueError(
+                    f"registry_meta.yaml: openrouter_vendor_namespaces entry "
+                    f"{value!r} must be a non-blank string without leading/trailing whitespace."
+                )
+        for value in self.provider_env_keys:
+            if not value or value.strip() != value:
+                raise ValueError(
+                    f"registry_meta.yaml: provider_env_keys entry {value!r} "
+                    "must be a non-blank string without leading/trailing whitespace."
+                )
+        if len(self.openrouter_vendor_namespaces) != len(set(self.openrouter_vendor_namespaces)):
+            raise ValueError(
+                "registry_meta.yaml: openrouter_vendor_namespaces contains duplicates."
+            )
+        if not self.openrouter_vendor_namespaces:
+            raise ValueError("registry_meta.yaml: openrouter_vendor_namespaces must not be empty.")
+        if not self.provider_env_keys:
+            raise ValueError("registry_meta.yaml: provider_env_keys must not be empty.")
+        return self
+
+
+def _load_registry_meta(path: Path) -> _RegistryMeta:
+    """Read the registry-meta YAML at *path*, fail loud on missing / malformed input."""
+    if not path.exists():
+        raise FileNotFoundError(
+            f"registry_meta.yaml not found at {path}; the shipped file ships with "
+            "the tbench adapter wheel and its absence is a packaging error."
+        )
+    data = yaml.safe_load(path.read_text())
+    if not isinstance(data, Mapping):
+        raise ValueError(
+            f"registry_meta.yaml at {path} must be a YAML mapping; got {type(data).__name__}."
+        )
+    try:
+        return _RegistryMeta.model_validate(dict(data))
+    except ValidationError as exc:
+        raise ValueError(f"registry_meta.yaml at {path}: {exc}") from exc
+
+
+_REGISTRY_META = _load_registry_meta(SHIPPED_REGISTRY_META_FILE)
+
+_VENDOR_NAMESPACE_PREFIXES: tuple[str, ...] = _REGISTRY_META.openrouter_vendor_namespaces
+"""OpenRouter ``vendor/`` namespaces that :func:`harness_model` drops from the
+model name for harnesses declaring ``strip_vendor_namespace=True``. Loaded from
+``data/registry_meta.yaml`` at import; adding a namespace is a YAML edit."""
+
+PROVIDER_ENV_KEYS: frozenset[str] = _REGISTRY_META.provider_env_keys
 """Environment variables a harness CLI may be given inside the task container.
 
 An allow-list, not an open surface: every forwarded value lands in the
 per-trial compose ``.env`` and then in the container the agent works in, so an
 open surface would let a run config shadow the task's own environment with
-arbitrary values."""
+arbitrary values. Loaded from ``data/registry_meta.yaml`` at import; adding a
+key is a YAML edit."""
 
 PROVIDER_ENV_INPUT_PREFIX = "TBENCH_PROVIDER_"
 """Prefix for the compose variable that carries a provider value.

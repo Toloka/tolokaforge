@@ -1137,6 +1137,94 @@ class TestInstallHarnessScript:
         assert recorded == []
 
 
+class TestHarnessRegistryMeta:
+    """``data/registry_meta.yaml`` — registry-wide catalogs (OpenRouter vendor
+    namespaces + provider env-var allow-list) that used to be Python
+    constants. Fail-loud on malformed data; adding a namespace or a key is a
+    YAML edit."""
+
+    def test_shipped_file_populates_the_module_globals(self):
+        from tolokaforge_adapter_terminal_bench.harness import (
+            _VENDOR_NAMESPACE_PREFIXES,
+            PROVIDER_ENV_KEYS,
+            SHIPPED_REGISTRY_META_FILE,
+        )
+
+        assert SHIPPED_REGISTRY_META_FILE.is_file()
+        assert _VENDOR_NAMESPACE_PREFIXES  # non-empty
+        assert PROVIDER_ENV_KEYS  # non-empty
+        # Existing shipped harnesses' provider_env keys all belong to the
+        # allow-list.
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        for spec in HARNESSES.values():
+            for key in spec.provider_env:
+                assert key in PROVIDER_ENV_KEYS, (
+                    f"harness ships provider_env key {key!r} outside PROVIDER_ENV_KEYS — "
+                    "either add the key to registry_meta.yaml or the harness is broken."
+                )
+
+    def test_missing_file_names_the_path(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import _load_registry_meta
+
+        with pytest.raises(FileNotFoundError, match="registry_meta.yaml"):
+            _load_registry_meta(tmp_path / "does_not_exist.yaml")
+
+    def test_non_mapping_yaml_is_refused(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import _load_registry_meta
+
+        target = tmp_path / "registry_meta.yaml"
+        target.write_text("- one\n- two\n")  # a list at the top level
+        with pytest.raises(ValueError, match="must be a YAML mapping"):
+            _load_registry_meta(target)
+
+    def test_unknown_top_level_key_is_refused(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import _load_registry_meta
+
+        target = tmp_path / "registry_meta.yaml"
+        target.write_text(
+            "openrouter_vendor_namespaces: [foo/]\n"
+            "provider_env_keys: [A_KEY]\n"
+            "extra_key: hi\n"
+        )
+        with pytest.raises(ValueError):
+            _load_registry_meta(target)
+
+    def test_empty_namespaces_list_is_refused(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import _load_registry_meta
+
+        target = tmp_path / "registry_meta.yaml"
+        target.write_text("openrouter_vendor_namespaces: []\nprovider_env_keys: [A_KEY]\n")
+        with pytest.raises(ValueError, match="openrouter_vendor_namespaces must not be empty"):
+            _load_registry_meta(target)
+
+    def test_empty_env_keys_list_is_refused(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import _load_registry_meta
+
+        target = tmp_path / "registry_meta.yaml"
+        target.write_text("openrouter_vendor_namespaces: [foo/]\nprovider_env_keys: []\n")
+        with pytest.raises(ValueError, match="provider_env_keys must not be empty"):
+            _load_registry_meta(target)
+
+    def test_duplicate_namespace_entry_is_refused(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import _load_registry_meta
+
+        target = tmp_path / "registry_meta.yaml"
+        target.write_text(
+            "openrouter_vendor_namespaces: [foo/, foo/]\nprovider_env_keys: [A_KEY]\n"
+        )
+        with pytest.raises(ValueError, match="duplicates"):
+            _load_registry_meta(target)
+
+    def test_blank_entry_is_refused(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import _load_registry_meta
+
+        target = tmp_path / "registry_meta.yaml"
+        target.write_text('openrouter_vendor_namespaces: ["foo/"]\nprovider_env_keys: [" "]\n')
+        with pytest.raises(ValueError, match="non-blank"):
+            _load_registry_meta(target)
+
+
 class TestHarnessSpecRegistry:
     """The shipped registry is packaged YAML data, loaded at import."""
 
