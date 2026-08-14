@@ -15,14 +15,49 @@ from unittest.mock import MagicMock
 
 from tests.canonical._factories import make_task_config, make_trial_spec
 from tolokaforge.core.conductor import InMemoryConductor
-from tolokaforge.core.output.artifacts import FileArtifactWriter
-from tolokaforge.core.runtime import InMemoryRuntimeBackend
+from tolokaforge.core.logging import StructuredLogger
+from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
+from tolokaforge.core.runtime import EnvHandle, InMemoryRuntimeBackend, ProvisionError
+from tolokaforge.core.trial import TrialSpec
 from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 
 PROVISION_FAILURE_FILES = ("metrics.yaml", "trajectory.yaml")
 """Every file the writer produces for such a trial — the assertion a caller of
 :func:`write_provision_failure_bundle` makes when the *absence* of the rest is
 its subject."""
+
+
+class FailProvisionBackend(InMemoryRuntimeBackend):
+    """A backend whose ``provision`` always raises, with a caller-chosen reason.
+
+    The direct route into :meth:`ProvisioningTrialExecutor.execute`'s failure
+    branch, where :func:`write_provision_failure_bundle` reaches it the long way
+    round through a readiness timeout.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__()
+        self._reason = reason
+
+    def provision(self, spec: TrialSpec) -> EnvHandle:
+        raise ProvisionError(trial_id=spec.trial_id, stage="provision", reason=self._reason)
+
+
+def provisioning_executor(
+    backend: InMemoryRuntimeBackend,
+    output_dir: Path,
+    artifact_writer: TrialArtifactWriter,
+    *,
+    logger: StructuredLogger,
+) -> ProvisioningTrialExecutor:
+    """The executor under test, with the conductor that is never reached."""
+    return ProvisioningTrialExecutor(
+        runtime_backend=backend,
+        conductor=InMemoryConductor(),
+        logger=logger,
+        output_dir=output_dir,
+        artifact_writer=artifact_writer,
+    )
 
 
 def write_provision_failure_bundle(
@@ -36,12 +71,11 @@ def write_provision_failure_bundle(
     that check a fixture that wrote nothing would arrive at the test as a bundle.
     """
     logger = MagicMock()
-    executor = ProvisioningTrialExecutor(
-        runtime_backend=InMemoryRuntimeBackend(await_ready_times_out=True),
-        conductor=InMemoryConductor(),
+    executor = provisioning_executor(
+        InMemoryRuntimeBackend(await_ready_times_out=True),
+        output_dir,
+        FileArtifactWriter(),
         logger=logger,
-        output_dir=output_dir,
-        artifact_writer=FileArtifactWriter(),
     )
     spec = make_trial_spec(trial_id=f"{task_id}:{trial_index}", task_id=task_id)
 

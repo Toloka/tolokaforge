@@ -62,6 +62,7 @@ from tolokaforge.core.models import (
     Trajectory,
 )
 from tolokaforge.core.output.artifacts import RedactedBundleError, read_recorded_tool_log
+from tolokaforge.core.output_writer import METRICS_FILENAME, TRAJECTORY_FILENAME
 
 __all__ = [
     "TRACE_CHECKS_RESULT_FILENAME",
@@ -603,7 +604,7 @@ def _is_a_call_id_defect(error: ErrorDetails) -> bool:
 
 
 def _unreadable_trajectory(bundle: Path, error: ValidationError) -> MissingTraceReplayInputError:
-    detail = f"{bundle / 'trajectory.yaml'} did not validate: {error}"
+    detail = f"{bundle / TRAJECTORY_FILENAME} did not validate: {error}"
     if not any(_is_a_call_id_defect(item) for item in error.errors()):
         return MissingTraceReplayInputError(detail)
     return MissingTraceReplayInputError(
@@ -621,10 +622,10 @@ def _load_trajectory(bundle: Path) -> tuple[Trajectory, bool]:
     tool-call record from the ``tool_log.yaml`` sidecar — so what this returns is
     whatever the writer wrote, never a reconstruction of it.
     """
-    persisted = _load_yaml_mapping(bundle / "trajectory.yaml")
+    persisted = _load_yaml_mapping(bundle / TRAJECTORY_FILENAME)
     if persisted is None:
         raise MissingTraceReplayInputError(
-            f"no transcript: {bundle / 'trajectory.yaml'} is missing or not a mapping"
+            f"no transcript: {bundle / TRAJECTORY_FILENAME} is missing or not a mapping"
         )
     try:
         record, tool_log_present = read_recorded_tool_log(bundle)
@@ -714,11 +715,11 @@ def _recorded_grade(bundle: Path) -> _RecordedGrade:
 
 def _schema_version(bundle: Path) -> int | None:
     """The bundle's schema stamp, ``None`` where the bundle predates the stamp."""
-    stamped = (_carried_mapping(bundle / "metrics.yaml") or {}).get("schema_version")
+    stamped = (_carried_mapping(bundle / METRICS_FILENAME) or {}).get("schema_version")
     if stamped is None or (isinstance(stamped, int) and not isinstance(stamped, bool)):
         return stamped
     raise MissingTraceReplayInputError(
-        f"{bundle / 'metrics.yaml'} stamps schema_version {stamped!r}, which is not a "
+        f"{bundle / METRICS_FILENAME} stamps schema_version {stamped!r}, which is not a "
         "version number, so the bundle cannot say which artifacts it carries"
     )
 
@@ -1096,6 +1097,12 @@ class TraceReplayEvidence(BaseModel):
     run also does. ``schema_versions`` counts the stamps seen, under ``unstamped``
     where a bundle predates the stamp; it is evidence and never a gate.
 
+    ``bundles_predating_call_ids`` and ``bundles_redacted`` are both subsets of
+    ``bundles_failed``, separated because neither is damage: the first is a corpus
+    older than the ids a re-check joins on, the second an intact bundle a policy
+    rewrote before it was written. Reading them out of ``bundles_failed`` alone
+    sends an operator looking for a broken file.
+
     ``bundles_skipped`` counts the bundles that declared no ``trace_checks`` and
     nothing else. A bundle carrying no ``task.yaml`` is counted by
     ``bundles_no_task`` instead: what an aborted trial could not say about a pack
@@ -1109,6 +1116,7 @@ class TraceReplayEvidence(BaseModel):
     bundles_no_task: int
     bundles_failed: int
     bundles_predating_call_ids: int
+    bundles_redacted: int
     schema_versions: dict[str, int]
 
     model_config = {"extra": "forbid"}
@@ -1351,6 +1359,9 @@ def _replay_evidence(outcomes: Sequence[TrialTraceReplayOutcome]) -> TraceReplay
         ),
         bundles_predating_call_ids=sum(
             1 for outcome in outcomes if outcome.failure is TraceReplayFailure.PREDATES_CALL_IDS
+        ),
+        bundles_redacted=sum(
+            1 for outcome in outcomes if outcome.failure is TraceReplayFailure.REDACTED_BUNDLE
         ),
         schema_versions=dict(stamps),
     )

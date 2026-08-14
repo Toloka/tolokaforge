@@ -88,8 +88,9 @@ carries a `redaction` stamp was rewritten by a policy before it was written, so 
 arguments a constraint would match are not the arguments the agent sent — and a
 constraint scored against them fails as *decided*, which is a confident wrong answer
 rather than an undecided one. The refusal is counted under its own
-`redacted_bundle` disposition: the bundle is intact, and reporting it as an
-unreadable input would send an operator looking for damage there is none of.
+`redacted_bundle` disposition, counted in the report's evidence block as
+`bundles_redacted` beside `bundles_failed`: the bundle is intact, and reporting it
+as an unreadable input would send an operator looking for damage there is none of.
 
 ## What gets re-checked
 

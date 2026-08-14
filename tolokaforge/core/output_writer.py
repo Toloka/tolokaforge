@@ -43,9 +43,16 @@ METRICS_FILENAME = "metrics.yaml"
 TRAJECTORY_FILENAME = "trajectory.yaml"
 """The bundle's message trace."""
 
+ENV_FILENAME = "env.yaml"
+"""The trial's final environment state."""
+
 JUDGE_TRAJECTORY_FILENAME = "judge_trajectory.yaml"
 """The rubric judge's own transcript. Withheld under a redacting policy — it
 renders the agent's arguments into prose a key-name rule cannot reach."""
+
+JUDGE_INPUTS_FILENAME = "judge_inputs.yaml"
+"""The judge's non-derivable ``run()`` inputs. Withheld under a redacting policy
+for the same reason as the transcript — ``state_diff_text`` renders values."""
 
 
 def _represent_multiline_str(dumper, data):
@@ -90,13 +97,14 @@ class OutputWriter:
         # Trial-scoped: one writer per trial directory, so a second trial's
         # stamp cannot name the first trial's artifacts.
         self._rewritten: set[str] = set()
+        self._omitted: set[str] = set()
 
     @property
     def _redacting(self) -> bool:
         return self.redaction.name is not RedactionPolicyName.NONE
 
     def _note_rewritten(self, artifact: str) -> None:
-        """Record that *artifact* was written with the policy applied.
+        """Record that *artifact* was written with the policy applied, and declare it.
 
         Accumulated rather than declared statically: the provision-failure path
         writes no ``tool_log.yaml``, and a stamp naming a file the bundle lacks
@@ -104,18 +112,44 @@ class OutputWriter:
         """
         if self._redacting:
             self._rewritten.add(artifact)
+            self._declare()
 
-    def _withheld(self, trajectory: Trajectory) -> list[str]:
-        """The artifacts this policy suppresses rather than rewrites.
+    def _note_withheld(self, artifact: str) -> None:
+        """Record that the policy suppressed *artifact* rather than rewriting it."""
+        if self._redacting:
+            self._omitted.add(artifact)
+            self._declare()
 
-        Derived from the trajectory, not from what is already on disk:
-        ``write_metrics`` runs before ``write_grade``, so the sidecar's absence
-        is not yet observable when the stamp is built. ``grade`` is ``None`` on
-        the provision-failure path, which never reaches ``write_grade`` at all.
+    def _declare(self) -> None:
+        """Put the current stamp into ``metrics.yaml``, creating the file if needed.
+
+        The declaration belongs to the writer rather than to :meth:`write_metrics`:
+        a caller writing only some of the bundle — the replay path writes a grade
+        and nothing else — must still leave a bundle that says a policy touched it,
+        or an unstamped rewritten bundle reads as faithful. Merged into whatever
+        the header already holds, because the stamp grows as the bundle is written
+        and ``write_grade`` runs after ``write_metrics``.
         """
-        if self._redacting and trajectory.grade and trajectory.grade.judge_transcript:
-            return [JUDGE_TRAJECTORY_FILENAME]
-        return []
+        path = self.output_dir / METRICS_FILENAME
+        metrics: dict[str, Any] = {}
+        if path.exists():
+            carried = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if not isinstance(carried, dict):
+                raise ValueError(
+                    f"{path} holds {type(carried).__name__} where a mapping belongs, so this "
+                    "bundle cannot declare what the redaction policy did to it"
+                )
+            metrics = carried
+        metrics["redaction"] = self._stamp().model_dump(mode="json")
+        with open(path, "w") as f:
+            yaml.dump(metrics, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    def _stamp(self) -> RedactionStamp:
+        return RedactionStamp(
+            policy=self.redaction.name,
+            artifacts=sorted(self._rewritten),
+            omitted=sorted(self._omitted),
+        )
 
     def write_task_info(self, task_config: dict[str, Any]):
         """Write task.yaml — the caller's task snapshot, serialised whole
@@ -213,13 +247,24 @@ class OutputWriter:
         self._note_rewritten(TOOL_LOG_FILENAME)
 
     def write_env_state(self, env_state: dict[str, Any]):
-        """Write env.yaml with final environment state
+        """Write env.yaml with final environment state, through the policy
+
+        The snapshot is a plain mapping the adapter composed, so the same
+        key-name rule reaches it — an environment that ends holding the
+        credential the agent was issued names it under a key the rule reads.
 
         Args:
             env_state: Final environment state dictionary
         """
-        with open(self.output_dir / "env.yaml", "w") as f:
-            yaml.dump(env_state, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        with open(self.output_dir / ENV_FILENAME, "w") as f:
+            yaml.dump(
+                self.redaction.redact_arguments(env_state),
+                f,
+                default_flow_style=False,
+                allow_unicode=True,
+                sort_keys=False,
+            )
+        self._note_rewritten(ENV_FILENAME)
 
     def write_metrics(self, trajectory: Trajectory):
         """Write metrics.yaml with performance metrics and tool usage
@@ -257,11 +302,7 @@ class OutputWriter:
         ]
 
         if self._redacting:
-            metrics_data["redaction"] = RedactionStamp(
-                policy=self.redaction.name,
-                artifacts=sorted(self._rewritten),
-                omitted=self._withheld(trajectory),
-            ).model_dump(mode="json")
+            metrics_data["redaction"] = self._stamp().model_dump(mode="json")
 
         with open(self.output_dir / METRICS_FILENAME, "w") as f:
             yaml.dump(
@@ -276,8 +317,11 @@ class OutputWriter:
         the full verdict in one scannable file. The judge's message transcript —
         often kilobytes of tool calls and inspection — is split into a sibling
         ``judge_trajectory.yaml`` (mirroring the ``trajectory.yaml`` /
-        ``prompts.yaml`` split), so it never bloats the grade file. See
-        docs/OUTPUT_FORMAT.md.
+        ``prompts.yaml`` split), so it never bloats the grade file. Both judge
+        sidecars are withheld under a redacting policy, which is what the *grade
+        handed here* determines — the replay path grades a bundle with a grade
+        object of its own, so a stamp read off the trajectory would name the
+        wrong files. See docs/OUTPUT_FORMAT.md.
 
         Args:
             grade: Grade object with scores, reasons, judge usage / transcript
@@ -300,29 +344,33 @@ class OutputWriter:
         # redaction stamp is the discriminator, and names it under ``omitted``.
         # Gate on truthiness, not ``is not None`` — an empty transcript is not
         # worth a sidecar.
-        if grade.judge_transcript and not self._redacting:
-            with open(self.output_dir / JUDGE_TRAJECTORY_FILENAME, "w") as f:
-                yaml.dump(
-                    {"messages": grade.judge_transcript},
-                    f,
-                    default_flow_style=False,
-                    allow_unicode=True,
-                    sort_keys=False,
-                )
+        if grade.judge_transcript:
+            self._write_judge_sidecar(
+                JUDGE_TRAJECTORY_FILENAME, {"messages": grade.judge_transcript}
+            )
 
         # Sidecar: the judge's non-derivable run() inputs (state-diff string +
         # read-tool surface), only when a judge ran. Absent file ⇒ no judge inputs
-        # recorded for this trial. Kept out of grade.yaml (the diff can be large);
-        # replay reconstructs the judge's opening message from it.
+        # recorded for this trial, or a redacting policy withheld it — same
+        # discriminator. Kept out of grade.yaml (the diff can be large); replay
+        # reconstructs the judge's opening message from it.
         if grade.judge_inputs:
-            with open(self.output_dir / "judge_inputs.yaml", "w") as f:
-                yaml.dump(
-                    grade.judge_inputs.model_dump(mode="json"),
-                    f,
-                    default_flow_style=False,
-                    allow_unicode=True,
-                    sort_keys=False,
-                )
+            self._write_judge_sidecar(
+                JUDGE_INPUTS_FILENAME, grade.judge_inputs.model_dump(mode="json")
+            )
+
+    def _write_judge_sidecar(self, filename: str, payload: dict[str, Any]) -> None:
+        """Write a judge sidecar, or withhold it and declare that instead.
+
+        Both sidecars render the agent's arguments into prose — the transcript
+        quotes the calls, ``state_diff_text`` the values — which a key-name rule
+        cannot reach, so a redacting policy suppresses them whole.
+        """
+        if self._redacting:
+            self._note_withheld(filename)
+            return
+        with open(self.output_dir / filename, "w") as f:
+            yaml.dump(payload, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     def write_logs(self, logger: StructuredLogger):
         """Write logs.yaml from structured logger

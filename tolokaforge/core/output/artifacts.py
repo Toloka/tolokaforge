@@ -7,7 +7,8 @@ for the nine per-trial YAML files that make up a trial bundle:
 * ``trajectory.yaml`` — full message trace incl. reasoning blocks
 * ``tool_log.yaml`` — the trial's ordered tool-call record (sidecar; the
   grader's view of what each call did, which the message view cannot carry)
-* ``env.yaml`` — final env state snapshot
+* ``env.yaml`` — final env state snapshot (through the redaction policy, as
+  the argument-carrying artifacts are)
 * ``metrics.yaml`` — usage / latency / tool-call metrics
 * ``grade.yaml`` — pass / fail + score components, per-criterion
   rubric breakdown, judge_status + judge usage (omitted when the trial
@@ -184,12 +185,20 @@ def refuse_redacted_bundle(trial_dir: Path) -> None:
     stamp = bundle_redaction(trial_dir)
     if stamp is None:
         return
-    withheld = f", and withheld {', '.join(stamp.omitted)} entirely" if stamp.omitted else ""
+    # Either list can be empty: the judge-replay path withholds the judge sidecars
+    # and writes no argument-carrying artifact at all, so a stamp naming only
+    # ``omitted`` is a bundle this refusal still has to describe.
+    did: list[str] = []
+    if stamp.artifacts:
+        did.append(f"rewrote {', '.join(stamp.artifacts)}")
+    if stamp.omitted:
+        did.append(f"withheld {', '.join(stamp.omitted)} entirely")
     raise RedactedBundleError(
         f"{trial_dir} was written under the {stamp.policy.value} redaction policy, which "
-        f"rewrote {', '.join(stamp.artifacts)}{withheld}. The arguments it carries are not "
-        "the arguments the agent sent, so a verdict read off them would be confidently "
-        "wrong rather than undecided. Re-record the trial without redaction to grade it."
+        f"{' and '.join(did) or 'named no artifact of its own'}. The arguments it carries "
+        "are not the arguments the agent sent, so a verdict read off them would be "
+        "confidently wrong rather than undecided. Re-record the trial without redaction "
+        "to grade it."
     )
 
 

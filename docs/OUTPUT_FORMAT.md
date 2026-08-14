@@ -24,11 +24,11 @@ bumped and this document is updated in the same commit.
             ├── task.yaml
             ├── trajectory.yaml             ← message trace + status + metrics
             ├── tool_log.yaml               ← the trial's ordered tool-call record
-            ├── env.yaml
+            ├── env.yaml                    ← final env state (through the redaction policy)
             ├── metrics.yaml
             ├── grade.yaml                  ← only when the trial produced a grade
             ├── judge_trajectory.yaml       ← rubric-judge transcript (when an LLM judge ran; withheld under a redacting policy)
-            ├── judge_inputs.yaml           ← rubric-judge structured inputs for replay (only when an LLM judge ran)
+            ├── judge_inputs.yaml           ← rubric-judge structured inputs for replay (when an LLM judge ran; withheld under a redacting policy)
             ├── logs.yaml
             ├── prompts.yaml                ← agent + user-sim system prompts
             ├── tools_schemas.yaml          ← post-policy tool list
@@ -426,6 +426,13 @@ must keep apart:
 | absent | `([], False)` | the bundle carries no record; a check over `status`, `executor` or `latency_seconds` is undecidable on it |
 | `[]` | `([], True)` | the trial called no tool |
 
+There is a third outcome, decided before the file is touched at all: a bundle
+whose `metrics.yaml` carries a [`redaction`
+stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote) raises
+`RedactedBundleError`. The check precedes the read so a redacted bundle that
+wrote no `tool_log.yaml` is refused rather than read back as a trial that called
+nothing.
+
 Absence is the permanent shape of a bundle written before this artifact existed —
 not an error, and not the same fact as an empty trial. A present file that does
 not read as a list of recorded calls raises, naming the path — including the
@@ -471,6 +478,12 @@ environment:       # present only for manifest-driven trials (see below)
 
 Free-form snapshot of the environment state at trial end. Adapters /
 tasks control the shape; no schema version attached.
+
+It is a plain mapping, so a redacting artifact-write policy reaches it: values
+under credential-named keys are replaced at every nesting level, and the file is
+named in `metrics.yaml`'s [`redaction`
+stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote). Under the
+default policy the snapshot is written exactly as the adapter composed it.
 
 ### `environment` — resolved environment identity
 
@@ -621,21 +634,31 @@ Redaction). Under a redacting policy the writer stamps what it did:
 redaction:
   policy: sensitive_keys
   artifacts:
+    - env.yaml
     - tool_log.yaml
     - trajectory.yaml
   omitted:
+    - judge_inputs.yaml
     - judge_trajectory.yaml
 ```
 
 | Field | Meaning |
 |---|---|
 | `policy` | The policy that wrote this bundle, from a closed vocabulary (`sensitive_keys` is the only redacting member today) |
-| `artifacts` | The files this bundle carries whose tool-call arguments were rewritten, sorted |
-| `omitted` | The files the policy withheld entirely rather than rewrote |
+| `artifacts` | The files this bundle carries whose credential-named values were rewritten, sorted |
+| `omitted` | The files the policy withheld entirely rather than rewrote, sorted |
 
-`artifacts` is accumulated as each file is written, not declared ahead of time, so
-it names only files the bundle actually holds — on the [provision-failure
-bundle](#provision-failure-bundle) it is `[trajectory.yaml]` alone.
+Both lists are accumulated as the bundle is written, not declared ahead of time,
+so they name only files this bundle actually holds — on the [provision-failure
+bundle](#provision-failure-bundle) `artifacts` is `[trajectory.yaml]` alone.
+
+**The stamp is a property of the writer.** The moment a policy rewrites or
+withholds anything, the writer puts the stamp here — creating `metrics.yaml`
+where the caller writes no metrics of its own, which is what judge replay does
+when it writes a grade and its provenance into a replay directory. A bundle whose
+`artifacts` list is empty and whose `omitted` list is not is that case: nothing
+was rewritten because no argument-carrying artifact was written, and the judge
+sidecars were withheld.
 
 **A stamped bundle is refused by every offline grading command.** The arguments it
 carries are not the arguments the agent sent, so a trace-check constraint over a
@@ -1265,8 +1288,14 @@ most useful debugging artifact.
 
 ## `trials/{task_id}/{trial_index}/judge_inputs.yaml`
 
-The rubric judge's non-derivable `run()` inputs — written **only** when an
-LLM judge ran (absent file ⇒ no judge inputs for this trial). This is the
+The rubric judge's non-derivable `run()` inputs — written when an LLM judge ran,
+and withheld under a redacting artifact-write policy. So an absent file has two
+readings, and `metrics.yaml`'s [`redaction`
+stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote) is the
+discriminator, exactly as for `judge_trajectory.yaml`: no stamp ⇒ no judge inputs
+for this trial; a stamp naming this file under `omitted` ⇒ they exist and were
+withheld. It is withheld rather than rewritten because `state_diff_text` renders
+values into prose a key-name rule cannot reach. This is the
 record an offline **judge replay** reads to re-execute the judge over the
 recorded trajectory without live services: everything else the judge
 consumed is already structured elsewhere (the transcript in

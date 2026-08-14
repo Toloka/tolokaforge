@@ -60,7 +60,11 @@ from tolokaforge.core.grading.trace_replay import (
 )
 from tolokaforge.core.models import JudgeStatus, RecordedToolCall, ToolExecutionStatus
 from tolokaforge.core.output.artifacts import RedactedBundleError, read_recorded_tool_log
-from tolokaforge.core.output_writer import TOOL_LOG_FILENAME
+from tolokaforge.core.output_writer import (
+    METRICS_FILENAME,
+    TOOL_LOG_FILENAME,
+    TRAJECTORY_FILENAME,
+)
 
 __all__ = [
     "CORPUS_CARRIED_FILES",
@@ -80,10 +84,10 @@ __all__ = [
 #: The manifest a corpus directory carries, and what makes a directory one.
 CORPUS_MANIFEST_FILENAME = "corpus.yaml"
 #: Written for every admitted bundle — the admission rule guarantees all three.
-CORPUS_REQUIRED_FILES = ("task.yaml", "trajectory.yaml", "grade.yaml")
+CORPUS_REQUIRED_FILES = ("task.yaml", TRAJECTORY_FILENAME, "grade.yaml")
 #: Written where the source bundle carries them. ``tool_log.yaml``'s absence changes
 #: what a constraint can read, so the manifest records it per bundle as well.
-CORPUS_CARRIED_FILES = ("tools_schemas.yaml", "metrics.yaml", TOOL_LOG_FILENAME)
+CORPUS_CARRIED_FILES = ("tools_schemas.yaml", METRICS_FILENAME, TOOL_LOG_FILENAME)
 
 #: The subdirectory a run keeps its trials under: ``<run-id>/trials/<task-id>/<index>``.
 _RUN_TRIALS_DIRNAME = "trials"

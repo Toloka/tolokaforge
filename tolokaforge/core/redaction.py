@@ -38,7 +38,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
@@ -93,8 +93,10 @@ class RedactionPolicyName(str, Enum):
 class RedactionPolicy(Protocol):
     """What a writer needs from a redaction policy.
 
-    ``name`` is read-only so a frozen dataclass satisfies it — a plain
-    annotation would declare a settable variable and reject one.
+    ``name`` is a class-level constant on each policy, declared read-only here so
+    that a policy cannot be constructed claiming a name other than the one it
+    implements — a rewriting policy stamping ``none`` is the one shape a bundle's
+    reader could not detect.
     """
 
     @property
@@ -111,7 +113,7 @@ class RedactionPolicy(Protocol):
 class NoRedaction:
     """The default: arguments reach disk exactly as the agent sent them."""
 
-    name: RedactionPolicyName = RedactionPolicyName.NONE
+    name: ClassVar[RedactionPolicyName] = RedactionPolicyName.NONE
 
     def redact_arguments(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         return dict(arguments)
@@ -121,7 +123,7 @@ class NoRedaction:
 class SensitiveKeyRedaction:
     """Replace values under credential-named keys, at every nesting level."""
 
-    name: RedactionPolicyName = RedactionPolicyName.SENSITIVE_KEYS
+    name: ClassVar[RedactionPolicyName] = RedactionPolicyName.SENSITIVE_KEYS
 
     def redact_arguments(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         return _redact_mapping(arguments)

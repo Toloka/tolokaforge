@@ -67,6 +67,11 @@ from tolokaforge.core.output.artifacts import (
     TrialArtifactWriter,
     refuse_redacted_bundle,
 )
+from tolokaforge.core.output_writer import (
+    ENV_FILENAME,
+    JUDGE_INPUTS_FILENAME,
+    TRAJECTORY_FILENAME,
+)
 from tolokaforge.runner.models import LLMJudgeConfig, Rubric
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
@@ -528,7 +533,7 @@ def _offline_read_surface(
                 extra.append(_OfflineReadTool(name, "workspace"))
             elif name not in ("get_db_state", "query_db"):
                 extra.append(_OfflineReadTool(name, name))
-    elif (trial_dir / "env.yaml").exists():
+    elif (trial_dir / ENV_FILENAME).exists():
         db_reader = OfflineDBReader()
 
     gating = kb_gating or {}
@@ -576,9 +581,11 @@ def read_replay_inputs(
         raise MissingReplayInputError(
             f"no agent policy: {trial_dir / 'prompts.yaml'} is missing or not a mapping"
         )
-    trajectory_raw = _load_yaml(trial_dir / "trajectory.yaml")
+    trajectory_raw = _load_yaml(trial_dir / TRAJECTORY_FILENAME)
     if trajectory_raw is None:
-        raise MissingReplayInputError(f"no transcript: {trial_dir / 'trajectory.yaml'} is missing")
+        raise MissingReplayInputError(
+            f"no transcript: {trial_dir / TRAJECTORY_FILENAME} is missing"
+        )
 
     rubric_override = grading_override.rubric if grading_override is not None else None
     rubric, rubric_source = _resolve_rubric(task, rubric_override)
@@ -595,7 +602,7 @@ def read_replay_inputs(
     wire = encode_transcript_wire(trajectory, recorded_agent_prompt)
     if wire is None:
         raise MissingReplayInputError(
-            f"no transcript: {trial_dir / 'trajectory.yaml'} has no messages and no agent prompt"
+            f"no transcript: {trial_dir / TRAJECTORY_FILENAME} has no messages and no agent prompt"
         )
     agent_system_prompt, transcript = split_leading_system_message(json.loads(wire))
 
@@ -640,7 +647,7 @@ def read_replay_inputs(
 
 
 def _load_judge_inputs(trial_dir: Path) -> JudgeInputs | None:
-    raw = _load_yaml(trial_dir / "judge_inputs.yaml")
+    raw = _load_yaml(trial_dir / JUDGE_INPUTS_FILENAME)
     return JudgeInputs.model_validate(raw) if raw is not None else None
 
 
@@ -792,10 +799,10 @@ def _no_grade_reason(trial_dir: Path) -> str:
     bundle that cannot say what happened to it is a different state from one that
     says nothing was graded.
     """
-    recorded = _carried_mapping(trial_dir / "trajectory.yaml")
+    recorded = _carried_mapping(trial_dir / TRAJECTORY_FILENAME)
     if recorded is None:
         raise MissingReplayInputError(
-            f"no recorded outcome: {trial_dir / 'trajectory.yaml'} is missing, so a bundle "
+            f"no recorded outcome: {trial_dir / TRAJECTORY_FILENAME} is missing, so a bundle "
             "carrying no grade cannot say why it carries none"
         )
     trajectory = Trajectory.model_validate(recorded)

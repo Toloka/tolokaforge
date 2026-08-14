@@ -1,10 +1,10 @@
 """A bundle that says it was redacted is refused by every offline grading command.
 
-**The stamps here are written by hand on purpose.** Nothing in the tree writes one
-yet — the writer arrives in a later commit. Landing the refusal first is what makes
-it impossible for any commit on this branch to leave a redacted bundle silently
-gradeable, and a hand-written stamp is the only way to express that intent before a
-producer exists.
+**The stamps here are written by hand on purpose.** That is what lets this file
+assert the refusal over stamps the writer would never produce — malformed, naming
+a policy nothing implements, carrying a key the model does not define. The bundle
+the production writer actually leaves is refused in
+``test_redaction_at_artifact_write.py``.
 
 What each claim carries:
 
@@ -15,9 +15,10 @@ What each claim carries:
 2. **Each of the four refuses a stamped bundle by name.** The assertion is the
    operator-visible *message*, not the exit code: an unreadable bundle already exits
    non-zero, so an exit-code assertion would pass for the wrong reason.
-3. **``retrace`` counts the refusal as its own disposition**, not as an unreadable
-   input — the bundle is intact, and telling an operator otherwise sends them to
-   look for damage there is none of.
+3. **``retrace`` counts the refusal as its own disposition** — in the outcome and
+   in the report's evidence block — never as an unreadable input; the bundle is
+   intact, and telling an operator otherwise sends them to look for damage there
+   is none of.
 4. **An unstamped bundle is untouched** — the control that stops a gate which
    refuses everything from passing every claim above.
 5. **A stamp that does not read raises**, rather than being taken for an absent one.
@@ -39,6 +40,7 @@ from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.grading.trace_replay import (
     TraceReplayFailure,
     TraceReplayOutcomeStatus,
+    build_trace_replay_report,
     run_trace_replay_batch,
 )
 from tolokaforge.core.logging import StructuredLogger
@@ -306,6 +308,28 @@ class TestTheRefusalIsCountedAsItself:
 
         assert outcome.status is TraceReplayOutcomeStatus.FAILED
         assert outcome.failure is TraceReplayFailure.REDACTED_BUNDLE
+
+    def test_the_persisted_report_counts_it_apart_from_a_broken_bundle(
+        self, run_dir: Path, bundle: Path
+    ) -> None:
+        """``bundles_failed`` alone cannot tell an intact refused bundle from a
+        damaged one, and the report is what a caller gates on."""
+        _stamp(bundle, _redacted_stamp())
+
+        outcomes = run_trace_replay_batch(run_dir, replay_id="canon", dry_run=True)
+        report = build_trace_replay_report(outcomes, declared={}, source=run_dir, replay_id="canon")
+
+        assert report is not None
+        assert report.evidence.bundles_failed == 1
+        assert report.evidence.bundles_redacted == 1
+        assert report.evidence.bundles_predating_call_ids == 0
+
+    def test_an_unstamped_corpus_counts_none_redacted(self, run_dir: Path) -> None:
+        outcomes = run_trace_replay_batch(run_dir, replay_id="canon", dry_run=True)
+        report = build_trace_replay_report(outcomes, declared={}, source=run_dir, replay_id="canon")
+
+        assert report is not None
+        assert report.evidence.bundles_redacted == 0
 
     def test_curate_names_redaction_rather_than_an_unreadable_record(
         self, run_dir: Path, bundle: Path, tmp_path: Path

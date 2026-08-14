@@ -11,6 +11,7 @@ import pytest
 from tolokaforge.core.redaction import (
     REDACTED_PLACEHOLDER,
     NoRedaction,
+    RedactionPolicyName,
     SensitiveKeyRedaction,
     key_is_sensitive,
 )
@@ -97,3 +98,17 @@ class TestNoRedaction:
         result = NoRedaction().redact_arguments({"api_token": "sk-live-abc123"})
 
         assert result == {"api_token": "sk-live-abc123"}
+
+
+class TestAPolicyCannotBeConstructedUnderAnotherPolicysName:
+    """The one stamp a bundle's reader could not detect is a policy that rewrote
+    the bundle while naming itself ``none``, so the name is not a settable field."""
+
+    @pytest.mark.parametrize("policy", [NoRedaction, SensitiveKeyRedaction])
+    def test_the_name_is_not_a_constructor_argument(self, policy: type) -> None:
+        with pytest.raises(TypeError):
+            policy(name=RedactionPolicyName.NONE)
+
+    def test_each_policy_answers_with_its_own_name(self) -> None:
+        assert NoRedaction().name is RedactionPolicyName.NONE
+        assert SensitiveKeyRedaction().name is RedactionPolicyName.SENSITIVE_KEYS

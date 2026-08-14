@@ -170,7 +170,8 @@ def _evidence_line(report: TraceReplayReport) -> str:
         f"{evidence.bundles_skipped} skipped, "
         f"{evidence.bundles_no_task} with no task snapshot, "
         f"{evidence.bundles_failed} failed, "
-        f"{evidence.bundles_predating_call_ids} predating call ids"
+        f"{evidence.bundles_predating_call_ids} predating call ids, "
+        f"{evidence.bundles_redacted} redacted"
         + (f"; bundle schema versions {stamps}" if stamps else "")
     )
 

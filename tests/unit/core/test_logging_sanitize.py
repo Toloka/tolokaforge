@@ -35,51 +35,12 @@ class TestReservedKeyRename:
 
 
 class TestSensitiveKeyRedaction:
-    @pytest.mark.parametrize(
-        "key",
-        [
-            "password",
-            "api_key",
-            "apikey",
-            "API_KEY",
-            "token",
-            "access_token",
-            "api_token",
-            "authorization",
-            "user_secret",
-            "credential",
-            "credentials",
-            "openai_api_key",
-        ],
-    )
-    def test_sensitive_key_value_is_redacted(self, key: str) -> None:
-        result = StructuredLogger._sanitize_extra({key: "sk-abc123"})
+    """What the log path does with the vocabulary's answer.
 
-        assert result[key] == REDACTED_PLACEHOLDER
-
-    @pytest.mark.parametrize(
-        "key",
-        [
-            "user_id",
-            "trial_id",
-            "model_name",
-            "provider",
-            "duration",
-            "count",
-            # Telemetry keys ending in `_tokens` are NOT credentials — the
-            # `token`/`access_token` exact-form set redacts on word-boundary
-            # matches only. Regression guard: if the redactor widens back
-            # to substring `token`, these red.
-            "max_tokens",
-            "total_tokens",
-            "prompt_tokens",
-            "completion_tokens",
-        ],
-    )
-    def test_non_sensitive_key_value_is_kept(self, key: str) -> None:
-        result = StructuredLogger._sanitize_extra({key: 42})
-
-        assert result[key] == 42
+    Which key names answer which way is locked once, in
+    ``tests/unit/core/test_redaction.py`` — a second table here would go stale
+    against the first rather than catch anything it misses.
+    """
 
     def test_reserved_and_sensitive_combine_correctly(self) -> None:
         """A reserved-key rename followed by a sensitive-key match — the
