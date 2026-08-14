@@ -181,6 +181,12 @@ judge_only = "tolokaforge.core.trial_grader:judge_backed_trial_grader_factory"
 # Same call shape as runner_rpc, but bound to the grader service's address
 # instead of the runner's; enables independent deploy and independent scale.
 grader_rpc = "tolokaforge.core.trial_grader:grader_rpc_trial_grader_factory"
+# Fourth impl — queue-backed transport (ADR-0035 P3). Orchestrator worker
+# publishes a grade job and blocks on a Future; a pool of grader workers
+# consumes from the queue in parallel. Ships with an in-memory reference
+# broker; Redis Streams / RabbitMQ / SQS backends plug behind the same
+# GradeBroker Protocol as follow-ups.
+queue = "tolokaforge.core.trial_grader:queue_trial_grader_factory"
 
 [project.entry-points."tolokaforge.conductors"]
 in_process = "tolokaforge.core.conductor:in_process_conductor_factory"

@@ -148,7 +148,7 @@ def test_turn_policy_names_resolve_to_their_class() -> None:
 
 def test_available_listings_match_the_builtin_set() -> None:
     assert available_runtime_backends() == ["in_memory", "per_trial", "shared"]
-    assert available_trial_graders() == ["grader_rpc", "judge_only", "runner_rpc"]
+    assert available_trial_graders() == ["grader_rpc", "judge_only", "queue", "runner_rpc"]
     assert available_conductors() == ["in_memory", "in_process"]
     assert available_readiness_probes() == ["grpc", "http", "tcp"]
     assert available_turn_policies() == ["agent_only", "conversational"]
