@@ -123,16 +123,43 @@ harnesses:
     # gemini-cli's model catalog uses bare names.
     strip_vendor_namespace: true
     # gemini-cli speaks Google's native Gemini schema (`generateContent`),
-    # not OpenAI-compat, so an OpenRouter key does not authenticate its
-    # requests — pointing `GOOGLE_GEMINI_BASE_URL` at OpenRouter returns 400.
-    # The reference vendor-CLI invocation reads `GEMINI_API_KEY` and 401s otherwise
-    # (empirically verified: no matrix run of any pipeline ever produced a
-    # real gemini trajectory without a real Google AI Studio key).
-    # The operator supplies `GEMINI_API_KEY=<google-key>` in `.env`; the
-    # secret ref below is honest about what is required. Without the secret,
-    # SecretManager fails at trial start (loudly), which is the right shape:
-    # a run measuring a model against a laptop the operator can't
-    # authenticate would silently degrade to the baseline container score.
+    # not OpenAI-compat, so the CLI cannot be pointed at OpenRouter:
+    #
+    # 1. OpenRouter exposes only OpenAI-compat (`/chat/completions`) and
+    #    Anthropic-compat (`/messages`) surfaces. There is no
+    #    `POST /v1beta/models/{model}:generateContent` endpoint (confirmed
+    #    against OpenRouter's own API reference, and explicitly declined
+    #    upstream at github.com/google-gemini/gemini-cli/issues/1515).
+    # 2. `@google/gemini-cli@0.55.1`'s bundle has zero code paths that
+    #    emit OpenAI-schema requests (grep on `dist/main.mjs`:
+    #    `chat/completions` → 0 hits, `openai.com` → 0 hits). All six
+    #    auth types — `USE_GEMINI`, `USE_VERTEX_AI`, `LOGIN_WITH_GOOGLE`,
+    #    `COMPUTE_ADC`, `LEGACY_CLOUD_SHELL`, `GATEWAY` — call
+    #    `new GoogleGenAI(...)` which hardcodes the `generateContent`
+    #    wire protocol. The `GATEWAY` mode reached via
+    #    `GOOGLE_GEMINI_BASE_URL` still speaks Google's schema, just to a
+    #    different endpoint.
+    #
+    # The operator must supply a Google-issued credential — the
+    # secret ref below is honest about that. Without it, SecretManager
+    # fails loudly at trial start, which is the right shape: a run
+    # measuring a model the operator can't authenticate would silently
+    # degrade to the baseline container score.
+    #
+    # `GEMINI_CLI_TRUST_WORKSPACE=true` is mandatory: without it, `--yolo`
+    # is silently demoted to "default" mode in an untrusted workspace and
+    # the CLI blocks every tool call. `~/.gemini/settings.json` is
+    # emitted with `security.auth.selectedType` pinned to `gemini-api-key`
+    # because gemini-cli's headless `--prompt` mode 400s with "Invalid
+    # auth method selected" without a pre-pinned auth type — auto-
+    # detection breaks in the same non-interactive path we run in.
+    # `experimental.skills: true` matches the reference vendor-CLI
+    # invocation's baseline settings write.
+    container_env:
+      GEMINI_CLI_TRUST_WORKSPACE: "true"
+    config_files:
+      "/root/.gemini/settings.json": |-
+        {"security":{"auth":{"selectedType":"gemini-api-key"}},"experimental":{"skills":true}}
     provider_env:
       GEMINI_API_KEY: "${secret:GEMINI_API_KEY}"
 

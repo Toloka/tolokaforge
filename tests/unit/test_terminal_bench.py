@@ -1292,11 +1292,19 @@ class TestHarnessCommand:
         ]
 
     def test_gemini_argv_shape(self):
+        """The CLI portion, after the config_files preamble's final ``&&``,
+        matches the pinned shape. The preamble emits
+        ``~/.gemini/settings.json`` before invoking the CLI — gemini-cli's
+        headless ``--prompt`` mode 400s without a pre-pinned
+        ``security.auth.selectedType``."""
         import shlex
 
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        assert shlex.split(harness_command("gemini-cli", "do it", "google/gemini-2.5-flash")) == [
+        _, _, cli = harness_command("gemini-cli", "do it", "google/gemini-2.5-flash").rpartition(
+            " && "
+        )
+        assert shlex.split(cli) == [
             "gemini",
             "--model",
             "gemini-2.5-flash",
@@ -1322,16 +1330,21 @@ class TestHarnessCommand:
         assert "auth.json" in preamble
         assert "OPENAI_API_KEY" in preamble
 
-    def test_gemini_has_no_preamble_no_stdin(self):
-        """A CLI without config_files, without env_model_vars, and with
-        argv-channel instruction publishes the CLI command alone — no shell
-        scaffolding for readers of the metadata to peel off."""
+    def test_gemini_uses_argv_instruction_not_stdin(self):
+        """gemini-cli reads the instruction from a positional argument
+        after ``--prompt``, not from stdin. The command scaffolds the
+        settings.json emission but never pipes the instruction — every
+        stdin marker (``|`` between pipeline stages, ``&& printf %s
+        "$INSTRUCTION" | cli``) must be absent."""
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
         command = harness_command("gemini-cli", "go", "google/gemini-2.5-flash")
-        assert "&&" not in command
-        assert "printf" not in command
-        assert command.startswith("gemini ")
+        # No stdin pipe into the CLI itself. The `printf ... > file` in the
+        # preamble writes settings.json to disk (redirect, not pipe).
+        assert " | gemini" not in command
+        assert command.rstrip().endswith(
+            " go"
+        ), "instruction must sit as the trailing positional argv token"
 
     def test_instruction_is_one_shell_argument(self):
         import shlex
@@ -1509,7 +1522,10 @@ class TestModelFlagStyle:
 
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        argv = shlex.split(harness_command("gemini-cli", "go", "google/gemini-2.5-flash"))
+        _, _, cli = harness_command("gemini-cli", "go", "google/gemini-2.5-flash").rpartition(
+            " && "
+        )
+        argv = shlex.split(cli)
         assert argv[1:3] == ["--model", "gemini-2.5-flash"]
 
     def test_equals_style_is_one_argv_word(self):
