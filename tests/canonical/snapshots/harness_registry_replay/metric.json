@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 10,
+  "bucket_b_count": 11,
   "commits": [
     {
       "adapter_paths": [
@@ -1356,6 +1356,28 @@
         "tolokaforge/runner/compose_naming.py",
         "tolokaforge/runner/models.py",
         "tolokaforge/runner/tool_factory.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "docs/OUTPUT_FORMAT.md",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/fingerprint.py",
+        "tests/README.md",
+        "tests/unit/test_harness_fingerprint.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-14",
+      "pr": null,
+      "reason": "5 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "3420e7b470e07173be5894641ec92ecb8beded41",
+      "subject": "fix(tbench): reviewer nits \u2014 annotation hygiene + doc caveats + shared-recipe lock",
+      "touched_files": [
+        "docs/OUTPUT_FORMAT.md",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/fingerprint.py",
+        "tests/README.md",
+        "tests/unit/test_harness_fingerprint.py"
       ]
     },
     {
