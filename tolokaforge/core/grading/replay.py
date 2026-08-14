@@ -62,7 +62,11 @@ from tolokaforge.core.models import (
     TerminationReason,
     Trajectory,
 )
-from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
+from tolokaforge.core.output.artifacts import (
+    FileArtifactWriter,
+    TrialArtifactWriter,
+    refuse_redacted_bundle,
+)
 from tolokaforge.runner.models import LLMJudgeConfig, Rubric
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
@@ -559,7 +563,12 @@ def read_replay_inputs(
     when no agent prompt was set, so absence is a broken bundle, not a faithful
     empty prompt. Callers must classify the trial first — this is only valid
     for a judge-eligible trial.
+
+    Raises :class:`RedactedBundleError` for a bundle written under a redaction
+    policy: the judge would be shown arguments the agent never sent.
     """
+    refuse_redacted_bundle(trial_dir)
+
     task = _load_yaml(trial_dir / "task.yaml")
     grade = _load_yaml(trial_dir / "grade.yaml")
     prompts = _load_yaml(trial_dir / "prompts.yaml")

@@ -70,6 +70,7 @@ replaces.
 | a constraint separated nothing (`always_true`, `always_false`, `never_decided`, `undecided_in_part`, `not_measured`) | `0` |
 | a re-check disagrees with the verdict the live run recorded for that constraint | `0` |
 | a bundle cannot be classified or reconstructed | `1`, after the per-bundle lines and the report |
+| a bundle declares it was redacted before it was written | `1`, counted as `redacted_bundle` rather than as an unreadable input |
 | `--constraints` cannot be loaded, or fails the authoring gate | `1`, before any trial is re-checked; nothing is written |
 | `--source` holds no bundle at all | `1`, naming the source; nothing is loaded |
 | two bundles claim one task while declaring different `trace_checks` blocks | `1`, naming both; the batch ran, no report was written |
@@ -81,6 +82,14 @@ candidate expects to read `always_true` and keep working, and a CI job must not 
 red because a corpus turned out to be uninformative. A caller that needs to gate on
 them reads `trace_replay_report.yaml`, which carries every count. A gating mode would
 be a new explicit flag, not a change to this default.
+
+**A redacted bundle is refused, not re-checked.** A bundle whose `metrics.yaml`
+carries a `redaction` stamp was rewritten by a policy before it was written, so the
+arguments a constraint would match are not the arguments the agent sent — and a
+constraint scored against them fails as *decided*, which is a confident wrong answer
+rather than an undecided one. The refusal is counted under its own
+`redacted_bundle` disposition: the bundle is intact, and reporting it as an
+unreadable input would send an operator looking for damage there is none of.
 
 ## What gets re-checked
 

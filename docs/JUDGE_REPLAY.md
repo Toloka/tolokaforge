@@ -188,6 +188,10 @@ rubric-only override over a gated bundle reads `rubric_source: override` while
   persisted structurally), so a `state_diff`-influenced verdict may not reproduce.
   The fallback is stamped in `replay_provenance.yaml` (`fidelity_mode: fallback`),
   never applied silently.
+- **Redacted bundles do not replay at all.** A bundle whose `metrics.yaml` carries a
+  `redaction` stamp is refused by name before any judge spend: the transcript it
+  would rebuild carries argument values a policy rewrote, so the judge would be
+  shown — and would grade — evidence the agent never produced.
 
 ## Output
 

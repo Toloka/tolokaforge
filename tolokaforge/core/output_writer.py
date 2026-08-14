@@ -29,6 +29,11 @@ TOOL_LOG_FILENAME = "tool_log.yaml"
 """The bundle's tool-call record. Read back with
 :func:`tolokaforge.core.output.artifacts.read_recorded_tool_log`."""
 
+METRICS_FILENAME = "metrics.yaml"
+"""The bundle's header — what it carries, alongside the metrics themselves.
+:func:`tolokaforge.core.output.artifacts.bundle_redaction` reads its
+``redaction`` key."""
+
 
 def _represent_multiline_str(dumper, data):
     """Custom YAML representer for multiline strings
@@ -190,7 +195,7 @@ class OutputWriter:
             {"tool_name": name, **stats} for name, stats in sorted(tool_usage.items())
         ]
 
-        with open(self.output_dir / "metrics.yaml", "w") as f:
+        with open(self.output_dir / METRICS_FILENAME, "w") as f:
             yaml.dump(
                 metrics_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False
             )

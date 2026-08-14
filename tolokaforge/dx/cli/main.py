@@ -71,6 +71,7 @@ from tolokaforge.core.orchestrator import (
     OrchestratorDeps,
     resolve_run_directory,
 )
+from tolokaforge.core.output.artifacts import RedactedBundleError
 from tolokaforge.core.project_loader import (
     construct_config,
     find_project_yaml,
@@ -1076,15 +1077,18 @@ def rejudge(
     grading_override = load_grading_override(Path(grading)) if grading else None
 
     console.print(f"[bold blue]Re-judging trials under {source_path}...[/bold blue]")
-    outcomes = run_replay_batch(
-        source_path,
-        replay_id=replay_id,
-        trial=Path(trial) if trial else None,
-        grading_override=grading_override,
-        judge_model_override=judge_model,
-        knowledge_search=KnowledgeSearchMode(knowledge_search),
-        dry_run=dry_run,
-    )
+    try:
+        outcomes = run_replay_batch(
+            source_path,
+            replay_id=replay_id,
+            trial=Path(trial) if trial else None,
+            grading_override=grading_override,
+            judge_model_override=judge_model,
+            knowledge_search=KnowledgeSearchMode(knowledge_search),
+            dry_run=dry_run,
+        )
+    except RedactedBundleError as exc:
+        raise click.ClickException(str(exc)) from exc
     if not outcomes:
         raise click.ClickException(
             f"no trial bundle under {source_path} — a batch that discovered nothing "

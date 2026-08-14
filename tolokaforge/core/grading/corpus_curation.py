@@ -59,7 +59,7 @@ from tolokaforge.core.grading.trace_replay import (
     recorded_task_id,
 )
 from tolokaforge.core.models import JudgeStatus, RecordedToolCall, ToolExecutionStatus
-from tolokaforge.core.output.artifacts import read_recorded_tool_log
+from tolokaforge.core.output.artifacts import RedactedBundleError, read_recorded_tool_log
 from tolokaforge.core.output_writer import TOOL_LOG_FILENAME
 
 __all__ = [
@@ -341,6 +341,11 @@ def _read(bundle: Path, reader: Callable[[Path], Any]) -> Any:
 def _recorded_tool_calls(bundle: Path) -> tuple[list[RecordedToolCall], bool]:
     try:
         return read_recorded_tool_log(bundle)
+    except RedactedBundleError as exc:
+        raise CurationError(
+            f"{bundle} was redacted before it was written, so it is not evidence of what "
+            f"the agent did: {exc}"
+        ) from exc
     except ValueError as exc:
         raise CurationError(f"{bundle} carries an unreadable tool-call record: {exc}") from exc
 

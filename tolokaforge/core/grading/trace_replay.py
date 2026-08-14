@@ -61,7 +61,7 @@ from tolokaforge.core.models import (
     TraceConstraintResult,
     Trajectory,
 )
-from tolokaforge.core.output.artifacts import read_recorded_tool_log
+from tolokaforge.core.output.artifacts import RedactedBundleError, read_recorded_tool_log
 
 __all__ = [
     "TRACE_CHECKS_RESULT_FILENAME",
@@ -149,10 +149,15 @@ class TraceReplayFailure(str, Enum):
     is the one defect that is a property of the corpus's *age* rather than of a
     broken file: an operator reading ``NEVER_DECIDED`` off a corpus that lost
     bundles to it is reading a report about the harness, not about the constraint.
+
+    ``REDACTED_BUNDLE`` is separated for the mirror reason: the bundle is intact and
+    reads perfectly. It was rewritten on purpose, and an operator told its file is
+    unreadable would go looking for damage there is none of.
     """
 
     UNREADABLE_INPUT = "unreadable_input"
     PREDATES_CALL_IDS = "predates_call_ids"
+    REDACTED_BUNDLE = "redacted_bundle"
 
 
 class ConstraintDiscrimination(str, Enum):
@@ -623,6 +628,10 @@ def _load_trajectory(bundle: Path) -> tuple[Trajectory, bool]:
         )
     try:
         record, tool_log_present = read_recorded_tool_log(bundle)
+    except RedactedBundleError as exc:
+        raise MissingTraceReplayInputError(
+            str(exc), failure=TraceReplayFailure.REDACTED_BUNDLE
+        ) from exc
     except ValueError as exc:
         raise MissingTraceReplayInputError(str(exc)) from exc
     try:
