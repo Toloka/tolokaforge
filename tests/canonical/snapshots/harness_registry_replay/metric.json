@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 9,
+  "bucket_b_count": 10,
   "commits": [
     {
       "adapter_paths": [
@@ -1528,6 +1528,33 @@
       "subject": "fix(tbench): opencode ANTHROPIC_BASE_URL /v1 + kimi-code multi-turn docs (#1159)",
       "touched_files": [
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "docs/OUTPUT_FORMAT.md",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/fingerprint.py",
+        "tests/canonical/test_engine_run_state_harness_fingerprint.py",
+        "tests/unit/test_harness_fingerprint.py",
+        "tests/unit/test_terminal_bench.py",
+        "tests/utils/harness_plugins.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-14",
+      "pr": null,
+      "reason": "7 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "ea754e7050fd959d408358d8c9d189c500d47432",
+      "subject": "feat(tbench): a run names the harness registry it ran on",
+      "touched_files": [
+        "docs/OUTPUT_FORMAT.md",
+        "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/fingerprint.py",
+        "tests/canonical/test_engine_run_state_harness_fingerprint.py",
+        "tests/unit/test_harness_fingerprint.py",
+        "tests/unit/test_terminal_bench.py",
+        "tests/utils/harness_plugins.py"
       ]
     }
   ]
