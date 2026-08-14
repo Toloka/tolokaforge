@@ -61,7 +61,8 @@ actors:
       - If asked, confirm your site has no on-site cold storage and no receiving
         specialist on the late shift — but do NOT volunteer this unprompted.
       - Never name a resolution path or quote policy; that is the agent's job.
-      - Say ###STOP### once the agent confirms a resolution is recorded.
+      - Say ###STOP### once a resolution is recorded, or the agent tells you none
+        is available.
 policies:
   guidance:
     - "Reach each service by its base URL with the `http_request` tool: the delivery tracker, product catalog, and site info are read with GET; inspect DLV-4021 (delivery_id 4021), its product, and the Northwind site."

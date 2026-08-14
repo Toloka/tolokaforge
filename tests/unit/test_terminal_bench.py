@@ -1,12 +1,14 @@
 """Unit tests for terminal-bench adapter and Docker Compose exec wrapper."""
 
 import os
+import shutil
 import subprocess
 import tarfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from tolokaforge.docker.policy import Capability
 from tolokaforge.docker.stacks.core import core_stack
@@ -464,6 +466,42 @@ class TestTerminalBenchAdapterEnvironmentManifest:
         extra = td.agent_tools[0].source.extra
         env = adapter._environment("echo-hello")
         assert extra == {"service": env.agent_service, "compose_project_prefix": "tbench_"}
+
+
+class TestTerminalBenchAdapterInstructionlessTask:
+    """A pack whose instruction carries no text pins no opener, so the simulator
+    writes turn 1.
+
+    The key can be absent, null, or whitespace, and ``discover_tasks`` reports
+    all three as a blank instruction. A blank ``initial_user_message`` is a
+    task-contract error whose remedies — omit the key in ``task.yaml``, return
+    ``None`` from ``get_task()`` — a terminal-bench pack cannot carry out for
+    itself. The adapter must leave the field unset rather than forward the blank.
+    """
+
+    @pytest.mark.parametrize(
+        "task_yaml",
+        [
+            pytest.param({"difficulty": "easy"}, id="instruction_absent"),
+            pytest.param(
+                {"difficulty": "easy", "instruction": "   \n  "}, id="instruction_whitespace"
+            ),
+            pytest.param({"difficulty": "easy", "instruction": None}, id="instruction_null"),
+        ],
+    )
+    def test_get_task_leaves_initial_user_message_unset(self, tmp_path, task_yaml) -> None:
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        fixture_dir = Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+        tbench_dir = tmp_path / "tasks"
+        shutil.copytree(fixture_dir, tbench_dir)
+        (tbench_dir / "echo-hello" / "task.yaml").write_text(yaml.safe_dump(task_yaml))
+
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(tbench_dir), "staging_root": str(tmp_path / "staging")}
+        )
+
+        assert adapter.get_task("echo-hello").initial_user_message is None
 
 
 class TestTerminalBenchAdapterNoSubprocess:

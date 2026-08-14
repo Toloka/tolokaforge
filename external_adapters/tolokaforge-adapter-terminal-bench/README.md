@@ -343,11 +343,11 @@ it is invoked, so install order must not decide which agent a benchmark
 measures. Discovery is on by default and skipped entirely by
 `disable_harness_plugins: true`, for runs that must reproduce independently of
 what else is installed in the environment. See
-[ADR 0032](../../docs/adr/0032-external-harness-plugin-discovery.md).
+[ADR 0034](../../docs/adr/0034-external-harness-plugin-discovery.md).
 
 An operator ships their own entries without an adapter release by pointing
 `harness_presets_file` at a second YAML of the same shape — see
-[ADR 0031](../../docs/adr/0031-external-harness-registry.md) for the decision
+[ADR 0033](../../docs/adr/0033-external-harness-registry.md) for the decision
 record, which mirrors the operator-pointed preset file in
 [ADR 0002](../../docs/adr/0002-external-model-registry.md) for the model
 registry. Merging is

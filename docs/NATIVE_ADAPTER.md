@@ -77,7 +77,7 @@ description: >                           # optional — long description
 
 max_turns: 14                            # optional — overrides orchestrator default
 
-initial_user_message: >                  # optional — first message from user to agent
+initial_user_message: >                  # optional — pinned opener (see below)
   Hi! I'd like to buy 1 × Wireless Headphones …
 
 initial_state:
@@ -102,12 +102,13 @@ tools:
   user:
     enabled: []                          # tool names available to user simulator
 
-user_simulator:
-  mode: llm                             # llm | scripted
-  persona: cooperative                  # short persona label for the LLM
-  backstory: >                          # scenario description (revealed gradually to agent)
-    You are customer Alex Torres (C-101) …
-    When the assistant confirms, end with ###STOP###.
+actors:
+  user:
+    mode: llm                           # llm | scripted
+    persona: cooperative                # short persona label for the LLM
+    backstory: >                        # scenario description (revealed gradually to agent)
+      You are customer Alex Torres (C-101) …
+      When the assistant confirms, end with ###STOP###.
 
 policies:
   guidance:                             # optional — guidelines shown in system prompt
@@ -116,6 +117,14 @@ policies:
 grading: "grading.yaml"                 # path to grading file (relative to task dir)
 system_prompt: "system_prompt.md"       # path to system prompt file (relative to task dir)
 ```
+
+### initial_user_message
+
+The task's pinned opener. Its text is delivered verbatim as the first user
+message — leading and trailing whitespace included — and the user simulator
+generates no opening turn for that trial. Omit the key to have the simulator
+open the conversation instead. Declaring it blank is refused at load: an opener
+with no text has nothing to deliver.
 
 ### initial_state.json format
 

@@ -144,6 +144,28 @@ class ServiceDefinition(BaseModel):
         default="latest",
         description="Tag for prebuilt image",
     )
+    published_image_repo: str | None = Field(
+        default=None,
+        description=(
+            "Docker Hub repository that publishes this service's images, e.g. "
+            "'tolokasoft1/tolokaforge-runner'. When set, the pull-vs-build "
+            "policy on EngineStack.config.image_source can resolve to pulling "
+            "'{published_image_repo}:{engine_version}' instead of building "
+            "locally. When None, only the build path is available for this "
+            "service (task-declared services, third-party images, etc.)."
+        ),
+    )
+    published_image_platform: str = Field(
+        default="linux/amd64",
+        description=(
+            "Docker platform spec passed to Image.pull for this service's "
+            "published images. Defaults to linux/amd64 because that's what "
+            "publish-images.yml currently produces for every first-party "
+            "image; an arm64 host pulls the amd64 variant under emulation. "
+            "A service that publishes multi-arch or arm64-native images "
+            "overrides this per-service."
+        ),
+    )
     context_files: list[str | tuple[str, str]] = Field(
         default_factory=list,
         description="Explicit list of files/dirs to include in build context. "
@@ -320,12 +342,30 @@ class EngineStack(BaseModel):
         return images
 
     def _build_one_image(self, svc: ServiceDefinition, force: bool = False) -> Image | None:
-        """Build (or fetch) a single service's image.
+        """Build (or pull, or fetch) a single service's image.
 
-        Honors ``svc.context_files`` by assembling an isolated temp build
-        directory and cleaning it up after the build. Returns ``None`` only
-        when the service has neither a dockerfile nor a prebuilt image (a
-        misconfiguration the caller logs and skips).
+        Order of resolution:
+
+        1. ``use_prebuilt_image=True`` — third-party images the engine does
+           not own (``dind``, ``typesense``). Stubbed via ``Image(...,
+           context_hash="prebuilt")``; Docker pulls implicitly at
+           ``docker run`` time.
+        2. Pull path (only when ``force=False`` and the pull-policy
+           resolves to ``"pull"``). Requires ``svc.published_image_repo``
+           and a concrete engine version. On success returns an
+           :class:`Image` with ``context_hash="pulled"`` and the pulled
+           image already resident in the daemon. On failure in ``auto``
+           mode, falls through to the build path with a
+           ``logger.warning`` naming the failure kind; in explicit
+           ``pull`` mode, re-raises.
+        3. Local build via :meth:`Image.build` or the shared
+           :class:`ImageRegistry` cache (content-hash keyed).
+
+        Honors ``svc.context_files`` on the build path by assembling an
+        isolated temp build directory and cleaning it up after the build.
+        Returns ``None`` only when the service has neither a dockerfile
+        nor a prebuilt image (a misconfiguration the caller logs and
+        skips).
         """
         if svc.use_prebuilt_image:
             logger.info(
@@ -341,6 +381,26 @@ class EngineStack(BaseModel):
                 context=svc.context,
                 context_hash="prebuilt",
             )
+
+        # Pull path — resolved against DockerConfig.image_source and the
+        # service's declared published repo.
+        #
+        # ``force=True`` normally skips the pull (the caller wants a
+        # fresh build), BUT in explicit ``pull`` mode that would silently
+        # violate the pull-or-die contract — the operator explicitly
+        # asked for a pulled image. Raise instead so the caller sees the
+        # conflict.
+        if force and self.config.image_source == "pull":
+            raise ValueError(
+                f"force=True is incompatible with docker.image_source='pull' "
+                f"on service '{svc.name}': explicit pull mode refuses to "
+                f"build. Set image_source to 'auto' or 'build', or omit "
+                f"force=True."
+            )
+        if not force:
+            pulled = self._maybe_pull_service_image(svc)
+            if pulled is not None:
+                return pulled
 
         if not svc.dockerfile:
             logger.warning(
@@ -391,6 +451,93 @@ class EngineStack(BaseModel):
             context=svc.context,
             build_args=svc.build_args,
         )
+
+    def _maybe_pull_service_image(self, svc: ServiceDefinition) -> Image | None:
+        """Resolve the pull-vs-build policy for one service and try to pull.
+
+        Returns:
+            An :class:`Image` if the pull path resolved to ``"pull"`` AND
+            the pull actually succeeded. ``None`` when the caller should
+            fall through to the build path — either because the policy
+            resolved to ``"build"``, or because ``"pull"`` was tried and
+            failed under ``auto`` mode (fallback), so a warning was
+            emitted and control is being returned to the build path.
+
+        Raises:
+            ImagePullError: When the config resolves to explicit
+                ``"pull"`` mode and the pull attempt failed. The explicit
+                mode is a "pull or die" contract; hard-fail is the whole
+                point of choosing it.
+        """
+        # No published-repo declaration → no pull target. Task-declared
+        # services, third-party images, and any first-party service not
+        # yet wired up all take this branch. In explicit ``pull`` mode
+        # this is a contract violation (the operator asked for a pull
+        # but the service has nothing to pull from) — refuse rather than
+        # silently drop to build.
+        if svc.published_image_repo is None:
+            if self.config.image_source == "pull":
+                raise ValueError(
+                    f"docker.image_source='pull' but service '{svc.name}' "
+                    "has no published_image_repo declared. Nothing to pull. "
+                    "Either declare a published_image_repo on the "
+                    "ServiceDefinition, switch to image_source='auto' or "
+                    "'build', or exclude this service from the stack."
+                )
+            return None
+
+        import tolokaforge
+        from tolokaforge.docker.builder import repo_root
+        from tolokaforge.docker.image import ImagePullError
+        from tolokaforge.docker.image_source_policy import resolve_image_source
+
+        engine_version = tolokaforge.__version__
+        is_wheel_install = not (repo_root() / "pyproject.toml").is_file()
+
+        resolved = resolve_image_source(
+            request=self.config.image_source,
+            is_wheel_install=is_wheel_install,
+            engine_version=engine_version,
+        )
+        if resolved == "build":
+            return None
+
+        published_ref = f"{svc.published_image_repo}:{engine_version}"
+        logger.info(
+            "Pulling published image '%s' for service '%s' (policy: %s%s)",
+            published_ref,
+            svc.name,
+            self.config.image_source,
+            "" if self.config.image_source != "auto" else f", wheel_install={is_wheel_install}",
+        )
+        # Platform pinned per-service via published_image_platform (default
+        # linux/amd64 — the current publish-images.yml target). On arm64
+        # hosts an explicit platform override is required or docker will
+        # refuse the pull with "no matching manifest for linux/arm64/v8"
+        # even if it can emulate. Matches deploy/standalone/docker-
+        # compose.yaml's ``platform: ${TOLOKAFORGE_PLATFORM:-linux/amd64}``.
+        try:
+            return Image.pull(
+                name=svc.published_image_repo,
+                tag=engine_version,
+                platform=svc.published_image_platform,
+                log_label=svc.name,
+            )
+        except ImagePullError as exc:
+            if self.config.image_source == "pull":
+                # Explicit pull mode: hard-fail. The escape hatch means
+                # "I want the published image; refuse anything else."
+                raise
+            # auto mode: log-loud with the specific reason so an operator
+            # can act (e.g. add Docker Hub auth on 'rate_limited'), then
+            # fall through to the build path.
+            logger.warning(
+                "Pull of '%s' failed [%s]: %s. Falling back to local build.",
+                published_ref,
+                exc.kind,
+                exc,
+            )
+            return None
 
     # ── Network Management ──────────────────────────────────────────────
 
@@ -562,6 +709,28 @@ class EngineStack(BaseModel):
                 )
 
         return result
+
+    def _inspect_running_image(self, container_name: str) -> tuple[list[str], str | None]:
+        """Read the underlying image's tag list + daemon id for a container.
+
+        Returns ``([], None)`` on any failure — the caller treats that as
+        'we couldn't verify' and destroys the container to be safe.
+        Separate helper so the reuse-check comparison in ``_start_service``
+        stays readable and the raw ``docker`` client call is contained.
+        """
+        import docker as docker_lib
+
+        try:
+            client = docker_lib.from_env()
+            raw = client.containers.get(container_name)
+        except Exception:
+            return [], None
+        try:
+            tags = list(raw.image.tags or [])
+            image_id = raw.image.id
+        except Exception:
+            return [], None
+        return tags, image_id
 
     def _try_reuse_existing(
         self,
@@ -741,21 +910,39 @@ class EngineStack(BaseModel):
         component_id = build_component_id("engine", "docker.service", name)
 
         # ── Try to reuse an existing healthy container ──────────────
-        # Verify the running container's image tag matches the freshly-built
-        # tag; otherwise we'd silently keep a stale container after a build_arg
-        # change (e.g., enable_playwright on/off).
+        # Verify the running container's image matches the freshly-built
+        # or freshly-pulled image; otherwise we'd silently keep a stale
+        # container after a build_arg change (e.g., enable_playwright on/off).
+        #
+        # Reuse-check identity: match on either (a) daemon image id (uniquely
+        # identifies the image regardless of tags) OR (b) presence of our
+        # expected full_tag in the container image's tag list. The pull path
+        # aliases the underlying image with ``tolokaforge-runner:local`` on
+        # top of the pulled ``tolokasoft1/tolokaforge-runner:X.Y.Z`` tag; a
+        # single-slot ``existing.image.tags[0]`` compare could pick the alias
+        # in one run and the pulled tag in the next (Docker does not
+        # guarantee tag-list ordering), spuriously destroying healthy
+        # containers on every subsequent run.
         existing = self._try_reuse_existing(container_name, svc)
         if existing:
             reuse = False
             try:
-                running_image = existing.image_tag or ""
-                expected_image = image.full_tag
-                if running_image and running_image != expected_image:
+                expected_full_tag = image.full_tag
+                expected_image_id = image.image_id
+                actual_tags, actual_image_id = self._inspect_running_image(container_name)
+                tags_match = expected_full_tag in actual_tags
+                ids_match = bool(
+                    actual_image_id and expected_image_id and actual_image_id == expected_image_id
+                )
+                if not (tags_match or ids_match):
                     logger.info(
-                        "Existing container '%s' uses image '%s' but expected '%s' — recreating",
+                        "Existing container '%s' uses image (id=%s, tags=%s) but "
+                        "expected id=%s / full_tag='%s' — recreating",
                         container_name,
-                        running_image,
-                        expected_image,
+                        actual_image_id or "unknown",
+                        actual_tags or ["unknown"],
+                        expected_image_id or "unknown",
+                        expected_full_tag,
                     )
                     existing.destroy()
                 else:

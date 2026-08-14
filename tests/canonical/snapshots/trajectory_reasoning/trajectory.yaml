@@ -1,11 +1,12 @@
 task_id: canon-reasoning-001
 trial_index: 0
-simulator_schema_version: 2
+simulator_schema_version: 3
 start_ts: '2026-01-01T12:00:00+00:00'
 end_ts: '2026-01-01T12:00:00+00:00'
 status: completed
 termination_reason: null
 grading_error: null
+first_user_message_source: null
 messages:
 - role: user
   content: Hello
@@ -35,3 +36,4 @@ messages:
     budget_used: 512
     transport: null
   ts: '2026-01-01T12:00:00Z'
+user_reply_guard_events: []

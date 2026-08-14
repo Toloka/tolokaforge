@@ -92,6 +92,39 @@ provisioning them per the manifest's isolation rules. See
 [RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md) for
 the backend lifecycle.
 
+### Image resolution — pull vs build
+
+At `tolokaforge run` time the four first-party service images
+(`runner`, `db-service`, `rag-service`, `mock-web`) resolve through a
+`docker.image_source` policy with three values. Design rationale,
+alternatives considered, and the failure-mode contract are captured in
+[ADR-0031](adr/0031-pull-vs-build-default-for-service-images.md).
+
+| `docker.image_source` | Behavior |
+| --- | --- |
+| `auto` (default) | Pull the published `tolokasoft1/tolokaforge-<svc>:<engine_version>` image from Docker Hub when the engine is a wheel install (`pip install tolokaforge`); build locally from source when running from a repo checkout. Falls back to a local build on any pull failure with a `logger.warning` naming the exact reason. |
+| `pull` | Always pull. On pull failure — 404, 429, unreachable — this is a hard failure with no fallback. Use when you need a strong "pull or die" guarantee (e.g. arena runs where a silent rebuild would waste minutes per fresh host). |
+| `build` | Always build locally. Skip pull entirely. Use when editing Dockerfiles or service code, or in air-gapped environments that never touch Docker Hub. |
+
+Override the config value with the `--image-source` flag on
+`tolokaforge run` or the `TOLOKAFORGE_IMAGE_SOURCE` environment
+variable. Precedence: flag > env > `docker.image_source` in the run
+config > default (`auto`). The engine version used for the pull tag
+comes from `tolokaforge.__version__` (`importlib.metadata.version(
+"tolokaforge")`); a source checkout without a `pip install` reports a
+sentinel and always resolves `auto` to `build`.
+
+For the Docker Hub tag axis (`:X.Y.Z` immutable, `:X.Y` moving,
+`:latest`), see the published-images section of
+[STANDALONE_RUNNER.md](STANDALONE_RUNNER.md#published-images).
+
+Docker Hub rate-limits anonymous pulls to 100 per 6 h per IP. Shared
+CI runners or arena hosts that drive many `tolokaforge run` invocations
+should either configure authenticated pulls via the daemon's standard
+`~/.docker/config.json` (`docker login`), or set `docker.image_source:
+build` to skip pull entirely. A 429 in `auto` mode surfaces as a
+`WARNING` line naming `rate_limited` before the fallback build starts.
+
 ### Runner readiness contract
 
 The runner is gated for readiness at two independent layers, and they answer
@@ -148,12 +181,18 @@ naming the skew in `RegisterTrialResponse.error`. The orchestrator already treat
 registration failure as fatal, so a skewed pair fails before any tokens are spent.
 
 **This gate's bound is one-sided, and the unprotected direction is the quieter one.**
-An **older** engine against a newer image fails every trial at registration, loudly.
-A **newer** engine against an older image passes *this* gate — the older runner does
-not know the `engine_protocol_version` field, and proto3 drops unknown fields on a
-proto message rather than erroring — so the version skew itself surfaces later and
-less clearly: that engine sends a `call_id` on every `ExecuteTool` which the older
-runner also ignores, so calls are recorded without the id grading joins on.
+An **older** engine against a newer image fails every trial at registration, loudly —
+for the field it cannot send (`call_id`) and, from protocol version 2 on, for the two
+`user_simulator` keys it still emits into the trial spec that the current image no
+longer declares. A **newer** engine against an older image passes *this* gate — the
+older runner does not know the `engine_protocol_version` field, and proto3 drops
+unknown fields on a proto message rather than erroring — so the version skew itself
+surfaces later and less clearly: that engine sends a `call_id` on every `ExecuteTool`
+which the older runner also ignores, so calls are recorded without the id grading
+joins on. Each version and what it first changed is listed in
+[`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#version-lock) § Version lock; refusing an
+engine below the bound at the gate, rather than at model validation, is what a bump
+buys.
 
 **That reasoning covers the proto message only, and registration also carries a
 JSON payload where it does not hold.** The trial spec crosses as `trial_spec_json`,

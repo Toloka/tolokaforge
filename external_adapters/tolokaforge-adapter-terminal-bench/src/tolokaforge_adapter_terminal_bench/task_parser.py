@@ -47,7 +47,8 @@ def _load_task_yaml(task_dir: Path) -> dict[str, Any]:
 
 def _parse_instruction(task_dir: Path, data: Mapping[str, Any]) -> str:
     """Instruction text from ``task.yaml``, falling back to ``instruction.md``."""
-    instruction = data.get("instruction", "")
+    # A bare ``instruction:`` key parses as None, which ``.get(..., "")`` cannot cover.
+    instruction = data.get("instruction") or ""
     if not instruction:
         instruction_md = task_dir / "instruction.md"
         if instruction_md.exists():

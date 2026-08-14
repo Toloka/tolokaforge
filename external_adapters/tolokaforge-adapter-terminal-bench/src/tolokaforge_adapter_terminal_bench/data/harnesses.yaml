@@ -300,7 +300,7 @@ harnesses:
     # OpenAI-shaped routing and is not a whitelist variable — hardcoded
     # because we always route this entry through OpenRouter; an operator
     # targeting a different provider does a whole-entry replacement per
-    # ADR 0031.
+    # ADR 0033.
     config_files:
       "/root/.grok/config.toml": |
         [cli]

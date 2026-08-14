@@ -61,5 +61,6 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0028](0028-multi-actor-turn-policy.md) | Multi-actor turn policy — `interaction_mode` + `Actor` + `TurnPolicy` | Accepted |
 | [0029](0029-build-check-builtin-tool.md) | `build_check` as a generic peer-service HTTP probe in core | Accepted |
 | [0030](0030-tolokaforge-models-split.md) | Model data as a second PyPI wheel — `tolokaforge-models` from the same monorepo | Proposed |
-| [0031](0031-external-harness-registry.md) | External harness registry — operator-overridable YAML for coding-CLI parity knobs | Accepted |
-| [0032](0032-external-harness-plugin-discovery.md) | External harness plugin discovery — pip-installable harness bundles | Accepted |
+| [0031](0031-pull-vs-build-default-for-service-images.md) | Wheel consumers pull published images by default — `docker.image_source` policy | Proposed |
+| [0033](0033-external-harness-registry.md) | External harness registry — operator-overridable YAML for coding-CLI parity knobs | Accepted |
+| [0034](0034-external-harness-plugin-discovery.md) | External harness plugin discovery — pip-installable harness bundles | Accepted |

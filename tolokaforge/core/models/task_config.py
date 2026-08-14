@@ -112,6 +112,26 @@ class ToolsConfig(BaseModel):
     user: dict[str, Any] = Field(default_factory=lambda: {"enabled": []})
 
 
+def _refuse_first_message(data: Any) -> Any:
+    """Reject an opener declared on the user actor instead of on the task.
+
+    ``extra="ignore"`` would drop the key, and the nested position keeps it
+    out of :func:`construct_config`'s unknown-key warning — so an author would
+    see neither their opener delivered nor any complaint. Both declared mirrors
+    of the user actor run this, so every spelling reaches it: ``actors.user``,
+    the legacy top-level ``user_simulator`` block, a project's
+    ``task_defaults`` actors map, and a direct-Python
+    ``UserSimulatorConfig(...)``.
+    """
+    if isinstance(data, dict) and "first_message" in data:
+        raise ValueError(
+            "first_message is not a field on the user actor. A task's opening turn is declared "
+            "task-level as initial_user_message, whose text is delivered verbatim as "
+            "the first user message — move the value there."
+        )
+    return data
+
+
 class UserSimulatorConfig(BaseModel):
     """User simulator configuration"""
 
@@ -121,6 +141,11 @@ class UserSimulatorConfig(BaseModel):
     persona: str = "cooperative"
     backstory: str | None = None  # User instruction for tau-bench parity
     scripted_flow: list[dict[str, str]] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_first_message(cls, data: Any) -> Any:
+        return _refuse_first_message(data)
 
 
 _RESERVED_ACTOR_NAMES = frozenset({"agent", "judge"})
@@ -149,6 +174,11 @@ class ActorSpec(BaseModel):
     scripted_flow: list[dict[str, str]] | None = None
 
     model_config = {"extra": "ignore"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_first_message(cls, data: Any) -> Any:
+        return _refuse_first_message(data)
 
 
 def _validate_actors_map(
@@ -239,7 +269,13 @@ class TaskConfig(BaseModel):
     description: str
     adapter_type: str = "native"  # Adapter runtime type (native, tlk_mcp_core, tau, …)
     max_turns: int | None = None  # Optional per-task turn cap override
-    initial_user_message: str | None = None  # If provided, sent directly as first user message
+    initial_user_message: str | None = None
+    """The task's pinned opener. When set, this exact text — whitespace
+    included — is message index 0, and no simulator dispatch produces the
+    opening turn. Unset, the conversational shape has the user simulator
+    generate turn 1, while the agent-only shape fails at bootstrap: it has
+    no simulator to synthesise a seed from."""
+
     interaction_mode: InteractionMode = "conversational"
     """Turn-loop shape. ``conversational`` (default) dispatches the user
     simulator every turn — backward-compatible with every existing pack.
@@ -316,6 +352,24 @@ class TaskConfig(BaseModel):
         cls, value: dict[str, ActorSpec] | None
     ) -> dict[str, ActorSpec] | None:
         return _validate_actors_map(value)
+
+    @model_validator(mode="after")
+    def _refuse_blank_initial_user_message(self) -> Self:
+        """Reject a declared opener that carries no text.
+
+        The one state the turn loop cannot honour: there is nothing to deliver
+        verbatim, and the only alternative — generating turn 1 anyway — is the
+        opposite of what declaring the key asks for.
+        """
+        if self.initial_user_message is None or self.initial_user_message.strip():
+            return self
+        raise ValueError(
+            f"Task '{self.task_id}' declares initial_user_message with no text "
+            f"({self.initial_user_message!r}). The value is delivered verbatim as the "
+            "first user message, so a blank one has nothing to send. Either give it "
+            "text, or leave it unset — omit the key in task.yaml, or pass None from an "
+            "adapter's get_task() — to have the user simulator open the conversation."
+        )
 
     def resolve_user_simulator(self) -> UserSimulatorConfig:
         """Return the effective user-simulator config from ``actors.user``.

@@ -511,4 +511,14 @@ providers:
   # directly into Google's ``thinking_level=medium``.
   gemini:
     params:
-      unsupported_effort_levels: ["medium"]
+      param_value_rules:
+        reasoning_effort:
+          medium:
+            action: reject
+            evidence: >-
+              2026-05-21, litellm 1.83.14: reasoning_effort='medium' alongside
+              tool calls returns an empty response on the direct gemini route
+              (finish_reason=stop, zero completion tokens, no tool_calls) for
+              Gemini 3.1 Pro. BerriAI/litellm#19403-class. low and high work;
+              the OpenRouter route is unaffected because it sends
+              extra_body.reasoning.effort

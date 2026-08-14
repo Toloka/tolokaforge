@@ -16,7 +16,7 @@ import inspect
 import logging
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import yaml
 
@@ -632,6 +632,35 @@ def _validate_overlay(data: dict[str, Any], path: str) -> None:
         _check_block(provider_cfg or {}, f"providers.{provider_name}")
 
 
+#: The one nested key inside a ``params:`` block; see :func:`_merge_params`.
+_VALUE_RULES_KEY: Final[str] = "param_value_rules"
+
+
+def _merge_params(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    """Merge one ``params:`` block over another.
+
+    Scalar keys replace, as they always have. ``param_value_rules`` is the one
+    nested key, and a shallow merge there loses whole layers silently: an
+    overlay declaring a ``tool_choice`` rule would drop the bundled
+    ``reasoning_effort`` rule with it, disarming a guard nobody touched. Rules
+    therefore merge per parameter and per value; the innermost spec still
+    replaces, so an operator can override one declaration without inheriting
+    half of it.
+    """
+    merged = {**base, **incoming}
+    base_rules = base.get(_VALUE_RULES_KEY)
+    incoming_rules = incoming.get(_VALUE_RULES_KEY)
+    if isinstance(base_rules, dict) and isinstance(incoming_rules, dict):
+        combined = {param: dict(values) for param, values in base_rules.items()}
+        for param, values in incoming_rules.items():
+            if isinstance(values, dict) and isinstance(combined.get(param), dict):
+                combined[param] = {**combined[param], **values}
+            else:
+                combined[param] = values
+        merged[_VALUE_RULES_KEY] = combined
+    return merged
+
+
 def _merge_overlay(
     bundled: dict[str, Any], overlay: dict[str, Any], overlay_path: str
 ) -> dict[str, Any]:
@@ -655,7 +684,7 @@ def _merge_overlay(
     merged_default = dict(default_bundled)
     for key, value in default_overlay.items():
         if key == "params" and isinstance(merged_default.get("params"), dict):
-            merged_default["params"] = {**merged_default["params"], **value}
+            merged_default["params"] = _merge_params(merged_default["params"], value)
         else:
             merged_default[key] = value
     merged["default"] = merged_default
@@ -691,7 +720,7 @@ def _merge_overlay(
         merged_p = dict(b)
         for key, value in o.items():
             if key == "params" and isinstance(merged_p.get("params"), dict):
-                merged_p["params"] = {**merged_p["params"], **value}
+                merged_p["params"] = _merge_params(merged_p["params"], value)
             else:
                 merged_p[key] = value
         new_providers[name] = merged_p
@@ -795,7 +824,7 @@ def _match_preset(model_name: str, provider: str) -> dict[str, Any]:
             if key in ("match", "match_provider"):
                 continue
             if key == "params" and "params" in result:
-                result["params"] = {**result["params"], **value}
+                result["params"] = _merge_params(result["params"], value)
             else:
                 result[key] = value
         break
@@ -805,7 +834,7 @@ def _match_preset(model_name: str, provider: str) -> dict[str, Any]:
     provider_cfg = data.get("providers", {}).get(prov_lower, {})
     for key, value in provider_cfg.items():
         if key == "params" and "params" in result:
-            result["params"] = {**result["params"], **value}
+            result["params"] = _merge_params(result["params"], value)
         else:
             result[key] = value
 

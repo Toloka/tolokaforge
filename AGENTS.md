@@ -461,7 +461,7 @@ The Bucket-A allow-list backing the [`tests/canonical/test_models_wheel_replay.p
 3. **Formatting drift**: `ruff format --check` reports pre-existing drift across the tree — no number is quoted here because a count in a doc goes stale silently. Run `mcp__dev__format_check` scoped to the files you touched (`paths=…`) and treat only *your* files' drift as yours to fix.
 4. **`black --check` is clean tree-wide**, so a `black` failure is drift in the code you just wrote, not the known `ruff format` backlog. Both formatters must pass on a file you touch, and they disagree often enough that satisfying one is not satisfying the other.
 5. **Benchmark runs** and e2e flows require API keys in `.env`. Unit and canonical tests do not.
-6. **10 tests in `test_golden_set_projects.py`** need `git lfs pull`. Not required for normal development.
+6. **10 tests in `test_golden_set_projects.py`** need `git lfs pull`, plus the committed-corpus sweep in [`tests/unit/test_scratchpad_detector.py`](tests/unit/test_scratchpad_detector.py) (skips gracefully without LFS). Not required for normal development.
 7. **JSON DB update API** uses JSON Patch-style operations: `{"ops": [{"op": "replace", "path": "$.field", "value": ...}]}`. Supported ops: `add`, `replace`, `remove`.
 8. **Service startup**: Start both services in background (`&`) for JSON DB (port 8000) + Mock Web (port 8080). Mock Web requires `JSON_DB_URL=http://localhost:8000`.
 9. **`tolokaforge run`** requires at least one LLM API key in `.env` (Anthropic, OpenAI, etc.).

@@ -671,7 +671,8 @@ class InProcessConductor:
             # run has to cover it too — otherwise a simulator 429 kills the trial
             # the agent-side probe was keeping alive. It gets the shorter
             # simulator-scoped per-call budget: its throughput is not what the probe
-            # measures, and both budgets are spent inside one uninterruptible turn.
+            # measures, and one turn can spend the simulator's budget once per
+            # reply-guard attempt, all inside one uninterruptible turn.
             user_simulator = UserSimulator(
                 mode=sim.mode,
                 llm_config=user_llm_config,
@@ -758,10 +759,9 @@ class InProcessConductor:
             interaction_mode=task.interaction_mode,
         )
 
-        # Use initial_user_message if provided (e.g., tool-use style tasks).
-        # Otherwise use task.description which the user simulator interprets (e.g., TAU tasks).
-        initial_message = task.initial_user_message if task.initial_user_message else ""
-        trajectory = runner.run(system_prompt, initial_message)
+        # "" is the runner's "caller supplied nothing" seed: turn 0 is routed
+        # to the turn policy's own bootstrap instead of a pinned opener.
+        trajectory = runner.run(system_prompt, task.initial_user_message or "")
 
         return trajectory, runner, system_prompt
 
@@ -1024,11 +1024,25 @@ class InProcessConductor:
             user_prompt=runner.user_system_prompt,
         )
 
+        # Same condition :meth:`_run_agent_loop` builds the simulator under: an
+        # ``agent_only`` trial resolves no simulator, so a configuration
+        # recorded here would assert a resolution the run never made.
+        user_actor = (
+            task.resolve_user_simulator().model_dump(mode="json")
+            if task.interaction_mode == "conversational"
+            else None
+        )
+
+        # user_actor is the record, not an authoring field: TaskConfig has no
+        # such field and extra="ignore" drops it on reload.
         task_config_dict = {
             "task_id": task.task_id,
             "trial_index": setup.trial_idx,
             "category": task.category,
             "description": task.description,
+            "interaction_mode": task.interaction_mode,
+            "initial_user_message": task.initial_user_message,
+            "user_actor": user_actor,
             "grading_config": grading_config.model_dump(mode="json") if grading_config else {},
             "tools": task.tools.model_dump(mode="json"),
             "policies": task.policies,

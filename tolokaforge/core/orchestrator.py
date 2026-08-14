@@ -1777,7 +1777,19 @@ class Orchestrator:
                 else:
                     self.logger.info("Creating service stack (db-service + runner)")
                     stack_factory = core_stack
-                service_stack = stack_factory(**core_stack_kwargs)
+                # Thread the run's docker config through to the stack so
+                # ``docker.image_source`` (CLI flag, TOLOKAFORGE_IMAGE_SOURCE
+                # env, or YAML) actually reaches ``EngineStack._maybe_pull_
+                # service_image``. Without this explicit forwarding the
+                # entire pull-vs-build policy stays inert — the stack
+                # factories default ``config=None`` → ``DockerConfig()`` →
+                # ``image_source='auto'``, so an operator setting
+                # ``--image-source build`` on a wheel install would still
+                # get a silent pull.
+                from tolokaforge.docker.config import DockerConfig
+
+                docker_config = self.config.docker or DockerConfig()
+                service_stack = stack_factory(config=docker_config, **core_stack_kwargs)
                 # Route through the effective-choice helper so both the
                 # operator override and the task-driven per-trial signal
                 # produce the same task-declared-stack decision (see
@@ -1854,7 +1866,26 @@ class Orchestrator:
                         )
                     self._connect_typesense_to_runner_network(service_stack)
             except Exception as e:
-                self.logger.error("Failed to auto-start services", error=str(e))
+                # Special-case ``ImagePullError`` so its kind and the
+                # operator-actionable hint (e.g. "Docker Hub rate limit
+                # hit. Configure authenticated pulls…") land in the log
+                # verbatim, not folded into a generic stack trace. The
+                # exception is re-raised so callers still see the crash;
+                # this only makes sure the actionable text is prominent
+                # in the operator's terminal.
+                from tolokaforge.docker.image import ImagePullError
+
+                if isinstance(e, ImagePullError):
+                    retry_after = e.response_headers.get("Retry-After")
+                    self.logger.error(
+                        "Failed to auto-start services: pull failed",
+                        kind=e.kind,
+                        image=e.full_tag,
+                        message=str(e),
+                        retry_after=retry_after,
+                    )
+                else:
+                    self.logger.error("Failed to auto-start services", error=str(e))
                 raise
         else:
             runner_address = None

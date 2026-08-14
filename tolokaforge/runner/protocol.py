@@ -7,9 +7,9 @@ registration, before any tokens are spent — a per-call rejection would reach t
 agent as an ordinary tool failure, and it would retry until the turn budget was
 gone while the trial still reported ``status=completed``.
 
-Version 1 is the first that sends ``ExecuteToolRequest.call_id``. Without it a
-tool call cannot be joined to the result it produced, so a runner built from
-this tree cannot grade a trial driven by an older engine.
+What each version is the first to change is the ledger in
+``docs/GRPC_PROTOCOL.md`` § Version lock, which a canonical test holds level
+with this constant.
 
 :data:`RECORDED_STATUS_BY_PROTO` translates the wire's ``ExecutionStatus`` into
 the recorded vocabulary. It lives here because both ends of the wire read it:
@@ -26,7 +26,7 @@ from tolokaforge.core.models import TerminationReason
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.tools.registry import ToolExecutionStatus
 
-ENGINE_PROTOCOL_VERSION = 1
+ENGINE_PROTOCOL_VERSION = 2
 
 # EXECUTION_STATUS_TRIAL_NOT_FOUND is absent because there is no trial context to
 # record into, and EXECUTION_STATUS_UNSPECIFIED because it names no outcome.

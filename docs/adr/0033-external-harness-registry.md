@@ -1,4 +1,4 @@
-# 0031. External harness registry — operator-overridable YAML for coding-CLI parity knobs
+# 0033. External harness registry — operator-overridable YAML for coding-CLI parity knobs
 
 - **Status:** Accepted
 - **Date:** 2026-08-13
@@ -89,7 +89,7 @@ following the same overlay shape as ADR-0002 for the model registry.
    group. Operators install a `pip` package that ships a YAML file. Same
    distribution mechanism ADR-0002 deferred as a follow-up. Deferred here
    for want of evidence of cross-project reuse; adopted in
-   [ADR-0032](0032-external-harness-plugin-discovery.md) once the Arena
+   [ADR-0034](0034-external-harness-plugin-discovery.md) once the Arena
    expansion supplied it.
 
 4. **Sidecar Python module for new harness classes.** For a CLI whose
@@ -223,7 +223,7 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
   trade-off. If operators complain, a subsequent ADR can add an explicit
   `inherit_from: <name>` field to the overlay entry.
 - Entry-point plugin discovery for harness bundles (Option 3) lands
-  separately in [ADR-0032](0032-external-harness-plugin-discovery.md), so a
+  separately in [ADR-0034](0034-external-harness-plugin-discovery.md), so a
   `pip install` can change which spec a harness name resolves to. The
   overlay stays the highest-precedence layer, and
   `disable_harness_plugins` pins the registry to what the adapter ships.
@@ -234,7 +234,7 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
   per-harness envelope once it picks up the tolokaforge release carrying
   `HarnessSpec.provider_env`.
 - **Entry-point plugin discovery** for harness bundles — landed as
-  [ADR-0032](0032-external-harness-plugin-discovery.md). A contributor
+  [ADR-0034](0034-external-harness-plugin-discovery.md). A contributor
   publishes a package declaring
   `tolokaforge_adapter_terminal_bench.harness_registries`; the adapter unions
   every installed bundle above the shipped registry and below the operator

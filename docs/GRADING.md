@@ -915,7 +915,11 @@ these keys requires a runner image built from the same release. Old engine + new
 is safe **for these keys**: an engine that predates them ignores what it does not
 declare, since a model's `extra` setting is fixed when the engine is built. An engine
 from this release onward refuses a key it does not declare instead of ignoring it — see
-[§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses).
+[§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses). That is a
+per-key verdict, not a verdict on the pairing: an engine old enough to predate these
+keys declares a protocol version below the image's bound, so it is refused at
+registration before any key is read — see
+[`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#version-lock) § Version lock.
 
 **Runner-engine version lock (both directions)**: the trial spec crosses the wire as
 a plain `model_dump_json()` parsed by `extra="forbid"` runner models — so a field, or
@@ -923,8 +927,11 @@ a field *value*, that the receiving side does not declare fails validation rathe
 being dropped. Six keys carry the lock:
 
 - `state_checks.env_assertions`, which the current runner `StateChecksConfig` does not
-  declare: an engine older than this release translates it onto that field, so an
-  **old engine against a new runner image** is rejected at `RegisterTrial`.
+  declare: an engine older than this release translates it onto that field. Such an
+  engine is refused at `RegisterTrial` by the protocol-version gate before any model
+  validates it ([`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#version-lock) § Version lock), so
+  the **old engine against a new runner image** pairing fails whether or not the pack
+  carries this key; the key is why the pairing could not have worked anyway.
 - `state_checks.hash_weight`, which a runner image older than this release does not
   declare: the current engine emits it (as `null` when the pack declares no weight),
   so a **new engine against an old runner image** is rejected the same way.
@@ -938,8 +945,9 @@ being dropped. Six keys carry the lock:
 - `combine_method`, whose declared value domain both gained and lost members in this
   release. The runner `GradingConfig` validates it against the closed set in
   [§ Score Combination](#score-combination): a **new engine** translating `any` is
-  rejected by an older image, and an **old engine** translating a name the set no
-  longer holds is rejected by a current one.
+  rejected by an older image. An **old engine** translating a name the set no longer
+  holds is refused by a current image at the version gate, before the value is
+  validated at all.
 - `state_checks.id_fields`, whose declared **value** shape admits a composite
   (list-valued) key. A runner image that predates the list form declares the value
   as a plain string, so a **new engine against an old runner image** emitting a
@@ -969,11 +977,13 @@ dropped byte. The signature of the skew is a Pydantic `extra_forbidden` error na
 `hash_weight` or `min_assistant_turns` in the `RegisterTrialResponse.error` —
 whichever block the pack carries.
 
-An old engine against a new runner image can also be rejected for a second,
-narrower reason: such an engine drops `hash.weight` on the way to the wire, so a
-pack configuring a hash source *and* non-empty `jsonpaths` reaches the runner with
-nothing saying how to fold them, and the presence gate rejects it. That rejection is
-correct — the alternative is grading the trial by a rule the author never chose.
+An old engine against a new runner image carries a second, narrower defect behind
+the version gate: such an engine drops `hash.weight` on the way to the wire, so a
+pack configuring a hash source *and* non-empty `jsonpaths` would reach the runner
+with nothing saying how to fold them. The presence gate would reject it — correctly,
+since the alternative is grading the trial by a rule the author never chose — but the
+protocol-version gate refuses that engine at registration first, so the fold rule is
+never the message an operator sees for this pairing.
 
 ### The `jsonpaths` assertion vocabulary
 
@@ -1012,7 +1022,7 @@ trial's final state, and both levels are fixed:
 | source | evaluated against |
 |---|---|
 | `hash` | the **unwrapped** database inside the final state (`db`, else `agent`, else the state itself) — the level the golden state and `compute_stable_hash` both describe |
-| `jsonpaths` | the **whole** final environment state, so an assertion is rooted `$.db.<table>[…]` |
+| `jsonpaths` | the **whole** final environment state — `$.db.<table>[…]` for a row and `$.filesystem['/env/fs/agent-visible/<rel>']` for a provisioned file the agent may have edited |
 
 A source that declares nothing to evaluate produces no verdict, and a source
 nobody configured contributes nothing rather than a score. An empty `jsonpaths`
@@ -1022,7 +1032,12 @@ has the answer `1.0`, and that fraction of nothing never becomes a component sco
 - **hash only** (`jsonpaths` empty — the tau-bench shape): the component *is* the
   hash verdict, at every `weight`. An empty assertion list is not a pass.
 - **non-empty `jsonpaths` only** (no hash source declared): the component is the
-  assertion score. **Core-side only** — see the substrate note below.
+  assertion score. Both substrates evaluate the shape; on the runner side the
+  jsonpath state is `$.db`/`$.tables` for stored rows and `$.filesystem` for
+  files provisioned under `/env/fs/agent-visible/` — a filesystem-only task
+  (one whose `initial_state` declares no `tables`) still grades, and a
+  `$.filesystem['/env/fs/agent-visible/<rel>']` assertion resolves to the
+  file's current on-disk content.
 - **both**: `jsonpath_score × (1 − weight) + hash_score × weight`.
 - **neither** — an empty `jsonpaths` list with hash grading off, or on and unable
   to produce a verdict: the component is **not evaluated**. It is absent from the
@@ -3178,7 +3193,7 @@ infrastructure:
 |---|---|---|
 | `timeout` | measured | A declared wall-clock budget over agent actions, the same as `max_turns`. A thrashing agent hits it too, and excluding it would make thrashing vanish from the denominator |
 | `api_error` | measured | Produced by matching provider names in the message text, which also matches a context-window overflow (agent behaviour) and a 400 from a malformed tool schema (our bug) |
-| `error` | harness error | The classifier's fall-through, so usually a defect of ours. Counted — excluding our own bugs would hide them — and reported separately as `harness_errors` so a non-zero count is visible as a run-health signal |
+| `error` | harness error | The classifier's fall-through, so usually a defect of ours. Counted — excluding our own bugs would hide them — and reported separately as `harness_errors` so a non-zero count is visible as a run-health signal. A user simulator whose every generation of one turn was flagged by a detector lands here: the reply guard refuses the turn rather than delivering it, and the trajectory's `user_reply_guard_events` carries the evidence (see [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md)) |
 | `stuck_detected` | measured | The agent repeated itself without progress. It auto-fails with `score: 0.0`, and that verdict is correct |
 | any reason, with `grading_error` set | ungradeable | Grading refused, so no verdict exists. Counted for the same reason a harness error is — the fault is ours — and reported separately as `ungradeable`. This is read **before** the reason, so a refusal is never traded for an exclusion |
 

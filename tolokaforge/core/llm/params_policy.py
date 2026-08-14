@@ -55,8 +55,11 @@ See [`docs/LLM_LAYER.md`](../../../docs/LLM_LAYER.md) § ``params_policy``.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, ClassVar, Final
 
 from tolokaforge.core.llm.reasoning import ReasoningConfig
 
@@ -64,7 +67,14 @@ __all__ = [
     "ParamsPolicy",
     "ParamPolicy",  # noqa: F822 — resolved via module-level __getattr__ shim
     "GenerationParams",
+    # Named in docs/LLM_LAYER.md as the operator-facing contract, so exported
+    # rather than left as module internals a reader cannot import.
+    "RULABLE_PARAMS",
+    "RuleAction",
+    "VALID_RULE_ACTIONS",
 ]
+
+logger = logging.getLogger(__name__)
 
 _SAMPLING_KEYS: tuple[str, ...] = ("temperature", "top_p", "top_k")
 
@@ -104,6 +114,23 @@ class ParamsPolicy(ABC):
         reasoning: ReasoningConfig | None,
     ) -> dict[str, Any]: ...
 
+    def rule_for(self, param: str, value: str | None) -> RuleAction | None:
+        """Declared action for ``value`` of ``param``; ``None`` when unruled.
+
+        Concrete on the base rather than abstract: ``LLMClient`` asks every
+        params policy about ``tool_choice``, and a policy that declares no
+        value gaps should not have to implement a method to say so.
+        """
+        return None
+
+    def rule_evidence(self, param: str, value: str | None) -> str | None:
+        """Evidence behind a declared value gap; ``None`` when unruled."""
+        return None
+
+    def rule_substitute(self, param: str, value: str | None) -> str | None:
+        """Replacement value for an ``override`` rule; ``None`` otherwise."""
+        return None
+
 
 #: Deprecated alias for :class:`ParamsPolicy`. Kept as a class-identity
 #: alias (``ParamPolicy is ParamsPolicy`` remains true) so
@@ -132,6 +159,147 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+@dataclass(frozen=True)
+class _ValueRule:
+    """One declared value gap: what to do, and the evidence it rests on."""
+
+    action: RuleAction
+    evidence: str
+    substitute: str | None = None
+
+
+def _normalise_value_rules(
+    raw: dict[str, dict[str, dict[str, str]]] | None,
+) -> dict[tuple[str, str], _ValueRule]:
+    """Validate and flatten a ``param_value_rules`` block.
+
+    Every rejection here is a preset that would otherwise look like it does
+    something and quietly do nothing, so all of them raise rather than warn.
+    """
+    rules: dict[tuple[str, str], _ValueRule] = {}
+    if raw is not None and not isinstance(raw, dict):
+        raise ValueError(
+            f"param_value_rules: expected a mapping of parameter -> value -> "
+            f"rule, got {type(raw).__name__}."
+        )
+    for param, values in (raw or {}).items():
+        if param not in RULABLE_PARAMS:
+            raise ValueError(
+                f"param_value_rules: {param!r} is not a rulable parameter "
+                f"(known: {sorted(RULABLE_PARAMS)}). Nothing would ever read a "
+                f"rule on it, so it would be accepted and silently do nothing."
+            )
+        if not isinstance(values, dict):
+            raise ValueError(
+                f"param_value_rules[{param!r}]: expected a mapping of "
+                f"value -> rule, got {type(values).__name__}."
+            )
+        for value, spec in values.items():
+            if not isinstance(spec, dict):
+                raise ValueError(
+                    f"param_value_rules[{param!r}][{value!r}]: expected a "
+                    f"mapping with 'action' and 'evidence', got "
+                    f"{type(spec).__name__}."
+                )
+            unknown = set(spec) - {"action", "evidence", "with"}
+            if unknown:
+                raise ValueError(
+                    f"param_value_rules[{param!r}][{value!r}]: unknown key(s) "
+                    f"{sorted(unknown)}. Legal keys are ['action', 'evidence', "
+                    f"'with']. An unrecognised key here would be accepted and "
+                    f"never read, which is what every other check in this "
+                    f"function exists to prevent."
+                )
+            action = str(spec.get("action", "")).lower()
+            if action not in VALID_RULE_ACTIONS:
+                raise ValueError(
+                    f"param_value_rules[{param!r}][{value!r}]: action "
+                    f"{spec.get('action')!r} is not one of "
+                    f"{sorted(VALID_RULE_ACTIONS)}."
+                )
+            evidence = str(spec.get("evidence", "")).strip()
+            if not evidence:
+                raise ValueError(
+                    f"param_value_rules[{param!r}][{value!r}]: 'evidence' is "
+                    f"required. A value gap is a claim about a provider on a "
+                    f"date; without the claim written down nobody can tell "
+                    f"later whether it still holds."
+                )
+            normalised_value = str(value).lower()
+            substitute = spec.get("with")
+            if action == RuleAction.OVERRIDE:
+                if not str(substitute or "").strip():
+                    raise ValueError(
+                        f"param_value_rules[{param!r}][{value!r}]: action "
+                        f"'override' requires a 'with' value — the rule has to "
+                        f"say what to send instead."
+                    )
+                substitute = str(substitute).lower()
+                if substitute == normalised_value:
+                    raise ValueError(
+                        f"param_value_rules[{param!r}][{value!r}]: 'with' is "
+                        f"the value being overridden; that rule does nothing."
+                    )
+            elif substitute is not None:
+                raise ValueError(
+                    f"param_value_rules[{param!r}][{value!r}]: 'with' is only "
+                    f"meaningful for action 'override', not {action!r}."
+                )
+            rules[(param, normalised_value)] = _ValueRule(
+                action=RuleAction(action), evidence=evidence, substitute=substitute
+            )
+    # A substitute that is itself ruled would send a value the same block
+    # already declares unusable, so reject the contradiction rather than
+    # resolve it in some order the operator cannot predict.
+    for (param, value), rule in rules.items():
+        if rule.substitute is not None and (param, rule.substitute) in rules:
+            raise ValueError(
+                f"param_value_rules[{param!r}][{value!r}]: 'with' names "
+                f"{rule.substitute!r}, which this block also declares a rule "
+                f"for. Substituting into another declared gap would send a "
+                f"value already known to be unusable."
+            )
+    return rules
+
+
+#: Parameters with a consult site, i.e. the ones a rule can actually reach. A
+#: rule on anything else would be accepted and then never read, so it is
+#: refused: that is a typo, not a decision. Adding a parameter here means
+#: adding the site that consults it.
+RULABLE_PARAMS: Final[frozenset[str]] = frozenset({"reasoning_effort", "tool_choice"})
+
+
+class RuleAction(str, Enum):
+    """What a rule may ask for.
+
+    A named type rather than bare literals: the action is compared at three
+    consult sites across two modules, and a typo at a future one
+    (``action == "overide"``) would be a silent no-op — the exact failure class
+    this feature exists to remove. Subclassing ``str`` keeps YAML values and
+    equality against plain strings working.
+
+    ``reject`` refuses to build the request. ``drop`` omits the parameter and
+    lets the provider default apply. ``override`` sends a declared replacement.
+
+    ``drop`` and ``override`` both change what the request carries, and only
+    the caller knows whether that matters — omitting ``tool_choice`` is the
+    provider's own spelling of ``auto`` and costs nothing, while omitting
+    ``reasoning_effort`` yields the provider's default budget rather than the
+    level asked for. The engine does not adjudicate: it applies the
+    declaration and logs a WARNING naming both values, so a caller that
+    compares results can see the deviation. ``docs/LLM_LAYER.md`` carries the
+    warning in full.
+    """
+
+    REJECT = "reject"
+    DROP = "drop"
+    OVERRIDE = "override"
+
+
+#: Derived, so the set and the type cannot drift apart.
+VALID_RULE_ACTIONS: Final[frozenset[str]] = frozenset(a.value for a in RuleAction)
+
+
 class GenerationParams(ParamsPolicy):
     """Adapts generation kwargs based on model constraints.
 
@@ -147,7 +315,7 @@ class GenerationParams(ParamsPolicy):
             "reasoning_via_thinking_kwarg",
             "drop_sampling_when_thinking",
             "reasoning_budget_default",
-            "unsupported_effort_levels",
+            "param_value_rules",
         }
     )
 
@@ -159,7 +327,7 @@ class GenerationParams(ParamsPolicy):
         reasoning_via_thinking_kwarg: bool = False,
         drop_sampling_when_thinking: bool = False,
         reasoning_budget_default: int | None = None,
-        unsupported_effort_levels: frozenset[str] | list[str] | tuple[str, ...] | None = None,
+        param_value_rules: dict[str, dict[str, dict[str, str]]] | None = None,
     ):
         self._fixed_temperature = fixed_temperature
         self._supports_seed = supports_seed
@@ -167,19 +335,12 @@ class GenerationParams(ParamsPolicy):
         self._reasoning_via_thinking_kwarg = reasoning_via_thinking_kwarg
         self._drop_sampling_when_thinking = drop_sampling_when_thinking
         self._reasoning_budget_default = reasoning_budget_default
-        # Per-provider known-broken effort levels (AGENTS.md rule #1: surface
-        # failures explicitly rather than silently mapping). Populated by
-        # presets / provider overlays when an effort level is known to break
-        # upstream — e.g. litellm's direct ``gemini/*`` path silently returns
-        # empty responses for Gemini 3.1 Pro when ``reasoning_effort='medium'``
-        # is combined with tool_calls (verified 2026-05-21,
-        # BerriAI/litellm#19403-class). ``_emit_effort_kwargs`` raises
-        # ``ValueError`` rather than mapping to a working level — the caller
-        # picks the workaround.
-        # Normalise YAML lists into a frozenset so equality + membership are
-        # cheap and ``GenerationParams`` is still hashable-friendly.
-        self._unsupported_effort_levels: frozenset[str] = frozenset(
-            e.lower() for e in (unsupported_effort_levels or ())
+        # Declared value gaps, flattened to (param, value) -> rule. Populated
+        # from a preset or a provider overlay; see ``docs/LLM_LAYER.md``
+        # § param_value_rules for what each action means and when to reach for
+        # which.
+        self._param_value_rules: dict[tuple[str, str], _ValueRule] = _normalise_value_rules(
+            param_value_rules
         )
 
     def adapt(
@@ -278,30 +439,90 @@ class GenerationParams(ParamsPolicy):
             )
         return budget
 
+    def rule_for(self, param: str, value: str | None) -> RuleAction | None:
+        """The declared action for ``value`` of ``param``, or ``None``.
+
+        Read by every site that attaches a rulable parameter — the effort path
+        below, and ``LLMClient._build_kwargs`` for ``tool_choice``. Returning
+        the action rather than acting keeps the decision where the parameter is
+        known: only the caller can say what refusing or omitting means there.
+        """
+        if value is None:
+            return None
+        rule = self._param_value_rules.get((param, value.lower()))
+        return rule.action if rule else None
+
+    def rule_evidence(self, param: str, value: str | None) -> str | None:
+        """The evidence recorded for a declared value gap, for error messages."""
+        if value is None:
+            return None
+        rule = self._param_value_rules.get((param, value.lower()))
+        return rule.evidence if rule else None
+
+    def rule_substitute(self, param: str, value: str | None) -> str | None:
+        """The replacement an ``override`` rule declares, or ``None``."""
+        if value is None:
+            return None
+        rule = self._param_value_rules.get((param, value.lower()))
+        return rule.substitute if rule else None
+
+    def warn_substituted(self, param: str, requested: str, sent: str) -> None:
+        """Log that the request no longer carries what the caller asked for.
+
+        An ``override`` is the one action that changes the request's meaning,
+        and nothing downstream can tell from the response that it happened. The
+        engine cannot know what its callers do with the result, so it records
+        the substitution where any of them can see it.
+        """
+        logger.warning(
+            "param_value_rules: sent %s=%r instead of the requested %r "
+            "(evidence: %s). Results from this call are not directly "
+            "comparable with calls that sent %r.",
+            param,
+            sent,
+            requested,
+            self.rule_evidence(param, requested),
+            requested,
+        )
+
     def _emit_effort_kwargs(self, kwargs: dict[str, Any], effort_hint: str | None) -> None:
         """Emit provider-flavoured effort kwargs for adaptive / fallback modes."""
         if effort_hint is None:
             return
         effort = effort_hint.lower()
-        if effort in self._unsupported_effort_levels:
-            supported = (
-                ("low", "medium", "high", "xhigh")
-                if not self._unsupported_effort_levels
-                else tuple(
-                    e
-                    for e in ("low", "medium", "high", "xhigh")
-                    if e not in self._unsupported_effort_levels
-                )
-            )
+        action = self.rule_for("reasoning_effort", effort)
+        if action == RuleAction.REJECT:
+            # Both the refused set and the remaining choices come from the
+            # rules, and only `reject` rules count: a `drop` or `override` on
+            # another level is still usable, so listing it would tell the
+            # operator a level is unavailable when it is not.
+            refused = {
+                v
+                for (param, v), rule in self._param_value_rules.items()
+                if param == "reasoning_effort" and rule.action == RuleAction.REJECT
+            }
+            supported = tuple(e for e in ("low", "medium", "high", "xhigh") if e not in refused)
+            evidence = self.rule_evidence("reasoning_effort", effort)
             raise ValueError(
                 f"ReasoningConfig(effort_hint={effort!r}) is declared "
                 f"unsupported for this provider+model combination "
-                f"(unsupported_effort_levels={sorted(self._unsupported_effort_levels)}). "
+                f"(refused: {sorted(refused)}). Evidence: {evidence}. "
                 f"Use one of {list(supported)!r}, or route through a transport "
                 f"that supports this effort level (e.g. OpenRouter rather than "
                 f"the direct provider, when available). See "
                 f"tolokaforge_models/data/model_presets.yaml for the declarations."
             )
+        if action == RuleAction.DROP:
+            # Omitting the parameter yields the provider's DEFAULT budget, not
+            # the level asked for, so this is a real change to the request. The
+            # caller declared it; log it and move on.
+            self.warn_substituted("reasoning_effort", effort, "<omitted>")
+            return
+        if action == RuleAction.OVERRIDE:
+            substitute = self.rule_substitute("reasoning_effort", effort)
+            if substitute:
+                self.warn_substituted("reasoning_effort", effort, substitute)
+                effort = substitute
         if self._reasoning_via_extra_body:
             self._emit_extra_body_reasoning(kwargs, {"effort": effort})
         else:

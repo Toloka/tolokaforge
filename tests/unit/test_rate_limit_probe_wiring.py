@@ -6,9 +6,10 @@ What is load-bearing beyond the retry controller itself
 - The budget invariant is enforced by raising — at config-load time against the
   configured episode budget, and in the conductor against the *effective* one
   after the task-pack ``min()`` clamp. It bounds the whole per-turn 429 ceiling
-  (both per-call budgets **plus** both calls' overshoot), because one turn issues
-  both calls back to back and ``stop`` is evaluated on an attempt's outcome.
-  Configs that clear the budgets but not the overshoot are pinned as rejected.
+  (the agent's per-call budget **plus** one per user-reply attempt, **plus** each
+  of those calls' overshoot), because one turn issues them back to back and
+  ``stop`` is evaluated on an attempt's outcome. Configs that clear the budgets
+  but not the overshoot are pinned as rejected.
 - The mode cannot arm on a conductor that does not wire it: the orchestrator arms
   the agent client, the conductor wires the simulator probe, the per-task
   re-check and the telemetry, so a mismatch raises instead of producing
@@ -33,6 +34,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tolokaforge.core.actors.reply_guard import UserReplyGuard
 from tolokaforge.core.conductor import (
     InMemoryConductor,
     InProcessConductor,
@@ -45,6 +47,7 @@ from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     RATE_LIMIT_PROBE_ATTEMPT_CEILING_S,
+    USER_REPLY_MAX_ATTEMPTS,
     EvaluationConfig,
     Metrics,
     ModelConfig,
@@ -105,9 +108,9 @@ class TestBudgetInvariantAtLoadTime:
             )
 
     def test_a_per_call_budget_just_under_the_episode_budget_is_rejected(self) -> None:
-        """The invariant covers *both* calls one turn makes. This config passes
+        """The invariant covers every call one turn makes. This config passes
         ``per_call_budget_s < episode_s`` but its worst case is
-        ``7200 + 7199 + 600 = 14999s`` against a ``2 x 7200 = 14400s`` lease, so
+        ``7200 + 8999 + 3020 = 19219s`` against a ``2 x 7200 = 14400s`` lease, so
         the trial would outlive its lease and be re-run by another worker."""
         with pytest.raises(ValueError, match="per-turn 429 wall time"):
             OrchestratorConfig(
@@ -117,27 +120,47 @@ class TestBudgetInvariantAtLoadTime:
 
     def test_the_simulator_budget_counts_toward_the_invariant(self) -> None:
         """Raising only the simulator's budget can break the lease on its own,
-        so it has to be part of the sum."""
+        so it has to be part of the sum — and it enters that sum once per
+        user-reply attempt, which is what the rejected block trips on: its
+        budgets clear the two-call arithmetic and fail only on the multiplier."""
         fits = OrchestratorConfig(
-            timeouts=TimeoutConfig(episode_s=7200),
+            timeouts=TimeoutConfig(episode_s=14400),
             rate_limit_probe=RateLimitProbeConfig(
-                enabled=True, per_call_budget_s=3600.0, simulator_per_call_budget_s=1600.0
+                enabled=True, per_call_budget_s=3600.0, simulator_per_call_budget_s=600.0
             ),
         )
-        assert fits.rate_limit_probe.turn_budget_s == 5200.0
+        assert fits.rate_limit_probe.turn_budget_s == 3600.0 + USER_REPLY_MAX_ATTEMPTS * 600.0
 
         with pytest.raises(ValueError, match="simulator_per_call_budget_s"):
             OrchestratorConfig(
-                timeouts=TimeoutConfig(episode_s=7200),
+                timeouts=TimeoutConfig(episode_s=14400),
                 rate_limit_probe=RateLimitProbeConfig(
-                    enabled=True, per_call_budget_s=3600.0, simulator_per_call_budget_s=3600.0
+                    enabled=True, per_call_budget_s=3600.0, simulator_per_call_budget_s=3000.0
                 ),
             )
 
-    def test_turn_budget_is_the_sum_of_both_roles_per_call_budgets(self) -> None:
+    def test_turn_budget_is_the_agent_call_plus_every_user_reply_attempt(self) -> None:
         """``_run_turn`` issues the agent's ``generate`` and then the simulator's
-        ``reply``, and the episode timeout is only checked between turns."""
-        assert _PROBE.turn_budget_s == 4200.0
+        ``reply``, which the reply guard may reissue; the episode timeout is only
+        checked between turns."""
+        assert (
+            _PROBE.turn_budget_s
+            == _PROBE.per_call_budget_s
+            + USER_REPLY_MAX_ATTEMPTS * _PROBE.simulator_per_call_budget_s
+        )
+
+    def test_the_guard_and_the_invariant_read_one_attempt_count(self) -> None:
+        """A guard with its own literal default would let the two drift."""
+        assert UserReplyGuard().max_attempts == USER_REPLY_MAX_ATTEMPTS
+
+    def test_the_documented_budgets_need_an_episode_budget_past_the_guard_term(self) -> None:
+        """8000 s clears the agent budget, the simulator budget, and either
+        widened term on its own — only the whole per-turn ceiling (5400 + 3020)
+        exceeds it, so this rejection reads both halves of the arithmetic."""
+        with pytest.raises(ValueError, match="per-turn 429 wall time") as excinfo:
+            validate_rate_limit_probe_budget(_PROBE, 8000.0, source="probe")
+
+        assert "orchestrator.timeouts.episode_s" in str(excinfo.value)
 
     def test_the_documented_defaults_fit(self) -> None:
         config = OrchestratorConfig(
@@ -145,8 +168,8 @@ class TestBudgetInvariantAtLoadTime:
             rate_limit_probe=RateLimitProbeConfig(enabled=True),
         )
         probe = config.rate_limit_probe
-        # 14400 (episode) + 4200 (both budgets) + 1510 (both overshoots)
-        # = 20110 < 28800 lease.
+        # 14400 (episode) + 5400 (agent budget + three simulator budgets)
+        # + 3020 (one overshoot per call) = 22820 < 28800 lease.
         assert probe.turn_wall_ceiling_s < config.timeouts.episode_s
         assert config.timeouts.episode_s + probe.turn_wall_ceiling_s < config.timeouts.episode_s * 2
 
@@ -210,7 +233,7 @@ class TestTheOvershootIsPartOfTheInvariant:
     ) -> None:
         probe = RateLimitProbeConfig(enabled=True, retry_interval_s=15.0, jitter_fraction=0.2)
         assert probe.call_overshoot_s == 15.0 * 1.2 + RATE_LIMIT_PROBE_ATTEMPT_CEILING_S
-        assert probe.turn_overshoot_s == 2 * probe.call_overshoot_s
+        assert probe.turn_overshoot_s == (1 + USER_REPLY_MAX_ATTEMPTS) * probe.call_overshoot_s
         assert probe.turn_wall_ceiling_s == probe.turn_budget_s + probe.turn_overshoot_s
 
     @pytest.mark.parametrize(
@@ -219,9 +242,9 @@ class TestTheOvershootIsPartOfTheInvariant:
             pytest.param(
                 3601,
                 RateLimitProbeConfig(
-                    enabled=True, per_call_budget_s=3000.0, simulator_per_call_budget_s=599.0
+                    enabled=True, per_call_budget_s=3000.0, simulator_per_call_budget_s=200.0
                 ),
-                id="two-seconds-of-budget-slack",
+                id="one-second-of-budget-slack",
             ),
             pytest.param(
                 14400,
@@ -280,7 +303,7 @@ class TestTheOvershootIsPartOfTheInvariant:
         """The per-task re-check reads the same ceiling, so a pack's
         ``trial_seconds`` clamp cannot smuggle an unfittable overshoot through."""
         probe = RateLimitProbeConfig(enabled=True, retry_interval_s=1200.0)
-        # Legal at the run level: 4200 + 2 x (1440 + 737) = 8554 < 14400.
+        # Legal at the run level: 5400 + 4 x (1440 + 737) = 14108 < 14400.
         config = _run_config(probe=probe)
         assert config.orchestrator.rate_limit_probe.turn_wall_ceiling_s < 14400
 
@@ -426,7 +449,8 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
 class TestUserSimulatorCarriesTheMode:
     """The simulator shares the agent's provider quota, so it has to probe too —
     but with the shorter per-call budget, because its throughput is not what the
-    probe measures and both budgets are spent inside one uninterruptible turn."""
+    probe measures and one turn can spend the simulator's budget once per
+    reply-guard attempt, all inside one uninterruptible turn."""
 
     def test_llm_simulator_client_uses_the_probe_controller(
         self, monkeypatch: pytest.MonkeyPatch
@@ -933,12 +957,13 @@ class TestSeedMessageRetryLoop:
     that same ``start_time``), not added to it.
 
     Under probe mode the loop collapses to one attempt. It only ever retried
-    429s, and the simulator's own client now polls 429s at a fixed interval for
-    up to its per-call budget — strictly more tolerant than 4 attempts of
-    2/4/8 s backoff — so the outer attempts are redundant. Collapsing also keeps
-    this step's worst case at one simulator budget instead of ``init_attempts``
-    of them, which is what makes the budget invariant alone sufficient to bound
-    the trial under its ``max(300, episode_s * 2)`` lease.
+    429s, and the simulator's own client polls 429s at a fixed interval for up
+    to its per-call budget — strictly more tolerant than 4 attempts of 2/4/8 s
+    backoff — so the outer attempts are redundant. Collapsing also keeps this
+    step's worst case at the reply guard's simulator budgets instead of
+    ``init_attempts`` times as many, which is what makes the budget invariant
+    alone sufficient to bound the trial under its ``max(300, episode_s * 2)``
+    lease.
     """
 
     def _runner(self, probe_stats: RateLimitProbeStats | None) -> TrialRunner:
@@ -1042,17 +1067,17 @@ class TestNonProbingRolesStayOnTheDefaultPath:
 
         assert config.orchestrator.rate_limit_probe.enabled is False
 
-    def test_run_trials_composed_config_sizes_the_episode_budget_for_both_calls(self) -> None:
+    def test_run_trials_composed_config_sizes_the_episode_budget_for_every_call(self) -> None:
         """With the mode on, the composed episode budget has to clear the whole
-        per-*turn* 429 ceiling — both per-call budgets *and* both overshoots —
-        not just one call's budget."""
+        per-*turn* 429 ceiling — every per-call budget the turn can spend *and*
+        every one of their overshoots — not just one call's budget."""
         config = _build_run_config(_AGENT, _AGENT, None, Path("out"), _PROBE)
 
         assert config.orchestrator.rate_limit_probe.enabled is True
         assert (
             config.orchestrator.timeouts.episode_s
             == int(_PROBE.turn_wall_ceiling_s * 2) + 1
-            == 11421
+            == 16841
         )
 
     def test_run_trials_composed_config_fits_the_invariant_for_any_legal_block(self) -> None:

@@ -90,6 +90,7 @@ def core_stack(
     db_service = ServiceDefinition(
         name="db-service",
         image_name="tolokaforge-db-service",
+        published_image_repo="tolokasoft1/tolokaforge-db-service",
         dockerfile="tolokaforge/docker/dockerfiles/db_service.Dockerfile",
         context=".",
         context_files=[
@@ -193,6 +194,7 @@ def core_stack(
     runner = ServiceDefinition(
         name="runner",
         image_name="tolokaforge-runner",
+        published_image_repo="tolokasoft1/tolokaforge-runner",
         dockerfile="tolokaforge/docker/dockerfiles/runner.Dockerfile",
         context=".",
         # Sources ``hatch build --target custom`` consumes in the wheel-builder

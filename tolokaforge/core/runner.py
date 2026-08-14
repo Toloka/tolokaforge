@@ -1,10 +1,12 @@
 """Trial runner with agent-user loop"""
 
 import time
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
 from tolokaforge.core.actors.actor import Actor
+from tolokaforge.core.actors.reply_guard import UserReplyRefused
 from tolokaforge.core.actors.turn_policy import TurnPolicy, TurnState
 from tolokaforge.core.llm import SIMULATOR_GREETING, GenerationResult, LLMClient, UserSimulator
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
@@ -17,17 +19,21 @@ from tolokaforge.core.loop import (
     UserTurnResult,
 )
 from tolokaforge.core.models import (
+    FirstUserMessageSource,
     Message,
     MessageRole,
     Metrics,
     RateLimitProbeBucketMetrics,
     RateLimitProbeRoleMetrics,
     RecordedToolCall,
+    ReplyDefect,
     TerminationReason,
     ToolExecutionStatus,
     ToolExecutorIdentity,
     Trajectory,
     TrialStatus,
+    UserReplyGuardEvent,
+    UserReplyOutcome,
 )
 from tolokaforge.core.models.task_config import InteractionMode, TaskConfig
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
@@ -169,6 +175,13 @@ class TrialRunner:
         # :meth:`UserSimulator.reply` for tests that drive the runner's helper
         # methods directly.
         self._user_observation: LLMCallObservation | None = None
+        # How turn 0 was delivered, stamped by ``_seed_first_user_message`` and
+        # carried onto the trajectory. Stays ``None`` when the bootstrap never
+        # completed — a trial that failed before turn 0 has no such source.
+        self._first_user_message_source: FirstUserMessageSource | None = None
+        # One entry per dispatched user turn the reply guard did not accept on
+        # its first generation, carried onto the trajectory.
+        self._user_reply_guard_events: list[UserReplyGuardEvent] = []
         # Set when the simulator emits a substantive final reply glued to the
         # ``###STOP###`` token in the same message. On the next user turn the
         # runner terminates before calling the simulator so the agent gets
@@ -644,19 +657,47 @@ class TrialRunner:
 
         if decision.first_user_message is not None:
             first_user_text = decision.first_user_message
-            self.logger.debug("Using provided initial_user_message directly")
+            self._first_user_message_source = FirstUserMessageSource.PINNED
         elif decision.bootstrap_via_simulator:
             first_user_text = self._bootstrap_via_simulator()
+            self._first_user_message_source = FirstUserMessageSource.SIMULATOR
         else:
             raise RuntimeError(
                 "BootstrapDecision must supply first_user_message or bootstrap_via_simulator=True"
             )
 
+        self.logger.info(
+            "First user message delivered",
+            source=self._first_user_message_source.value,
+        )
         self.messages.append(
             Message(
                 role=MessageRole.USER,
                 content=first_user_text,
                 ts=datetime.now(tz=timezone.utc),
+            )
+        )
+
+    def _record_user_reply_guard(
+        self,
+        *,
+        message_index: int,
+        outcome: UserReplyOutcome,
+        rejected: Sequence[ReplyDefect],
+    ) -> None:
+        """Record what one dispatched user turn cost the reply guard.
+
+        A turn the guard accepted on its first generation rejected nothing and
+        records nothing, so a trial that never broke frame carries an empty list
+        rather than one no-op row per turn.
+        """
+        if not rejected:
+            return
+        self._user_reply_guard_events.append(
+            UserReplyGuardEvent(
+                message_index=message_index,
+                outcome=outcome,
+                rejected=list(rejected),
             )
         )
 
@@ -668,13 +709,14 @@ class TrialRunner:
         catches 429s (see the ``is_rate_limit`` guard below), and under probe
         mode the simulator's own client already polls 429s at a fixed interval
         for up to its per-call budget — strictly more tolerant than 4 attempts
-        of 2/4/8 s backoff — so the outer attempts are redundant. Dropping
-        them also keeps this step's worst case at one simulator budget instead
-        of ``init_attempts`` of them, which is what makes the budget invariant
-        alone sufficient to bound the trial under its
-        ``max(300, episode_s * 2)`` queue lease. Non-429 errors are unaffected:
-        they were never retried here, and the client's own five-attempt
-        exponential path still covers them under probe mode.
+        of 2/4/8 s backoff — so the outer attempts are redundant. Dropping them
+        also keeps this step's worst case at the simulator budgets one guarded
+        reply can spend (``USER_REPLY_MAX_ATTEMPTS`` of them, the term
+        ``turn_budget_s`` already carries) instead of ``init_attempts`` times as
+        many, which is what makes the budget invariant alone sufficient to bound
+        the trial under its ``max(300, episode_s * 2)`` queue lease. Non-429
+        errors are unaffected: they were never retried here, and the client's own
+        five-attempt exponential path still covers them under probe mode.
         """
         if self.user_simulator is None:
             raise RuntimeError(
@@ -694,6 +736,11 @@ class TrialRunner:
                 first_user_result = self.user_simulator.reply(
                     greeting_context, observation=self._user_observation
                 )
+                self._record_user_reply_guard(
+                    message_index=len(self.messages),
+                    outcome=UserReplyOutcome.DELIVERED,
+                    rejected=first_user_result.guard_rejections,
+                )
                 # An empty opening would seed the transcript with a blank USER
                 # turn: the simulator's flipped context then drops it, loses
                 # every trace of having asked, and restarts the conversation —
@@ -705,6 +752,16 @@ class TrialRunner:
                     )
                 self.logger.debug("User simulator generated first message")
                 return first_user_result.text
+            except UserReplyRefused as exc:
+                # Before the re-raise: the trial dies here, and the evidence for
+                # why has to outlive the exception. A refusal is never a rate
+                # limit, so it must not reach the retry branch below either.
+                self._record_user_reply_guard(
+                    message_index=len(self.messages),
+                    outcome=UserReplyOutcome.REFUSED,
+                    rejected=exc.rejected,
+                )
+                raise
             except Exception as exc:
                 is_rate_limit = self._is_rate_limit_error(exc)
                 if is_rate_limit and attempt < init_attempts:
@@ -814,7 +871,24 @@ class TrialRunner:
                 )
             )
 
-        user_result = actor.reply(messages, observation=self._user_observation)
+        # Read before the dispatch: this is the position the turn's USER message
+        # will occupy, and on a stop token or a refusal the loop puts its own
+        # SYSTEM message there instead.
+        message_index = len(messages)
+        try:
+            user_result = actor.reply(messages, observation=self._user_observation)
+        except UserReplyRefused as exc:
+            self._record_user_reply_guard(
+                message_index=message_index,
+                outcome=UserReplyOutcome.REFUSED,
+                rejected=exc.rejected,
+            )
+            raise
+        self._record_user_reply_guard(
+            message_index=message_index,
+            outcome=UserReplyOutcome.DELIVERED,
+            rejected=user_result.guard_rejections,
+        )
 
         if "###STOP###" in user_result.text:
             pre_stop_text, _, _ = user_result.text.partition("###STOP###")

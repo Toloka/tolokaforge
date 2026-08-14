@@ -23,10 +23,12 @@ from tolokaforge.core.run_display_events import (
     DEFAULT_PROBE_BUCKET_WIDTH_S,
     DEFAULT_PROBE_MAX_BUCKETS,
 )
+from tolokaforge.docker.config import DockerConfig
 
 __all__ = [
     "ComputeConfig",
     "DOCKER_RUNTIME_ALIAS_TARGET",
+    "DockerConfig",
     "EngineConfig",
     "EvaluationConfig",
     "HarnessAdapterConfig",
@@ -50,6 +52,7 @@ __all__ = [
     "TimeoutConfig",
     "TracingConfig",
     "TypeSenseConfig",
+    "USER_REPLY_MAX_ATTEMPTS",
     "validate_rate_limit_probe_budget",
 ]
 
@@ -92,6 +95,23 @@ are pre-existing engine properties that a probe-off run shares;
 :func:`validate_rate_limit_probe_budget` uses the nominal value so that the
 probe's *own* knobs are bounded against a stated reference rather than against
 zero."""
+
+
+USER_REPLY_MAX_ATTEMPTS = 3
+"""How many generations one user turn may cost before the trial is refused.
+
+The user-reply guard (:mod:`tolokaforge.core.actors.reply_guard`) discards a
+reply a detector flags and regenerates it, so a single turn can issue up to this
+many simulator calls. It is declared here, away from the guard that reads it,
+because ``reply_guard`` imports this package for
+:class:`~tolokaforge.core.models.trajectory.ReplyDefect` — declaring it beside
+the guard and importing it back would close an import cycle.
+
+A module constant rather than a run-config field on purpose:
+:func:`validate_rate_limit_probe_budget` multiplies the simulator's per-call
+budget by it, so an operator able to raise it from a run config could defeat
+that invariant from the config file — the same failure mode that makes
+``retry_interval_s`` one of the knobs the invariant below reads."""
 
 
 class RateLimitProbeConfig(BaseModel):
@@ -145,8 +165,9 @@ class RateLimitProbeConfig(BaseModel):
     provider quota, so it has to absorb 429s or a simulator 429 kills the trial
     the agent-side probe was keeping alive — but the simulator's throughput is
     not what the probe measures, so paying agent-sized wall time for it only
-    eats the trial's lease headroom. It is part of the budget invariant because
-    one turn issues one call of each (see
+    eats the trial's lease headroom. It is part of the budget invariant, and
+    enters it multiplied by :data:`USER_REPLY_MAX_ATTEMPTS`, because one turn
+    issues one agent call and up to that many simulator calls (see
     :func:`validate_rate_limit_probe_budget`)."""
 
     bucket_width_s: int = Field(default=DEFAULT_PROBE_BUCKET_WIDTH_S, gt=0)
@@ -203,12 +224,19 @@ class RateLimitProbeConfig(BaseModel):
     def turn_budget_s(self) -> float:
         """Worst-case 429 wall time one *uninterrupted turn* can spend.
 
-        A turn issues one probe-capable call per role — the agent's
-        ``generate`` and then the user simulator's ``reply``
-        (``ToolCallingLoop._run_turn`` -> ``_advance_user_turn``) — and the
-        episode timeout is only evaluated *between* turns, so both budgets can
-        be spent back to back with nothing able to interrupt them."""
-        return self.per_call_budget_s + self.simulator_per_call_budget_s
+        A turn issues the agent's ``generate`` and then the user simulator's
+        ``reply`` (``ToolCallingLoop._run_turn`` -> ``_advance_user_turn``),
+        and the episode timeout is only evaluated *between* turns, so every
+        budget below can be spent back to back with nothing able to interrupt
+        them.
+
+        The simulator term is multiplied by :data:`USER_REPLY_MAX_ATTEMPTS`:
+        the user-reply guard regenerates a reply a detector flags, each
+        regeneration is a fresh retry controller carrying the whole simulator
+        budget, and a 429 does not consume a guard attempt — it propagates out
+        of the generation the guard called — so the worst cases compound
+        instead of excluding each other."""
+        return self.per_call_budget_s + USER_REPLY_MAX_ATTEMPTS * self.simulator_per_call_budget_s
 
     @property
     def call_overshoot_s(self) -> float:
@@ -230,11 +258,13 @@ class RateLimitProbeConfig(BaseModel):
 
     @property
     def turn_overshoot_s(self) -> float:
-        """The per-turn overshoot: :attr:`call_overshoot_s` for both calls.
+        """The per-turn overshoot: :attr:`call_overshoot_s` for every call.
 
-        One turn issues one probe-capable call per role and neither can be
-        interrupted, so both overshoots land inside the same turn."""
-        return 2.0 * self.call_overshoot_s
+        One turn issues the agent's call plus up to
+        :data:`USER_REPLY_MAX_ATTEMPTS` simulator calls, none of which can be
+        interrupted, so every one of those overshoots lands inside the same
+        turn."""
+        return (1 + USER_REPLY_MAX_ATTEMPTS) * self.call_overshoot_s
 
     @property
     def turn_wall_ceiling_s(self) -> float:
@@ -255,14 +285,15 @@ def validate_rate_limit_probe_budget(
     """Raise when a probe's per-turn 429 handling cannot fit inside the episode budget.
 
     A call already blocked in 429 backoff is not interrupted mid-flight — the
-    episode timeout is only evaluated between turns — and one turn issues *two*
-    probe-capable calls (the agent's, then the user simulator's). The episode
-    check can pass with elapsed time a hair under ``episode_timeout_s``, so the
-    worst-case trial wall time is ``episode_timeout_s`` plus one whole turn of
-    429 handling::
+    episode timeout is only evaluated between turns — and one turn issues the
+    agent's call plus up to :data:`USER_REPLY_MAX_ATTEMPTS` user-simulator
+    calls, because the user-reply guard regenerates a reply a detector flags
+    rather than editing it. The episode check can pass with elapsed time a hair
+    under ``episode_timeout_s``, so the worst-case trial wall time is
+    ``episode_timeout_s`` plus one whole turn of 429 handling::
 
-        turn_wall_ceiling_s = turn_budget_s        # both per-call budgets
-                            + turn_overshoot_s    # both calls' overshoot
+        turn_wall_ceiling_s = turn_budget_s        # agent + guard-many simulator budgets
+                            + turn_overshoot_s    # one overshoot per call
 
     A call's overshoot is one jitter-maximum retry interval plus one attempt's
     own ceiling (:data:`RATE_LIMIT_PROBE_ATTEMPT_CEILING_S`), because ``stop`` is
@@ -271,8 +302,9 @@ def validate_rate_limit_probe_budget(
     Holding ``turn_wall_ceiling_s`` strictly below ``episode_timeout_s`` bounds
     the probe-attributable wall time at ``2 x episode_timeout_s``, which is
     exactly the queue-lease horizon (``max(300, episode_s * 2)``). Every knob
-    that can stretch a turn's 429 handling is read: both per-call budgets,
-    ``retry_interval_s`` and ``jitter_fraction``. ``retry_interval_s`` has no
+    that can stretch a turn's 429 handling is read: each role's per-call budget,
+    ``retry_interval_s`` and ``jitter_fraction``, with the guard's attempt count
+    as a fixed multiplier the config cannot move. ``retry_interval_s`` has no
     upper field bound, and an invariant that ignores it is defeatable by that one
     knob while every other budget sits at its documented default.
 
@@ -304,13 +336,16 @@ def validate_rate_limit_probe_budget(
         raise ValueError(
             f"{source}: rate_limit_probe worst-case per-turn 429 wall time "
             f"({probe.turn_wall_ceiling_s}s = per_call_budget_s "
-            f"{probe.per_call_budget_s}s + simulator_per_call_budget_s "
-            f"{probe.simulator_per_call_budget_s}s + {probe.turn_overshoot_s}s "
-            f"of overshoot for the two calls, at retry_interval_s "
+            f"{probe.per_call_budget_s}s + {USER_REPLY_MAX_ATTEMPTS} x "
+            f"simulator_per_call_budget_s {probe.simulator_per_call_budget_s}s "
+            f"+ {probe.turn_overshoot_s}s of overshoot for those "
+            f"{1 + USER_REPLY_MAX_ATTEMPTS} calls, at retry_interval_s "
             f"{probe.retry_interval_s}s and jitter_fraction "
             f"{probe.jitter_fraction}) must be strictly below the effective "
-            f"episode budget ({episode_timeout_s}s). One turn issues both calls "
-            "back to back, the episode timeout is only checked between turns, "
+            f"episode budget ({episode_timeout_s}s). One turn issues the agent's "
+            f"call and up to {USER_REPLY_MAX_ATTEMPTS} user-simulator calls — the "
+            "reply guard regenerates a reply a detector flags instead of editing it "
+            "— back to back, the episode timeout is only checked between turns, "
             "and stop is evaluated on an attempt's outcome — so a larger budget "
             "lets the trial outlive its queue lease and be re-run by another "
             "worker. Lower per_call_budget_s / simulator_per_call_budget_s / "
@@ -854,6 +889,7 @@ class RunConfig(BaseModel):
     compute: ComputeConfig | None = None
     storage: StorageConfig | None = None
     observability: ObservabilityConfig | None = None
+    docker: DockerConfig | None = None
 
     @property
     def effective_workers(self) -> int:

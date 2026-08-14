@@ -1,11 +1,11 @@
-# 0032. External harness plugin discovery — pip-installable harness bundles
+# 0034. External harness plugin discovery — pip-installable harness bundles
 
 - **Status:** Accepted
 - **Date:** 2026-08-13
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
 - **Superseded by:** —
-- **Extends:** [ADR-0031](0031-external-harness-registry.md) — realises its
+- **Extends:** [ADR-0033](0033-external-harness-registry.md) — realises its
   **Option 3**, the entry-point plugin discovery that ADR deferred. The shipped
   YAML and the operator overlay it decided are unchanged; this ADR adds one
   layer between them.
@@ -15,7 +15,7 @@
 
 ## Context and Problem Statement
 
-[ADR-0031](0031-external-harness-registry.md) closed the harness registry as
+[ADR-0033](0033-external-harness-registry.md) closed the harness registry as
 data: `data/harnesses.yaml` inside the adapter wheel, plus an
 operator-pointed overlay named by
 `evaluation.harness_adapter.params.harness_presets_file`. That covers two of
@@ -30,7 +30,7 @@ the three people who want to add a harness, and leaves out the third:
 - The **external contributor** has neither address. Their harness is either
   upstreamed into a repo they do not own, or it is a YAML they mail around.
 
-ADR-0031 deferred entry-point discovery for want of "evidence of cross-project
+ADR-0033 deferred entry-point discovery for want of "evidence of cross-project
 reuse". The Arena expansion supplied it: three CLIs (Kimi Code, OpenCode, Grok
 Build) landed in the shipped YAML in one week, each needed by a matrix run
 rather than by tolokaforge itself, and each carrying knobs — an install
@@ -46,9 +46,9 @@ finds without being told.
 ## Decision Drivers
 
 - **An external contributor can ship a harness bundle without an adapter
-  release** — and without commit rights on this repo. The driver ADR-0031's
+  release** — and without commit rights on this repo. The driver ADR-0033's
   Option 3 named and deferred.
-- Everything ADR-0031 already decided: **one address per harness**, **Pydantic
+- Everything ADR-0033 already decided: **one address per harness**, **Pydantic
   + `extra="forbid"` + snapshot** ([ADR-0011](0011-seam-and-declaration-conventions.md)
   Pattern B), **no thread-hostile mutation** of the module-level registry, and
   **loud-fail per AGENTS.md rule 1**.
@@ -103,7 +103,7 @@ my_org = "my_org.tolokaforge_harnesses"
   `tolokaforge_adapter_terminal_bench.harness`, and is exported.
 - It is **adapter-namespaced**, not `tolokaforge.*`: the harness registry is
   the terminal-bench adapter's surface, and the engine core never learns these
-  names ([ADR-0031](0031-external-harness-registry.md) § Context). A
+  names ([ADR-0033](0033-external-harness-registry.md) § Context). A
   `tolokaforge.harness_registries` group would imply the engine consumes it.
 - The entry point's **value is the plugin's Python package**; the package
   ships its registry beside its `__init__.py` as `harnesses.yaml`, read
@@ -111,7 +111,7 @@ my_org = "my_org.tolokaforge_harnesses"
   (`PLUGIN_REGISTRY_RESOURCE`), not a second declaration: a
   `HARNESS_REGISTRY_FILE` module attribute would be a second address for one
   fact, and could disagree with what the wheel actually contains — the failure
-  ADR-0031's "one address per harness" driver exists to prevent. A contributor
+  ADR-0033's "one address per harness" driver exists to prevent. A contributor
   copying the shipped registry's own file name is the whole contract.
 - The bundle's shape is `data/harnesses.yaml`'s shape, loaded by the same
   `load_harness_registry`. A plugin's typo is refused with the message an
@@ -128,7 +128,7 @@ shipped data/harnesses.yaml
   ← operator overlay (harness_presets_file)  — overlay wins, silently
 ```
 
-Whole-entry replacement, never field-wise, for ADR-0031's reason: a merge
+Whole-entry replacement, never field-wise, for ADR-0033's reason: a merge
 would let a bundle silently inherit a default it never meant to keep — a
 pinned CLI version, a mandatory permission flag, an `env_model_vars` quartet —
 and produce an invocation no layer declared.
@@ -176,7 +176,7 @@ No plugin, no line: the common case stays silent.
 - The shipped registry stops being the only address for a harness anyone
   wants, so it can stay what it should be: the set this repo keeps working.
 - Nothing changes when no plugin is installed. The shipped-plus-overlay
-  behaviour ADR-0031 decided is bit-identical, and the existing canonical
+  behaviour ADR-0033 decided is bit-identical, and the existing canonical
   snapshots stay valid — a plugin bundle produces the same `HarnessSpec`
   through the same loader, so there is no new wire shape to pin.
 - One discovery primitive across the repo's seven entry-point groups, one
@@ -190,7 +190,7 @@ No plugin, no line: the common case stays silent.
   `disable_harness_plugins`, but not eliminated — an operator who installs a
   bundle is trusting its publisher exactly as they trust any dependency.
 - **A plugin bundle is not part of the staging digest by publisher.** The
-  *resolved spec* is (ADR-0031), so two adapters differing by an overlaid or
+  *resolved spec* is (ADR-0033), so two adapters differing by an overlaid or
   plugin-supplied spec do not share a staging directory. But two plugins
   shipping byte-identical specs under one name are indistinguishable to the
   digest — correctly, since they would produce the same image and the same
@@ -209,13 +209,13 @@ No plugin, no line: the common case stays silent.
   README is the whole contract, but a real minimal package on PyPI would be a
   faster starting point for the first external contributor. File when one asks.
 - **Sidecar Python module for new harness classes** — still open from
-  ADR-0031. A CLI whose invocation shape fits no `HarnessSpec` field needs
+  ADR-0033. A CLI whose invocation shape fits no `HarnessSpec` field needs
   code, not data, and no entry-point group makes that a YAML.
 
 ## Links
 
 - Related ADRs:
-  - [ADR-0031](0031-external-harness-registry.md) — the shipped YAML and
+  - [ADR-0033](0033-external-harness-registry.md) — the shipped YAML and
     operator overlay this ADR layers between; its Option 3 is what this
     decides.
   - [ADR-0002](0002-external-model-registry.md) — the same deferral, and the
