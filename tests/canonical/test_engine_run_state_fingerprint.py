@@ -1,6 +1,6 @@
-"""Locks the ``models_fingerprint`` field on ``engine_run_state.json``.
+"""Locks the fingerprint fields on ``engine_run_state.json``.
 
-Two behaviour surfaces:
+Three behaviour surfaces:
 
 * **Overlay sensitivity of the on-disk field** — writing the fingerprint
   from a baseline module state, then reinstalling an overlay and rewriting,
@@ -12,6 +12,9 @@ Two behaviour surfaces:
   this lock, a future refactor could swap the computed fingerprint for a
   static fixture at the write site and still compile with every other
   test green.
+* **The adapter self-report map** — both orchestrator entry paths write
+  ``adapter_fingerprints``, empty when the installed adapter reports
+  nothing, so a consumer never has to tell an absent key from an empty one.
 
 Canonical tier: resolution goes through the in-memory conductor + runtime
 backend so the orchestrator run is Docker-free and LLM-free.
@@ -116,6 +119,7 @@ def test_overlay_changes_persisted_fingerprint(
         run_id="fingerprint-baseline",
         presets_file=None,
         models_fingerprint=baseline_fp,
+        adapter_fingerprints={},
     )
     baseline_state = read_engine_run_state(tmp_path)
 
@@ -152,6 +156,7 @@ def test_overlay_changes_persisted_fingerprint(
         run_id="fingerprint-overlay",
         presets_file=preset_overlay,
         models_fingerprint=overlay_fp,
+        adapter_fingerprints={},
     )
     persisted_overlay = read_persisted_models_fingerprint(tmp_path)
 
@@ -200,6 +205,9 @@ def test_orchestrator_persists_fingerprint_matching_seam(flat_pack: Path, tmp_pa
     adapter_stub.get_task_dir.side_effect = lambda _tid: task_dir
     adapter_stub.docker_stack_requirements.return_value = None
     adapter_stub.trial_grader_name = "runner_rpc"
+    # A stub adapter reports nothing; left unstubbed it would hand the writer
+    # a `MagicMock` that `json.dumps` cannot serialise.
+    adapter_stub.fingerprint.return_value = None
     orch.adapter = adapter_stub
     orch.run(run_id=run_id, output_dir=output_dir)
 
@@ -208,3 +216,38 @@ def test_orchestrator_persists_fingerprint_matching_seam(flat_pack: Path, tmp_pa
 
     assert persisted is not None
     assert persisted == expected
+    assert read_engine_run_state(output_dir)["adapter_fingerprints"] == {}
+
+
+def test_prepare_run_records_an_empty_adapter_fingerprint_map(
+    flat_pack: Path, tmp_path: Path
+) -> None:
+    """``adapter_fingerprints`` is on the file even when nothing reports.
+
+    Drives ``prepare_run`` with a real :class:`NativeAdapter` — the shipped
+    adapter overrides no fingerprint seam, so the map is empty, and a consumer
+    still finds the key rather than having to distinguish "absent" from "none".
+    """
+    run_id = "fingerprint-prepare-lock"
+    output_dir = tmp_path / run_id
+    config = RunConfig(
+        models={"agent": ModelConfig(**_AGENT)},
+        orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+        evaluation=EvaluationConfig(
+            output_dir=str(output_dir),
+            projects=[str(flat_pack)],
+            tasks_glob="tasks/**/task.yaml",
+            grading_validation=GradingValidationConfig(fail_on=GradingFindingSeverity.ERROR),
+        ),
+    )
+    orch = Orchestrator(
+        config,
+        deps=OrchestratorDeps(
+            runtime_backend=InMemoryRuntimeBackend(),
+            conductor_factory=lambda _ctx: InMemoryConductor(),
+        ),
+    )
+    orch.prepare_run(output_dir)
+
+    assert isinstance(orch.adapter, NativeAdapter)
+    assert read_engine_run_state(output_dir)["adapter_fingerprints"] == {}

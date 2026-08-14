@@ -470,6 +470,18 @@ class BaseAdapter(ABC):
         """
         return DockerStackRequirements()
 
+    def fingerprint(self) -> dict[str, Any] | None:
+        """What this adapter reports about the resolved inputs it ran on.
+
+        A self-report. The engine records the returned payload verbatim under
+        ``adapter_fingerprints[<adapter type>]`` on ``engine_run_state.json``
+        and neither validates nor interprets it, so it must be JSON-safe.
+
+        The default returns ``None``: an adapter reports nothing until it has
+        resolved inputs worth naming.
+        """
+        return None
+
     def convert_to_native(self, task_id: str) -> NativeTaskBundle:
         """Convert an external task to native TolokaForge format.
 

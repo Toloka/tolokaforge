@@ -3,9 +3,10 @@
 The file carries the engine-level inputs a worker subprocess needs to join
 a run without the operator threading them through every ``tolokaforge
 worker`` invocation: the canonical ``run_id`` for the run, the preset
-overlay path active when ``tolokaforge prepare`` ran, and the resolved
+overlay path active when ``tolokaforge prepare`` ran, the resolved
 model-data fingerprint identifying which
-:mod:`tolokaforge.core.model_data` snapshot the run was scored against.
+:mod:`tolokaforge.core.model_data` snapshot the run was scored against,
+and whatever the installed adapter reports about its own resolved inputs.
 
 The file is small, JSON, and intentionally separate from the queue database
 so that adding new engine-level fields later does not require a schema
@@ -16,6 +17,7 @@ auditability" for the fingerprint field.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +35,7 @@ def write_engine_run_state(
     run_id: str,
     presets_file: str | None,
     models_fingerprint: ModelsFingerprint,
+    adapter_fingerprints: Mapping[str, Any],
 ) -> None:
     """Write ``engine_run_state.json`` next to the run queue.
 
@@ -46,6 +49,10 @@ def write_engine_run_state(
     :func:`tolokaforge.core.model_data_fingerprint.compute_models_fingerprint`
     at each write site so a completed run identifies both the resolved
     bundle and any operator overlay folded on top.
+    ``adapter_fingerprints`` is required and carries each installed
+    adapter's own self-report, keyed by adapter type; it is written
+    verbatim, so a payload that is not JSON-safe raises here at run start
+    rather than at read time. ``{}`` means no adapter reported one.
     """
     if not run_id:
         raise ValueError("run_id must be a non-empty string")
@@ -53,6 +60,7 @@ def write_engine_run_state(
         "run_id": run_id,
         "presets_file": presets_file,
         "models_fingerprint": models_fingerprint.model_dump(mode="json"),
+        "adapter_fingerprints": dict(adapter_fingerprints),
     }
     (Path(run_dir) / _FILENAME).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 

@@ -97,6 +97,7 @@ def _orchestrator_trajectory(base_dir: Path, task, output_dir: Path) -> Trajecto
     adapter_stub.to_task_description.side_effect = lambda _tid: task_desc
     adapter_stub.docker_stack_requirements.return_value = None
     adapter_stub.trial_grader_name = "runner_rpc"
+    adapter_stub.fingerprint.return_value = None
     orch.adapter = adapter_stub
     orch.run()
     (trajectory,) = orch.results

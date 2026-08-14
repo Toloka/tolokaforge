@@ -64,9 +64,11 @@ rolled up run-wide in `aggregate.json` → `captured_service_logs` (see
 
 Written under `{output_dir}/` at run start by both `tolokaforge run` and
 `tolokaforge prepare`. Carries the engine-level inputs a worker subprocess
-needs to join a run and the resolved model-data snapshot the run was
-scored against, so a completed run identifies both the effective preset
-overlay and the exact tolokaforge-models resolution behind every score.
+needs to join a run, the resolved model-data snapshot the run was
+scored against, and whatever the installed adapter reports about its own
+resolved inputs — so a completed run identifies the effective preset
+overlay, the exact tolokaforge-models resolution behind every score, and
+the adapter-side inputs that drove the trials.
 
 ```json
 {
@@ -77,7 +79,8 @@ overlay and the exact tolokaforge-models resolution behind every score.
     "content_sha256": "9f0d…64-hex chars…",
     "api_version": 1,
     "minimum_engine_version": ">=0.17,<1.0"
-  }
+  },
+  "adapter_fingerprints": {}
 }
 ```
 
@@ -86,6 +89,7 @@ overlay and the exact tolokaforge-models resolution behind every score.
 | `run_id` | string | Canonical run identifier — the `{output_dir}` basename. Stamped on every `TrialSpec.run_id` so workers reuse it across the queue. |
 | `presets_file` | string \| null | Absolute path to the preset overlay active when `prepare` / `run` executed, or `null` when no overlay was in effect. Workers launched later from the same `--run-dir` read this to reinstall the same overlay without an explicit `--presets-file` on every invocation. |
 | `models_fingerprint` | object | Resolved model-data snapshot — see the sub-table below. Absent on runs prepared before this field was introduced; consumers that read this file with the `read_persisted_models_fingerprint` helper get `None` in that case. |
+| `adapter_fingerprints` | object | Per-adapter self-report, keyed by adapter type (`"terminal_bench"`, `"native"`, …). Each value is whatever that adapter's `fingerprint()` returned — the engine records it verbatim and neither validates nor interprets it, so the shape of a namespace is documented by the adapter that owns it, not here. `{}` when the installed adapter reports nothing, which is the shipped default. Each payload is derived from the adapter's own resolved content; unlike `models_fingerprint` it carries no package or API version, because no adapter-side package boundary is being asserted. |
 
 `models_fingerprint` sub-fields:
 
@@ -97,6 +101,8 @@ overlay and the exact tolokaforge-models resolution behind every score.
 | `minimum_engine_version` | string | PEP 440 specifier the model-data snapshot requires the engine to satisfy — sourced from `tolokaforge_models.minimum_engine_version` at compute time. Parsed via `packaging.specifiers.SpecifierSet`. |
 
 Written via [`tolokaforge.core.engine_run_state.write_engine_run_state`](../tolokaforge/core/engine_run_state.py) with the fingerprint computed by [`tolokaforge.core.model_data_fingerprint.compute_models_fingerprint`](../tolokaforge/core/model_data_fingerprint.py); the on-disk shape is locked by the `ModelsFingerprint` Pydantic model (`extra="forbid"`). See [`docs/adr/0030-tolokaforge-models-split.md`](adr/0030-tolokaforge-models-split.md) § "Fingerprinting for auditability" for the wheel-split context.
+
+`adapter_fingerprints` is populated from [`BaseAdapter.fingerprint()`](../tolokaforge/adapters/base.py) — see [`docs/ADAPTER_INTERFACE.md`](ADAPTER_INTERFACE.md) § Optional Methods for the seam an adapter overrides to report one.
 
 ## `LIMIT_HIT.json`
 
