@@ -12,6 +12,7 @@ bash tool only ``docker exec``s into the already-running agent container.
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -59,12 +60,16 @@ from tolokaforge_adapter_terminal_bench.harness import (
     ENGINE_LOOP,
     HarnessSpec,
     PathResolver,
+    ResolvedHarnessRegistry,
     SkillDelivery,
     harness_command,
     provider_env_input,
     resolve_effective_registry,
     validate_harness,
     validate_provider_env_keys,
+)
+from tolokaforge_adapter_terminal_bench.harness.fingerprint import (
+    compute_harness_fingerprint,
 )
 from tolokaforge_adapter_terminal_bench.task_parser import (
     TerminalBenchTask,
@@ -180,10 +185,11 @@ class TerminalBenchAdapter(BaseAdapter):
             params.get("network_policy", NetworkPolicy.FULL_INTERNET.value)
         )
         self.prebuild_images: bool = params.get("prebuild_images", True)
-        self.harnesses: dict[str, HarnessSpec] = resolve_effective_registry(
+        self._resolved_registry: ResolvedHarnessRegistry = resolve_effective_registry(
             params.get("harness_presets_file"),
             discover_plugins=not params.get("disable_harness_plugins", False),
         )
+        self.harnesses: Mapping[str, HarnessSpec] = self._resolved_registry.harnesses
         self.agent_harness: str = validate_harness(
             params.get("agent_harness", ENGINE_LOOP), self.harnesses
         )
@@ -215,6 +221,14 @@ class TerminalBenchAdapter(BaseAdapter):
     def harness_spec(self) -> HarnessSpec | None:
         """This run's harness spec. ``None`` under the engine loop, which runs no CLI."""
         return self.harnesses.get(self.agent_harness)
+
+    def fingerprint(self) -> dict[str, Any]:
+        """The harness registry this run resolved, under a ``harness`` namespace."""
+        return {
+            "harness": compute_harness_fingerprint(
+                self._resolved_registry, self.agent_harness
+            ).model_dump(mode="json")
+        }
 
     # -- discovery ------------------------------------------------------------
 

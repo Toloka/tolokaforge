@@ -27,6 +27,7 @@ class TestResolveResumeRunDirectory:
             run_id="canonical_run_id",
             presets_file=None,
             models_fingerprint=compute_models_fingerprint(),
+            adapter_fingerprints={},
         )
         _write_run_state(run_dir, run_id="stale_id_in_run_state")
 
@@ -77,6 +78,7 @@ class TestResolveResumeRunDirectory:
             run_id="rid",
             presets_file=None,
             models_fingerprint=compute_models_fingerprint(),
+            adapter_fingerprints={},
         )
 
         _, resolved = resolve_resume_run_directory(run_dir)

@@ -72,6 +72,7 @@ def _seed_run_dir(
         run_id=run_id,
         presets_file=None,
         models_fingerprint=compute_models_fingerprint(),
+        adapter_fingerprints={},
     )
     manager = RunStateManager(run_dir)
     state = manager.initialize_run(

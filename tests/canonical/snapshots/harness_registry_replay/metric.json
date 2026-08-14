@@ -1,5 +1,5 @@
 {
-  "bucket_a_count": 2,
+  "bucket_a_count": 1,
   "bucket_b_count": 11,
   "commits": [
     {
@@ -1360,19 +1360,24 @@
     },
     {
       "adapter_paths": [
+        "docs/OUTPUT_FORMAT.md",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "tests/unit/test_harness_skill_delivery.py"
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/fingerprint.py",
+        "tests/README.md",
+        "tests/unit/test_harness_fingerprint.py"
       ],
       "bucket": "B",
       "date": "2026-08-14",
       "pr": null,
-      "reason": "2 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "3b044fa296463b26fee61101e65aefd9079a80ab",
-      "subject": "fix(tbench): key the skills hash on delivery handoff, not image arrival",
+      "reason": "5 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "3420e7b470e07173be5894641ec92ecb8beded41",
+      "subject": "fix(tbench): reviewer nits \u2014 annotation hygiene + doc caveats + shared-recipe lock",
       "touched_files": [
-        "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
+        "docs/OUTPUT_FORMAT.md",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "tests/unit/test_harness_skill_delivery.py"
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/fingerprint.py",
+        "tests/README.md",
+        "tests/unit/test_harness_fingerprint.py"
       ]
     },
     {
@@ -1380,70 +1385,55 @@
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/path_resolvers.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/protocols.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/task_parser.py",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/data/terminal_bench_tasks/echo-hello-skills/skills/README.md",
+        "tests/unit/test_harness_path_resolver.py",
         "tests/unit/test_harness_skill_delivery.py",
         "tests/unit/test_terminal_bench.py"
       ],
       "bucket": "B",
       "date": "2026-08-14",
-      "pr": null,
-      "reason": "6 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "59a120c429caa4146e9fd771be9eb22f4f4169a9",
-      "subject": "feat(tbench): SkillDelivery seam \u2014 the image-layer COPY becomes one implementation",
+      "pr": 1208,
+      "reason": "11 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "43d84c1d2ac555e1d3da6dc2410defe3ffdb6b9e",
+      "subject": "feat(tbench): PathResolver + SkillDelivery \u2014 runtime seams for the harness surface (#1208)",
       "touched_files": [
         "docs/adr/0033-external-harness-registry.md",
         "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/path_resolvers.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/protocols.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/task_parser.py",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/snapshots/tbench_echo_hello_harness/harness_spec.json",
+        "tests/data/terminal_bench_tasks/echo-hello-skills/skills/README.md",
+        "tests/unit/test_harness_path_resolver.py",
         "tests/unit/test_harness_skill_delivery.py",
         "tests/unit/test_terminal_bench.py"
       ]
     },
     {
       "adapter_paths": [
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/path_resolvers.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/protocols.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/task_parser.py",
-        "tests/data/terminal_bench_tasks/echo-hello-skills/skills/README.md",
-        "tests/unit/test_harness_path_resolver.py",
-        "tests/unit/test_harness_skill_delivery.py"
+        "tests/unit/test_terminal_bench.py"
       ],
       "bucket": "B",
       "date": "2026-08-14",
       "pr": null,
-      "reason": "8 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "831f13ff534dfdc5398606bd7789bf9a60893525",
-      "subject": "fix(tbench): the staging digest carries both harness seams",
+      "reason": "3 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "5330f2feb744ed9661bb8cc2dad6b91e1d7b36ff",
+      "subject": "feat(tbench): registry resolution returns the layers that composed it",
       "touched_files": [
-        "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/path_resolvers.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/protocols.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/task_parser.py",
-        "tests/data/terminal_bench_tasks/echo-hello-skills/skills/README.md",
-        "tests/unit/test_harness_path_resolver.py",
-        "tests/unit/test_harness_skill_delivery.py"
-      ]
-    },
-    {
-      "adapter_paths": [],
-      "bucket": "A",
-      "date": "2026-08-14",
-      "pr": null,
-      "reason": "all touched paths in Bucket-A allow-list",
-      "sha": "8b247dbda877cf2a1477d0ac5bbbdf2cf04b044d",
-      "subject": "feat(tbench): migrate shipped harness registry onto the path vocabulary",
-      "touched_files": [
-        "docs/adr/0033-external-harness-registry.md",
-        "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
-        "tests/canonical/snapshots/tbench_echo_hello_harness/harness_spec.json"
+        "tests/unit/test_terminal_bench.py"
       ]
     },
     {
@@ -1564,26 +1554,29 @@
     },
     {
       "adapter_paths": [
+        "docs/OUTPUT_FORMAT.md",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/path_resolvers.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/protocols.py",
-        "tests/unit/test_harness_path_resolver.py"
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/fingerprint.py",
+        "tests/canonical/test_engine_run_state_harness_fingerprint.py",
+        "tests/unit/test_harness_fingerprint.py",
+        "tests/unit/test_terminal_bench.py",
+        "tests/utils/harness_plugins.py"
       ],
       "bucket": "B",
       "date": "2026-08-14",
       "pr": null,
-      "reason": "5 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "d2096724c0a24be99478fc211e7af90e45f1a1f1",
-      "subject": "feat(tbench): PathResolver seam \u2014 runtime filesystem conventions become injectable",
+      "reason": "7 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "ea754e7050fd959d408358d8c9d189c500d47432",
+      "subject": "feat(tbench): a run names the harness registry it ran on",
       "touched_files": [
-        "docs/adr/0033-external-harness-registry.md",
+        "docs/OUTPUT_FORMAT.md",
         "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/path_resolvers.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/protocols.py",
-        "tests/unit/test_harness_path_resolver.py"
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/fingerprint.py",
+        "tests/canonical/test_engine_run_state_harness_fingerprint.py",
+        "tests/unit/test_harness_fingerprint.py",
+        "tests/unit/test_terminal_bench.py",
+        "tests/utils/harness_plugins.py"
       ]
     }
   ]
