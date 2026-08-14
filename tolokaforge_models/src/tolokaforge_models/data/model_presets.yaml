@@ -406,6 +406,25 @@ presets:
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
 
+  # Gemini 3.7 Flash - third model in this Flash lineage to land the SAME
+  # pair of axes as its 3.5/3.6 siblings above. The observe baseline
+  # (2026-08-14, default preset, 31 capability probes x 15 reps) resolved to
+  # the generic ``gemini`` preset and reproduced the identical signature:
+  # ``recursive_ref`` 0/15 on all four shapes with an in-engine
+  # "$ref resolution exceeded depth 16" crash, plus the ``dict_map``
+  # ``scalar_values`` and ``nested_in_object`` variants 0/15. Routed through
+  # the already-shipped ``gemini_recursive`` sanitizer +
+  # ``scalar_array_dict_map`` response policy; reprobe went 5/5 on every
+  # fix-target. Exact match globs only, declared BEFORE the generic
+  # ``gemini`` glob (first-match-wins), so no sibling route is affected.
+  gemini_37_flash_recursive:
+    match:
+      - "google/gemini-3.7-flash"
+      - "openrouter/google/gemini-3.7-flash"
+    reasoning_codec: gemini
+    schema_sanitizer: gemini_recursive
+    response_policy: scalar_array_dict_map
+
   # Google Gemini family (3.x preview + 3.x GA + 2.5 backstop).
   # ``GeminiReasoningCodec`` decodes Gemini's OpenRouter
   # ``provider_specific_fields.reasoning_details`` envelope: handles
