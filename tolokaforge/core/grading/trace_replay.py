@@ -61,7 +61,13 @@ from tolokaforge.core.models import (
     TraceConstraintResult,
     Trajectory,
 )
-from tolokaforge.core.output.artifacts import read_recorded_tool_log
+from tolokaforge.core.output.artifacts import RedactedBundleError, read_recorded_tool_log
+from tolokaforge.core.output_writer import (
+    GRADE_FILENAME,
+    METRICS_FILENAME,
+    TASK_FILENAME,
+    TRAJECTORY_FILENAME,
+)
 
 __all__ = [
     "TRACE_CHECKS_RESULT_FILENAME",
@@ -149,10 +155,15 @@ class TraceReplayFailure(str, Enum):
     is the one defect that is a property of the corpus's *age* rather than of a
     broken file: an operator reading ``NEVER_DECIDED`` off a corpus that lost
     bundles to it is reading a report about the harness, not about the constraint.
+
+    ``REDACTED_BUNDLE`` is separated for the mirror reason: the bundle is intact and
+    reads perfectly. It was rewritten on purpose, and an operator told its file is
+    unreadable would go looking for damage there is none of.
     """
 
     UNREADABLE_INPUT = "unreadable_input"
     PREDATES_CALL_IDS = "predates_call_ids"
+    REDACTED_BUNDLE = "redacted_bundle"
 
 
 class ConstraintDiscrimination(str, Enum):
@@ -527,10 +538,10 @@ def recorded_task(bundle: Path) -> dict[str, Any]:
     module that need the trial's own account of what it was graded against: the
     differential reads the rubric each bundle recorded off it.
     """
-    task = _load_yaml_mapping(bundle / "task.yaml")
+    task = _load_yaml_mapping(bundle / TASK_FILENAME)
     if task is None:
         raise MissingTraceReplayInputError(
-            f"{bundle / 'task.yaml'} is missing or not a mapping, so nothing says what "
+            f"{bundle / TASK_FILENAME} is missing or not a mapping, so nothing says what "
             "the trial recorded here was graded against"
         )
     return task
@@ -572,14 +583,14 @@ def _resolve_trace_checks(
     declared = _declared_trace_checks(task)
     if declared is None:
         raise MissingTraceReplayInputError(
-            f"no trace_checks: {bundle / 'task.yaml'} declares no "
+            f"no trace_checks: {bundle / TASK_FILENAME} declares no "
             "grading_config.trace_checks and no override was supplied"
         )
     try:
         return TraceChecksConfig.model_validate(declared), ConstraintProvenance.RECORDED
     except ValidationError as exc:
         raise MissingTraceReplayInputError(
-            f"{bundle / 'task.yaml'} declares a trace_checks block that does not validate: {exc}"
+            f"{bundle / TASK_FILENAME} declares a trace_checks block that does not validate: {exc}"
         ) from exc
 
 
@@ -598,7 +609,7 @@ def _is_a_call_id_defect(error: ErrorDetails) -> bool:
 
 
 def _unreadable_trajectory(bundle: Path, error: ValidationError) -> MissingTraceReplayInputError:
-    detail = f"{bundle / 'trajectory.yaml'} did not validate: {error}"
+    detail = f"{bundle / TRAJECTORY_FILENAME} did not validate: {error}"
     if not any(_is_a_call_id_defect(item) for item in error.errors()):
         return MissingTraceReplayInputError(detail)
     return MissingTraceReplayInputError(
@@ -616,13 +627,17 @@ def _load_trajectory(bundle: Path) -> tuple[Trajectory, bool]:
     tool-call record from the ``tool_log.yaml`` sidecar — so what this returns is
     whatever the writer wrote, never a reconstruction of it.
     """
-    persisted = _load_yaml_mapping(bundle / "trajectory.yaml")
+    persisted = _load_yaml_mapping(bundle / TRAJECTORY_FILENAME)
     if persisted is None:
         raise MissingTraceReplayInputError(
-            f"no transcript: {bundle / 'trajectory.yaml'} is missing or not a mapping"
+            f"no transcript: {bundle / TRAJECTORY_FILENAME} is missing or not a mapping"
         )
     try:
         record, tool_log_present = read_recorded_tool_log(bundle)
+    except RedactedBundleError as exc:
+        raise MissingTraceReplayInputError(
+            str(exc), failure=TraceReplayFailure.REDACTED_BUNDLE
+        ) from exc
     except ValueError as exc:
         raise MissingTraceReplayInputError(str(exc)) from exc
     try:
@@ -650,7 +665,7 @@ def _recorded_binary_pass(bundle: Path, grade: dict[str, Any]) -> bool | None:
     if recorded is None or isinstance(recorded, bool):
         return recorded
     raise MissingTraceReplayInputError(
-        f"{bundle / 'grade.yaml'} records binary_pass {recorded!r}, which is neither a "
+        f"{bundle / GRADE_FILENAME} records binary_pass {recorded!r}, which is neither a "
         "pass nor a fail, so the bundle cannot say what the live run concluded"
     )
 
@@ -668,7 +683,7 @@ def _recorded_constraints(bundle: Path, recorded: Any) -> tuple[TraceConstraintR
         return None
     if not isinstance(recorded, list):
         raise MissingTraceReplayInputError(
-            f"{bundle / 'grade.yaml'} holds {type(recorded).__name__} where the live run's "
+            f"{bundle / GRADE_FILENAME} holds {type(recorded).__name__} where the live run's "
             "per-constraint verdicts belong, so the bundle cannot say what it concluded"
         )
     return tuple(TraceConstraintResult.model_validate(item) for item in recorded)
@@ -683,7 +698,7 @@ def recorded_grade(bundle: Path) -> dict[str, Any] | None:
     anything other than a mapping is refused rather than folded into the ``None``: a
     bundle that cannot say what it concluded is not one nobody graded.
     """
-    return _carried_mapping(bundle / "grade.yaml")
+    return _carried_mapping(bundle / GRADE_FILENAME)
 
 
 def _recorded_grade(bundle: Path) -> _RecordedGrade:
@@ -699,17 +714,17 @@ def _recorded_grade(bundle: Path) -> _RecordedGrade:
         )
     except ValidationError as exc:
         raise MissingTraceReplayInputError(
-            f"{bundle / 'grade.yaml'} records trace-check verdicts that do not validate: {exc}"
+            f"{bundle / GRADE_FILENAME} records trace-check verdicts that do not validate: {exc}"
         ) from exc
 
 
 def _schema_version(bundle: Path) -> int | None:
     """The bundle's schema stamp, ``None`` where the bundle predates the stamp."""
-    stamped = (_carried_mapping(bundle / "metrics.yaml") or {}).get("schema_version")
+    stamped = (_carried_mapping(bundle / METRICS_FILENAME) or {}).get("schema_version")
     if stamped is None or (isinstance(stamped, int) and not isinstance(stamped, bool)):
         return stamped
     raise MissingTraceReplayInputError(
-        f"{bundle / 'metrics.yaml'} stamps schema_version {stamped!r}, which is not a "
+        f"{bundle / METRICS_FILENAME} stamps schema_version {stamped!r}, which is not a "
         "version number, so the bundle cannot say which artifacts it carries"
     )
 
@@ -724,7 +739,7 @@ def recorded_task_id(bundle: Path, task: dict[str, Any]) -> str:
     if isinstance(declared, str) and declared:
         return declared
     raise MissingTraceReplayInputError(
-        f"{bundle / 'task.yaml'} names no task_id, so nothing attributes the trial's "
+        f"{bundle / TASK_FILENAME} names no task_id, so nothing attributes the trial's "
         "verdicts to a task — and a constraint id is unique only inside one pack's "
         "block, so an unattributed verdict folds into whatever other pack reused the id"
     )
@@ -890,7 +905,7 @@ def _task_less_disposition(bundle: Path) -> TrialTraceReplayOutcome:
     termination = aborted_without_a_task_snapshot(bundle)
     if termination is None:
         raise MissingTraceReplayInputError(
-            f"{bundle / 'task.yaml'} is missing, so nothing says what the trial recorded "
+            f"{bundle / TASK_FILENAME} is missing, so nothing says what the trial recorded "
             "here was graded against"
         )
     return TrialTraceReplayOutcome(
@@ -914,7 +929,7 @@ def _replay_one_bundle(
     authoring: AuthoringReport | None,
 ) -> TrialTraceReplayOutcome:
     try:
-        if not (bundle / "task.yaml").exists():
+        if not (bundle / TASK_FILENAME).exists():
             return _task_less_disposition(bundle)
         task = recorded_task(bundle)
         if _classify_trace_trial(task, override) is TraceReplayEligibility.NOT_APPLICABLE:
@@ -1087,6 +1102,12 @@ class TraceReplayEvidence(BaseModel):
     run also does. ``schema_versions`` counts the stamps seen, under ``unstamped``
     where a bundle predates the stamp; it is evidence and never a gate.
 
+    ``bundles_predating_call_ids`` and ``bundles_redacted`` are both subsets of
+    ``bundles_failed``, separated because neither is damage: the first is a corpus
+    older than the ids a re-check joins on, the second an intact bundle a policy
+    rewrote before it was written. Reading them out of ``bundles_failed`` alone
+    sends an operator looking for a broken file.
+
     ``bundles_skipped`` counts the bundles that declared no ``trace_checks`` and
     nothing else. A bundle carrying no ``task.yaml`` is counted by
     ``bundles_no_task`` instead: what an aborted trial could not say about a pack
@@ -1100,6 +1121,7 @@ class TraceReplayEvidence(BaseModel):
     bundles_no_task: int
     bundles_failed: int
     bundles_predating_call_ids: int
+    bundles_redacted: int
     schema_versions: dict[str, int]
 
     model_config = {"extra": "forbid"}
@@ -1342,6 +1364,9 @@ def _replay_evidence(outcomes: Sequence[TrialTraceReplayOutcome]) -> TraceReplay
         ),
         bundles_predating_call_ids=sum(
             1 for outcome in outcomes if outcome.failure is TraceReplayFailure.PREDATES_CALL_IDS
+        ),
+        bundles_redacted=sum(
+            1 for outcome in outcomes if outcome.failure is TraceReplayFailure.REDACTED_BUNDLE
         ),
         schema_versions=dict(stamps),
     )

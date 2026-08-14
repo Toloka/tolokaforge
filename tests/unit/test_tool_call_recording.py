@@ -399,8 +399,9 @@ class TestArgumentsAreRecordedVerbatim:
         redacted, so a core-side rewrite of ``token`` / ``password`` / ``secret``
         / ``api_key`` made the two substrates disagree on the same call — and a
         matcher over arguments would pass on one substrate and fail on the
-        other. Redacting an *artifact* is tracked separately (#694); redacting
-        the grader's input is a correctness bug."""
+        other. Redacting an *artifact* is a separate concern, handled by the
+        write policy in ``OutputWriter``; redacting the grader's input is a
+        correctness bug."""
         record = _record_one(
             "authorize", {"token": "sk-live-abc123"}, registry=_registry(_Secretive())
         )

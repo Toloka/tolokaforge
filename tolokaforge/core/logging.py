@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import sys
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -22,6 +21,13 @@ from pathlib import Path
 from typing import Any, TextIO
 
 import yaml
+
+from tolokaforge.core.redaction import (
+    REDACTED_PLACEHOLDER,
+    NoRedaction,
+    RedactionPolicy,
+    key_is_sensitive,
+)
 
 
 class LogFormat(str, Enum):
@@ -70,41 +76,6 @@ _LEVEL_ANSI: dict[str, str] = {
 }
 
 _TOLOKAFORGE_ROOT_HANDLER_SENTINEL = "_tolokaforge_root_handler"
-
-
-#: Substrings identifying context keys whose values must not appear in log
-#: output. Match is case-insensitive on a word-boundary basis so
-#: `password_hash` matches but `max_tokens` / `total_tokens` don't —
-#: telemetry keys carrying `_tokens` suffixes are not credentials.
-#: Extending the list is preferable to whitelisting individual redactions
-#: elsewhere — `_sanitize_extra` is the single choke point.
-_SENSITIVE_KEY_SUBSTRINGS: frozenset[str] = frozenset(
-    {"password", "secret", "api_key", "apikey", "authorization", "credential"}
-)
-
-#: Exact-form token names (word-boundary match) that redact regardless of
-#: surrounding word context. `token` on its own is a credential; `max_tokens`
-#: / `total_tokens` are telemetry. Kept separate from the substring set so a
-#: future ambiguous name is a discussion, not a silent regression.
-_SENSITIVE_KEY_EXACT_TOKENS: frozenset[str] = frozenset(
-    {"token", "access_token", "refresh_token", "bearer", "session_id"}
-)
-
-_REDACTED = "***REDACTED***"
-
-
-def _key_is_sensitive(key: str) -> bool:
-    """Return whether ``key`` names a value that must not appear in logs.
-
-    Substring markers match anywhere in the key (case-insensitive). Exact
-    tokens match on a word boundary (case-insensitive) — `token` matches
-    `bearer_token` and `token`, but not `max_tokens` / `prompt_tokens`.
-    """
-    lower = key.lower()
-    if any(marker in lower for marker in _SENSITIVE_KEY_SUBSTRINGS):
-        return True
-    parts = re.split(r"[^a-z0-9]+", lower)
-    return any(token in _SENSITIVE_KEY_EXACT_TOKENS for token in parts)
 
 
 def _render_scalar(key: str, value: Any) -> str:
@@ -303,17 +274,18 @@ class StructuredLogger:
            are prefixed with `ctx_` so `logging.Logger.log(..., extra=...)`
            doesn't raise `KeyError` at `LogRecord.__init__`. The
            `StructuredFormatter` reads renamed keys via the same rule.
-        2. Values under keys that name a credential (`password`, `secret`,
-           `token`, `api_key`, …) are replaced with `***REDACTED***`.
-           Substring match on the sanitized (post-rename) key, case-
-           insensitive. `_sanitize_extra` is the single choke point for
-           this policy — callers cannot bypass it.
+        2. Values under keys that name a credential are replaced with the
+           placeholder. The vocabulary and the matching rule live in
+           :mod:`tolokaforge.core.redaction`, shared with the artifact
+           writer; the match runs on the sanitized (post-rename) key.
+           `_sanitize_extra` is the single choke point on the log path —
+           callers cannot bypass it.
         """
         sanitized: dict[str, Any] = {}
         for key, value in context.items():
             safe_key = f"ctx_{key}" if key in _LOG_RECORD_RESERVED else key
-            if _key_is_sensitive(safe_key):
-                sanitized[safe_key] = _REDACTED
+            if key_is_sensitive(safe_key):
+                sanitized[safe_key] = REDACTED_PLACEHOLDER
             else:
                 sanitized[safe_key] = value
         return sanitized
@@ -403,15 +375,21 @@ class StructuredLogger:
         """
         self._log("ERROR", message, context, **kwargs)
 
-    def save_to_file(self, path: Path):
+    def save_to_file(self, path: Path, redaction: RedactionPolicy = NoRedaction()):
         """Save collected logs to YAML file
 
         Args:
             path: Output file path
+            redaction: Applied to each record on its way out; the default writes
+                them as collected. A trial bundle passes its writer's policy,
+                which is what reaches a credential nested inside a record's
+                context — `_sanitize_extra` reads top-level keys only. The
+                collected records themselves are left untouched.
         """
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        output = {"trial_id": self.name, "total_logs": len(self.logs), "logs": self.logs}
+        records = [redaction.redact_mapping(entry) for entry in self.logs]
+        output = {"trial_id": self.name, "total_logs": len(records), "logs": records}
 
         with open(path, "w") as f:
             yaml.dump(output, f, default_flow_style=False, allow_unicode=True, sort_keys=False)

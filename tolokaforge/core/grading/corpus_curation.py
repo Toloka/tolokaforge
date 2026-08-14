@@ -59,8 +59,14 @@ from tolokaforge.core.grading.trace_replay import (
     recorded_task_id,
 )
 from tolokaforge.core.models import JudgeStatus, RecordedToolCall, ToolExecutionStatus
-from tolokaforge.core.output.artifacts import read_recorded_tool_log
-from tolokaforge.core.output_writer import TOOL_LOG_FILENAME
+from tolokaforge.core.output.artifacts import RedactedBundleError, read_recorded_tool_log
+from tolokaforge.core.output_writer import (
+    GRADE_FILENAME,
+    METRICS_FILENAME,
+    TASK_FILENAME,
+    TOOL_LOG_FILENAME,
+    TRAJECTORY_FILENAME,
+)
 
 __all__ = [
     "CORPUS_CARRIED_FILES",
@@ -80,10 +86,10 @@ __all__ = [
 #: The manifest a corpus directory carries, and what makes a directory one.
 CORPUS_MANIFEST_FILENAME = "corpus.yaml"
 #: Written for every admitted bundle — the admission rule guarantees all three.
-CORPUS_REQUIRED_FILES = ("task.yaml", "trajectory.yaml", "grade.yaml")
+CORPUS_REQUIRED_FILES = (TASK_FILENAME, TRAJECTORY_FILENAME, GRADE_FILENAME)
 #: Written where the source bundle carries them. ``tool_log.yaml``'s absence changes
 #: what a constraint can read, so the manifest records it per bundle as well.
-CORPUS_CARRIED_FILES = ("tools_schemas.yaml", "metrics.yaml", TOOL_LOG_FILENAME)
+CORPUS_CARRIED_FILES = ("tools_schemas.yaml", METRICS_FILENAME, TOOL_LOG_FILENAME)
 
 #: The subdirectory a run keeps its trials under: ``<run-id>/trials/<task-id>/<index>``.
 _RUN_TRIALS_DIRNAME = "trials"
@@ -285,7 +291,7 @@ def _discovered_bundles(sources: Sequence[Path]) -> list[Path]:
 
 def _classified(bundle: Path, *, criterion: str) -> CuratedBundle | RejectedTrial:
     """Admit *bundle* into the corpus of *criterion*, or name why it does not enter."""
-    if not (bundle / "task.yaml").exists():
+    if not (bundle / TASK_FILENAME).exists():
         return _rule_rejection(bundle, CurationRejection.MISSING_TASK_SNAPSHOT, "no task.yaml")
     grade = _read(bundle, recorded_grade)
     if grade is None:
@@ -341,6 +347,11 @@ def _read(bundle: Path, reader: Callable[[Path], Any]) -> Any:
 def _recorded_tool_calls(bundle: Path) -> tuple[list[RecordedToolCall], bool]:
     try:
         return read_recorded_tool_log(bundle)
+    except RedactedBundleError as exc:
+        raise CurationError(
+            f"{bundle} was redacted before it was written, so it is not evidence of what "
+            f"the agent did: {exc}"
+        ) from exc
     except ValueError as exc:
         raise CurationError(f"{bundle} carries an unreadable tool-call record: {exc}") from exc
 
@@ -387,7 +398,7 @@ def _recorded_agent_model(bundle: Path, task: Mapping[str, Any]) -> str:
     named = _named_model(task, "agent")
     if named is None:
         raise CurationError(
-            f"{bundle / 'task.yaml'} names no model_config.agent.name, so the corpus cannot "
+            f"{bundle / TASK_FILENAME} names no model_config.agent.name, so the corpus cannot "
             f"say which model produced the trial it would admit"
         )
     return named

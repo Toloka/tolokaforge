@@ -236,6 +236,11 @@ recorded rubric does not read as one, a `grade.yaml` whose `criterion_results` h
 is not a judge verdict or whose `score` or component values are not numbers. Each is one named
 entry under `unreadable_trials`, and every other trial in the corpus is still measured.
 
+A bundle whose `metrics.yaml` carries a `redaction` stamp lands there too, under a reason that
+names redaction rather than damage: it was rewritten by a policy before it was written, so it
+is not evidence of what the agent did, and a κ computed partly from it would be a number over
+an unknown denominator.
+
 ## Pooling across tasks
 
 Two tasks may quote one measurement only when they claim the same criterion *and* recompute it

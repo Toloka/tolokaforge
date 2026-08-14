@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from tolokaforge.core.engine_run_state import read_persisted_run_id
 from tolokaforge.core.logging import get_logger
+from tolokaforge.core.output_writer import TRAJECTORY_FILENAME
 
 
 @dataclass(frozen=True)
@@ -225,7 +226,7 @@ class RunStateManager:
             return False
 
         # Check trajectory for 429 error or error status
-        trajectory_path = trial_dir / "trajectory.yaml"
+        trajectory_path = trial_dir / TRAJECTORY_FILENAME
         if trajectory_path.exists():
             try:
                 with open(trajectory_path) as f:

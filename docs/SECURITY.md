@@ -78,10 +78,95 @@ value there changes a grading verdict. A trial whose agent passed a
 and would fail it on one substrate only, since the runner has never rewritten
 anything.
 
-Redaction belongs at artifact-write time, where the concern actually is —
+Redaction happens at artifact-write time, where the concern actually is:
 discretion protects a written artifact, and must not corrupt what the grader
-reads. That layering is tracked in #694; until it lands, treat a recorded run's
-tool-call arguments as carrying whatever the agent passed.
+reads.
+
+### Artifact-Write Redaction
+
+**One vocabulary for what a key name says.** `key_is_sensitive`
+([`tolokaforge/core/redaction.py`](../tolokaforge/core/redaction.py)) is the
+engine's single answer to "does this key name a credential" — substring markers
+(`password`, `secret`, `api_key`, `apikey`, `authorization`, `credential`) matched
+anywhere in the lowercased key, plus exact tokens (`token`, `bearer`) matched per
+non-alphanumeric-delimited part, so `bearer_token` is a credential and
+`max_tokens` is telemetry. Two callers ask it: `StructuredLogger._sanitize_extra`
+per top-level log-context key, and the artifact-write policies per key of every
+mapping the writer puts on disk, at every nesting level. Widening the vocabulary is therefore one edit rather than two
+lists drifting apart.
+
+**Two policies.** `NoRedaction` writes what the agent sent.
+`SensitiveKeyRedaction` replaces credential-named values with `***REDACTED***` at
+every nesting level, descending into nested mappings and into mappings inside
+lists — a trace-check matcher addresses `body.query`-style paths, so a shallow
+rule would leave a credential one level down in the clear.
+
+**A redacting policy rewrites seven files and withholds two.** Every mapping the
+rule can read is rewritten: the tool-call arguments in `trajectory.yaml` and
+`tool_log.yaml`, the final environment snapshot in `env.yaml`, the task snapshot
+in `task.yaml` (its `policies` and resolved `grading_config` are free-form blocks
+a pack fills), each tool schema in `tools_schemas.yaml` (a declared default or
+pinned header can name a credential), the verdict in `grade.yaml` (`state_diff`
+is the environment rows the runner diffed and `custom_checks_details[].details`
+whatever a pack's check recorded), and every record in `logs.yaml` (context keys
+are sanitised where they are logged, but that walk reads top-level keys only and
+callers do log mapping-valued context). The two judge
+sidecars — `judge_trajectory.yaml` and `judge_inputs.yaml` — are withheld
+entirely rather than rewritten, because both render the agent's arguments into
+prose (the transcript quotes the calls, `state_diff_text` the values) that a
+key-name rule cannot reach. The bundle then declares what was done to it in
+`metrics.yaml`'s `redaction` stamp — the policy, the files it rewrote, the files
+it withheld (see [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § `metrics.yaml`).
+The policy runs over the mapping on its way to disk, never over the trajectory
+the run holds, so the live grader reads the arguments the agent sent either way.
+
+The stamp belongs to the writer, not to any one artifact: the moment a policy
+rewrites or withholds anything, the writer puts the stamp in `metrics.yaml` —
+creating that file where the caller writes no metrics of its own, as judge replay
+does. No sequence of writes can leave a rewritten bundle reading as faithful: a
+stamp that cannot be written takes the artifacts it would have named off disk with
+it, because several callers treat the bundle write as best-effort diagnostics and
+a missing bundle is a state every reader already handles.
+
+**The default is `NoRedaction`, deliberately.** Two reasons, and both cut against
+flipping it silently:
+
+1. Both grading substrates record raw, so every recorded run already carries these
+   values. A changed default would change what every new bundle means relative to
+   the corpus beside it.
+2. A redacted bundle cannot be graded offline at all. A constraint over a
+   rewritten argument fails as *decided* — indistinguishable from a trial where
+   the agent never passed it — so `retrace`, `rejudge`, `curate` and `reconcile`
+   refuse a stamped bundle by name rather than answering from it. On by default,
+   that would silently cost every recorded run its re-gradeability.
+
+Selecting a policy is a programmatic constructor argument today; no run config or
+CLI flag reaches it, and no shipped code path constructs anything but the default.
+Exposing an enablement knob is #1171.
+
+**What this does not reach**, stated so the boundary is not mistaken for coverage:
+
+- The rule reads key **names**, never values. A credential travelling under an
+  innocuous key, echoed back in a tool's own output, or quoted in prose is outside
+  it by construction. The value-based pass is #1157.
+  [`tolokaforge.secrets.log_filter`](../tolokaforge/secrets/log_filter.py) is the
+  existing value-based mechanism — a process-global scrub of resolved secret
+  values on every log record — and keeps its own placeholder rather than being
+  merged into this key-name vocabulary while that design is open.
+- **One written artifact a redacting policy leaves untouched, and it is the only
+  one**, every other file in a bundle being either rewritten or withheld:
+  `prompts.yaml`. A system prompt is rendered prose: a task that puts a credential
+  into its prompt puts it inside a sentence, and there is no key to match on. The
+  file is written as the run composed it.
+- **Prose fields inside the files that are rewritten.** A rewritten file is not a
+  clean one: `grade.yaml`'s judge prose (`Grade.reasons`,
+  `CriterionResult.justification`) and a log record's `message` in `logs.yaml`
+  quote whatever the judge or the caller was shown, under no key the rule can
+  read. They are written as produced, and are the same value-based gap, #1157's.
+- Two vocabulary entries are inert. Because exact tokens match per key part,
+  `access_token` and `refresh_token` are redundant (both already match via the
+  bare `token` part) and `session_id` matches nothing. Repairing that changes what
+  every log line in the process redacts, so it is #1158's own behaviour change.
 
 ## Secret Management
 
@@ -122,7 +207,8 @@ The agent never sees grading criteria or expected outputs:
 | Supply chain attacks in task code | Task authors are assumed trusted |
 | Side-channel attacks | Not mitigated |
 | Agent exfiltrating data via LLM output | The orchestrator relays model output; no content filtering |
-| Sensitive data in recorded tool-call arguments | Recorded verbatim on both substrates — see § Tool Call Arguments for why the grader's input must not be rewritten. Redaction belongs at artifact-write time; tracked in #694 |
+| Sensitive data in written tool-call arguments | Recorded verbatim on both substrates — see § Tool Call Arguments for why the grader's input must not be rewritten. A redacting artifact-write policy covers what a key name declares, and is off by default because a redacted bundle cannot be graded offline (§ Artifact-Write Redaction); enabling it from a run config is #1171 |
+| Sensitive values under innocuous keys, in tool output, or quoted in prose (system prompts, judge prose, log messages) | Outside a key-name rule by construction, so a redacting policy leaves `prompts.yaml` as written, and leaves the prose fields of the files it rewrites (`grade.yaml`'s reasons and justifications, a `logs.yaml` record's message) as written too. The value-based scrub that would reach them exists for log records only (`tolokaforge.secrets.log_filter`) and is not applied at artifact-write time; tracked in #1157 |
 
 
 ## Testing
@@ -130,6 +216,7 @@ The agent never sees grading criteria or expected outputs:
 - **Tool allowlisting** — `tests/unit/test_tool_security.py::TestToolAllowlisting`: unregistered tool rejection, schema validation, rate limiting. No Docker needed.
 - **`Network.internal` primitive + built-in non-internal invariant** — `tests/unit/test_network_internal.py`: `Network.create(..., internal=…)` faithfully carries docker-py's `internal` flag, and `EngineStack.create_networks()` always creates its networks non-internal (the executable form of "Case A is `full_internet` by construction"). No Docker needed.
 - **Task-declared `network_policy` enforcement (Case B/C)** — `tests/canonical/test_network_policy_enforcement.py` snapshots the `no_internet` compose-file topology produced by `enforce_network_policy`; `tests/canonical/test_environment_manifest_contract.py::TestNetworkPolicyContract` pins the wire shape and `no_internet` default. No Docker needed.
+- **Artifact-write redaction** — `tests/canonical/test_redaction_at_artifact_write.py` drives the production artifact-write phase under both policies: the default bundle carries what the agent sent, a redacting one carries the placeholder in every rewritten artifact, withholds both judge sidecars, stamps `metrics.yaml` whichever subset of the writer's methods the caller invokes, discards what it rewrote when that stamp cannot be written, and is refused by the offline reader — while the same trial's live grading verdict is unchanged. A whole-bundle scan names `prompts.yaml` as the one file still carrying the planted credential, so the declared prose gap is asserted rather than assumed. The vocabulary and the policies themselves are locked in `tests/unit/core/test_redaction.py`, and the offline refusal across every grading command in `tests/canonical/test_redacted_bundle_refusal.py`. No Docker needed.
 - **Runner network isolation (real daemon)** — `tests/integration/test_security.py::TestNetworkIsolation` moves a runner onto an internal network and asserts it reaches db-service but not the public internet. This demonstrates a runner *can* be network-isolated when its trial makes no in-container LLM-judge call; the built-in `runner-net` is deliberately non-internal so that grading egress is available.
 
 ```bash

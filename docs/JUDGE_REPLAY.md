@@ -188,6 +188,10 @@ rubric-only override over a gated bundle reads `rubric_source: override` while
   persisted structurally), so a `state_diff`-influenced verdict may not reproduce.
   The fallback is stamped in `replay_provenance.yaml` (`fidelity_mode: fallback`),
   never applied silently.
+- **Redacted bundles do not replay at all.** A bundle whose `metrics.yaml` carries a
+  `redaction` stamp is refused by name before any judge spend: the transcript it
+  would rebuild carries argument values a policy rewrote, so the judge would be
+  shown — and would grade — evidence the agent never produced.
 
 ## Output
 
@@ -200,6 +204,12 @@ trial:
 - `replay_provenance.yaml` — the judge model used, whether each of the judge
   model / rubric / KB-gating / custom prompt came from the bundle or an override,
   and the fidelity mode.
+
+Under a redacting artifact-write policy both judge sidecars are withheld and a
+`metrics.yaml` appears carrying the redaction stamp alone — the writer's
+declaration that they were withheld rather than never produced (see
+[`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § `redaction`), which is what makes
+the replay bundle refusable in turn.
 
 The batch also writes one `replays/<replay_id>/replay_report.yaml` — the per-run
 comparison against the recorded originals. A batch that replayed **nothing**

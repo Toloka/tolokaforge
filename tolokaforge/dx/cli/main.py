@@ -71,6 +71,8 @@ from tolokaforge.core.orchestrator import (
     OrchestratorDeps,
     resolve_run_directory,
 )
+from tolokaforge.core.output.artifacts import RedactedBundleError
+from tolokaforge.core.output_writer import GRADE_FILENAME, METRICS_FILENAME
 from tolokaforge.core.project_loader import (
     construct_config,
     find_project_yaml,
@@ -1076,15 +1078,18 @@ def rejudge(
     grading_override = load_grading_override(Path(grading)) if grading else None
 
     console.print(f"[bold blue]Re-judging trials under {source_path}...[/bold blue]")
-    outcomes = run_replay_batch(
-        source_path,
-        replay_id=replay_id,
-        trial=Path(trial) if trial else None,
-        grading_override=grading_override,
-        judge_model_override=judge_model,
-        knowledge_search=KnowledgeSearchMode(knowledge_search),
-        dry_run=dry_run,
-    )
+    try:
+        outcomes = run_replay_batch(
+            source_path,
+            replay_id=replay_id,
+            trial=Path(trial) if trial else None,
+            grading_override=grading_override,
+            judge_model_override=judge_model,
+            knowledge_search=KnowledgeSearchMode(knowledge_search),
+            dry_run=dry_run,
+        )
+    except RedactedBundleError as exc:
+        raise click.ClickException(str(exc)) from exc
     if not outcomes:
         raise click.ClickException(
             f"no trial bundle under {source_path} — a batch that discovered nothing "
@@ -1621,13 +1626,13 @@ def analyze(trajectory: str):
     logs = []
 
     if metrics is None:
-        metrics_path = traj_path.parent / "metrics.yaml"
+        metrics_path = traj_path.parent / METRICS_FILENAME
         if metrics_path.exists():
             with open(metrics_path) as f:
                 metrics = yaml.safe_load(f)
 
     if grade is None:
-        grade_path = traj_path.parent / "grade.yaml"
+        grade_path = traj_path.parent / GRADE_FILENAME
         if grade_path.exists():
             with open(grade_path) as f:
                 grade = yaml.safe_load(f)

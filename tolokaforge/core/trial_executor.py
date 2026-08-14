@@ -36,6 +36,7 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
+from tolokaforge.core.output_writer import METRICS_FILENAME
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
     RunDisplayEvents,
@@ -263,7 +264,7 @@ class ProvisioningTrialExecutor:
         file is absent. Logs and continues on I/O failure so a diagnostic write
         never masks the trial result.
         """
-        metrics_path = self.output_dir / "trials" / task_id / str(trial_idx) / "metrics.yaml"
+        metrics_path = self.output_dir / "trials" / task_id / str(trial_idx) / METRICS_FILENAME
         if not metrics_path.exists():
             return
         try:
