@@ -190,7 +190,13 @@ presets:
     match:
       - "x-ai/grok-4.6*"
       - "xai/grok-4.6*"
-      - "*grok-4.6*"
+      # Gateway-prefixed routes (openrouter/…, litellm_proxy/…) reach the same
+      # model through a transport prefix, so the vendor segment is anchored
+      # rather than matched anywhere in the string: a bare "*grok-4.6*" also
+      # claims foreign models whose name merely CONTAINS it, and future
+      # siblings (grok-4.60, grok-4.6-fast) whose axes are unmeasured.
+      - "*/x-ai/grok-4.6*"
+      - "*/xai/grok-4.6*"
     schema_sanitizer: xai_grok_recursive
     content_policy: openai
     response_policy: scalar_array_dict_map
