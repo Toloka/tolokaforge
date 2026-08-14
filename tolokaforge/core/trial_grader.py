@@ -634,8 +634,8 @@ class GraderRPCTrialGrader:
             ),
         )
 
-        if not (grade_result["success"] and grade_result["grade"]):
-            error_msg = grade_result.get("error", "Unknown grading error")
+        if not grade_result["success"]:
+            error_msg = grade_result.get("error") or "Unknown grading error"
             self.logger.error(
                 "Grader service RPC failed",
                 task_id=task_id,
@@ -643,6 +643,17 @@ class GraderRPCTrialGrader:
                 error=error_msg,
             )
             raise GradingFailedError(f"Grading failed for trial {spec.trial_id!r}: {error_msg}")
+
+        if grade_result.get("no_verdict"):
+            # The wire distinguishes "nothing to grade" (no verdict) from a
+            # grading failure — the ``TrialGrader`` Protocol returns ``None``
+            # for the former and raises ``GradingFailedError`` for the latter.
+            self.logger.info(
+                "Grader service produced no verdict",
+                task_id=task_id,
+                trial_index=trial_idx,
+            )
+            return None
 
         grade = _parse_grade_result(grade_result["grade"])
         self.logger.info(
