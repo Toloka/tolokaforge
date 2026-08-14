@@ -64,3 +64,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0031](0031-pull-vs-build-default-for-service-images.md) | Wheel consumers pull published images by default — `docker.image_source` policy | Proposed |
 | [0033](0033-external-harness-registry.md) | External harness registry — operator-overridable YAML for coding-CLI parity knobs | Accepted |
 | [0034](0034-external-harness-plugin-discovery.md) | External harness plugin discovery — pip-installable harness bundles | Accepted |
+| [0035](0035-grader-detachment.md) | Grader detachment — grader as an independently deployable and scalable component | Proposed |
