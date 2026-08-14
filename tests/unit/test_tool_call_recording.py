@@ -37,6 +37,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.runner import TrialRunner, TrialToolCallRecorder
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import Tool, ToolExecutor, ToolRegistry, ToolResult
 
 pytestmark = pytest.mark.unit
@@ -794,17 +795,30 @@ class TestTheWireStatusSurvivesTheClient:
 
         assert result.status is ToolExecutionStatus.SUCCESS
 
-    def test_a_trial_not_found_response_carries_no_recordable_status(self) -> None:
-        """There is no tool outcome to name, so the field stays ``None`` and the
-        recorder resolves ``ERROR`` — the truth, stated less specifically."""
-        result = self._client_for(
-            pb2.ExecuteToolResponse(
-                status=pb2.EXECUTION_STATUS_TRIAL_NOT_FOUND,
-                error_message="Trial 't:0' not found",
-            )
-        ).execute_tool("t:0", "calculator", {}, call_id="toolu_A")
+    def test_a_trial_not_found_response_refuses_instead_of_returning_a_result(self) -> None:
+        """The runner holds no registration, so the call reached no tool and has
+        no outcome to record. A ``ToolResult`` here is a failure the agent reads
+        as its own, so the client raises and names what was lost instead."""
+        with pytest.raises(TrialNotRegisteredError) as raised:
+            self._client_for(
+                pb2.ExecuteToolResponse(
+                    status=pb2.EXECUTION_STATUS_TRIAL_NOT_FOUND,
+                    error_message="Trial 't:0' not found",
+                )
+            ).execute_tool("t:0", "calculator", {}, call_id="toolu_A")
 
-        assert result.status is None
+        assert raised.value.trial_id == "t:0"
+        assert raised.value.tool_name == "calculator"
+        assert "t:0" in str(raised.value)
+
+    def test_a_status_no_trial_records_refuses_rather_than_degrading_to_error(self) -> None:
+        """The translation is total. ``UNSPECIFIED`` names no outcome, and the
+        next status added to the proto will name none either until it is mapped
+        — neither may arrive at a recorder as an ordinary tool failure."""
+        with pytest.raises(ValueError, match="no recordable ToolExecutionStatus"):
+            self._client_for(
+                pb2.ExecuteToolResponse(status=pb2.EXECUTION_STATUS_UNSPECIFIED)
+            ).execute_tool("t:0", "calculator", {}, call_id="toolu_A")
 
 
 def test_messages_are_unaffected_by_recording() -> None:

@@ -63,7 +63,11 @@ from tolokaforge.runner import (
     runner_pb2,
     runner_pb2_grpc,
 )
-from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION, RECORDED_STATUS_BY_PROTO
+from tolokaforge.runner.protocol import (
+    ENGINE_PROTOCOL_VERSION,
+    TrialNotRegisteredError,
+    recorded_status,
+)
 from tolokaforge.tools.registry import ToolResult
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports for provisioning surface
@@ -496,23 +500,26 @@ class GrpcRunnerClient:
 
             response = self.stub.ExecuteTool(request)
 
-            # Map ExecutionStatus to success/error
+            if response.status == ExecutionStatus.EXECUTION_STATUS_TRIAL_NOT_FOUND:
+                raise TrialNotRegisteredError(trial_id, tool_name)
+
+            # The fine-grained status the runner reported, carried through rather
+            # than collapsed to ``success`` — it is what makes TIMEOUT /
+            # TOOL_NOT_FOUND / INVALID_ARGUMENTS recordable on the docker path.
+            # Raises for a status no trial records, so a status added to the proto
+            # cannot arrive here and be recorded as an ordinary failure.
+            status = recorded_status(response.status)
+
             success = response.status == ExecutionStatus.EXECUTION_STATUS_SUCCESS
             error = None
             if not success:
                 error = response.error_message or self._status_to_error(response.status)
 
-            # The fine-grained status the runner reported, carried through rather
-            # than collapsed to ``success`` — it is what makes TIMEOUT /
-            # TOOL_NOT_FOUND / INVALID_ARGUMENTS recordable on the docker path.
-            # ``None`` for a status no trial records (a trial-not-found response
-            # names no tool outcome); the recorder then resolves ERROR, which is
-            # the truth stated less specifically.
             return ToolResult(
                 success=success,
                 output=response.output,
                 error=error,
-                status=RECORDED_STATUS_BY_PROTO.get(response.status),
+                status=status,
             )
 
         except grpc.RpcError as e:
@@ -520,16 +527,19 @@ class GrpcRunnerClient:
             return ToolResult(success=False, output="", error=f"gRPC error: {str(e)}")
 
     def _status_to_error(self, status: int) -> str:
-        """Convert ExecutionStatus enum to error message"""
+        """The sentence a failed call reports when the runner sent no message.
+
+        Keyed by the recordable failure statuses and nothing else: the caller has
+        already refused every status outside :data:`RECORDED_STATUS_BY_PROTO`, so
+        a miss here is a status that reached a recorder without being mappable.
+        """
         status_messages = {
-            ExecutionStatus.EXECUTION_STATUS_UNSPECIFIED: "Unknown error",
             ExecutionStatus.EXECUTION_STATUS_ERROR: "Tool execution error",
             ExecutionStatus.EXECUTION_STATUS_TIMEOUT: "Tool execution timed out",
             ExecutionStatus.EXECUTION_STATUS_TOOL_NOT_FOUND: "Tool not found",
             ExecutionStatus.EXECUTION_STATUS_INVALID_ARGUMENTS: "Invalid arguments",
-            ExecutionStatus.EXECUTION_STATUS_TRIAL_NOT_FOUND: "Trial not found",
         }
-        return status_messages.get(status, f"Unknown status: {status}")
+        return status_messages[status]
 
     def grade_trial(
         self,
