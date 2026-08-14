@@ -223,9 +223,13 @@ class TestHarnessTrialBypassesTheTurnLoop:
         assert call["arguments"] == {"command": _HARNESS_COMMAND}
         assert call["executor"] == "agent"
 
-    def test_the_tools_own_timeout_is_the_harness_deadline(self, harness_trial):
+    def test_no_per_call_budget_rides_the_wire(self, harness_trial):
+        """The budget the runner enforces is the one the tool declares
+        (registered ``timeout_s``), so the harness RPC names none of its own —
+        a wire-carried value could only agree with or contradict it."""
         _, runtime, _ = harness_trial()
-        assert runtime.executed_tools[0]["timeout_seconds"] == _HARNESS_TIMEOUT_S
+        assert "timeout_seconds" not in runtime.executed_tools[0]
+        assert "timeout_seconds" not in runtime.executed_tools[0]["arguments"]
 
     def test_a_run_budget_below_the_harness_budget_is_refused(self, harness_trial):
         """The exec cannot be cut short, so a shorter run budget must not be

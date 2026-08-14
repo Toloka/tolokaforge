@@ -421,15 +421,11 @@ class TrialRunner:
                 Built by the adapter, which owns every CLI's argv.
             instruction: The task text handed to the CLI, recorded as the
                 trial's user message.
-            timeout_s: Deadline for the invocation, enforced runner-side. Must
-                equal the target tool's registered ``timeout_s``: the runner
-                applies this to the RPC and the tool's own value to the
-                subprocess, and abandoning the former does not stop the latter.
-
-        Requires a ``tool_executor`` accepting ``timeout_seconds`` — the
-        per-trial :class:`~tolokaforge.core.docker_adapter.DockerRunnerAdapter`
-        does; the narrower :class:`~tolokaforge.tools.registry.ToolExecutor`
-        does not, and cannot reach a harness trial (which is Docker-only).
+            timeout_s: The harness deadline, for the engine's own accounting.
+                Must equal the target tool's registered ``timeout_s`` — the
+                budget the runner resolves and enforces is the one the tool
+                declares, so no per-call value rides the wire; passing the
+                same number here keeps the engine-side overrun warning honest.
         """
         trial_id = f"{self.task_id}:{self.trial_index}"
         with trial_id_scope(trial_id):
@@ -457,7 +453,6 @@ class TrialRunner:
             result = self.tool_executor.execute(
                 tool_name,
                 arguments,
-                timeout_seconds=timeout_s,
                 call_id=call_id,
             )
             output = resolve_tool_output(result)

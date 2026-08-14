@@ -33,8 +33,8 @@ from tolokaforge.core.models import TerminationReason
 from tolokaforge.core.trial_grader import GradingFailedError, RunnerRPCTrialGrader
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
-from tolokaforge.tools.registry import ToolExecutionStatus
 from tolokaforge.runner.tool_factory import ToolFactory
+from tolokaforge.tools.registry import ToolExecutionStatus
 
 
 @pytest.fixture
@@ -1075,6 +1075,8 @@ class TestTheToolBudgetIsTheOneThatFires:
         assert response.status == pb2.EXECUTION_STATUS_SUCCESS
         assert response.error_message == ""
         assert json.loads(response.output) == {"ok": True}
+
+
 class TestUserSideToolExecution:
     """Each actor's tools live in its own registry, and ``ExecuteTool`` routes on
     the request's ``executor`` field. A tool the task declared for the user is
