@@ -665,9 +665,9 @@ The tool execution flow:
 | `TIMEOUT` | Execution exceeded timeout | Return timeout message to LLM | yes |
 | `TOOL_NOT_FOUND` | Tool name not registered | Log error, fail trial | yes |
 | `INVALID_ARGUMENTS` | Arguments don't match schema | Return validation error to LLM | yes, with empty `arguments` |
-| `TRIAL_NOT_FOUND` | Trial ID not registered | Log error, fail trial | no — there is no trial context to record into |
+| `TRIAL_NOT_FOUND` | Trial ID not registered | Abort the trial as `trial_lost` | no — on either side; the call reached no tool |
 
-A call the runner refuses before execution is still recorded, because the host appends a `role: tool` error message for it either way; a record that omitted it would read as a call the agent never attempted.
+A call the runner refuses before execution is still recorded, because the host appends a `role: tool` error message for it either way; a record that omitted it would read as a call the agent never attempted. `TRIAL_NOT_FOUND` is the exception, and it is not one: the runner holds no registration, so the call reached no tool and there is no outcome for either side to record. `GrpcRunnerClient` raises `TrialNotRegisteredError` instead of building a `ToolResult`, and the trial ends with `termination_reason: trial_lost` — see [RUNNER.md](RUNNER.md) § Retryability and countability are two questions.
 
 ### GradeTrialRequest
 

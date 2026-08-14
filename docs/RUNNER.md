@@ -460,19 +460,29 @@ One classification of a finished trial answers both, and the answers are
 independent by design:
 
 - **Is another attempt worth making?** `Orchestrator._is_retryable_trajectory`.
-  Anything transient — a rate limit, an API error, a timeout, a bare error — is
-  requeued until `max_attempt_retries` is spent. A deterministic fault
-  (`provision_error`, an auth-shaped `api_error`) is not: the next attempt fails
-  the same way.
+  Anything transient — a rate limit, an API error, a timeout, a bare error, a
+  `trial_lost` registration — is requeued until `max_attempt_retries` is spent. A
+  deterministic fault (`provision_error`, an auth-shaped `api_error`) is not: the
+  next attempt fails the same way.
 - **Did the attempt measure the agent?** `classify_trial_outcome`. Only a trial
   killed by a *typed* infrastructure condition — `rate_limit`, `api_timeout`,
   `provision_error` — leaves the rate denominators.
 
 They disagree, and the disagreements are the point. A wall-clock `timeout`, an
-`api_error` and a bare `error` are all retried *and* counted: repeating them may
-help, and the agent whose behaviour produced them was measured doing so. Deriving
-either answer from the other would silently either stop retrying transient
-failures or start excusing agent failures from the benchmark.
+`api_error`, a bare `error` and a `trial_lost` are all retried *and* counted:
+repeating them may help, and the trial they describe is either one the agent was
+measured on or one whose fault is ours to carry. Deriving either answer from the
+other would silently either stop retrying transient failures or start excusing
+agent failures from the benchmark.
+
+`trial_lost` is the one of those the agent had no part in: the runner no longer
+holds the trial the engine is running — a restarted shared-stack runner, a
+shutdown sweep, or the deregistration before a retry — so the tool call that hit
+it reached no tool. The trial ends there rather than spending its turn budget on
+refusals, classifies as `harness_error`, and is **not graded**: the runner that
+would compute the verdict is the one that lost the trial, so no fabricated score
+enters `avg_score`. Re-registering is exactly the repair, which is why it is
+retried.
 
 Retries are exhausted before any of this is recorded, so a trial that eventually
 succeeded contributes one measured result, not one per attempt. See
