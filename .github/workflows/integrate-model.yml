@@ -68,6 +68,15 @@ permissions:
   # `gh workflow run release-models.yml` after a successful auto-merge. Needed
   # because a GITHUB_TOKEN squash-push cannot trigger the push-event release
   # workflow (Actions recursion guard); dispatching is the documented exception.
+  #
+  # ACCEPTED RISK: the single `integrate` job both executes resolve-agent-authored
+  # code (the finalize verify step imports it under pytest) and holds this scope,
+  # so that code can dispatch any workflow_dispatch workflow. Bounded, not zero:
+  # the reachable target is `release-models.yml`, whose cz bump only commits a
+  # version + changelog derived from main's own history, so the worst case is
+  # release spam rather than code injection. Removing the overlap means splitting
+  # the merge/report/dispatch tail into a second job with an artifact handoff -
+  # tracked separately, not done here. Same spirit as the `env -u` caveat below.
   actions: write
 
 concurrency:
@@ -752,8 +761,8 @@ jobs:
           # Classify the staged tree BEFORE the verify-time `stash --keep-index` (the stash drops
           # every non-staged file so the worktree matches the future commit; classification must
           # read `git diff --cached` while the staged set is intact). Bucket A = models-wheel
-          # only; Bucket B = any engine-side path touched. Post-split the classifier is a POLICY
-          # GATE, not a taxonomy: this pipeline commits Bucket A only. `tolokaforge/core/llm` is
+          # only; Bucket B = any engine-side path touched. The classifier is a POLICY GATE, not
+          # a taxonomy: this pipeline commits Bucket A only. `tolokaforge/core/llm` is
           # still staged above so an engine-side write is *seen* here rather than left behind as
           # an unstaged file the classifier would miss. `--format plain` yields
           # `bucket=A|B\nreason=...\nengine_paths=<csv>` (greppable from bash without jq). Fail
@@ -781,6 +790,13 @@ jobs:
               --text "$(printf '%s\n%s' 'Needs human: the fix requires engine-side code' "This automation commits models-wheel changes only. The resolve agent wrote to: ${ENGINE_PATHS}. A new base-class hook, policy slot or capability category is an engine decision - land it on the engine release axis first, then re-run the integration.")" \
               --pr-url "$PR_URL" --run-url "$RUN_URL" || true
             touch "$RUNNER_TEMP/slack_terminal_sent" || true
+            # Also on the PR itself. The dedup marker suppresses the catch-all handler's comment,
+            # and `automation slack` no-ops on an empty channel, so without this the only
+            # human-readable explanation on an unconfigured-Slack run is the job log.
+            gh pr comment "$PR" -R "$REPO" --body "$(printf '%s\n\n%s\n\n%s' \
+              '**Needs human: the fix requires engine-side code.**' \
+              "This automation commits models-wheel changes only. The resolve agent wrote to: \`${ENGINE_PATHS}\`." \
+              "A new base-class hook, policy slot or capability category is an engine decision - land it on the engine release axis first, then re-run the integration. [Run log](${RUN_URL})")" || true
             exit 1
           fi
           # Cert-vs-baseline reconciliation - run BEFORE the stash so observation/findings.json is
@@ -890,12 +906,20 @@ jobs:
             # the two exceptions to that guard, so dispatch the release directly. A HUMAN merge
             # is not affected by the guard and is picked up by the push trigger instead - hence
             # this fires only on MERGED=yes, and the two paths cannot double-release.
-            if [ "$MERGED" = "yes" ]; then
+            # Gated on the PR's BASE branch, not just on MERGED. The label path always targets
+            # main, but the workflow_dispatch entry takes an arbitrary `pr` input, so a stacked
+            # or experiment PR merged into a non-main base would otherwise cut a models MINOR
+            # release from a `main` that does not contain the model. The `test/*` guard upstream
+            # covers head refs, not base refs.
+            MERGE_BASE=$(gh pr view "$PR" -R "$REPO" --json baseRefName -q .baseRefName 2>/dev/null || echo "")
+            if [ "$MERGED" = "yes" ] && [ "$MERGE_BASE" = "main" ]; then
               if gh workflow run release-models.yml -R "$REPO" --ref main -f bump=minor -f dry_run=false; then
                 echo "dispatched models release (minor) for the merged integration"
               else
                 echo "::warning::models release dispatch failed - cut it by hand from the Actions tab (Release tolokaforge-models, bump=minor)"
               fi
+            elif [ "$MERGED" = "yes" ]; then
+              echo "::notice::merged into '${MERGE_BASE:-unknown}', not main - no models release dispatched"
             fi
             # One settings deep-link (the Actions variables page where
             # ARENA_AUTOMATION_AUTO_MERGE_ENABLED lives) rendered as "configure <here>" (only

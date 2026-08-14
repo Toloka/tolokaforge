@@ -15,9 +15,9 @@ runtime checks:
   locally defined by the subclass.
 * **Test 4 (boundary direction)** — no class registered from
   ``tolokaforge.core.llm.*`` extends another in-registry class. That shape
-  is a per-model subclass on the engine side of the boundary, which is what
-  the pre-split tree looked like and what the auto-integration would
-  recreate if a resolve agent wrote into an engine module.
+  is a per-model subclass on the engine side of the boundary, exactly what
+  the auto-integration would recreate if a resolve agent wrote into an
+  engine module.
 
 Tests 1-3 parse the subclass' host-module source via :mod:`ast`; no runtime
 import of the subclass is required. Test 4 walks the registries at import
@@ -213,10 +213,29 @@ def _base_method_names(base_cls: type[Any]) -> set[str]:
     }
 
 
-def test_per_model_subclasses_is_populated() -> None:
-    assert len(PER_MODEL_SUBCLASSES) >= 8, (
-        "PER_MODEL_SUBCLASSES must enumerate the shipped per-model classes — a short "
-        "list disables the boundary guardrail."
+def test_per_model_subclasses_covers_every_contributing_module() -> None:
+    """Each module that registers a policy must appear in the derived set.
+
+    A count floor would pass on a partial derivation that still cleared it, and
+    would fail on a legitimately retired family with a constant edit as the only
+    repair. Coverage of the registries is the property actually worth locking.
+    """
+    presets = importlib.import_module("tolokaforge.core.llm.presets")
+    contributing = {
+        cls.__module__
+        for registry in presets._POLICY_REGISTRIES.values()
+        for cls in registry.values()
+        if not cls.__module__.startswith("tolokaforge.core.llm.")
+    }
+    assert contributing, (
+        "no module outside tolokaforge.core.llm registers a policy — either the "
+        "models wheel is not installed or entry-point loading broke, and the "
+        "boundary guardrail below would silently audit nothing"
+    )
+    audited = {module for module, _ in PER_MODEL_SUBCLASSES}
+    assert contributing <= audited, (
+        "modules register a policy but contribute no audited class: "
+        f"{sorted(contributing - audited)}"
     )
 
 
@@ -327,15 +346,14 @@ def test_no_per_model_subclass_is_registered_engine_side() -> None:
     """No per-model policy class may live under ``tolokaforge.core.llm.*``.
 
     :data:`PER_MODEL_SUBCLASSES` is derived from the registries, so "is it
-    listed" is no longer a question worth asking. The invariant that still
+    listed" is not a question worth asking. The invariant that still
     needs guarding is the direction of the boundary: per-model policy code
     belongs in the models wheel, and the engine LLM package holds only slot
     Protocols and the concrete *bases* those per-model classes extend.
 
     A class registered from ``tolokaforge.core.llm.*`` that itself inherits
     from another registered class is a per-model subclass sitting on the
-    wrong side. That is how the pre-split shape looked (``GeminiSchema`` and
-    friends lived in ``schema_sanitizer.py``), and it is what the auto
+    wrong side. That is the shape this guard forbids, and it is what the auto
     integration would recreate if a resolve agent wrote a new adapter into an
     engine module. `.github/workflows/integrate-model.yml` refuses to commit
     that tree; this test is the same rule enforced against the merged

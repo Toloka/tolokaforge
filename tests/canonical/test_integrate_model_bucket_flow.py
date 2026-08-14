@@ -4,7 +4,7 @@
 The finalize step stages the models-wheel + engine surfaces produced by the
 resolve/finalize agent, classifies the staged tree as Bucket A (models-wheel
 only) or Bucket B (any engine-side path touched) via ``automation
-classify-paths``, and — post-ADR-0030 — commits Bucket A only. This test locks
+classify-paths``, and commits Bucket A only. This test locks
 the properties a future refactor could silently regress:
 
 1. The ``git add`` whitelist references the current models-wheel layout
@@ -154,7 +154,7 @@ def test_commit_subject_carries_bucket_suffix() -> None:
     body = _finalize_step_body()
     a_msg = "finalize commit-subject template for Bucket A missing"
     assert re.search(r"Bucket A: preset \+ cert", body), a_msg
-    # No Bucket B counterpart: post-split the finalize step refuses that tree
+    # No Bucket B counterpart: the finalize step refuses that tree
     # instead of committing it under a different subject. See
     # `test_finalize_refuses_to_commit_bucket_b`.
     integrate_subjects = re.findall(r"integrate: \$\{TF_NAME\}[^\"]*", body)
@@ -298,13 +298,11 @@ def test_the_verdict_carries_a_reason_token() -> None:
     assert "infra-noise" in body
 
 
-# Post-split policy: this pipeline commits Bucket A only.
+# This pipeline commits Bucket A only.
 #
-# Before the split the classifier was a taxonomy and both buckets flowed through
-# the same commit + push path, differing only in the commit subject. Per-model
-# policy code now belongs in the models wheel, so an engine-side write means the
-# candidate needs a base hook / slot / capability category that is a human
-# decision on the engine's release axis. These lock the refusal in shape.
+# Per-model policy code belongs in the models wheel, so an engine-side write
+# means the candidate needs a base hook / slot / capability category that is a
+# human decision on the engine's release axis. These lock the refusal in shape.
 # ---------------------------------------------------------------------------
 
 _RELEASE_TRIGGER_PATH = _REPO_ROOT / ".github" / "workflows" / "release-models-on-integrate.yml"
@@ -329,6 +327,11 @@ def test_finalize_refuses_to_commit_bucket_b() -> None:
     assert (
         "slack_terminal_sent" in guard
     ), "the Bucket B guard must set the dedup marker so the catch-all handler does not double-ping"
+    assert "gh pr comment" in guard, (
+        "the refusal must also land on the PR: the dedup marker suppresses the "
+        "catch-all comment and `automation slack` no-ops on an empty channel, so "
+        "otherwise an unconfigured-Slack run explains itself only in the job log"
+    )
 
 
 def test_bucket_b_guard_precedes_the_commit() -> None:
@@ -338,7 +341,7 @@ def test_bucket_b_guard_precedes_the_commit() -> None:
     assert guard < commit, "the Bucket B refusal must run before anything is committed"
 
 
-def test_commit_subject_no_longer_branches_on_bucket() -> None:
+def test_commit_subject_does_not_branch_on_bucket() -> None:
     body = _finalize_step_body()
     subject_block = body[body.index("COMMIT_SUBJECT=") : body.index("git commit -m")]
     assert "Bucket B" not in subject_block, (
@@ -421,12 +424,24 @@ def test_auto_merge_dispatches_the_models_release() -> None:
         "workflow, so the auto-merge path must dispatch the release itself"
     )
     assert "-f bump=minor" in body, "the dispatched release must request the minor increment"
-    guard = re.search(r'if \[ "\$MERGED" = "yes" \]; then(.*?)\n *fi\n', body, re.DOTALL)
-    assert guard is not None, "the dispatch must be gated on the merge having succeeded"
+    guard = re.search(
+        r'if \[ "\$MERGED" = "yes" \] && \[ "\$MERGE_BASE" = "main" \]; then(.*?)\n *fi\n',
+        body,
+        re.DOTALL,
+    )
+    assert guard is not None, (
+        "the dispatch must be gated on both the merge having succeeded and the PR "
+        "having targeted main"
+    )
     assert "gh workflow run" in guard.group(1), (
-        "the dispatch belongs inside the MERGED guard — dispatching when we did not "
+        "the dispatch belongs inside the guard — dispatching when we did not "
         "merge would release a model that is not on main, and a human merge is "
         "already covered by the push trigger"
+    )
+    assert "--json baseRefName" in body, (
+        "MERGE_BASE must be read from the PR: the workflow_dispatch entry takes an "
+        "arbitrary `pr` input, so a PR merged into a non-main base would otherwise cut "
+        "a minor models release from a main that does not contain the model"
     )
 
 

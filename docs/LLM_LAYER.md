@@ -1856,7 +1856,7 @@ runtime checks parse each entry's source via `ast` and walk
 * **`test_no_private_symbol_imports`** — rejects any `from tolokaforge.core.llm.<mod> import _<name>` in the subclass module.
 * **`test_no_private_base_method_override`** — rejects a subclass method starting with `_` that shadows a base-class method of the same name (via `inspect.getmembers` on the concrete base).
 * **`test_no_private_attribute_access_on_self_or_super`** — rejects `self._<attr>` / `cls._<attr>` / `super()._<attr>` reads whose `<attr>` is not defined locally in the subclass body.
-* **`test_no_per_model_subclass_is_registered_engine_side`** — walks `_POLICY_REGISTRIES` and asserts no class registered from `tolokaforge.core.llm.*` extends another registered class. That shape is a per-model subclass sitting on the engine side of the boundary, which is what the pre-split tree looked like and what the auto-integration would recreate if a resolve agent wrote into an engine module.
+* **`test_no_per_model_subclass_is_registered_engine_side`** — walks `_POLICY_REGISTRIES` and asserts no class registered from `tolokaforge.core.llm.*` extends another registered class. That shape is a per-model subclass sitting on the engine side of the boundary, exactly what the auto-integration would recreate if a resolve agent wrote into an engine module.
 
 A per-model subclass added to a preset registry that regresses into a
 `_`-prefixed name fails one of the four checks at test-import time — before
