@@ -37,6 +37,11 @@ from typing import Protocol, runtime_checkable
 
 from tolokaforge.core.models import Grade
 
+_CLOSE_SENTINEL: object = object()
+"""Marker put on the queue by :meth:`InMemoryGradeBroker.close` so consumers
+parked in :meth:`~InMemoryGradeBroker.next_job` (default ``timeout=None``)
+unblock and terminate cleanly on shutdown."""
+
 
 @dataclass(frozen=True)
 class GradeJob:
@@ -125,9 +130,17 @@ class InMemoryGradeBroker:
 
     def next_job(self, timeout: float | None = None) -> GradeJob | None:
         try:
-            return self._q.get(timeout=timeout)
+            job = self._q.get(timeout=timeout)
         except queue.Empty:
             return None
+        # ``close()`` puts a sentinel on the queue so a consumer parked in
+        # ``next_job(timeout=None)`` (the default) unblocks and terminates
+        # cleanly instead of hanging on shutdown. Re-post the sentinel so
+        # multiple consumers each see it.
+        if job is _CLOSE_SENTINEL:
+            self._q.put(_CLOSE_SENTINEL)
+            return None
+        return job
 
     def publish_result(self, result: GradeResult) -> None:
         with self._futures_lock:
@@ -144,6 +157,10 @@ class InMemoryGradeBroker:
 
     def close(self) -> None:
         self._closed = True
+        # Unblock any consumer parked in ``next_job(timeout=None)``. The
+        # sentinel re-posts itself so a pool of N consumers each terminates
+        # rather than one racing ahead and starving the rest.
+        self._q.put(_CLOSE_SENTINEL)
         with self._futures_lock:
             for entry in self._futures.values():
                 if not entry.future.done():

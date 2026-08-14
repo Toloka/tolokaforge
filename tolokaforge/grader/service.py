@@ -170,9 +170,9 @@ class GraderServiceImpl(grader_pb2_grpc.GraderServiceServicer):
         )
         return grader_pb2.GradeResponse(success=True, grade=_grade_to_wire(grade))
 
-    def HealthCheck(  # noqa: N802
+    def HealthCheck(  # noqa: N802 — matches the generated stub method name
         self,
-        request: grader_pb2.HealthCheckRequest,  # noqa: ARG002
-        context: object,  # noqa: ARG002
+        request: grader_pb2.HealthCheckRequest,  # noqa: ARG002 — proto contract requires the arg; unused by this impl
+        context: object,  # noqa: ARG002 — gRPC context, unused by this impl
     ) -> grader_pb2.HealthCheckResponse:
         return grader_pb2.HealthCheckResponse(status=grader_pb2.HealthCheckResponse.SERVING)

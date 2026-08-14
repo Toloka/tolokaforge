@@ -4,14 +4,14 @@ The tolokaforge grader — the piece that turns a completed trial into a
 `Grade` — is a plug-in seam. Downstream code selects a grader by name,
 and the seam accepts fundamentally different dispatch shapes: a
 runner-side gRPC that computes deterministic state / transcript checks
-plus an LLM judge, or a host-side judge callable that runs the rubric
-directly with no runner state at all.
+plus an LLM judge, a host-side judge callable that runs the rubric
+directly, a dedicated grader-service RPC bound to its own address, or a
+queue-backed transport that decouples throughput from grader latency.
 
-This document describes the seam as it stands after the *grader detachment*
-milestone, points at the two registered built-ins, and shows how a
+This document describes the seam as it stands after the grader-detachment
+milestone, points at the four registered built-ins, and shows how a
 downstream package can register its own grader without touching engine
-code. For the design record — the decisions behind the seam and the
-work still ahead — see [ADR-0035](adr/0035-grader-detachment.md).
+code. For the design record, see [ADR-0035](adr/0035-grader-detachment.md).
 
 ## The seam
 
@@ -43,9 +43,13 @@ Per-task configuration names the grader by its plug-in name:
 
 ```yaml
 # task.yaml (excerpt)
-grader: runner_rpc         # the default — grades on the runner
+grader: runner_rpc         # runner-side gRPC — the shipping default
 # or
-grader: judge_only          # rubric-only judge dispatch, no runner state
+grader: judge_only          # host-side judge dispatch, no runner state
+# or
+grader: grader_rpc          # standalone tolokaforge-grader service
+# or
+grader: queue               # queue-backed transport (broker + workers)
 ```
 
 The name resolves through the `tolokaforge.trial_graders` entry-point
@@ -54,18 +58,16 @@ registers a grader name becomes selectable via the same field.
 
 ## Built-in graders
 
-Two implementations ship with tolokaforge today.
+Four implementations ship with tolokaforge.
 
 ### `runner_rpc` — `RunnerRPCTrialGrader`
 
-The production grader. Owns a `GrpcRunnerClient` bound to the runner's
+The shipping default. Owns a `GrpcRunnerClient` bound to the runner's
 address (`runner_address` on `TrialGraderContext`), calls
 `GradeTrial` on the runner service, and translates the returned proto
 into a `Grade`. Short-circuits with an auto-fail on
 `TrialStatus.ERROR` / `TrialStatus.TIMEOUT` /
 `TerminationReason.STUCK_DETECTED` before the RPC is dialled.
-
-Registered as:
 
 ```toml
 [project.entry-points."tolokaforge.trial_graders"]
@@ -74,25 +76,79 @@ runner_rpc = "tolokaforge.core.trial_grader:runner_rpc_trial_grader_factory"
 
 ### `judge_only` — `JudgeBackedTrialGrader`
 
-A second impl whose dispatch shape is fundamentally different: instead of
-a runner-side RPC that runs the deterministic state / transcript /
-custom-check pipeline plus the LLM judge, `JudgeBackedTrialGrader`
-invokes an injected judge callable directly. Auto-fail branches match
-`RunnerRPCTrialGrader` so both are drop-in swaps for the caller.
+Host-side dispatch to an injected judge callable. No runner state, no
+transcript rules, no custom checks — pure rubric evaluation. Auto-fail
+branches match `RunnerRPCTrialGrader` so both are drop-in swaps for the
+caller.
 
-Registered as:
+The factory ships with an unwired default that raises `NotImplementedError`
+if selected in production before a real `LLMJudge`-backed dispatch is
+wired; direct construction with a real `JudgeGradeFn` works today (for
+tests and offline-replay integration).
 
 ```toml
 [project.entry-points."tolokaforge.trial_graders"]
 judge_only = "tolokaforge.core.trial_grader:judge_backed_trial_grader_factory"
 ```
 
-The default factory dispatch is unwired (raises `NotImplementedError`
-with a clear pointer to the follow-up) — until a production
-`LLMJudge`-backed dispatch lands on the umbrella, `judge_only` is
-useful primarily to prove that the seam accepts more than one shape,
-and to be constructed directly by tests that inject their own
-`JudgeGradeFn`.
+### `grader_rpc` — `GraderRPCTrialGrader`
+
+Dials the standalone `tolokaforge.grader` service. Same call shape as
+`runner_rpc` but bound to the grader service's address instead of the
+runner's — the seam consumer that ADR-0035 built to enable independent
+deploy. The grader service ships as `tolokasoft1/tolokaforge-grader`
+alongside the runner / db-service / rag-service / mock-web images and
+runs `python -m tolokaforge.grader` on port 50052 by default.
+
+The factory reads `ctx.grader_address` when the operator has split the
+runner and grader onto distinct hosts, and falls back to
+`ctx.runner_address` for single-address deployments.
+
+```toml
+[project.entry-points."tolokaforge.trial_graders"]
+grader_rpc = "tolokaforge.core.trial_grader:grader_rpc_trial_grader_factory"
+```
+
+### `queue` — `QueueTrialGrader`
+
+Queue-backed transport. The orchestrator worker publishes a grade job
+and blocks on a `concurrent.futures.Future`; grader workers consume the
+queue in parallel, so orchestrator worker threads no longer serialise
+on grader latency (ADR-0035 Decision 3). The queue backend is a plug-in
+behind the `GradeBroker` Protocol; the reference impl is
+`InMemoryGradeBroker` (thread-safe, `queue.Queue`-backed).
+
+The registered factory raises `NotImplementedError` today: the
+`TrialGraderContext` does not yet carry broker-selection configuration
+and no worker pool is provisioned by the engine, so selecting
+`grader: queue` without one would publish to a broker nothing listens
+to. Direct construction of `QueueTrialGrader` with a custom
+`GradeBroker` works today and is exercised by the canonical tests.
+
+```toml
+[project.entry-points."tolokaforge.trial_graders"]
+queue = "tolokaforge.core.trial_grader:queue_trial_grader_factory"
+```
+
+## Deploying the standalone grader service
+
+The `tolokaforge-grader` image ships alongside the other four first-party
+images and is wired into `deploy/standalone/docker-compose.yaml`:
+
+```yaml
+grader:
+  image: tolokasoft1/tolokaforge-grader:${TOLOKAFORGE_IMAGE_TAG:-latest}
+  ports:
+    - "50052:50052"
+```
+
+`docker compose up` from `deploy/standalone/` brings up the runner and
+the grader side by side; the runner reaches the grader by service-name
+DNS (`grader:50052` on the compose network) or the grader from the host
+(`localhost:50052`).
+
+The runtime command is fixed: `python -m tolokaforge.grader`. Reads
+`--port` (or `$GRADER_SERVICE_PORT`, default `50052`).
 
 ## Registering a downstream grader
 
@@ -111,44 +167,41 @@ my_grader = "my_package.my_module:my_grader_factory"
 
 The engine discovers the entry point on next install and makes
 `grader: my_grader` a valid task-config choice. No engine-side change
-required. See [ADAPTER_ARCHITECTURE.md](ADAPTER_ARCHITECTURE.md) for the
-broader fail-loud registry pattern the seam follows.
+required.
 
 ## The context — serialisable configuration only
 
 The factory receives a `TrialGraderContext` carrying only serialisable
 data:
 
-- `runner_address: str` — the address the built-in `runner_rpc` grader
-  dials against. Downstream graders that need a different endpoint (a
-  remote grader service, a queue broker) may ignore this field or build
-  their own transport from it.
+- `runner_address: str` — the runner service's gRPC address; the
+  `runner_rpc` grader dials it.
+- `grader_address: str | None` — the standalone grader service's address;
+  the `grader_rpc` grader dials it, falling back to `runner_address`
+  when the operator has not split the two.
 - `logger: StructuredLogger` — the run-scoped logger.
 
-The context deliberately does *not* carry the orchestrator's live
-runtime backend. A live gRPC channel would couple the grader to a
-specific runner instance chosen by the orchestrator — precisely the
-coupling this milestone breaks so a grader can run on a different
-machine. A canonical hygiene test
+The context does *not* carry the orchestrator's live runtime backend.
+A canonical hygiene test
 (`tests/canonical/test_trial_grader_context_hygiene.py`) pins that
 negative-space contract at the type level.
 
-## Where the seam is going
+## Migration from earlier tolokaforge
 
-ADR-0035 records the milestone's five load-bearing decisions. Two
-extensions land after this milestone:
+The plug-in-seam contract changed in this milestone. Callers of the
+`TrialGraderContext` constructor need to update:
 
-- **Standalone grader service.** A new `tolokaforge grader-service`
-  binary + a `grader.proto` contract, so the grader can be deployed on
-  a different machine from the runner. `GraderRPCTrialGrader` becomes
-  a third built-in that dials the standalone service.
-- **Queue-backed variant.** A `QueueTrialGrader` that publishes grade
-  jobs to a broker (Redis Streams as the reference backend) so
-  orchestrator throughput on judge-heavy runs is decoupled from
-  grader latency.
+```python
+# Before
+TrialGraderContext(runtime_backend=backend, logger=logger)
 
-Both fit behind the current `TrialGrader` Protocol — no caller-facing
-API change — and both plug in through the same entry-point registry.
+# After
+TrialGraderContext(runner_address=backend.runner_address, logger=logger)
+```
+
+Downstream grader factories that read `ctx.runtime_backend` should read
+`ctx.runner_address` (or `ctx.grader_address`) and build their own gRPC
+client from it.
 
 ## See also
 
@@ -157,5 +210,3 @@ API change — and both plug in through the same entry-point registry.
 - [ADR-0035 — Grader Detachment](adr/0035-grader-detachment.md)
 - [STANDALONE_RUNNER.md](STANDALONE_RUNNER.md) — the sibling doc for the
   runner-as-component surface
-- [ADAPTER_ARCHITECTURE.md](ADAPTER_ARCHITECTURE.md) — fail-loud
-  registry pattern the plug-in seams share
