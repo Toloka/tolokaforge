@@ -741,11 +741,32 @@ jobs:
           # (reasoning_codec / schema_sanitizer / prompt_policy / content_policy / cache_policy)
           # or a new policy subclass under policies/<family>.py -- a narrower list would silently
           # drop the new file while committing its wiring -> a build-breaking dangling import.
+          # `tests/canonical` is on the list for the refresh above: the goldens are generated
+          # here, so omitting the path would commit the cert while dropping the baselines it
+          # moves -> a red PR whose fix is mechanical.
           # `git add -A` is refused deliberately: the workflow runs after a `git stash pop` that
           # restored `observation/` (tracked resolve evidence); the whitelist matches exactly the
           # surfaces the compose/finalize prompts are told to write. Every whitelisted path is
           # a permanent fixture of the current tree, so `git add` runs unguarded -- a missing
           # path signals a workflow bug in the retarget and must fail the step loudly.
+          # Canonical baselines DERIVED from certificate data move with every new
+          # certificate: the per-ratchet target sets, the certify-suite collection
+          # (one parametrised nodeid per probe x model) and the models-wheel replay
+          # metric. They are golden-backed, so refreshing them is one documented
+          # command -- and without it every integration lands red on tests it could
+          # not have predicted, which is exactly the failure mode the retired
+          # registry-flip lock had. Read the diff in review: a moved target set for a
+          # model this PR did not touch is a real regression, not noise.
+          uv run pytest tests/canonical -q --update-canon
+          # Anything still red is a HARDCODED contract that wants a deliberate edit
+          # rather than a regenerated golden -- today that is EXPECTED_REGISTRATIONS
+          # in tests/canonical/test_policy_registry_merge.py, which a code-CREATE must
+          # extend when it ships a new policy class. Fail loudly with that hint instead
+          # of letting the PR discover it in CI.
+          if ! uv run pytest tests/canonical -q; then
+            echo "::error::canonical baselines still red after --update-canon - a hardcoded contract needs a deliberate edit (new policy class -> EXPECTED_REGISTRATIONS in tests/canonical/test_policy_registry_merge.py)"
+            exit 1
+          fi
           git add \
             tolokaforge/core/llm \
             tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml \
@@ -754,7 +775,8 @@ jobs:
             tolokaforge_models/src/tolokaforge_models/policies \
             tolokaforge_models/src/tolokaforge_models/__init__.py \
             tolokaforge_models/pyproject.toml \
-            tolokaforge_models/tests
+            tolokaforge_models/tests \
+            tests/canonical
           if git diff --cached --quiet; then
             echo "::error::finalize produced no file changes"; exit 1
           fi

@@ -1,0 +1,28 @@
+{
+  "module": "tolokaforge.testing.certify.suite.test_implicit_prompt_caching_unsupported_ratchet",
+  "target_ids": [
+    "openrouter__deepseek_deepseek-v3.2-exp",
+    "openrouter__deepseek_deepseek-v4-flash",
+    "openrouter__deepseek_deepseek-v4-pro",
+    "openrouter__google_gemini-3-flash-preview",
+    "openrouter__google_gemini-3.1-pro-preview",
+    "openrouter__google_gemini-3.5-flash",
+    "openrouter__google_gemini-3.6-flash",
+    "openrouter__google_gemini-3.7-flash",
+    "openrouter__google_gemma-4-31b-it",
+    "openrouter__mistralai_mistral-medium-3-5",
+    "openrouter__moonshotai_kimi-k2.6",
+    "openrouter__moonshotai_kimi-k2.7-code",
+    "openrouter__nvidia_nemotron-3-super-120b-a12b",
+    "openrouter__nvidia_nemotron-3-ultra-550b-a55b",
+    "openrouter__openai_gpt-5.6-sol",
+    "openrouter__openai_gpt-5.6-terra",
+    "openrouter__openai_gpt-oss-120b",
+    "openrouter__qwen_qwen3.6-plus",
+    "openrouter__tencent_hy3-preview",
+    "openrouter__x-ai_grok-4",
+    "openrouter__x-ai_grok-4.3",
+    "openrouter__x-ai_grok-4.5",
+    "openrouter__x-ai_grok-4.6"
+  ]
+}
