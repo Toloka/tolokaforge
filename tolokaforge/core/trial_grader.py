@@ -65,16 +65,19 @@ if TYPE_CHECKING:
     from tolokaforge.core.plugin_registry import TrialGraderContext
     from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
     from tolokaforge.grader.client import GrpcGraderClient
+    from tolokaforge.grader.queue import GradeBroker
 
 __all__ = [
     "GraderRPCTrialGrader",
     "GradingFailedError",
     "JudgeBackedTrialGrader",
     "JudgeGradeFn",
+    "QueueTrialGrader",
     "RunnerRPCTrialGrader",
     "TrialGrader",
     "grader_rpc_trial_grader_factory",
     "judge_backed_trial_grader_factory",
+    "queue_trial_grader_factory",
 ]
 
 
@@ -656,6 +659,142 @@ def grader_rpc_trial_grader_factory(ctx: TrialGraderContext) -> GraderRPCTrialGr
     to a truly separate host.
     """
     return GraderRPCTrialGrader(grader_address=ctx.runner_address, logger=ctx.logger)
+
+
+class QueueTrialGrader:
+    """:class:`TrialGrader` that publishes grade jobs to a :class:`GradeBroker`
+    and blocks on a per-trial :class:`concurrent.futures.Future`.
+
+    Where :class:`GraderRPCTrialGrader` gives independent deploy, this gives
+    independent *throughput scale*: grader workers consume the queue in
+    parallel, so orchestrator worker threads no longer serialise on grader
+    latency. The plug-in Protocol stays synchronous — the future keeps the
+    call semantics intact — and the queue backend is a plug-in behind the
+    :class:`GradeBroker` Protocol.
+
+    Ships with an :class:`~tolokaforge.grader.queue.InMemoryGradeBroker`
+    reference backend (ADR-0035's Decision 3: Redis Streams as the
+    reference wire; other backends behind the same Protocol are follow-ups).
+    Tests inject any :class:`GradeBroker` to exercise the seam.
+    """
+
+    #: Timeout the grader waits for the broker's future to resolve. Long
+    #: because a queue backend's worker pool may saturate; a hard failure
+    #: at the seam layer would mask a scaling problem the operator can
+    #: fix by adding consumers. Tunable via the constructor.
+    DEFAULT_TIMEOUT_S: float = 600.0
+
+    def __init__(
+        self,
+        broker: GradeBroker,
+        logger: StructuredLogger,
+        *,
+        timeout_s: float | None = None,
+    ) -> None:
+        self.broker = broker
+        self.logger = logger
+        self.timeout_s = timeout_s if timeout_s is not None else self.DEFAULT_TIMEOUT_S
+
+    def grade(
+        self,
+        spec: TrialSpec,
+        trajectory: Trajectory,
+        agent_system_prompt: str,
+    ) -> Grade | None:
+        from tolokaforge.grader.queue import GradeJob, new_job_id
+
+        task_id, trial_idx = _split_trial_id(spec.trial_id)
+
+        if classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+            self.logger.info(
+                "Trial aborted by infrastructure - not graded",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
+            )
+            return None
+
+        if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
+            self.logger.info(
+                "Trial did not complete successfully - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(state_checks=0.0),
+                reasons=f"Trial failed with status: {trajectory.status.value}",
+            )
+
+        if trajectory.termination_reason == TerminationReason.STUCK_DETECTED:
+            self.logger.info(
+                "Trial stuck - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(state_checks=0.0),
+                reasons="Agent got stuck (repeated actions without progress)",
+            )
+
+        llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
+        job = GradeJob(
+            job_id=new_job_id(),
+            trial_id=spec.trial_id,
+            llm_messages_json=llm_messages_json,
+            termination_reason=(
+                trajectory.termination_reason.value if trajectory.termination_reason else ""
+            ),
+            task_config_json="",
+            agent_system_prompt=agent_system_prompt,
+        )
+        future = self.broker.publish_job(job)
+        try:
+            grade = future.result(timeout=self.timeout_s)
+        except Exception as exc:  # noqa: BLE001 — surface loudly with our own type
+            self.logger.error(
+                "Queue-backed grader failed",
+                task_id=task_id,
+                trial_index=trial_idx,
+                error=str(exc),
+            )
+            raise GradingFailedError(f"Grading failed for trial {spec.trial_id!r}: {exc}") from exc
+
+        if grade is None:
+            self.logger.info(
+                "Queue-backed grader returned no verdict",
+                task_id=task_id,
+                trial_index=trial_idx,
+            )
+        else:
+            self.logger.info(
+                "Grading via queue-backed grader",
+                task_id=task_id,
+                trial_index=trial_idx,
+                score=grade.score,
+                binary_pass=grade.binary_pass,
+            )
+        return grade
+
+
+def queue_trial_grader_factory(ctx: TrialGraderContext) -> QueueTrialGrader:
+    """Build a :class:`QueueTrialGrader` from a grader context.
+
+    The factory instantiates an in-memory reference broker
+    (:class:`~tolokaforge.grader.queue.InMemoryGradeBroker`) which is
+    useful for tests and single-machine deployments. A Redis Streams or
+    RabbitMQ backend plugs in via a follow-up context field carrying
+    broker-selection configuration.
+    """
+    from tolokaforge.grader.queue import InMemoryGradeBroker
+
+    broker = InMemoryGradeBroker()
+    return QueueTrialGrader(broker=broker, logger=ctx.logger)
 
 
 def judge_backed_trial_grader_factory(ctx: TrialGraderContext) -> JudgeBackedTrialGrader:
