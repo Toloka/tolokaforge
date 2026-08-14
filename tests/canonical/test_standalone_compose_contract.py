@@ -29,7 +29,7 @@ _COMPOSE_FILE = _REPO_ROOT / "deploy" / "standalone" / "docker-compose.yaml"
 _ENV_EXAMPLE = _REPO_ROOT / "deploy" / "standalone" / ".env.example"
 
 _IMAGE_TAG_REF = "${TOLOKAFORGE_IMAGE_TAG:-latest}"
-_EXPECTED_SERVICES = {"runner", "db-service", "rag-service", "mock-web"}
+_EXPECTED_SERVICES = {"runner", "db-service", "rag-service", "mock-web", "grader"}
 
 
 def _load_compose() -> dict:
@@ -88,12 +88,13 @@ def test_runner_env_and_port() -> None:
     )
 
 
-def test_only_runner_publishes_a_host_port() -> None:
+def test_only_runner_and_grader_publish_a_host_port() -> None:
     services = _load_compose()["services"]
     published = {name for name, spec in services.items() if "ports" in spec}
-    assert published == {"runner"}, (
-        "the three peers stay internal to the compose network; only the runner "
-        f"publishes a host port (found published: {sorted(published)})"
+    assert published == {"runner", "grader"}, (
+        "db-service / rag-service / mock-web stay internal to the compose network; "
+        "runner and grader publish host ports (50051 and 50052 respectively) so a "
+        f"cold user can dial either from the host (found published: {sorted(published)})"
     )
 
 

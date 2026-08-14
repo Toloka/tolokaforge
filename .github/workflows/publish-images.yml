@@ -16,7 +16,7 @@ concurrency:
 # only needs the names reads from here — kept in one place so adding a
 # fifth image is one env edit + one matrix row, not six sites.
 env:
-  FIRST_PARTY_IMAGES: "runner db-service rag-service mock-web"
+  FIRST_PARTY_IMAGES: "runner db-service rag-service mock-web grader"
 
 jobs:
   build-wheel:
@@ -93,6 +93,9 @@ jobs:
           - image: mock-web
             dockerfile: tolokaforge/docker/dockerfiles/mock_web.Dockerfile
             needs_wheel: false
+          - image: grader
+            dockerfile: tolokaforge/docker/dockerfiles/grader.Dockerfile
+            needs_wheel: true
     steps:
       - uses: actions/checkout@v5
 
