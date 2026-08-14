@@ -60,7 +60,11 @@ class _StubBackend:
 
 def _make_grader(backend: _StubBackend | None = None) -> tuple[RunnerRPCTrialGrader, MagicMock]:
     logger = MagicMock()
-    grader = RunnerRPCTrialGrader(runtime_backend=backend or _StubBackend(), logger=logger)
+    grader = RunnerRPCTrialGrader(
+        runner_address="stub:0",
+        logger=logger,
+        runner_client=backend or _StubBackend(),
+    )
     return grader, logger
 
 

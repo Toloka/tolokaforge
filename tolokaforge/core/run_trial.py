@@ -154,7 +154,7 @@ def run_trial(
         )
     )
     trial_grader = load_trial_grader(grader)(
-        TrialGraderContext(runtime_backend=runtime_backend, logger=logger)
+        TrialGraderContext(runner_address=runner_address, logger=logger)
     )
 
     agent_client = LLMClient(resolved_models.agent, rate_limit_probe=rate_limit_probe)

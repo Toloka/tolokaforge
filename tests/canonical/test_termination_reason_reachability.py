@@ -245,7 +245,9 @@ def test_only_reasons_from_a_completed_trial_reach_grade_trial(
     observed_outcomes: frozenset[tuple[TrialStatus, TerminationReason]],
 ) -> None:
     backend = _RecordingBackend()
-    grader = RunnerRPCTrialGrader(runtime_backend=backend, logger=MagicMock())
+    grader = RunnerRPCTrialGrader(
+        runner_address="stub:0", logger=MagicMock(), runner_client=backend
+    )
 
     for status, reason in sorted(observed_outcomes, key=lambda pair: pair[1].value):
         grader.grade(
@@ -315,7 +317,9 @@ def test_no_grade_is_produced_for_an_aborted_trial(
 ) -> None:
     """Which observed reasons answer with no grade at all, asserted against the
     named set rather than against the classifier that decides it."""
-    grader = RunnerRPCTrialGrader(runtime_backend=_RecordingBackend(), logger=MagicMock())
+    grader = RunnerRPCTrialGrader(
+        runner_address="stub:0", logger=MagicMock(), runner_client=_RecordingBackend()
+    )
 
     ungraded = {
         reason
