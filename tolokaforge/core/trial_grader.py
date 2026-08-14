@@ -133,9 +133,10 @@ class RunnerRPCTrialGrader:
     """Production :class:`TrialGrader`. Dispatches to the runner's
     ``grade_trial`` gRPC for real grading, short-circuits with an
     auto-fail :class:`Grade` when the trajectory shape rules out a
-    meaningful judge result, returns ``None`` for a trial that never
-    ran, and raises :class:`GradingFailedError` when the RPC could not
-    produce a verdict.
+    meaningful judge result, returns ``None`` where no verdict exists to
+    compute — a trial that never ran, and one whose runner lost it — and
+    raises :class:`GradingFailedError` when the RPC could not produce a
+    verdict.
 
     Instantiated per-run with a bound ``runtime_backend`` and the
     per-run :class:`StructuredLogger`. The orchestrator constructs one
@@ -163,6 +164,15 @@ class RunnerRPCTrialGrader:
                 termination_reason=(
                     trajectory.termination_reason.value if trajectory.termination_reason else None
                 ),
+            )
+            return None
+
+        if trajectory.termination_reason == TerminationReason.TRIAL_LOST:
+            self.logger.info(
+                "Trial lost by the runner - not graded",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
             )
             return None
 

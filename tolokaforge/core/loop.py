@@ -59,6 +59,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.run_display_events import LLMCallObservation
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
+from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
 
 
@@ -176,6 +177,11 @@ def classify_loop_error(
 ) -> TerminationDecision:
     """Classify a turn-loop exception into a terminal reason + message.
 
+    ``TRIAL_LOST`` is matched by type first and is the one typed reason here that
+    keeps the trial in the denominator: a runner that no longer holds the trial
+    is our fault, and the call it refused reached no tool, so the trial ends at
+    the fault rather than handing the agent a failure to retry against.
+
     ``API_TIMEOUT`` and ``RATE_LIMIT`` are matched by *type* — through the
     ``__cause__`` chain for the rate limit, since the client re-raises every
     provider error wrapped. Both reasons exclude the trial from the measured
@@ -190,6 +196,12 @@ def classify_loop_error(
     consults *patterns* — the caller's compiled per-provider list.
     """
     error_str = str(exc)
+    if isinstance(exc, TrialNotRegisteredError):
+        return TerminationDecision(
+            reason=TerminationReason.TRIAL_LOST,
+            system_message=f"{error_str} Dialogue terminated.",
+            status=TrialStatus.ERROR,
+        )
     if isinstance(exc, LLMApiTimeoutError):
         return TerminationDecision(
             reason=TerminationReason.API_TIMEOUT,

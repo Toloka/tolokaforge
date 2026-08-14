@@ -24,6 +24,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.canonical._factories import make_trajectory, make_trial_spec
 from tests.utils.mock_clients import MockAsyncClient
 from tests.utils.runner_requests import execute_request
 from tests.utils.servicer_runtime import ServicerBackend
@@ -37,7 +38,10 @@ from tolokaforge.core.grading.trace_timeline import (
 from tolokaforge.core.llm import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
+from tolokaforge.core.metrics import calculate_task_metrics
 from tolokaforge.core.models import (
+    Grade,
+    GradeComponents,
     RecordedToolCall,
     TerminationReason,
     ToolCall,
@@ -45,7 +49,9 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
+from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.runner import TrialRunner
+from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
 from tolokaforge.env.json_db_service.app import app as db_app
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.db_client import DBServiceClient
@@ -168,20 +174,12 @@ def test_the_runner_records_nothing_for_a_trial_it_never_registered() -> None:
     assert "never_registered:0" not in service.trials
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=(AssertionError, AttributeError),
-    reason="a lost trial burns its turn budget and reports every call as an agent tool error",
-)
 def test_a_trial_lost_inside_the_loop_ends_as_a_named_harness_fault(
     loop_route: tuple[Trajectory, tuple[RecordedToolCall, ...], TrialTimeline],
 ) -> None:
-    """The whole target contract as one test.
-
-    ``TRIAL_LOST`` is asserted first because it is the last piece to land: the
-    client refusing the status ends the trial on its own, under the generic
-    ``ERROR``, and this must stay red until the fault has its own name.
-    """
+    """The whole contract as one test: the trial stops at the fault, under a name
+    that says what happened, attributed to us, and with nothing on either view
+    that a ``status`` matcher would read as the agent's tool failing."""
     trajectory, records, timeline = loop_route
 
     assert trajectory.termination_reason is TerminationReason.TRIAL_LOST
@@ -197,11 +195,6 @@ def test_a_trial_lost_inside_the_loop_ends_as_a_named_harness_fault(
     assert results == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=(AssertionError, AttributeError),
-    reason="a trial lost before the loop ends under the bootstrap handler's generic ERROR",
-)
 def test_a_trial_lost_before_the_loop_ends_under_the_same_name(
     bootstrap_route: tuple[Trajectory, tuple[RecordedToolCall, ...], TrialTimeline],
 ) -> None:
@@ -214,3 +207,56 @@ def test_a_trial_lost_before_the_loop_ends_under_the_same_name(
     assert trajectory.status is TrialStatus.ERROR
     assert classify_trial_outcome(trajectory) is TrialOutcomeClass.HARNESS_ERROR
     assert records == ()
+
+
+def test_a_lost_trial_is_counted_against_the_run_and_scored_not_at_all(
+    loop_route: tuple[Trajectory, tuple[RecordedToolCall, ...], TrialTimeline],
+) -> None:
+    """The accounting, over one genuine pass and one lost trial.
+
+    The lost trial's grade is whatever the production grader produced for it,
+    assigned the way the conductor assigns it — not an omission written here. An
+    auto-fail ``0.0`` would sit in ``scored_trials`` and halve ``avg_score``,
+    describing agent performance with a fault of ours.
+    """
+    trajectory, _, _ = loop_route
+    backend = MagicMock()
+    grader = RunnerRPCTrialGrader(runtime_backend=backend, logger=MagicMock())
+
+    trajectory.grade = grader.grade(make_trial_spec(), trajectory, "You are an agent.")
+
+    assert trajectory.grade is None
+    backend.grade_trial.assert_not_called()
+
+    passed = make_trajectory(termination_reason=TerminationReason.AGENT_DONE)
+    passed.grade = Grade(
+        binary_pass=True,
+        score=1.0,
+        components=GradeComponents(state_checks=1.0),
+        reasons="graded",
+    )
+    metrics = calculate_task_metrics([passed, trajectory])
+
+    assert metrics["total_trials"] == 2
+    assert metrics["measured_trials"] == 2
+    assert metrics["harness_errors"] == 1
+    assert metrics["scored_trials"] == 1
+    assert metrics["avg_score"] == 1.0
+    assert metrics["successful_trials"] == 1
+    assert metrics["success_rate"] == 0.5
+    assert sorted(metrics["infrastructure_aborts"]) == [
+        "api_timeout",
+        "provision_error",
+        "rate_limit",
+    ]
+
+
+def test_a_lost_trial_is_still_worth_retrying(
+    loop_route: tuple[Trajectory, tuple[RecordedToolCall, ...], TrialTimeline],
+) -> None:
+    """Re-registering the trial is precisely the repair a lost registration
+    needs, so the attempt stays retryable rather than short-circuiting the way a
+    deterministic provisioning fault does."""
+    trajectory, _, _ = loop_route
+
+    assert Orchestrator._is_retryable_trajectory(trajectory) is True
