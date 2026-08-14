@@ -13,11 +13,23 @@ so that the two RPCs remain interchangeable at the plug-in seam layer.
 """
 
 from tolokaforge.grader.client import GrpcGraderClient
+from tolokaforge.grader.queue import (
+    GradeBroker,
+    GradeJob,
+    GradeResult,
+    InMemoryGradeBroker,
+    new_job_id,
+)
 from tolokaforge.grader.service import GradeDispatch, GraderServiceImpl, JudgeGradeFn
 
 __all__ = [
+    "GradeBroker",
     "GradeDispatch",
+    "GradeJob",
+    "GradeResult",
     "GraderServiceImpl",
     "GrpcGraderClient",
+    "InMemoryGradeBroker",
     "JudgeGradeFn",
+    "new_job_id",
 ]
