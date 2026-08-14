@@ -486,6 +486,13 @@ dev = [
     "psutil>=5.9.0",
     "black==26.3.1",
     "ruff==0.14.4",
+    # Import-boundary enforcement for the five plug-in seams (grader,
+    # runtime backends, service-readiness probes, turn policies, external
+    # harnesses). Contracts live in ``.importlinter``; a forbidden import
+    # fails the lint stage in ~1–3 s rather than after a full pytest run.
+    # See ADR-0035 § Design Drivers (import-linter, not just Protocol
+    # discipline).
+    "import-linter>=2.0",
     "mypy>=1.7.0",
     "pre-commit>=3.6.0",
     "playwright>=1.40.0",
