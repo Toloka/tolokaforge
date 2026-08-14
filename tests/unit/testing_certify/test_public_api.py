@@ -273,3 +273,10 @@ class TestAllModels:
         first = [c.model_id for c in ALL_MODELS]
         reloaded = [c.model_id for c in importlib.reload(registry).ALL_MODELS]
         assert reloaded == first
+
+    def test_certify_seam_and_models_wheel_return_the_same_tuple(self) -> None:
+        # The engine re-export must BE the wheel's tuple, not a copy that can
+        # drift. Kept from the deleted cutover lock; see ADR-0030.
+        from tolokaforge_models.certificates import ALL_MODELS as WHEEL_ALL_MODELS
+
+        assert ALL_MODELS is WHEEL_ALL_MODELS
