@@ -162,6 +162,11 @@ SERVICE_VERSION = "1.0.0"
 # Session working root handed to lifecycle tools as ``ToolLifecycleContext.work_dir``.
 AGENT_WORK_DIR = "/work"
 
+# Head start the inner ``asyncio.wait_for`` gets over the outer future deadline in
+# ``ExecuteTool``. Both enforce the same tool budget, so on an equal deadline the
+# winner is scheduler noise — and an outer win reports a genuine timeout as ERROR.
+_TOOL_TIMEOUT_SLACK_S = 5.0
+
 # The documented read-only mcp_core TypeSense KB connector the agent uses. The
 # judge is allowed to reuse this ONE reconstructed tool (read-only passthrough)
 # so it reads the same corpus the agent did. It is a closed (mcp_core) tool, not
@@ -1170,7 +1175,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # Use tool-specific timeout or default
             timeout_seconds = getattr(tool, "timeout_s", trial_context.default_timeout)
 
-        # Run async execution on dedicated event loop thread
+        # Run async execution on dedicated event loop thread. The RPC timeout is
+        # the effective deadline: the inner tool wrapper enforces the same value on
+        # its own subprocess, so the two must agree — otherwise a slow tool (a long
+        # harness CLI, a heavy compose exec) hits the 5-minute default and errors
+        # while its subprocess is still writing.
         try:
             result = self._run_async(
                 self._execute_tool_async(
@@ -1181,11 +1190,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     arguments=arguments,
                     executor=executor,
                     timeout_seconds=timeout_seconds,
-                )
+                ),
+                timeout=timeout_seconds + _TOOL_TIMEOUT_SLACK_S,
             )
             return result
         except Exception as e:
-            # This should not happen - _execute_tool_async catches all exceptions
+            # _execute_tool_async catches everything the tool raises, so what
+            # reaches here is the bridge itself failing (the outer deadline, a
+            # closed loop) rather than a tool outcome.
             logger.error(f"ExecuteTool: Unexpected error in async execution: {e}")
             logger.error(traceback.format_exc())
             return pb2.ExecuteToolResponse(

@@ -259,12 +259,13 @@ def _grading_config(task_yaml: Path) -> tuple[str, GradingConfig]:
 _RECORDED_ARTIFACT_DIRS = ("output/trials", "migration_corpora")
 
 # The authored task files that load no grading config, so a pack losing its grading
-# block shows up as a guard failure rather than as a silent absence. The three
+# block shows up as a guard failure rather than as a silent absence. The four
 # ``terminal_bench`` files declare no ``task_id`` at all and ``actor_binding`` ships no
 # grading; ``test_the_authored_walk_partitions_every_task_file_under_both_roots``
 # holds each reason.
 _TASKS_OUTSIDE_THE_GRADED_CORPUS = _TASKS_WITHOUT_A_PROJECT + (
     _TEST_DATA / "terminal_bench_tasks" / "echo-hello" / "task.yaml",
+    _TEST_DATA / "terminal_bench_tasks" / "echo-hello-skills" / "task.yaml",
     _TEST_DATA / "actor_binding" / "task.yaml",
 )
 
@@ -313,7 +314,7 @@ def test_the_authored_walk_partitions_every_task_file_under_both_roots() -> None
 
     A guard is only as honest as its walk, and this one drops files on two grounds: a
     recorded ``TaskDescription`` under ``output/trials`` or ``migration_corpora`` is
-    not authored, and four authored files load no grading config. Both are asserted
+    not authored, and five authored files load no grading config. Both are asserted
     against what the files actually do, so the exclusion list cannot be used to park
     a pack a guard reds on — a named file that *does* load a grading config fails
     here, and so does a task file the walk drops on neither ground.

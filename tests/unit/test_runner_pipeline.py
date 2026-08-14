@@ -10,6 +10,7 @@ This module tests the full flow end-to-end within a single process (no Docker):
 This validates that the trial-lifecycle components work together correctly.
 """
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -32,6 +33,7 @@ from tolokaforge.core.models import TerminationReason
 from tolokaforge.core.trial_grader import GradingFailedError, RunnerRPCTrialGrader
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
+from tolokaforge.tools.registry import ToolExecutionStatus
 
 
 @pytest.fixture
@@ -952,6 +954,75 @@ class TestDuplicateCallIdPublishesNoScore:
 
         assert DUPLICATE_CALL_ID in str(excinfo.value)
         assert trajectory.grade is None
+
+
+class TestTheToolBudgetIsTheOneThatFires:
+    """``ExecuteTool`` enforces the tool budget twice — once on the coroutine's
+    ``asyncio.wait_for``, once on the thread-bridge future that awaits it. Only
+    the inner one knows the outcome is a timeout; the outer one surfaces as a
+    bare ``TimeoutError`` the handler can only report as ``ERROR``, and its
+    cancellation drops the call before it is recorded. So an overrun has to be
+    the inner deadline's, and the trial's history has to show it.
+    """
+
+    @pytest.fixture
+    def budget_trial(
+        self, runner_service, mock_grpc_context, simple_task_description, request
+    ) -> str:
+        trial_id = f"{request.node.name}:0"
+        registration = register_request(
+            trial_spec_json(simple_task_description, trial_id=trial_id), trial_id=trial_id
+        )
+        registered = runner_service.RegisterTrial(registration, mock_grpc_context)
+        assert registered.success is True, registered.error
+
+        async def sleeps_past_any_budget(args):
+            await asyncio.sleep(30)
+            return json.dumps(args)
+
+        async def returns_immediately(args):
+            return json.dumps({"ok": True})
+
+        trial = runner_service.trials[trial_id]
+        trial.agent_tools["sleeps_past_any_budget"] = sleeps_past_any_budget
+        trial.agent_tools["returns_immediately"] = returns_immediately
+        return trial_id
+
+    def test_an_overrun_is_reported_as_timeout_and_recorded(
+        self, runner_service, mock_grpc_context, budget_trial
+    ):
+        response = runner_service.ExecuteTool(
+            execute_request(
+                budget_trial,
+                "sleeps_past_any_budget",
+                call_id="call_slow",
+                timeout_seconds=0.05,
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == pb2.EXECUTION_STATUS_TIMEOUT
+        assert "timed out after" in response.error_message
+        recorded = runner_service.trials[budget_trial].tool_call_history[-1]
+        assert recorded.call_id == "call_slow"
+        assert recorded.status is ToolExecutionStatus.TIMEOUT
+
+    def test_a_call_inside_its_budget_is_left_alone(
+        self, runner_service, mock_grpc_context, budget_trial
+    ):
+        response = runner_service.ExecuteTool(
+            execute_request(
+                budget_trial,
+                "returns_immediately",
+                call_id="call_fast",
+                timeout_seconds=10.0,
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == pb2.EXECUTION_STATUS_SUCCESS
+        assert response.error_message == ""
+        assert json.loads(response.output) == {"ok": True}
 
 
 # NOTE: TestDBClientWithTestClient has been moved to tests/test_db_client.py

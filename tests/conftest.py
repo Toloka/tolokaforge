@@ -34,6 +34,34 @@ def overlay_isolation():
 
 
 @pytest.fixture
+def env_backed_secrets(monkeypatch):
+    """Pin the process ``SecretManager`` to ``os.environ`` with the shipped
+    harness provider key resolvable.
+
+    Harness mode resolves ``HarnessSpec.provider_env`` — claude-code ships
+    ``${secret:OPENROUTER_API_KEY}`` — while constructing the adapter. The
+    process default manager reads a ``.env`` file first, so without this a lane
+    would resolve whatever credential the developer happens to have on disk and
+    would fail on a machine that has none. Patching the module global (rather
+    than ``init_default_from``) restores the singleton when the test ends, so no
+    manager leaks into a neighbouring test's secret reads. No resolved value
+    reaches a snapshot: the compose file carries names, and values live only in
+    the per-trial ``.env``.
+
+    Not autouse — a module that needs it declares
+    ``pytest.mark.usefixtures("env_backed_secrets")``, so replacing the process
+    secret manager stays scoped to the lanes that drive harness mode.
+    """
+    from tolokaforge.secrets import SecretManager
+    from tolokaforge.secrets.providers import EnvProvider
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter-test")
+    monkeypatch.setattr(
+        "tolokaforge.secrets.manager._default_manager", SecretManager([EnvProvider()])
+    )
+
+
+@pytest.fixture
 def write_overlay(tmp_path: Path) -> Callable[[dict], str]:
     """Return a writer that materialises an overlay dict to a temp YAML file
     and returns the path (the shape ``set_overlay_path`` consumes)."""

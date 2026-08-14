@@ -198,6 +198,20 @@ class TestBudgetInvariantAtLoadTime:
         validate_rate_limit_probe_budget(None, 60.0, source="test")
 
 
+def _spec() -> MagicMock:
+    """A ``TrialSpec`` stand-in whose ``task.metadata`` is a real mapping.
+
+    ``TaskDescription.metadata`` is a ``dict`` field with a ``{}`` default, so
+    every real spec has one. A bare ``MagicMock`` answers ``metadata.get(...)``
+    with another mock, which no caller can interpret — these tests care about
+    timeout wiring, not metadata, but the stand-in still has to honour the
+    contract the conductor reads.
+    """
+    spec = MagicMock()
+    spec.task.metadata = {}
+    return spec
+
+
 class TestTheOvershootIsPartOfTheInvariant:
     """``per_call_budget_s`` is a floor, so the invariant has to model the
     overshoot rather than trust the slack to absorb it.
@@ -317,7 +331,7 @@ class TestTheOvershootIsPartOfTheInvariant:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             pytest.raises(ValueError, match="task clamped-overshoot"),
         ):
-            conductor._run_agent_loop(MagicMock(), task, setup)
+            conductor._run_agent_loop(_spec(), task, setup)
 
 
 class TestBudgetInvariantAgainstTheEffectiveTimeout:
@@ -358,7 +372,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             pytest.raises(ValueError, match="task clamped"),
         ):
-            conductor._run_agent_loop(MagicMock(), task, self._setup(tmp_path))
+            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path))
 
     def test_task_without_declared_timeouts_uses_the_unclamped_run_budget(
         self, tmp_path: Path
@@ -371,7 +385,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
-            conductor._run_agent_loop(MagicMock(), task, self._setup(tmp_path))
+            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path))
 
         kwargs = runner_cls.call_args.kwargs
         assert kwargs["episode_timeout_s"] == 14400
@@ -389,7 +403,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
-            conductor._run_agent_loop(MagicMock(), task, self._setup(tmp_path))
+            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path))
 
         stats = runner_cls.call_args.kwargs["probe_stats"]
         assert (stats.bucket_width_s, stats.max_buckets) == (60, 7)
@@ -411,7 +425,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
-            conductor._run_agent_loop(MagicMock(), task, self._setup(tmp_path))
+            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path))
 
         simulator = runner_cls.call_args.kwargs["user_simulator"]
         assert simulator.llm_client is not None
@@ -427,7 +441,7 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
             patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
             patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
         ):
-            conductor._run_agent_loop(MagicMock(), task, self._setup(tmp_path))
+            conductor._run_agent_loop(_spec(), task, self._setup(tmp_path))
 
         assert runner_cls.call_args.kwargs["probe_stats"] is None
 

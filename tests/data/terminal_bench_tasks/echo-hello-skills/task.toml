@@ -1,0 +1,16 @@
+[metadata]
+author_name = "test"
+difficulty = "easy"
+category = "software_engineering"
+tags = ["shell", "basics"]
+
+[agent]
+timeout_sec = 60.0
+
+[verifier]
+timeout_sec = 30.0
+
+[environment]
+cpus = 1
+memory_mb = 512
+storage_mb = 1024

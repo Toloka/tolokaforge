@@ -387,60 +387,163 @@ class TrialRunner:
                 if self.strict:
                     raise
 
-            # Finalize metrics
-            end_ts = datetime.now(tz=timezone.utc)
-            self.metrics.latency_total_s = time.time() - self.start_time
-            self.metrics.turns = len([m for m in self.messages if m.role == MessageRole.ASSISTANT])
-            self._apply_probe_stats()
-
-            recorded_calls = self.tool_call_recorder.recorded
-            if recorded_calls:
-                success_count = sum(
-                    1 for call in recorded_calls if call.status is ToolExecutionStatus.SUCCESS
-                )
-                self.metrics.tool_success_rate = success_count / len(recorded_calls)
-                self.metrics.tool_calls = len(recorded_calls)
-
-            self.logger.info(
-                "Trial execution finished",
-                status=status.value,
-                turns=self.metrics.turns,
-                tool_calls=self.metrics.tool_calls,
-                latency_s=self.metrics.latency_total_s,
+            return self._finalise(
+                status=status, termination_reason=termination_reason, start_ts=start_ts
             )
 
-            # Pull the simulator prompt from the (possibly None) attribute
-            # exposed by UserSimulator. LLM mode populates it on every
-            # reply; scripted mode leaves it None. Overwrite our cached copy on
-            # every trial-end so that if a follow-up reply revised the prompt,
-            # we land the latest version. Guard against non-string values
-            # (e.g. MagicMock in tests) — a real UserSimulator never populates a
-            # non-string-non-None value, but silently coercing garbage onto the
-            # Trajectory would violate AGENTS.md rule #1.
-            sim_prompt = getattr(self.user_simulator, "last_system_prompt", None)
-            if isinstance(sim_prompt, str) and sim_prompt:
-                self._user_system_prompt_captured = sim_prompt
+    def run_harness(
+        self,
+        *,
+        tool_name: str,
+        command: str,
+        instruction: str,
+        timeout_s: float,
+    ) -> Trajectory:
+        """Run the trial as a single invocation of a coding-harness CLI.
 
-            # Create trajectory with status and termination reason. Both
-            # system prompts are read off the runner via the
-            # :attr:`effective_system_prompt` / :attr:`user_system_prompt`
-            # properties and persisted by the orchestrator into
-            # ``prompts.yaml`` — they no longer ride on Trajectory.
-            trajectory = Trajectory(
+        A harness CLI owns its own planning loop inside the container, so the
+        engine's turn loop would be a second agent stacked on the first. The
+        trial is one tool call instead: no LLM generation, no user turn, no
+        :class:`ToolCallingLoop`. The trajectory records *instruction* as the
+        user message and the CLI's output as the agent's single reply.
+
+        Args:
+            tool_name: Tool the command runs through — the task's sole agent
+                tool, resolved by the caller.
+            command: Shell command that starts the CLI against *instruction*.
+                Built by the adapter, which owns every CLI's argv.
+            instruction: The task text handed to the CLI, recorded as the
+                trial's user message.
+            timeout_s: Deadline for the invocation, enforced runner-side. Must
+                equal the target tool's registered ``timeout_s``: the runner
+                applies this to the RPC and the tool's own value to the
+                subprocess, and abandoning the former does not stop the latter.
+
+        Requires a ``tool_executor`` accepting ``timeout_seconds`` — the
+        per-trial :class:`~tolokaforge.core.docker_adapter.DockerRunnerAdapter`
+        does; the narrower :class:`~tolokaforge.tools.registry.ToolExecutor`
+        does not, and cannot reach a harness trial (which is Docker-only).
+        """
+        trial_id = f"{self.task_id}:{self.trial_index}"
+        with trial_id_scope(trial_id):
+            self.logger = init_trial_logger(trial_id, self.verbose, self.strict)
+            self.logger.info(
+                "Starting harness trial",
                 task_id=self.task_id,
                 trial_index=self.trial_index,
-                start_ts=start_ts,
-                end_ts=end_ts,
-                status=status,
-                termination_reason=termination_reason,
-                first_user_message_source=self._first_user_message_source,
-                messages=self.messages,
-                user_reply_guard_events=list(self._user_reply_guard_events),
-                metrics=self.metrics,
-                tool_log=list(recorded_calls),
+                tool_name=tool_name,
+                timeout_s=timeout_s,
+            )
+            self.start_time = time.time()
+            start_ts = datetime.now(tz=timezone.utc)
+            self.messages.append(
+                Message(
+                    role=MessageRole.USER,
+                    content=instruction,
+                    ts=datetime.now(tz=timezone.utc),
+                )
             )
 
-            return trajectory
+            arguments = {"command": command}
+            call_id = f"harness:{trial_id}"
+            call_started = time.time()
+            result = self.tool_executor.execute(
+                tool_name,
+                arguments,
+                timeout_seconds=timeout_s,
+                call_id=call_id,
+            )
+            output = resolve_tool_output(result)
+            tool_status = resolve_tool_status(result)
+            self.tool_call_recorder.record(
+                call_id=call_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                executor=ToolExecutorIdentity.AGENT,
+                status=tool_status,
+                output=output,
+                latency_seconds=time.time() - call_started,
+            )
+            self.messages.append(
+                Message(
+                    role=MessageRole.ASSISTANT,
+                    content=output,
+                    ts=datetime.now(tz=timezone.utc),
+                )
+            )
+
+            if tool_status is ToolExecutionStatus.SUCCESS:
+                status = TrialStatus.COMPLETED
+                termination_reason = TerminationReason.AGENT_DONE
+            elif tool_status is ToolExecutionStatus.TIMEOUT:
+                status = TrialStatus.TIMEOUT
+                termination_reason = TerminationReason.TIMEOUT
+                self.logger.warning("Harness CLI exceeded its deadline", timeout_s=timeout_s)
+            else:
+                status = TrialStatus.ERROR
+                termination_reason = TerminationReason.ERROR
+                self.logger.error("Harness CLI invocation failed", tool_status=tool_status.value)
+
+            return self._finalise(
+                status=status, termination_reason=termination_reason, start_ts=start_ts
+            )
+
+    def _finalise(
+        self,
+        *,
+        status: TrialStatus,
+        termination_reason: TerminationReason | None,
+        start_ts: datetime,
+    ) -> Trajectory:
+        """Close out metrics and assemble the trial's :class:`Trajectory`.
+
+        Shared by every way a trial can be driven, so the recorded shape does
+        not depend on which one drove it.
+        """
+        end_ts = datetime.now(tz=timezone.utc)
+        self.metrics.latency_total_s = time.time() - self.start_time
+        self.metrics.turns = len([m for m in self.messages if m.role == MessageRole.ASSISTANT])
+        self._apply_probe_stats()
+
+        recorded_calls = self.tool_call_recorder.recorded
+        if recorded_calls:
+            success_count = sum(
+                1 for call in recorded_calls if call.status is ToolExecutionStatus.SUCCESS
+            )
+            self.metrics.tool_success_rate = success_count / len(recorded_calls)
+            self.metrics.tool_calls = len(recorded_calls)
+
+        self.logger.info(
+            "Trial execution finished",
+            status=status.value,
+            turns=self.metrics.turns,
+            tool_calls=self.metrics.tool_calls,
+            latency_s=self.metrics.latency_total_s,
+        )
+
+        # LLM mode populates the simulator prompt on every reply; scripted mode
+        # leaves it None. Re-read at every trial-end so a follow-up reply that
+        # revised the prompt lands its latest version. The isinstance guard
+        # keeps a non-string (a MagicMock in a test) off the Trajectory rather
+        # than silently coercing it — AGENTS.md rule #1.
+        sim_prompt = getattr(self.user_simulator, "last_system_prompt", None)
+        if isinstance(sim_prompt, str) and sim_prompt:
+            self._user_system_prompt_captured = sim_prompt
+
+        # Both system prompts are read off the runner via the
+        # :attr:`effective_system_prompt` / :attr:`user_system_prompt`
+        # properties and persisted by the orchestrator into ``prompts.yaml``.
+        return Trajectory(
+            task_id=self.task_id,
+            trial_index=self.trial_index,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            status=status,
+            termination_reason=termination_reason,
+            messages=self.messages,
+            metrics=self.metrics,
+            tool_log=list(recorded_calls),
+        )
 
     def _apply_probe_stats(self) -> None:
         """Copy the trial's rate-limit probe accounting onto :class:`Metrics`.

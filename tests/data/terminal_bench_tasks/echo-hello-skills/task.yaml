@@ -1,0 +1,3 @@
+instruction: |
+  Create a file /tmp/hello.txt containing the text "Hello, World!".
+harness_skills_dir: skills/

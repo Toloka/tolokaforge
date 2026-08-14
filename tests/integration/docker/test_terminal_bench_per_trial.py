@@ -26,6 +26,13 @@ The concurrency case provisions the same task twice. Because the
 per-task agent image build ran once in the module-level fixture, this
 exercises per-trial isolation rather than racing two builds of the same
 tag.
+
+``TestTerminalBenchHarnessMode`` covers the same bracket for a trial that
+brings its own agent: base image, harness layer, forwarded provider
+credentials, one ``docker exec`` of the adapter-built command, grading.
+It runs against the cheap ``echo-hello`` fixture with the install script
+swapped for a stub, so no vendor CLI is downloaded and no provider key is
+needed.
 """
 
 from __future__ import annotations
@@ -267,3 +274,192 @@ class TestTerminalBenchPerTrialBracket:
                 backend.teardown(handle_b)
         finally:
             backend.teardown(handle_a)
+
+
+# ---------------------------------------------------------------------------
+# Harness mode — the task brings its own agent
+# ---------------------------------------------------------------------------
+
+_HARNESS_TASK_ID = "echo-hello"
+_HARNESS = "claude-code"
+_HARNESS_MODEL = "openrouter/anthropic/claude-sonnet-4-6"
+
+# A literal fake, asserted by exact value: a "key is set" marker would pass
+# even if compose interpolated the wrong one, and the wire is the whole point.
+_FAKE_PROVIDER_KEY = "sk-integration-fake"
+
+# Replaces the real install script inside the staging build context. Installs a
+# stand-in for the vendor CLI instead of downloading one — the layering, the
+# credential wire, and the single-exec trial body are what this test covers,
+# and a network install would make it slow and flaky without covering more.
+# The stub solves the fixture task, so grading yields a real 1.0 rather than a
+# reward the test had to special-case.
+_INSTALL_STUB = """#!/bin/sh
+set -eu
+# Same contract as the real script: method, source and pinned version.
+[ -n "${1:-}" ] || { echo "stub: no install method" >&2; exit 1; }
+[ -n "${2:-}" ] || { echo "stub: no install source" >&2; exit 1; }
+[ -n "${3:-}" ] || { echo "stub: no version" >&2; exit 1; }
+cat > /usr/local/bin/claude <<'CLI'
+#!/bin/sh
+echo "harness-stub argv: $*"
+echo "harness-stub provider-env: ${ANTHROPIC_API_KEY:-unset}"
+printf 'Hello, World!\\n' > /tmp/hello.txt
+CLI
+chmod +x /usr/local/bin/claude
+"""
+
+
+def _layered_image_ref() -> str:
+    """The harness-layered image tag, version included."""
+    from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+    return f"tbench-{_HARNESS_TASK_ID}:local-{_HARNESS}-{HARNESSES[_HARNESS].version}"
+
+
+@pytest.fixture(scope="module")
+def harness_adapter(tmp_path_factory: pytest.TempPathFactory) -> TerminalBenchAdapter:
+    tasks_dir = _REPO_ROOT / "tests" / "data" / "terminal_bench_tasks"
+    return TerminalBenchAdapter(
+        {
+            "terminal_bench_dir": str(tasks_dir),
+            "task_ids": [_HARNESS_TASK_ID],
+            "staging_root": str(tmp_path_factory.mktemp("tbench-harness-staging")),
+            "agent_harness": _HARNESS,
+            "agent_model": _HARNESS_MODEL,
+            "agent_provider_env": {"ANTHROPIC_API_KEY": _FAKE_PROVIDER_KEY},
+        }
+    )
+
+
+@pytest.fixture(scope="module")
+def prebuilt_harness_environment(
+    harness_adapter: TerminalBenchAdapter,
+    engine_images_with_docker_cli: None,
+) -> dict[str, Any]:
+    """Materialise the layered staging dir and run both declared builds in order.
+
+    Mirrors ``Orchestrator._perform_declared_compose_image_builds``, which
+    builds ``DockerStackRequirements.image_builds`` in the order the adapter
+    declared them — base before layer, since the layer's Dockerfile is ``FROM``
+    the base image.
+    """
+    del engine_images_with_docker_cli  # fixture ordering only
+    env = harness_adapter._environment(_HARNESS_TASK_ID)
+    task = harness_adapter.to_task_description(_HARNESS_TASK_ID)
+
+    (env.staging_dir / "_harness" / "install-harness.sh").write_text(_INSTALL_STUB)
+
+    requirements = harness_adapter.docker_stack_requirements()
+    assert [b.service for b in requirements.image_builds] == ["main-base", "main"]
+    for build in requirements.image_builds:
+        subprocess.run(
+            ["docker", "compose", "-f", str(build.compose_file), "build", build.service],
+            check=True,
+            timeout=_PREBUILD_TIMEOUT_S,
+        )
+    return {"env": env, "task": task}
+
+
+@pytest.mark.skipif(not is_docker_daemon_available(), reason="Docker not available")
+class TestTerminalBenchHarnessMode:
+    """The harness-mode bracket end-to-end against a real daemon."""
+
+    def test_layered_image_carries_the_cli_and_the_task_stack(
+        self, prebuilt_harness_environment: dict[str, Any]
+    ) -> None:
+        """One exec of the adapter-built command solves the task and grades 1.0.
+
+        The assertions walk the chain the layering exists to support: the CLI
+        is on ``PATH`` (harness layer built and installed), the task's own
+        tooling survived underneath it (the layer did not replace the base),
+        the forwarded credential reached the container's environment, and the
+        command the adapter published is what actually ran.
+        """
+        backend = PerTrialRuntimeBackend(mount_docker_socket=True)
+        task = prebuilt_harness_environment["task"]
+        spec = _make_trial_spec(task, f"{_HARNESS_TASK_ID}:0")
+        handle = backend.provision(spec)
+        try:
+            assert isinstance(handle, _LocalEnvHandle)
+            register = backend.register_trial(
+                trial_id=spec.trial_id,
+                trial_spec_json=spec.model_dump_json(exclude={"task": {"environment_manifest"}}),
+            )
+            assert register["success"] is True, register.get("error")
+
+            # The task's own base image survived under the harness layer.
+            probe = backend.execute_tool(
+                trial_id=spec.trial_id,
+                tool_name="bash",
+                arguments={"command": "command -v claude && python3 -m pytest --version"},
+                timeout_seconds=60.0,
+                call_id="probe-cli",
+            )
+            assert probe.success is True, probe.error
+            assert "/usr/local/bin/claude" in probe.output, probe.output
+
+            harness_command = task.metadata["agent_harness_command"]
+            invocation = backend.execute_tool(
+                trial_id=spec.trial_id,
+                tool_name="bash",
+                arguments={"command": harness_command},
+                timeout_seconds=task.agent_tools[0].timeout_s,
+                call_id="harness-1",
+            )
+            assert invocation.success is True, invocation.error
+            assert 'Create a file /tmp/hello.txt containing the text "Hello, World!"' in (
+                invocation.output
+            ), invocation.output
+            assert f"provider-env: {_FAKE_PROVIDER_KEY}" in invocation.output, invocation.output
+            # The vendor CLI reaches OpenRouter via ANTHROPIC_BASE_URL, so the
+            # litellm route prefix must not be on the model it was given.
+            assert "--model anthropic/claude-sonnet-4-6" in invocation.output, invocation.output
+            assert "openrouter/" not in invocation.output, invocation.output
+
+            grade_result = backend.grade_trial(
+                trial_id=spec.trial_id,
+                llm_messages_json=json.dumps([]),
+            )
+            assert grade_result["success"] is True, grade_result.get("error")
+            grade = grade_result["grade"]
+            assert grade is not None
+            assert grade["score"] == 1.0, (
+                f"the harness stub solved the task, so the reference suite must pass; "
+                f"got {grade['score']}. reasons: {grade.get('reasons')}"
+            )
+
+            backend.cleanup_trial(trial_id=spec.trial_id)
+        finally:
+            backend.teardown(handle)
+
+    def test_provider_credentials_never_enter_the_image_or_compose_file(
+        self, prebuilt_harness_environment: dict[str, Any]
+    ) -> None:
+        """The credential lives only in the per-trial ``.env``.
+
+        Baking it into the compose file or the image would put it in a layer
+        that outlives the trial and travels with any pushed tag.
+        """
+        env = prebuilt_harness_environment["env"]
+        assert _FAKE_PROVIDER_KEY not in env.compose_file.read_text()
+        assert (
+            _FAKE_PROVIDER_KEY
+            not in (env.staging_dir / "_harness" / "harness.Dockerfile").read_text()
+        )
+
+        history = subprocess.run(
+            [
+                "docker",
+                "image",
+                "history",
+                "--no-trunc",
+                "--format",
+                "{{.CreatedBy}}",
+                _layered_image_ref(),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert _FAKE_PROVIDER_KEY not in history.stdout

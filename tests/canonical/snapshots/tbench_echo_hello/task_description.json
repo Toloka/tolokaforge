@@ -90,6 +90,7 @@
   },
   "initialization_actions": [],
   "metadata": {
+    "agent_harness": "engine-loop",
     "difficulty": "easy",
     "tags": [
       "shell",
