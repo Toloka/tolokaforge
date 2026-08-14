@@ -27,7 +27,7 @@ bumped and this document is updated in the same commit.
             ├── env.yaml
             ├── metrics.yaml
             ├── grade.yaml                  ← only when the trial produced a grade
-            ├── judge_trajectory.yaml       ← rubric-judge transcript (only when an LLM judge ran)
+            ├── judge_trajectory.yaml       ← rubric-judge transcript (when an LLM judge ran; withheld under a redacting policy)
             ├── judge_inputs.yaml           ← rubric-judge structured inputs for replay (only when an LLM judge ran)
             ├── logs.yaml
             ├── prompts.yaml                ← agent + user-sim system prompts
@@ -608,6 +608,45 @@ table):
 | `cache_read_input_tokens` | Anthropic | Tokens re-used from the ephemeral cache this call |
 | `provider_raw` | — | Best-effort dump of the *last* call's raw usage block |
 
+### `redaction` — the bundle's own account of what a policy rewrote
+
+Tool-call arguments pass through a redaction policy
+([`tolokaforge/core/redaction.py`](../tolokaforge/core/redaction.py)) on their way
+to disk. The default policy rewrites nothing and this key is **absent** — which is
+what every bundle a shipped run produces carries, since no run config selects
+another policy (see [`docs/SECURITY.md`](SECURITY.md:1) § Artifact-Write
+Redaction). Under a redacting policy the writer stamps what it did:
+
+```yaml
+redaction:
+  policy: sensitive_keys
+  artifacts:
+    - tool_log.yaml
+    - trajectory.yaml
+  omitted:
+    - judge_trajectory.yaml
+```
+
+| Field | Meaning |
+|---|---|
+| `policy` | The policy that wrote this bundle, from a closed vocabulary (`sensitive_keys` is the only redacting member today) |
+| `artifacts` | The files this bundle carries whose tool-call arguments were rewritten, sorted |
+| `omitted` | The files the policy withheld entirely rather than rewrote |
+
+`artifacts` is accumulated as each file is written, not declared ahead of time, so
+it names only files the bundle actually holds — on the [provision-failure
+bundle](#provision-failure-bundle) it is `[trajectory.yaml]` alone.
+
+**A stamped bundle is refused by every offline grading command.** The arguments it
+carries are not the arguments the agent sent, so a trace-check constraint over a
+rewritten argument would fail as *decided* rather than undecidable — a confident
+wrong answer. `retrace`, `rejudge`, `curate` and `reconcile` therefore refuse a
+stamped bundle by name instead of grading it (see
+[`docs/TRACE_REPLAY.md`](TRACE_REPLAY.md:1),
+[`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md:1) and
+[`docs/RUBRIC_MIGRATION.md`](RUBRIC_MIGRATION.md:1)). A stamp that is present and
+does not parse is refused too, rather than read as an absent one.
+
 ### `rate_limit_*` / `probe_*` — rate-limit probe accounting
 
 Populated only by runs with
@@ -874,6 +913,13 @@ contains — on this path it is stamped and most of them are absent.
 
 Writing this bundle is best-effort: an I/O failure while writing it is logged
 and does not change the trial's failed result.
+
+Under a redacting artifact-write policy this bundle stamps only what it wrote:
+`metrics.yaml`'s [`redaction`](#redaction--the-bundles-own-account-of-what-a-policy-rewrote)
+names `artifacts: [trajectory.yaml]` — there is no `tool_log.yaml` to rewrite —
+and an empty `omitted`, since no judge ran to produce a transcript to withhold.
+The bundle is still refused by every offline grading command, before the missing
+record could be read as a trial that called no tool.
 
 ### `captured_service_logs` — on trial-body or graded failure
 
@@ -1173,12 +1219,19 @@ custom_checks_details:
 
 ## `trials/{task_id}/{trial_index}/judge_trajectory.yaml`
 
-The rubric judge's own message transcript — written **only** when an LLM
-judge ran and captured one (absent file ⇒ no judge transcript for this
-trial). Kept out of `grade.yaml` for the same reason agent prompts live
-in `prompts.yaml`: the transcript is often kilobytes of read-tool calls
-and inspection, and a reviewer opening `grade.yaml` wants the verdict,
-not the judge's working.
+The rubric judge's own message transcript — written when an LLM judge ran and
+captured one, and withheld under a redacting artifact-write policy. So an absent
+file has two readings, and `metrics.yaml`'s [`redaction`
+stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote) is the
+discriminator: no stamp ⇒ no judge transcript for this trial; a stamp naming this
+file under `omitted` ⇒ the transcript exists and was withheld. It is withheld
+rather than rewritten because the judge renders the agent's arguments into prose,
+which a key-name rule cannot reach.
+
+Kept out of `grade.yaml` for the same reason agent prompts live in
+`prompts.yaml`: the transcript is often kilobytes of read-tool calls and
+inspection, and a reviewer opening `grade.yaml` wants the verdict, not the
+judge's working.
 
 ```yaml
 messages:
@@ -1474,6 +1527,7 @@ evidence about us, and our own defects stay counted. See
 | `prompts.yaml` | — | n/a | Two-key mapping; field names match the legacy `Trajectory.system_prompt` / `Trajectory.user_system_prompt` |
 | `tools_schemas.yaml` | — | n/a | Format is the litellm tool-schema dict list, post-`schema_sanitizer` |
 | `tool_log.yaml` | — (struct-typed) | n/a | Format is the `RecordedToolCall` list; its presence is stamped by `metrics.yaml`'s `schema_version` |
+| `metrics.yaml` (`redaction` block) | — (struct-typed) | n/a | Optional; mirrors `RedactionStamp`. Absent unless a redacting artifact-write policy wrote the bundle, so its introduction bumps no version — a reader that does not know the key sees the bundles it always saw |
 
 The `simulator_schema_version` row is mechanical on its first trigger:
 [`tests/canonical/test_simulator_prompt_generation.py`](../tests/canonical/test_simulator_prompt_generation.py)
