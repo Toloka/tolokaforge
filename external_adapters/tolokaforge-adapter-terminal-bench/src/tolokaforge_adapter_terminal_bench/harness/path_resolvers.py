@@ -31,8 +31,7 @@ class LinuxRootResolver:
     exactly as it does without one.
 
     Deferral is why a mistyped construct in the shipped registry surfaces at CI
-    (``tests/unit/test_harness_path_resolver.py`` pins the shipped vocabulary)
-    rather than at registry load.
+    (at the shipped-vocabulary test) rather than at registry load.
     """
 
     def resolve(self, path: str) -> str:

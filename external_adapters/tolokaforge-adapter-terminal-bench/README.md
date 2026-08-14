@@ -420,8 +420,8 @@ construct is left for the container's own shell. The shipped entries use the
 vocabulary — claude-code's skills land at `${HOME}/.claude/skills/`,
 opencode's config at `${CONFIG_HOME}/opencode/opencode.json` — so a second
 runtime consumes this YAML unforked by supplying its own resolver. An absolute
-`/root/...` path stays valid and resolves to itself, so an overlay copied from
-an earlier shipped entry keeps working with nothing to migrate.
+`/root/...` path stays valid and resolves to itself, so an overlay writing one
+needs no change.
 
 ### Trial-level timeout
 

@@ -290,8 +290,8 @@ class HarnessSpec(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _skills_target_is_an_absolute_path(self) -> HarnessSpec:
-        """Refuse a target the image build would resolve somewhere unintended."""
+    def _skills_target_is_resolvable(self) -> HarnessSpec:
+        """Refuse a target no resolver and no build step would place."""
         target = self.skills_dir_target
         if target is None or target.startswith("/") or PATH_CONSTRUCT_PATTERN.match(target):
             return self

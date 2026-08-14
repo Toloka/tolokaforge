@@ -9,7 +9,6 @@ from tolokaforge_adapter_terminal_bench.harness import (
     DEFAULT_PATH_RESOLVER,
     HARNESSES,
     LinuxRootResolver,
-    PathResolver,
 )
 from tolokaforge_adapter_terminal_bench.harness.protocols import PATH_CONSTRUCT_PATTERN
 
@@ -60,11 +59,6 @@ class TestLinuxRootResolver:
         which is what keeps an operator overlay naming its own variable working
         exactly as it does without a resolver."""
         assert LinuxRootResolver().resolve(path) == path
-
-    def test_the_shipped_default_exposes_a_resolve_attribute(self):
-        """``@runtime_checkable`` checks method presence, never signature: this
-        is a rename guard, not evidence of conformance."""
-        assert isinstance(LinuxRootResolver(), PathResolver)
 
 
 def _unresolved_variables(path: str) -> set[str]:

@@ -76,8 +76,9 @@ class SkillsBundle:
     ``harness_skills_dir``."""
 
     target: str
-    """Absolute directory inside the runtime the CLI reads skills from,
-    already through the run's :class:`PathResolver`."""
+    """Directory inside the runtime the CLI reads skills from, already through
+    the run's :class:`PathResolver` — absolute unless that resolver deferred a
+    construct it does not know."""
 
     staging_dir: Path
     """Absolute path to the materialised trial substrate."""

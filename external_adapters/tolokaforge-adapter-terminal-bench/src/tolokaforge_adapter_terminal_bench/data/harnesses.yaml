@@ -50,14 +50,17 @@ harnesses:
     # drift apart when a task image sets `HOME` elsewhere. It is a literal
     # rather than a `${HOME}` construct because compose interpolates `${...}`
     # in the `environment:` block against the *invoking* shell, which would
-    # substitute the operator's host home.
+    # substitute the operator's host home. That asymmetry is why the pair is
+    # kept consistent by hand: `skills_dir_target` goes through the run's
+    # PathResolver and this value does not, so a runtime whose HOME is not
+    # `/root` desyncs them silently unless both are changed together.
     container_env:
       IS_SANDBOX: "1"
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
       CLAUDE_CONFIG_DIR: "/root/.claude"
-    # Where a task pack's own `harness_skills_dir` bundle is copied in the
-    # image layer. Only a task that ships skills installs any; the operator's
-    # `~/.claude/skills` is never a source (README, parity policy).
+    # Where a task pack's own `harness_skills_dir` bundle is delivered to. Only
+    # a task that ships skills installs any; the operator's `~/.claude/skills`
+    # is never a source (README, parity policy).
     skills_dir_target: "${HOME}/.claude/skills/"
     # Anthropic-shaped OpenRouter endpoint. `ANTHROPIC_BASE_URL` is a literal
     # URL (not a secret); the key value comes from the operator via the

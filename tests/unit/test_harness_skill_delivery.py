@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 from tolokaforge_adapter_terminal_bench.compose_synthesis import ImageLayerSkillDelivery
-from tolokaforge_adapter_terminal_bench.harness import SkillDelivery, SkillsBundle
+from tolokaforge_adapter_terminal_bench.harness import SkillsBundle
 
 pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("env_backed_secrets")]
 
@@ -21,6 +21,22 @@ class _RecordingDelivery:
 
     def deliver(self, bundle: SkillsBundle) -> None:
         self.calls.append(bundle)
+
+
+@dataclass(frozen=True)
+class _HomeAgentResolver:
+    """A second runtime's answer: the CLI runs as a non-root user."""
+
+    def resolve(self, path: str) -> str:
+        return path.replace("${HOME}", "/home/agent")
+
+
+def _staging_dir(adapter: TerminalBenchAdapter) -> Path:
+    return adapter.docker_stack_requirements().image_builds[-1].compose_file.parent
+
+
+def _harness_dockerfile(staging_dir: Path) -> str:
+    return (staging_dir / "_harness" / "harness.Dockerfile").read_text()
 
 
 def _adapter(
@@ -81,11 +97,6 @@ class TestImageLayerSkillDelivery:
     """The shipped answer for this adapter: one more layer on the harness
     image."""
 
-    def test_the_shipped_default_exposes_a_deliver_attribute(self):
-        """``@runtime_checkable`` checks method presence, never signature: this
-        is a rename guard, not evidence of conformance."""
-        assert isinstance(ImageLayerSkillDelivery(), SkillDelivery)
-
     def test_a_deferred_target_is_refused(self, tmp_path):
         """Docker expands a ``COPY`` destination from the image's own ``ENV``,
         which is neither the resolver's answer nor the container shell's — so
@@ -126,8 +137,27 @@ class TestTheTwoSeamsCompose:
             "my-cli",
             params={"harness_presets_file": str(overlay)},
         )
-        builds = adapter.docker_stack_requirements().image_builds
-        staging_dir = builds[-1].compose_file.parent
+        assert "COPY skills/. /root/.claude/skills/" in _harness_dockerfile(_staging_dir(adapter))
 
-        dockerfile = (staging_dir / "_harness" / "harness.Dockerfile").read_text()
-        assert "COPY skills/. /root/.claude/skills/" in dockerfile
+    def test_two_resolvers_over_one_staging_root_keep_their_own_build_contexts(
+        self, overlay, tmp_path
+    ):
+        """The staging directory carries the generated build context, so whoever
+        answered the paths is part of its identity: sharing one would leave the
+        first adapter pointing at a Dockerfile that copies skills where its CLI
+        never looks, while its artifact still recorded a bundle hash."""
+        params = {"harness_presets_file": str(overlay)}
+        shipped = _adapter(tmp_path, "echo-hello-skills", "my-cli", params=params)
+        injected = _adapter(
+            tmp_path,
+            "echo-hello-skills",
+            "my-cli",
+            params=params,
+            path_resolver=_HomeAgentResolver(),
+        )
+
+        assert _staging_dir(shipped) != _staging_dir(injected)
+        assert "COPY skills/. /root/.claude/skills/" in _harness_dockerfile(_staging_dir(shipped))
+        assert "COPY skills/. /home/agent/.claude/skills/" in _harness_dockerfile(
+            _staging_dir(injected)
+        )
