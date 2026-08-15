@@ -51,6 +51,7 @@ from tolokaforge.core.compose_materialisation import (
     first_published_port,
     make_project_temp_dir,
     mount_docker_socket_into_runner,
+    reap_stale_named_containers,
     resolve_env_endpoints,
     resolve_host_port,
     resolve_runner_endpoint,
@@ -282,6 +283,7 @@ class PerTrialRuntimeBackend:
                 mount_docker_socket_into_runner(
                     temp_dir / manifest.compose_file.name, manifest.runner_service
                 )
+            reap_stale_named_containers(temp_dir / manifest.compose_file.name)
             compose = DockerCompose(
                 context=str(temp_dir),
                 compose_file_name=manifest.compose_file.name,

@@ -35,6 +35,7 @@ from tolokaforge.core.compose_materialisation import (
     first_published_port,
     make_project_temp_dir,
     mount_docker_socket_into_runner,
+    reap_stale_named_containers,
     render_squid_config,
     resolve_env_endpoints,
     resolve_host_port,
@@ -908,3 +909,110 @@ class TestMountDockerSocketIntoRunner:
         assert compose.read_text() == before
         volumes = yaml.safe_load(compose.read_text())["services"]["runner"]["volumes"]
         assert len(volumes) == 1
+
+
+class TestReapStaleNamedContainers:
+    """A prior run's container that survived a killed session refuses ``docker
+    compose up`` with a name-conflict; the reaper clears it before the next
+    provision attempt.
+    """
+
+    def test_reaps_every_container_name_declared_in_compose(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(
+            "services:\n"
+            "  main:\n"
+            "    image: t:local\n"
+            "    container_name: tbench_task_0_main\n"
+            "  runner:\n"
+            "    image: r:local\n"
+            "    container_name: tbench_task_0_runner\n"
+        )
+        removed: list[list[str]] = []
+
+        def fake_run(argv, capture_output, text, timeout):  # noqa: ANN001
+            removed.append(list(argv))
+            return _FakeCompletedProcess(returncode=0, stdout=argv[-1] + "\n", stderr="")
+
+        monkeypatch.setattr("tolokaforge.core.compose_materialisation.subprocess.run", fake_run)
+
+        reaped = reap_stale_named_containers(compose)
+
+        assert reaped == ("tbench_task_0_main", "tbench_task_0_runner")
+        assert removed == [
+            ["docker", "rm", "-f", "tbench_task_0_main"],
+            ["docker", "rm", "-f", "tbench_task_0_runner"],
+        ]
+
+    def test_missing_container_is_a_noop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(
+            "services:\n"
+            "  main:\n"
+            "    image: t:local\n"
+            "    container_name: tbench_task_0_main\n"
+        )
+
+        def fake_run(argv, capture_output, text, timeout):  # noqa: ANN001
+            return _FakeCompletedProcess(
+                returncode=1,
+                stdout="",
+                stderr="Error: No such container: tbench_task_0_main\n",
+            )
+
+        monkeypatch.setattr("tolokaforge.core.compose_materialisation.subprocess.run", fake_run)
+
+        reaped = reap_stale_named_containers(compose)
+
+        assert reaped == ()
+
+    def test_services_without_container_name_are_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(
+            "services:\n"
+            "  main:\n"
+            "    image: t:local\n"
+            "    container_name: tbench_task_0_main\n"
+            "  db:\n"
+            "    image: db:local\n"
+        )
+        called: list[list[str]] = []
+
+        def fake_run(argv, capture_output, text, timeout):  # noqa: ANN001
+            called.append(list(argv))
+            return _FakeCompletedProcess(returncode=0, stdout=argv[-1] + "\n", stderr="")
+
+        monkeypatch.setattr("tolokaforge.core.compose_materialisation.subprocess.run", fake_run)
+
+        reap_stale_named_containers(compose)
+
+        assert called == [["docker", "rm", "-f", "tbench_task_0_main"]]
+
+    def test_unreadable_compose_file_is_a_silent_noop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        called: list[list[str]] = []
+
+        def fake_run(argv, capture_output, text, timeout):  # noqa: ANN001
+            called.append(list(argv))
+            return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("tolokaforge.core.compose_materialisation.subprocess.run", fake_run)
+
+        reaped = reap_stale_named_containers(tmp_path / "does_not_exist.yaml")
+
+        assert reaped == ()
+        assert called == []
+
+
+class _FakeCompletedProcess:
+    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr

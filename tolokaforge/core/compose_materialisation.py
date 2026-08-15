@@ -454,6 +454,50 @@ def copy_compose_context(compose_file: Path, dest_dir: Path) -> None:
             shutil.copy2(entry, target)
 
 
+def reap_stale_named_containers(compose_file: Path) -> tuple[str, ...]:
+    """Force-remove any pre-existing containers whose fixed ``container_name``
+    values appear in ``compose_file``. A prior run's containers can survive
+    a killed session or a crashed docker daemon and refuse ``docker compose up``
+    on the next attempt with an "already in use" conflict.
+
+    Returns the container names that were reaped (empty tuple when nothing
+    was stale). Non-existent names are a no-op — reaping is best-effort.
+    """
+    try:
+        doc = yaml.safe_load(compose_file.read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        return ()
+    services = doc.get("services") or {}
+    names = tuple(
+        sorted(
+            {
+                svc["container_name"]
+                for svc in services.values()
+                if isinstance(svc, dict) and isinstance(svc.get("container_name"), str)
+            }
+        )
+    )
+    if not names:
+        return ()
+    reaped: list[str] = []
+    for name in names:
+        proc = subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if proc.returncode == 0 and proc.stdout.strip() == name:
+            reaped.append(name)
+    if reaped:
+        logging.getLogger(__name__).info(
+            "Reaped %d stale named container(s) before compose up: %s",
+            len(reaped),
+            ", ".join(reaped),
+        )
+    return tuple(reaped)
+
+
 # ---------------------------------------------------------------------------
 # Endpoint resolution
 # ---------------------------------------------------------------------------
