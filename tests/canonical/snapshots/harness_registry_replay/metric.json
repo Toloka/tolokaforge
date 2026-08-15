@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 11,
+  "bucket_b_count": 9,
   "commits": [
     {
       "adapter_paths": [
@@ -1360,28 +1360,6 @@
     },
     {
       "adapter_paths": [
-        "docs/OUTPUT_FORMAT.md",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/fingerprint.py",
-        "tests/README.md",
-        "tests/unit/test_harness_fingerprint.py"
-      ],
-      "bucket": "B",
-      "date": "2026-08-14",
-      "pr": null,
-      "reason": "5 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "3420e7b470e07173be5894641ec92ecb8beded41",
-      "subject": "fix(tbench): reviewer nits \u2014 annotation hygiene + doc caveats + shared-recipe lock",
-      "touched_files": [
-        "docs/OUTPUT_FORMAT.md",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/fingerprint.py",
-        "tests/README.md",
-        "tests/unit/test_harness_fingerprint.py"
-      ]
-    },
-    {
-      "adapter_paths": [
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
@@ -1415,24 +1393,6 @@
         "tests/data/terminal_bench_tasks/echo-hello-skills/skills/README.md",
         "tests/unit/test_harness_path_resolver.py",
         "tests/unit/test_harness_skill_delivery.py",
-        "tests/unit/test_terminal_bench.py"
-      ]
-    },
-    {
-      "adapter_paths": [
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "tests/unit/test_terminal_bench.py"
-      ],
-      "bucket": "B",
-      "date": "2026-08-14",
-      "pr": null,
-      "reason": "3 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "5330f2feb744ed9661bb8cc2dad6b91e1d7b36ff",
-      "subject": "feat(tbench): registry resolution returns the layers that composed it",
-      "touched_files": [
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
         "tests/unit/test_terminal_bench.py"
       ]
     },
@@ -1554,29 +1514,67 @@
     },
     {
       "adapter_paths": [
+        "docs/ADAPTER_INTERFACE.md",
+        "docs/ARCHITECTURE.md",
         "docs/OUTPUT_FORMAT.md",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/fingerprint.py",
+        "tests/README.md",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/test_engine_run_state_fingerprint.py",
         "tests/canonical/test_engine_run_state_harness_fingerprint.py",
+        "tests/canonical/test_run_trial_composition.py",
+        "tests/integration/test_preset_overlay_subprocess.py",
+        "tests/unit/dx/test_cli_resume.py",
+        "tests/unit/llm/test_preset_overlay_worker_propagation.py",
+        "tests/unit/test_adapters.py",
         "tests/unit/test_harness_fingerprint.py",
+        "tests/unit/test_orchestrator_budget_shutdown.py",
+        "tests/unit/test_orchestrator_logic.py",
+        "tests/unit/test_resume_resolver.py",
+        "tests/unit/test_run_display_wiring.py",
         "tests/unit/test_terminal_bench.py",
-        "tests/utils/harness_plugins.py"
+        "tests/unit/test_ungradeable_trial_accounting.py",
+        "tests/utils/harness_plugins.py",
+        "tolokaforge/adapters/base.py",
+        "tolokaforge/core/engine_run_state.py",
+        "tolokaforge/core/orchestrator.py"
       ],
       "bucket": "B",
       "date": "2026-08-14",
-      "pr": null,
-      "reason": "7 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "ea754e7050fd959d408358d8c9d189c500d47432",
-      "subject": "feat(tbench): a run names the harness registry it ran on",
+      "pr": 1212,
+      "reason": "26 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "d0dfe4e56ca1808ad4b50e328c718364d1ba95bd",
+      "subject": "feat(engine+tbench): a run names the harness registry it ran on (#1212)",
       "touched_files": [
+        "docs/ADAPTER_INTERFACE.md",
+        "docs/ARCHITECTURE.md",
         "docs/OUTPUT_FORMAT.md",
         "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/fingerprint.py",
+        "tests/README.md",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/test_engine_run_state_fingerprint.py",
         "tests/canonical/test_engine_run_state_harness_fingerprint.py",
+        "tests/canonical/test_run_trial_composition.py",
+        "tests/integration/test_preset_overlay_subprocess.py",
+        "tests/unit/dx/test_cli_resume.py",
+        "tests/unit/llm/test_preset_overlay_worker_propagation.py",
+        "tests/unit/test_adapters.py",
         "tests/unit/test_harness_fingerprint.py",
+        "tests/unit/test_orchestrator_budget_shutdown.py",
+        "tests/unit/test_orchestrator_logic.py",
+        "tests/unit/test_resume_resolver.py",
+        "tests/unit/test_run_display_wiring.py",
         "tests/unit/test_terminal_bench.py",
-        "tests/utils/harness_plugins.py"
+        "tests/unit/test_ungradeable_trial_accounting.py",
+        "tests/utils/harness_plugins.py",
+        "tolokaforge/adapters/base.py",
+        "tolokaforge/core/engine_run_state.py",
+        "tolokaforge/core/orchestrator.py"
       ]
     }
   ]
