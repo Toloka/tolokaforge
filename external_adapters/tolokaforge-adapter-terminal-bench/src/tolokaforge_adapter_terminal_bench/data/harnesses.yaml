@@ -9,7 +9,7 @@ harnesses:
     # Pinned to the version the out-of-tree host we compared against resolved
     # when the matrix comparison was baselined. The pin closes the CLI-code
     # delta with that host while keeping reproducibility.
-    version: "2.1.231"
+    version: "2.1.233"
     argv_prefix: ["claude"]
     # `--verbose --output-format=stream-json` matches the reference vendor-CLI
     # invocation. Aligning the flag block aligns the CLI's internal reasoning
