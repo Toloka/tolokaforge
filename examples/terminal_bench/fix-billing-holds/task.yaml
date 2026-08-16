@@ -88,10 +88,13 @@ instruction: |
     1. Investigate the code and data to identify which fee types have bugs and
        what the correct calculation should be for each
     2. Fix all bugs in /app/fee_utils.py
-    3. Restart the service:
-         pkill uvicorn || true
+    3. Restart the service (picks up your /app changes):
+         start-billing-service
+       The service is supervised — you never need `&`, `nohup`, or
+       `disown`. If you prefer to run uvicorn yourself, launch it in
+       the background and confirm it stays up before proceeding:
          cd /app && uvicorn main:app --host 0.0.0.0 --port 8000 &
-         sleep 2
+         sleep 2 && curl -fsS http://localhost:8000/health
     4. Write and run targeted data migrations for each affected fee type.
        Do NOT blindly migrate all holds — identify which clients/fee_types
        were affected and apply the correct formula per type. Every table
