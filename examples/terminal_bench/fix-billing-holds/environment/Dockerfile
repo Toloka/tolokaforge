@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         postgresql-client-15 \
         curl \
         procps \
+        supervisor \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
@@ -32,8 +33,11 @@ RUN service postgresql start && \
 
 RUN mkdir -p /logs/verifier
 
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY start-billing-service /usr/local/bin/start-billing-service
+RUN chmod +x /entrypoint.sh /usr/local/bin/start-billing-service && \
+    mkdir -p /run /logs
 
 WORKDIR /app
 
