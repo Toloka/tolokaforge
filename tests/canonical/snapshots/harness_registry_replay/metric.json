@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 2,
-  "bucket_b_count": 9,
+  "bucket_b_count": 10,
   "commits": [
     {
       "adapter_paths": [
@@ -1575,6 +1575,26 @@
         "tolokaforge/adapters/base.py",
         "tolokaforge/core/engine_run_state.py",
         "tolokaforge/core/orchestrator.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "tests/canonical/snapshots/harness_registry_replay/metric.json"
+      ],
+      "bucket": "B",
+      "date": "2026-08-16",
+      "pr": null,
+      "reason": "1 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "218396c0daf8ab19d1e5943d8ae1b0a83fba58b4",
+      "subject": "fix(tbench): opencode routes openrouter/<vendor>/<model> through OpenRouter, not vendor-native",
+      "touched_files": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/snapshots/tbench_echo_hello_harness/harness_dockerfile.json",
+        "tests/canonical/snapshots/tbench_echo_hello_harness/harness_spec.json",
+        "tests/canonical/snapshots/tbench_echo_hello_harness/synthesised_compose.json",
+        "tests/canonical/snapshots/tbench_echo_hello_skills_harness/harness_dockerfile.json",
+        "tests/canonical/snapshots/tbench_echo_hello_skills_harness/synthesised_compose.json"
       ]
     },
     {
