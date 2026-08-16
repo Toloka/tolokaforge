@@ -289,11 +289,10 @@ harnesses:
     # name from the CLI arg verbatim as the slug the endpoint receives.
     config_files:
       "${CONFIG_HOME}/opencode/opencode.json": |-
-        {"provider":{"anthropic":{"options":{"baseURL":"{{ base_url }}"}},"openrouter":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"https://openrouter.ai/api/v1","apiKey":"${env:OPENROUTER_API_KEY}"},"models":{}}}}
+        {"provider":{"anthropic":{"options":{"baseURL":"{{ base_url }}"}},"openrouter":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"https://openrouter.ai/api/v1","apiKey":"${env:ANTHROPIC_API_KEY}"},"models":{}}}}
     provider_env:
       ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
       ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1"
-      OPENROUTER_API_KEY: "${secret:OPENROUTER_API_KEY}"
 
   grok-build:
     # Grok Build's installer is a curl-piped shell script from x.ai — the
