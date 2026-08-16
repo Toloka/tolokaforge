@@ -1,5 +1,5 @@
 {
-  "bucket_a_count": 1,
+  "bucket_a_count": 2,
   "bucket_b_count": 9,
   "commits": [
     {
@@ -1575,6 +1575,18 @@
         "tolokaforge/adapters/base.py",
         "tolokaforge/core/engine_run_state.py",
         "tolokaforge/core/orchestrator.py"
+      ]
+    },
+    {
+      "adapter_paths": [],
+      "bucket": "A",
+      "date": "2026-08-16",
+      "pr": null,
+      "reason": "all touched paths in Bucket-A allow-list",
+      "sha": "f4b67e6a42716dd53c2c0e95265e4a6c82dc585d",
+      "subject": "fix(tbench): pin claude-code to 2.1.233 to close matrix \u0394 vs harbor",
+      "touched_files": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml"
       ]
     }
   ]

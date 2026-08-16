@@ -257,9 +257,19 @@ harnesses:
       XDG_STATE_HOME: "/logs/agent/opencode/xdg-state"
     # opencode's provider baseURL is read from ~/.config/opencode/opencode.json,
     # not from an env var. Config-file emission via
-    # HarnessSpec.config_files. Default: OpenRouter's Anthropic-compat
-    # surface (matches claude-code's routing). An operator targeting an
-    # OpenAI or Gemini variant overlays this via harness_presets_file.
+    # HarnessSpec.config_files. Two provider blocks:
+    #
+    # 1. `anthropic` — points at OpenRouter's Anthropic-compat surface so
+    #    Claude-family models (`anthropic/claude-*`, `openrouter/anthropic/*`)
+    #    reach OpenRouter through the SDK opencode bundles.
+    # 2. `openrouter` — an explicit OpenAI-compat provider named `openrouter`
+    #    so a caller using an `openrouter/<vendor>/<model>` slug (e.g.
+    #    `openrouter/meta/muse-spark-1.1`, `openrouter/qwen/qwen3.7-max`)
+    #    reaches OpenRouter's OpenAI-compat endpoint rather than opencode's
+    #    bundled vendor-native provider for that prefix. Without this block,
+    #    opencode parses `moonshotai/`, `meta/`, `qwen/` as vendor selectors
+    #    and routes to `api.moonshot.ai` / etc., which 401s on the
+    #    OpenRouter key.
     #
     # `ANTHROPIC_BASE_URL` MUST end in `/v1`. opencode 1.x routes
     # anthropic-provider traffic through `@ai-sdk/anthropic` (bundled;
@@ -272,12 +282,18 @@ harnesses:
     # comes back, and `deriveStepStopReason` falls to the default
     # `"unknown"`. Diagnostic signature of this misconfiguration:
     # `step_finish reason:"unknown"`, 0 tokens, ~3 s wall-clock.
+    #
+    # The `openrouter` provider uses `@ai-sdk/openai-compatible`, which
+    # opencode bundles for arbitrary OpenAI-compat endpoints. The models
+    # dict must be present but can be empty — opencode uses the model
+    # name from the CLI arg verbatim as the slug the endpoint receives.
     config_files:
       "${CONFIG_HOME}/opencode/opencode.json": |-
-        {"provider":{"anthropic":{"options":{"baseURL":"{{ base_url }}"}}}}
+        {"provider":{"anthropic":{"options":{"baseURL":"{{ base_url }}"}},"openrouter":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"https://openrouter.ai/api/v1","apiKey":"${env:OPENROUTER_API_KEY}"},"models":{}}}}
     provider_env:
       ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
       ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1"
+      OPENROUTER_API_KEY: "${secret:OPENROUTER_API_KEY}"
 
   grok-build:
     # Grok Build's installer is a curl-piped shell script from x.ai — the
