@@ -34,5 +34,5 @@
   },
   "skills_dir_target": "/root/.claude/skills/",
   "strip_vendor_namespace": false,
-  "version": "2.1.231"
+  "version": "2.1.233"
 }

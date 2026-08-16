@@ -1637,7 +1637,7 @@ class TestComposeSynthesisHarnessLayer:
         assert base["profiles"] == ["tolokaforge-build"]
 
         main = compose["services"]["main"]
-        assert main["image"] == "tbench-layered:local-claude-code-2.1.231"
+        assert main["image"] == "tbench-layered:local-claude-code-2.1.233"
         assert main["build"] == {
             "context": ".",
             "dockerfile": "_harness/harness.Dockerfile",
@@ -1687,7 +1687,7 @@ class TestComposeSynthesisHarnessLayer:
         compose = _load_synthesised(env)
         assert "main-base" not in compose["services"]
         assert env.base_build_service is None
-        assert compose["services"]["main"]["image"] == "tbench-prebuilt:local-claude-code-2.1.231"
+        assert compose["services"]["main"]["image"] == "tbench-prebuilt:local-claude-code-2.1.233"
 
     def test_registry_base_is_pulled_not_built(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
@@ -2674,7 +2674,7 @@ class TestHarnessTaskDescriptionMetadata:
             "claude --verbose --output-format=stream-json "
             "--permission-mode=bypassPermissions --print"
         )
-        assert td.metadata["agent_harness_version"] == "2.1.231"
+        assert td.metadata["agent_harness_version"] == "2.1.233"
 
     def test_default_harness_publishes_no_command(self, fixture_dir, tmp_path):
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
