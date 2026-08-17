@@ -677,8 +677,14 @@ class TestTrialRunnerRun:
         assert traj.status == TrialStatus.TIMEOUT
 
     def test_agent_error_terminates(self) -> None:
-        """Agent API error → ERROR termination."""
-        agent = MagicMock()
+        """Agent API error → ERROR termination.
+
+        Uses ``_make_agent_client`` so ``classify_loop_error`` is wired to the
+        real helper — the runner's initialization branch routes the opening
+        exception through the classifier to keep pricing consistent between
+        opening-generation faults and mid-loop faults.
+        """
+        agent = _make_agent_client()
         agent.generate.side_effect = Exception("Connection failed")
 
         runner = _make_runner(agent_client=agent)

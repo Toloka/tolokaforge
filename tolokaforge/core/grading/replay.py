@@ -64,6 +64,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.output.artifacts import (
     FileArtifactWriter,
+    RedactedBundleError,
     TrialArtifactWriter,
     refuse_redacted_bundle,
 )
@@ -891,7 +892,14 @@ def run_replay_batch(
                 judge_model_override=judge_model_override,
                 knowledge_search=knowledge_search,
             )
-        except (MissingReplayInputError, ValidationError) as exc:
+        except (MissingReplayInputError, ValidationError, RedactedBundleError) as exc:
+            # ``RedactedBundleError`` is deliberately not a ``ValueError`` (see
+            # ``core/output/artifacts.py``), so without this arm one redacted
+            # bundle in a batch would raise out of the loop and abort every
+            # subsequent bundle — an $$ real judge spend already sunk earlier
+            # in the batch is discarded, and the per-trial "failed, batch
+            # continues" contract in this function's docstring is violated.
+            # ``ReplayOutcomeStatus.FAILED`` already has a slot for it.
             outcomes.append(
                 TrialReplayOutcome(
                     bundle=bundle, status=ReplayOutcomeStatus.FAILED, reason=str(exc)

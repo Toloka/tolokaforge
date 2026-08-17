@@ -360,12 +360,17 @@ def _search_plane_context(
     trial_id: str,
     search_config: SearchConfig,
     resolved_plane: ResolvedSearchPlane | None,
-    binding: ResolvedTypeSenseBinding,
+    binding: ResolvedTypeSenseBinding | None,
 ) -> str:
     """The prefix every search-plane refusal opens with: trial, domain, plane, address, source.
 
     Both bases are the ones the resolvers returned. Re-deriving either here would
     let a message name a plane or an address the client was not built from.
+
+    ``binding`` may be ``None`` for the "kb-task-in-a-typesense-disabled-run"
+    refusal — a run without a TypeSense plane resolves no address to name; the
+    prefix names "no address" in that case rather than crashing on
+    ``binding.host``.
     """
     domain = search_config.domain_name or "default"
     plane = (
@@ -373,10 +378,12 @@ def _search_plane_context(
         if resolved_plane is not None
         else "none declared"
     )
-    return (
-        f"Trial {trial_id}: domain '{domain}', search plane {plane}, "
+    address = (
         f"TypeSense at {binding.host}:{binding.port} (from {binding.basis.value})"
+        if binding is not None
+        else "no TypeSense address resolved"
     )
+    return f"Trial {trial_id}: domain '{domain}', search plane {plane}, {address}"
 
 
 def _bundles_a_docindex(artifacts_dir: Path | None) -> bool:
@@ -385,7 +392,7 @@ def _bundles_a_docindex(artifacts_dir: Path | None) -> bool:
 
 
 def _no_plane_refusal(
-    trial_id: str, search_config: SearchConfig, binding: ResolvedTypeSenseBinding
+    trial_id: str, search_config: SearchConfig, binding: ResolvedTypeSenseBinding | None
 ) -> str:
     """Why a corpus no plane serves is refused — an adapter half-way through migrating.
 
@@ -1544,46 +1551,53 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         error_message = ""
 
         try:
-            result = await self._invoke_tool(tool, tool_name, arguments, timeout_seconds)
+            try:
+                result = await self._invoke_tool(tool, tool_name, arguments, timeout_seconds)
 
-            # Convert result to string
-            if isinstance(result, str):
-                output = result
-            elif result is None:
-                output = "Success"
-            else:
-                output = json.dumps(result, default=str)
+                # Convert result to string
+                if isinstance(result, str):
+                    output = result
+                elif result is None:
+                    output = "Success"
+                else:
+                    output = json.dumps(result, default=str)
 
-            status = pb2.EXECUTION_STATUS_SUCCESS
-            logger.debug(f"ExecuteTool: {tool_name} completed successfully")
+                status = pb2.EXECUTION_STATUS_SUCCESS
+                logger.debug(f"ExecuteTool: {tool_name} completed successfully")
 
-        except asyncio.TimeoutError:
-            status = pb2.EXECUTION_STATUS_TIMEOUT
-            logger.warning(f"ExecuteTool: {tool_name} timed out after {timeout_seconds}s")
-            error_message = await self._reset_backstopped_tool(
-                trial_context, tool, tool_name, executor, timeout_seconds
+            except asyncio.TimeoutError:
+                status = pb2.EXECUTION_STATUS_TIMEOUT
+                logger.warning(f"ExecuteTool: {tool_name} timed out after {timeout_seconds}s")
+                error_message = await self._reset_backstopped_tool(
+                    trial_context, tool, tool_name, executor, timeout_seconds
+                )
+
+            except Exception as e:
+                # Catch all exceptions from tool execution
+                status = pb2.EXECUTION_STATUS_ERROR
+                error_message = raised_tool_failure_text(e)
+                logger.error(f"ExecuteTool: {tool_name} raised {type(e).__name__}: {e}")
+                logger.error(traceback.format_exc())
+        finally:
+            # ``_reset_backstopped_tool`` awaits inside the try/except's
+            # timeout window; ``_run_async`` cancels its slack-deadline
+            # coroutine on RPC timeout, and cancellation cannot interrupt a
+            # coroutine already blocked inside ``run_in_executor``. Without
+            # this ``finally`` the ``trial_context.record(...)`` below is
+            # skipped, and the runner-side ``GradeTrial`` reads a timeline
+            # missing the call — a forbidden tool that ran shows as "never
+            # called" and passes ``_check_disallowed_tool``. Latency is best-
+            # effort even on cancellation; the write is not.
+            latency_seconds = time.time() - start_time
+            trial_context.record(
+                call_id=call_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                output=output if status == pb2.EXECUTION_STATUS_SUCCESS else error_message,
+                status=recorded_status(status),
+                executor=executor,
+                latency_seconds=latency_seconds,
             )
-
-        except Exception as e:
-            # Catch all exceptions from tool execution
-            status = pb2.EXECUTION_STATUS_ERROR
-            error_message = raised_tool_failure_text(e)
-            logger.error(f"ExecuteTool: {tool_name} raised {type(e).__name__}: {e}")
-            logger.error(traceback.format_exc())
-
-        # Calculate latency
-        latency_seconds = time.time() - start_time
-
-        # Record tool call in history
-        trial_context.record(
-            call_id=call_id,
-            tool_name=tool_name,
-            arguments=arguments,
-            output=output if status == pb2.EXECUTION_STATUS_SUCCESS else error_message,
-            status=recorded_status(status),
-            executor=executor,
-            latency_seconds=latency_seconds,
-        )
 
         # Build response
         return pb2.ExecuteToolResponse(
@@ -3379,9 +3393,18 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             return self._init_typesense_for_trial(
                 trial_id, search_config, resolved_plane, binding, artifacts_dir
             )
-        no_plane_serves_the_corpus = (
-            task_declares_kb and address_resolved and resolved_plane is None
-        )
+        # A KB-declaring task in a run with no TypeSense plane must refuse loudly:
+        # otherwise nothing registers, every ``search_policy`` call fails on
+        # paid turns, and the trial grades the agent for the misconfiguration.
+        # Gating on ``address_resolved`` here was wrong — ``resolved_plane is
+        # None`` already implies ``search_config.plane`` and ``search_config.host``
+        # are both None, so ``address_resolved`` could only come from the stack
+        # env, which is injected exclusively by a run that HAS TypeSense. The
+        # KB-task-in-a-no-plane run therefore never triggered the refusal.
+        # Dropping ``address_resolved`` from the predicate reaches the intended
+        # cases; the refusal message names "no plane" independent of address
+        # resolution.
+        no_plane_serves_the_corpus = task_declares_kb and resolved_plane is None
         if no_plane_serves_the_corpus and not search_config.enabled:
             return _no_plane_refusal(trial_id, search_config, binding)
         if address_resolved and not task_declares_kb and _bundles_a_docindex(artifacts_dir):

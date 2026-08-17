@@ -374,12 +374,25 @@ class TrialRunner:
                 # The simulator's opening tool calls run here, before the loop and
                 # its classifier, so the one reason a tool call can end the trial
                 # under is named here too.
+                #
+                # Typed provider faults (API timeout, rate limit, …) that reach
+                # here from the opening ``client.completion`` are the same
+                # class the loop's ``classify_loop_error`` already routes to
+                # ``EXCLUDED_TYPED_REASONS``. Consulting the classifier here
+                # avoids pricing "one 429 on the opening generation" as a
+                # scored agent failure when "the identical 429 one turn later"
+                # is excluded. ``TrialNotRegisteredError`` beats the classifier
+                # (it is the "trial-lost" signal, unrelated to provider health).
                 status = TrialStatus.ERROR
-                termination_reason = (
-                    TerminationReason.TRIAL_LOST
-                    if isinstance(e, TrialNotRegisteredError)
-                    else TerminationReason.ERROR
-                )
+                if isinstance(e, TrialNotRegisteredError):
+                    termination_reason = TerminationReason.TRIAL_LOST
+                else:
+                    # ``classify_loop_error`` maps typed provider faults
+                    # (API_TIMEOUT, RATE_LIMIT) to reasons in
+                    # ``EXCLUDED_TYPED_REASONS`` and everything else back to
+                    # ``ERROR``. Reads them here so a 429 on the opening
+                    # generation and one turn later are classified alike.
+                    termination_reason = self.agent_client.classify_loop_error(e).reason
                 self.logger.error(
                     "Trial initialization error", error=str(e), error_type=type(e).__name__
                 )

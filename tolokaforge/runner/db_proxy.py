@@ -42,7 +42,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from tolokaforge.runner.db_client import DBServiceClient, DBServiceError
+from tolokaforge.runner.db_client import DBServiceClient
 from tolokaforge.runner.id_resolution import (
     IdFieldResolutionError,
     TableKey,
@@ -551,7 +551,17 @@ class DBServiceProxy:
         predicate = " & ".join(f"@.{field}=={literals[field]}" for field in components)
         try:
             response = await self.db_client.query(self.trial_id, f"$.{table_name}[?({predicate})]")
-        except DBServiceError as e:
+        except (
+            Exception
+        ) as e:  # noqa: BLE001 — every miss falls to the scan (see docstring at 442-444)
+            # The docstring promises "Every kind of miss (no literal, a query error, an
+            # unverified hit, no usable key to query at all) falls to the scan, which is
+            # why the query can only ever save a round trip, never change an answer."
+            # ``db_client.query`` only wraps ``httpx.ConnectError``; narrowing to
+            # ``DBServiceError`` lets ``httpx.ReadTimeout``, ``httpx.RemoteProtocolError``
+            # and a ``QueryResponse.model_validate`` failure escape and fail the tool
+            # call instead of falling through to ``get_all``, a different endpoint that
+            # may be healthy. Every branch below already means "fall to the scan".
             logger.warning(f"get_by_id: JSONPath lookup on '{target}' failed: {e} — full scan")
             return None
 
