@@ -6,6 +6,8 @@ its release cadence is orthogonal to the `tolokaforge` engine wheel's own
 `vX.Y.Z` tag axis. See
 [`docs/RELEASING.md`](https://github.com/Toloka/tolokaforge/blob/main/docs/RELEASING.md#pypi-package--tolokaforge-models-models-vxyz-automated).
 
+## models-v1.2.0 (2026-08-17)
+
 ## models-v1.1.0 (2026-08-17)
 
 ### BREAKING CHANGE
