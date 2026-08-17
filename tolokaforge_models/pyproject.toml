@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge-models"
-version = "1.0.0"
+version = "1.1.0"
 description = "Model data and per-model policy subclasses for tolokaforge."
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
