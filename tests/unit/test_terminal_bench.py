@@ -1390,7 +1390,12 @@ class TestHarnessCommand:
 
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        assert shlex.split(harness_command("gemini-cli", "do it", "google/gemini-2.5-flash")) == [
+        # gemini-cli 0.55.1 GATEWAY auth needs a settings.json emitted in the
+        # preamble; the CLI argv itself sits after the final ``&&``.
+        _, _, cli_command = harness_command(
+            "gemini-cli", "do it", "google/gemini-2.5-flash"
+        ).rpartition(" && ")
+        assert shlex.split(cli_command) == [
             "gemini",
             "--model",
             "gemini-2.5-flash",
@@ -1416,16 +1421,20 @@ class TestHarnessCommand:
         assert "auth.json" in preamble
         assert "OPENAI_API_KEY" in preamble
 
-    def test_gemini_has_no_preamble_no_stdin(self):
-        """A CLI without config_files, without env_model_vars, and with
-        argv-channel instruction publishes the CLI command alone — no shell
-        scaffolding for readers of the metadata to peel off."""
+    def test_gemini_settings_json_is_written_before_the_cli(self):
+        """gemini-cli 0.55.1 needs a settings.json flip to accept the GATEWAY
+        auth type; the file is emitted via ``printf`` in the preamble."""
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        command = harness_command("gemini-cli", "go", "google/gemini-2.5-flash")
-        assert "&&" not in command
-        assert "printf" not in command
-        assert command.startswith("gemini ")
+        preamble, sep, cli_command = harness_command(
+            "gemini-cli", "go", "google/gemini-2.5-flash"
+        ).rpartition(" && ")
+        assert sep, "gemini-cli must chain a preamble before the CLI"
+        assert "settings.json" in preamble
+        # Preamble content is shell-escaped for a double-quoted printf, so
+        # the JSON reaches the file through backslash-escaped quotes.
+        assert r"\"selectedType\":\"gateway\"" in preamble
+        assert cli_command.startswith("gemini ")
 
     def test_instruction_is_one_shell_argument(self):
         import shlex
@@ -1603,7 +1612,10 @@ class TestModelFlagStyle:
 
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        argv = shlex.split(harness_command("gemini-cli", "go", "google/gemini-2.5-flash"))
+        _, _, cli_command = harness_command(
+            "gemini-cli", "go", "google/gemini-2.5-flash"
+        ).rpartition(" && ")
+        argv = shlex.split(cli_command)
         assert argv[1:3] == ["--model", "gemini-2.5-flash"]
 
     def test_equals_style_is_one_argv_word(self):
@@ -1731,7 +1743,7 @@ class TestComposeSynthesisHarnessLayer:
         assert base["profiles"] == ["tolokaforge-build"]
 
         main = compose["services"]["main"]
-        assert main["image"] == "tbench-layered:local-claude-code-2.1.231"
+        assert main["image"] == "tbench-layered:local-claude-code-2.1.233"
         assert main["build"] == {
             "context": ".",
             "dockerfile": "_harness/harness.Dockerfile",
@@ -1781,7 +1793,7 @@ class TestComposeSynthesisHarnessLayer:
         compose = _load_synthesised(env)
         assert "main-base" not in compose["services"]
         assert env.base_build_service is None
-        assert compose["services"]["main"]["image"] == "tbench-prebuilt:local-claude-code-2.1.231"
+        assert compose["services"]["main"]["image"] == "tbench-prebuilt:local-claude-code-2.1.233"
 
     def test_registry_base_is_pulled_not_built(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
@@ -2830,7 +2842,7 @@ class TestHarnessTaskDescriptionMetadata:
             "claude --verbose --output-format=stream-json "
             "--permission-mode=bypassPermissions --print"
         )
-        assert td.metadata["agent_harness_version"] == "2.1.231"
+        assert td.metadata["agent_harness_version"] == "2.1.233"
 
     def test_default_harness_publishes_no_command(self, fixture_dir, tmp_path):
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter

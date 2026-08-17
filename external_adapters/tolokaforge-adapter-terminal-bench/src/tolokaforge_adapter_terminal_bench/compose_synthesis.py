@@ -48,6 +48,8 @@ from tolokaforge_adapter_terminal_bench.harness import (
     ENGINE_LOOP,
     HARNESSES,
     INSTALL_SCRIPT,
+    MIDDLEWARE_PROXY_CONTAINER_PATH,
+    MIDDLEWARE_PROXY_SCRIPT,
     PATH_CONSTRUCT_PATTERN,
     HarnessSpec,
     PathResolver,
@@ -420,8 +422,20 @@ def _write_harness_build_context(staging_dir: Path, *, base_image: str, spec: Ha
         f"RUN sh {_HARNESS_INSTALL_PATH} {spec.install_method} "
         f"{shlex.quote(spec.install_source)} {shlex.quote(spec.version)}",
     ]
+    dockerignore_lines = [f"!{install_script_path}"]
+
+    # Ship the middleware proxy alongside the install script when the harness
+    # declares one. `python3` is present on every task base image we drive
+    # (all inherit `python:*-slim-*`), and the proxy is pure stdlib — no
+    # additional install step needed.
+    if spec.request_middleware is not None:
+        shutil.copy2(MIDDLEWARE_PROXY_SCRIPT, harness_dir / MIDDLEWARE_PROXY_SCRIPT.name)
+        middleware_staging_path = f"{_HARNESS_STAGING_DIR}/{MIDDLEWARE_PROXY_SCRIPT.name}"
+        dockerfile.append(f"COPY {middleware_staging_path} {MIDDLEWARE_PROXY_CONTAINER_PATH}")
+        dockerignore_lines.append(f"!{middleware_staging_path}")
+
     (harness_dir / _HARNESS_DOCKERFILE_NAME).write_text("\n".join(dockerfile) + "\n")
-    (staging_dir / ".dockerignore").write_text(f"*\n!{install_script_path}\n")
+    (staging_dir / ".dockerignore").write_text("*\n" + "\n".join(dockerignore_lines) + "\n")
 
 
 @dataclass(frozen=True)

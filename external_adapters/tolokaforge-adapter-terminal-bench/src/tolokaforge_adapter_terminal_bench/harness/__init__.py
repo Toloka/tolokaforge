@@ -15,13 +15,14 @@ whatever command it finds there.
 from __future__ import annotations
 
 import importlib.resources
+import json
 import logging
 import re
 import shlex
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from jinja2 import Environment, StrictUndefined, TemplateSyntaxError
@@ -48,6 +49,8 @@ __all__ = [
     "SHIPPED_REGISTRY_FILE",
     "HarnessSpec",
     "LinuxRootResolver",
+    "MIDDLEWARE_PROXY_SCRIPT",
+    "RequestMiddleware",
     "PathResolver",
     "PluginBundle",
     "PluginDiscovery",
@@ -106,6 +109,63 @@ its own system prompt, and the adapter's ``bash`` tool — a different scaffold
 from terminal-bench's Terminus-2 agent, which this repo does not install. A
 trial recorded as ``terminus-2`` would be claiming a comparison it did not run.
 """
+
+
+class RequestMiddleware(BaseModel):
+    """Per-harness HTTP proxy that mutates outbound provider requests.
+
+    Ships with :mod:`~.middleware_proxy` — a stdlib-only HTTP forwarder that
+    lands in the image alongside ``install-harness.sh`` and starts
+    on-demand in the harness_command preamble. Configured here as data:
+    which env-var value gets redirected, what port to bind, what body /
+    header fields to inject.
+
+    Motivating case: ``moonshotai/kimi-k2.7-code`` on OpenRouter fans out to
+    14 possible providers, mostly INT4/FP4 third-parties whose tool-call
+    continuation returns empty completions. Forcing Moonshot AI first-party
+    routing via ``{"provider": {"only": ["moonshotai"]}}`` fixes it, but the
+    kimi-code CLI (through 0.36.1) has no user-facing body-passthrough. The
+    same shape covers any vendor / model whose OpenRouter routing needs
+    pinning, any custom-header injection a CLI does not surface, and any
+    on-the-wire body repair a downstream provider needs. Every future user
+    of this slot is a HarnessSpec YAML edit — no code change.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    upstream_env_key: str
+    """Which :attr:`HarnessSpec.provider_env` key's value is the URL to be
+    proxied. Non-empty. That variable's value in the container is rewritten
+    to ``http://127.0.0.1:<port>`` for the CLI process, while the real URL
+    reaches the middleware as its ``--upstream``. Naming the env key rather
+    than the URL itself keeps the routing (LiteLLM overlay, direct-provider
+    override, alternate gateway) as an operator overlay concern — the
+    middleware wraps whatever the run's ``provider_env`` finally resolves
+    to."""
+
+    port: int = 8899
+    """Local port :mod:`middleware_proxy` listens on inside the container.
+    Fixed rather than dynamic so a caller inspecting the CLI's traffic can
+    predict where it goes. Distinct across concurrent harnesses on the same
+    host is not required — each trial runs in its own container namespace."""
+
+    body_injections: dict[str, Any] = Field(default_factory=dict)
+    """JSON object deep-merged into every request body (only on
+    :attr:`path_filter`). Overlay values win on key conflict; nested dicts
+    merge recursively; non-dict overlay values replace. Empty on default —
+    the middleware becomes a passthrough forwarder, useful when only headers
+    are being injected."""
+
+    header_injections: dict[str, str] = Field(default_factory=dict)
+    """Extra HTTP headers added to every forwarded request. Values are string
+    literals — no template expansion, since the middleware runs inside the
+    container after :attr:`HarnessSpec.provider_env` interpolation."""
+
+    path_filter: str | None = None
+    """Only inject on request paths starting with this prefix. ``None`` (the
+    default) injects on every ``POST`` with a JSON body; set to
+    ``"/chat/completions"`` when the provider serves both chat and
+    non-chat endpoints and only chat needs a body override."""
 
 
 class HarnessSpec(BaseModel):
@@ -256,6 +316,25 @@ class HarnessSpec(BaseModel):
     <name> not found" and the CLI silently drops OpenRouter routing to hit
     the vendor's default endpoint. The reference vendor-CLI invocation
     sidesteps the same trap by taking the last path segment."""
+
+    request_middleware: RequestMiddleware | None = None
+    """When set, ships a stdlib HTTP proxy inside the trial container and
+    routes the CLI's provider calls through it, injecting the declared body /
+    header fields. See :class:`RequestMiddleware` — the docstring names the
+    motivating case (OpenRouter provider-preference pinning for
+    ``moonshotai/kimi-k2.7-code``) and the future shape."""
+
+    strip_openrouter_prefix: bool = True
+    """Whether ``harness_model`` should strip a leading ``openrouter/`` route
+    marker before handing the model name to the CLI. ``True`` for CLIs whose
+    provider registry uses the ``openrouter/`` prefix to select a direct-vendor
+    handler (claude-code, codex, grok-build, kimi-code, gemini-cli) — the
+    prefix would land on ``api.openrouter.ai/openrouter/...`` and 404. ``False``
+    for CLIs whose config template defines a provider *literally* named
+    ``openrouter`` and expects the caller to route ``openrouter/<vendor>/<model>``
+    to it (opencode). Stripping the prefix for those CLIs re-routes
+    ``openrouter/meta/muse-glimmer-30b`` to a nonexistent ``meta`` provider
+    and crashes with ``UnknownError`` in ~2s."""
 
     provider_env: dict[str, str] = Field(default_factory=dict)
     """Default provider-env envelope for this harness — the shape the CLI
@@ -578,6 +657,15 @@ def resolve_effective_registry(
 
 INSTALL_SCRIPT = Path(__file__).parent / "install-harness.sh"
 
+MIDDLEWARE_PROXY_SCRIPT = Path(__file__).parent / "middleware_proxy.py"
+"""Path to the stdlib HTTP proxy that ships alongside :data:`INSTALL_SCRIPT`.
+
+Copied into every image whose harness declares
+:attr:`HarnessSpec.request_middleware`; started on-demand from the
+:func:`harness_command` preamble. See :mod:`~.middleware_proxy` for the
+proxy itself and :class:`RequestMiddleware` for the per-harness config
+shape."""
+
 OPENROUTER_PREFIX = "openrouter/"
 """Route marker litellm reads to select its OpenRouter handler.
 
@@ -722,9 +810,15 @@ def harness_model(
 ) -> str:
     """Model name as *agent_harness*'s CLI must receive it.
 
-    Always strips the ``openrouter/`` route marker (see
-    :data:`OPENROUTER_PREFIX`); a vendor CLI does not go through litellm and
-    would otherwise select its own direct-vendor handler and fail with 401.
+    Strips the ``openrouter/`` route marker (see :data:`OPENROUTER_PREFIX`)
+    by default; a vendor CLI does not go through litellm and would otherwise
+    select its own direct-vendor handler and fail with 401. Gated by
+    :attr:`HarnessSpec.strip_openrouter_prefix` — a harness whose config
+    template defines a provider literally named ``openrouter`` (opencode)
+    sets it to ``False`` so the caller's ``openrouter/<vendor>/<model>``
+    slug reaches the config's ``openrouter`` provider block; stripping the
+    prefix for those CLIs routes the trial to a nonexistent vendor provider
+    and crashes.
 
     When *agent_harness* names a harness whose spec declares
     :attr:`HarnessSpec.strip_vendor_namespace`, also strips a leading
@@ -732,9 +826,15 @@ def harness_model(
     (``gpt-5-mini`` from ``openrouter/openai/gpt-5-mini``).
 
     *agent_harness* defaults to ``None`` for callers that only need the
-    ``openrouter/`` strip (or for the engine loop, which keeps everything).
+    ``openrouter/`` strip (or for the engine loop, which keeps everything);
+    with ``None``, the default of ``strip_openrouter_prefix=True`` applies.
     """
-    if model.startswith(OPENROUTER_PREFIX):
+    strip_prefix = True
+    if agent_harness is not None:
+        spec = registry.get(agent_harness)
+        if spec is not None:
+            strip_prefix = spec.strip_openrouter_prefix
+    if strip_prefix and model.startswith(OPENROUTER_PREFIX):
         model = model[len(OPENROUTER_PREFIX) :]
     if agent_harness is not None:
         spec = registry.get(agent_harness)
@@ -743,6 +843,52 @@ def harness_model(
                 if model.startswith(prefix):
                     return model[len(prefix) :]
     return model
+
+
+MIDDLEWARE_PROXY_CONTAINER_PATH = "/opt/tolokaforge/middleware_proxy.py"
+"""Where ``install-harness.sh`` writes the middleware proxy script inside
+every image whose harness declares :attr:`HarnessSpec.request_middleware`."""
+
+
+def _middleware_preamble(middleware: RequestMiddleware) -> list[str]:
+    """Preamble steps that boot the middleware proxy and redirect the CLI to it.
+
+    Emitted BEFORE ``config_files`` / env-model-vars exports so the CLI's
+    template renders and its environment inherit the redirected base-URL.
+    Two steps: start the proxy in daemon mode against the current value of
+    :attr:`RequestMiddleware.upstream_env_key`; then rewrite that env var to
+    ``http://127.0.0.1:<port>`` for everything downstream.
+
+    The proxy's ``--daemon`` mode double-forks and only returns when the
+    listener is bound, so the CLI's first request cannot race the proxy's
+    startup.
+    """
+    # The upstream URL is an ``${ENV_VAR}`` reference that MUST expand at
+    # shell time — the CLI process's provider_env supplies its value; the
+    # adapter never sees the resolved URL, so binding it here would freeze
+    # a stale one. Quote the fixed tokens (path, JSON payloads) but pass
+    # the reference itself inside a double-quoted string that bash expands
+    # before ``python3`` sees it. ``shlex.quote`` uses single quotes, which
+    # would suppress the expansion.
+    upstream_ref = f'"${{{middleware.upstream_env_key}}}"'
+    boot_args: list[str] = [
+        "python3",
+        shlex.quote(MIDDLEWARE_PROXY_CONTAINER_PATH),
+        "--port",
+        str(middleware.port),
+        "--upstream",
+        upstream_ref,
+        "--body-inject",
+        shlex.quote(json.dumps(middleware.body_injections)),
+        "--header-inject",
+        shlex.quote(json.dumps(middleware.header_injections)),
+    ]
+    if middleware.path_filter is not None:
+        boot_args += ["--path-filter", shlex.quote(middleware.path_filter)]
+    boot_args.append("--daemon")
+    boot = " ".join(boot_args)
+    rewrite = f"export {middleware.upstream_env_key}=http://127.0.0.1:{middleware.port}"
+    return [boot, rewrite]
 
 
 def _shell_string(value: str) -> str:
@@ -841,6 +987,8 @@ def harness_command(
 
     # Pre-exec preamble: on-disk config-file emission + env-quartet exports.
     preamble_parts: list[str] = []
+    if spec.request_middleware is not None:
+        preamble_parts.extend(_middleware_preamble(spec.request_middleware))
     if spec.config_files:
         variables = _config_template_variables(
             resolved_model, model, spec.provider_env if provider_env is None else provider_env
