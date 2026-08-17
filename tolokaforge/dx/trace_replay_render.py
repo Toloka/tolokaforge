@@ -84,7 +84,10 @@ def _disposition(outcome: TrialTraceReplayOutcome, bundle: str) -> str:
         # fragment prints rather than vanishing as console markup.
         return f"[warn]skip (no task)[/warn] {bundle} — {escape(outcome.reason or '')}"
     if outcome.status is TraceReplayOutcomeStatus.FAILED:
-        return f"[error]failed[/error] {bundle} — {outcome.reason}"
+        # Match the SKIPPED_NO_TASK branch above — the reason may carry
+        # bracketed fragments Rich would misparse. Escape both the reason
+        # and the bundle name.
+        return f"[error]failed[/error] {escape(bundle)} — {escape(outcome.reason or '')}"
     evidence = outcome.evidence
     record = "record present" if evidence and evidence.tool_log_present else "no record"
     result = outcome.result

@@ -950,7 +950,14 @@ def _print_rejudge_summary(
             reason = escape(outcome.reason or "")
             console.print(f"[yellow]skip (no grade)[/yellow] {rel} — {reason}")
         elif outcome.status is ReplayOutcomeStatus.FAILED:
-            console.print(f"[red]failed[/red] {rel} — {outcome.reason}")
+            # ``outcome.reason`` is ``str(exc)`` for a ``MissingReplayInputError``
+            # or a pydantic ``ValidationError`` — user-authored text can carry
+            # rich-markup brackets that Rich would either fail to parse
+            # (``MarkupError``) or silently truncate. Match the sibling SKIP
+            # branch above and escape the reason (and ``rel``, since bundle
+            # paths are authored-adjacent).
+            reason = escape(outcome.reason or "")
+            console.print(f"[red]failed[/red] {escape(rel)} — {reason}")
         else:
             prov = outcome.provenance
             model = prov.judge_model if prov else "?"
