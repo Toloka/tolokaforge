@@ -1470,6 +1470,91 @@ class TestHarnessCommand:
             validate_harness("terminus-2")
 
 
+class TestHarnessRequestMiddleware:
+    """The ``HarnessSpec.request_middleware`` slot + its shipped kimi-code use.
+
+    Locks the preamble shape so a refactor of ``_middleware_preamble`` cannot
+    silently change what runs inside the trial container. Real-container
+    end-to-end coverage lives in the matrix rerun; these tests exist so a
+    plain unit run catches regressions before a trial is spent.
+    """
+
+    def test_shipped_kimi_code_pins_moonshotai_provider_via_body_injection(self):
+        """The row that motivated the whole slot: kimi-k2.7-code on OpenRouter
+        fans out across 14 providers, and only Moonshot AI first-party returns
+        non-empty completions on tool-call continuation. If this test flips,
+        we're back to deterministic 0.433/0.6 baselines."""
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        mw = HARNESSES["kimi-code"].request_middleware
+        assert mw is not None
+        assert mw.upstream_env_key == "KIMI_MODEL_BASE_URL"
+        assert mw.body_injections == {
+            "provider": {"only": ["moonshotai"], "allow_fallbacks": False}
+        }
+        assert mw.path_filter == "/chat/completions"
+
+    def test_no_other_shipped_harness_declares_a_middleware(self):
+        """Middleware boots a proxy inside every trial container it's set on —
+        make the shipped scope explicit so a copy-paste edit is caught."""
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        with_middleware = {
+            name for name, spec in HARNESSES.items() if spec.request_middleware is not None
+        }
+        assert with_middleware == {"kimi-code"}
+
+    def test_middleware_preamble_boots_proxy_then_rewrites_env_before_cli(self):
+        """The three-step preamble the CLI depends on:
+        (1) daemon-mode proxy boot reading the ORIGINAL env-var value as
+            upstream (so it forwards to the real provider);
+        (2) env-var rewrite to localhost so the CLI reaches the proxy;
+        (3) CLI invocation.
+        A refactor that reorders these breaks either the forwarding chain
+        (proxy hits localhost recursively) or the CLI's routing.
+        """
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        steps = harness_command("kimi-code", "do it", "openrouter/moonshotai/kimi-k2.7-code").split(
+            " && "
+        )
+        # First non-config step boots the proxy against the ORIGINAL URL
+        boot = next(s for s in steps if "middleware_proxy.py" in s)
+        assert '"${KIMI_MODEL_BASE_URL}"' in boot
+        assert '"only": ["moonshotai"]' in boot
+        assert "/chat/completions" in boot
+        assert boot.rstrip().endswith("--daemon")
+        # Env rewrite MUST come after the boot (so the boot reads upstream)
+        # and MUST come before the CLI (so the CLI reaches localhost)
+        boot_idx = steps.index(boot)
+        rewrite_idx = next(
+            i for i, s in enumerate(steps) if s.startswith("export KIMI_MODEL_BASE_URL=")
+        )
+        cli_idx = next(i for i, s in enumerate(steps) if s.startswith("kimi "))
+        assert boot_idx < rewrite_idx < cli_idx
+        assert steps[rewrite_idx] == "export KIMI_MODEL_BASE_URL=http://127.0.0.1:8899"
+
+    def test_a_spec_that_declares_both_middleware_and_config_files_is_refused(self):
+        """The two features do not compose today: ``config_files`` templates
+        interpolate provider_env at Python-assembly time, while the middleware
+        rewrite happens at bash time. A CLI reading its endpoint from an
+        on-disk config would bake in the upstream URL and bypass the proxy."""
+        from tolokaforge_adapter_terminal_bench.harness import (
+            HarnessSpec,
+            RequestMiddleware,
+        )
+
+        with pytest.raises(Exception, match="request_middleware and config_files"):
+            HarnessSpec(
+                install_source="some-pkg",
+                version="1.0.0",
+                argv_prefix=("cli",),
+                argv_suffix=(),
+                config_files={"/etc/cli.conf": "endpoint={{ base_url }}"},
+                request_middleware=RequestMiddleware(upstream_env_key="X_BASE_URL"),
+            )
+
+
 class TestHarnessConfigFiles:
     """CLIs configured by file: rendered from the declared variables only."""
 
@@ -1662,10 +1747,43 @@ class TestHarnessModelPrefix:
 
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        argv = shlex.split(
-            harness_command("gemini-cli", "go", "openrouter/google/gemini-2.5-flash")
-        )
+        _, _, cli_command = harness_command(
+            "gemini-cli", "go", "openrouter/google/gemini-2.5-flash"
+        ).rpartition(" && ")
+        argv = shlex.split(cli_command)
         assert argv[argv.index("--model") + 1] == "gemini-2.5-flash"
+
+    def test_shipped_opencode_spec_declares_strip_openrouter_prefix_false(self):
+        """Opencode's config template defines a provider literally named
+        ``openrouter`` — stripping the prefix would re-route
+        ``openrouter/<vendor>/<model>`` to a provider its config never
+        declared. Lock the shipped default."""
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        assert HARNESSES["opencode"].strip_openrouter_prefix is False
+
+    def test_opencode_preserves_openrouter_prefix_so_config_provider_block_wins(self):
+        """The user-visible behavior of the flag: an ``openrouter/vendor/model``
+        slug reaches the opencode CLI intact so opencode routes to its
+        ``openrouter`` provider block. If this test flips, PR #1216's
+        `` fix regresses and opencode 401s again on Muse-family models."""
+        from tolokaforge_adapter_terminal_bench.harness import harness_model
+
+        assert (
+            harness_model("openrouter/meta/muse-glimmer-30b", "opencode")
+            == "openrouter/meta/muse-glimmer-30b"
+        )
+
+    def test_default_strip_openrouter_prefix_removes_the_prefix(self):
+        """Default preserves the pre-existing behavior for every harness
+        besides opencode — kimi-code, claude-code, codex, grok-build,
+        gemini-cli all rely on the strip."""
+        from tolokaforge_adapter_terminal_bench.harness import harness_model
+
+        assert (
+            harness_model("openrouter/anthropic/claude-sonnet-5", "claude-code")
+            == "anthropic/claude-sonnet-5"
+        )
 
     def test_a_bare_model_name_is_untouched_for_claude_code(self):
         from tolokaforge_adapter_terminal_bench.harness import harness_model

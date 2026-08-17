@@ -136,9 +136,23 @@ harnesses:
     # — the CLI still speaks Google-native, but the endpoint can be any
     # gateway serving the same shape.
     #
-    # We route through Toloka's LiteLLM gateway, which exposes the
-    # Gemini-compat surface at `<base>/gemini/v1beta/…`. That unblocks
-    # Gemini 3.1 Pro / 3.6 Flash without a direct Google API key.
+    # The shipped default is a direct Google AI Studio route (a plain
+    # `GEMINI_API_KEY`; no `GOOGLE_GEMINI_BASE_URL`). An operator running
+    # against a GATEWAY endpoint that speaks Google's native
+    # `generateContent` shape (e.g. a LiteLLM proxy exposing
+    # `/gemini/v1beta/models/*:generateContent`) declares the endpoint
+    # + settings-file flip in their run config's `agent_provider_env`
+    # overlay, not here — the wheel ships to PyPI and must not reference
+    # internal infrastructure.
+    #
+    # Example operator overlay (in the run config, not this file):
+    #
+    #     harness_adapter:
+    #       params:
+    #         agent_provider_env:
+    #           GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"
+    #           GOOGLE_GEMINI_BASE_URL: "https://<your-litellm-host>/gemini"
+    #
     # (Gemini 3 Pro `gemini-3-pro-preview` was retired by Google — it now
     # sits under "Previous models (Shut down)" in Google's public docs;
     # 3.1 Pro Preview is the current Pro-tier flagship successor.
@@ -162,8 +176,7 @@ harnesses:
       "${HOME}/.gemini/settings.json": |-
         {"security":{"auth":{"selectedType":"gateway","useExternal":true}}}
     provider_env:
-      GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"
-      GOOGLE_GEMINI_BASE_URL: "https://litellm.toloka.network/gemini"
+      GEMINI_API_KEY: "${secret:GEMINI_API_KEY}"
 
   kimi-code:
     install_method: "npm"

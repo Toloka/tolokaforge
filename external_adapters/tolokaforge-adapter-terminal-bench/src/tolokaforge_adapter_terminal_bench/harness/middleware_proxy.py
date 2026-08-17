@@ -33,7 +33,6 @@ preamble can wait for it deterministically before starting the CLI.
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import os
 import socket
@@ -197,10 +196,7 @@ def _daemonize() -> None:
         os._exit(0)  # noqa: SLF001
     devnull = os.open(os.devnull, os.O_RDWR)
     for stream in (sys.stdin, sys.stdout, sys.stderr):
-        try:
-            os.dup2(devnull, stream.fileno())
-        except OSError:
-            pass
+        os.dup2(devnull, stream.fileno())
 
 
 def main(argv: list[str] | None = None) -> int:

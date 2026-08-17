@@ -125,6 +125,24 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
     agent service always carries.
   - `strip_vendor_namespace: bool` — whether to strip a `vendor/` prefix
     from the model name before handing it to the CLI.
+  - `strip_openrouter_prefix: bool = True` — whether the `openrouter/`
+    route marker on the model name is stripped before it reaches the CLI.
+    Default preserves the vendor-CLI behavior (the CLI reads `*_BASE_URL`
+    for OpenRouter and would 401 on its native handler otherwise).
+    `False` on opencode, whose config template defines a provider literally
+    named `openrouter` and expects the caller to route
+    `openrouter/<vendor>/<model>` to it.
+  - `request_middleware: RequestMiddleware | None` — declares a stdlib
+    HTTP proxy (`middleware_proxy.py`) that lands inside the trial image
+    and rewrites the CLI's provider requests before they leave the
+    container. The record names an env-var whose URL value gets redirected
+    to `http://127.0.0.1:<port>`, plus body deep-merge / header-inject /
+    URL-path-filter fields the proxy applies before forwarding upstream.
+    Cannot coexist with `config_files` (config templates render at
+    Python-assembly time from the upstream URL; the middleware rewrite
+    only reaches env-driven routing). Motivating case: kimi-code injects
+    `provider.only=["moonshotai"]` on every `/chat/completions` body to
+    force Moonshot AI first-party routing on OpenRouter.
   - `provider_env: dict[str, str]` — the shipped default `agent_provider_env`
     envelope for this harness (URLs, `${secret:…}` refs).
 - Canonical snapshot at `tests/canonical/snapshots/tbench_echo_hello_harness/harness_spec.json`

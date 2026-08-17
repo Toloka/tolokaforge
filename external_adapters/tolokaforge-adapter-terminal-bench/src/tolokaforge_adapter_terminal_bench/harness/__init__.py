@@ -388,6 +388,32 @@ class HarnessSpec(BaseModel):
         )
 
     @model_validator(mode="after")
+    def _config_files_and_request_middleware_do_not_coexist(self) -> HarnessSpec:
+        """Refuse a spec that would silently bake the upstream URL into a config file.
+
+        :attr:`config_files` templates render at Python assembly time from
+        :attr:`provider_env` — the ``base_url`` variable interpolates the
+        pre-rewrite ``*_BASE_URL`` value. :attr:`request_middleware`
+        rewrites that env var at bash time, AFTER the config files have
+        already been written. A CLI that reads its endpoint from an on-disk
+        config file bakes in the upstream URL and bypasses the proxy —
+        silently, since the CLI never touches the env var again after
+        startup. Reject the combination at load rather than at trial time
+        with a broken run to diagnose.
+        """
+        if self.request_middleware is not None and self.config_files:
+            raise ValueError(
+                "HarnessSpec: request_middleware and config_files cannot both be "
+                "set. config_files render at assembly time with the upstream URL "
+                "from provider_env; the middleware rewrite only reaches env-driven "
+                "routing. A CLI that reads its endpoint from a config file would "
+                "bake in the upstream and bypass the proxy. Route the CLI's "
+                "endpoint through an env var, or land the config template "
+                "referencing http://127.0.0.1:<port> directly."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _install_source_fits_the_method(self) -> HarnessSpec:
         """Refuse a source the method cannot consume, at load rather than build."""
         if self.install_method in _URL_INSTALL_METHODS:
@@ -829,19 +855,14 @@ def harness_model(
     ``openrouter/`` strip (or for the engine loop, which keeps everything);
     with ``None``, the default of ``strip_openrouter_prefix=True`` applies.
     """
-    strip_prefix = True
-    if agent_harness is not None:
-        spec = registry.get(agent_harness)
-        if spec is not None:
-            strip_prefix = spec.strip_openrouter_prefix
+    spec = registry.get(agent_harness) if agent_harness is not None else None
+    strip_prefix = spec.strip_openrouter_prefix if spec is not None else True
     if strip_prefix and model.startswith(OPENROUTER_PREFIX):
         model = model[len(OPENROUTER_PREFIX) :]
-    if agent_harness is not None:
-        spec = registry.get(agent_harness)
-        if spec is not None and spec.strip_vendor_namespace:
-            for prefix in _VENDOR_NAMESPACE_PREFIXES:
-                if model.startswith(prefix):
-                    return model[len(prefix) :]
+    if spec is not None and spec.strip_vendor_namespace:
+        for prefix in _VENDOR_NAMESPACE_PREFIXES:
+            if model.startswith(prefix):
+                return model[len(prefix) :]
     return model
 
 

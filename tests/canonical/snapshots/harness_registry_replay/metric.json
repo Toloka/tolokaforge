@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 3,
-  "bucket_b_count": 11,
+  "bucket_b_count": 13,
   "commits": [
     {
       "adapter_paths": [
@@ -1638,6 +1638,42 @@
       "subject": "fix(tbench): pin claude-code to 2.1.233 to close matrix \u0394 vs harbor",
       "touched_files": [
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/middleware_proxy.py",
+        "tests/unit/test_terminal_bench.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-17",
+      "pr": null,
+      "reason": "4 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "80aa8f995117d95ead3f0f774ffa299627d79355",
+      "subject": "feat(tbench): unblock Kimi K2.7 / Muse Glimmer / Gemini via new harness surface",
+      "touched_files": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/middleware_proxy.py",
+        "tests/unit/test_terminal_bench.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "tests/canonical/snapshots/harness_registry_replay/metric.json"
+      ],
+      "bucket": "B",
+      "date": "2026-08-17",
+      "pr": null,
+      "reason": "1 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "80ce9c12b26c82f328b785128094e2795f9c9f20",
+      "subject": "test(canon): regenerate snapshots for new HarnessSpec fields",
+      "touched_files": [
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/snapshots/tbench_echo_hello_harness/harness_spec.json"
       ]
     }
   ]
