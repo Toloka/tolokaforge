@@ -983,6 +983,98 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # Grok-4.6 — landed via auto-resolve (Slack-requested integration,
+    # PR #1161). It does NOT route through the shared ``xai_grok`` preset its
+    # 4.x siblings use: the model-specific ``xai_grok_4_6`` preset (see
+    # model_presets.yaml) shadows the broader ``x-ai/*`` glob for this one route
+    # and lifts all three of that preset's axes to a SUPERSET of what they
+    # replace (``strict`` -> ``xai_grok_recursive``, ``array_dict_map`` ->
+    # ``scalar_array_dict_map``, ``openai`` -> ``openai_summary_replay``; each a
+    # subclass of the policy it replaces).
+    #
+    # Posture set from the observe baseline + the converged reprobe, NOT copied
+    # from a sibling. Three deltas against grok-4.5:
+    #
+    #   * THINKING_EMITS_BLOCKS is REQUIRED (known_unsupported on every earlier
+    #     grok). Grok-4.6 surfaces a reasoning summary the inherited OpenAI
+    #     ``extract`` lands as blocks — 15/15 natively on the observe baseline.
+    #   * UNSIGNED_THINKING_REPLAY is REQUIRED (known_unsupported on every
+    #     earlier grok). 0/15 natively ("assistant dict missing
+    #     ``reasoning_details`` — the codec's encode_for_replay path is not
+    #     running") because the plain ``openai`` codec's ``encode_for_replay``
+    #     is a no-op; ``openai_summary_replay`` rebuilds the unsigned
+    #     OpenRouter ``reasoning_details`` envelope and the reprobe went 5/5.
+    #     No signature is synthesised, so this is contract conformance on the
+    #     unsigned surface only.
+    #   * RECURSIVE_REF_TOOL_CALL stays REQUIRED (as on grok-4, unlisted on
+    #     4.3/4.5) but only because of the sanitiser: under ``strict`` it was
+    #     0/15 on all four shapes with an in-engine ``$ref resolution exceeded
+    #     depth 16`` ValueError raised BEFORE the request was sent, so the model
+    #     never saw the tool. ``xai_grok_recursive`` prunes the genuine cycle and
+    #     the reprobe went 5/5 on ``deep_chain``.
+    #
+    # The three ceilings are structural and unchanged in kind from the family:
+    # THINKING_REPLAY_ROUNDTRIP needs SIGNED turn-1 blocks, which this route
+    # never emits and no policy can manufacture (its unsigned sibling is
+    # required above); PROMPT_CACHING is Anthropic-style ephemeral
+    # ``cache_control`` that the preset does not wire (cache_policy: none) and
+    # the route does not honour; IMPLICIT_PROMPT_CACHING keeps the grok-family
+    # observation that no upstream cache is surfaced on the OpenRouter
+    # x-ai/grok-* routes.
+    #
+    # NOT ceilings, deliberately: the residual
+    # ``recursive_ref[simple/nested_in_object/wide_tree]`` and
+    # ``variant_dict_map[nested_in_object]`` misses are Grok's intrinsic
+    # ~10-30 % no-tool-call rate, not a capability gap — the same rate depresses
+    # probes with no schema surface at all (``simple_tool_call`` 14/15,
+    # ``heterogeneous_array`` 10-13/15) and one captured payload is prose, not a
+    # malformed call envelope. Flaky noise, so the structural capabilities stay
+    # required. See ``observation/resolve/decision.json``.
+    MC(
+        model_id="openrouter__x-ai_grok-4.6",
+        provider="openrouter",
+        name="x-ai/grok-4.6",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Requires SIGNED blocks on turn 1; this route emits none, and
+                # ``openai_summary_replay`` synthesises no signature. The
+                # unsigned sibling (UNSIGNED_THINKING_REPLAY) is required above.
+                C.THINKING_REPLAY_ROUNDTRIP,
+                # Anthropic-style ephemeral ``cache_control`` markers are not
+                # wired on this preset (cache_policy: none) and the route does
+                # not honour them.
+                C.PROMPT_CACHING,
+                # No implicit upstream cache surfaced on the OpenRouter
+                # x-ai/grok-* routes.
+                C.IMPLICIT_PROMPT_CACHING,
+            }
+        ),
+    ),
     # -----------------------------------------------------------------
     # Google Gemini family — routed through the named ``gemini`` preset
     # (see ``model_presets.yaml``) which adds ``GeminiReasoningCodec``

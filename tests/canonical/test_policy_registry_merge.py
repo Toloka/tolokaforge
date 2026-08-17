@@ -43,6 +43,12 @@ EXPECTED_REGISTRATIONS: tuple[tuple[str, str, str, str], ...] = (
         "GeminiRecursiveSchema",
     ),
     (
+        "schema_sanitizer",
+        "xai_grok_recursive",
+        "tolokaforge_models.policies.xai",
+        "XaiGrokRecursiveSchema",
+    ),
+    (
         "prompt_policy",
         "dict_map_hints_ref",
         "tolokaforge_models.policies.inkling",
