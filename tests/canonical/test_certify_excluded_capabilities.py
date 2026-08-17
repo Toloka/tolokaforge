@@ -7,8 +7,15 @@ Two invariants ride together here and neither can drift silently:
    the exclusion is certificate data, not a hardcoded name-set inside
    the ratchet module.
 2. Every ``_ratchet_targets()`` in the suite returns the baseline
-   ``model_id`` set embedded below. Changing the exclusion predicate
-   shape must not perturb the set of model_ids it resolves to.
+   ``model_id`` set recorded in ``snapshots/ratchet_targets/``. Changing
+   the exclusion predicate shape must not perturb the set of model_ids it
+   resolves to. The baseline is a golden rather than a literal because it
+   is DERIVED from certificate data: every new certificate legitimately
+   moves it, so a hardcoded copy reds each integration instead of
+   catching a predicate change (the failure mode the retired
+   registry-flip lock had). Refresh with ``--update-canon`` and read the
+   diff - a change in the target IDS of a model you did not touch is the
+   regression this locks.
 """
 
 from __future__ import annotations
@@ -27,44 +34,6 @@ _RATCHET_MODULES = (
     "tolokaforge.testing.certify.suite.test_enum_slash_tolerance_unsupported_ratchet",
 )
 
-# Baseline captured against the ratchet's current predicate. A diff
-# here means the certificate-data lookup resolves to a different
-# target set than expected — investigate before regenerating.
-_RATCHET_TARGETS_BASELINE: dict[str, list[str]] = {
-    "tolokaforge.testing.certify.suite.test_implicit_prompt_caching_unsupported_ratchet": [
-        "openrouter__deepseek_deepseek-v3.2-exp",
-        "openrouter__deepseek_deepseek-v4-flash",
-        "openrouter__deepseek_deepseek-v4-pro",
-        "openrouter__google_gemini-3-flash-preview",
-        "openrouter__google_gemini-3.1-pro-preview",
-        "openrouter__google_gemini-3.5-flash",
-        "openrouter__google_gemini-3.6-flash",
-        "openrouter__google_gemini-3.7-flash",
-        "openrouter__google_gemma-4-31b-it",
-        "openrouter__mistralai_mistral-medium-3-5",
-        "openrouter__moonshotai_kimi-k2.6",
-        "openrouter__moonshotai_kimi-k2.7-code",
-        "openrouter__nvidia_nemotron-3-super-120b-a12b",
-        "openrouter__nvidia_nemotron-3-ultra-550b-a55b",
-        "openrouter__openai_gpt-5.6-sol",
-        "openrouter__openai_gpt-5.6-terra",
-        "openrouter__openai_gpt-oss-120b",
-        "openrouter__qwen_qwen3.6-plus",
-        "openrouter__tencent_hy3-preview",
-        "openrouter__x-ai_grok-4",
-        "openrouter__x-ai_grok-4.3",
-        "openrouter__x-ai_grok-4.5",
-        "openrouter__x-ai_grok-4.6",
-    ],
-    "tolokaforge.testing.certify.suite.test_re2_pattern_tolerance_unsupported_ratchet": [
-        "openrouter__openai_gpt-5.6-sol",
-        "openrouter__openai_gpt-5.6-terra",
-        "openrouter__x-ai_grok-4.3",
-    ],
-    "tolokaforge.testing.certify.suite.test_enum_slash_tolerance_unsupported_ratchet": [
-        "openrouter__x-ai_grok-4.3",
-    ],
-}
 
 
 def _muse_spark_cert() -> ModelCertificate:
@@ -107,11 +76,13 @@ class TestRatchetTargetsSetForSet:
     """
 
     @pytest.mark.parametrize("module_name", _RATCHET_MODULES)
-    def test_ratchet_targets_match_baseline(self, module_name: str) -> None:
+    def test_ratchet_targets_match_baseline(self, module_name: str, canon_snapshot) -> None:
         module = importlib.import_module(module_name)
         actual = sorted(cert.model_id for cert in module._ratchet_targets())
-        expected = _RATCHET_TARGETS_BASELINE[module_name]
-        assert actual == expected
+        canon_snapshot("ratchet_targets").assert_match(
+            {"module": module_name, "target_ids": actual},
+            f"{module_name.rsplit('.', 1)[-1]}.json",
+        )
 
 
 class TestExcludedCapabilitiesRoundTrip:

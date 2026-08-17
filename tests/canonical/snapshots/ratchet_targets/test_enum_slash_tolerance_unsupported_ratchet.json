@@ -1,0 +1,6 @@
+{
+  "module": "tolokaforge.testing.certify.suite.test_enum_slash_tolerance_unsupported_ratchet",
+  "target_ids": [
+    "openrouter__x-ai_grok-4.3"
+  ]
+}

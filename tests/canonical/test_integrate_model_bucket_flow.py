@@ -52,6 +52,11 @@ _EXPECTED_STAGED_PATHS = frozenset(
         "tolokaforge_models/src/tolokaforge_models/__init__.py",
         "tolokaforge_models/pyproject.toml",
         "tolokaforge_models/tests",
+        # The finalize step regenerates the golden-backed canonical baselines a new
+        # certificate moves (ratchet target sets, certify-suite collection, models-wheel
+        # replay metric); staging them is what stops every integration landing red on
+        # tests it could not have predicted.
+        "tests/canonical",
     }
 )
 
@@ -104,6 +109,27 @@ def test_finalize_git_add_targets_models_wheel_layout() -> None:
         f"got {sorted(staged)}"
     )
     assert staged == _EXPECTED_STAGED_PATHS, msg
+
+
+def test_finalize_refreshes_canonical_baselines_before_staging() -> None:
+    """The refresh has to precede `git add`, or the regenerated goldens never land.
+
+    Ordering is the whole contract here: `--update-canon` writes files, the
+    whitelist stages them, and a refresh that ran afterwards would leave the
+    integration committing a certificate without the baselines it moves.
+    """
+    body = _finalize_step_body()
+    refresh_match = re.search(r"pytest tests/canonical[^\n]*--update-canon", body)
+    add_match = re.search(r"^\s*git add\b", body, re.MULTILINE)
+    assert refresh_match is not None, (
+        "expected `pytest tests/canonical ... --update-canon` in the finalize step: a new "
+        "certificate moves the golden-backed canonical baselines"
+    )
+    assert add_match is not None, "`git add` not found in finalize step"
+    assert refresh_match.start() < add_match.start(), (
+        "the canonical refresh must run BEFORE `git add`, otherwise the regenerated "
+        "goldens are not staged"
+    )
 
 
 def test_finalize_drops_pre_cutover_paths() -> None:

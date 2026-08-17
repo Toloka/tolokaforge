@@ -65,6 +65,14 @@ and pushes the whole integration to needs-human.
    sanitizer subclass goes in `gemini.py`; a brand-new family gets a new file). The class is
    registered via an entry point in `tolokaforge_models/pyproject.toml` under
    `[project.entry-points."tolokaforge.policies"]` keyed as `<slot_name>.<policy_name>` (e.g.
+
+   A new entry point is also a CANONICAL CONTRACT: add the same
+   `(slot, policy_name, module_path, class_name)` tuple to `EXPECTED_REGISTRATIONS` in
+   `tests/canonical/test_policy_registry_merge.py`. That list is deliberately hardcoded -
+   it is the assertion that the wiring you shipped is the wiring you meant - so it is the
+   one canonical baseline `--update-canon` cannot refresh for you. Everything else the
+   integration moves (ratchet target sets, certify-suite collection, models-wheel replay
+   metric) is golden-backed and the workflow refreshes it after you finish.
    `response_policy.deepseek_new_recovery`); the engine's merge-loader picks it up at startup.
    Do NOT edit `tolokaforge/core/llm/*.py`, `_POLICY_REGISTRIES`, or `tolokaforge/core/llm/__init__.py`
    for the new class — those stay engine-owned. Then reference the new policy name from the

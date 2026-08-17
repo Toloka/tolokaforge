@@ -294,6 +294,32 @@ quirk needs to travel as certificate data rather than test-body code:
 - `capability_extras: Mapping[str, str]` — opaque per-model quirks that
   do not fit the `Capability` enum, consulted by adapter code paths.
 
+## 3a. Refresh the canonical baselines the certificate moves
+
+A new certificate necessarily moves three golden-backed baselines under
+`tests/canonical/`, none of which is a judgement call:
+
+| Baseline | Why it moves |
+|---|---|
+| `snapshots/ratchet_targets/*.json` | each ratchet's target set is derived from cert data, so a `known_unsupported` declaration lands in the matching list |
+| `snapshots/certify_suite_collection/collection.json` | the suite gains one parametrised nodeid per probe for the new route |
+| `snapshots/models_wheel_replay/metric.json` | the Bucket-A model count |
+
+Refresh them together, then **read the diff** — a moved target set for a model
+your change did not touch is a real regression, not noise:
+
+```bash
+uv run pytest tests/canonical -q --update-canon
+```
+
+The one baseline this cannot refresh is `EXPECTED_REGISTRATIONS` in
+`tests/canonical/test_policy_registry_merge.py`: it is hardcoded on purpose, as
+the assertion that a new policy class is wired the way its author meant. Extend
+it by hand when (and only when) you ship one.
+
+`integrate-model.yml` runs the refresh in its finalize step and commits the
+result, so an auto-integration PR arrives with these already in the diff.
+
 ## 4. Run the capability suite locally
 
 ```bash
