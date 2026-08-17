@@ -1,5 +1,5 @@
 {
-  "bucket_a_count": 3,
+  "bucket_a_count": 4,
   "bucket_b_count": 4,
   "integrations": [
     {
@@ -126,6 +126,20 @@
         "tests/integration/llm/registry.py",
         "tolokaforge/core/data/model_presets.yaml",
         "tolokaforge/core/data/pricing.json"
+      ]
+    },
+    {
+      "bucket": "A",
+      "date": "2026-08-14",
+      "engine_paths": [],
+      "model": "google/gemini-3.7-flash",
+      "pr": null,
+      "reason": "all touched paths in Bucket-A allow-list",
+      "sha": "0328653fa43106e887d03b1a5f9acb34dbcb7662",
+      "touched_files": [
+        "tolokaforge_models/src/tolokaforge_models/certificates/registry.py",
+        "tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml",
+        "tolokaforge_models/src/tolokaforge_models/data/pricing.json"
       ]
     }
   ]
