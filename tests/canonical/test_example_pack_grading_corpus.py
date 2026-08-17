@@ -648,18 +648,22 @@ def test_no_shipped_pack_addresses_a_state_its_substrate_cannot_reach() -> None:
         f"{reading_an_absent_database}"
     )
 
+    # ``$.filesystem[…]`` is reachable on the runner (via
+    # ``_read_agent_visible_filesystem``), so it is *not* in the negative-control
+    # set. The residue is ``agent`` / ``user`` / ``mock_web_url`` /
+    # ``rag_corpus_dir`` — roots the core engine composes from a run's live env
+    # that the runner has no equivalent for.
     probed_paths, _ = _states_a_pack_addresses_but_cannot_reach(
         {
             "state_checks": {
                 "jsonpaths": [
-                    {"path": _A_FILESYSTEM_ROOTED_PATH},
                     {"path": _AN_AGENT_ROOTED_PATH},
                 ]
             }
         },
         SeededTablesLayer.unresolvable(),
     )
-    assert probed_paths == [_A_FILESYSTEM_ROOTED_PATH, _AN_AGENT_ROOTED_PATH]
+    assert probed_paths == [_AN_AGENT_ROOTED_PATH]
     _, probed_absent_database = _states_a_pack_addresses_but_cannot_reach(
         {"state_checks": {"jsonpaths": [{"path": _A_DATABASE_ROOTED_PATH}]}},
         SeededTablesLayer(tables={}),

@@ -2706,36 +2706,33 @@ def test_a_source_less_hash_block_on_a_task_that_seeds_nothing_is_refused_by_nam
     assert "TrialNotFoundError" not in response.error
 
 
-def test_a_filesystem_rooted_path_is_refused_rather_than_scored_against_the_agent(
-    runner_service, mock_grpc_context
-):
-    """The refusal that stops a narrowed state fetch becoming a zero the agent earned.
+def test_a_filesystem_rooted_path_is_graded_not_refused(runner_service, mock_grpc_context):
+    """The runner grades a ``$.filesystem[…]``-rooted path against the
+    agent-visible filesystem — the state
+    :meth:`RunnerServiceImpl._read_agent_visible_filesystem` composes.
 
-    The task seeds a database, so nothing here is about a missing DB service. The
-    assertion addresses a root the runner's JSONPath state does not carry, and the
-    outcome that must not happen is a scored ``0.0``: dropping such an assertion out
-    of the fetch and evaluating it against no state reports
-    ``DB state unavailable for JSONPath checks`` and grades the agent for it.
-
-    ``success is False`` is what carries that claim. The reason text is asserted absent
-    beside it, and on a refusal there is no reason text to search — that assertion
-    speaks only against a build which scores this pack instead of refusing it, which is
-    the build it exists for.
+    The pre-existing refusal at ``_unreachable_state_checks_refusal`` classified
+    every filesystem-rooted path as unreachable and led ``GradeTrial`` to answer
+    ``success=false``. Measurement (reviewer report on the earlier commit) proved
+    the runner actually resolves such paths correctly, so the refusal was removed.
+    This test locks the corrected behaviour: the RPC responds ``success=true`` and
+    hands back a normal ``Grade`` rather than a refusal.
     """
     task = _in_memory_task(
-        "refusal_filesystem",
+        "graded_filesystem",
         state_checks=runner_models.RunnerStateChecksConfig(
             jsonpath_checks=[{"path": _A_FILESYSTEM_PATH, "contains": "def divide"}]
         ),
         seeds_a_database=True,
     )
 
-    response = _refusal_for(runner_service, mock_grpc_context, task, "refusal_filesystem:0")
+    response = _refusal_for(runner_service, mock_grpc_context, task, "graded_filesystem:0")
 
-    assert response.success is False, response.grade.reasons
-    assert "path_glob" in response.error
-    assert _A_FILESYSTEM_PATH in response.error
-    assert "DB state unavailable" not in response.grade.reasons
+    # ``success`` is now True: the assertion is graded rather than refused. The
+    # score itself may be 0.0 because the in-memory test filesystem does not
+    # actually contain ``x.py`` with the asserted content — we assert only the
+    # non-refusal semantic here; the substrate-parity suite covers the score.
+    assert response.success is True, response.error
 
 
 def test_a_path_rooted_where_only_the_core_engine_composes_is_refused(
@@ -2806,9 +2803,14 @@ _REFUSALS_THAT_NAME_THE_TRIAL = (
     ),
     pytest.param(
         runner_models.RunnerStateChecksConfig(
-            jsonpath_checks=[{"path": _A_FILESYSTEM_PATH, "contains": "def divide"}]
+            jsonpath_checks=[
+                {"path": "$.agent.customers[0].balance", "equals": "0"},
+            ]
         ),
         True,
+        # ``$.agent`` roots at state only the core engine composes; the runner
+        # has no equivalent, so the refusal fires here where filesystem no
+        # longer does.
         id="a_path_the_runner_composes_no_root_for",
     ),
 )

@@ -55,7 +55,6 @@ from tolokaforge.core.grading.grade_components import (
     component_requested,
 )
 from tolokaforge.core.grading.jsonpath_addressing import (
-    JsonPathTarget,
     addresses_the_database,
     block_addresses_the_database,
     unreachable_target,
@@ -1670,16 +1669,15 @@ def _check_jsonpaths_address_a_reachable_state(grading: Mapping[str, Any]) -> Au
         target = unreachable_target(assertion)
         if target is None:
             continue
+        # Only ``BEYOND_THE_RUNNERS_STATE`` reaches here now — ``FILESYSTEM``
+        # grades on the runner via ``_read_agent_visible_filesystem``, so the
+        # authoring gate no longer refuses ``$.filesystem[…]``-rooted paths.
         findings.append(
             Finding(
                 _JSONPATHS_ADDRESS,
                 _A_PATH_BEYOND_THE_RUNNERS_STATE.format(
                     path=assertion.get("path"),
-                    remedy=(
-                        _ADDRESS_A_FILE_BY_GLOB
-                        if target is JsonPathTarget.FILESYSTEM
-                        else _ADDRESS_THE_DATABASE
-                    ),
+                    remedy=_ADDRESS_THE_DATABASE,
                 ),
             )
         )

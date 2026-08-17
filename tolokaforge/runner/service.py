@@ -66,7 +66,6 @@ from tolokaforge.core.grading.golden_replay import (
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.jsonpath_addressing import (
-    JsonPathTarget,
     addresses_the_database,
     block_addresses_the_database,
     unreachable_target,
@@ -456,19 +455,18 @@ def _unreachable_state_checks_refusal(
         target = unreachable_target(assertion)
         if target is None:
             continue
+        # Only ``BEYOND_THE_RUNNERS_STATE`` (``agent`` / ``user`` /
+        # ``mock_web_url`` / ``rag_corpus_dir``) reaches here. ``FILESYSTEM``
+        # is graded by the runner via ``_read_agent_visible_filesystem`` and
+        # ``TRIAL_DATABASE`` returns ``None`` from :func:`unreachable_target`.
         described = assertion.get("description")
-        remedy = (
-            "Address a file with path_glob: and contains_ci:, which both substrates read "
-            "the same way."
-            if target is JsonPathTarget.FILESYSTEM
-            else "Address the trial's database, which is rooted at db or tables."
-        )
         return (
             f"state_checks.jsonpaths declares path {assertion.get('path')!r}"
             + (f" ({described})" if described else "")
-            + ", which addresses state the runner's JSONPath grading does not carry: it "
-            "composes db and tables from the trial's database and nothing else, so this "
-            f"assertion can never match there. {remedy}"
+            + ", which addresses state neither substrate carries at grading time: the "
+            "core engine composes agent / user / mock_web_url / rag_corpus_dir from a "
+            "run's live env, none of which are the runner's to reach. Address the "
+            "trial's database (rooted at db or tables), or drop the assertion."
         )
     return None
 
