@@ -1,6 +1,6 @@
 {
-  "bucket_a_count": 2,
-  "bucket_b_count": 10,
+  "bucket_a_count": 3,
+  "bucket_b_count": 11,
   "commits": [
     {
       "adapter_paths": [
@@ -1595,6 +1595,37 @@
         "tests/canonical/snapshots/tbench_echo_hello_harness/synthesised_compose.json",
         "tests/canonical/snapshots/tbench_echo_hello_skills_harness/harness_dockerfile.json",
         "tests/canonical/snapshots/tbench_echo_hello_skills_harness/synthesised_compose.json"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "tests/canonical/snapshots/harness_registry_replay/metric.json"
+      ],
+      "bucket": "B",
+      "date": "2026-08-16",
+      "pr": null,
+      "reason": "1 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "6acad3c0539659cebb17aad512e697f95dbf932d",
+      "subject": "fixup: reuse ANTHROPIC_API_KEY in opencode's openrouter provider",
+      "touched_files": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json"
+      ]
+    },
+    {
+      "adapter_paths": [],
+      "bucket": "A",
+      "date": "2026-08-16",
+      "pr": null,
+      "reason": "all touched paths in Bucket-A allow-list",
+      "sha": "b5a4b04357e49958cb03e98f87c336a724a8d1bf",
+      "subject": "fix(tbench-tasks): fix-billing-holds \u2014 supervisord auto-restart for uvicorn",
+      "touched_files": [
+        "examples/terminal_bench/fix-billing-holds/environment/Dockerfile",
+        "examples/terminal_bench/fix-billing-holds/environment/entrypoint.sh",
+        "examples/terminal_bench/fix-billing-holds/environment/start-billing-service",
+        "examples/terminal_bench/fix-billing-holds/environment/supervisord.conf",
+        "examples/terminal_bench/fix-billing-holds/task.yaml"
       ]
     },
     {
