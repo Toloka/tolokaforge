@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 16,
+  "bucket_b_count": 14,
   "commits": [
     {
       "adapter_paths": [
@@ -1459,24 +1459,6 @@
     },
     {
       "adapter_paths": [
-        "CHANGELOG.md",
-        "tests/unit/test_terminal_bench.py"
-      ],
-      "bucket": "B",
-      "date": "2026-08-18",
-      "pr": 1237,
-      "reason": "2 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "0cc5803a6846911f9c4811b0ccc50b59657c24d1",
-      "subject": "fix(harness): declare the gemini/LiteLLM gateway URL under provider_env (#1237)",
-      "touched_files": [
-        "CHANGELOG.md",
-        "examples/terminal_bench/gemini_litellm_overlay.yaml",
-        "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
-        "tests/unit/test_terminal_bench.py"
-      ]
-    },
-    {
-      "adapter_paths": [
         "AGENTS.md",
         "Makefile",
         "docs/RUNNING_TERMINAL_BENCH.md",
@@ -1520,6 +1502,33 @@
         "tolokaforge_coding_harnesses/tests/unit/test_plugin_discovery.py",
         "tolokaforge_coding_harnesses/tests/unit/test_registry_composition.py",
         "tools/dev-mcp/src/dev_mcp/server.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "CHANGELOG.md",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/test_terminal_bench_adapter_canon.py",
+        "tests/unit/test_terminal_bench.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_registry.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-18",
+      "pr": 1238,
+      "reason": "6 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "238d8d9606e4f1fc604d80b44bbd748bb99adf7d",
+      "subject": "fix(harness): refuse value-carrying env in HarnessSpec.container_env (#1237) (#1238)",
+      "touched_files": [
+        "CHANGELOG.md",
+        "examples/terminal_bench/gemini_litellm_overlay.yaml",
+        "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/test_terminal_bench_adapter_canon.py",
+        "tests/unit/test_terminal_bench.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml",
+        "tolokaforge_coding_harnesses/tests/unit/test_registry.py"
       ]
     },
     {
@@ -1660,21 +1669,6 @@
     },
     {
       "adapter_paths": [
-        "tests/canonical/test_terminal_bench_adapter_canon.py"
-      ],
-      "bucket": "B",
-      "date": "2026-08-18",
-      "pr": 1237,
-      "reason": "1 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "b5874cd90bc106c344d07334d39afcaa2f391690",
-      "subject": "docs(harness): correct the LiteLLM allow-list claim and settle README casing (#1237)",
-      "touched_files": [
-        "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
-        "tests/canonical/test_terminal_bench_adapter_canon.py"
-      ]
-    },
-    {
-      "adapter_paths": [
         "docs/RUNNING_TERMINAL_BENCH.md",
         "docs/adr/README.md"
       ],
@@ -1690,28 +1684,6 @@
         "docs/adr/0034-external-harness-plugin-discovery.md",
         "docs/adr/0035-tolokaforge-coding-harnesses-split.md",
         "docs/adr/README.md"
-      ]
-    },
-    {
-      "adapter_paths": [
-        "CHANGELOG.md",
-        "tests/canonical/test_terminal_bench_adapter_canon.py",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_registry.py"
-      ],
-      "bucket": "B",
-      "date": "2026-08-18",
-      "pr": 1237,
-      "reason": "4 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "c338e7f76af0cde7dbe3a89ff66f3be5df332ec1",
-      "subject": "feat(harness): refuse value-carrying env in HarnessSpec.container_env (#1237)",
-      "touched_files": [
-        "CHANGELOG.md",
-        "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
-        "tests/canonical/test_terminal_bench_adapter_canon.py",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml",
-        "tolokaforge_coding_harnesses/tests/unit/test_registry.py"
       ]
     },
     {
