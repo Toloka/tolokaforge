@@ -117,11 +117,32 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
   - `config_files: dict[str, str]` — container path to Jinja template for
     CLIs configured by file. Rendered per trial against a closed variable
     set (`model`, `provider`, `base_url`, `api_key_env`); an undeclared
-    name is refused at load.
+    name is refused at load. A path is absolute, a `${HOME}` /
+    `${CONFIG_HOME}` construct the run's `PathResolver` answers (shipped
+    default `LinuxRootResolver` → `/root`, `/root/.config`), or any other
+    `$VAR` reference, left verbatim for the container's own shell.
   - `container_env: dict[str, str]` — compose environment lines the
     agent service always carries.
   - `strip_vendor_namespace: bool` — whether to strip a `vendor/` prefix
     from the model name before handing it to the CLI.
+  - `strip_openrouter_prefix: bool = True` — whether the `openrouter/`
+    route marker on the model name is stripped before it reaches the CLI.
+    Default preserves the vendor-CLI behavior (the CLI reads `*_BASE_URL`
+    for OpenRouter and would 401 on its native handler otherwise).
+    `False` on opencode, whose config template defines a provider literally
+    named `openrouter` and expects the caller to route
+    `openrouter/<vendor>/<model>` to it.
+  - `request_middleware: RequestMiddleware | None` — declares a stdlib
+    HTTP proxy (`middleware_proxy.py`) that lands inside the trial image
+    and rewrites the CLI's provider requests before they leave the
+    container. The record names an env-var whose URL value gets redirected
+    to `http://127.0.0.1:<port>`, plus body deep-merge / header-inject /
+    URL-path-filter fields the proxy applies before forwarding upstream.
+    Cannot coexist with `config_files` (config templates render at
+    Python-assembly time from the upstream URL; the middleware rewrite
+    only reaches env-driven routing). Motivating case: kimi-code injects
+    `provider.only=["moonshotai"]` on every `/chat/completions` body to
+    force Moonshot AI first-party routing on OpenRouter.
   - `provider_env: dict[str, str]` — the shipped default `agent_provider_env`
     envelope for this harness (URLs, `${secret:…}` refs).
 - Canonical snapshot at `tests/canonical/snapshots/tbench_echo_hello_harness/harness_spec.json`
@@ -244,8 +265,11 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
 - **Task-pack skills bundle** — landed. A task pack declares
   `harness_skills_dir: <task-relative path>` in its `task.yaml`, and
   `HarnessSpec.skills_dir_target` names where a harness wants such a
-  bundle (`/root/.claude/skills/` for claude-code; unset means the
-  harness installs none). The image layer copies the directory, and
+  bundle — absolute, or rooted at a `${HOME}` / `${CONFIG_HOME}` construct
+  the run's `PathResolver` answers (`${HOME}/.claude/skills/` for
+  claude-code; unset means the harness installs none). *How* the bundle
+  travels is the run's `SkillDelivery`; the shipped
+  `ImageLayerSkillDelivery` copies the directory into the image layer, and
   `TaskDescription.metadata["harness_skills_bundle_sha"]` records its
   content hash — the reproducible, auditable replacement for the
   operator-environment contamination the out-of-tree host smuggles. The

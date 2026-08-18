@@ -145,7 +145,15 @@ Because the layered image tag carries the harness name and its pinned version,
 switching harnesses or bumping a CLI can never reuse a stale cached image — and
 the harness is part of the staging digest, so each gets its own staging
 directory. A `.dockerignore` in the staging dir keeps the task sources, tests,
-and log mountpoints out of the layer's build context.
+and log mountpoints out of the layer's build context; everything the layer
+copies is re-included there by name.
+
+Nothing else is in that Dockerfile by default. A task pack's skills bundle
+reaches it only because the adapter's shipped `SkillDelivery` —
+`ImageLayerSkillDelivery` — appends its own `COPY` and `.dockerignore`
+exceptions after the CLI install, so editing a bundle invalidates the copy
+layer without reinstalling the CLI. A run driving the adapter with a different
+delivery gets a harness image with no skills in it.
 
 `describe_environment_identity` records `{agent}-base` among the trial's
 services even though the compose profile keeps it out of `up` — it is a
@@ -220,6 +228,42 @@ production key inside a benchmark container and into its trial artifacts.
 Nothing sets the prefixed name by accident, so the container's environment is
 exactly what the run config declared.
 
+### Routing options — OpenRouter, LiteLLM, or a mix
+
+`HarnessSpec.provider_env` names CLI-native env vars (`ANTHROPIC_BASE_URL`,
+`OPENAI_BASE_URL`, `GOOGLE_GEMINI_BASE_URL`, `KIMI_MODEL_BASE_URL`, …); its
+values name literal URLs and credential keys. The adapter has no opinion on
+which gateway or vendor those URLs belong to — an overlay swaps the whole
+`provider_env` block, and the CLI reads whatever it was handed. That leaves the
+operator free to choose:
+
+**OpenRouter (the shipped default).** Every shipped harness except gemini-cli
+targets `openrouter.ai/api` (Anthropic-compat surface for claude-code /
+opencode, OpenAI-compat surface for codex / grok-build / kimi-code). One
+credential — `OPENROUTER_API_KEY` — covers all five. gemini-cli is the exception:
+its wire protocol (Google's `generateContent`) is not on OpenRouter's surface,
+so the shipped default targets Google directly and `GEMINI_API_KEY` is required.
+
+**LiteLLM (operator overlay).** A team-hosted LiteLLM gateway centralises
+credentials and can serve wire protocols OpenRouter does not — most notably
+Google's `generateContent`, via LiteLLM's Gemini passthrough at
+`{base}/gemini/v1beta/models/…`. The route is a `harness_presets_file` overlay
+that whole-replaces the harness entry with a LiteLLM-flavoured `provider_env`
+and `container_env`. A worked example ships at
+[`examples/terminal_bench/gemini_litellm_overlay.yaml`](../../examples/terminal_bench/gemini_litellm_overlay.yaml)
+for gemini-cli.
+
+**Per-harness split.** Because each harness's `provider_env` resolves
+independently, one run can leave five harnesses on OpenRouter and route
+gemini-cli through LiteLLM by naming a `harness_presets_file` that only overlays
+the gemini-cli entry — the other five stay as shipped. This is the current
+recommended shape for Toloka's own matrix runs.
+
+`LITELLM_API_KEY`, `LITELLM_BASE_URL`, and `GOOGLE_GEMINI_BASE_URL` are all in
+`PROVIDER_ENV_KEYS` (allow-listed by the adapter), so switching a harness to
+LiteLLM does not need an adapter release — it is a data-only change on the
+overlay side.
+
 ### Harness parity policy
 
 A harness trial's job is to produce a reward comparable to the one the same
@@ -241,11 +285,13 @@ somewhere else, so a per-harness policy is one entry to read.
 | Instruction path | `"argv"` (positional argument) or `"stdin"` (`printf "%s" '<instr>' \| cli …`). `"stdin"` sidesteps every shell-escape edge case a positional-arg prompt would have to survive. Claude Code uses stdin. | `HarnessSpec.instruction_channel` |
 | Model routing | Env variables the resolved model exports into. Non-empty for CLIs whose sub-agents route model independently of the top-level `--model` flag: without the export, Task/Explore sub-agents fall back to the CLI's own sonnet-default and may pick a different provider mid-trial. Claude Code declares the quartet `ANTHROPIC_MODEL` + `_DEFAULT_SONNET_MODEL` / `_OPUS_MODEL` / `_HAIKU_MODEL` + `CLAUDE_CODE_SUBAGENT_MODEL`. When set, the redundant `--model` CLI flag is dropped. | `HarnessSpec.env_model_vars` |
 | Static hardening env | Env pairs the compose `environment:` block writes for the agent service. Claude Code declares `IS_SANDBOX=1` (root-user bypass, without which the CLI refuses `--permission-mode=bypassPermissions` under UID 0) and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (opt-in telemetry off). | `HarnessSpec.container_env` |
-| Provider envelope | The variables the CLI needs to reach its provider, as defaults a run config unions over. Claude Code and OpenCode declare `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` (both route through OpenRouter's Anthropic-compat surface); codex the `OPENAI_*` pair; Kimi Code the `KIMI_MODEL_*` pair; Grok Build the `OPENROUTER_*` pair; **gemini-cli `GEMINI_API_KEY` — needs a real Google AI Studio key, since Google's Gemini API is not OpenAI-compat and OpenRouter does not proxy it.** | `HarnessSpec.provider_env` |
+| Provider envelope | The variables the CLI needs to reach its provider, as defaults a run config unions over. Claude Code and OpenCode declare `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` (both route through OpenRouter's Anthropic-compat surface); codex the `OPENAI_*` pair; Kimi Code the `KIMI_MODEL_*` pair; Grok Build the `OPENROUTER_*` pair; gemini-cli `GEMINI_API_KEY` (public default routes at Google AI Studio; an operator overlay swaps in a GATEWAY-compatible endpoint like a LiteLLM proxy that speaks Google's native `generateContent` shape). | `HarnessSpec.provider_env` |
+| OpenRouter-prefix routing | Whether the `openrouter/` marker on the model name reaches the CLI. Stripped by default: a vendor CLI reads `*_BASE_URL` for OpenRouter routing and would otherwise select its own direct-vendor handler and 401. Preserved on opencode, whose config template defines a provider *literally* named `openrouter` and expects the caller to route `openrouter/<vendor>/<model>` to it. | `HarnessSpec.strip_openrouter_prefix` |
+| Request-body / header rewrite | An HTTP proxy that lands inside the trial image and rewrites the CLI's provider requests before they leave the container. Declares body-field deep-merges and per-request header injections keyed on a URL-path filter. Ships stdlib-only (`middleware_proxy.py`). Motivating case: kimi-code injects `provider.only=["moonshotai"]` on every `/chat/completions` body to force Moonshot AI first-party routing (OpenRouter's default fan-out to INT4/FP4 third-party providers returns empty completions on tool-call continuation). | `HarnessSpec.request_middleware` |
 | Model-name form | Whether a leading `vendor/` namespace is dropped before the model reaches the CLI. Codex and gemini-cli catalogs use bare names; a namespaced string makes them drop OpenRouter routing for the vendor's default endpoint. | `HarnessSpec.strip_vendor_namespace` |
 | Model-flag form | Whether the model flag and its value are two argv words (`--model gpt-5`) or one (`--model=gpt-5`). A CLI parsing its flags strictly accepts only one of the two. | `HarnessSpec.model_flag_style` |
 | File-based configuration | Files the CLI reads its configuration from, rendered per trial. | `HarnessSpec.config_files` |
-| Skills | Where a task pack's own `harness_skills_dir` bundle is copied in the image layer. Unset means the harness installs no skills; the operator's `~/.claude/skills` is never a source. | `HarnessSpec.skills_dir_target` |
+| Skills | Where a task pack's own `harness_skills_dir` bundle lands — absolute, or rooted at a `${HOME}` / `${CONFIG_HOME}` construct the adapter's `PathResolver` answers. *How* it gets there is the adapter's `SkillDelivery`; the shipped answer is an image-layer `COPY`. Unset means the harness installs no skills; the operator's `~/.claude/skills` is never a source. | `HarnessSpec.skills_dir_target` |
 
 **Operator skills are deliberately not aligned.** The out-of-tree host we
 compared against copies the operator's `~/.claude/skills/` into the
@@ -257,9 +303,10 @@ never reads the operator's home directory. The delta this creates is the
 *right* delta — stable across machines and dates.
 
 A task that genuinely needs domain skills ships them itself. Its
-`task.yaml` declares `harness_skills_dir: <task-relative path>`, and the
-harness image layer copies that directory to the CLI's skills path —
-`HarnessSpec.skills_dir_target`, `/root/.claude/skills/` for claude-code.
+`task.yaml` declares `harness_skills_dir: <task-relative path>`, and that
+directory reaches the CLI's skills path — `HarnessSpec.skills_dir_target`,
+`${HOME}/.claude/skills/` for claude-code, which the shipped
+`LinuxRootResolver` places at `/root/.claude/skills/`.
 This keeps every property the smuggled version loses: the bundle is
 versioned with the tests it is scored against, it shows up in a `git
 diff` on the task pack, and its content hash is recorded on the trial
@@ -272,17 +319,49 @@ the pack would reintroduce exactly the host contamination the policy
 rejects. A harness leaving `skills_dir_target` unset installs no skills:
 a pack that ships them still runs under it, without them and with a
 warning, so one task stays comparable across harnesses. The bundle hash
-is written only when the bundle actually reached the image, so an absent
-key reads as "this agent had no skills" and never as "unknown".
+is written only when a bundle was handed to the run's `SkillDelivery`, so
+an absent key reads as "this agent had no skills" and never as "unknown".
+That the bundle then arrives is the delivery's contract: one that cannot
+place it raises.
+
+`skills_dir_target` says *where* the bundle lands; `SkillDelivery` says
+*how* it gets there. The shipped `ImageLayerSkillDelivery` appends a `COPY`
+to the generated harness Dockerfile, so the bundle rides the image; an
+embedder driving a different runtime passes its own as
+`TerminalBenchAdapter(params, skill_delivery=…)` and the image stops
+carrying skills at all. The target it receives has already been through
+the run's `PathResolver`, and `ImageLayerSkillDelivery` refuses one that
+still carries a `${…}` construct: Docker expands a `COPY` destination from
+the *image's* own `ENV`, so a base image declaring `ENV HOME=/home/agent`
+would answer a question the resolver was asked. That case is foreclosed
+deliberately — letting Docker place the skills while the resolver places
+the config files would give one harness two different homes. A runtime
+that wants image-`ENV` semantics supplies a `PathResolver` returning those
+paths, and stays the single authority on where its CLI lives.
 
 Some CLIs need file-based configuration that no env var (compose or
 otherwise) can supply — codex reads `openai_base_url` from
 `$CODEX_HOME/config.toml` and its API key from `$CODEX_HOME/auth.json`,
 and honours neither env var alone. `HarnessSpec.config_files` maps a
 container path to a Jinja template; each file is written by the shell
-chain that runs before the CLI. A path may be rooted at a `$VAR`
-(`${CODEX_HOME:-$HOME/.codex}/config.toml`) so a harness need not assume
-the container's user. Templates render against four variables and no
+chain that runs before the CLI. A path is one of three things:
+
+- an absolute path (`/etc/mycli/config.toml`), which every resolver returns
+  unchanged;
+- a `${HOME}` or `${CONFIG_HOME}` construct, which the adapter's
+  `PathResolver` answers while assembling the command. The shipped
+  `LinuxRootResolver` reads them as `/root` and `/root/.config`; an embedder
+  driving the adapter from Python passes its runtime's own answer as
+  `TerminalBenchAdapter(params, path_resolver=…)`. These two names are the
+  *adapter's* answer, not the container's — a container that changed its user
+  would not change them;
+- any other `$VAR`-rooted reference
+  (`${CODEX_HOME:-$HOME/.codex}/config.toml`), which reaches the container
+  verbatim and is expanded by the container's own shell — so a harness need
+  not assume the container's user, and a variable the resolver does not know
+  keeps the container's answer.
+
+Templates render against four variables and no
 others — `model` (as the CLI receives it), `provider` (the routing prefix
 the run config's model named), `base_url` (the provider envelope's
 `*_BASE_URL` value, after any run-config override), and `api_key_env`
@@ -373,6 +452,57 @@ evaluation:
 The three layers compose lowest to highest — shipped YAML, then installed
 plugin bundles, then the overlay — with whole-entry replacement at each
 transition.
+
+Every layer writes its `config_files` keys and its `skills_dir_target` against
+the same path vocabulary: `${HOME}` and `${CONFIG_HOME}` are the *adapter's*
+answers, supplied by the run's `PathResolver`, and any other `${VAR}`
+construct is left for the container's own shell. The shipped entries use the
+vocabulary — claude-code's skills land at `${HOME}/.claude/skills/`,
+opencode's config at `${CONFIG_HOME}/opencode/opencode.json` — so a second
+runtime consumes this YAML unforked by supplying its own resolver. An absolute
+`/root/...` path stays valid and resolves to itself, so an overlay writing one
+needs no change.
+
+### What a run records about its registry
+
+Because the effective registry is composed from three layers, two runs of the
+same config on two machines can drive different CLI versions. So the adapter
+reports what it resolved: `engine_run_state.json` carries it under
+`adapter_fingerprints["terminal_bench"]["harness"]` (see
+[`docs/OUTPUT_FORMAT.md`](../../docs/OUTPUT_FORMAT.md) §
+`engine_run_state.json`). Every field is read off the registry the run
+composed.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `resolved_sha256` | 64-hex string | Digest over the post-plugin, post-overlay registry — the specs that actually drove the run. |
+| `shipped_sha256` | 64-hex string | Digest over the shipped `data/harnesses.yaml` alone. |
+| `agent_harness` | string | The harness this run selected (`engine-loop` when no CLI drives the trial). |
+| `agent_harness_version` | string \| null | The effective spec's pinned version — `null` under the engine loop. |
+| `overlay_file` | string \| null | Resolved absolute path of the `harness_presets_file` overlay. |
+| `plugin_bundles` | list | `{distribution, version, harnesses[]}` per installed registry bundle, ordered by distribution. |
+
+`resolved_sha256 == shipped_sha256` exactly when neither a bundle nor an
+overlay changed anything. An overlay or a plugin that alters any spec moves
+`resolved_sha256`; `shipped_sha256` moves only when this repo's own registry
+changes, so it is the fixed reference point the other digest is read against.
+Both digests hash the *parsed* specs, so reformatting the YAML or editing a
+comment leaves them where they are. `data/registry_meta.yaml` is outside both:
+it is shipped-only rather than layerable, and folding it in would blur what
+`shipped == resolved` means.
+
+Two things this payload's names do not mean:
+
+- `overlay_file` is the **registry** overlay (`harness_presets_file`, the
+  YAML declaring harness specs). It is unrelated to `engine_run_state.json`'s
+  top-level `presets_file`, which is the engine's *model-preset* overlay.
+- `agent_harness_version` is the same value the per-trial
+  `metadata["agent_harness_version"]` carries — both read `HarnessSpec.version`
+  off the effective registry (the CLI-version row in [Harness parity
+  policy](#harness-parity-policy) above), so they cannot disagree. They differ
+  in *presence*, not value: under `engine-loop` the per-trial key is absent,
+  because that surface uses absence to say "no CLI ran", while the run-level
+  field is an explicit `null` in a fixed-shape record.
 
 ### Trial-level timeout
 

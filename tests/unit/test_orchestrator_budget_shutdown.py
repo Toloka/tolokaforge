@@ -157,6 +157,7 @@ def _build_orchestrator(
     # A real directory carrying no grading.yaml: the run's pre-flight resolves
     # each task's grading file under it and has nothing to check.
     adapter.get_task_dir.return_value = tmp_path
+    adapter.fingerprint.return_value = None
     orch.adapter = adapter
     return orch, tmp_path / "results" / "run"
 

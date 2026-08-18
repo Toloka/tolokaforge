@@ -1,0 +1,10 @@
+#!/bin/bash
+# Restart the billing service under supervisord.
+#
+# Use this after editing /app/main.py or /app/fee_utils.py — supervisord
+# keeps the previous uvicorn process alive across code changes, so
+# restarting is what makes the new code take effect. `supervisorctl
+# restart` returns only after uvicorn's `startsecs` health-window closes,
+# so the caller does not need to `sleep 2` afterwards.
+set -eu
+supervisorctl -c /etc/supervisor/conf.d/supervisord.conf restart uvicorn

@@ -116,6 +116,7 @@ class TestSubprocessInheritance:
             run_id="overlay_subprocess_e2e",
             presets_file=queue_overlay,
             models_fingerprint=compute_models_fingerprint(),
+            adapter_fingerprints={},
         )
         result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value=None)
         assert result["resolved"] == queue_overlay
@@ -129,6 +130,7 @@ class TestSubprocessInheritance:
             run_id="overlay_subprocess_e2e",
             presets_file=queue_overlay,
             models_fingerprint=compute_models_fingerprint(),
+            adapter_fingerprints={},
         )
         result = _run_resolver(run_dir=tmp_path, cli_value=cli_overlay, config_value=None)
         assert result["resolved"] == cli_overlay
@@ -141,6 +143,7 @@ class TestSubprocessInheritance:
             run_id="overlay_subprocess_e2e",
             presets_file=queue_overlay,
             models_fingerprint=compute_models_fingerprint(),
+            adapter_fingerprints={},
         )
         result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value=config_overlay)
         assert result["resolved"] == queue_overlay
@@ -160,6 +163,7 @@ class TestSubprocessInheritance:
             run_id="overlay_subprocess_e2e",
             presets_file=None,
             models_fingerprint=compute_models_fingerprint(),
+            adapter_fingerprints={},
         )
         result = _run_resolver(run_dir=tmp_path, cli_value=None, config_value=config_overlay)
         assert result["resolved"] == config_overlay

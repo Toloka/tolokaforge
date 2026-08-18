@@ -39,6 +39,16 @@ Each adapter must subclass `BaseAdapter` and implement:
     raises `NotImplementedError`; only external adapters need to override.
     See [Conversion Layer](CONVERSION_LAYER.md) for details.
 
+12. `fingerprint() -> dict[str, Any] | None`
+
+    Report what this adapter resolved for the run.  The engine writes the
+    returned payload verbatim under `adapter_fingerprints[<adapter type>]` on
+    `engine_run_state.json` and neither validates nor interprets it, so it
+    must be JSON-safe — a payload that is not raises at run start.  The
+    default returns `None` and contributes no namespace; an adapter overrides
+    it once it has resolved inputs worth naming.  See
+    [Output Format](OUTPUT_FORMAT.md) § `engine_run_state.json`.
+
 ## Lifecycle Expectations
 
 1. Discovery: enumerate tasks deterministically.

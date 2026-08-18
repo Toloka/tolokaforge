@@ -10,8 +10,11 @@ for i in $(seq 1 15); do
 done
 echo "PostgreSQL ready!"
 
-# Start the billing service in the background
-cd /app && uvicorn main:app --host 0.0.0.0 --port 8000 &
-echo "Billing service started on port 8000"
+# Launch the billing service under supervisord so a model that later
+# kills+relaunches uvicorn in the foreground (dropping `&`) does not
+# leave the service dead at grade time. See supervisord.conf.
+mkdir -p /logs
+supervisord -c /etc/supervisor/conf.d/supervisord.conf
+echo "Billing service supervised on port 8000"
 
 exec "$@"

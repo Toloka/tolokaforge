@@ -295,6 +295,7 @@ def _run_with_one_refusal(
     adapter.docker_stack_requirements.return_value = None
     adapter.trial_grader_name = "runner_rpc"
     adapter.get_grading_config.return_value = None
+    adapter.fingerprint.return_value = None
     orch.adapter = adapter
 
     return orch.run()
