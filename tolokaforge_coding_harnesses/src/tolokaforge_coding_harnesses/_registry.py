@@ -240,12 +240,22 @@ class HarnessSpec(BaseModel):
     ``CLAUDE_CODE_SUBAGENT_MODEL`` siblings — a five-var quartet."""
 
     container_env: dict[str, str] = Field(default_factory=dict)
-    """Static env pairs the compose ``environment:`` block writes for the
-    agent service. Zero-model, one-key-per-behaviour hardening — claude-code
-    reads ``IS_SANDBOX=1`` (root-user override) and
-    ``CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1``. Values must be strings
-    (compose interpolation is stringly typed) and must not overlap
-    :data:`PROVIDER_ENV_KEYS` (a run-config would then shadow this)."""
+    """Static literals the compose ``environment:`` block writes for the agent
+    service. Zero-model, one-key-per-behaviour hardening — claude-code reads
+    ``IS_SANDBOX=1`` (root-user override) and
+    ``CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1``.
+
+    Two narrowings are refused at registry-load time. A key in
+    :data:`PROVIDER_ENV_KEYS`: this map is written into the agent service's
+    ``environment:`` after the provider envelope, so a colliding key silently
+    overwrites the ``${TBENCH_PROVIDER_*}`` indirection the per-trial ``.env``
+    answers. A value containing a ``$``: docker interpolates that block, so
+    ``${secret:NAME}`` is refused as ``invalid interpolation format`` and a bare
+    ``$FOO`` resolves against the invoking shell.
+
+    Env that must carry a secret or an operator-supplied endpoint goes in
+    :attr:`provider_env`, which expands ``${secret:NAME}`` and keeps the value
+    out of the compose file entirely."""
 
     skills_dir_target: str | None = None
     """Runtime directory a task pack's skills bundle is delivered to, or
@@ -389,6 +399,40 @@ class HarnessSpec(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _container_env_does_not_shadow_the_provider_envelope(self) -> HarnessSpec:
+        """Refuse a key whose literal would replace the provider indirection.
+
+        The compose writer emits the provider envelope first and
+        :attr:`container_env` second, and the later write wins — so a key on
+        both sides reaches the container as this literal, and the
+        ``${TBENCH_PROVIDER_*}`` input the per-trial ``.env`` answers is gone
+        with nothing to read back that it ever existed.
+        """
+        overlapping = sorted(set(self.container_env) & PROVIDER_ENV_KEYS)
+        if not overlapping:
+            return self
+        raise ValueError(
+            f"container_env key(s) {overlapping!r} are provider env keys; declare them "
+            "under provider_env, the seam that expands `${secret:NAME}` and supplies the "
+            "value through the per-trial `.env`. container_env is written into the compose "
+            "file verbatim, and last, so it would silently overwrite that indirection."
+        )
+
+    @model_validator(mode="after")
+    def _container_env_values_are_compose_literals(self) -> HarnessSpec:
+        """Refuse a value docker would interpolate rather than pass through."""
+        interpolated = sorted(key for key, value in self.container_env.items() if "$" in value)
+        if not interpolated:
+            return self
+        raise ValueError(
+            f"container_env value(s) for {interpolated!r} contain a `$`; docker interpolates "
+            "the compose `environment:` block, where `${secret:NAME}` is refused outright "
+            "(`invalid interpolation format`) and a bare `$FOO` is replaced by whatever the "
+            "invoking shell holds. container_env carries literals only — a value that must "
+            "carry a secret or an operator-supplied endpoint belongs in provider_env."
+        )
+
 
 SHIPPED_REGISTRY_FILE = Path(__file__).resolve().parent / "data" / "harnesses.yaml"
 """Packaged registry data — the source of truth for the shipped harnesses.
@@ -459,10 +503,6 @@ def load_harness_registry(path: Path) -> dict[str, HarnessSpec]:
                 f"invalid field(s) {fields!r} — {exc}"
             ) from exc
     return registry
-
-
-HARNESSES: dict[str, HarnessSpec] = load_harness_registry(SHIPPED_REGISTRY_FILE)
-"""The shipped registry, loaded from :data:`SHIPPED_REGISTRY_FILE` at import."""
 
 
 HARNESS_REGISTRY_ENTRY_POINT_GROUP = "tolokaforge_adapter_terminal_bench.harness_registries"
@@ -802,6 +842,14 @@ per-trial compose ``.env`` and then in the container the agent works in, so an
 open surface would let a run config shadow the task's own environment with
 arbitrary values. Loaded from ``data/registry_meta.yaml`` at import; adding a
 key is a YAML edit."""
+
+HARNESSES: dict[str, HarnessSpec] = load_harness_registry(SHIPPED_REGISTRY_FILE)
+"""The shipped registry, loaded from :data:`SHIPPED_REGISTRY_FILE` at import.
+
+Bound after :data:`PROVIDER_ENV_KEYS`, which
+:meth:`HarnessSpec._container_env_does_not_shadow_the_provider_envelope` reads
+while validating each entry.
+"""
 
 PROVIDER_ENV_INPUT_PREFIX = "TBENCH_PROVIDER_"
 """Prefix for the compose variable that carries a provider value.

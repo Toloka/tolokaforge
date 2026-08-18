@@ -186,6 +186,29 @@ class TestTerminalBenchHarnessModeCanon:
                 f"{key}={value}" in agent_env
             ), f"container_env pair {key}={value!r} missing from synthesised compose"
 
+    def test_agent_env_carries_only_adapter_owned_interpolations(self, tbench_harness_adapter):
+        """Docker interpolates the compose ``environment:`` block, so every
+        ``$`` the adapter writes under the agent service has to be a placeholder
+        the adapter owns and the per-trial ``.env`` answers. Anything else is a
+        field leaking an un-owned construct into the block: ``${secret:NAME}``
+        makes compose refuse the whole file (``invalid interpolation format``),
+        and a bare ``$FOO`` silently resolves against the invoking shell. The
+        guard stops at the agent service — task-authored siblings carry their
+        own placeholders and are not the adapter's to constrain."""
+        import yaml
+
+        env = tbench_harness_adapter._environment("echo-hello")
+        with env.compose_file.open() as f:
+            compose = yaml.safe_load(f)
+        agent_env = compose["services"]["main"]["environment"]
+        owned = re.compile(r"^\$\{(TBENCH_PROVIDER_[A-Z0-9_]+|TOLOKAFORGE_TRIAL_SLUG)\}$")
+        unowned = [
+            entry
+            for entry in agent_env
+            if "$" in entry and not owned.match(entry.partition("=")[2])
+        ]
+        assert unowned == [], f"agent env carries un-owned interpolation construct(s): {unowned!r}"
+
 
 class TestTerminalBenchSkillsBundleCanon:
     """The substrate for a task pack that ships its own skills bundle.

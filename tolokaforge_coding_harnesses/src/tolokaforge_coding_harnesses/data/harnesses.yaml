@@ -149,9 +149,10 @@ harnesses:
     # ``generateContent`` shape reaches gemini-cli via its ``GATEWAY`` auth
     # type. That path needs THREE additions the shipped default deliberately
     # omits so nothing internal-hostname-shaped ships to PyPI:
-    #   1. ``GOOGLE_GEMINI_BASE_URL`` — the gateway endpoint that answers
-    #      ``/v1beta/models/{model}:generateContent``. Its mere presence
-    #      flips the CLI to GATEWAY mode.
+    #   1. ``GOOGLE_GEMINI_BASE_URL`` under ``provider_env`` — the gateway
+    #      endpoint that answers ``/v1beta/models/{model}:generateContent``.
+    #      Its mere presence flips the CLI to GATEWAY mode. It is a provider
+    #      env key, so ``container_env`` refuses it at load.
     #   2. ``config_files["${HOME}/.gemini/settings.json"]`` with
     #      ``security.auth.selectedType: "gateway"`` + ``useExternal: true``
     #      — gemini-cli 0.55.1's ``validateAuthMethod()`` has not been
