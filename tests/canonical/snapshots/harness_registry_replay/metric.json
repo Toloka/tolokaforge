@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 3,
-  "bucket_b_count": 13,
+  "bucket_b_count": 14,
   "commits": [
     {
       "adapter_paths": [
@@ -1674,6 +1674,31 @@
       "touched_files": [
         "tests/canonical/snapshots/harness_registry_replay/metric.json",
         "tests/canonical/snapshots/tbench_echo_hello_harness/harness_spec.json"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/middleware_proxy.py",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/unit/test_middleware_proxy.py",
+        "tests/unit/test_terminal_bench.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-17",
+      "pr": null,
+      "reason": "5 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "b81edf61c79a7cb086350b8f825c44250123a164",
+      "subject": "fix(tbench): address PR #1228 code-review findings",
+      "touched_files": [
+        "docs/adr/0033-external-harness-registry.md",
+        "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/middleware_proxy.py",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/unit/test_middleware_proxy.py",
+        "tests/unit/test_terminal_bench.py"
       ]
     }
   ]

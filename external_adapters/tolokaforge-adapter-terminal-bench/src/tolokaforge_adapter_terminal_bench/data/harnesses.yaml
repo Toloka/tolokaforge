@@ -145,7 +145,13 @@ harnesses:
     # overlay, not here — the wheel ships to PyPI and must not reference
     # internal infrastructure.
     #
-    # Example operator overlay (in the run config, not this file):
+    # Worked overlay example ships at
+    # ``examples/terminal_bench/gemini_litellm_overlay.yaml`` — an operator
+    # names it in the run config's ``harness_presets_file`` param to
+    # whole-replace this entry with a GATEWAY-flavoured one.
+    #
+    # For an ad-hoc single-key overlay (no separate presets file), a caller
+    # can also union values into ``provider_env`` from the run config:
     #
     #     harness_adapter:
     #       params:

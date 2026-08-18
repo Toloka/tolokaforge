@@ -2689,6 +2689,29 @@ class TestHarnessPresetsFileOverlay:
 
         assert self._adapter(fixture_dir, tmp_path, None).harnesses == HARNESSES
 
+    def test_shipped_gemini_litellm_overlay_resolves(self, fixture_dir, tmp_path, monkeypatch):
+        """The shipped overlay example at
+        ``examples/terminal_bench/gemini_litellm_overlay.yaml`` is the
+        sanctioned path to route gemini-cli via a LiteLLM gateway. It must
+        resolve into a valid ``HarnessSpec`` — a stale field name or a
+        missed allow-list widen surfaces here rather than as a load-time
+        crash on the operator's machine."""
+        monkeypatch.setenv("LITELLM_API_KEY", "sk-litellm-test")
+        monkeypatch.setenv("LITELLM_BASE_URL", "https://litellm.example.test")
+        examples_dir = Path(__file__).parent.parent.parent / "examples" / "terminal_bench"
+        overlay = examples_dir / "gemini_litellm_overlay.yaml"
+        adapter = self._adapter(
+            fixture_dir,
+            tmp_path,
+            overlay,
+            agent_harness="gemini-cli",
+            agent_model="gemini-3.1-pro-preview",
+        )
+        spec = adapter.harnesses["gemini-cli"]
+        assert spec.container_env["GEMINI_CLI_TRUST_WORKSPACE"] == "true"
+        assert spec.container_env["GOOGLE_GEMINI_BASE_URL"] == ("${secret:LITELLM_BASE_URL}/gemini")
+        assert spec.provider_env == {"GEMINI_API_KEY": "${secret:LITELLM_API_KEY}"}
+
 
 class TestHarnessRegistryPluginDiscovery:
     """A pip-installed bundle contributes harnesses without an adapter release."""

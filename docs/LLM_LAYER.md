@@ -783,6 +783,14 @@ nothing about any specific gateway product or organisation. Everything
 deployment-specific, including the attribution headers a given gateway
 demands, is supplied as configuration.
 
+**This layer is engine-loop only.** Harness mode (see the terminal-bench
+adapter's `README.md` § Routing options) drives the vendor CLI directly inside
+the task container and does not call `litellm.completion()` for the agent's
+LLM traffic. There, routing is expressed by the URL literal in
+`HarnessSpec.provider_env` — an operator overlay can point the CLI at
+OpenRouter, a LiteLLM gateway, or any other endpoint the CLI's native env-var
+names honour, without touching `LLM_PROXY_*` at all.
+
 **"The same surface" is a narrower contract than "OpenAI-compatible".** What is
 actually required is: *for each routed provider, the gateway serves the route
 that litellm's transport for that provider targets.* This layer only overrides
