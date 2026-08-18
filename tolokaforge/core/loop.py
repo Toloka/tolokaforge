@@ -14,11 +14,10 @@ optional user turn, error classification, max-turns), and delegates every
   :class:`~tolokaforge.core.llm.client.LLMClient` already satisfies it).
 * :class:`TerminationPolicy` — a callback ``(result, turn, messages) ->
   TerminationDecision | None`` checked after the assistant message is appended
-  and before tool execution. The agent terminates on stuck-detection and its
-  ``###STOP###``/``_is_done`` marker; the judge will terminate when
-  ``submit_report`` is called.
+  and before tool execution. The agent terminates on stuck-detection; the judge
+  terminates when ``submit_report`` is called. Neither reads assistant prose.
 * :class:`UserTurn` — OPTIONAL. When absent, the loop never references
-  user-simulator concepts (no ``###STOP###`` handling, no user reply turn). The
+  user-simulator concepts (no exit-token handling, no user reply turn). The
   judge runs without one.
 * :class:`MetricsSink` — accumulates per-call usage/cost/tool counts. The agent
   threads its trial :class:`~tolokaforge.core.models.Metrics`; the judge will
@@ -53,12 +52,15 @@ from tolokaforge.core.models import (
     Message,
     MessageRole,
     TerminationReason,
+    ToolCall,
     ToolCallRecorder,
     ToolExecutorIdentity,
     TrialStatus,
 )
 from tolokaforge.core.run_display_events import LLMCallObservation
-from tolokaforge.tools.registry import ToolExecutor, resolve_tool_output, resolve_tool_status
+from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
+from tolokaforge.runner.protocol import TrialNotRegisteredError
+from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
 
 
 class LoopLLMClient(Protocol):
@@ -84,12 +86,9 @@ class LoopConfig:
 
     The loop is bounded by ``max_turns`` and by wall-time via
     ``episode_timeout_s`` (enforced in :meth:`ToolCallingLoop._check_episode_timeout`).
-    There is deliberately no per-turn timeout: a previously declared
-    ``turn_timeout_s`` field was never enforced (dead on ``main`` and through
-    Stage 1) and was dropped in Stage 4 — per-turn LLM timeouts are already
-    handled inside :class:`~tolokaforge.core.llm.client.LLMClient`
-    (``api_call_timeout_s`` + bounded retry), so episode wall-time is the only
-    loop-level time bound.
+    There is deliberately no per-turn timeout: per-turn LLM timeouts are handled
+    inside :class:`~tolokaforge.core.llm.client.LLMClient` (``api_call_timeout_s``
+    + bounded retry), so episode wall-time is the only loop-level time bound.
     """
 
     max_turns: int = 50
@@ -178,6 +177,11 @@ def classify_loop_error(
 ) -> TerminationDecision:
     """Classify a turn-loop exception into a terminal reason + message.
 
+    ``TRIAL_LOST`` is matched by type first and is the one typed reason here that
+    keeps the trial in the denominator: a runner that no longer holds the trial
+    is our fault, and the call it refused reached no tool, so the trial ends at
+    the fault rather than handing the agent a failure to retry against.
+
     ``API_TIMEOUT`` and ``RATE_LIMIT`` are matched by *type* — through the
     ``__cause__`` chain for the rate limit, since the client re-raises every
     provider error wrapped. Both reasons exclude the trial from the measured
@@ -192,6 +196,12 @@ def classify_loop_error(
     consults *patterns* — the caller's compiled per-provider list.
     """
     error_str = str(exc)
+    if isinstance(exc, TrialNotRegisteredError):
+        return TerminationDecision(
+            reason=TerminationReason.TRIAL_LOST,
+            system_message=f"{error_str} Dialogue terminated.",
+            status=TrialStatus.ERROR,
+        )
     if isinstance(exc, LLMApiTimeoutError):
         return TerminationDecision(
             reason=TerminationReason.API_TIMEOUT,
@@ -252,7 +262,7 @@ class ToolCallingLoop:
     """
 
     llm_client: LoopLLMClient
-    tool_executor: ToolExecutor
+    tool_executor: ToolExecuting
     tool_schemas: list[dict[str, Any]]
     config: LoopConfig
     metrics: MetricsSink
@@ -269,6 +279,11 @@ class ToolCallingLoop:
         None
     )
     call_observation: LLMCallObservation | None = None
+    # The episode's id assigner. Injected rather than owned: a trial's second
+    # actor executes tool calls outside this loop and must draw from the same
+    # sequence, while a rubric judge's loop takes the default and disambiguates
+    # only against its own calls.
+    call_ids: EpisodeUniqueCallIds = field(default_factory=EpisodeUniqueCallIds)
 
     # Captured from the first generation's effective system prompt.
     _captured_effective_prompt: str | None = field(default=None, init=False)
@@ -336,6 +351,7 @@ class ToolCallingLoop:
         classified by the caller.
         """
         result = self._generate(turn, system_prompt, messages)
+        self._assign_call_ids(result)
         self._capture_effective_prompt(result)
         self.metrics.record_generation(result)
         self._log_generation(turn, result)
@@ -351,6 +367,31 @@ class ToolCallingLoop:
             return None, None, False
 
         return self._advance_user_turn(messages)
+
+    def _assign_call_ids(self, result: GenerationResult) -> None:
+        """Give every parsed call the episode-unique id, before anything reads it.
+
+        Placed between the generation and the assistant message so all four
+        consumers downstream — the assistant message, the executor (hence the
+        runner's own record), the trial recorder and the ``role: tool`` message —
+        carry one id per call. A provider that already mints unique ids sees its
+        own ids back, so this is a no-op for all but the providers that number
+        their calls per turn.
+        """
+        assigned: list[ToolCall] = []
+        for call in result.tool_calls:
+            key = self.call_ids.assign(call.id)
+            if key == call.id:
+                assigned.append(call)
+                continue
+            self.logger.warning(
+                "Provider reused a tool-call id within the episode; assigned a unique one",
+                tool=call.name,
+                provider_call_id=call.id,
+                assigned_call_id=key,
+            )
+            assigned.append(call.model_copy(update={"id": key}))
+        result.tool_calls = assigned
 
     def _generate(self, turn: int, system_prompt: str, messages: list[Message]) -> GenerationResult:
         self.logger.debug("Requesting agent response", turn=turn)
@@ -414,7 +455,9 @@ class ToolCallingLoop:
                 Message(
                     role=MessageRole.TOOL,
                     content=(
-                        tool_result.output if tool_result.success else f"Error: {tool_result.error}"
+                        tool_result.output
+                        if tool_result.success
+                        else f"Error: {resolve_tool_output(tool_result)}"
                     ),
                     content_blocks=(tool_result.content_blocks if tool_result.success else None),
                     tool_call_id=tc.id,

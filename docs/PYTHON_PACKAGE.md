@@ -98,7 +98,11 @@ config = RunConfig(
 
 orch = Orchestrator(config)
 orch.load_tasks()
-orch.run()
+run_dir = orch.run()
+
+# An embedder gets no exit code, so this is its channel for "did the run grade
+# everything it measured": see docs/API.md § grading_completeness.
+assert orch.grading_completeness.is_complete, orch.grading_completeness.ungradeable_trial_ids
 ```
 
 ## Notes

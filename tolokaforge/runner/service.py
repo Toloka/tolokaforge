@@ -39,7 +39,11 @@ from tolokaforge.core.grading.check_runner import (
     CheckRunner,
     validate_checks_module,
 )
-from tolokaforge.core.grading.checks_helpers import build_check_context, custom_checks_enabled
+from tolokaforge.core.grading.checks_helpers import (
+    build_check_context,
+    custom_checks_enabled,
+    custom_checks_reason,
+)
 from tolokaforge.core.grading.checks_interface import (
     CheckResult,
     CheckResultSet,
@@ -61,6 +65,11 @@ from tolokaforge.core.grading.golden_replay import (
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.jsonpath_addressing import (
+    addresses_the_database,
+    block_addresses_the_database,
+    unreachable_target,
+)
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
@@ -70,6 +79,10 @@ from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
     TrialTimeline,
     build_trial_timeline,
+)
+from tolokaforge.core.grading.transcript import (
+    evaluate_transcript_rules,
+    scored_transcript_rules,
 )
 from tolokaforge.core.grading.transcript_wire import (
     decode_transcript_wire,
@@ -98,7 +111,6 @@ from tolokaforge.runner.grading import (
     compute_state_diff,
     evaluate_db_probes,
     evaluate_jsonpath_checks,
-    evaluate_transcript_rules,
     resolve_state_checks_component,
 )
 from tolokaforge.runner.grading_ledger import (
@@ -113,6 +125,7 @@ from tolokaforge.runner.grading_ledger import (
     NO_TIMELINE_EVENTS_SKIP,
     audit_accounted_keys,
     hash_family_accounting,
+    hash_family_skip_accounting,
     transcript_rules_author_keys,
 )
 from tolokaforge.runner.id_resolution import (
@@ -120,18 +133,23 @@ from tolokaforge.runner.id_resolution import (
     compute_diff_ops,
 )
 from tolokaforge.runner.models import (
-    GoldenAction,
+    HashComparisonBasis,
     HashGradingResult,
     KeyAccountingRecord,
     RecordedToolCall,
     RunnerGradeComponents,
-    RunnerTranscriptRulesConfig,
+    RunnerInitialStateConfig,
+    RunnerStateChecksConfig,
+    SearchConfig,
+    SearchPlane,
     StateDiff,
     TaskDescription,
     ToolExecutorIdentity,
     TraceChecksConfig,
     TraceChecksResult,
     TranscriptEvaluationResult,
+    TranscriptRulesConfig,
+    provisions_database,
 )
 from tolokaforge.runner.protocol import (
     ENGINE_PROTOCOL_VERSION,
@@ -143,6 +161,13 @@ from tolokaforge.runner.rag_client import (
     RAGServiceError,
     load_documents_from_directory,
 )
+from tolokaforge.runner.search_plane import (
+    PartialTypeSenseAddressError,
+    ResolvedSearchPlane,
+    ResolvedTypeSenseBinding,
+    resolve_search_plane,
+    resolve_typesense_binding,
+)
 from tolokaforge.runner.tool_factory import (
     DockerComposeExecToolWrapper,
     MCPServerToolWrapper,
@@ -151,8 +176,9 @@ from tolokaforge.runner.tool_factory import (
     ToolFactory,
     ToolLifecycleContext,
     ToolReconstructionError,
+    ToolWrapper,
 )
-from tolokaforge.tools.registry import ToolExecutionStatus
+from tolokaforge.tools.registry import ToolExecutionStatus, raised_tool_failure_text
 
 logger = logging.getLogger(__name__)
 
@@ -330,6 +356,141 @@ def _readable_outcome(answer: object) -> ToolCallOutcome:
     )
 
 
+def _search_plane_context(
+    trial_id: str,
+    search_config: SearchConfig,
+    resolved_plane: ResolvedSearchPlane | None,
+    binding: ResolvedTypeSenseBinding | None,
+) -> str:
+    """The prefix every search-plane refusal opens with: trial, domain, plane, address, source.
+
+    Both bases are the ones the resolvers returned. Re-deriving either here would
+    let a message name a plane or an address the client was not built from.
+
+    ``binding`` may be ``None`` for the "kb-task-in-a-typesense-disabled-run"
+    refusal — a run without a TypeSense plane resolves no address to name; the
+    prefix names "no address" in that case rather than crashing on
+    ``binding.host``.
+    """
+    domain = search_config.domain_name or "default"
+    plane = (
+        f"{resolved_plane.plane.value} ({resolved_plane.basis.value})"
+        if resolved_plane is not None
+        else "none declared"
+    )
+    address = (
+        f"TypeSense at {binding.host}:{binding.port} (from {binding.basis.value})"
+        if binding is not None
+        else "no TypeSense address resolved"
+    )
+    return f"Trial {trial_id}: domain '{domain}', search plane {plane}, {address}"
+
+
+def _bundles_a_docindex(artifacts_dir: Path | None) -> bool:
+    """Whether a ``docindex/`` corpus arrived in the trial's artifacts."""
+    return artifacts_dir is not None and (artifacts_dir / "docindex").is_dir()
+
+
+def _no_plane_refusal(
+    trial_id: str, search_config: SearchConfig, binding: ResolvedTypeSenseBinding | None
+) -> str:
+    """Why a corpus no plane serves is refused — an adapter half-way through migrating.
+
+    An adapter that stops emitting connection details before it declares
+    ``search.plane`` produces a task the derivation cannot place: a knowledge base,
+    a run whose stack offers TypeSense, and nothing saying the two belong together.
+    Registration would otherwise succeed with no search client — the silently dead
+    plane every other refusal here exists to prevent.
+    """
+    return (
+        f"{_search_plane_context(trial_id, search_config, None, binding)} — the task declares a "
+        f"knowledge base ('{search_config.documents_path}') that neither plane serves: "
+        f"search.plane is unset and the task carries no connection details to derive it from, so "
+        f"no search client is registered, and search.enabled is false, so no rag-service index is "
+        f"built. Declare search.plane: typesense for a corpus this run's TypeSense serves, or "
+        f"search.plane: rag_service with search.enabled: true."
+    )
+
+
+def _unreachable_state_checks_refusal(
+    state_checks: RunnerStateChecksConfig, initial_state: RunnerInitialStateConfig
+) -> str | None:
+    """Why this ``state_checks`` block cannot be graded against this trial, if it cannot.
+
+    The sentence alone; the caller names the trial it refused, so one call site decides
+    how every refusal in this family opens on the wire.
+
+    Two authoring defects leave ``GradeTrial`` with no state to read, and each is
+    refused by name rather than scored, because the score either would produce is a
+    component value the agent did not earn. A block reading the database of a task that
+    provisions none reaches the DB client for a trial ``RegisterTrial`` never registered
+    there; a ``path:`` rooted outside what the runner composes resolves against a
+    JSONPath state built from the database alone, and scores ``0.0`` for a state never
+    read.
+
+    The authoring gate states the same rule before a trial is paid for, and neither
+    point makes the other redundant: ``core.grading.config_validation`` is named in
+    :data:`~tolokaforge.core._runner_subset.RUNNER_SUBSET_EXCLUDED_FILES`, so the gate
+    ships in the base wheel and never inside the runner image, and it is skipped
+    wholesale for a task whose grading source cannot be interrogated. A trial arriving
+    here may never have been offered to it.
+    """
+    if block_addresses_the_database(state_checks.authored_state_sources()) and (
+        not provisions_database(initial_state)
+    ):
+        if state_checks.hash_enabled:
+            where = "state_checks.hash"
+            declares = (
+                f"is enabled and compares against {state_checks.hash_comparison_basis().value}"
+            )
+        else:
+            assertion = next(a for a in state_checks.jsonpath_checks if addresses_the_database(a))
+            where = "state_checks.jsonpaths"
+            described = assertion.get("description")
+            declares = f"declares path {assertion.get('path')!r}" + (
+                f" ({described})" if described else ""
+            )
+        return (
+            f"{where} {declares}, which reads the trial's database, but the task's "
+            f"initial_state provisions none — no tables, no schemas, no unstable_fields "
+            f"— so no DB service was registered for this trial and there is no state for "
+            f"{where} to read. Seed the state the assertion reads under "
+            f"initial_state.json_db, or drop {where} from the pack."
+        )
+
+    for assertion in state_checks.jsonpath_checks:
+        target = unreachable_target(assertion)
+        if target is None:
+            continue
+        # Only ``BEYOND_THE_RUNNERS_STATE`` (``agent`` / ``user`` /
+        # ``mock_web_url`` / ``rag_corpus_dir``) reaches here. ``FILESYSTEM``
+        # is graded by the runner via ``_read_agent_visible_filesystem`` and
+        # ``TRIAL_DATABASE`` returns ``None`` from :func:`unreachable_target`.
+        described = assertion.get("description")
+        return (
+            f"state_checks.jsonpaths declares path {assertion.get('path')!r}"
+            + (f" ({described})" if described else "")
+            + ", which addresses state neither substrate carries at grading time: the "
+            "core engine composes agent / user / mock_web_url / rag_corpus_dir from a "
+            "run's live env, none of which are the runner's to reach. Address the "
+            "trial's database (rooted at db or tables), or drop the assertion."
+        )
+    return None
+
+
+def _backstop_seconds(tool: Any, trial_default: float) -> float:
+    """The band the runner applies around a call on *tool*.
+
+    A :class:`ToolWrapper` names its own band, which for a tool enforcing a
+    per-call budget of its own sits above that budget. Anything else — a bare
+    callable injected onto a trial — has no band to name, so the trial's
+    default stands.
+    """
+    if isinstance(tool, ToolWrapper):
+        return tool.effective_timeout_s
+    return trial_default
+
+
 # =============================================================================
 # Trial Context - Per-trial runtime state (with tool callables)
 # =============================================================================
@@ -351,7 +512,8 @@ class TrialContextRuntime:
         agent_tools: Map of tool name -> tool callable for agent tools
         user_tools: Map of tool name -> tool callable for user-side tools
         tool_call_history: The trial's ordered tool-call record
-        default_timeout: Default timeout for tool execution in seconds
+        default_timeout: Fallback band for a tool that names none of its own
+        lifecycle_ctx: The context this trial's lifecycle tools were started with
     """
 
     def __init__(
@@ -378,6 +540,21 @@ class TrialContextRuntime:
         # concurrent across trials; this gives lifecycle for free and avoids
         # locking/leak. See the kb_search resolver methods below.
         self._kb_search: KnowledgeSearch | None = None
+        # The context this trial's lifecycle tools were started with, kept so a
+        # tool whose session the backstop poisoned is rebuilt against the same
+        # artifacts_dir and work_dir rather than a reconstruction of them.
+        self.lifecycle_ctx: ToolLifecycleContext | None = None
+        self._unusable_tools: dict[tuple[ToolExecutorIdentity, str], str] = {}
+
+    def mark_tool_unusable(
+        self, tool_name: str, executor: ToolExecutorIdentity, reason: str
+    ) -> None:
+        """Refuse every later call to this tool, naming *reason*."""
+        self._unusable_tools[(executor, tool_name)] = reason
+
+    def unusable_reason(self, tool_name: str, executor: ToolExecutorIdentity) -> str | None:
+        """Why this tool can no longer be called, or ``None`` if it can."""
+        return self._unusable_tools.get((executor, tool_name))
 
     def register_kb_search(self, impl: KnowledgeSearch) -> None:
         """Bind the per-trial :class:`KnowledgeSearch` resolved at trial setup."""
@@ -431,7 +608,8 @@ class TrialContextRuntime:
         ``sequence`` is stamped here, so no caller can supply a wrong index.
 
         Args:
-            call_id: Provider tool-call id joining this call to its result
+            call_id: The trial's episode-unique tool-call id, joining this call
+                to its result
             tool_name: Name of the tool called
             arguments: Tool arguments, verbatim
             executor: Which side of the dialogue made the call
@@ -819,18 +997,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             self._cleanup_trial_artifacts(trial_id)
             return pb2.RegisterTrialResponse(success=False, error=custom_checks_error)
 
-        # Initialise mcp_core TypeSense registry so search_policy tools work.
-        # Documents are already indexed by the host-side adapter; we just
-        # register a client inside this container pointing at the same server.
-        #
-        # Gated on ``host`` (TypeSense is configured) ONLY — independent of
-        # ``enabled``. ``enabled`` now means just "this task needs rag-service"
-        # (it gates the RAG indexing block below); it does NOT govern TypeSense.
-        # A TypeSense-only domain therefore sets ``enabled=False`` + ``host=…``:
-        # TypeSense inits here, the RAG block is skipped (no rag_client needed).
-        search_config = task_description.search
-        if search_config and search_config.host:
-            self._init_typesense_for_trial(search_config, artifacts_dir)
+        # This gate runs BEFORE the RAG one deliberately — a task declaring both
+        # planes reports its TypeSense failure, which is the nearer one.
+        search_plane_error = self._register_search_plane(
+            trial_id, task_description.search, artifacts_dir
+        )
+        if search_plane_error is not None:
+            # Extraction ran before this gate, so a refusal leaves the tmp dir
+            # on disk and on ``sys.path`` — drop it as the custom-checks gate does.
+            self._cleanup_trial_artifacts(trial_id)
+            logger.error(f"RegisterTrial: {search_plane_error}")
+            return pb2.RegisterTrialResponse(success=False, error=search_plane_error)
 
         # Create trial context with validated TaskDescription
         trial_context = TrialContextRuntime(
@@ -840,20 +1017,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             judge_model_config=trial_spec.judge_model_config,
         )
 
-        # Initialize DB Service with initial_state — only when the trial
-        # actually declares DB state to initialise. Tasks that use no DB
-        # tables / schemas / unstable_fields (e.g. adapters that grade via
-        # `custom_checks` + an HTTP endpoint on a sidecar, and drive no
-        # runner-managed state) skip the DB call entirely, so the runner
+        # A task that provisions no database (e.g. an adapter grading via
+        # `custom_checks` + an HTTP endpoint on a sidecar, driving no
+        # runner-managed state) skips the DB call entirely, so the runner
         # provisions cleanly even when no `db-service` sits in the trial's
-        # compose stack. Matches the guard the state-diff renderer already
-        # applies at `_maybe_render_state_diff` (checks `not initial_state.tables`).
-        # FAIL FAST is preserved for trials that DO declare DB state.
+        # compose stack. FAIL FAST is preserved for trials that DO declare DB state.
         initial_state = task_description.initial_state
-        needs_db = bool(
-            initial_state.tables or initial_state.schemas or initial_state.unstable_fields
-        )
-        if needs_db:
+        if provisions_database(initial_state):
             try:
                 # Run async operation on dedicated event loop thread
                 self._run_async(
@@ -1018,16 +1188,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # Start any tools that manage per-trial resources. Driven by the tool's
         # ``has_lifecycle`` capability, not by adapter identity, so any lifecycle
-        # tool (e.g. a compose-backed sandbox) is provisioned the same way.
-        lifecycle_ctx = ToolLifecycleContext(
+        # tool (e.g. a compose-backed sandbox) is provisioned the same way —
+        # and over both registries, because either actor may be given one.
+        trial_context.lifecycle_ctx = ToolLifecycleContext(
             trial_id=trial_id,
             artifacts_dir=str(artifacts_dir) if artifacts_dir is not None else None,
             work_dir=AGENT_WORK_DIR,
         )
-        for tool in trial_context.agent_tools.values():
+        for tool in (*trial_context.agent_tools.values(), *trial_context.user_tools.values()):
             if getattr(tool, "has_lifecycle", False):
                 try:
-                    tool.start(lifecycle_ctx)
+                    tool.start(trial_context.lifecycle_ctx)
                 except Exception as e:
                     logger.error(f"RegisterTrial: Failed to start tool lifecycle: {e}")
                     return pb2.RegisterTrialResponse(
@@ -1155,25 +1326,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error_message=f"Invalid arguments JSON: {e}",
             )
 
-        # Look up tool in the appropriate tool set
-        tool = trial_context.get_tool(tool_name, executor)
+        tool, refusal = self._resolve_tool_or_refuse(
+            trial_context=trial_context,
+            call_id=call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            executor=executor,
+        )
         if tool is None:
-            logger.warning(f"ExecuteTool: Tool not found: {tool_name} ({executor.value})")
-            return self._reject_tool_call(
-                trial_context=trial_context,
-                call_id=call_id,
-                tool_name=tool_name,
-                arguments=arguments,
-                executor=executor,
-                status=pb2.EXECUTION_STATUS_TOOL_NOT_FOUND,
-                error_message=f"Tool '{tool_name}' not found in {executor.value} tools",
-            )
+            return refusal
 
-        # Determine timeout
         timeout_seconds = request.timeout_seconds
         if timeout_seconds <= 0:
-            # Use tool-specific timeout or default
-            timeout_seconds = getattr(tool, "timeout_s", trial_context.default_timeout)
+            timeout_seconds = _backstop_seconds(tool, trial_context.default_timeout)
 
         # Run async execution on dedicated event loop thread. The RPC timeout is
         # the effective deadline: the inner tool wrapper enforces the same value on
@@ -1207,6 +1372,49 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 metrics=pb2.ToolMetrics(),
             )
 
+    def _resolve_tool_or_refuse(
+        self,
+        *,
+        trial_context: TrialContextRuntime,
+        call_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        executor: ToolExecutorIdentity,
+    ) -> tuple[Any, None] | tuple[None, pb2.ExecuteToolResponse]:
+        """The tool that will serve this call, or the recorded refusal instead.
+
+        Two ways a registered trial holds no tool able to answer: the name
+        resolves to nothing in this executor's registry, or the tool's session
+        could not be rebuilt after the backstop fired and there is nothing left
+        to serve from.
+        """
+        tool = trial_context.get_tool(tool_name, executor)
+        if tool is None:
+            logger.warning(f"ExecuteTool: Tool not found: {tool_name} ({executor.value})")
+            return None, self._reject_tool_call(
+                trial_context=trial_context,
+                call_id=call_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                executor=executor,
+                status=pb2.EXECUTION_STATUS_TOOL_NOT_FOUND,
+                error_message=f"Tool '{tool_name}' not found",
+            )
+
+        unusable = trial_context.unusable_reason(tool_name, executor)
+        if unusable is None:
+            return tool, None
+        logger.warning(f"ExecuteTool: refusing {tool_name} ({executor.value}): {unusable}")
+        return None, self._reject_tool_call(
+            trial_context=trial_context,
+            call_id=call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            executor=executor,
+            status=pb2.EXECUTION_STATUS_ERROR,
+            error_message=unusable,
+        )
+
     def _reject_tool_call(
         self,
         trial_context: TrialContextRuntime,
@@ -1233,6 +1441,88 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             error_message=error_message,
             metrics=pb2.ToolMetrics(),
         )
+
+    async def _invoke_tool(
+        self,
+        tool: Any,
+        tool_name: str,
+        arguments: dict[str, Any],
+        timeout_seconds: float,
+    ) -> Any:
+        """Call *tool* under the runner's band, whatever shape it takes.
+
+        Raises :class:`asyncio.TimeoutError` when the band elapses. The band is
+        a backstop: it cancels the await, but a tool running on a worker thread
+        keeps running there, which is why a timed-out lifecycle tool has its
+        session rebuilt by :meth:`_reset_backstopped_tool`.
+        """
+        if hasattr(tool, "execute"):
+            return await asyncio.wait_for(tool.execute(arguments), timeout=timeout_seconds)
+        if not callable(tool):
+            raise TypeError(f"Tool {tool_name} is not callable")
+        if inspect.iscoroutinefunction(tool):
+            return await asyncio.wait_for(tool(arguments), timeout=timeout_seconds)
+        loop = asyncio.get_event_loop()
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: tool(arguments)),
+            timeout=timeout_seconds,
+        )
+
+    async def _reset_backstopped_tool(
+        self,
+        trial_context: TrialContextRuntime,
+        tool: Any,
+        tool_name: str,
+        executor: ToolExecutorIdentity,
+        timeout_seconds: float,
+    ) -> str:
+        """Rebuild a backstopped lifecycle tool's session, and say so in the call's message.
+
+        The backstop abandons the worker thread rather than killing it, so a
+        tool holding a session across calls is left with a reader still draining
+        its pipe — and the next call on that session can read what it drains.
+        Rebuilding before this call returns is what keeps that from happening;
+        the agent's next call finds a clean session, so the transcript says so.
+
+        A rebuild that fails leaves nothing usable behind, so the tool is marked
+        for the trial and every later call on it is refused by name rather than
+        served from a pipe nobody owns.
+
+        Dispatch is by capability, never by adapter identity: a tool rebuilding
+        into the same configuration it already held clears nothing, and is left
+        alone rather than told the agent its session was reset.
+
+        ``stop()`` / ``start()`` are synchronous and can take seconds — a
+        SIGKILL wait plus, on the compose engine, reopening an exec — so they go
+        through the executor. Running them on the event loop would stall every
+        other trial this runner is serving.
+        """
+        timed_out = f"Tool execution timed out after {timeout_seconds}s"
+        if not getattr(tool, "has_lifecycle", False) or not getattr(
+            tool, "rebuild_clears_backstopped_state", False
+        ):
+            return timed_out
+        try:
+            lifecycle_ctx = trial_context.lifecycle_ctx
+            if lifecycle_ctx is None:
+                raise RuntimeError("the trial stored no ToolLifecycleContext at registration")
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._rebuild_session, tool, lifecycle_ctx)
+        except Exception as e:
+            reason = (
+                f"Tool '{tool_name}' is unusable for the rest of this trial: its session "
+                f"could not be rebuilt after a timeout ({type(e).__name__}: {e})"
+            )
+            logger.error(f"ExecuteTool: {reason}")
+            logger.error(traceback.format_exc())
+            trial_context.mark_tool_unusable(tool_name, executor, reason)
+            return f"{timed_out}. {reason}"
+        return f"{timed_out}. The tool's session was reset, so the next call starts clean."
+
+    @staticmethod
+    def _rebuild_session(tool: Any, lifecycle_ctx: ToolLifecycleContext) -> None:
+        tool.stop()
+        tool.start(lifecycle_ctx)
 
     async def _execute_tool_async(
         self,
@@ -1261,68 +1551,53 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         error_message = ""
 
         try:
-            # Execute tool with timeout
-            # Tool wrappers have async execute(arguments) -> str method
-            if hasattr(tool, "execute"):
-                # ToolWrapper interface
-                result = await asyncio.wait_for(
-                    tool.execute(arguments),
-                    timeout=timeout_seconds,
-                )
-            elif callable(tool):
-                # Direct callable (for testing or simple tools)
-                if inspect.iscoroutinefunction(tool):
-                    result = await asyncio.wait_for(
-                        tool(arguments),
-                        timeout=timeout_seconds,
-                    )
+            try:
+                result = await self._invoke_tool(tool, tool_name, arguments, timeout_seconds)
+
+                # Convert result to string
+                if isinstance(result, str):
+                    output = result
+                elif result is None:
+                    output = "Success"
                 else:
-                    # Sync callable - run in executor
-                    loop = asyncio.get_event_loop()
-                    result = await asyncio.wait_for(
-                        loop.run_in_executor(None, lambda: tool(arguments)),
-                        timeout=timeout_seconds,
-                    )
-            else:
-                raise TypeError(f"Tool {tool_name} is not callable")
+                    output = json.dumps(result, default=str)
 
-            # Convert result to string
-            if isinstance(result, str):
-                output = result
-            elif result is None:
-                output = "Success"
-            else:
-                output = json.dumps(result, default=str)
+                status = pb2.EXECUTION_STATUS_SUCCESS
+                logger.debug(f"ExecuteTool: {tool_name} completed successfully")
 
-            status = pb2.EXECUTION_STATUS_SUCCESS
-            logger.debug(f"ExecuteTool: {tool_name} completed successfully")
+            except asyncio.TimeoutError:
+                status = pb2.EXECUTION_STATUS_TIMEOUT
+                logger.warning(f"ExecuteTool: {tool_name} timed out after {timeout_seconds}s")
+                error_message = await self._reset_backstopped_tool(
+                    trial_context, tool, tool_name, executor, timeout_seconds
+                )
 
-        except asyncio.TimeoutError:
-            status = pb2.EXECUTION_STATUS_TIMEOUT
-            error_message = f"Tool execution timed out after {timeout_seconds}s"
-            logger.warning(f"ExecuteTool: {tool_name} timed out after {timeout_seconds}s")
-
-        except Exception as e:
-            # Catch all exceptions from tool execution
-            status = pb2.EXECUTION_STATUS_ERROR
-            # Sanitize error message - don't expose internal details
-            error_message = f"Tool error: {type(e).__name__}: {str(e)}"
-            logger.error(f"ExecuteTool: {tool_name} raised exception: {e}")
-            logger.error(traceback.format_exc())
-
-        # Calculate latency
-        latency_seconds = time.time() - start_time
-
-        # Record tool call in history
-        trial_context.record(
-            call_id=call_id,
-            tool_name=tool_name,
-            arguments=arguments,
-            output=output if status == pb2.EXECUTION_STATUS_SUCCESS else error_message,
-            status=recorded_status(status),
-            executor=executor,
-            latency_seconds=latency_seconds,
-        )
+            except Exception as e:
+                # Catch all exceptions from tool execution
+                status = pb2.EXECUTION_STATUS_ERROR
+                error_message = raised_tool_failure_text(e)
+                logger.error(f"ExecuteTool: {tool_name} raised {type(e).__name__}: {e}")
+                logger.error(traceback.format_exc())
+        finally:
+            # ``_reset_backstopped_tool`` awaits inside the try/except's
+            # timeout window; ``_run_async`` cancels its slack-deadline
+            # coroutine on RPC timeout, and cancellation cannot interrupt a
+            # coroutine already blocked inside ``run_in_executor``. Without
+            # this ``finally`` the ``trial_context.record(...)`` below is
+            # skipped, and the runner-side ``GradeTrial`` reads a timeline
+            # missing the call — a forbidden tool that ran shows as "never
+            # called" and passes ``_check_disallowed_tool``. Latency is best-
+            # effort even on cancellation; the write is not.
+            latency_seconds = time.time() - start_time
+            trial_context.record(
+                call_id=call_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                output=output if status == pb2.EXECUTION_STATUS_SUCCESS else error_message,
+                status=recorded_status(status),
+                executor=executor,
+                latency_seconds=latency_seconds,
+            )
 
         # Build response
         return pb2.ExecuteToolResponse(
@@ -1391,16 +1666,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error=f"Grading error: {type(e).__name__}: {str(e)}",
             )
 
-    async def _assemble_jsonpath_state(self, trial_id: str) -> dict[str, Any]:
+    async def _assemble_jsonpath_state(
+        self, trial_id: str, *, fetch_db: bool = True
+    ) -> dict[str, Any]:
         # Feeds path: jsonpath state_checks. Two roots: "db"/"tables" carry
         # the DB service's stable state (empty when the trial has no DB —
         # filesystem-only tasks); "filesystem" mirrors /work/ back out under
         # the logical /env/fs/agent-visible/ layout the task YAML asserts
         # against, so ``$.filesystem['/env/fs/agent-visible/foo.py']`` can
         # match the file the agent actually edited.
+        db_state: dict[str, Any] = {}
         try:
-            stable = await self.db_client.get_stable_state(trial_id)
-            db_state: dict[str, Any] = stable.data
+            if fetch_db:
+                stable = await self.db_client.get_stable_state(trial_id)
+                db_state = stable.data
         except DBTrialNotFoundError:
             # Filesystem-only tasks never call db_client.init_trial(), so an
             # absent DB is the expected shape. For tasks that DID declare a
@@ -1410,7 +1689,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             logger.warning(
                 f"GradeTrial: {trial_id} - DB trial not found; grading with empty DB state"
             )
-            db_state = {}
         return {
             "db": db_state,
             "tables": db_state,
@@ -1515,30 +1793,39 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error=f"Trial {trial_id!r} is not gradeable: {type(exc).__name__}: {exc}",
             )
 
-        # Get state_checks config (may contain golden_actions)
+        # Get state_checks config (may name a hash source)
         state_checks_config = grading_config.state_checks
-        golden_actions: list[GoldenAction] = []
+
         if state_checks_config:
-            golden_actions = state_checks_config.golden_actions
+            state_checks_refusal = _unreachable_state_checks_refusal(
+                state_checks_config, trial_context.task_description.initial_state
+            )
+            if state_checks_refusal is not None:
+                logger.error(f"GradeTrial: {trial_id} - {state_checks_refusal}")
+                return pb2.GradeTrialResponse(
+                    success=False,
+                    error=(
+                        f"Trial {trial_id!r} cannot be graded as authored: "
+                        f"{state_checks_refusal}"
+                    ),
+                )
 
         # A) HASH-BASED GRADING
-        # Run hash grading when hash_enabled is set (even with empty golden_actions,
-        # which represents refusal tasks where the expected state == initial state).
+        # Run hash grading when hash_enabled is set (even with no source, which
+        # represents refusal tasks where the expected state == initial state).
         if state_checks_config and state_checks_config.hash_enabled:
             logger.info(
-                f"GradeTrial: {trial_id} - Executing hash-based grading with {len(golden_actions)} golden actions"
+                f"GradeTrial: {trial_id} - Executing hash-based grading against "
+                f"{state_checks_config.hash_comparison_basis().value}"
             )
             try:
                 hash_result = await self._execute_hash_grading(
-                    trial_id,
-                    trial_context,
-                    golden_actions,
-                    numeric_string_fields=state_checks_config.numeric_string_fields,
+                    trial_id, trial_context, state_checks_config
                 )
                 components.hash_match = hash_result.hash_match
                 components.hash_score = hash_result.hash_score
                 state_diff = hash_result.state_diff
-                accounted_keys.update(hash_family_accounting(EVALUATED))
+                accounted_keys.update(hash_family_accounting(hash_result.basis))
             except Exception as e:
                 logger.error(f"GradeTrial: Hash grading failed: {e}")
                 logger.error(traceback.format_exc())
@@ -1551,7 +1838,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # `hash:` keys still arrive populated with no evaluator to consume
             # them — the adapter fills golden_actions whether or not
             # `enabled: true` is set.
-            accounted_keys.update(hash_family_accounting(HASH_DISABLED_SKIP))
+            accounted_keys.update(hash_family_skip_accounting(HASH_DISABLED_SKIP))
 
         # A.2) JSONPATH ASSERTIONS (if jsonpath_checks exist)
         if state_checks_config and state_checks_config.jsonpath_checks:
@@ -1562,11 +1849,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # Only assemble a state dict when at least one assertion targets
             # it via ``path:``. File-only (``path_glob:``) checks never needed
             # a state dict; they read files off disk directly via
-            # ``evaluate_jsonpath_file_checks``.
+            # ``evaluate_jsonpath_file_checks``. The DB round-trip inside the
+            # assembly is further gated on a check actually addressing the
+            # database, so a filesystem-only pack costs no DB call and gains
+            # no DB failure mode.
             jsonpath_checks = state_checks_config.jsonpath_checks
             jsonpath_state = None
             if any(check.get("path") is not None for check in jsonpath_checks):
-                jsonpath_state = await self._assemble_jsonpath_state(trial_id)
+                jsonpath_state = await self._assemble_jsonpath_state(
+                    trial_id,
+                    fetch_db=any(addresses_the_database(check) for check in jsonpath_checks),
+                )
             jsonpath_score, jsonpath_reasons = evaluate_jsonpath_checks(
                 jsonpath_checks,
                 state=jsonpath_state,
@@ -1676,9 +1969,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # when ``grading.custom_checks.enabled``; the aggregate score fills
         # ``components.custom_checks`` and the per-check breakdown rides
         # ``Grade.custom_checks`` (see ADR-0012).
-        custom_checks_score, custom_check_wire_results = await self._grade_custom_checks(
-            trial_id, trial_context, llm_messages
-        )
+        (
+            custom_checks_score,
+            custom_check_wire_results,
+            custom_checks_reasons,
+        ) = await self._grade_custom_checks(trial_id, trial_context, llm_messages)
         components.custom_checks_score = custom_checks_score
         # A pack that wrote the block but left it off never reaches the executor,
         # so the key is populated with nothing consuming it — the same shape as
@@ -1729,31 +2024,39 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Build reasons string
         state_diff_dict = state_diff.model_dump() if state_diff else None
         transcript_result_dict = transcript_result.model_dump() if transcript_result else None
-        reasons = build_grade_reasons(
-            components_dict,
-            state_diff_dict,
-            transcript_result_dict,
-            judge_reasons=judge_reasons or None,
-            trace_checks_result=trace_checks_result.model_dump(mode="json"),
-            golden_replay=hash_result.golden_replay if hash_result is not None else None,
-        )
+        # Collected and joined once. The components' renderer contributes nothing for a
+        # trial that scored nothing, and appending to its output would open that grade
+        # with a separator.
+        reason_segments = [
+            build_grade_reasons(
+                components_dict,
+                state_diff_dict,
+                transcript_result_dict,
+                judge_reasons=judge_reasons or None,
+                trace_checks_result=trace_checks_result.model_dump(mode="json"),
+                golden_replay=hash_result.golden_replay if hash_result is not None else None,
+                custom_checks_reasons=custom_checks_reasons,
+            )
+        ]
         if judge_status == pb2.JUDGE_STATUS_ERRORED:
-            reasons += f" | JUDGE ERRORED: {judge_reasons}"
+            reason_segments.append(f"JUDGE ERRORED: {judge_reasons}")
 
         # A populated key whose evaluator was skipped scored nothing; say so on the
         # grade rather than letting the trial look fully evaluated.
         if audit.skip_notes:
-            reasons += " | " + "; ".join(audit.skip_notes)
+            reason_segments.append("; ".join(audit.skip_notes))
 
         # The ledger's skip notes cover populated SCORED_CHECK keys; hash.weight is a
         # CONFIG_INPUT the fold can skip on its own, so it reports itself.
         if state_checks_slot.inert_weight_reason:
-            reasons += f" | {state_checks_slot.inert_weight_reason}"
+            reason_segments.append(state_checks_slot.inert_weight_reason)
 
         # A fold that counted nothing is not described by any component's reasons, so its
         # own sentence is what stops a 0.0 arriving beside components that all read as passing.
         if verdict.reason:
-            reasons += f" | {verdict.reason}"
+            reason_segments.append(verdict.reason)
+
+        reasons = " | ".join(segment for segment in reason_segments if segment)
 
         logger.info(
             f"GradeTrial: {trial_id} - score={score:.2f}, pass={binary_pass}, "
@@ -1852,49 +2155,38 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     def _grade_transcript_rules(
         self,
         trial_id: str,
-        transcript_rules_config: RunnerTranscriptRulesConfig,
+        transcript_rules_config: TranscriptRulesConfig,
         timeline: TrialTimeline,
     ) -> tuple[TranscriptEvaluationResult | None, dict[str, KeyAccountingRecord]]:
         """Score the pack's transcript rules, returning ``(result, accounted keys)``.
 
-        A ``None`` result is the trial that left no trace of itself — a timeline
-        carrying neither a conversational turn nor a tool call — and declared no
-        activity floor: nothing is evaluated and the component is left out of the
-        combine.
-
-        A declared floor *is* evaluated on that timeline, because no events is
-        precisely the answer it asks for, while every other rule would score
-        against evidence the trial does not carry. So the floor alone reaches the
-        evaluator there and its siblings are recorded as skipped — the blanket skip
-        goes down first so the floor's own record survives it.
+        Which rules an events-less timeline leaves evaluable is
+        :func:`scored_transcript_rules`, shared with the core engine so the fold
+        does not depend on which substrate graded the trial. A ``None`` result is
+        that decision coming back empty. When it comes back as the activity floor
+        alone, the floor's siblings are recorded as skipped — the blanket skip goes
+        down first so the floor's own record survives it.
         """
-        activity_floor = transcript_rules_config.min_assistant_turns
-        skipped_siblings: dict[str, KeyAccountingRecord] = {}
-        if timeline.events:
-            logger.info(f"GradeTrial: {trial_id} - Evaluating transcript rules")
-            # The author-facing RunnerTranscriptRulesConfig as a dict; the grader
-            # decomposes its fields (must_contain / disallow_regex / max_turns /
-            # min_assistant_turns / required_actions / communicate_info) into
-            # per-field sub-checks.
-            rules_dict = transcript_rules_config.model_dump()
-        elif activity_floor is None:
+        scored_rules = scored_transcript_rules(timeline, transcript_rules_config)
+        if scored_rules is None:
             logger.info(
                 f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool calls)"
             )
             return None, dict.fromkeys(transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP)
+
+        skipped_siblings: dict[str, KeyAccountingRecord] = {}
+        if timeline.events:
+            logger.info(f"GradeTrial: {trial_id} - Evaluating transcript rules")
         else:
             logger.info(
                 f"GradeTrial: {trial_id} - Evaluating the activity floor alone "
                 "(no messages or tool calls)"
             )
-            rules_dict = RunnerTranscriptRulesConfig(
-                min_assistant_turns=activity_floor
-            ).model_dump()
             skipped_siblings = dict.fromkeys(
                 transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP
             )
 
-        result = evaluate_transcript_rules(timeline, rules_dict)
+        result = evaluate_transcript_rules(timeline, scored_rules)
         return result, {**skipped_siblings, **result.accounted_keys}
 
     def _grade_trace_checks(
@@ -2048,11 +2340,18 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id: str,
         trial_context: TrialContextRuntime,
         llm_messages: list[dict[str, Any]],
-    ) -> tuple[float, list["pb2.CustomCheckResult"]]:
+    ) -> tuple[float, list["pb2.CustomCheckResult"], str | None]:
         """Run the pack's ``checks.py`` against the trial's evidence.
 
-        Returns ``(score, wire_results)``. A missing/disabled config returns
-        ``(-1.0, [])`` so :func:`combine_grade_components` treats the
+        Returns ``(score, wire_results, reason)``. The reason is the sentence
+        :func:`custom_checks_reason` renders and is what ``Grade.reasons`` carries
+        for this component; every return that ran or tried to run supplies one, so a
+        suite that failed before it started still says why. ``None`` is reserved for
+        the one case with no suite to describe: a pack that declared no
+        ``custom_checks`` block or disabled the one it declared.
+
+        A missing/disabled config returns
+        ``(-1.0, [], None)`` so :func:`combine_grade_components` treats the
         component as not-evaluated (the empty-active-set guard then fires
         for a custom-checks-only pack instead of silently passing).
 
@@ -2071,7 +2370,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         grading_config = trial_context.grading_config
         custom_config_raw = grading_config.custom_checks if grading_config else None
         if not custom_checks_enabled(custom_config_raw):
-            return -1.0, []
+            return -1.0, [], None
 
         config = CustomChecksConfig(**custom_config_raw)
 
@@ -2083,7 +2382,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             logger.error("GradeTrial: %s - %s", trial_id, error_msg)
             score = 0.0 if config.fail_on_error else -1.0
-            return score, [_executor_error_to_wire(error_msg)]
+            return (
+                score,
+                [_executor_error_to_wire(error_msg)],
+                custom_checks_reason(CheckResultSet(error=error_msg)),
+            )
         checks_file = artifacts_dir / config.file
 
         task_description = trial_context.task_description
@@ -2148,9 +2451,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 trial_id,
             )
             score = 0.0 if config.fail_on_error else -1.0
-            return score, [_executor_error_to_wire(str(exc))]
+            return (
+                score,
+                [_executor_error_to_wire(str(exc))],
+                custom_checks_reason(CheckResultSet(error=str(exc))),
+            )
 
         wire_results = [_check_result_to_wire(r) for r in result.results]
+        reason = custom_checks_reason(result)
 
         if result.error:
             logger.error(
@@ -2160,15 +2468,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             wire_results.append(_executor_error_to_wire(result.error))
             score = 0.0 if config.fail_on_error else -1.0
-            return score, wire_results
+            return score, wire_results, reason
 
         logger.info(
             f"GradeTrial: {trial_id} - custom checks: "
             f"{result.passed}/{result.total} passed, score={result.aggregate_score:.2f}"
         )
         if not result.decided_something:
-            return -1.0, wire_results
-        return result.aggregate_score, wire_results
+            return -1.0, wire_results, reason
+        return result.aggregate_score, wire_results, reason
 
     async def _build_judge_state_diff(
         self, trial_id: str, trial_context: TrialContextRuntime
@@ -2322,15 +2630,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         self,
         trial_id: str,
         trial_context: TrialContextRuntime,
-        golden_actions: list[GoldenAction],
-        *,
-        numeric_string_fields: list[str] | None = None,
+        state_checks: RunnerStateChecksConfig,
     ) -> HashGradingResult:
         """
         Execute hash-based grading algorithm.
 
         Steps:
-        0. Resolve every golden-action name
+        0. Select the comparison basis and resolve every golden-action name
         1. Get current trial stable hash
         2. Snapshot current state
         3. Reset to initial state
@@ -2341,14 +2647,22 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         8. Compare hashes
         9. If mismatch, compute state diff
 
+        The basis is selected from ``state_checks`` once and returned on the result:
+        only :attr:`HashComparisonBasis.GOLDEN_REPLAY` replays anything, so the other
+        two compare the trial against the state step 3 restored — identically, since
+        what separates them is which declaration asked for it, which is the runtime
+        ledger's question rather than the verdict's.
+
         Args:
             trial_id: Trial identifier
             trial_context: Trial context with tools
-            golden_actions: List of golden path actions to execute
+            state_checks: The trial's state-check config, which names the source to
+                compare against and the fields whose numeric-looking strings fold
 
         Returns:
-            HashGradingResult with hash_match, hash_score, an optional state_diff, and
-            the record of how much of the golden path ran
+            HashGradingResult with hash_match (the model derives hash_score from it),
+            the basis the comparison was run against, an optional state_diff, and the
+            record of how much of the golden path ran
 
         Raises:
             UnresolvableGoldenAction: an action names no tool registered for the trial,
@@ -2356,7 +2670,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 is untouched — steps 1-4 mutate it, and a trial whose grading failed on
                 a pack defect must not be left holding the initial state.
         """
-        # 0. Resolve every authored name
+        # 0. Select the basis, then resolve every authored name
+        basis = state_checks.hash_comparison_basis()
+        golden_actions = (
+            state_checks.golden_actions if basis is HashComparisonBasis.GOLDEN_REPLAY else []
+        )
+        numeric_string_fields = state_checks.numeric_string_fields
         resolved_tool_names = resolve_golden_action_names(
             [action.tool_name for action in golden_actions],
             candidates=trial_context.agent_tools.keys(),
@@ -2490,7 +2809,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # 8. Compare hashes
         hash_match = trial_hash == golden_hash
-        hash_score = 1.0 if hash_match else 0.0
 
         # 9. If mismatch, compute state diff
         state_diff: StateDiff | None = None
@@ -2514,7 +2832,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         return HashGradingResult(
             hash_match=hash_match,
-            hash_score=hash_score,
+            basis=basis,
             state_diff=state_diff,
             golden_replay=GoldenReplayRecord(
                 authored=len(golden_actions), failures=tuple(replay_failures)
@@ -2819,8 +3137,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_context.clear_history()
 
             # Stop any per-trial lifecycle tools started during registration.
-            # Capability-driven (has_lifecycle), not adapter identity.
-            for tool in trial_context.agent_tools.values():
+            # Capability-driven (has_lifecycle), not adapter identity, and over both
+            # registries because registration started both.
+            for tool in (*trial_context.agent_tools.values(), *trial_context.user_tools.values()):
                 if getattr(tool, "has_lifecycle", False):
                     try:
                         tool.stop()
@@ -3007,11 +3326,107 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     # TypeSense Client Initialization (for mcp_core search tools)
     # =========================================================================
 
+    def _read_docindex_snippets(
+        self,
+        artifacts_dir: Path | None,
+        context: str,
+    ) -> tuple[list[str], str | None]:
+        """Read the trial's ``docindex/*.md`` corpus.
+
+        Returns the snippets, or the reason the declared knowledge base cannot
+        be used. The collection name is derived from every non-empty document,
+        so a corpus read that skipped one would address a collection the
+        host-side indexer never created.
+        """
+        docindex_dir = artifacts_dir / "docindex" if artifacts_dir else None
+        snippets: list[str] = []
+        if docindex_dir is not None and docindex_dir.is_dir():
+            for md_file in sorted(docindex_dir.glob("*.md")):
+                try:
+                    content = md_file.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError) as e:
+                    return [], (
+                        f"{context} — the knowledge base is unusable: cannot read "
+                        f"{md_file} ({e}). Every non-empty document feeds the collection "
+                        f"name, so skipping it would address a collection the host-side "
+                        f"index never created."
+                    )
+                if content.strip():
+                    snippets.append(content)
+
+        if not snippets:
+            return [], (
+                f"{context} — the knowledge base is unusable: the task declares one, but "
+                f"no readable '*.md' arrived in the trial's artifacts (looked in "
+                f"{docindex_dir}). The declared corpus did not survive bundling and "
+                f"extraction."
+            )
+        return snippets, None
+
+    def _register_search_plane(
+        self, trial_id: str, search_config: SearchConfig, artifacts_dir: Path | None
+    ) -> str | None:
+        """Serve this task's corpus from the plane it declares, or say why nothing can.
+
+        Returns ``None`` when the trial may proceed, which includes the common case
+        of a task that declares no knowledge base at all.
+
+        Three conditions decide whether a TypeSense client is registered: the plane
+        serving this task's corpus is TypeSense, the task declares a corpus, and an
+        address for that plane resolved. None of them is ``enabled`` — that flag
+        means "this task needs rag-service" and gates the RAG indexing block, so a
+        TypeSense-only domain sets ``enabled=False`` and still registers here.
+        """
+        try:
+            binding = resolve_typesense_binding(search_config)
+        except PartialTypeSenseAddressError as e:
+            return str(e)
+
+        resolved_plane = resolve_search_plane(search_config)
+        served_by_typesense = (
+            resolved_plane is not None and resolved_plane.plane is SearchPlane.TYPESENSE
+        )
+        task_declares_kb = search_config.documents_path is not None
+        address_resolved = binding is not None
+
+        if served_by_typesense and task_declares_kb and address_resolved:
+            return self._init_typesense_for_trial(
+                trial_id, search_config, resolved_plane, binding, artifacts_dir
+            )
+        # A KB-declaring task in a run with no TypeSense plane must refuse loudly:
+        # otherwise nothing registers, every ``search_policy`` call fails on
+        # paid turns, and the trial grades the agent for the misconfiguration.
+        # Gating on ``address_resolved`` here was wrong — ``resolved_plane is
+        # None`` already implies ``search_config.plane`` and ``search_config.host``
+        # are both None, so ``address_resolved`` could only come from the stack
+        # env, which is injected exclusively by a run that HAS TypeSense. The
+        # KB-task-in-a-no-plane run therefore never triggered the refusal.
+        # Dropping ``address_resolved`` from the predicate reaches the intended
+        # cases; the refusal message names "no plane" independent of address
+        # resolution.
+        no_plane_serves_the_corpus = task_declares_kb and resolved_plane is None
+        if no_plane_serves_the_corpus and not search_config.enabled:
+            return _no_plane_refusal(trial_id, search_config, binding)
+        if address_resolved and not task_declares_kb and _bundles_a_docindex(artifacts_dir):
+            # A corpus arrived for a task declaring none: the gate above skipped
+            # the plane, so registering would succeed with no search client.
+            return (
+                f"{_search_plane_context(trial_id, search_config, resolved_plane, binding)} — the "
+                f"search declaration and the artifact bundle disagree: a 'docindex/' corpus "
+                f"arrived in the trial's artifacts, but search.documents_path is unset, so no "
+                f"search client is registered and every search_policy call would fail. Declare "
+                f"search.documents_path for this task, or stop bundling the corpus."
+            )
+        return None
+
     def _init_typesense_for_trial(
         self,
-        search_config: Any,  # SearchConfig from models
+        trial_id: str,
+        search_config: SearchConfig,
+        resolved_plane: ResolvedSearchPlane | None,
+        binding: ResolvedTypeSenseBinding,
         artifacts_dir: Path | None,
-    ) -> None:
+    ) -> str | None:
         """Initialise mcp_core TypeSense registry for search_policy tools.
 
         Inside Docker, the ``search_policy`` tool calls
@@ -3025,72 +3440,54 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         The document snippets are needed solely to compute the deterministic
         collection name (``<domain>_<sha256[:8]>``).
+
+        Returns ``None`` when the plane is usable, otherwise the reason
+        registration must be refused: a trial whose search plane is dead spends
+        paid turns on ``search_policy`` calls that cannot work, and grades the
+        result as agent behaviour.
         """
+        domain = search_config.domain_name or "default"
+        context = _search_plane_context(trial_id, search_config, resolved_plane, binding)
+
         try:
             from mcp_core.search.typesense_registry import initialize_typesense_for_domain
-        except ImportError:
-            logger.warning(
-                "mcp_core.search.typesense_registry not available — "
-                "search_policy tools will fail with 'Search service is not available'"
+        except ImportError as e:
+            return (
+                f"{context} — this runner image cannot provide a search client: "
+                f"mcp_core.search.typesense_registry is not importable ({e})."
             )
-            return
 
-        domain = search_config.domain_name or "default"
-        host = search_config.host
-        port = search_config.port or 8108
-        api_key = search_config.api_key
-
-        # Load document snippets from extracted docindex/ directory.
-        # These are needed to compute the deterministic collection name
-        # that matches what the host-side adapter already indexed.
-        snippets: list[str] = []
-        if artifacts_dir:
-            docindex_dir = artifacts_dir / "docindex"
-            if docindex_dir.is_dir():
-                for md_file in sorted(docindex_dir.glob("*.md")):
-                    try:
-                        content = md_file.read_text(encoding="utf-8")
-                        if content.strip():
-                            snippets.append(content)
-                    except Exception as e:
-                        logger.warning(f"Failed to read docindex file {md_file}: {e}")
-
-        if not snippets:
-            logger.warning(
-                f"No docindex snippets found for domain '{domain}' "
-                f"(artifacts_dir={artifacts_dir}) — TypeSense client not registered"
-            )
-            return
+        snippets, corpus_error = self._read_docindex_snippets(artifacts_dir, context)
+        if corpus_error is not None:
+            return corpus_error
 
         logger.info(
             f"Initialising TypeSense client for domain '{domain}': "
-            f"host={host}, port={port}, snippets={len(snippets)}"
+            f"host={binding.host}, port={binding.port}, basis={binding.basis.value}, "
+            f"snippets={len(snippets)}"
         )
 
         try:
             client = initialize_typesense_for_domain(
                 domain=domain,
                 snippets=snippets,
-                host=host,
-                port=port,
-                api_key=api_key,
+                host=binding.host,
+                port=binding.port,
+                api_key=binding.api_key,
             )
-            if client:
-                logger.info(
-                    f"TypeSense client registered for domain '{domain}' "
-                    f"(is_available={client.is_available})"
-                )
-            else:
-                logger.warning(
-                    f"TypeSense initialization returned None for domain '{domain}' — "
-                    "search_policy tools will fail"
-                )
         except Exception as e:
-            # Graceful degradation: log but don't fail the whole trial
-            logger.warning(
-                f"TypeSense initialization failed for domain '{domain}': {e} — "
-                "search_policy tools will fail"
+            return f"{context} — registering the search client failed: {e}"
+
+        if client is None:
+            return (
+                f"{context} — the server is unreachable or refused the collection: "
+                f"initialize_typesense_for_domain returned no client."
             )
+        if not client.is_available:
+            return f"{context} — the registered search client reports the server as unavailable."
+
+        logger.info(f"TypeSense client registered for domain '{domain}'")
+        return None
 
     # =========================================================================
     # RAG Document Indexing
@@ -3099,7 +3496,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     async def _index_documents_for_trial(
         self,
         trial_id: str,
-        search_config: Any,  # SearchConfig from models
+        search_config: SearchConfig,
         artifacts_dir: Path | None,
     ) -> None:
         """

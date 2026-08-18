@@ -1,31 +1,43 @@
 """Substrate-parity guard rail for the grading key manifest.
 
-Thirteen locks over :mod:`tolokaforge.core.grading.key_manifest`:
+Twenty locks. Locks 1-15 are over :mod:`tolokaforge.core.grading.key_manifest`:
+what each grading key is, which substrate scores it, and whether the two agree.
+Locks 16-20 are over what a grade *does* and *says*, which the manifest does not
+describe — the proposition a hash source compares against, what the hash reads a
+record's numeric-looking strings as, what ``Grade.reasons`` carries for a component
+that took a verdict, and whose mistake a comparison no trajectory could make is:
 
 1. every field either substrate's grading config declares is claimed by exactly
-   one manifest entry, and every claimed field resolves;
+   one manifest entry, and every claimed field resolves; a position below a claimed
+   field is addressed by an element path, which is the only such mechanism;
 2. the exemption sets are frozen here — in the test module, never beside the
    manifest data they guard — so widening one is a reviewable edit, every entry
    matching lock 3's predicate names both evaluators and owns a fixture, and every
-   ``DIFFERENTIAL_INTEGRATION`` claim's ``enforcing_test`` nodeid resolves to a test
-   function pytest would collect;
+   entry carrying an ``enforcing_test`` — at any tier, since a canonically proven
+   claim may still record where it was observed in production — has that nodeid
+   resolve to a test function pytest would collect;
 3. every key claiming both substrates at ``DIFFERENTIAL_CANONICAL`` demonstrably
    moves both substrates' component scores, through each substrate's real
    production evaluator and its real combine;
 4. every key both substrates declare survives adapter translation;
 5. every ledger key's ``runner_field`` resolves to a place in the runner
-   ``GradingConfig`` dump *and* some recording site in the grading path claims
-   it, so a malformed or unclaimed entry fails here rather than at grade time in
-   production;
+   ``GradingConfig`` dump *and* is declared in ``accountable_author_keys()``, the
+   per-key human claim that a recording site files it, so a malformed or
+   undeclared entry fails here rather than at grade time in production — lock 15
+   is what drives the site itself;
 6. both substrates fold a hash verdict and a JSONPath score into one
    ``state_checks`` component by the author's weight, pinned cell by cell to
    arithmetic this module computes for itself;
-7. the hash verdict either substrate can produce is binary, which is what makes
-   lock 6's canonical-tier hash inputs the only values that path yields rather
-   than a stand-in for it;
+7. the hash verdict either substrate can produce is binary — source-audited for
+   the producers whose verdict leaves as a bare float in a tuple, and a type
+   invariant of ``HashGradingResult`` for the producer whose verdict leaves
+   inside it — which is what makes lock 6's canonical-tier hash inputs the only
+   values that path yields rather than a stand-in for it;
 8. every ``DIFFERENTIAL_CANONICAL`` claim lock 3's predicate cannot reach is
-   enumerated here, and the two tables those claims rest on — lock 6's weight sweep
-   and lock 9's method answers — stay substantive;
+   enumerated here, and the tables those claims rest on — lock 6's weight sweep,
+   lock 9's method answers, lock 19's folding matrix — stay substantive; lock 19's
+   own nodeid is resolved besides, so that one differential cannot be deleted or
+   renamed with the set unchanged;
 9. both substrates aggregate one split pair of deterministic components by the
    author's ``combine.method``, each method pinned to a score written out here;
 10. both substrates score one ``trace_checks`` pack to the same component through
@@ -41,14 +53,61 @@ Thirteen locks over :mod:`tolokaforge.core.grading.key_manifest`:
 13. a state source that declares nothing leaves ``state_checks`` unscored on both
     substrates, and the one asymmetry the rule permits — a probe-only pack, which
     only the runner can read, and which is the whole of what a pack declaring a probe
-    may be — is asserted against the manifest's own claim rather than assumed.
+    may be — is asserted against the manifest's own claim rather than assumed;
+14. every scored component a pack produces declares a share of ``combine.weights``
+    on both substrates, and a fold with no share to read decides rather than
+    defaulting to one;
+15. every ledger key's recording site is *driven*: a real
+    ``RegisterTrial → ExecuteTool → GradeTrial`` populates the key, lets its
+    evaluator run, and the outcome the ledger reports is the one the manifest
+    implies. Editing a declaration cannot satisfy it — deleting a recording site,
+    downgrading it to a skip, filing ``EVALUATED`` over an evaluation that never
+    ran, or driving a config that never populated the key each fail it;
+16. both substrates score ``state_checks.hash.expect_initial_state`` alike — the
+    proposition "the trial left the state as it found it", with each substrate
+    computing both sides of the comparison in its own hash algebra, because the two
+    label the same equivalence classes under different digests and no stored digest
+    is readable in both (#915);
+17. the ``custom_checks`` segment of ``Grade.reasons`` names the check that decided
+    the trial, and is one text on both substrates — extracted from each substrate's
+    ``reasons`` by splitting on the segment separator rather than compared whole,
+    because the two legitimately differ elsewhere in that string (#994);
+18. every component :data:`GRADE_COMPONENTS` registers narrates itself in a real
+    grade: a trial driven through ``RegisterTrial → GradeTrial`` on a config
+    populating that component carries the marker production emits for it. The fold
+    enumerates the registry and the renderer enumerates by hand, so this is what
+    holds the second list to the first — and the row names the marker rather than
+    asking whether the grade said anything, because a component whose branch went or
+    whose marker was renamed leaves the grade just as full either way;
+19. a record field's numeric-looking string folds on both substrates when — and only
+    when — ``state_checks.numeric_string_fields`` names that field: a matrix pairing a
+    representation difference against a genuine one, under the empty list, the list
+    naming the field that differs and a list of the same length naming another
+    declared field, so a build reading the list's length rather than the names it
+    holds fails one row alone.
+20. a binding reference whose two runtime types the operator can never satisfy fails
+    the call it was read on rather than the constraint, on both substrates: a pack
+    addressing an argument the gate types at its first segment only scores ``1.0``
+    where one candidate made the comparison beside one that could not, and ``0.0``
+    where none could — with the sentence naming the reference on the verdict that
+    crosses the wire, since a diagnostic the author never reads leaves an authoring
+    mistake looking like the agent's.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
 explicit, reviewable edit to one of the frozen constants below.
 
-Locks 3, 6, 7, 9, 10 and 11 drive a real trial, and each reads it through one fixture
-loader, so what a ``grading_parity`` pack can express bounds what they can prove.
+Locks 3, 6, 7, 9, 10, 11, 15, 16, 17, 18, 19 and 20 drive a real trial, and each reads
+it through one fixture loader, so what a ``grading_parity`` pack can express bounds what
+they can prove — for locks 15 and 18 that bound covers the keys their driver tables
+send to a parity pack, the hash family, the probes and the judge being driven from
+tasks written out in this module instead, for lock 17 it is one pack declaring one
+check, so the shapes it reaches are all-passed and all-failed, and lock 20 reads a pack
+under ``tests/data/tasks`` because the shape it needs is one no parity pack may declare. Lock 18's
+``state_checks`` row drives one of that component's three sources; the sub-source
+counterpart is three unit locks — ``test_runner_jsonpath_grading.py`` on the JSONPath
+and db-probe sentences, and ``test_grading_correctness.py`` on the hash verdict — so
+this module's table is not the whole guarantee for that slot.
 That loader's contract — a tool call belongs to the message that requested it, and
 carries that call's own result text — is locked at the end of this module.
 """
@@ -61,25 +120,36 @@ import re
 import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from types import MappingProxyType, UnionType
-from typing import Any, Union, get_args, get_origin
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
 import pytest
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from tests.utils.combine_method_verdicts import (
     COMBINE_METHOD_COMPONENTS,
     COMBINE_METHOD_PASS_THRESHOLD,
     COMBINE_METHOD_VERDICTS,
 )
+from tests.utils.grading_parity_packs import (
+    FIXTURE_TIMESTAMP,
+    TrialCase,
+    load_case,
+    wire_message,
+)
 from tests.utils.runner_requests import execute_request, register_request, trial_spec_json
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
+from tolokaforge.core.grading.checks_helpers import CUSTOM_CHECKS_REASON_PREFIX
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import COMBINE_METHODS
 from tolokaforge.core.grading.combine_weights import MissingComponentWeight
+from tolokaforge.core.grading.golden_replay import GoldenReplayRecord, resolve_initial_state
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
     Enforcement,
@@ -90,33 +160,42 @@ from tolokaforge.core.grading.key_manifest import (
     entry,
     family_author_keys,
 )
-from tolokaforge.core.grading.state_checks import StateChecker, extract_db_state
+from tolokaforge.core.grading.state_checks import StateChecker, extract_db_state, state_digest
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
-from tolokaforge.core.grading.trace_timeline import TrialTimeline, build_trial_timeline
+from tolokaforge.core.grading.trace_timeline import TrialTimeline
+from tolokaforge.core.grading.transcript import evaluate_transcript_rules
 from tolokaforge.core.models import (
     Message,
     RecordedToolCall,
     ToolCall,
-    ToolExecutionStatus,
-    ToolExecutorIdentity,
     Trajectory,
 )
 from tolokaforge.runner import grading as runner_grading
 from tolokaforge.runner import models as runner_models
 from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner import service as runner_service_module
 from tolokaforge.runner.grading import (
     combine_grade_components,
     evaluate_db_probes,
     evaluate_jsonpath_checks,
-    evaluate_transcript_rules,
     resolve_state_checks_component,
 )
 from tolokaforge.runner.grading_ledger import (
     LEDGER_KEYS,
+    LLM_JUDGE_KEY,
+    NO_JUDGE_MESSAGES_SKIP,
     accountable_author_keys,
+    populated_ledger_keys,
     runner_dump_path,
+    skip_note,
+    skip_note_prefix,
 )
-from tolokaforge.runner.models import TRACE_CONSTRAINT_KINDS, TraceConstraintExpr
+from tolokaforge.runner.models import (
+    TRACE_CONSTRAINT_KINDS,
+    KeyAccounting,
+    KeyAccountingRecord,
+    TraceConstraintExpr,
+)
 from tolokaforge.runner.service import (
     RunnerServiceImpl,
     TrialContextRuntime,
@@ -148,8 +227,8 @@ _COMPOSITION_KEY = "state_checks.hash.weight"
 # from every rule that agrees with it at 0 and 1.
 _COMPOSITION_JSONPATH_SCORE = 0.5
 
-# Case name -> the hash verdict it produces against the pack's committed
-# expected_state_hash. Lock 7 asserts core's evaluator really returns these.
+# Case name -> the hash verdict it produces against the hash of the state the pack's
+# task declares it starts in. Lock 7 asserts core's evaluator really returns these.
 _COMPOSITION_HASH_CASES: tuple[tuple[str, float], ...] = (
     ("hash_matching", 1.0),
     ("hash_diverging", 0.0),
@@ -170,16 +249,41 @@ _METHOD_CASE = "split_components"
 _HASH_SCORE_NAME = "hash_score"
 _BINARY_HASH_VERDICT = frozenset({0.0, 1.0})
 
+_UNSCORED_COMPONENT = -1.0
+"""What ``GradeComponents`` carries for a component the runner did not score.
+
+Every component evaluator in ``tolokaforge/runner/grading.py`` returns it when
+handed nothing to evaluate, so a slot holding it means no evaluation happened
+whatever the ledger recorded for the keys that feed it.
+"""
+
 _HASH_FAMILY_ROOT = "state_checks.hash"
+_EXPECT_INITIAL_STATE_KEY = "state_checks.hash.expect_initial_state"
+_GOLDEN_ACTIONS_KEY = "state_checks.hash.golden_actions"
+_NUMERIC_STRING_FIELDS_KEY = "state_checks.numeric_string_fields"
+
+# The one in-repo pack that both declares golden actions and gives them a world to be
+# replayed in — a JSON initial-state file and an ``mcp_server`` whose tools they call.
+# It sits under ``tests/data/tasks/`` for the reason :data:`_PROBE_PACK` does.
+_GOLDEN_REPLAY_PACK = "shop_orders_02"
 
 # Every function that can hand a hash verdict to the shared composer, as
-# (repo-relative module, function name). Asserted as set equality against the
-# hash family's declared evaluators, so a fourth producer forces an edit here
-# instead of landing with lock 7 green and lock 6's binariness premise false.
-_HASH_VERDICT_PRODUCERS = frozenset(
+# (repo-relative module, function name), partitioned by the shape the verdict
+# leaves in. Tuple-verdict producers hand it on as a bare float in a tuple, so
+# lock 7 audits their sources; the model-verdict producer returns it inside
+# ``HashGradingResult``, which derives the score from ``hash_match``, so lock 7
+# proves that invariant instead of reading its source. The union is asserted as
+# set equality against the hash family's declared evaluators, so a fourth
+# producer forces an edit here instead of landing with lock 7 green and lock
+# 6's binariness premise false.
+_TUPLE_VERDICT_PRODUCERS = frozenset(
     {
         ("tolokaforge/core/grading/state_checks.py", "check_hash"),
         ("tolokaforge/core/grading/state_checks.py", "check_hash_against_golden_replay"),
+    }
+)
+_MODEL_VERDICT_PRODUCERS = frozenset(
+    {
         ("tolokaforge/runner/service.py", "_execute_hash_grading"),
     }
 )
@@ -193,13 +297,14 @@ _HASH_VERDICT_PRODUCERS = frozenset(
 _ARCHITECTURAL_EXEMPTIONS = frozenset(
     {
         "state_checks.db_probes",
+        "state_checks.hash.description",
         "llm_judge",
         "grading_method",
     }
 )
 
 # Non-BOTH keys that should be both and are not yet. tracking_issue is required.
-_DRIFT_EXEMPTIONS = frozenset({"state_checks.hash.expected_state_hash"})
+_DRIFT_EXEMPTIONS: frozenset[str] = frozenset()
 
 # Scored keys that claim both substrates but are not differentially proven
 # in-process. A key added here is a key whose parity claim rests on field
@@ -218,6 +323,7 @@ _NON_DIFFERENTIAL_SCORED_KEYS = frozenset(
 _CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3 = frozenset(
     {
         "state_checks.hash.weight",
+        "state_checks.numeric_string_fields",
         "combine.method",
         "combine.weights",
         "trace_checks",
@@ -245,6 +351,7 @@ _TRACE_CONFIG_INPUT_KEYS: tuple[str, ...] = (
 _NON_TRACKED_FIELD_RESOLUTION_KEYS = frozenset(
     {
         "combine.pass_threshold",
+        "state_checks.hash.description",
         "state_checks.id_fields",
         "state_checks.relaxed_validation",
         "grading_method",
@@ -256,6 +363,7 @@ _CONTAINER_FIELDS = frozenset(
     {
         "core:GradingConfig.combine",
         "core:GradingConfig.state_checks",
+        "core:StateChecksConfig.hash",
         "core:GradingConfig.transcript_rules",
         "core:GradingConfig.trace_checks",
         "runner:RunnerGradingConfig.state_checks",
@@ -279,10 +387,6 @@ def _field_of(item: GradingKey, substrate: str) -> str | None:
     return item.core_field if substrate == "core" else item.runner_field
 
 
-def _dict_key_of(item: GradingKey, substrate: str) -> str | None:
-    return item.core_dict_key if substrate == "core" else item.runner_dict_key
-
-
 def _element_path_of(item: GradingKey, substrate: str) -> str | None:
     return item.core_element_path if substrate == "core" else item.runner_element_path
 
@@ -290,18 +394,14 @@ def _element_path_of(item: GradingKey, substrate: str) -> str | None:
 def _claimed_fields(substrate: str) -> dict[str, list[str]]:
     """Model field paths claimed directly -> author keys.
 
-    An entry addressing a dict key or an element path is not claiming the field:
-    it claims one place *inside* it, and several such entries share the field.
-    Counting them as claims would report the shared field as claimed twice over.
+    An entry carrying an element path is not claiming the field: it claims one
+    place *inside* it, and several such entries share the field. Counting them as
+    claims would report the shared field as claimed twice over.
     """
     claims: dict[str, list[str]] = {}
     for item in GRADING_KEYS:
         field = _field_of(item, substrate)
-        addressed_inside = (
-            _dict_key_of(item, substrate) is not None
-            or _element_path_of(item, substrate) is not None
-        )
-        if field is None or addressed_inside:
+        if field is None or _element_path_of(item, substrate) is not None:
             continue
         claims.setdefault(field, []).append(item.author_key)
     return claims
@@ -327,10 +427,6 @@ def _direct_model(annotation: Any) -> type[BaseModel] | None:
         ):
             return option
     return None
-
-
-def _is_dict_field(annotation: Any) -> bool:
-    return any(get_origin(option) is dict for option in _union_options(annotation))
 
 
 def _element_model(annotation: Any) -> type[BaseModel] | None:
@@ -437,23 +533,23 @@ def _differential_entries() -> tuple[GradingKey, ...]:
     )
 
 
-def _assert_enforcing_test_is_collectable(item: GradingKey) -> None:
-    """The named integration test exists as a function pytest would collect.
+def _assert_nodeid_is_collectable(label: str, nodeid: str) -> None:
+    """The nodeid names a module-level function pytest would collect.
 
     Resolved by parsing the module, never by importing it: the integration tier
     pulls testcontainers and a docker daemon, neither of which the canonical tier
     has. That is also the limit of what this can prove — the nodeid resolves and is
-    collectable; whether it *passes* is what running the integration tier answers.
+    collectable; whether it *passes* is what running that tier answers.
     """
-    module_path, separator, function_name = item.enforcing_test.partition("::")
+    module_path, separator, function_name = nodeid.partition("::")
     assert separator, (
-        f"{item.author_key}: enforcing_test {item.enforcing_test!r} is a module path, not a "
-        "pytest nodeid, so it names no test function"
+        f"{label} {nodeid!r} is a module path, not a pytest nodeid, so it names a file that "
+        "may hold no test function at all"
     )
     module_file = _REPO_ROOT / module_path
     assert module_file.is_file(), (
-        f"{item.author_key}: enforcing_test module {module_path!r} does not exist on disk, "
-        "so nothing proves the integration differential"
+        f"{label} names module {module_path!r}, which does not exist on disk, so nothing "
+        "proves the differential"
     )
     declared = {
         node.name
@@ -462,13 +558,18 @@ def _assert_enforcing_test_is_collectable(item: GradingKey) -> None:
     }
     collectable = sorted(name for name in declared if name.startswith("test_"))
     assert function_name in declared, (
-        f"{item.author_key}: enforcing_test names {function_name!r}, which {module_path} does "
-        f"not declare at module level. It declares {collectable}"
+        f"{label} names {function_name!r}, which {module_path} does not declare at module "
+        f"level. It declares {collectable}"
     )
     assert function_name.startswith("test_"), (
-        f"{item.author_key}: enforcing_test names {function_name!r}, which pytest does not "
-        "collect as a test"
+        f"{label} names {function_name!r}, which pytest does not collect as a test — the nodeid "
+        "resolves to a function no run of that module would execute"
     )
+
+
+def _assert_enforcing_test_is_collectable(item: GradingKey) -> None:
+    """The integration test the entry names exists as a function pytest would collect."""
+    _assert_nodeid_is_collectable(f"{item.author_key}: enforcing_test", item.enforcing_test)
 
 
 def _split_dotted(path: str) -> tuple[Any, list[str]]:
@@ -499,42 +600,28 @@ def _evaluator_source(evaluator: str) -> tuple[str, str]:
     return str(Path(module.__file__).resolve().relative_to(_REPO_ROOT)), attributes[-1]
 
 
-def _declared_hash_verdict_producers() -> frozenset[tuple[str, str]]:
+def _declared_hash_verdict_producers() -> dict[tuple[str, str], Any]:
     """Every evaluator the manifest names for a *scored* member of the hash family.
+
+    Keyed by source location — what the frozen producer partitions pin — with the
+    resolved callable as the value, so lock 7's model-verdict clause reads the
+    declared return type off the same walk its gate reads the set from.
 
     ``state_checks.hash.weight`` is ``CONFIG_INPUT`` — it names the composer that
     consumes a verdict, not a function that produces one — so the ``SCORED_CHECK``
     filter is what keeps the fold itself out of the audit.
     """
-    return frozenset(
-        _evaluator_source(evaluator)
+    return {
+        _evaluator_source(evaluator): _import_dotted(evaluator)
         for author_key in family_author_keys(_HASH_FAMILY_ROOT)
         for evaluator in (entry(author_key).core_evaluator, entry(author_key).runner_evaluator)
         if evaluator is not None and entry(author_key).kind is KeyKind.SCORED_CHECK
-    )
+    }
 
 
 # --------------------------------------------------------------------------
 # Fixture-pack helpers
 # --------------------------------------------------------------------------
-
-# The one shape a ``trial.yaml`` case may take. Every key is read; anything else
-# is rejected, so a pack cannot carry a field the loader silently drops.
-_CASE_KEYS = frozenset({"messages", "state"})
-_MESSAGE_KEYS = frozenset({"role", "content", "tool_calls"})
-_CALL_KEYS = frozenset({"tool_name", "executor", "status", "arguments", "output"})
-
-_FIXTURE_TIMESTAMP = "2026-01-01T00:00:00+00:00"
-
-
-@dataclass(frozen=True)
-class _TrialCase:
-    """One satisfying-or-violating trial, in each substrate's own input shape."""
-
-    core_trajectory: Trajectory
-    runner_messages: list[dict[str, Any]]
-    runner_timeline: TrialTimeline
-    state: dict[str, Any]
 
 
 def _task_id_for(author_key: str) -> str:
@@ -620,22 +707,33 @@ _CONSTRAINT_KIND_KEYS = frozenset(
 )
 
 
+_BLOCK_SWITCH = "enabled"
+
+
 def _authoring_the_same_key(declared_key: str, author_key: str) -> bool:
     """Whether ``declared_key`` is part of writing ``author_key`` down.
 
-    Three structural cases, none of them a second check. The ancestors a leaf
+    Four structural cases, none of them a second check. The ancestors a leaf
     lives under: a constraint kind needs the block and the list around it. The
     leaves of a key standing for a list: writing something in the list is what
     authoring the list looks like. And another kind beside a kind — a composite
     is an expression over other kinds and cannot be written without them, which
     is why the sharper assertion on what a pack authors at *top level* is the one
     that keeps a kind's pack about that kind.
+
+    The fourth is the switch that turns a block on. A source inside a block cannot
+    be written without it — ``state_checks.hash.expect_initial_state`` under an
+    ``enabled: false`` block is read by nothing — and the switch carries no verdict
+    of its own: with it off there is no component to discriminate the two trials by,
+    so it cannot be what discriminated them.
     """
+    block, _, leaf = author_key.rpartition(".")
     return (
         declared_key == author_key
         or author_key.startswith(f"{declared_key}.")
         or declared_key.startswith(f"{author_key}.")
         or {declared_key, author_key} <= _CONSTRAINT_KIND_KEYS
+        or (leaf != _BLOCK_SWITCH and declared_key == f"{block}.{_BLOCK_SWITCH}")
     )
 
 
@@ -651,95 +749,6 @@ def _top_level_constraint_kinds(grading_yaml: dict[str, Any]) -> set[str]:
         for kind in element["require"]
         if kind in TRACE_CONSTRAINT_KINDS
     }
-
-
-def _reject_unknown(authored: dict[str, Any], allowed: frozenset[str], *, what: str) -> None:
-    """A fixture key nothing reads expresses less than its author wrote — so it is an error."""
-    unknown = sorted(set(authored) - allowed)
-    assert not unknown, f"{what} declares {unknown}; the loader reads only {sorted(allowed)}"
-
-
-def _authored_call(raw_call: dict[str, Any], *, sequence: int) -> tuple[ToolCall, RecordedToolCall]:
-    """One authored call, as the message view declares it and as the record kept it.
-
-    ``latency_seconds`` is not authorable and is pinned at ``0.0``: wall time is
-    not compared across substrates, so a fixture varying it would pin a number no
-    parity claim reads.
-    """
-    call_id = f"call_{sequence}"
-    return (
-        ToolCall(id=call_id, name=raw_call["tool_name"], arguments=raw_call["arguments"]),
-        RecordedToolCall(
-            call_id=call_id,
-            sequence=sequence,
-            tool_name=raw_call["tool_name"],
-            arguments=raw_call["arguments"],
-            executor=ToolExecutorIdentity(raw_call["executor"]),
-            output=raw_call.get("output", ""),
-            status=ToolExecutionStatus(raw_call["status"]),
-            latency_seconds=0.0,
-            timestamp=_FIXTURE_TIMESTAMP,
-        ),
-    )
-
-
-def _wire_message(message: Message) -> dict[str, Any]:
-    """One turn as the runner receives it, in ``llm_messages_json``'s OpenAI shape."""
-    wire: dict[str, Any] = {"role": message.role.value, "content": message.content}
-    if message.tool_calls:
-        wire["tool_calls"] = [
-            {
-                "id": call.id,
-                "type": "function",
-                "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
-            }
-            for call in message.tool_calls
-        ]
-    return wire
-
-
-def _load_case(pack_dir: Path, case: str) -> _TrialCase:
-    """One authored trial, in the input shape each substrate really takes.
-
-    A call is authored inside the message that requested it, so a fixture places
-    its calls across turns and the timeline's ``turn_index`` and event order follow
-    what the author wrote.
-    """
-    fixture = yaml.safe_load((pack_dir / "trial.yaml").read_text())[case]
-    where = f"{pack_dir.name}/trial.yaml case {case!r}"
-    _reject_unknown(fixture, _CASE_KEYS, what=where)
-
-    # One recorded-tool-call list feeds both substrates: the core engine holds it
-    # on the Trajectory, the runner's evaluators read its dump. A per-substrate
-    # fixture could disagree with itself, which is the divergence this suite exists
-    # to catch. The message view declares every one of them, or the trial's two
-    # views disagree and neither substrate will grade it.
-    view: list[Message] = []
-    recorded: list[RecordedToolCall] = []
-    for index, raw in enumerate(fixture["messages"]):
-        _reject_unknown(raw, _MESSAGE_KEYS, what=f"{where} message {index}")
-        declared: list[ToolCall] = []
-        for raw_call in raw.get("tool_calls", ()):
-            _reject_unknown(raw_call, _CALL_KEYS, what=f"{where} message {index} tool call")
-            call, record = _authored_call(raw_call, sequence=len(recorded))
-            declared.append(call)
-            recorded.append(record)
-        view.append(Message(role=raw["role"], content=raw["content"], tool_calls=declared or None))
-
-    trajectory = Trajectory(
-        task_id=pack_dir.name,
-        trial_index=0,
-        start_ts=_FIXTURE_TIMESTAMP,
-        end_ts=_FIXTURE_TIMESTAMP,
-        messages=view,
-        tool_log=recorded,
-    )
-    return _TrialCase(
-        core_trajectory=trajectory,
-        runner_messages=[_wire_message(message) for message in view],
-        runner_timeline=build_trial_timeline(view, recorded, None),
-        state=fixture["state"],
-    )
 
 
 class _FixtureStateDBClient:
@@ -761,12 +770,23 @@ class _FixtureStateDBClient:
 
 
 def _core_verdict(
-    family: str, grading_config: core_models.GradingConfig, case: _TrialCase, task_dir: Path
+    family: str,
+    grading_config: core_models.GradingConfig,
+    case: TrialCase,
+    task_dir: Path,
+    *,
+    task_initial_state: core_models.InitialStateConfig | None,
 ) -> tuple[float, float]:
-    """(component score, combined score) from the core engine's real combine."""
-    grade = GradingEngine(grading_config, task_dir=task_dir).grade_trajectory(
-        case.core_trajectory, case.state
-    )
+    """(component score, combined score) from the core engine's real combine.
+
+    The engine is built the way ``adapters/base.py`` builds it for a real trial, so a
+    pack whose grading reads a task-level fact — the state it starts in, which the
+    hash block's ``expect_initial_state`` source compares against — is graded here
+    against the same fact production would hand it rather than against nothing.
+    """
+    grade = GradingEngine(
+        grading_config, task_dir=task_dir, task_initial_state=task_initial_state
+    ).grade_trajectory(case.core_trajectory, case.state)
     component = getattr(grade.components, family, None)
     assert component is not None, (
         f"the core engine produced no {family!r} component — either that family has no "
@@ -776,7 +796,7 @@ def _core_verdict(
 
 
 def _runner_custom_checks_score(
-    task_description: runner_models.TaskDescription, case: _TrialCase
+    task_description: runner_models.TaskDescription, case: TrialCase
 ) -> float:
     """The runner's ``custom_checks`` component, via its real delivery + executor.
 
@@ -790,7 +810,7 @@ def _runner_custom_checks_score(
         trial_id = f"{task_description.task_id}:0"
         servicer._extract_tool_artifacts(trial_id, task_description.tool_artifacts)
         context = TrialContextRuntime(trial_id=trial_id, task_description=task_description)
-        score, _ = servicer._run_async(
+        score, _, _ = servicer._run_async(
             servicer._grade_custom_checks(trial_id, context, case.runner_messages)
         )
         return score
@@ -798,20 +818,92 @@ def _runner_custom_checks_score(
         servicer.shutdown()
 
 
-def _runner_verdict(
-    family: str, task_description: runner_models.TaskDescription, case: _TrialCase
+def _write_case_state_into_the_trial_database(
+    servicer: RunnerServiceImpl, trial_id: str, tables: Mapping[str, list[dict[str, Any]]]
+) -> None:
+    """Move the trial's database to ``tables``, one upsert per record.
+
+    Generic over the fixture: every record of every table is written under the
+    upsert's own key resolution, so a pack's authored state reaches db-service
+    without this helper knowing which tables it holds. Upsert rather than a wholesale
+    replace because that is the mutation db-service offers for a record that may or
+    may not already be there — a case that expects a record *removed* would need a
+    delete this does not write, and the verdict would then disagree with the fixture
+    rather than quietly agree with it.
+    """
+    for table, records in tables.items():
+        servicer._run_async(
+            servicer.db_client.mutate(
+                trial_id, table, [{"op": "upsert", "record": record} for record in records]
+            )
+        )
+
+
+def _runner_state_checks_hash_verdict(
+    task_description: runner_models.TaskDescription,
+    case: TrialCase,
+    servicer: RunnerServiceImpl,
+    context: Any,
+    *,
+    trial_id: str,
 ) -> tuple[float, float]:
-    """(component score, combined score) from the runner's real evaluators."""
+    """(state_checks component, trial score) from the runner's own ``GradeTrial``.
+
+    The hash evaluator reads the trial's database rather than the case's ``state``
+    mapping, so the case has to *be* the database: ``RegisterTrial`` provisions it
+    from the pack's ``initial_state`` — which is the expected side of the comparison —
+    and the trial's own records are written over it before grading.
+
+    The combined score is the runner's own fold off the same response, so both halves
+    of the return come from one real trial rather than from a second computation here.
+    """
+    _register_pack(servicer, context, task_description, trial_id)
+    _replay_authored_calls(servicer, context, trial_id, case)
+    _write_case_state_into_the_trial_database(servicer, trial_id, case.state["db"])
+
+    response = _grade_registered_trial(
+        servicer, context, trial_id, json.dumps(case.runner_messages)
+    )
+    assert response.success is True, response.error
+
+    component = response.grade.components.state_checks
+    assert component != _UNSCORED_COMPONENT, (
+        "the runner graded the pack without scoring state_checks, so this cell carries "
+        "the unscored sentinel rather than a hash verdict — two of them read as "
+        f"agreement between the substrates and prove nothing: {response.grade.reasons!r}"
+    )
+    return component, response.grade.score
+
+
+def _runner_verdict(
+    family: str,
+    task_description: runner_models.TaskDescription,
+    case: TrialCase,
+    *,
+    servicer: RunnerServiceImpl,
+    context: Any,
+    trial_id: str,
+) -> tuple[float, float]:
+    """(component score, combined score) from the runner's real evaluators.
+
+    ``state_checks`` splits on what the pack declares rather than on the key under
+    test: a hash block naming a state the trial is compared against is scored by an
+    evaluator that resets and hashes a real database, which is reachable only through
+    a registered trial. A pack declaring no hash source keeps the in-process JSONPath
+    path, so no cell that passed before this arm existed is driven differently now.
+    """
     grading = task_description.grading
     if family == "state_checks":
-        component, _ = evaluate_jsonpath_checks(
-            grading.state_checks.jsonpath_checks, state=case.state
-        )
+        state_checks = grading.state_checks
+        undeclared = runner_models.HashComparisonBasis.UNDECLARED_INITIAL_STATE
+        if state_checks.hash_enabled and state_checks.hash_comparison_basis() is not undeclared:
+            return _runner_state_checks_hash_verdict(
+                task_description, case, servicer, context, trial_id=trial_id
+            )
+        component, _ = evaluate_jsonpath_checks(state_checks.jsonpath_checks, state=case.state)
         components = {"jsonpath_score": component}
     elif family == "transcript_rules":
-        result = evaluate_transcript_rules(
-            case.runner_timeline, grading.transcript_rules.model_dump()
-        )
+        result = evaluate_transcript_rules(case.runner_timeline, grading.transcript_rules)
         component = result.score
         components = {"transcript_score": component}
     elif family == "custom_checks":
@@ -868,18 +960,6 @@ def test_manifest_covers_every_declared_config_field():
                 f"{model_name} has no field {field_name!r}"
             )
 
-        for item in GRADING_KEYS:
-            dict_key = _dict_key_of(item, substrate)
-            field = _field_of(item, substrate)
-            if dict_key is None or field is None:
-                continue
-            model_name, _, field_name = field.partition(".")
-            annotation = registry[model_name].model_fields[field_name].annotation
-            assert _is_dict_field(annotation), (
-                f"{item.author_key}: {substrate}_dict_key {dict_key!r} requires "
-                f"{field!r} to be a dict field, got {annotation}"
-            )
-
         _assert_element_paths_resolve(substrate, registry)
 
     assert containers == _CONTAINER_FIELDS, (
@@ -887,6 +967,50 @@ def test_manifest_covers_every_declared_config_field():
         "container's leaves must be claimed individually; a new container here means "
         "a new key family landed on a substrate."
     )
+
+
+def test_a_position_inside_a_claimed_field_is_addressed_by_an_element_path():
+    """An element path is the manifest's one address for a place below a field.
+
+    An entry whose author key sits under another entry's, on a substrate where that
+    parent claims a field, names a position inside that field's value rather than a
+    field of its own. Read as a set equality so both halves are findings: a key
+    inside a claimed field carrying no element path addresses nothing the suite can
+    walk, and an element path under a parent that claims no field is walked from
+    nowhere. The field the path starts at is then checked to be the parent's own.
+    """
+    by_key = {item.author_key: item for item in GRADING_KEYS}
+    for substrate in _SUBSTRATE_ROOTS:
+        inside_a_claimed_field = {
+            item.author_key
+            for item in GRADING_KEYS
+            if (parent := by_key.get(item.author_key.rpartition(".")[0])) is not None
+            and _field_of(parent, substrate) is not None
+        }
+        element_addressed = {
+            item.author_key
+            for item in GRADING_KEYS
+            if _element_path_of(item, substrate) is not None
+        }
+        assert element_addressed, (
+            f"no {substrate} entry carries an element path, so this lock compares two "
+            "empty sets and asserts nothing about how a nested position is addressed"
+        )
+        assert inside_a_claimed_field == element_addressed, (
+            f"{substrate}: the keys sitting inside a claimed field and the keys carrying "
+            f"an element path have diverged. Inside a claimed field: "
+            f"{sorted(inside_a_claimed_field)}. Element-addressed: "
+            f"{sorted(element_addressed)}. A position below a declared field is "
+            "addressed by an element path, which the suite walks against the element "
+            "model; there is no other way to name one."
+        )
+        for key in sorted(element_addressed):
+            parent_field = _field_of(by_key[key.rpartition(".")[0]], substrate)
+            assert _field_of(by_key[key], substrate) == parent_field, (
+                f"{key}: {substrate}_element_path is walked from {parent_field!r}, the "
+                f"field its parent key claims, but the entry names "
+                f"{_field_of(by_key[key], substrate)!r}"
+            )
 
 
 # --------------------------------------------------------------------------
@@ -942,7 +1066,7 @@ def test_exemption_sets_are_frozen_and_classified(test_data_dir):
     )
 
     for item in GRADING_KEYS:
-        if item.enforcement is Enforcement.DIFFERENTIAL_INTEGRATION:
+        if item.enforcing_test:
             _assert_enforcing_test_is_collectable(item)
         for evaluator in (item.core_evaluator, item.runner_evaluator):
             if evaluator is None:
@@ -987,26 +1111,55 @@ class _SubstrateDifferential:
 
 
 def _drive_both_substrates(
-    author_key: str, test_data_dir: Path, tmp_path: Path
+    author_key: str,
+    test_data_dir: Path,
+    tmp_path: Path,
+    servicer: RunnerServiceImpl,
+    context: Any,
 ) -> _SubstrateDifferential:
-    """Grade a key's satisfying and violating trials through each substrate's own path."""
+    """Grade a key's satisfying and violating trials through each substrate's own path.
+
+    The two cases take a trial id apiece: a runner arm that registers a trial mutates
+    its database, so grading both cases under one id would compare the second against
+    what the first left behind.
+    """
     family = author_key.split(".")[0]
+    task_id = _task_id_for(author_key)
     pack = _pack_dir(test_data_dir, author_key)
     adapter = _parity_adapter(test_data_dir)
-    core_config = adapter.get_grading_config(_task_id_for(author_key))
-    task_description = adapter.to_task_description(_task_id_for(author_key))
-    satisfying = _load_case(pack, "satisfying")
-    violating = _load_case(pack, "violating")
+    core_config = adapter.get_grading_config(task_id)
+    task_description = adapter.to_task_description(task_id)
+    initial_state = adapter.get_task(task_id).initial_state
+    satisfying = load_case(pack, "satisfying")
+    violating = load_case(pack, "violating")
     # The core engine imports the pack's ``checks.py`` from its task dir, which
     # writes ``__pycache__`` beside the fixture; grade from a copy so a canonical
     # run leaves the repo clean.
     core_task_dir = tmp_path / "core_task_dir"
     shutil.copytree(pack, core_task_dir)
 
-    core_ok, core_ok_total = _core_verdict(family, core_config, satisfying, core_task_dir)
-    core_bad, core_bad_total = _core_verdict(family, core_config, violating, core_task_dir)
-    runner_ok, runner_ok_total = _runner_verdict(family, task_description, satisfying)
-    runner_bad, runner_bad_total = _runner_verdict(family, task_description, violating)
+    core_ok, core_ok_total = _core_verdict(
+        family, core_config, satisfying, core_task_dir, task_initial_state=initial_state
+    )
+    core_bad, core_bad_total = _core_verdict(
+        family, core_config, violating, core_task_dir, task_initial_state=initial_state
+    )
+    runner_ok, runner_ok_total = _runner_verdict(
+        family,
+        task_description,
+        satisfying,
+        servicer=servicer,
+        context=context,
+        trial_id=f"differential_{task_id}_satisfying:0",
+    )
+    runner_bad, runner_bad_total = _runner_verdict(
+        family,
+        task_description,
+        violating,
+        servicer=servicer,
+        context=context,
+        trial_id=f"differential_{task_id}_violating:0",
+    )
     return _SubstrateDifferential(
         core_ok=core_ok,
         core_bad=core_bad,
@@ -1040,7 +1193,9 @@ def _assert_the_substrates_agree(author_key: str, verdict: _SubstrateDifferentia
 
 
 @pytest.mark.parametrize("author_key", [item.author_key for item in _differential_entries()])
-def test_both_substrates_discriminate_each_shared_scored_key(author_key, test_data_dir, tmp_path):
+def test_both_substrates_discriminate_each_shared_scored_key(
+    author_key, test_data_dir, tmp_path, runner_service, mock_grpc_context
+):
     item = entry(author_key)
     pack = _pack_dir(test_data_dir, author_key)
 
@@ -1067,7 +1222,9 @@ def test_both_substrates_discriminate_each_shared_scored_key(author_key, test_da
             "belong inside its own expression rather than next to it"
         )
 
-    verdict = _drive_both_substrates(author_key, test_data_dir, tmp_path)
+    verdict = _drive_both_substrates(
+        author_key, test_data_dir, tmp_path, runner_service, mock_grpc_context
+    )
     _assert_both_substrates_discriminate(author_key, verdict)
 
     assert verdict.core_ok_total > verdict.core_bad_total
@@ -1082,26 +1239,46 @@ def test_both_substrates_discriminate_each_shared_scored_key(author_key, test_da
 # --------------------------------------------------------------------------
 
 
+_EXPECT_INITIAL_STATE_PACK = _task_id_for(_EXPECT_INITIAL_STATE_KEY)
+
 _TRANSLATION_PACK_GLOBS: Mapping[str, str] = MappingProxyType(
-    {_ALL_KEYS_TASK: _PARITY_GLOB, _PROBE_PACK: _TASKS_GLOB}
+    {
+        _ALL_KEYS_TASK: _PARITY_GLOB,
+        _PROBE_PACK: _TASKS_GLOB,
+        _GOLDEN_REPLAY_PACK: _TASKS_GLOB,
+        _EXPECT_INITIAL_STATE_PACK: _PARITY_GLOB,
+    }
 )
 """The packs whose declared keys together carry the manifest, and the glob loading each.
 
-Two packs rather than one because ``state_checks.db_probes`` is exclusive with the other
-state sources: a pack declaring the probes cannot declare beside them the hash block and
-the JSONPath assertions ``all_keys`` carries. So the manifest's totality is a union over
-packs each of which is authorable on its own, and the two live under different roots —
-hence a glob apiece.
+More than one pack because a key ``all_keys`` may not declare beside the rest still has
+to be translated by something. ``state_checks.db_probes`` is exclusive with the hash
+block and the JSONPath assertions ``all_keys`` carries; the two hash sources name
+different expected states, so at most one of them lives there; and ``golden_actions``
+needs a task supplying a JSON initial-state file and an ``mcp_server`` to replay
+against, which ``all_keys`` supplies neither of. So the manifest's totality is a union
+over packs each of which is authorable on its own, and they do not all live under one
+root — hence a glob apiece.
 """
 
-_TRANSLATION_OWNERS: Mapping[str, str] = MappingProxyType({_PROBES_KEY: _PROBE_PACK})
+_TRANSLATION_OWNERS: Mapping[str, str] = MappingProxyType(
+    {
+        _PROBES_KEY: _PROBE_PACK,
+        _GOLDEN_ACTIONS_KEY: _GOLDEN_REPLAY_PACK,
+        _EXPECT_INITIAL_STATE_KEY: _EXPECT_INITIAL_STATE_PACK,
+    }
+)
 """The pack that must carry a key to the runner as something other than the field default.
 
-``all_keys`` owns every key this map does not name, so a key added to the manifest has an
-owner from the start and fails the lock until that pack declares it. Ownership is per key
-rather than per pack because declaring a key is not translating it: ``db_probe_grading``
-writes ``combine.method: weighted`` and ``llm_judge: null``, both of which reach the runner
-as exactly the field default, so a per-pack claim over it would assert nothing about
+Two reasons put a key here. The first is legality: a key ``all_keys`` cannot declare
+beside the rest needs a pack that can. The second is attribution — ``expect_initial_state``
+is legal there, but the pack named for it declares that key alone, so nothing else in the
+pack could be what put the field off its default. ``all_keys`` owns every key neither
+reason claims, so a key added to the manifest has an owner from the start and fails the
+lock until some pack declares it. Ownership is per key rather than per pack because
+declaring a key is not translating it: ``db_probe_grading`` writes
+``combine.method: weighted`` and ``llm_judge: null``, both of which reach the runner as
+exactly the field default, so a per-pack claim over it would assert nothing about
 translation and be red besides.
 """
 
@@ -1113,7 +1290,7 @@ def _translation_carriers(
     return {
         "RunnerGradingConfig": grading,
         "RunnerStateChecksConfig": grading.state_checks,
-        "RunnerTranscriptRulesConfig": grading.transcript_rules,
+        "TranscriptRulesConfig": grading.transcript_rules,
         "TraceChecksConfig": grading.trace_checks,
     }
 
@@ -1190,7 +1367,7 @@ def test_adapter_translation_carries_every_runner_key(test_data_dir):
 
 
 # --------------------------------------------------------------------------
-# 5. Every ledger key resolves in the runner config dump and has a recording site
+# 5. Every ledger key resolves in the runner config dump and declares a site
 # --------------------------------------------------------------------------
 
 _LEDGER_PROBE_TRACE_CHECKS = runner_models.TraceChecksConfig(
@@ -1218,7 +1395,7 @@ declared it.
 def test_every_ledger_key_resolves_in_the_runner_config_dump():
     runner_dump = runner_models.RunnerGradingConfig(
         state_checks=runner_models.RunnerStateChecksConfig(),
-        transcript_rules=runner_models.RunnerTranscriptRulesConfig(),
+        transcript_rules=runner_models.TranscriptRulesConfig(),
         trace_checks=_LEDGER_PROBE_TRACE_CHECKS,
     ).model_dump()
 
@@ -1240,10 +1417,12 @@ def test_every_ledger_key_resolves_in_the_runner_config_dump():
             "the ledger would never see the key as populated"
         )
         assert item.author_key in accountable, (
-            f"{item.author_key} reaches the runner but no recording site in the grading "
-            "path claims it, so every task populating it would fail GradeTrial. Add an "
-            "evaluate-or-skip site in _grade_trial_async (or the evaluator it calls) and "
-            "list the key in grading_ledger.accountable_author_keys"
+            f"{item.author_key} reaches the runner but nobody has declared a recording "
+            "site for it in grading_ledger.accountable_author_keys, so every task "
+            "populating it would fail GradeTrial. Add an evaluate-or-skip site in "
+            "_grade_trial_async (or the evaluator it calls) and list the key there. "
+            "This asserts the declaration only; lock 15 is what drives the site and "
+            "reads the outcome it filed"
         )
 
 
@@ -1277,12 +1456,13 @@ def _composition_verdict(
     The pack is copied and its ``state_checks.hash.weight`` rewritten per cell, so
     every cell crosses the whole load path — YAML, the shared load gate, and
     ``NativeAdapter.to_task_description`` — rather than a config mutated after
-    validation. Core's hash verdict is the real one: the pack commits the
-    ``expected_state_hash`` of its ``hash_matching`` state, so ``check_hash``
-    produces the verdict in process. The runner's is handed in, because its hash
-    evaluator drives db-service over HTTP — honest only because that verdict is
-    binary, which lock 7 holds, and because the runner producing it for itself is
-    proven at the integration tier by the hash family's ``enforcing_test``.
+    validation. Core's hash verdict is the real one: the pack declares its initial
+    state as the expected one and its ``hash_matching`` case reproduces it, so
+    ``check_hash`` produces the verdict in process. The runner's is handed in,
+    because its hash evaluator drives db-service over HTTP — honest only because
+    that verdict is binary, which lock 7 holds, and because the runner producing it
+    for itself is proven at the integration tier by the hash family's
+    ``enforcing_test``.
     """
     pack = _pack_dir(test_data_dir, _COMPOSITION_KEY)
     root = tmp_path / f"weight_{weight}_{case}"
@@ -1297,9 +1477,15 @@ def _composition_verdict(
     task_id = _task_id_for(_COMPOSITION_KEY)
     core_config = adapter.get_grading_config(task_id)
     runner_grading = adapter.to_task_description(task_id).grading
-    trial = _load_case(pack, case)
+    trial = load_case(pack, case)
 
-    core_component, core_total = _core_verdict("state_checks", core_config, trial, task_dir)
+    core_component, core_total = _core_verdict(
+        "state_checks",
+        core_config,
+        trial,
+        task_dir,
+        task_initial_state=adapter.get_task(task_id).initial_state,
+    )
     core_jsonpath, _ = StateChecker().check_jsonpaths(
         trial.state, core_config.state_checks.jsonpaths
     )
@@ -1445,21 +1631,19 @@ def _verdict_constants(expression: ast.expr) -> frozenset[float] | None:
 def _verdict_expression(node: ast.AST) -> ast.expr | None:
     """The expression ``node`` puts in the hash-score position, or ``None``.
 
-    Three shapes carry a verdict out of a producer: the first element of a returned
-    tuple (the ``(score, reason)`` pair both core producers return), a ``hash_score``
-    keyword argument (the runner returns its verdict inside a model), and an
-    assignment to ``hash_score``, which the other two then hand on.
+    Two shapes carry a verdict out of a tuple-verdict producer: the first element
+    of a returned tuple (the ``(score, reason, …)`` pair both audited producers
+    return) and an assignment to ``hash_score``, which a later return then hands on.
     """
     if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
         return node.value.elts[0]
-    named = isinstance(node, ast.keyword) and node.arg == _HASH_SCORE_NAME
     assigned = (
         isinstance(node, ast.Assign)
         and len(node.targets) == 1
         and isinstance(node.targets[0], ast.Name)
         and node.targets[0].id == _HASH_SCORE_NAME
     )
-    return node.value if named or assigned else None
+    return node.value if assigned else None
 
 
 def _sole_function(module_path: str, function_name: str) -> ast.AST:
@@ -1487,7 +1671,7 @@ def _reachable_hash_verdicts(module_path: str, function_name: str) -> frozenset[
     Fails when a score position holds a computed expression rather than a choice
     between literals: a derived partial verdict would make lock 6's ``0.0``/``1.0``
     runner inputs a stand-in for values that path never yields. Fails too when the
-    producer leaves by a ``return`` whose verdict sits outside the three positions
+    producer leaves by a ``return`` whose verdict sits outside the two positions
     :func:`_verdict_expression` reads — otherwise a refactor to ``return result``
     routes the verdict past the audit while the literals it left behind keep the
     binariness assertion green.
@@ -1513,51 +1697,181 @@ def _reachable_hash_verdicts(module_path: str, function_name: str) -> frozenset[
     assert not unaudited, (
         f"{module_path}::{function_name} returns at lines {unaudited} without putting a "
         "verdict in a position this audit reads — the first element of a returned tuple, "
-        f"an assignment to {_HASH_SCORE_NAME}, or a {_HASH_SCORE_NAME}= keyword. The "
-        "literals it leaves behind would keep the binariness assertion green while the "
-        "verdict it actually returns went unread"
+        f"or an assignment to {_HASH_SCORE_NAME}. The literals it leaves behind would "
+        "keep the binariness assertion green while the verdict it actually returns "
+        "went unread"
     )
     return frozenset(constants)
 
 
-def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
-    """Read from the source, because neither remaining producer is callable here.
+def _minimal_hash_result(**score_fields: Any) -> runner_models.HashGradingResult:
+    """A ``HashGradingResult`` carrying only what lock 7's model clause varies."""
+    return runner_models.HashGradingResult(
+        basis=runner_models.HashComparisonBasis.UNDECLARED_INITIAL_STATE,
+        golden_replay=GoldenReplayRecord(authored=0),
+        **score_fields,
+    )
 
-    The runner's hash evaluator drives db-service over HTTP and core's golden-replay
-    producer needs a task's MCP server, so a canonical-tier call reaches neither.
-    What is callable is core's ``expected_state_hash`` branch, and the composition
-    fixture's two cases are graded through it — which pins the two values lock 6
-    hands the runner as the ones core's own evaluator returns for the same states.
+
+def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
+    """Each producer is held to binariness by the shape its verdict leaves in.
+
+    The two core producers hand their verdict on as a bare float in a tuple, and
+    core's golden-replay producer needs a task's MCP server, so their sources are
+    read: each must choose its score between literals, and every ``return`` must
+    carry it somewhere the audit reads. The runner's producer returns its verdict
+    inside ``HashGradingResult``, which derives ``hash_score`` from ``hash_match``
+    — so instead of reading that function's source, the lock proves the derivation
+    by exhaustion over the model's one free bit, that supplying a score at
+    construction is refused, and that the producer's declared return type keeps
+    the verdict inside the model.
+
+    What is callable is ``check_hash``, which core's ``expect_initial_state``
+    branch reaches by hashing the pack's declared initial state; the composition
+    fixture's two cases are graded through it against a digest computed here the
+    way that branch computes it — which pins the two values lock 6 hands the
+    runner as the ones core's own evaluator returns for the same states.
     """
     producers = _declared_hash_verdict_producers()
-    assert producers == _HASH_VERDICT_PRODUCERS, (
+    assert frozenset(producers) == _TUPLE_VERDICT_PRODUCERS | _MODEL_VERDICT_PRODUCERS, (
         "the set of functions the manifest names as hash-verdict producers changed. Every "
-        "one is audited below, and lock 6 hands the runner's fold a 0.0/1.0 verdict on the "
-        "strength of that audit — so widening this set is an edit a reviewer sees"
+        "one is guarded below — tuple-verdict producers by source audit, the model-verdict "
+        "producer by the model's own derivation — and lock 6 hands the runner's fold a "
+        "0.0/1.0 verdict on the strength of that guard, so widening either partition is an "
+        "edit a reviewer sees"
     )
-    for module_path, function_name in sorted(producers):
+    for module_path, function_name in sorted(_TUPLE_VERDICT_PRODUCERS):
         reachable = _reachable_hash_verdicts(module_path, function_name)
         assert reachable == _BINARY_HASH_VERDICT, (
             f"{module_path}::{function_name} can produce hash scores {sorted(reachable)}, "
             f"not {sorted(_BINARY_HASH_VERDICT)}"
         )
 
+    for module_path, function_name in sorted(_MODEL_VERDICT_PRODUCERS):
+        declared_return = get_type_hints(producers[(module_path, function_name)]).get("return")
+        assert declared_return is runner_models.HashGradingResult, (
+            f"{module_path}::{function_name} declares return type {declared_return!r}, not "
+            "HashGradingResult — its verdict would leave outside the model whose derivation "
+            "is the whole of what holds this producer to a binary verdict"
+        )
+    for match in (True, False):
+        derived = _minimal_hash_result(hash_match=match).hash_score
+        assert derived == (1.0 if match else 0.0), (
+            f"HashGradingResult(hash_match={match}) derives hash_score {derived}, so the "
+            "score no longer restates the verdict bit"
+        )
+    assert {
+        _minimal_hash_result(hash_match=match).hash_score for match in (True, False)
+    } == _BINARY_HASH_VERDICT, (
+        "exhausting hash_match yields hash scores outside "
+        f"{sorted(_BINARY_HASH_VERDICT)}, so the model-verdict producer's path can hand "
+        "the fold a value lock 6 never drives"
+    )
+    for match, score in ((True, 0.0), (True, 1.0), (False, 0.37)):
+        with pytest.raises(ValidationError, match=_HASH_SCORE_NAME):
+            _minimal_hash_result(hash_match=match, hash_score=score)
+
     pack = _pack_dir(test_data_dir, _COMPOSITION_KEY)
-    expected_hash = yaml.safe_load((pack / "grading.yaml").read_text())["state_checks"]["hash"][
-        "expected_state_hash"
-    ]
+    task_id = _task_id_for(_COMPOSITION_KEY)
+    adapter = _parity_adapter(test_data_dir)
+    expected_hash = state_digest(
+        resolve_initial_state(
+            task_dir=adapter.get_task_dir(task_id),
+            initial_state_json_db=adapter.get_task(task_id).initial_state.json_db,
+        )
+    )
     for case, hash_score in _COMPOSITION_HASH_CASES:
-        db_state = extract_db_state(_load_case(pack, case).state)
+        db_state = extract_db_state(load_case(pack, case).state)
         actual, _ = StateChecker().check_hash(db_state, expected_hash)
         assert actual == hash_score, (
-            f"the composition fixture's {case!r} case scores {actual} against the pack's "
-            f"committed expected_state_hash, not the {hash_score} lock 6 assumes"
+            f"the composition fixture's {case!r} case scores {actual} against the hash of "
+            f"the state its task declares it starts in, not the {hash_score} lock 6 assumes"
         )
 
 
 # --------------------------------------------------------------------------
 # 8. Canonical differentials lock 3's predicate cannot reach
 # --------------------------------------------------------------------------
+
+
+def _assert_the_folding_matrix_discriminates() -> None:
+    """The property lock 19's differential rests on, read off its matrix.
+
+    Folding is per-field, so the rows have to differ in the places that make that
+    question askable: a representation difference a fold may collapse beside a genuine
+    difference it must refuse, and two field lists of one name each — the field that
+    differs, and another the record declares.
+
+    The differential is then bound to *this* matrix, because the clauses below and the
+    rows lock 19 actually drives are otherwise two lists nothing holds together: slicing
+    the parametrisation would drop the control rows while every clause here still read
+    the whole constant. What that binding reaches is the decorator naming the constant
+    whole; a helper filtering rows at call time would still escape it.
+    """
+    module_path, _, function_name = _FOLDING_DIFFERENTIAL_NODEID.partition("::")
+    differential = next(
+        (
+            node
+            for node in ast.parse((_REPO_ROOT / module_path).read_text()).body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == function_name
+        ),
+        None,
+    )
+    assert differential is not None, (
+        f"{module_path} declares no module-level {function_name!r}, so the matrix below "
+        "is asserted over and driven by nothing"
+    )
+    parametrisation = [
+        node for decorator in differential.decorator_list for node in ast.walk(decorator)
+    ]
+    assert any(
+        isinstance(node, ast.Name) and node.id == _FOLDING_MATRIX_NAME for node in parametrisation
+    ), (
+        f"{function_name} is not parametrised over {_FOLDING_MATRIX_NAME}, so the rows this "
+        "test asserts the discrimination of and the rows that differential drives are two "
+        "separate lists"
+    )
+    assert not any(isinstance(node, ast.Subscript) for node in parametrisation), (
+        f"{function_name}'s parametrisation subscripts its source, so it can drive a subset "
+        f"of {_FOLDING_MATRIX_NAME} while every clause here still reads the whole constant. "
+        "Dropping the control rows that way reopens the per-field question in silence"
+    )
+
+    record = _FOLDING_INITIAL_ORDERS["orders"][0]
+    assert {_FOLDING_FIELD, _FOLDING_CONTROL_FIELD} <= set(record), (
+        f"the folding record {record} does not declare both {_FOLDING_FIELD!r} and "
+        f"{_FOLDING_CONTROL_FIELD!r}, so a row listing the second names a field no state "
+        "carries and the per-field rule is never asked a question"
+    )
+
+    amounts = {cell.final_amount for cell in _NUMERIC_STRING_FOLDING_MATRIX}
+    assert len(amounts) == 2 and _FOLDING_DECLARED_AMOUNT not in amounts, (
+        f"the matrix leaves the trial's {_FOLDING_FIELD} at {sorted(amounts)} against a declared "
+        f"{_FOLDING_DECLARED_AMOUNT!r}. It needs exactly two, neither the declared string itself, "
+        "or there is no representation difference for a fold to collapse"
+    )
+    folds = {amount for amount in amounts if float(amount) == float(_FOLDING_DECLARED_AMOUNT)}
+    assert len(folds) == 1, (
+        f"{sorted(folds)} of the matrix's amounts are numerically equal to "
+        f"{_FOLDING_DECLARED_AMOUNT!r}, not one. With none there is nothing a fold may collapse; "
+        "with both there is no genuine difference a fold must refuse"
+    )
+
+    listed = {cell.numeric_string_fields for cell in _NUMERIC_STRING_FOLDING_MATRIX}
+    assert listed == {(), (_FOLDING_FIELD,), (_FOLDING_CONTROL_FIELD,)}, (
+        f"the matrix's field lists are {sorted(listed)}, not the empty list beside two lists of "
+        f"one name each — {_FOLDING_FIELD!r}, which differs, and {_FOLDING_CONTROL_FIELD!r}, "
+        "which does not. Drop the second and a build folding whenever the list is non-empty "
+        "answers every remaining row correctly"
+    )
+
+    matched = [cell for cell in _NUMERIC_STRING_FOLDING_MATRIX if cell.state_checks == 1.0]
+    assert matched == [_FoldingCell((_FOLDING_FIELD,), next(iter(folds)), 1.0)], (
+        f"the matrix expects a match on {matched}, not on the one row pairing the listed "
+        "differing field with the amount that is the declared one written another way. Every "
+        "other row is a refusal, so a table agreeing everywhere proves no discrimination"
+    )
 
 
 def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive():
@@ -1568,10 +1882,18 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
     names asserted nothing. So this asserts the property each escaped claim depends
     on instead: that lock 6's sweep still spans the weights where a fold rule is
     distinguishable at all, that lock 9's answer table still spans the declared
-    combine methods with one distinct score each, and that lock 14's weight maps still
+    combine methods with one distinct score each, that lock 14's weight maps still
     span the pair a membership rule is distinguishable over while its zero-share table
-    still answers ``all``/``any`` differently from ``weighted``. Membership alone
-    enforces nothing: a differential deleted wholesale leaves the escaped set unchanged.
+    still answers ``all``/``any`` differently from ``weighted``, and that lock 19's
+    folding matrix still pairs a representation difference against a genuine one under
+    field lists that differ by name rather than by length. Membership alone enforces
+    nothing: a differential deleted wholesale leaves the escaped set unchanged.
+
+    Lock 19 is the one entry here that does not rest on membership: its nodeid is
+    resolved through the same parse the ``enforcing_test`` claims use, and its
+    parametrisation is read out of the same AST, so deleting the function, renaming it,
+    or pointing it at a *subset* of the matrix asserted here all fail this test. The
+    other entries keep the weaker guarantee.
     """
     reached = {item.author_key for item in _differential_entries()}
     escaped = {
@@ -1634,6 +1956,11 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
         "zero-total-weight rule scoped to every method would satisfy the whole table"
     )
 
+    _assert_nodeid_is_collectable(
+        f"{_NUMERIC_STRING_FIELDS_KEY}: its differential", _FOLDING_DIFFERENTIAL_NODEID
+    )
+    _assert_the_folding_matrix_discriminates()
+
 
 # --------------------------------------------------------------------------
 # 9. Both substrates aggregate by the author's combine.method
@@ -1674,7 +2001,7 @@ def _core_method_verdict(test_data_dir: Path, root: Path, *, method: str) -> _Me
         f"the pack's authored pass_threshold is {grading_config.combine.pass_threshold}, so "
         f"the flags pinned against {COMBINE_METHOD_PASS_THRESHOLD} answer a different question"
     )
-    case = _load_case(_pack_dir(test_data_dir, _METHOD_KEY), _METHOD_CASE)
+    case = load_case(_pack_dir(test_data_dir, _METHOD_KEY), _METHOD_CASE)
     grade = GradingEngine(grading_config, task_dir=_pack_dir(root, _METHOD_KEY)).grade_trajectory(
         case.core_trajectory, case.state
     )
@@ -1703,12 +2030,12 @@ def _runner_method_verdict(test_data_dir: Path, root: Path, *, method: str) -> _
         f"the adapter translated pass_threshold {grading.pass_threshold}, so "
         f"the flags pinned against {COMBINE_METHOD_PASS_THRESHOLD} answer a different question"
     )
-    case = _load_case(_pack_dir(test_data_dir, _METHOD_KEY), _METHOD_CASE)
+    case = load_case(_pack_dir(test_data_dir, _METHOD_KEY), _METHOD_CASE)
     jsonpath_score, _ = evaluate_jsonpath_checks(
         grading.state_checks.jsonpath_checks, state=case.state
     )
     transcript_score = evaluate_transcript_rules(
-        case.runner_timeline, grading.transcript_rules.model_dump()
+        case.runner_timeline, grading.transcript_rules
     ).score
     folded = combine_grade_components(
         {"jsonpath_score": jsonpath_score, "transcript_score": transcript_score},
@@ -1768,7 +2095,7 @@ _TRACE_CHECKS_TASK = "trace_checks_constraints"
 
 
 def _replay_authored_calls(
-    servicer: RunnerServiceImpl, context: Any, trial_id: str, case: _TrialCase
+    servicer: RunnerServiceImpl, context: Any, trial_id: str, case: TrialCase
 ) -> None:
     """Execute each authored call through the runner, in the order it was written.
 
@@ -1797,29 +2124,76 @@ def _replay_authored_calls(
         assert executed.status == pb2.EXECUTION_STATUS_SUCCESS, executed.error_message
 
 
-def _runner_trace_checks_grade(
+def _register_pack(
     servicer: RunnerServiceImpl,
-    task_description: runner_models.TaskDescription,
-    case: _TrialCase,
-    trial_id: str,
     context: Any,
-) -> pb2.Grade:
-    """The runner's own ``GradeTrial`` verdict on ``case``, over real gRPC handlers."""
+    task_description: runner_models.TaskDescription,
+    trial_id: str,
+    *,
+    judge_model_config: core_models.ModelConfig | None = None,
+) -> None:
+    """Put ``task_description`` on the runner through its own ``RegisterTrial``.
+
+    The spec round-trips through JSON, so the runner grades the config it rebuilt
+    rather than the caller's object — which is why a caller that needs the graded
+    config reads it back off ``servicer.trials[trial_id]``.
+
+    ``judge_model_config`` rides the spec for a task declaring an ``llm_judge``
+    rubric, which ``_grade_llm_judge`` refuses to grade without.
+    """
     registered = servicer.RegisterTrial(
         register_request(
-            trial_spec_json(task_description.model_dump(mode="json"), trial_id=trial_id),
+            trial_spec_json(
+                task_description.model_dump(mode="json"),
+                trial_id=trial_id,
+                judge_model_config=judge_model_config,
+            ),
             trial_id=trial_id,
         ),
         context,
     )
     assert registered.success is True, registered.error
-    _replay_authored_calls(servicer, context, trial_id, case)
-    response = servicer.GradeTrial(
-        pb2.GradeTrialRequest(
-            trial_id=trial_id, llm_messages_json=json.dumps(case.runner_messages)
-        ),
+
+
+def _grade_registered_trial(
+    servicer: RunnerServiceImpl, context: Any, trial_id: str, llm_messages_json: str
+) -> pb2.GradeTrialResponse:
+    """``GradeTrial`` on an already-registered trial, response unasserted."""
+    return servicer.GradeTrial(
+        pb2.GradeTrialRequest(trial_id=trial_id, llm_messages_json=llm_messages_json),
         context,
     )
+
+
+def _grade_pack_through_the_runner(
+    servicer: RunnerServiceImpl,
+    context: Any,
+    task_description: runner_models.TaskDescription,
+    case: TrialCase,
+    trial_id: str,
+) -> pb2.GradeTrialResponse:
+    """Register the task, replay ``case``'s calls, grade — the runner's whole path.
+
+    The ``GradeTrialResponse`` comes back unasserted. A caller may be reading the
+    RPC's own verdict — a failed audit is an outcome, not a fixture error — so
+    asserting ``success`` here would consume the very fact it was called for.
+    Registration is asserted, because a trial that never registered is a broken
+    fixture whichever outcome the caller wants.
+    """
+    _register_pack(servicer, context, task_description, trial_id)
+    _replay_authored_calls(servicer, context, trial_id, case)
+    return _grade_registered_trial(servicer, context, trial_id, json.dumps(case.runner_messages))
+
+
+def _runner_trace_checks_grade(
+    servicer: RunnerServiceImpl,
+    task_description: runner_models.TaskDescription,
+    case: TrialCase,
+    trial_id: str,
+    context: Any,
+) -> pb2.Grade:
+    """The runner's own ``GradeTrial`` verdict on ``case``, over real gRPC handlers."""
+    response = _grade_pack_through_the_runner(servicer, context, task_description, case, trial_id)
     assert response.success is True, response.error
     return response.grade
 
@@ -1841,11 +2215,16 @@ def test_both_substrates_score_trace_checks_through_their_own_grading_path(
     adapter = _parity_adapter(test_data_dir)
     core_config = adapter.get_grading_config(_TRACE_CHECKS_TASK)
     task_description = adapter.to_task_description(_TRACE_CHECKS_TASK)
-    satisfying = _load_case(pack, "satisfying")
-    violating = _load_case(pack, "violating")
+    satisfying = load_case(pack, "satisfying")
+    violating = load_case(pack, "violating")
 
-    core_ok, _ = _core_verdict("trace_checks", core_config, satisfying, tmp_path)
-    core_bad, _ = _core_verdict("trace_checks", core_config, violating, tmp_path)
+    initial_state = adapter.get_task(_TRACE_CHECKS_TASK).initial_state
+    core_ok, _ = _core_verdict(
+        "trace_checks", core_config, satisfying, tmp_path, task_initial_state=initial_state
+    )
+    core_bad, _ = _core_verdict(
+        "trace_checks", core_config, violating, tmp_path, task_initial_state=initial_state
+    )
     runner_ok = _runner_trace_checks_grade(
         runner_service, task_description, satisfying, "trace_ok:0", mock_grpc_context
     )
@@ -1894,8 +2273,8 @@ def test_a_trace_gate_fails_the_trial_on_both_substrates(
     adapter = _parity_adapter(test_data_dir)
     core_config = adapter.get_grading_config(_TRACE_GATE_TASK)
     task_description = adapter.to_task_description(_TRACE_GATE_TASK)
-    satisfying = _load_case(pack, "satisfying")
-    violating = _load_case(pack, "violating")
+    satisfying = load_case(pack, "satisfying")
+    violating = load_case(pack, "violating")
 
     core_ok = GradingEngine(core_config, task_dir=tmp_path).grade_trajectory(
         satisfying.core_trajectory, satisfying.state
@@ -1976,7 +2355,7 @@ def test_the_winning_route_crosses_the_wire(
     adapter = _parity_adapter(test_data_dir)
     core_config = adapter.get_grading_config(_TRACE_ALTERNATIVES_TASK)
     task_description = adapter.to_task_description(_TRACE_ALTERNATIVES_TASK)
-    ledger, cherry_picked = _load_case(pack, "satisfying"), _load_case(pack, "violating")
+    ledger, cherry_picked = load_case(pack, "satisfying"), load_case(pack, "violating")
 
     core_won = GradingEngine(core_config, task_dir=tmp_path).grade_trajectory(
         ledger.core_trajectory, ledger.state
@@ -2066,14 +2445,7 @@ def _runner_undecided_grade(
     a hand-written counterpart could describe a trial the runner did not have, and
     then the two substrates would be graded on two different trials.
     """
-    registered = servicer.RegisterTrial(
-        register_request(
-            trial_spec_json(task_description.model_dump(mode="json"), trial_id=trial_id),
-            trial_id=trial_id,
-        ),
-        context,
-    )
-    assert registered.success is True, registered.error
+    _register_pack(servicer, context, task_description, trial_id)
 
     lookup = _execute_declared_call(servicer, context, trial_id, _UNDECIDED_LOOKUP, succeeds=True)
     assert lookup.status == pb2.EXECUTION_STATUS_SUCCESS, lookup.error_message
@@ -2089,7 +2461,7 @@ def _runner_undecided_grade(
     response = servicer.GradeTrial(
         pb2.GradeTrialRequest(
             trial_id=trial_id,
-            llm_messages_json=json.dumps([_wire_message(message) for message in _UNDECIDED_VIEW]),
+            llm_messages_json=json.dumps([wire_message(message) for message in _UNDECIDED_VIEW]),
         ),
         context,
     )
@@ -2107,8 +2479,8 @@ def _core_undecided_verdict(
         Trajectory(
             task_id=_TRACE_UNDECIDED_TASK,
             trial_index=0,
-            start_ts=_FIXTURE_TIMESTAMP,
-            end_ts=_FIXTURE_TIMESTAMP,
+            start_ts=FIXTURE_TIMESTAMP,
+            end_ts=FIXTURE_TIMESTAMP,
             messages=_UNDECIDED_VIEW,
             tool_log=list(recorded),
         ),
@@ -2179,12 +2551,305 @@ def test_an_undecided_verdict_crosses_the_wire_as_the_fact_it_is(
 
 
 # --------------------------------------------------------------------------
+# The runner's own registration path reaches the DB-reading packs
+# --------------------------------------------------------------------------
+
+_PACKS_WITH_A_REACHABILITY_ROW = (
+    ("state_checks_jsonpaths", "state_checks", "satisfying", 1.0),
+    ("custom_checks", "custom_checks", "satisfying", 1.0),
+    ("combine_method", "state_checks", "split_components", 0.0),
+)
+
+
+@pytest.mark.parametrize(
+    ("task_id", "component", "case_name", "expected"), _PACKS_WITH_A_REACHABILITY_ROW
+)
+def test_a_state_reading_pack_grades_through_the_runners_own_registration(
+    task_id, component, case_name, expected, test_data_dir, runner_service, mock_grpc_context
+):
+    """A pack whose grading reads the trial's database grades through ``RegisterTrial``.
+
+    ``RegisterTrial`` provisions the DB service from ``initial_state``, not from the
+    trial fixture's ``state:``, so such a pack reaches a score here only if its task
+    seeds one.
+
+    Each row carries the case it drives and the component value that case is authored
+    to produce, because the packs do not agree on one: two are satisfied by the rows
+    their ``initial_state`` seeds, and ``combine_method`` seeds a status its assertion
+    contradicts, so its trial splits into a 0.0 component and a 1.0 one. Pinning the
+    value per row is what holds that seed — a seed satisfying the assertion scores 1.0
+    here and makes the pack a different fixture, which no other lock over it can see:
+    both arms of the combine differential read the trial fixture's ``state:`` and never
+    consult ``initial_state`` at all.
+
+    Discriminating a satisfying case from a violating one is lock 3's claim, made over
+    the trial fixture's state. What is claimed here is reachability of the runner's own
+    path, and the component value that path produces.
+    """
+    adapter = _parity_adapter(test_data_dir)
+    task_description = adapter.to_task_description(task_id)
+    case = load_case(test_data_dir / "grading_parity" / task_id, case_name)
+
+    response = _grade_pack_through_the_runner(
+        runner_service,
+        mock_grpc_context,
+        task_description,
+        case,
+        f"reachability_{task_id}:0",
+    )
+
+    assert response.success is True, response.error
+    assert getattr(response.grade.components, component) == pytest.approx(expected), (
+        f"{task_id} reached GradeTrial but scored {component} at "
+        f"{getattr(response.grade.components, component)} rather than {expected}: the "
+        "runner graded against a database that does not carry what initial_state seeds"
+    )
+
+
+# --------------------------------------------------------------------------
+# A state_checks block the trial cannot answer is refused, never scored
+# --------------------------------------------------------------------------
+
+_A_SEEDED_TABLE = {"orders": [{"id": "O1", "status": "pending"}]}
+_A_FILESYSTEM_PATH = "$.filesystem['/env/fs/agent-visible/x.py']"
+_A_DATABASE_PATH = "$.db.orders[0].status"
+
+
+def _in_memory_task(
+    task_id: str,
+    *,
+    state_checks: runner_models.RunnerStateChecksConfig,
+    seeds_a_database: bool,
+) -> runner_models.TaskDescription:
+    """A task carrying nothing but the ``state_checks`` block under test.
+
+    Built in memory rather than committed as a fixture pack, because every shape here
+    is one the corpus sweeps refuse on disk. It is also the population these cells
+    stand for: a task from an adapter maintained outside this repository, whose
+    authoring gate was skipped or whose seeded tables could not be resolved.
+    """
+    return runner_models.TaskDescription(
+        task_id=task_id,
+        name=task_id,
+        category="test",
+        description=task_id,
+        adapter_type="native",
+        system_prompt="s",
+        initial_state=runner_models.RunnerInitialStateConfig(
+            tables=_A_SEEDED_TABLE if seeds_a_database else {}
+        ),
+        grading=runner_models.RunnerGradingConfig(
+            weights={"state_checks": 1.0}, state_checks=state_checks
+        ),
+    )
+
+
+def _refusal_for(
+    servicer, context, task_description: runner_models.TaskDescription, trial_id: str
+) -> pb2.GradeTrialResponse:
+    _register_pack(servicer, context, task_description, trial_id)
+    return _grade_registered_trial(
+        servicer, context, trial_id, json.dumps([{"role": "user", "content": "hi"}])
+    )
+
+
+def test_a_database_reading_block_on_a_task_that_seeds_nothing_is_refused_by_name(
+    runner_service, mock_grpc_context
+):
+    """The author hears which key and which assertion, not that a trial went missing.
+
+    ``TrialNotFoundError`` is asserted absent rather than merely unmentioned: it is
+    what this shape produced while the read happened before anything checked whether
+    there was a database to read, and it names the runner's own bookkeeping instead of
+    the pack.
+    """
+    task = _in_memory_task(
+        "refusal_jsonpaths",
+        state_checks=runner_models.RunnerStateChecksConfig(
+            jsonpath_checks=[
+                {"path": _A_DATABASE_PATH, "equals": "shipped", "description": "order O1 shipped"}
+            ]
+        ),
+        seeds_a_database=False,
+    )
+
+    response = _refusal_for(runner_service, mock_grpc_context, task, "refusal_jsonpaths:0")
+
+    assert response.success is False
+    assert "state_checks.jsonpaths" in response.error
+    assert _A_DATABASE_PATH in response.error
+    assert "order O1 shipped" in response.error
+    assert "TrialNotFoundError" not in response.error
+
+
+def test_a_source_less_hash_block_on_a_task_that_seeds_nothing_is_refused_by_name(
+    runner_service, mock_grpc_context
+):
+    """The hash block declaring no source at all — the shape that reads the DB first.
+
+    ``_execute_hash_grading`` fetches the trial's stable hash before it consults
+    ``expect_initial_state`` or ``golden_actions``, so a block declaring neither
+    reaches the database exactly as one declaring both does. Its basis is named in the
+    refusal, so the author can tell which of the three hash shapes was refused.
+    """
+    task = _in_memory_task(
+        "refusal_hash",
+        state_checks=runner_models.RunnerStateChecksConfig(hash_enabled=True),
+        seeds_a_database=False,
+    )
+
+    response = _refusal_for(runner_service, mock_grpc_context, task, "refusal_hash:0")
+
+    assert response.success is False
+    assert "state_checks.hash" in response.error
+    assert runner_models.HashComparisonBasis.UNDECLARED_INITIAL_STATE.value in response.error
+    assert "TrialNotFoundError" not in response.error
+
+
+def test_a_filesystem_rooted_path_is_graded_not_refused(runner_service, mock_grpc_context):
+    """The runner grades a ``$.filesystem[…]``-rooted path against the
+    agent-visible filesystem — the state
+    :meth:`RunnerServiceImpl._read_agent_visible_filesystem` composes.
+
+    The pre-existing refusal at ``_unreachable_state_checks_refusal`` classified
+    every filesystem-rooted path as unreachable and led ``GradeTrial`` to answer
+    ``success=false``. Measurement (reviewer report on the earlier commit) proved
+    the runner actually resolves such paths correctly, so the refusal was removed.
+    This test locks the corrected behaviour: the RPC responds ``success=true`` and
+    hands back a normal ``Grade`` rather than a refusal.
+    """
+    task = _in_memory_task(
+        "graded_filesystem",
+        state_checks=runner_models.RunnerStateChecksConfig(
+            jsonpath_checks=[{"path": _A_FILESYSTEM_PATH, "contains": "def divide"}]
+        ),
+        seeds_a_database=True,
+    )
+
+    response = _refusal_for(runner_service, mock_grpc_context, task, "graded_filesystem:0")
+
+    # ``success`` is now True: the assertion is graded rather than refused. The
+    # score itself may be 0.0 because the in-memory test filesystem does not
+    # actually contain ``x.py`` with the asserted content — we assert only the
+    # non-refusal semantic here; the substrate-parity suite covers the score.
+    assert response.success is True, response.error
+
+
+def test_a_path_rooted_where_only_the_core_engine_composes_is_refused(
+    runner_service, mock_grpc_context
+):
+    """``agent`` is a root core composes and the runner does not — the same divergence.
+
+    Its remedy differs from the filesystem's: the state is in the trial's database, so
+    the path is rooted at ``db``, not rewritten as a file assertion.
+    """
+    task = _in_memory_task(
+        "refusal_agent_root",
+        state_checks=runner_models.RunnerStateChecksConfig(
+            jsonpath_checks=[{"path": "$.agent.customers[0].balance", "equals": "10"}]
+        ),
+        seeds_a_database=True,
+    )
+
+    response = _refusal_for(runner_service, mock_grpc_context, task, "refusal_agent_root:0")
+
+    assert response.success is False, response.grade.reasons
+    assert "$.agent.customers[0].balance" in response.error
+    assert "rooted at db or tables" in response.error
+    assert "DB state unavailable" not in response.grade.reasons
+
+
+def test_the_authored_state_source_view_carries_every_source_key_the_manifest_names() -> None:
+    """The runtime's authored view is keyed by the manifest, not by its one consumer.
+
+    ``authored_state_sources`` is how ``GradeTrial`` hands
+    ``block_addresses_the_database`` a block in the author's vocabulary — the same
+    vocabulary the gate reads its raw YAML in — so the two points cannot answer the
+    same question about different keys. A source key added to ``state_checks`` and not
+    to the view would make the runtime's answer quietly narrower than the gate's, which
+    is the split this whole family exists to close.
+
+    The expectation is derived from :data:`GRADING_KEYS` rather than written out: a
+    ``state_checks`` leaf that scores is a source, and one that only shapes how a source
+    scores is a ``CONFIG_INPUT``. ``db_probes`` is therefore carried although
+    ``block_addresses_the_database`` never consults it — the view answers for the block,
+    and a view trimmed to its current reader would have to be widened again, silently,
+    by whoever writes the next rule.
+    """
+    source_keys = {
+        item.author_key.split(".", 1)[1]
+        for item in GRADING_KEYS
+        if item.author_key.startswith("state_checks.")
+        and item.author_key.count(".") == 1
+        and item.kind is KeyKind.SCORED_CHECK
+    }
+
+    assert source_keys, "no state_checks leaf in the manifest scores, so this proves nothing"
+    assert set(runner_models.RunnerStateChecksConfig().authored_state_sources()) == source_keys
+
+
+_REFUSALS_THAT_NAME_THE_TRIAL = (
+    pytest.param(
+        runner_models.RunnerStateChecksConfig(
+            jsonpath_checks=[{"path": _A_DATABASE_PATH, "equals": "shipped"}]
+        ),
+        False,
+        id="a_database_read_the_task_seeds_nothing_for",
+    ),
+    pytest.param(
+        runner_models.RunnerStateChecksConfig(hash_enabled=True),
+        False,
+        id="a_source_less_hash_block",
+    ),
+    pytest.param(
+        runner_models.RunnerStateChecksConfig(
+            jsonpath_checks=[
+                {"path": "$.agent.customers[0].balance", "equals": "0"},
+            ]
+        ),
+        True,
+        # ``$.agent`` roots at state only the core engine composes; the runner
+        # has no equivalent, so the refusal fires here where filesystem no
+        # longer does.
+        id="a_path_the_runner_composes_no_root_for",
+    ),
+)
+
+
+@pytest.mark.parametrize(("state_checks", "seeds_a_database"), _REFUSALS_THAT_NAME_THE_TRIAL)
+def test_every_state_checks_refusal_names_the_trial_it_refused(
+    state_checks, seeds_a_database, runner_service, mock_grpc_context
+):
+    """One opening for the whole family, because one call site writes it.
+
+    ``GradeTrialResponse.error`` is enumerated row by row in ``docs/GRPC_PROTOCOL.md``,
+    and every other row there identifies the trial. These two are built before the
+    ``try`` whose handler prefixes ``Grading error:``, so nothing else would put the id
+    on them and a host reading a batch of failures could not say which trial it held.
+
+    The sibling cells above assert what each refusal *says*; this one asserts how all of
+    them open, so a fourth refusal added to the family cannot arrive anonymous.
+    """
+    trial_id = "refusal_names_its_trial:0"
+    task = _in_memory_task(
+        "refusal_names_its_trial", state_checks=state_checks, seeds_a_database=seeds_a_database
+    )
+
+    response = _refusal_for(runner_service, mock_grpc_context, task, trial_id)
+
+    assert response.success is False, response.grade.reasons
+    assert response.error.startswith(f"Trial {trial_id!r} cannot be graded as authored: ")
+
+
+# --------------------------------------------------------------------------
 # 11. Both substrates read every per-constraint config input
 # --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("author_key", _TRACE_CONFIG_INPUT_KEYS)
-def test_both_substrates_read_each_per_constraint_config_input(author_key, test_data_dir, tmp_path):
+def test_both_substrates_read_each_per_constraint_config_input(
+    author_key, test_data_dir, tmp_path, runner_service, mock_grpc_context
+):
     """A field that shapes how a kind scores, driven the way lock 3 drives a scored key.
 
     Lock 3 selects ``SCORED_CHECK``, so these five escape it — they carry no
@@ -2195,7 +2860,9 @@ def test_both_substrates_read_each_per_constraint_config_input(author_key, test_
     or the argument the two matchers correlate on is. Discrimination here is
     therefore the field being read, not the constraint around it working.
     """
-    verdict = _drive_both_substrates(author_key, test_data_dir, tmp_path)
+    verdict = _drive_both_substrates(
+        author_key, test_data_dir, tmp_path, runner_service, mock_grpc_context
+    )
     _assert_both_substrates_discriminate(author_key, verdict)
     _assert_the_substrates_agree(author_key, verdict)
 
@@ -2253,8 +2920,8 @@ def _messageless_trajectory(task_id: str) -> Trajectory:
     return Trajectory(
         task_id=task_id,
         trial_index=0,
-        start_ts=_FIXTURE_TIMESTAMP,
-        end_ts=_FIXTURE_TIMESTAMP,
+        start_ts=FIXTURE_TIMESTAMP,
+        end_ts=FIXTURE_TIMESTAMP,
         messages=[],
     )
 
@@ -2310,7 +2977,7 @@ def test_an_empty_assertion_list_is_unscored_on_both_substrates(declared, test_d
         f"{pack}/grading.yaml declares no JSONPath assertions, so the declared column "
         "below carries an empty list too and this test compares one cell against itself"
     )
-    case = _load_case(pack, "satisfying")
+    case = load_case(pack, "satisfying")
 
     core, runner = _jsonpath_presence(authored if declared else [], case.state)
 
@@ -2483,14 +3150,15 @@ def test_a_scored_component_with_no_declared_weight_refuses_on_both_substrates(c
     """
     pack = _pack_dir(test_data_dir, _JSONPATHS_KEY)
     authored = yaml.safe_load((pack / "grading.yaml").read_text())["state_checks"]["jsonpaths"]
-    trial = _load_case(pack, "violating")
+    trial = load_case(pack, "violating")
     weights = _WEIGHT_MAPS[case]
     core_config, runner_config = _scored_pair_configs(authored, weights)
     jsonpath_score, _ = evaluate_jsonpath_checks(authored, state=trial.state)
     runner_components = {
         "jsonpath_score": jsonpath_score,
         "transcript_score": evaluate_transcript_rules(
-            trial.runner_timeline, runner_config["transcript_rules"]
+            trial.runner_timeline,
+            runner_models.TranscriptRulesConfig(**runner_config["transcript_rules"]),
         ).score,
     }
 
@@ -2532,7 +3200,7 @@ def test_a_zero_total_weight_decides_under_weighted_alone_on_both_substrates(
     """
     pack = _pack_dir(test_data_dir, _JSONPATHS_KEY)
     authored = yaml.safe_load((pack / "grading.yaml").read_text())["state_checks"]["jsonpaths"]
-    trial = _load_case(pack, case)
+    trial = load_case(pack, case)
     core_config = core_models.GradingConfig(
         state_checks={"jsonpaths": authored},
         combine={
@@ -2604,6 +3272,1186 @@ def test_a_config_scoring_nothing_passes_only_when_it_asked_for_nothing(weights,
         return
     assert named in core.reasons, core.reasons
     assert named in (runner.reason or ""), runner.reason
+
+
+# --------------------------------------------------------------------------
+# 15. Every ledger key's recording site is driven through a real GradeTrial
+# --------------------------------------------------------------------------
+
+
+class _Driver(str, Enum):
+    """How lock 15 gets one ledger key populated with its evaluator able to run."""
+
+    PARITY_PACK = "parity_pack"
+    HASH_FAMILY = "hash_family"
+    EXPECT_INITIAL_STATE = "expect_initial_state"
+    DB_PROBES = "db_probes"
+    LLM_JUDGE = "llm_judge"
+
+
+_LEDGER_KEY_DRIVERS: Mapping[str, _Driver] = MappingProxyType(
+    {
+        "custom_checks": _Driver.PARITY_PACK,
+        "state_checks.jsonpaths": _Driver.PARITY_PACK,
+        "transcript_rules.must_contain": _Driver.PARITY_PACK,
+        "transcript_rules.disallow_regex": _Driver.PARITY_PACK,
+        "transcript_rules.max_turns": _Driver.PARITY_PACK,
+        "transcript_rules.min_assistant_turns": _Driver.PARITY_PACK,
+        "transcript_rules.tool_expectations": _Driver.PARITY_PACK,
+        "transcript_rules.required_actions": _Driver.PARITY_PACK,
+        "transcript_rules.communicate_info": _Driver.PARITY_PACK,
+        "trace_checks.constraints": _Driver.PARITY_PACK,
+        "trace_checks.alternatives": _Driver.PARITY_PACK,
+        "trace_checks.constraints.present": _Driver.PARITY_PACK,
+        "trace_checks.constraints.absent": _Driver.PARITY_PACK,
+        "trace_checks.constraints.count": _Driver.PARITY_PACK,
+        "trace_checks.constraints.before": _Driver.PARITY_PACK,
+        "trace_checks.constraints.immediately_before": _Driver.PARITY_PACK,
+        "trace_checks.constraints.absent_before": _Driver.PARITY_PACK,
+        "trace_checks.constraints.absent_between": _Driver.PARITY_PACK,
+        "trace_checks.constraints.all_of": _Driver.PARITY_PACK,
+        "trace_checks.constraints.any_of": _Driver.PARITY_PACK,
+        "trace_checks.constraints.negate": _Driver.PARITY_PACK,
+        "state_checks.hash.enabled": _Driver.HASH_FAMILY,
+        "state_checks.hash.golden_actions": _Driver.HASH_FAMILY,
+        "state_checks.hash.expect_initial_state": _Driver.EXPECT_INITIAL_STATE,
+        "state_checks.db_probes": _Driver.DB_PROBES,
+        "llm_judge": _Driver.LLM_JUDGE,
+    }
+)
+"""Which driver can populate each ledger key and let its evaluator run.
+
+Written out per key, like ``accountable_author_keys()`` and for the same reason:
+comprehended from :data:`LEDGER_KEYS` the totality assertion below would compare
+that set against itself, and a key nothing can drive would join the sweep as a row
+that silently proves nothing.
+"""
+
+_LEDGER_SITE_KEYS = tuple(item.author_key for item in LEDGER_KEYS if item.runner_field is not None)
+
+
+def test_every_ledger_key_names_a_driver_that_can_populate_it():
+    """A ledger key absent from the table would drop out of the sweep, not fail it."""
+    undriven = sorted(set(_LEDGER_SITE_KEYS) - set(_LEDGER_KEY_DRIVERS))
+    stale = sorted(set(_LEDGER_KEY_DRIVERS) - set(_LEDGER_SITE_KEYS))
+
+    assert not undriven and not stale, (
+        f"the lock-15 driver table names no driver for {undriven or 'nothing'} and "
+        f"names {stale or 'nothing'} that is not a ledger key with a runner_field. "
+        "Every ledger key needs a driver here, or its recording site is unverified"
+    )
+
+
+def _assert_the_site_reported(
+    author_key: str,
+    grading_config: runner_models.RunnerGradingConfig,
+    response: pb2.GradeTrialResponse,
+) -> None:
+    """Assert the runner reported ``author_key`` the way the manifest implies.
+
+    ``grading_config`` is the config the runner *graded* — read off the registered
+    trial, not the test's own copy, because the spec round-trips through JSON and
+    the two are siblings.
+
+    The manifest decides which outcome to expect and the ledger supplies the text,
+    so neither this module nor a task author can spell an expectation production
+    never emits.
+    """
+    item = entry(author_key)
+
+    assert author_key in populated_ledger_keys(grading_config), (
+        f"{author_key}: the config the runner graded does not populate the key, so "
+        "the audit never visited it and every claim below would hold over a config "
+        "that asked for nothing"
+    )
+    assert response.success is True, (
+        f"{author_key}: GradeTrial failed, which is what the audit does when no "
+        f"recording site filed the key — {response.error}"
+    )
+
+    assert item.runner_evaluator is not None, (
+        f"{author_key}: the manifest gives it no runner evaluator, so this lock cannot "
+        "say what its recording site should have filed — a ledger key the runner never "
+        "evaluates needs a standing-skip record and a site that files it"
+    )
+    assert skip_note_prefix(author_key) not in response.grade.reasons, (
+        f"{author_key} declares the runner evaluator {item.runner_evaluator}, so its "
+        "recording site must file EVALUATED — the grade instead carries a skip note "
+        f"for it: {response.grade.reasons!r}"
+    )
+    component = author_key.split(".")[0]
+    assert getattr(response.grade.components, component) != _UNSCORED_COMPONENT, (
+        f"{author_key} was recorded as evaluated, but the {component} component it "
+        "feeds is the unscored sentinel — the site filed an evaluation that did not "
+        "happen"
+    )
+
+
+def _ledger_trial_id(label: str, author_key: str) -> str:
+    """A trial id unique to one caller and one key.
+
+    The DB service keeps a trial's rows for the whole session, so two tests naming
+    the same trial collide at ``RegisterTrial`` instead of grading. Sibling keys
+    sharing a driver — the three hash-family members — still need one trial each.
+    """
+    return f"ledger_site_{label}_{_task_id_for(author_key)}:0"
+
+
+def _drive_parity_pack(
+    author_key: str,
+    test_data_dir: Path,
+    servicer: RunnerServiceImpl,
+    context: Any,
+    *,
+    trial_id: str,
+) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
+    """Grade the key's own pack, and hand back the config the runner actually graded."""
+    task_description = _parity_adapter(test_data_dir).to_task_description(_task_id_for(author_key))
+    case = load_case(_pack_dir(test_data_dir, author_key), "satisfying")
+    response = _grade_pack_through_the_runner(servicer, context, task_description, case, trial_id)
+    return servicer.trials[trial_id].grading_config, response
+
+
+_HASH_DRIVER_TOOL = "ship_order"
+
+_HASH_DRIVER_TASK: dict[str, Any] = {
+    "task_id": "ledger_hash_family",
+    "name": "Ledger hash family",
+    "category": "test",
+    "description": "A hash-graded trial, for the hash family's recording site",
+    "adapter_type": "native",
+    "system_prompt": "You are a test assistant.",
+    "initial_state": {
+        "tables": {"orders": [{"order_id": "O1", "status": "pending"}]},
+        "schemas": [
+            {
+                "table_name": "orders",
+                "fields": {"order_id": "string", "status": "string"},
+                "primary_key": "order_id",
+            }
+        ],
+    },
+    # The golden action resolves against the trial's registered callables rather
+    # than against declared tool sources, so the tool is bound after registration
+    # and declaring it here would only ask the runner to reconstruct it.
+    "agent_tools": [],
+    "user_tools": [],
+    "grading": {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0},
+        "pass_threshold": 0.5,
+        "state_checks": {
+            "hash_enabled": True,
+            "golden_actions": [{"tool_name": _HASH_DRIVER_TOOL, "arguments": {"order_id": "O1"}}],
+        },
+    },
+}
+
+_INITIAL_ORDERS = {"orders": [{"order_id": "O1", "status": "pending"}]}
+
+#: The trial's own database, one record away from the state it started in. Both
+#: substrates read their two sides from these two mappings — the runner by seeding
+#: db-service with the first and mutating it into the second, core by hashing the
+#: first as the task's declared initial state and the second as the trial's — so a
+#: verdict that differs between them is the grading path's doing.
+_ORDERS_AFTER_A_CHANGE = {"orders": [{"order_id": "O1", "status": "shipped"}]}
+
+_EXPECT_INITIAL_STATE_TASK: dict[str, Any] = {
+    "task_id": "ledger_expect_initial_state",
+    "name": "Ledger expect_initial_state",
+    "category": "test",
+    "description": "A refusal-shaped trial whose expected final state is its initial state",
+    "adapter_type": "native",
+    "system_prompt": "You are a test assistant.",
+    "initial_state": {
+        "tables": _INITIAL_ORDERS,
+        "schemas": [
+            {
+                "table_name": "orders",
+                "fields": {"order_id": "string", "status": "string"},
+                "primary_key": "order_id",
+            }
+        ],
+    },
+    "agent_tools": [],
+    "user_tools": [],
+    "grading": {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0},
+        "pass_threshold": 0.5,
+        "state_checks": {"hash_enabled": True, "expect_initial_state": True},
+    },
+}
+"""A second hash-driver task, because ``_HASH_DRIVER_TASK`` cannot carry this key.
+
+That one declares ``golden_actions``, and the authored block refuses
+``expect_initial_state`` beside it — so a driver sharing it would fail lock 15's
+first claim, the key never being populated on the config the runner graded.
+"""
+
+#: What the same pack declares to the core engine, which takes the authored block and
+#: the task's own initial state rather than the runner's flattened naming.
+_EXPECT_INITIAL_STATE_GRADING: dict[str, Any] = {
+    "combine": {"method": "weighted", "weights": {"state_checks": 1.0}, "pass_threshold": 0.5},
+    "state_checks": {"hash": {"enabled": True, "expect_initial_state": True}},
+}
+
+_JUDGE_DRIVER_TASK: dict[str, Any] = {
+    "task_id": "ledger_llm_judge",
+    "name": "Ledger llm judge",
+    "category": "test",
+    "description": "A rubric-graded trial, for the judge's recording site",
+    "adapter_type": "native",
+    "system_prompt": "You are a test assistant.",
+    "initial_state": {},
+    "agent_tools": [],
+    "user_tools": [],
+    "grading": {
+        "combine_method": "weighted",
+        "weights": {"llm_judge": 1.0},
+        "pass_threshold": 0.5,
+        "llm_judge": {
+            "rubric": {
+                "criteria": [
+                    {
+                        "id": "explained",
+                        "description": "the agent explained the outcome",
+                        "kind": "binary",
+                        "weight": 1.0,
+                    }
+                ]
+            }
+        },
+    },
+}
+
+_JUDGE_TRANSCRIPT = json.dumps(
+    [{"role": "assistant", "content": "I shipped order O1, so the request is complete."}]
+)
+_PROBE_TRANSCRIPT = json.dumps([{"role": "assistant", "content": "Corrective action recorded."}])
+_HASH_TRANSCRIPT = json.dumps([{"role": "assistant", "content": "Order O1 is shipped."}])
+
+#: Rows standing in for the postgres the pack's probe queries. The DSN resolves only
+#: inside the task's docker network, which is why the manifest enforces this key's
+#: *score* at the integration tier — orthogonal to whether its *recording site* can be
+#: driven here, which is what lock 15 asks.
+_PROBE_ROWS = [{"reason_code": "CAPA-01", "status": "open"}]
+
+
+class _StubJudge:
+    """Stands in for the model provider at the seam ``service.LLMJudge`` names.
+
+    What it replaces is an external LLM call, not a recording site, an evaluator's
+    decision, the audit or the combine — all of those stay real on this path.
+    """
+
+    def __init__(self, model_config: Any, **_kwargs: Any) -> None:
+        self.model_config = model_config
+
+    def run(self, **_kwargs: Any) -> JudgeResult:
+        return JudgeResult(
+            status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
+        )
+
+
+async def _shipped(arguments: dict[str, Any]) -> str:
+    return json.dumps({"order_id": arguments["order_id"], "status": "shipped"})
+
+
+def _drive_hash_family(
+    servicer: RunnerServiceImpl, context: Any, *, trial_id: str
+) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
+    """Grade a hash-enabled trial whose one golden action names a registered tool.
+
+    Asserts the replay ran whole. The family is accounted for from the basis the
+    evaluator returns, and it returns one whenever it completes — including when every
+    golden action failed to take effect, which still grades ``success=True`` with
+    ``state_checks == 1.0``. All four of lock 15's claims hold on that hollow
+    evaluation, so without this guard claim 4 would mean nothing for the hash family.
+    """
+    task_description = runner_models.TaskDescription.model_validate(_HASH_DRIVER_TASK)
+    _register_pack(servicer, context, task_description, trial_id)
+    servicer.trials[trial_id].agent_tools[_HASH_DRIVER_TOOL] = _shipped
+
+    response = _grade_registered_trial(servicer, context, trial_id, _HASH_TRANSCRIPT)
+
+    assert "GOLDEN REPLAY ERRORS" not in response.grade.reasons, (
+        "the golden replay did not run whole, so the hash verdict was computed "
+        f"against a partial golden world and evaluating it proves nothing: "
+        f"{response.grade.reasons!r}"
+    )
+    return servicer.trials[trial_id].grading_config, response
+
+
+def _drive_expect_initial_state(
+    servicer: RunnerServiceImpl, context: Any, *, trial_id: str, changed: bool = False
+) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
+    """Grade a trial whose declared hash source is the state its task starts in.
+
+    ``changed`` moves the trial's database away from that state through the same
+    db-service the evaluator resets and hashes, so the two cells differ in what the
+    trial left behind rather than in what the pack declared.
+    """
+    task_description = runner_models.TaskDescription.model_validate(_EXPECT_INITIAL_STATE_TASK)
+    _register_pack(servicer, context, task_description, trial_id)
+    if changed:
+        servicer._run_async(
+            servicer.db_client.mutate(
+                trial_id,
+                "orders",
+                [
+                    {
+                        "op": "upsert",
+                        "record": _ORDERS_AFTER_A_CHANGE["orders"][0],
+                        "key": "order_id",
+                    }
+                ],
+            )
+        )
+
+    response = _grade_registered_trial(servicer, context, trial_id, _HASH_TRANSCRIPT)
+    return servicer.trials[trial_id].grading_config, response
+
+
+def _drive_db_probes(
+    test_data_dir: Path,
+    servicer: RunnerServiceImpl,
+    context: Any,
+    monkeypatch: Any,
+    *,
+    trial_id: str,
+) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
+    """Grade the ``db_probe_grading`` pack with the probe's postgres substituted.
+
+    ``_fetch_probe_rows`` is the seam lock 13 already reads this pack through. The
+    probe's own ``expect`` assertions, the fold that reads the score, the recording
+    site and the audit are all the real ones.
+    """
+
+    async def _rows(_dsn: str, _query: str) -> list[dict[str, Any]]:
+        return _PROBE_ROWS
+
+    monkeypatch.setattr(runner_grading, "_fetch_probe_rows", _rows)
+    task_description = _adapter_for(test_data_dir, _TASKS_GLOB).to_task_description(_PROBE_PACK)
+    _register_pack(servicer, context, task_description, trial_id)
+
+    response = _grade_registered_trial(servicer, context, trial_id, _PROBE_TRANSCRIPT)
+    return servicer.trials[trial_id].grading_config, response
+
+
+def _drive_llm_judge(
+    servicer: RunnerServiceImpl,
+    context: Any,
+    monkeypatch: Any,
+    *,
+    trial_id: str,
+    transcript: str = _JUDGE_TRANSCRIPT,
+) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
+    """Grade a rubric-configured trial with the model provider substituted.
+
+    The spec carries a judge ``ModelConfig``: ``_grade_llm_judge`` raises before it
+    ever constructs the judge without one, so the row would otherwise red on claim 2
+    for a reason with nothing to do with the recording site.
+    """
+    monkeypatch.setattr(runner_service_module, "LLMJudge", _StubJudge)
+    task_description = runner_models.TaskDescription.model_validate(_JUDGE_DRIVER_TASK)
+    _register_pack(
+        servicer,
+        context,
+        task_description,
+        trial_id,
+        judge_model_config=core_models.ModelConfig(name="test-judge", provider="test"),
+    )
+
+    response = _grade_registered_trial(servicer, context, trial_id, transcript)
+    return servicer.trials[trial_id].grading_config, response
+
+
+def _drive_the_key(
+    author_key: str,
+    test_data_dir: Path,
+    servicer: RunnerServiceImpl,
+    context: Any,
+    monkeypatch: Any,
+    *,
+    label: str,
+) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
+    """Whichever driver the table names for ``author_key``."""
+    driver = _LEDGER_KEY_DRIVERS[author_key]
+    trial_id = _ledger_trial_id(label, author_key)
+    if driver is _Driver.PARITY_PACK:
+        return _drive_parity_pack(author_key, test_data_dir, servicer, context, trial_id=trial_id)
+    if driver is _Driver.HASH_FAMILY:
+        return _drive_hash_family(servicer, context, trial_id=trial_id)
+    if driver is _Driver.EXPECT_INITIAL_STATE:
+        return _drive_expect_initial_state(servicer, context, trial_id=trial_id)
+    if driver is _Driver.DB_PROBES:
+        return _drive_db_probes(test_data_dir, servicer, context, monkeypatch, trial_id=trial_id)
+    if driver is _Driver.LLM_JUDGE:
+        return _drive_llm_judge(servicer, context, monkeypatch, trial_id=trial_id)
+    raise AssertionError(f"{author_key}: the {driver.value} driver has no implementation")
+
+
+@pytest.mark.parametrize("author_key", _LEDGER_SITE_KEYS)
+def test_every_ledger_keys_recording_site_is_driven(
+    author_key, test_data_dir, runner_service, mock_grpc_context, monkeypatch
+):
+    """Drive a real ``GradeTrial`` per ledger key and read what its site filed.
+
+    Editing ``accountable_author_keys()`` cannot satisfy this: the key has to be
+    populated on a config the runner registered, its evaluator has to run, and the
+    outcome the ledger reports has to be the one the manifest implies.
+
+    Two rows substitute an external service — the probe's postgres and the judge's
+    model provider — and nothing else. A key the manifest enforces at the
+    *integration* tier for its **score** is still canonically drivable for its
+    **recording site**; the two are orthogonal, and conflating them is what would
+    leave a residue here.
+    """
+    grading_config, response = _drive_the_key(
+        author_key, test_data_dir, runner_service, mock_grpc_context, monkeypatch, label="sweep"
+    )
+
+    _assert_the_site_reported(author_key, grading_config, response)
+
+
+def test_a_judge_with_no_transcript_messages_records_its_skip(
+    runner_service, mock_grpc_context, monkeypatch
+):
+    """The judge's other branch, kept beside the sweep rather than in it.
+
+    Every sweep row carries one manifest-derived expectation; this trial populates
+    ``llm_judge`` and legitimately skips it, which is the one shape that expectation
+    cannot describe. Its note is what tells a task author the rubric scored nothing.
+    """
+    grading_config, response = _drive_llm_judge(
+        runner_service,
+        mock_grpc_context,
+        monkeypatch,
+        trial_id=_ledger_trial_id("skip", LLM_JUDGE_KEY),
+        transcript="",
+    )
+
+    assert response.success is True, response.error
+    assert LLM_JUDGE_KEY in populated_ledger_keys(grading_config)
+    assert skip_note(LLM_JUDGE_KEY, NO_JUDGE_MESSAGES_SKIP) in response.grade.reasons, (
+        "a judge-configured trial with no transcript to judge must say so on the "
+        f"grade: {response.grade.reasons!r}"
+    )
+
+
+# Fault injections. Without them lock 15 is a gate nobody has seen fail, so each
+# asserts the helper rejects a trial the runner graded — five through a broken
+# runner, one through a config that never asked for the key.
+
+_INJECTION_JSONPATHS = "state_checks.jsonpaths"
+_INJECTION_TRACE = "trace_checks.constraints.all_of"
+_INJECTION_TRANSCRIPT = "transcript_rules.must_contain"
+
+
+def test_the_site_lock_rejects_a_config_that_populated_nothing(
+    test_data_dir, runner_service, mock_grpc_context
+):
+    """Claim 1: a real grade beside a config that never asked for the key."""
+    _, response = _drive_parity_pack(
+        _INJECTION_JSONPATHS,
+        test_data_dir,
+        runner_service,
+        mock_grpc_context,
+        trial_id=_ledger_trial_id("unpopulated", _INJECTION_JSONPATHS),
+    )
+
+    with pytest.raises(AssertionError, match="does not populate the key"):
+        _assert_the_site_reported(
+            _INJECTION_JSONPATHS, runner_models.RunnerGradingConfig(), response
+        )
+
+
+def test_the_site_lock_rejects_a_site_that_filed_a_skip_where_it_evaluated(
+    test_data_dir, runner_service, mock_grpc_context, monkeypatch
+):
+    """Claim 3: a recording site downgraded to a skip while its evaluator still ran.
+
+    Patching the module-level ``EVALUATED`` stands in for the class of defect rather
+    than reproducing one site's edit: every inline site reads this global, so the
+    downgrade lands on all of them at once.
+    """
+    monkeypatch.setattr(
+        runner_service_module,
+        "EVALUATED",
+        KeyAccountingRecord(outcome=KeyAccounting.SKIPPED, detail="downgraded by injection"),
+    )
+
+    grading_config, response = _drive_parity_pack(
+        _INJECTION_JSONPATHS,
+        test_data_dir,
+        runner_service,
+        mock_grpc_context,
+        trial_id=_ledger_trial_id("downgraded", _INJECTION_JSONPATHS),
+    )
+
+    assert response.success is True, response.error
+    with pytest.raises(AssertionError, match="must file EVALUATED"):
+        _assert_the_site_reported(_INJECTION_JSONPATHS, grading_config, response)
+
+
+@pytest.mark.parametrize(
+    ("evaluator_name", "author_key"),
+    [
+        ("evaluate_trace_checks", _INJECTION_TRACE),
+        ("evaluate_transcript_rules", _INJECTION_TRANSCRIPT),
+    ],
+)
+def test_the_site_lock_rejects_an_evaluator_that_stopped_accounting(
+    evaluator_name, author_key, test_data_dir, runner_service, mock_grpc_context, monkeypatch
+):
+    """Claim 2: the evaluator still scores, but records no key — the audit fails the RPC."""
+    real = getattr(runner_service_module, evaluator_name)
+
+    def drifted(*args: Any, **kwargs: Any) -> Any:
+        return real(*args, **kwargs).model_copy(update={"accounted_keys": {}})
+
+    monkeypatch.setattr(runner_service_module, evaluator_name, drifted)
+
+    grading_config, response = _drive_parity_pack(
+        author_key,
+        test_data_dir,
+        runner_service,
+        mock_grpc_context,
+        trial_id=_ledger_trial_id("unaccounted", author_key),
+    )
+
+    assert response.success is False, "the audit was meant to fail the RPC"
+    with pytest.raises(AssertionError, match="GradeTrial failed"):
+        _assert_the_site_reported(author_key, grading_config, response)
+
+
+def test_the_site_lock_rejects_an_evaluated_record_over_an_evaluation_that_did_not_run(
+    test_data_dir, runner_service, mock_grpc_context, monkeypatch
+):
+    """Claim 4: real accounting filed EVALUATED while the component stayed unscored."""
+    real = runner_service_module.evaluate_transcript_rules
+
+    def hollow(*args: Any, **kwargs: Any) -> Any:
+        return real(*args, **kwargs).model_copy(update={"score": _UNSCORED_COMPONENT})
+
+    monkeypatch.setattr(runner_service_module, "evaluate_transcript_rules", hollow)
+
+    grading_config, response = _drive_parity_pack(
+        _INJECTION_TRANSCRIPT,
+        test_data_dir,
+        runner_service,
+        mock_grpc_context,
+        trial_id=_ledger_trial_id("hollow", _INJECTION_TRANSCRIPT),
+    )
+
+    assert response.success is True, response.error
+    assert skip_note_prefix(_INJECTION_TRANSCRIPT) not in response.grade.reasons, (
+        "the key must still be recorded as evaluated, or claim 3 would fire here "
+        "and claim 4 would go unmeasured"
+    )
+    with pytest.raises(AssertionError, match="unscored sentinel"):
+        _assert_the_site_reported(_INJECTION_TRANSCRIPT, grading_config, response)
+
+
+def test_the_site_lock_rejects_hash_accounting_that_files_nothing(
+    runner_service, mock_grpc_context, monkeypatch
+):
+    """Claim 2 for the mechanism the hash family alone uses.
+
+    The whole family reaches the ledger through one ``hash_family_accounting`` call,
+    so that call returning nothing is how this family's recording site disappears.
+    The assertion is on lock 15's own helper: the mutation also breaks a dozen unit
+    tests elsewhere, and a lock that relied on those going red would not be reading
+    its own claim.
+    """
+    monkeypatch.setattr(runner_service_module, "hash_family_accounting", lambda basis: {})
+
+    grading_config, response = _drive_hash_family(
+        runner_service,
+        mock_grpc_context,
+        trial_id=_ledger_trial_id("unaccounted_hash", "state_checks.hash.enabled"),
+    )
+
+    assert response.success is False, "the audit was meant to fail the RPC"
+    with pytest.raises(AssertionError, match="GradeTrial failed"):
+        _assert_the_site_reported("state_checks.hash.enabled", grading_config, response)
+
+
+# --------------------------------------------------------------------------
+# 16. Both substrates score a comparison against the initial state alike
+# --------------------------------------------------------------------------
+
+
+def _core_expect_initial_state_verdict(final_db: dict[str, Any]) -> float:
+    """The core engine's ``state_checks`` for a trial ending in ``final_db``.
+
+    Hashes the task's declared initial state in core's own algebra and compares the
+    trial's state against it, which is the whole of what the runner does in its
+    algebra — so the two verdicts agreeing is a portability claim about the
+    proposition rather than about a digest neither substrate could share (#915).
+    """
+    grade = GradingEngine(
+        core_models.GradingConfig(**_EXPECT_INITIAL_STATE_GRADING),
+        task_initial_state=core_models.InitialStateConfig(json_db=_INITIAL_ORDERS),
+    ).grade_trajectory(_messageless_trajectory("expect_initial_state"), {"db": final_db})
+    return grade.components.state_checks
+
+
+@pytest.mark.parametrize(
+    ("changed", "final_db", "expected"),
+    [
+        pytest.param(False, _INITIAL_ORDERS, 1.0, id="the_trial_left_the_state_as_it_found_it"),
+        pytest.param(True, _ORDERS_AFTER_A_CHANGE, 0.0, id="the_trial_changed_a_record"),
+    ],
+)
+def test_both_substrates_score_a_comparison_against_the_initial_state_alike(
+    changed, final_db, expected, runner_service, mock_grpc_context
+):
+    """``state_checks.hash.expect_initial_state``'s ``BOTH_SCORE_PARITY`` claim.
+
+    The runner arm is its whole production path — ``RegisterTrial``, the trial's own
+    db-service state, ``GradeTrial`` — so what is compared is the state the evaluator
+    reset to rather than a state this module handed it. Neither cell can be the
+    unscored sentinel, both being asserted against a verdict of their own.
+
+    One row carries both arms' inputs, because each substrate reaches the trial's
+    final state its own way: ``changed`` is the mutation the runner's db-service
+    takes, ``final_db`` the same state as core receives it.
+    """
+    _, response = _drive_expect_initial_state(
+        runner_service,
+        mock_grpc_context,
+        trial_id=_ledger_trial_id(f"differential_{changed}", _EXPECT_INITIAL_STATE_KEY),
+        changed=changed,
+    )
+
+    assert response.success is True, response.error
+    assert response.grade.components.state_checks == pytest.approx(expected)
+    assert _core_expect_initial_state_verdict(final_db) == pytest.approx(expected)
+
+
+# --------------------------------------------------------------------------
+# 17. The custom_checks segment names the check that decided the trial, and is
+#     one text on both substrates
+# --------------------------------------------------------------------------
+
+_CUSTOM_CHECKS_TASK = "custom_checks"
+
+
+def _custom_checks_segment(reasons: str) -> str:
+    """The one ``Custom checks:`` segment of a ``reasons`` string.
+
+    Extracted rather than compared whole. The two substrates legitimately differ
+    elsewhere in ``reasons`` — a passing trial's account is core's ``All checks
+    passed`` against the runner's per-component sentences (#994) — so a whole-string
+    comparison would fail for a reason this lock is not about, and weakening it until
+    it passed would leave it proving nothing.
+    """
+    segments = [
+        segment
+        for segment in reasons.split(" | ")
+        if segment.startswith(CUSTOM_CHECKS_REASON_PREFIX)
+    ]
+    assert len(segments) == 1, (
+        f"expected exactly one {CUSTOM_CHECKS_REASON_PREFIX!r} segment, "
+        f"found {len(segments)} in {reasons!r}"
+    )
+    return segments[0]
+
+
+def _runner_custom_checks_grade(
+    servicer: RunnerServiceImpl,
+    context: Any,
+    task_description: runner_models.TaskDescription,
+    case: TrialCase,
+    trial_id: str,
+) -> pb2.Grade:
+    """The runner's own ``GradeTrial`` verdict, over the case's state.
+
+    ``RegisterTrial`` provisions the trial's database from the pack's
+    ``initial_state``, which seeds ``orders[0].status: shipped`` — the very state the
+    pack's one check asks about. Writing the case's own rows over it is what makes the
+    violating case violate; without that write both cases score ``1.0`` and every
+    assertion below would be about the passing branch twice.
+    """
+    _register_pack(servicer, context, task_description, trial_id)
+    _replay_authored_calls(servicer, context, trial_id, case)
+    _write_case_state_into_the_trial_database(servicer, trial_id, case.state["db"])
+    response = _grade_registered_trial(
+        servicer, context, trial_id, json.dumps(case.runner_messages)
+    )
+    assert response.success is True, response.error
+    return response.grade
+
+
+@pytest.fixture
+def custom_checks_grades(
+    request, test_data_dir, tmp_path, runner_service, mock_grpc_context
+) -> dict[str, tuple[core_models.Grade, pb2.Grade]]:
+    """``(core, runner)`` grades for both cases of the custom-checks parity pack.
+
+    Each substrate takes its own path — the core engine's ``grade_trajectory`` and the
+    runner's real ``RegisterTrial → ExecuteTool → GradeTrial`` — so a substrate that
+    never reaches the shared renderer, or re-wraps what it returns, differs here.
+
+    The trial id carries both the case and the requesting test: the two cases must not
+    share one, because a runner arm that registers a trial mutates its database, and
+    the db-service behind the servicer outlives a single test, so a fixture keyed on
+    the case alone re-registers an id that already exists.
+    """
+    pack = test_data_dir / "grading_parity" / _CUSTOM_CHECKS_TASK
+    adapter = _parity_adapter(test_data_dir)
+    core_config = adapter.get_grading_config(_CUSTOM_CHECKS_TASK)
+    task_description = adapter.to_task_description(_CUSTOM_CHECKS_TASK)
+    initial_state = adapter.get_task(_CUSTOM_CHECKS_TASK).initial_state
+    # The core engine imports the pack's ``checks.py`` from its task dir, which writes
+    # ``__pycache__`` beside the fixture; grade from a copy so a run leaves the repo clean.
+    core_task_dir = tmp_path / "core_task_dir"
+    shutil.copytree(pack, core_task_dir)
+
+    caller = re.sub(r"[^0-9a-zA-Z_]", "_", request.node.name)
+    grades: dict[str, tuple[core_models.Grade, pb2.Grade]] = {}
+    for case_name in ("satisfying", "violating"):
+        case = load_case(pack, case_name)
+        core_grade = GradingEngine(
+            core_config, task_dir=core_task_dir, task_initial_state=initial_state
+        ).grade_trajectory(case.core_trajectory, case.state)
+        runner_grade = _runner_custom_checks_grade(
+            runner_service,
+            mock_grpc_context,
+            task_description,
+            case,
+            f"{caller}_{case_name}:0",
+        )
+        grades[case_name] = (core_grade, runner_grade)
+    return grades
+
+
+@pytest.mark.parametrize("case_name", ("satisfying", "violating"))
+def test_the_custom_checks_segment_is_one_text_on_both_substrates(
+    case_name, custom_checks_grades
+) -> None:
+    """One renderer, two call sites, and neither re-wraps what it returns.
+
+    The claim is about the call sites rather than about the shared function: a
+    substrate prefixing its own wrapper around the sentence, or building its own text
+    beside it, produces a different segment here while both still call the renderer.
+    """
+    core_grade, runner_grade = custom_checks_grades[case_name]
+
+    assert _custom_checks_segment(core_grade.reasons) == _custom_checks_segment(
+        runner_grade.reasons
+    )
+
+
+def test_the_compared_custom_checks_segments_are_this_packs_two_verdicts(
+    custom_checks_grades,
+) -> None:
+    """Without this the equality above would hold for two identical passing sentences.
+
+    The pack declares one ``@check`` reading ``ctx.final_state``, so the two cases are
+    the only shapes it can express — all-passed and all-failed. That a *mixed* suite
+    cannot diverge follows from there being one renderer, which is an argument rather
+    than a measurement, and this pack cannot make it one.
+
+    Both segments are pinned to their exact text rather than to each other: the
+    check's name and its message are what the issue was about, and an inequality
+    between the two would hold for a pair differing by a score alone — and, once both
+    are pinned, could not fail on its own at all.
+    """
+    satisfying_core, satisfying_runner = custom_checks_grades["satisfying"]
+    violating_core, violating_runner = custom_checks_grades["violating"]
+
+    satisfying = _custom_checks_segment(satisfying_core.reasons)
+    violating = _custom_checks_segment(violating_core.reasons)
+
+    assert violating == (
+        "Custom checks: score=0.00, 1 of 1 checks failed — "
+        "order_was_shipped: order O1 is not shipped"
+    )
+    assert satisfying == "Custom checks: score=1.00, all 1 checks passed"
+
+    # The verdicts the segments describe, so neither is a sentence about a component
+    # that scored the other way round.
+    assert (satisfying_core.components.custom_checks, violating_core.components.custom_checks) == (
+        1.0,
+        0.0,
+    )
+    assert satisfying_runner.components.custom_checks == pytest.approx(1.0)
+    assert violating_runner.components.custom_checks == pytest.approx(0.0)
+
+    # The pack declares one component, so the segment is the runner's whole account of
+    # the trial — asserted as the equality it is, which also pins that a grade carries
+    # no separator at either end.
+    assert violating_runner.reasons == violating
+
+
+# --------------------------------------------------------------------------
+# 18. Every registered component narrates itself in a real grade
+# --------------------------------------------------------------------------
+
+_COMPONENT_NARRATION: Mapping[str, tuple[str, str]] = MappingProxyType(
+    {
+        "state_checks": ("state_checks.jsonpaths", "JSONPath:"),
+        "transcript_rules": ("transcript_rules.must_contain", "Transcript:"),
+        "trace_checks": ("trace_checks.constraints", "Trace checks:"),
+        "llm_judge": ("llm_judge", "Judge:"),
+        "custom_checks": ("custom_checks", "Custom checks:"),
+    }
+)
+"""Per registry component: an author key that populates it, and the marker it emits.
+
+The key half is an **author** key rather than the bare registry name, because
+:func:`_drive_the_key` keys on author keys and :func:`_drive_parity_pack` resolves a
+pack as ``grading_parity/<author key, dots to underscores>``; no pack exists under
+``state_checks`` or ``transcript_rules``.
+
+The marker half is the whole of what a row asserts about the text. Every pack these
+rows drive declares one component, so deleting that component's branch from
+``build_grade_reasons`` leaves the grade carrying the fold's own sentence and nothing
+else — measured on all five rows — and a marker that was merely *renamed* leaves the
+grade just as full. Neither is visible to a check that only asks whether the grade
+said anything, which is why a row names the marker production emits.
+
+Both halves are written out rather than derived. Comprehended from
+:data:`GRADE_COMPONENTS` the totality assertion below would compare a set against
+itself, and read from the production constants the marker would follow a rename
+instead of catching one — the same reason ``accountable_author_keys()`` and lock 15's
+driver table are written out.
+"""
+
+
+def test_every_registered_component_has_a_narration_row():
+    """A component absent from the table would drop out of the sweep, not fail it."""
+    unnarrated = sorted({spec.name for spec in GRADE_COMPONENTS} - set(_COMPONENT_NARRATION))
+    stale = sorted(set(_COMPONENT_NARRATION) - {spec.name for spec in GRADE_COMPONENTS})
+
+    assert not unnarrated and not stale, (
+        f"the component narration table names no row for {unnarrated or 'nothing'} and "
+        f"names {stale or 'nothing'} that is not a registered grade component. A "
+        "component without a row is one whose verdict may reach no grade at all"
+    )
+
+
+@pytest.mark.parametrize(
+    ("author_key", "marker"),
+    tuple(
+        pytest.param(author_key, marker, id=component)
+        for component, (author_key, marker) in _COMPONENT_NARRATION.items()
+    ),
+)
+def test_every_registered_component_narrates_itself_in_a_real_grade(
+    author_key, marker, test_data_dir, runner_service, mock_grpc_context, monkeypatch
+):
+    """The fold enumerates the registry; the renderer enumerated by hand.
+
+    Nothing held the second list to the first, which is how ``custom_checks`` came to
+    score a trial and contribute no sentence to its grade. This is the registry
+    holding the renderer: a component added to :data:`GRADE_COMPONENTS` without a
+    branch that names it fails here rather than shipping a grade that says the
+    component was never evaluated.
+
+    Driven through the same real ``RegisterTrial → GradeTrial`` as lock 15, so what is
+    read is a grade the runner built rather than a call to the renderer with a
+    hand-made component dict — the renderer was always *reachable*; the caller never
+    gave it anything, and a unit lock over ``build_grade_reasons`` would have been
+    green through the whole defect.
+    """
+    _, response = _drive_the_key(
+        author_key,
+        test_data_dir,
+        runner_service,
+        mock_grpc_context,
+        monkeypatch,
+        label="narration",
+    )
+
+    assert response.success is True, response.error
+    reasons = response.grade.reasons
+    assert marker in reasons, (
+        f"{author_key} scored its component and the grade never named it: no "
+        f"{marker!r} in {reasons!r}"
+    )
+
+
+# --------------------------------------------------------------------------
+# 19. Both substrates fold a listed numeric-string field alike
+# --------------------------------------------------------------------------
+
+_FOLDING_TASK_ID = "parity_numeric_string_folding"
+_FOLDING_FIELD = "amount"
+_FOLDING_CONTROL_FIELD = "quantity"
+_FOLDING_DECLARED_AMOUNT = "130.00"
+
+#: The record the folding task seeds. Its money field is the one a row may list, its
+#: quantity the declared field a row may list *instead* — same list length, different
+#: name, so a build reading the list's length rather than the names it holds cannot
+#: tell the two rows apart.
+_FOLDING_INITIAL_ORDERS: dict[str, Any] = {
+    "orders": [{"order_id": "O1", "amount": _FOLDING_DECLARED_AMOUNT, "quantity": "2"}]
+}
+
+
+@dataclass(frozen=True)
+class _FoldingCell:
+    """One row: what the pack listed, what the trial left, what both substrates owe."""
+
+    numeric_string_fields: tuple[str, ...]
+    final_amount: str
+    state_checks: float
+
+
+#: ``"130.0"`` is the declared amount written another way; ``"131.0"`` is a different
+#: amount. Folding is representational, so only the first can collapse, and only for a
+#: row that named the field it sits under.
+_NUMERIC_STRING_FOLDING_MATRIX: tuple[_FoldingCell, ...] = (
+    _FoldingCell((), "130.0", 0.0),
+    _FoldingCell((), "131.0", 0.0),
+    _FoldingCell((_FOLDING_FIELD,), "130.0", 1.0),
+    _FoldingCell((_FOLDING_FIELD,), "131.0", 0.0),
+    _FoldingCell((_FOLDING_CONTROL_FIELD,), "130.0", 0.0),
+    _FoldingCell((_FOLDING_CONTROL_FIELD,), "131.0", 0.0),
+)
+
+_FOLDING_MATRIX_NAME = "_NUMERIC_STRING_FOLDING_MATRIX"
+"""The matrix constant's own name, so lock 8 can read it out of the differential's AST."""
+
+_FOLDING_DIFFERENTIAL_NODEID = (
+    "tests/canonical/test_grading_substrate_parity.py"
+    "::test_both_substrates_fold_a_listed_numeric_string_field_alike"
+)
+"""The differential the matrix above exists for, named so lock 8 can resolve it.
+
+Membership in :data:`_CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3` says the claim needs a
+differential in this module; this says which function it is, and lock 8 holds the
+module to declaring it.
+"""
+
+#: What the runner's ``Grade.reasons`` carries for each verdict the matrix pins. Read
+#: beside the component so a row scoring 0.0 is a hash verdict rather than a component
+#: that took no verdict at all and left the wire's default behind.
+_FOLDING_HASH_SENTENCE = {1.0: "State: hash match", 0.0: "State mismatch"}
+
+
+def _folding_label(cell: _FoldingCell) -> str:
+    """One row's inputs as a name — never the verdict it is asserted against."""
+    listed = "_".join(cell.numeric_string_fields) or "nothing"
+    return f"{listed}_listed_{cell.final_amount.replace('.', '_')}"
+
+
+def _folding_task(numeric_string_fields: tuple[str, ...]) -> dict[str, Any]:
+    """The folding task as the runner takes it, listing ``numeric_string_fields``."""
+    return {
+        "task_id": _FOLDING_TASK_ID,
+        "name": "Numeric string folding",
+        "category": "test",
+        "description": "A trial whose money field ends in another representation",
+        "adapter_type": "native",
+        "system_prompt": "You are a test assistant.",
+        "initial_state": {
+            "tables": _FOLDING_INITIAL_ORDERS,
+            "schemas": [
+                {
+                    "table_name": "orders",
+                    "fields": {"order_id": "string", "amount": "string", "quantity": "string"},
+                    "primary_key": "order_id",
+                }
+            ],
+        },
+        "agent_tools": [],
+        "user_tools": [],
+        "grading": {
+            "combine_method": "weighted",
+            "weights": {"state_checks": 1.0},
+            "pass_threshold": 0.5,
+            "state_checks": {
+                "hash_enabled": True,
+                "expect_initial_state": True,
+                "numeric_string_fields": list(numeric_string_fields),
+            },
+        },
+    }
+
+
+def _folding_core_grading(numeric_string_fields: tuple[str, ...]) -> dict[str, Any]:
+    """The same declaration as core takes it, in the authored block's own naming."""
+    return {
+        "combine": {"method": "weighted", "weights": {"state_checks": 1.0}, "pass_threshold": 0.5},
+        "state_checks": {
+            "hash": {"enabled": True, "expect_initial_state": True},
+            "numeric_string_fields": list(numeric_string_fields),
+        },
+    }
+
+
+def _folding_final_orders(final_amount: str) -> dict[str, Any]:
+    """The trial's database with its money field rewritten and nothing else moved."""
+    return {"orders": [{**_FOLDING_INITIAL_ORDERS["orders"][0], "amount": final_amount}]}
+
+
+def _drive_numeric_string_folding(
+    servicer: RunnerServiceImpl, context: Any, *, trial_id: str, cell: _FoldingCell
+) -> pb2.GradeTrialResponse:
+    """Grade a trial whose money field ends in ``cell.final_amount``.
+
+    The mutation crosses the trial's own db-service and the evaluator hashes both
+    sides back through it, so what the fold reads is the record that service stored
+    rather than a mapping this module handed a hasher.
+    """
+    task_description = runner_models.TaskDescription.model_validate(
+        _folding_task(cell.numeric_string_fields)
+    )
+    _register_pack(servicer, context, task_description, trial_id)
+    servicer._run_async(
+        servicer.db_client.mutate(
+            trial_id,
+            "orders",
+            [
+                {
+                    "op": "upsert",
+                    "record": _folding_final_orders(cell.final_amount)["orders"][0],
+                    "key": "order_id",
+                }
+            ],
+        )
+    )
+    return _grade_registered_trial(servicer, context, trial_id, _HASH_TRANSCRIPT)
+
+
+def _core_numeric_string_folding_verdict(cell: _FoldingCell) -> float:
+    """Core's ``state_checks`` for the same row, built from the row and nothing else."""
+    grade = GradingEngine(
+        core_models.GradingConfig(**_folding_core_grading(cell.numeric_string_fields)),
+        task_initial_state=core_models.InitialStateConfig(json_db=_FOLDING_INITIAL_ORDERS),
+    ).grade_trajectory(
+        _messageless_trajectory(_FOLDING_TASK_ID),
+        {"db": _folding_final_orders(cell.final_amount)},
+    )
+    return grade.components.state_checks
+
+
+@pytest.mark.parametrize(
+    "cell",
+    tuple(pytest.param(cell, id=_folding_label(cell)) for cell in _NUMERIC_STRING_FOLDING_MATRIX),
+)
+def test_both_substrates_fold_a_listed_numeric_string_field_alike(
+    cell, runner_service, mock_grpc_context
+):
+    """``state_checks.numeric_string_fields``'s ``BOTH_SCORE_PARITY`` claim.
+
+    The declared hash source is ``expect_initial_state``, because the key is read once
+    per grade before the runner picks a basis and in every one of core's three
+    branches — so the source costs the claim nothing, and it is the one both substrates
+    can drive in process with no golden world to replay an action in.
+
+    Each arm reaches the trial's final state its own way and neither reads what the
+    other computed: the runner mutates its own db-service and grades over its real
+    handlers, core hashes the row's final mapping against the task's declared initial
+    state in its own algebra. Six cells of agreement are therefore six measurements
+    rather than one taken twice.
+
+    What the matrix cannot express: one table, one record depth, one declared field and
+    one hash source. ``canonicalize_numbers=False`` and the guards ``hash.py`` documents
+    separately — booleans never folding to ints, leading-zero ids never equating — carry
+    their own unit coverage in ``tests/unit/grading/test_hash.py``, which this does not
+    extend. A folding field nested under a differently named record key at greater depth
+    is outside both.
+    """
+    response = _drive_numeric_string_folding(
+        runner_service,
+        mock_grpc_context,
+        trial_id=_ledger_trial_id(_folding_label(cell), _NUMERIC_STRING_FIELDS_KEY),
+        cell=cell,
+    )
+
+    assert response.success is True, response.error
+    assert response.grade.components.state_checks == pytest.approx(cell.state_checks)
+    assert _FOLDING_HASH_SENTENCE[cell.state_checks] in response.grade.reasons, (
+        f"the runner scored {cell.state_checks} for {_folding_label(cell)} without its "
+        f"grade naming the hash verdict that score restates: {response.grade.reasons!r}"
+    )
+    assert _core_numeric_string_folding_verdict(cell) == pytest.approx(cell.state_checks)
+
+
+_NESTED_BINDING_PACK = "nested_binding_grading"
+"""The one in-repo pack whose binding reference sits where the gate cannot type it.
+
+The reference addresses ``args.json.q``, below the tool schema's first segment, which
+the authoring gate checks at its first segment only (#765) — so the evaluator's own
+reading of the two runtime types is the last thing between the author and a
+comparison no trajectory can make. It sits under ``tests/data/tasks/`` rather than in
+the parity corpus because that corpus is one pack per author key with every addressed
+argument precisely typed, and this fixture needs the key already taken and the type
+deliberately unreadable.
+"""
+
+_UNMAKEABLE_SENTENCE_OPENING = "the args.json.q comparison was not made"
+
+
+def test_an_unmakeable_comparison_fails_its_own_call_on_both_substrates(
+    test_data_dir, tmp_path, runner_service, mock_grpc_context
+):
+    """A reference no candidate could compare is the author's mistake, and says so.
+
+    Both trials bind the same reason code out of the report they read and both search
+    the policy corpus by the lot number, an integer where the binding holds text —
+    a pair the operator can never satisfy. The satisfying trial also searches by the
+    code, so one candidate made the comparison and the constraint is scored on what
+    the agent did; the violating trial has only the unmakeable call, and fails
+    carrying the sentence that names the reference. The two scores are asserted as a
+    pair, so a build that charges the whole constraint for the unmakeable call — or
+    one that reports nothing anywhere — moves one of them and fails here.
+
+    The core engine's ``grade_trajectory`` and the runner's real gRPC ``GradeTrial``
+    are driven separately, and the sentence is read off the verdict that crossed the
+    wire, because a diagnostic that reaches only the in-process substrate is not the
+    one an author reads in ``grade.yaml``.
+    """
+    pack = test_data_dir / "tasks" / _NESTED_BINDING_PACK
+    adapter = _adapter_for(test_data_dir, _TASKS_GLOB)
+    core_config = adapter.get_grading_config(_NESTED_BINDING_PACK)
+    task_description = adapter.to_task_description(_NESTED_BINDING_PACK)
+    initial_state = adapter.get_task(_NESTED_BINDING_PACK).initial_state
+    satisfying = load_case(pack, "satisfying")
+    violating = load_case(pack, "violating")
+
+    core_ok, _ = _core_verdict(
+        "trace_checks", core_config, satisfying, tmp_path, task_initial_state=initial_state
+    )
+    core_bad, _ = _core_verdict(
+        "trace_checks", core_config, violating, tmp_path, task_initial_state=initial_state
+    )
+    runner_ok = _runner_trace_checks_grade(
+        runner_service, task_description, satisfying, "nested_binding_ok:0", mock_grpc_context
+    )
+    runner_bad = _runner_trace_checks_grade(
+        runner_service, task_description, violating, "nested_binding_bad:0", mock_grpc_context
+    )
+
+    assert (core_ok, core_bad) == (1.0, 0.0), (
+        "the core engine does not discriminate the call the comparison was unmakeable "
+        f"on from the one that made it: satisfying {core_ok} vs violating {core_bad}"
+    )
+    assert runner_ok.components.HasField("trace_checks"), (
+        "the runner produced no trace_checks component, so the parity comparison below "
+        "would hold on a component neither substrate scored"
+    )
+    assert runner_ok.components.trace_checks == pytest.approx(core_ok)
+    assert runner_bad.components.trace_checks == pytest.approx(core_bad)
+
+    (reported,) = runner_bad.trace_checks
+    assert reported.passed is False
+    assert _UNMAKEABLE_SENTENCE_OPENING in reported.message, (
+        "the verdict that crossed the wire does not name the reference no candidate "
+        f"could compare, so the author reads it as the agent's miss: {reported.message!r}"
+    )
+    assert "binding 'code' holds 'CAPA-01', a JSON string" in reported.message
+    (silent,) = runner_ok.trace_checks
+    assert (silent.passed, _UNMAKEABLE_SENTENCE_OPENING in silent.message) == (True, False), (
+        "the trial whose sibling call made the comparison is reported as an authoring "
+        f"mistake anyway: {silent.message!r}"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -2686,7 +4534,7 @@ def test_the_fixture_loader_places_each_turns_calls_where_the_author_wrote_them(
     — with no expressible fixture at all.
     """
     pack = _write_pack(tmp_path, _MULTI_TURN_FIXTURE)
-    trial = _load_case(pack, _MULTI_TURN_CASE)
+    trial = load_case(pack, _MULTI_TURN_CASE)
 
     assert _produced_events(trial.runner_timeline) == _MULTI_TURN_EVENTS
 
@@ -2708,7 +4556,7 @@ def test_the_fixture_loader_hands_the_runner_wire_shaped_tool_calls(tmp_path):
     call — the parity suite's own silent divergence.
     """
     pack = _write_pack(tmp_path, _MULTI_TURN_FIXTURE)
-    transcript = _build_runner_check_transcript(_load_case(pack, _MULTI_TURN_CASE).runner_messages)
+    transcript = _build_runner_check_transcript(load_case(pack, _MULTI_TURN_CASE).runner_messages)
 
     assert [
         (call.name, call.arguments)
@@ -2756,4 +4604,4 @@ def test_the_fixture_loader_rejects_a_key_it_would_not_read(what, mutate, reject
     pack = _write_pack(tmp_path, fixture)
 
     with pytest.raises(AssertionError, match=re.escape(rejected)):
-        _load_case(pack, _MULTI_TURN_CASE)
+        load_case(pack, _MULTI_TURN_CASE)

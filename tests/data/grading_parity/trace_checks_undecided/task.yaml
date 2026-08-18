@@ -12,7 +12,10 @@ initial_state:
 
 tools:
   agent:
-    enabled: []
+    mcp_server: mcp_server.py
+    enabled:
+      - billing_api_get_payment
+      - servicenow_csm_update_case
   user:
     enabled: []
 

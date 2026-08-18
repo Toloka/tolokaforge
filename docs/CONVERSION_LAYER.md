@@ -101,7 +101,8 @@ state_checks:
   hash:
     enabled: true
     weight: 1.0
-    expected_state_hash: "3f2a…"         # the state the converted golden path produces
+    expect_initial_state: true           # the converted task's expected final state is
+                                         # the state it starts in
 ```
 
 Grading by golden-action **replay** — `hash.golden_actions` in place of the literal above —

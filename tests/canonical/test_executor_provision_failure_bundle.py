@@ -22,42 +22,15 @@ import pytest
 import yaml
 
 from tests.canonical._factories import make_task_config, make_trial_spec
-from tolokaforge.core.conductor import InMemoryConductor
+from tests.utils.provision_failure import FailProvisionBackend, provisioning_executor
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import Trajectory, TrialStatus
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.output.artifacts import FileArtifactWriter, InMemoryArtifactWriter
 from tolokaforge.core.output_writer import TRIAL_BUNDLE_SCHEMA_VERSION
-from tolokaforge.core.runtime import InMemoryRuntimeBackend, ProvisionError
 from tolokaforge.core.trial import TrialResult
-from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 
 pytestmark = pytest.mark.canonical
-
-
-class _FailProvisionBackend(InMemoryRuntimeBackend):
-    """Backend whose ``provision`` always raises with a caller-chosen reason."""
-
-    def __init__(self, reason: str) -> None:
-        super().__init__()
-        self._reason = reason
-
-    def provision(self, spec):  # type: ignore[override]
-        raise ProvisionError(trial_id=spec.trial_id, stage="provision", reason=self._reason)
-
-
-def _make_executor(
-    backend: InMemoryRuntimeBackend,
-    output_dir: Path,
-    artifact_writer,
-) -> ProvisioningTrialExecutor:
-    return ProvisioningTrialExecutor(
-        runtime_backend=backend,
-        conductor=InMemoryConductor(),
-        logger=StructuredLogger("test-provision-failure-bundle"),
-        output_dir=output_dir,
-        artifact_writer=artifact_writer,
-    )
 
 
 def _trial_dir(output_dir: Path, task_id: str, trial_idx: int) -> Path:
@@ -66,8 +39,13 @@ def _trial_dir(output_dir: Path, task_id: str, trial_idx: int) -> Path:
 
 class TestBundleWrittenOnProvisionFailure:
     def test_bundle_lands_on_disk_with_failure_signal(self, tmp_path: Path) -> None:
-        backend = _FailProvisionBackend("no capacity in region")
-        executor = _make_executor(backend, tmp_path, FileArtifactWriter())
+        backend = FailProvisionBackend("no capacity in region")
+        executor = provisioning_executor(
+            backend,
+            tmp_path,
+            FileArtifactWriter(),
+            logger=StructuredLogger("test-provision-failure-bundle"),
+        )
 
         result = executor.execute(
             make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1")
@@ -105,8 +83,13 @@ class TestBundleWrittenOnProvisionFailure:
         assert not (trial_dir / "grade.yaml").exists()
 
     def test_collect_existing_cost_reads_the_failed_trial(self, tmp_path: Path) -> None:
-        backend = _FailProvisionBackend("boom")
-        executor = _make_executor(backend, tmp_path, FileArtifactWriter())
+        backend = FailProvisionBackend("boom")
+        executor = provisioning_executor(
+            backend,
+            tmp_path,
+            FileArtifactWriter(),
+            logger=StructuredLogger("test-provision-failure-bundle"),
+        )
 
         executor.execute(make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1"))
 
@@ -115,8 +98,13 @@ class TestBundleWrittenOnProvisionFailure:
 
 class TestErrorReasonPropagation:
     def test_metrics_error_reason_carries_provision_error_reason(self, tmp_path: Path) -> None:
-        backend = _FailProvisionBackend("compose pull failed: image not found")
-        executor = _make_executor(backend, tmp_path, FileArtifactWriter())
+        backend = FailProvisionBackend("compose pull failed: image not found")
+        executor = provisioning_executor(
+            backend,
+            tmp_path,
+            FileArtifactWriter(),
+            logger=StructuredLogger("test-provision-failure-bundle"),
+        )
 
         executor.execute(make_trial_spec(trial_id="task-9:3"), make_task_config(task_id="task-9"))
 
@@ -134,15 +122,9 @@ class _RaisingWriter(InMemoryArtifactWriter):
 
 class TestBundleWriteFailureDoesNotMask:
     def test_write_failure_is_logged_and_result_still_returned(self, tmp_path: Path) -> None:
-        backend = _FailProvisionBackend("boom")
+        backend = FailProvisionBackend("boom")
         logger = StructuredLogger("test-provision-failure-bundle")
-        executor = ProvisioningTrialExecutor(
-            runtime_backend=backend,
-            conductor=InMemoryConductor(),
-            logger=logger,
-            output_dir=tmp_path,
-            artifact_writer=_RaisingWriter(),
-        )
+        executor = provisioning_executor(backend, tmp_path, _RaisingWriter(), logger=logger)
 
         result = executor.execute(
             make_trial_spec(trial_id="task-1:0"), make_task_config(task_id="task-1")

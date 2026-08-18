@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.console import Console
+from rich.markup import escape
 
 from tolokaforge.core.grading.trace_replay import (
     ConstraintDiscrimination,
@@ -78,8 +79,15 @@ def _gate_notes(outcome: TrialTraceReplayOutcome) -> str:
 def _disposition(outcome: TrialTraceReplayOutcome, bundle: str) -> str:
     if outcome.status is TraceReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE:
         return f"[warn]skip (not applicable)[/warn] {bundle}"
+    if outcome.status is TraceReplayOutcomeStatus.SKIPPED_NO_TASK:
+        # The reason embeds recorded trajectory text; escape it so a bracketed
+        # fragment prints rather than vanishing as console markup.
+        return f"[warn]skip (no task)[/warn] {bundle} — {escape(outcome.reason or '')}"
     if outcome.status is TraceReplayOutcomeStatus.FAILED:
-        return f"[error]failed[/error] {bundle} — {outcome.reason}"
+        # Match the SKIPPED_NO_TASK branch above — the reason may carry
+        # bracketed fragments Rich would misparse. Escape both the reason
+        # and the bundle name.
+        return f"[error]failed[/error] {escape(bundle)} — {escape(outcome.reason or '')}"
     evidence = outcome.evidence
     record = "record present" if evidence and evidence.tool_log_present else "no record"
     result = outcome.result
@@ -114,8 +122,9 @@ def render_trace_replay_dispositions(
     console.print(
         f"\n[bold]{'Would re-check' if dry_run else 'Re-checked'}:[/bold] {eligible} eligible, "
         f"{_count(outcomes, TraceReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE)} "
-        f"skipped-not-applicable, {_count(outcomes, TraceReplayOutcomeStatus.FAILED)} "
-        "failed-with-reason"
+        "skipped-not-applicable, "
+        f"{_count(outcomes, TraceReplayOutcomeStatus.SKIPPED_NO_TASK)} skipped-no-task, "
+        f"{_count(outcomes, TraceReplayOutcomeStatus.FAILED)} failed-with-reason"
     )
 
 
@@ -161,8 +170,11 @@ def _evidence_line(report: TraceReplayReport) -> str:
     return (
         f"[bold]Evidence:[/bold] {evidence.bundles_read} bundles read, "
         f"{evidence.bundles_with_tool_log} carried a tool-call record, "
-        f"{evidence.bundles_skipped} skipped, {evidence.bundles_failed} failed, "
-        f"{evidence.bundles_predating_call_ids} predating call ids"
+        f"{evidence.bundles_skipped} skipped, "
+        f"{evidence.bundles_no_task} with no task snapshot, "
+        f"{evidence.bundles_failed} failed, "
+        f"{evidence.bundles_predating_call_ids} predating call ids, "
+        f"{evidence.bundles_redacted} redacted"
         + (f"; bundle schema versions {stamps}" if stamps else "")
     )
 

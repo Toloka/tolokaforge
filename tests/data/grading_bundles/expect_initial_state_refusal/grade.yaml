@@ -1,0 +1,11 @@
+binary_pass: true
+score: 1.0
+components:
+  state_checks: 1.0
+  transcript_rules: null
+  trace_checks: null
+  llm_judge: null
+  custom_checks: null
+reasons: 'State: State hash matches (tau-bench algorithm)'
+state_diff: null
+custom_checks_details: null

@@ -1,8 +1,9 @@
 """The window a trial's assistant-turn count is graded against.
 
-Substrate-neutral by construction: a stdlib-only predicate over the two author
-keys that bound the counter, so both ``TranscriptRulesConfig`` models reject the
-same windows instead of each carrying its own comparison and its own wording.
+A stdlib-only predicate over the two author keys that bound the counter, so
+``TranscriptRulesConfig`` states the rule once and every construction path — a
+``grading.yaml`` load and ``RegisterTrial`` alike — rejects the same windows in
+the same words.
 """
 
 from __future__ import annotations

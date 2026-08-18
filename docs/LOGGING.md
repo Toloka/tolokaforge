@@ -66,7 +66,7 @@ logger.debug("State synchronized", tables=5)
 **Examples:**
 ```python
 logger.info("Trial execution started", task_id="task-123")
-logger.info("Agent signaled completion")
+logger.info("User signaled completion (###STOP###)", dropped_tool_calls=0)
 logger.info("Trial graded", score=0.95, binary_pass=True)
 ```
 
@@ -208,6 +208,8 @@ logs:
 ```
 
 Timestamps are UTC ISO-8601 with microsecond precision — a distinct shape from the console line's `HH:MM:SS.mmm`. The on-disk YAML keys `{timestamp, level, module, message, context}` are a separate contract from the JSON-on-the-wire keys `{ts, level, logger, message, extra}`; see [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § `logs.yaml`.
+
+`save_to_file` takes the redaction policy to apply to each record on its way out, defaulting to `NoRedaction` — the records as collected. A trial bundle passes the writer's policy, which is what reaches a credential nested inside a mapping-valued context: the redaction applied where a call is logged reads top-level context keys only. See [`docs/SECURITY.md`](SECURITY.md) § Artifact-Write Redaction.
 
 ## Logger Registry
 

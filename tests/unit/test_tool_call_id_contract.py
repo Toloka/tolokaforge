@@ -1,13 +1,16 @@
-"""The provider's tool-call id is required and reaches every executor.
+"""``ToolCall.id`` is required and reaches every executor.
 
-``ToolCall.id`` is the only key that joins a tool call to the tool result it
-produced. Position does not resolve the case that matters — the same tool called
-twice with byte-identical arguments — so the id is required at construction *and*
-at load, and every executor the engine drives is handed it explicitly.
+The id is the only key that joins a tool call to the tool result it produced.
+Position does not resolve the case that matters — the same tool called twice
+with byte-identical arguments — so the id is required at construction *and* at
+load, and every executor the engine drives is handed it explicitly.
 
-The runner-side half (the id on the wire and in the runner's recorded history)
-is locked in ``tests/unit/test_runner_pipeline.py``; what the id lands on
-core-side is locked in ``tests/unit/test_tool_call_recording.py``.
+What the field *holds* is the trial's episode-unique id: the model accepts the
+provider's own value, and ``ToolCallingLoop`` assigns the episode-unique one
+over it before any executor sees it. That assignment is locked in
+``tests/unit/test_tool_call_recording.py``, together with what the id lands on
+core-side; the runner-side half — the id on the wire and in the runner's
+recorded history — is locked in ``tests/unit/test_runner_pipeline.py``.
 """
 
 from __future__ import annotations
@@ -38,7 +41,6 @@ class _RecordingRuntime:
         trial_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        timeout_seconds: float = 30.0,
         executor: str = "agent",
         *,
         call_id: str,

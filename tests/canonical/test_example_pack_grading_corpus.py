@@ -11,7 +11,7 @@ Fifteen claims over the packs an author reads as the reference:
    what ``NativeAdapter.get_grading_config`` returns after the project layer merges —
    because five shipped packs declare no ``combine`` of their own and inherit
    ``llm_judge: 1.0`` from ``project.yaml``. Over raw ``grading.yaml`` the same guard
-   is red on those five on day one. Both corpus roots are walked: the 64 project-less
+   is red on those five on day one. Both corpus roots are walked: the 80 project-less
    ``tests/data`` packs are where every stray weight was.
 2. **``helpdesk_01``'s ``trace_checks`` block asserts the process its README calls
    ungradeable by any other rule**, and each of its three constraints can fail on
@@ -28,9 +28,15 @@ Fifteen claims over the packs an author reads as the reference:
    ``examples/`` and ``tests/data/tasks/`` is checked against its own task's tool
    inventory *and* its own effective combine, and produces no error, no advisory and
    nothing unchecked — the measured proof that the gate ships green rather than the
-   claim that it does. The rules a ``task.yaml`` holder can run without a tool set
-   are held over the wider 94-pack walk too, so a pack outside the two task roots
-   cannot declare a section that asserts nothing.
+   claim that it does. The 49 authored packs outside those two roots — the two parity
+   roots, the recorded projects and the migration fixtures — face the same whole gate
+   through the same call site, against their own inventories and their own effective
+   combines, so a fixture naming a tool its task never declares, or weighting a
+   component it never configures, is refused before anyone runs ``validate``. Every
+   schema those packs resolve closes its argument set, which is what keeps the
+   argument rules refusing rather than advising. The rules a ``task.yaml`` holder can
+   run without a tool set are held over the wider 109-pack walk on top of that, so no
+   pack anywhere can declare a section that asserts nothing.
 6. **``cache_debug`` grades two genuinely alternative diagnostic routes and cannot be
    passed by mutating.** Either comparison its rubric reference names scores in full
    and records itself as the winner; completing neither scores below completing
@@ -79,16 +85,16 @@ Fifteen claims over the packs an author reads as the reference:
 15. **Every pack that replays a golden path is authored against a task that gives it a
     world to replay in.** An initial-state JSON file and an MCP server module are
     ``task.yaml`` facts, unreadable from ``grading.yaml``, and without them core hashes
-    nothing and refuses to grade the trial at all. Each of the 94 packs is checked
+    nothing and refuses to grade the trial at all. Each of the 109 packs is checked
     against its own resolved world, and again with that world's server module withheld
-    and any ``expected_state_hash`` removed — the removal being what makes the control
-    fire on the one pack that ships both hash sources.
+    and a golden action injected, which every pack has to be refused for.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -99,6 +105,13 @@ from click.testing import CliRunner
 from pydantic import ValidationError
 
 from tests.canonical._factories import make_trajectory, make_trial_messages
+from tests.utils.example_packs import (
+    EXAMPLES_ROOT,
+    REPO_ROOT,
+    TEST_DATA_ROOT,
+    enclosing_project,
+    project_layer,
+)
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import Turn, build_turn_timeline
 from tests.utils.trace_overrides import override_file
@@ -107,20 +120,28 @@ from tolokaforge.adapters._task_loader import (
     hash_source_layer_under_adapter,
     load_task_yaml,
     replay_world_under_adapter,
+    seeded_tables_under_adapter,
 )
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.config_validation import (
+    ArgumentSchema,
     AuthoringReport,
     HashSourceLayer,
     ReplayWorld,
+    SeededTablesLayer,
     ToolInventory,
     inspect_grading_authoring,
+    state_sources_as_a_run_reads_them,
 )
 from tolokaforge.core.grading.grade_components import (
     COMPONENT_BY_NAME,
     GRADE_COMPONENTS,
     component_requested,
+)
+from tolokaforge.core.grading.jsonpath_addressing import (
+    block_addresses_the_database,
+    unreachable_target,
 )
 from tolokaforge.core.grading.rubric import aggregate_rubric, parse_submit_report
 from tolokaforge.core.grading.state_composition import HASH_SOURCE_KEYS
@@ -162,12 +183,17 @@ from tolokaforge.core.project_loader import (
 from tolokaforge.dx.cli.main import cli
 from tolokaforge.runner.grading import compose_runner_trial_verdict
 from tolokaforge.runner.grading_ledger import audit_accounted_keys
+from tolokaforge.runner.models import (
+    RunnerInitialStateConfig,
+    TableSchema,
+    provisions_database,
+)
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
-_REPO = Path(__file__).resolve().parents[2]
-_EXAMPLES = _REPO / "examples"
-_TEST_DATA = _REPO / "tests" / "data"
+_REPO = REPO_ROOT
+_EXAMPLES = EXAMPLES_ROOT
+_TEST_DATA = TEST_DATA_ROOT
 
 # Every task under ``examples/`` the corpus grades, so a guard that enumerated nothing
 # fails instead of passing over the empty set. The two files outside it are the
@@ -183,35 +209,6 @@ _TASKS_WITHOUT_A_PROJECT = (
 )
 
 
-def _enclosing_project(task_yaml: Path) -> Path | None:
-    """The ``project.yaml`` whose layer this task loads under, or ``None``.
-
-    The walk is bounded by the two corpus roots: every pack under ``tests/data``
-    ships without a project, and an unbounded walk would go on to ask the repository
-    root and the filesystem above it.
-    """
-    for directory in task_yaml.parents:
-        candidate = directory / "project.yaml"
-        if candidate.exists():
-            return candidate
-        if directory in (_EXAMPLES, _TEST_DATA):
-            return None
-    return None
-
-
-def _project_layer(task_yaml: Path) -> dict[str, Any] | None:
-    """The ``task_defaults`` layer beneath this task, or ``None`` for no project at all.
-
-    ``None`` is the honest answer for a project-less pack rather than an empty
-    mapping: no layer means the task's own block *is* the effective one, which is a
-    different statement from a layer that could not be read.
-    """
-    project_yaml = _enclosing_project(task_yaml)
-    if project_yaml is None:
-        return None
-    return load_project_config(project_yaml).task_defaults.model_dump(exclude_defaults=True) or None
-
-
 def _pack_adapter(task_yaml: Path) -> tuple[str, NativeAdapter]:
     """The task's id and an adapter over it, wired the orchestrator's way.
 
@@ -220,7 +217,7 @@ def _pack_adapter(task_yaml: Path) -> tuple[str, NativeAdapter]:
     while their ``project.yaml`` sits a level above, so enumerating by the declared
     glob silently measures a subset of the corpus.
     """
-    project_yaml = _enclosing_project(task_yaml)
+    project_yaml = enclosing_project(task_yaml)
     if project_yaml is None:
         root, environment = task_yaml.parent, None
     else:
@@ -230,7 +227,7 @@ def _pack_adapter(task_yaml: Path) -> tuple[str, NativeAdapter]:
         {
             "tasks_glob": str(task_yaml.relative_to(root)),
             "task_packs": [str(root)],
-            "project_task_defaults": _project_layer(task_yaml),
+            "project_task_defaults": project_layer(task_yaml),
             "project_default_environment": environment,
         }
     )
@@ -256,7 +253,7 @@ def _grading_config(task_yaml: Path) -> tuple[str, GradingConfig]:
 # Directories under ``tests/data`` holding recorded ``TaskDescription`` artifacts: a
 # bundle's own copy of the config the trial was graded under. They are not authored
 # packs, nothing may edit them, and a guard over authoring must not read them.
-_RECORDED_ARTIFACT_DIRS = ("output/trials", "migration_corpora")
+_RECORDED_ARTIFACT_DIRS = ("output/trials", "migration_corpora", "curation_runs")
 
 # The authored task files that load no grading config, so a pack losing its grading
 # block shows up as a guard failure rather than as a silent absence. The four
@@ -270,9 +267,9 @@ _TASKS_OUTSIDE_THE_GRADED_CORPUS = _TASKS_WITHOUT_A_PROJECT + (
 )
 
 # Every authored pack in the repository whose grading config loads: 29 under
-# ``examples/``, each beneath a ``project.yaml``, and 65 project-less packs under
+# ``examples/``, each beneath a ``project.yaml``, and 80 project-less packs under
 # ``tests/data``. Reconciled by the partition guard rather than only counted here.
-_AUTHORED_PACK_COUNT = 94
+_AUTHORED_PACK_COUNT = 109
 
 
 def _is_a_recorded_artifact(task_yaml: Path) -> bool:
@@ -335,18 +332,40 @@ def test_the_authored_walk_partitions_every_task_file_under_both_roots() -> None
     for task_yaml in _TASKS_OUTSIDE_THE_GRADED_CORPUS:
         assert task_yaml.exists(), f"{task_yaml} is excluded by name and does not exist"
         assert _loads_no_grading_config(task_yaml), (
-            f"{task_yaml} loads a grading config, so excluding it hides a pack from "
-            "every guard over this walk"
+            f"{task_yaml} names a grading source, so excluding it hides a pack from "
+            "every guard over this walk — including one whose source is not on disk, "
+            "which belongs here as a failure the guards catch"
         )
 
 
 def _loads_no_grading_config(task_yaml: Path) -> bool:
-    """Whether this task file reaches no grading block, for either of the two reasons."""
+    """Whether this task file reaches no grading block, for either of the two reasons.
+
+    It loads as no :class:`TaskConfig` at all, or it loads and names no grading source.
+    A file naming a source that is not on disk is neither: ``tolokaforge validate``
+    refuses such a pack under the native adapter, so it belongs in this walk as a
+    failure the guards catch and never in the exclusion list as a pack nothing grades.
+    """
     try:
-        task, task_dir = load_task_yaml(task_yaml)
+        task, _ = load_task_yaml(task_yaml)
     except ValidationError:
         return True
-    return task.grading is None or not (task_dir / task.grading).exists()
+    return task.grading is None
+
+
+def test_a_pack_naming_a_grading_file_that_is_absent_cannot_be_excluded(tmp_path: Path) -> None:
+    """The exclusion list may not become the place a refused pack is parked.
+
+    ``tolokaforge validate`` fails such a pack under the native adapter, so listing one
+    here would hide a hard failure behind a walk that reports nothing — the shape this
+    helper's two legitimate reasons must not be widened to cover.
+    """
+    dangling = tmp_path / "task.yaml"
+    dangling.write_text(
+        yaml.safe_dump({"task_id": "dangling", "description": "d", "grading": "grading.yaml"})
+    )
+
+    assert not _loads_no_grading_config(dangling)
 
 
 def test_every_authored_pack_and_its_weight_map_name_the_same_components() -> None:
@@ -368,7 +387,7 @@ def test_every_authored_pack_and_its_weight_map_name_the_same_components() -> No
 
     Keyed by path rather than by task id: two ``migration_packs`` fixtures reuse the
     task ids of the ``native_shared_domain`` packs they were narrowed from, so a
-    corpus keyed by id silently measures 92 of the 94.
+    corpus keyed by id silently measures 107 of the 109.
     """
     corpus = {task_yaml: _grading_config(task_yaml)[1] for task_yaml in _authored_packs()}
     assert len(corpus) == _AUTHORED_PACK_COUNT, (
@@ -444,18 +463,18 @@ _TEST_DATA_TASKS = Path(__file__).resolve().parents[1] / "data" / "tasks"
 
 # Every pack under the two roots that ships a grading.yaml, so a guard that
 # enumerated nothing fails instead of passing over the empty set.
-_GATED_PACK_COUNT = 59
+_GATED_PACK_COUNT = 60
 
 # The one pack whose tool inventory cannot be built: it declares
 # ``tools.agent.mobile: true``, a typo fixture whose whole point is that a non-mapping
 # init block fails loud rather than reaching trial registration as a TypeError.
 _PACK_WITH_NO_INVENTORY = "bad_mobile"
 
-# The two packs that address a tool argument below its first path segment — the one
+# The three packs that address a tool argument below its first path segment — the one
 # thing the gate declines to check over this corpus, and the reason it gives (#765).
 # Pinned so a weight or tool-set skip, either of which would mean a rule proved
 # nothing, cannot hide among them.
-_PACKS_ADDRESSING_A_NESTED_ARGUMENT = ("helpdesk_01", "lot_ops_01")
+_PACKS_ADDRESSING_A_NESTED_ARGUMENT = ("helpdesk_01", "lot_ops_01", "nested_binding_grading")
 _NESTED_ARGUMENT_SKIP = "an argument path is checked at its first segment only"
 
 
@@ -484,7 +503,7 @@ def _effective_combine(task_yaml: Path, grading: Mapping[str, Any]) -> GradingCo
     tasks that inherit theirs.
     """
     return resolve_effective_grading_combine(
-        project_grading_combine(_project_layer(task_yaml)), grading.get("combine")
+        project_grading_combine(project_layer(task_yaml)), grading.get("combine")
     )
 
 
@@ -500,6 +519,7 @@ def _gate_reports(
     inventory: ToolInventory,
     world: ReplayWorld,
     hash_sources: HashSourceLayer,
+    seeded_tables: SeededTablesLayer,
 ) -> tuple[AuthoringReport, AuthoringReport]:
     """A pack's own gate report, and the same pack's under one weight naming nothing.
 
@@ -509,11 +529,13 @@ def _gate_reports(
     gating a whole pack owes that — so a clean sweep would still read clean with those
     two rules never run. The probed report is empty in exactly that case.
 
-    The replay world and the hash layer are the pack's own too, resolved the way the
-    gate's callers resolve each: an unresolvable world would report a skip for every
-    pack replaying golden actions, an unresolvable layer one for every hash block whose
-    flag and source disagree, and the ``unchecked`` assertion below would stop saying
-    which rules were skipped either way.
+    The replay world, the hash layer and the seeded tables are the pack's own too,
+    resolved the way the gate's callers resolve each: an unresolvable world would
+    report a skip for every pack replaying golden actions, an unresolvable hash layer
+    one for every hash block whose flag and source disagree, an unresolvable
+    seeded-tables layer one for every pack declaring ``id_fields``, and the
+    ``unchecked`` assertion below would stop saying which rules were skipped in any of
+    those cases.
     """
     combine = _effective_combine(task_yaml, grading)
     probed = combine.model_copy(
@@ -525,6 +547,7 @@ def _gate_reports(
             inventory,
             replay_world=world,
             hash_sources=hash_sources,
+            seeded_tables=seeded_tables,
             effective_combine=combine,
         ),
         inspect_grading_authoring(
@@ -532,9 +555,168 @@ def _gate_reports(
             inventory,
             replay_world=world,
             hash_sources=hash_sources,
+            seeded_tables=seeded_tables,
             effective_combine=probed,
         ),
     )
+
+
+_A_FILESYSTEM_ROOTED_PATH = "$.filesystem['/env/fs/agent-visible/x.py']"
+_AN_AGENT_ROOTED_PATH = "$.agent.customers[0].balance"
+_A_DATABASE_ROOTED_PATH = "$.db.orders[0].status"
+
+
+def _states_a_pack_addresses_but_cannot_reach(
+    grading: Mapping[str, Any], seeded_tables: SeededTablesLayer
+) -> tuple[list[str], bool]:
+    """The paths this pack writes that the runner cannot resolve, and its absent-DB read.
+
+    An unresolvable ``seeded_tables`` answers ``False`` for the second reading: what a
+    task seeds is the one input it needs, and no pack is held to a fact nobody could
+    resolve. The first reading needs nothing but the block, so it answers for every
+    pack.
+    """
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping):
+        return [], False
+    beyond_the_runner = [
+        assertion["path"]
+        for assertion in state_checks.get("jsonpaths") or ()
+        if isinstance(assertion, Mapping) and unreachable_target(assertion) is not None
+    ]
+    reads_a_database_it_does_not_seed = (
+        bool(
+            block_addresses_the_database(state_sources_as_a_run_reads_them(state_checks))
+            and seeded_tables.known
+        )
+        and not seeded_tables.tables
+    )
+    return beyond_the_runner, reads_a_database_it_does_not_seed
+
+
+def test_no_shipped_pack_addresses_a_state_its_substrate_cannot_reach() -> None:
+    """Every authored ``state_checks`` block reads state the trial grading it has.
+
+    Two readings over the whole authored corpus — both task roots and the parity,
+    project and migration packs outside them — because a pack failing either cannot be
+    graded at all: a ``path:`` rooted anywhere but ``db`` or ``tables`` — ``filesystem``,
+    ``agent``, ``user`` — resolves on the core engine and not on the runner, and a block
+    reading the database of a task that seeds none reaches a DB service ``RegisterTrial``
+    never registered.
+
+    The examined population is printed rather than counted silently, and asserted
+    non-empty: both residues are lists that a walk selecting nothing would leave empty
+    while reading clean. The two readings are then run again over blocks written here
+    to fail them, through the same function the sweep calls — so a zero above is a fact
+    about the corpus rather than about a predicate that stopped discriminating.
+    """
+    examined: list[str] = []
+    beyond_the_runner: dict[str, list[str]] = {}
+    reading_an_absent_database: list[str] = []
+
+    for task_yaml in sorted({t for t, _ in _gated_packs()} | set(_packs_outside_the_gate_walk())):
+        task, task_dir = load_task_yaml(task_yaml)
+        if not task.grading or not (task_dir / task.grading).is_file():
+            continue
+        grading = yaml.safe_load((task_dir / task.grading).read_text()) or {}
+        state_checks = grading.get("state_checks")
+        if not isinstance(state_checks, Mapping) or not (
+            state_checks.get("jsonpaths") or state_checks.get("hash")
+        ):
+            continue
+        pack = str(task_yaml.relative_to(_REPO))
+        examined.append(pack)
+        paths, absent_database = _states_a_pack_addresses_but_cannot_reach(
+            grading, seeded_tables_under_adapter(task, task_dir, task.adapter_type)
+        )
+        if paths:
+            beyond_the_runner[pack] = paths
+        if absent_database:
+            reading_an_absent_database.append(pack)
+
+    print(f"packs declaring a state_checks source ({len(examined)}):\n  " + "\n  ".join(examined))
+    assert examined, "the walk selected no pack declaring a state_checks source"
+
+    assert not beyond_the_runner, (
+        "a state_checks.jsonpaths path addresses state the runner does not compose, so "
+        "it resolves only on the core engine — root it at db or tables, or write a file "
+        f"assertion as path_glob: + contains_ci:: {beyond_the_runner}"
+    )
+    assert not reading_an_absent_database, (
+        "a state_checks block reads the trial's database on a task whose initial_state "
+        f"seeds none, so GradeTrial refuses it before a score exists: "
+        f"{reading_an_absent_database}"
+    )
+
+    # ``$.filesystem[…]`` is reachable on the runner (via
+    # ``_read_agent_visible_filesystem``), so it is *not* in the negative-control
+    # set. The residue is ``agent`` / ``user`` / ``mock_web_url`` /
+    # ``rag_corpus_dir`` — roots the core engine composes from a run's live env
+    # that the runner has no equivalent for.
+    probed_paths, _ = _states_a_pack_addresses_but_cannot_reach(
+        {
+            "state_checks": {
+                "jsonpaths": [
+                    {"path": _AN_AGENT_ROOTED_PATH},
+                ]
+            }
+        },
+        SeededTablesLayer.unresolvable(),
+    )
+    assert probed_paths == [_AN_AGENT_ROOTED_PATH]
+    _, probed_absent_database = _states_a_pack_addresses_but_cannot_reach(
+        {"state_checks": {"jsonpaths": [{"path": _A_DATABASE_ROOTED_PATH}]}},
+        SeededTablesLayer(tables={}),
+    )
+    assert probed_absent_database is True
+
+
+def test_the_gate_and_the_runtime_read_one_fact_about_what_a_task_seeds() -> None:
+    """The gate's answer and the runtime's answer are the same answer, per shipped task.
+
+    The gate refuses a database-reading block against ``seeded_tables.tables``;
+    ``RegisterTrial`` provisions the DB service against
+    :func:`~tolokaforge.runner.models.provisions_database`. A task the first calls
+    seeded and the second calls unprovisioned would pass the gate and fail the run.
+
+    **What this cannot express, stated rather than left to be inferred.** Over the
+    native corpus the two are equal by construction: ``NativeAdapter`` hard-codes
+    ``schemas`` and ``unstable_fields`` empty, and the core ``InitialStateConfig``
+    declares neither field, so no ``task.yaml`` can express a disagreement. The
+    control row below writes out the shape that can — schemas seeded, tables empty —
+    and asserts the two answers parting there. It is constructed rather than loaded,
+    for the same reason: it pins that the predicates disagree on that shape, not that
+    any resolver produces it. The corpus half therefore reds on exactly
+    one future change: the day ``NativeAdapter`` populates either field without the
+    gate being revisited. That is the drift it exists to catch, and the only one.
+    """
+    disagreed: list[str] = []
+    examined: list[str] = []
+    for task_yaml in _corpus_task_files():
+        if task_yaml in _TASKS_WITHOUT_A_PROJECT:
+            continue
+        task, task_dir = load_task_yaml(task_yaml)
+        if task.adapter_type != "native":
+            continue
+        task_id, adapter = _pack_adapter(task_yaml)
+        runtime = provisions_database(adapter.to_task_description(task_id).initial_state)
+        gate = bool(seeded_tables_under_adapter(task, task_dir, "native").tables)
+        examined.append(str(task_yaml.relative_to(_REPO)))
+        if runtime != gate:
+            disagreed.append(f"{task_yaml}: provisions_database={runtime} seeded_tables={gate}")
+
+    assert examined, "the walk selected no native task"
+    print(f"native tasks holding both answers to one fact: {len(examined)}")
+    assert not disagreed, (
+        "the gate and RegisterTrial disagree about whether these tasks provision a "
+        f"database, so a pack the gate passes fails its run: {disagreed}"
+    )
+
+    schemas_only = RunnerInitialStateConfig(
+        tables={}, schemas=[TableSchema(table_name="orders", fields={"id": "string"})]
+    )
+    assert provisions_database(schemas_only) is True
+    assert provisions_database(schemas_only) != bool(SeededTablesLayer(tables={}).tables)
 
 
 def test_no_shipped_pack_fails_the_authoring_gate() -> None:
@@ -574,7 +756,8 @@ def test_no_shipped_pack_fails_the_authoring_gate() -> None:
             grading,
             inventory,
             replay_world_under_adapter(task, task.adapter_type),
-            hash_source_layer_under_adapter(task.adapter_type),
+            hash_source_layer_under_adapter(task, task_dir, task.adapter_type),
+            seeded_tables_under_adapter(task, task_dir, task.adapter_type),
         )
         reported = [
             f"{finding.where}: {finding.message}" for finding in report.errors + report.advisories
@@ -615,23 +798,27 @@ def test_no_shipped_pack_fails_the_authoring_gate() -> None:
 
 
 def test_no_authored_grading_block_asserts_nothing() -> None:
-    """Rule 1 over all 94 authored packs, which is 35 more than the gate walk reaches.
+    """Rule 1 over all 109 authored packs, which is 49 more than the gate walk reaches.
 
-    ``tests/data/grading_parity`` and ``tests/data/projects`` sit outside
+    ``tests/data/grading_parity``, ``tests/data/transcript_parity``,
+    ``tests/data/projects`` and ``tests/data/migration_packs`` sit outside
     :func:`_gated_packs`, so without this the rule's corpus proof stops at the packs
     that happen to live under the two task roots. The inventory is deliberately
-    unresolvable: the rules that need a tool set are the gate guard's business above,
+    unresolvable: the rules that need a tool set are the two gate guards' business —
+    the one above for the task roots, and
+    :func:`test_the_packs_outside_the_gate_walk_are_held_to_the_whole_gate` for these —
     and what is wanted here is every rule a caller holding a ``task.yaml`` can run
     without one, over the widest walk in the file.
 
     The ``unchecked`` assertion is what stops that from reading as a clean bill of
     health. Every pack reports exactly the one tool-set skip; a rule moved behind
     ``inventory.known`` would show up here as a second skip rather than as a silent
-    loss of coverage. Each pack's real replay world and real hash layer are passed for
-    that assertion's sake: both are resolved off the ``task.yaml`` every caller here
-    holds, so leaving either unresolvable would add a second skip — to the four packs
-    that replay golden actions, or to any pack whose hash flag and source disagree —
-    and say nothing about any rule.
+    loss of coverage. Each pack's real replay world, hash layer and seeded tables are
+    passed for that assertion's sake: all three are resolved off the ``task.yaml``
+    every caller here holds, so leaving any of them unresolvable would add a second
+    skip — to the four packs that replay golden actions, to any pack whose hash flag
+    and source disagree, or to every pack declaring ``id_fields`` — and say nothing
+    about any rule.
     """
     findings: dict[str, list[str]] = {}
     unchecked: dict[str, list[str]] = {}
@@ -645,7 +832,8 @@ def test_no_authored_grading_block_asserts_nothing() -> None:
             grading,
             ToolInventory.unresolvable(),
             replay_world=replay_world_under_adapter(task, task.adapter_type),
-            hash_sources=hash_source_layer_under_adapter(task.adapter_type),
+            hash_sources=hash_source_layer_under_adapter(task, task_dir, task.adapter_type),
+            seeded_tables=seeded_tables_under_adapter(task, task_dir, task.adapter_type),
         )
         pack = str(task_yaml.relative_to(_REPO))
         if report.errors or report.advisories:
@@ -669,8 +857,10 @@ def test_no_authored_grading_block_asserts_nothing() -> None:
     )
 
 
-# The address the golden-action name rule reports under, and a name no pack declares,
-# injected into every pack's hash block as the positive control.
+# The address the golden-action name rule reports under, and a name no pack declares.
+# The name is every tool-set control's sentinel: injected into a hash block here, and
+# written over a matcher or a tool_expectations entry — or injected as one where the
+# pack authors neither — by the whole-gate guard.
 _GOLDEN_ACTION_ADDRESS = "state_checks.hash.golden_actions["
 _A_TOOL_NO_ACTOR_CAN_CALL = "a_tool_no_actor_can_call"
 
@@ -678,11 +868,11 @@ _A_TOOL_NO_ACTOR_CAN_CALL = "a_tool_no_actor_can_call"
 def _golden_action_findings(report: AuthoringReport) -> list[str]:
     """Only what the golden-action name rule reported, out of the whole gate's report.
 
-    Scoped to one rule because this walk is 35 packs wider than
-    :func:`_gated_packs`, and the extra packs are wire-parity fixtures that name tools
-    no actor is given on purpose — over the whole report the guard below would be red on
-    20 of them for reasons that are not this rule's. Widening the gate walk itself is a
-    corpus measurement of its own.
+    Scoped to one rule because the guard below is a single-rule instrument: it pairs its
+    walk with a control provoking this rule and nothing else, so a finding another rule
+    reported would leave the sweep saying nothing about whether this one still fires.
+    The whole gate over the packs beyond :func:`_gated_packs` is
+    :func:`test_the_packs_outside_the_gate_walk_are_held_to_the_whole_gate`'s business.
     """
     return [
         f"{finding.where}: {finding.message}"
@@ -694,9 +884,9 @@ def _golden_action_findings(report: AuthoringReport) -> list[str]:
 def _naming_a_tool_no_actor_can_call(grading: Mapping[str, Any]) -> dict[str, Any]:
     """*grading* with one more golden action, naming a tool no pack in the corpus declares.
 
-    Injected into every pack rather than one, because only 4 of the 94 declare a golden
+    Injected into every pack rather than one, because only 3 of the 109 declare a golden
     action at all: a rule that stopped firing would otherwise leave this guard reading
-    green over the 89 that never provoke it. The flag is written on for the same reason
+    green over the 106 that never provoke it. The flag is written on for the same reason
     the rule reads it — a source under a falsy flag is resolved by nobody.
     """
     state_checks = {**(grading.get("state_checks") or {})}
@@ -715,9 +905,9 @@ def _naming_a_tool_no_actor_can_call(grading: Mapping[str, Any]) -> dict[str, An
 def test_no_authored_golden_action_names_a_tool_no_actor_can_call() -> None:
     """Every golden action in the repo resolves against the tools its task declares.
 
-    Over all 94 authored packs, which is where the golden-action packs live: three of
-    the four sit under ``tests/data/projects`` and ``tests/data/grading_parity``, outside
-    :func:`_gated_packs` entirely, so a guard over that walk would reach one of them.
+    Over all 109 authored packs, which is where the golden-action packs live: two of
+    the three sit under ``tests/data/projects``, outside :func:`_gated_packs` entirely,
+    so a guard over that walk would reach one of them.
 
     Each inventory is the pack's own, built the way the gate's callers build it. An
     unresolvable one would skip the rule on every pack and prove nothing, which is why
@@ -763,6 +953,214 @@ def test_no_authored_golden_action_names_a_tool_no_actor_can_call() -> None:
     )
 
 
+# The authored packs the gate walk does not reach: the two parity roots, the recorded
+# projects and the migration fixtures. Pinned so a walk that stopped finding them fails
+# rather than passing over the empty set, and computed as a difference so a fifth root
+# is covered the day someone adds one.
+_PACKS_OUTSIDE_THE_GATE_WALK = 49
+
+# The two addresses a name no actor can call is reported under, one per producer.
+_UNCALLABLE_TOOL_ADDRESSES = ("trace_checks.", "transcript_rules.tool_expectations.")
+
+
+def _packs_outside_the_gate_walk() -> list[Path]:
+    """Every authored pack :func:`_gated_packs` does not reach."""
+    gated = {task_yaml for task_yaml, _ in _gated_packs()}
+    return [task_yaml for task_yaml in _authored_packs() if task_yaml not in gated]
+
+
+def _findings_naming_the_uncallable_tool(report: AuthoringReport) -> list[str]:
+    """Only what the control provoked, filtered on the sentinel in the message.
+
+    On the name rather than on an address, because the control reaches its packs by two
+    branches reporting under different addresses: an address constant answers for one
+    branch and passes over the other half of the walk. The name also keeps the filter
+    honest should a pack ever carry a finding of its own at the injected address, which
+    an address constant would read as the control firing. Both producers quote the
+    offending tool, so one predicate reads both branches.
+    """
+    return [
+        f"{finding.where}: {finding.message}"
+        for finding in report.errors + report.advisories
+        if _A_TOOL_NO_ACTOR_CAN_CALL in finding.message
+    ]
+
+
+def _retargeting_one_tool_named(grading: Any) -> bool:
+    """Point the first tool-naming site in *grading* at a tool no actor can call.
+
+    In place and depth-first, so the site is the first one an author reads. Returns
+    whether the block held one at all: half the walk authors neither a matcher nor a
+    ``tool_expectations`` entry, and those packs need the other branch.
+    """
+    if isinstance(grading, dict):
+        tool = grading.get("tool")
+        if isinstance(tool, dict):
+            if isinstance(tool.get("equals"), str):
+                tool["equals"] = _A_TOOL_NO_ACTOR_CAN_CALL
+                return True
+            named = tool.get("in_")
+            if isinstance(named, list) and named and isinstance(named[0], str):
+                named[0] = _A_TOOL_NO_ACTOR_CAN_CALL
+                return True
+        expectations = grading.get("tool_expectations")
+        if isinstance(expectations, dict):
+            for key in ("required_tools", "disallowed_tools"):
+                named = expectations.get(key)
+                if isinstance(named, list) and named and isinstance(named[0], str):
+                    named[0] = _A_TOOL_NO_ACTOR_CAN_CALL
+                    return True
+        return any(_retargeting_one_tool_named(value) for value in grading.values())
+    if isinstance(grading, list):
+        return any(_retargeting_one_tool_named(value) for value in grading)
+    return False
+
+
+def _naming_a_tool_no_actor_can_call_where_the_pack_looks(
+    grading: Mapping[str, Any],
+) -> dict[str, Any]:
+    """*grading* with one tool no actor can call, wherever this pack can hold one.
+
+    A pack carrying a matcher or a ``tool_expectations`` entry has that site retargeted,
+    which is what puts the trace rule under the control. The 23 carrying neither have a
+    ``disallowed_tools`` entry injected instead — beside whatever the block already
+    declares, the way :func:`_naming_a_tool_no_actor_can_call` injects a golden action.
+    Mutating alone would leave half the walk with no control at all.
+    """
+    retargeted = deepcopy(dict(grading))
+    if _retargeting_one_tool_named(retargeted):
+        return retargeted
+    rules = {**(grading.get("transcript_rules") or {})}
+    expectations = {**(rules.get("tool_expectations") or {})}
+    expectations["disallowed_tools"] = [
+        *(expectations.get("disallowed_tools") or []),
+        _A_TOOL_NO_ACTOR_CAN_CALL,
+    ]
+    rules["tool_expectations"] = expectations
+    return {**grading, "transcript_rules": rules}
+
+
+def test_the_packs_outside_the_gate_walk_are_held_to_the_whole_gate() -> None:
+    """The parity roots and their neighbours face every rule, not only the block-only ones.
+
+    :func:`_gated_packs` stops at the two task roots, which leaves the 49 packs under
+    ``grading_parity``, ``transcript_parity``, ``tests/data/projects`` and
+    ``tests/data/migration_packs`` reached only by guards scoped to a single rule
+    apiece. Here each faces the whole gate through :func:`_gate_reports` — the same
+    instrument the gated walk runs, over the half of the corpus that walk does not
+    reach — against **its own** inventory, replay world, hash layer, seeded tables and
+    effective combine, built the way ``tolokaforge validate``'s caller builds them. So a
+    fixture whose grading names a tool its task never declares is refused here, before
+    anyone runs ``validate`` and before a trial is paid for.
+
+    The residue is asserted empty rather than pinned to whatever comes back: every one of
+    these packs declares the schemas of the arguments it addresses, so a skip appearing
+    here is a fixture that stopped doing so.
+
+    Closure is asserted beside the residue because ``fixtures/tools.json`` is a cache: a
+    pack whose committed file goes missing has it regenerated from the pack's own server,
+    and the servers never emit ``additionalProperties``. The regenerated schema checks
+    the same argument names at advisory tier instead of refusing them, which moves
+    nothing in a report whose addressed arguments are all present — so neither the sweep
+    nor the residue can see that happen, and this list can. A tool whose schema does not
+    resolve read-only at all is a different state and stays legitimate here.
+
+    Two controls, because the sweep answers for two families of rule. Every pack is
+    checked again with a tool no actor can call, written wherever that pack can hold
+    one — the 23 authoring neither a matcher nor a ``tool_expectations`` entry would
+    otherwise sit inside a walk that proves nothing about them — and again with a weight
+    naming no component, which :func:`_gate_reports` supplies from the same resolved
+    combine: hand the gate no combine and the two weight rules are absent from the
+    report entirely, so a sweep that stopped resolving the layer would go on reading
+    clean over rules that never ran.
+    """
+    findings: dict[str, list[str]] = {}
+    advisories: dict[str, list[str]] = {}
+    unchecked: dict[str, list[str]] = {}
+    opened: list[str] = []
+    unprobed_tools: list[str] = []
+    unprobed_weights: list[str] = []
+    misaddressed: list[str] = []
+    packs = _packs_outside_the_gate_walk()
+
+    for task_yaml in packs:
+        task, task_dir = load_task_yaml(task_yaml)
+        assert task.grading is not None
+        grading = yaml.safe_load((task_dir / task.grading).read_text()) or {}
+        inventory = build_tool_inventory(task, task_dir)
+        world = replay_world_under_adapter(task, task.adapter_type)
+        layer = hash_source_layer_under_adapter(task, task_dir, task.adapter_type)
+        tables = seeded_tables_under_adapter(task, task_dir, task.adapter_type)
+        pack = str(task_yaml.relative_to(_REPO))
+
+        report, weighted = _gate_reports(task_yaml, grading, inventory, world, layer, tables)
+        if report.errors:
+            findings[pack] = [f"{f.where}: {f.message}" for f in report.errors]
+        if report.advisories:
+            advisories[pack] = [f"{f.where}: {f.message}" for f in report.advisories]
+        if report.unchecked:
+            unchecked[pack] = [f"{skip.where}: {skip.reason}" for skip in report.unchecked]
+        opened += [
+            f"{pack}:{tool}"
+            for tool in sorted(inventory.declared)
+            if inventory.strictness(tool) is ArgumentSchema.OPEN
+        ]
+        if [finding.where for finding in weighted.errors] != [
+            f"combine.weights.{_A_WEIGHT_NAMING_NO_COMPONENT}"
+        ]:
+            unprobed_weights.append(pack)
+
+        probed = inspect_grading_authoring(
+            _naming_a_tool_no_actor_can_call_where_the_pack_looks(grading),
+            inventory,
+            replay_world=world,
+            hash_sources=layer,
+            seeded_tables=tables,
+        )
+        reported = _findings_naming_the_uncallable_tool(probed)
+        if not reported:
+            unprobed_tools.append(pack)
+        misaddressed += [
+            reported_finding
+            for reported_finding in reported
+            if not reported_finding.startswith(_UNCALLABLE_TOOL_ADDRESSES)
+        ]
+
+    assert len(packs) == _PACKS_OUTSIDE_THE_GATE_WALK, (
+        f"the guard inspected {len(packs)} packs, not {_PACKS_OUTSIDE_THE_GATE_WALK}. A "
+        "corpus proof over a subset says nothing about the packs it skipped"
+    )
+    assert findings == {}, (
+        "these packs cannot be graded as written: the gate refuses the block against the "
+        "tool set the pack's own task declares, so every trial they grade is paid for "
+        "and lost"
+    )
+    assert advisories == {}, (
+        "the gate reported a probable defect in these packs, and a corpus that ships one "
+        "teaches the shape it reports"
+    )
+    assert unchecked == {}, (
+        "the gate could not check a rule for these packs — an addressed argument whose "
+        "schema no longer resolves — so the sweep above passed over what it reports on"
+    )
+    assert opened == [], (
+        "a schema in this walk stopped closing its argument set, so an argument the "
+        "gate would refuse is now only advised about and the sweep above reads green"
+    )
+    assert unprobed_tools == [], (
+        "the gate did not refuse a tool no actor can call for these packs, so the rule "
+        "never ran here and the clean sweep above proves nothing about them"
+    )
+    assert unprobed_weights == [], (
+        "the gate did not refuse a weight naming no component for these packs, so the "
+        "weight rules never ran here and the clean sweep above proves nothing about them"
+    )
+    assert misaddressed == [], (
+        "a control finding quoted the sentinel from an address neither the trace rule "
+        f"nor the tool-expectation rule owns: {misaddressed}"
+    )
+
+
 # The address the replay-world rule reports the whole block under, distinct from the
 # per-action ``…[i].name`` the name rule uses, so scoping to one is scoping to one rule.
 _GOLDEN_REPLAY_WORLD_ADDRESS = "state_checks.hash.golden_actions"
@@ -771,8 +1169,8 @@ _GOLDEN_REPLAY_WORLD_ADDRESS = "state_checks.hash.golden_actions"
 def _replay_world_findings(report: AuthoringReport) -> list[str]:
     """Only what the replay-world rule reported, out of the whole gate's report.
 
-    Scoped for the reason :func:`_golden_action_findings` gives: this walk reaches 35
-    packs the gate walk does not, and they name tools no actor is given on purpose.
+    Scoped for the reason :func:`_golden_action_findings` gives: one rule, one control,
+    so the sweep answers for the rule its control provokes.
     """
     return [
         f"{finding.where}: {finding.message}"
@@ -782,21 +1180,16 @@ def _replay_world_findings(report: AuthoringReport) -> list[str]:
 
 
 def _a_golden_replay_with_no_world(grading: Mapping[str, Any]) -> dict[str, Any]:
-    """*grading* with a golden path to replay and no literal hash to answer in its place.
+    """*grading* with a golden path to replay, whatever else it declares.
 
-    Injected into every pack rather than one, because only 4 of the 94 declare a golden
-    action at all. Any ``expected_state_hash`` is removed first, and that step is what
-    makes the control fire on ``tests/data/grading_parity/all_keys``: it ships both hash
-    sources, core answers from the literal before the replay is reached, and the rule
-    steps around exactly that pack — so a control that left the literal in place would
-    silently not fire on the one pack in the corpus whose world cannot be built.
+    Injected into every pack rather than one, because only 3 of the 109 declare a golden
+    action at all. ``golden_actions`` is the only hash source needing a world, and it is
+    the source the rule reads, so a pack reaches the rule on this block alone — including
+    ``tests/data/grading_parity/all_keys``, the one pack in the corpus whose world cannot
+    be built.
     """
     state_checks = {**(grading.get("state_checks") or {})}
-    hash_block = {
-        key: value
-        for key, value in (state_checks.get("hash") or {}).items()
-        if key != "expected_state_hash"
-    }
+    hash_block = {**(state_checks.get("hash") or {})}
     state_checks["hash"] = {
         **hash_block,
         "enabled": True,
@@ -808,16 +1201,16 @@ def _a_golden_replay_with_no_world(grading: Mapping[str, Any]) -> dict[str, Any]
 def test_no_authored_pack_gives_its_golden_replay_no_world_to_be_built_in() -> None:
     """Every pack that replays a golden path is authored against a task supplying one.
 
-    Over all 94 authored packs, each against **its own** replay world resolved the way
+    Over all 109 authored packs, each against **its own** replay world resolved the way
     the gate's callers resolve it, because the facts the rule reads live in ``task.yaml``
     rather than in the block. The tool inventory is deliberately unresolvable: this rule
-    reads no tool, and the packs outside the two task roots name tools no actor is given
-    on purpose.
+    reads no tool, so resolving one would decide nothing here and would couple this
+    sweep to a rule its control does not provoke.
 
-    Every pack is checked a second time with its MCP server module withheld, a golden
-    action injected and any ``expected_state_hash`` removed, which has to be refused —
-    without that control a rule that stopped firing would read as a corpus with no
-    defects in it, since 90 of the 94 replay nothing.
+    Every pack is checked a second time with its MCP server module withheld and a golden
+    action injected, which has to be refused — without that control a rule that stopped
+    firing would read as a corpus with no defects in it, since 106 of the 109 replay
+    nothing.
 
     The unresolvable-world arm is **not** exercised here and cannot be: every authored
     pack in the repository is native, so every world resolved below is ``known``. That
@@ -873,17 +1266,17 @@ _AN_INJECTED_PROBE = {
     "expect": [{"path": "$.row_count", "equals": 1}],
 }
 
-# How many of the 94 declare a state source the fold also scores, so the control's two
-# arms cannot silently collapse into one: 25 packs where injecting a probe must be
-# refused, and 69 where it must not, because the injection leaves them probe-only.
-_PACKS_DECLARING_A_FOLD_SCORED_STATE_SOURCE = 25
+# How many of the 109 declare a state source the fold also scores, so the control's two
+# arms cannot silently collapse into one: 26 packs where injecting a probe must be
+# refused, and 83 where it must not, because the injection leaves them probe-only.
+_PACKS_DECLARING_A_FOLD_SCORED_STATE_SOURCE = 26
 
 
 def _probe_exclusivity_findings(report: AuthoringReport) -> list[str]:
     """Only what the state-source exclusivity rule reported, out of the whole report.
 
-    Scoped for the reason :func:`_golden_action_findings` gives: this walk reaches 35
-    packs the gate walk does not, and they name tools no actor is given on purpose.
+    Scoped for the reason :func:`_golden_action_findings` gives: one rule, one control,
+    so the sweep answers for the rule its control provokes.
     """
     return [
         f"{finding.where}: {finding.message}"
@@ -913,9 +1306,9 @@ def _declares_a_state_source_the_fold_scores(grading: Mapping[str, Any]) -> bool
 def _a_probe_beside_whatever_the_pack_declares(grading: Mapping[str, Any]) -> dict[str, Any]:
     """*grading* with one more ``db_probes`` entry and every other source left as written.
 
-    Injected into every pack rather than one, because 3 of the 94 declare a probe at all.
+    Injected into every pack rather than one, because 3 of the 109 declare a probe at all.
     Nothing else is touched, which is what splits the walk: a pack already declaring a
-    source the fold scores becomes the refused shape, and a pack declaring none — 69 of
+    source the fold scores becomes the refused shape, and a pack declaring none — 83 of
     them — becomes a probe-only block, which is the shape this rule exists to leave alone.
     """
     state_checks = {**(grading.get("state_checks") or {})}
@@ -926,7 +1319,7 @@ def _a_probe_beside_whatever_the_pack_declares(grading: Mapping[str, Any]) -> di
 def test_no_authored_pack_declares_a_probe_beside_another_state_source() -> None:
     """No shipped pack declares a probe beside a state source the fold also scores.
 
-    Over all 94 authored packs: the probe packs sit under ``examples/native`` and
+    Over all 109 authored packs: the probe packs sit under ``examples/native`` and
     ``tests/data/tasks``, and the packs carrying the sources they may not join are spread
     across both roots and ``tests/data/grading_parity``, which is outside
     :func:`_gated_packs` entirely.
@@ -936,13 +1329,14 @@ def test_no_authored_pack_declares_a_probe_beside_another_state_source() -> None
     non-empty ``jsonpaths`` or an enabled hash over a source has to be refused, and
     injecting one into a pack declaring neither has to be admitted — that block is
     probe-only, which is exactly what a probe pack ships. A control that injected blindly
-    and expected a finding everywhere would assert the opposite of the rule on 69 of the
-    93. Both arms are collected, and the size of the refused arm is pinned so a corpus
+    and expected a finding everywhere would assert the opposite of the rule on 83 of the
+    109. Both arms are collected, and the size of the refused arm is pinned so a corpus
     that stopped declaring hash and JSONPath sources could not leave the positive arm
     vacuous.
 
-    The tool inventory is deliberately unresolvable: this rule reads no tool, and the
-    packs outside the two task roots name tools no actor is given on purpose.
+    The tool inventory is deliberately unresolvable: this rule reads no tool, so
+    resolving one would decide nothing here and would couple this sweep to a rule its
+    control does not provoke.
     """
     findings: dict[str, list[str]] = {}
     unprobed: list[str] = []
@@ -1006,7 +1400,7 @@ def test_the_two_project_less_task_files_are_the_terminal_bench_pair() -> None:
     orphans = tuple(
         task_yaml
         for task_yaml in sorted(_EXAMPLES.rglob("task.yaml"))
-        if _enclosing_project(task_yaml) is None
+        if enclosing_project(task_yaml) is None
     )
     assert orphans == _TASKS_WITHOUT_A_PROJECT
 
@@ -1260,6 +1654,14 @@ _CACHE_DEBUG_PATHS = (
     ),
 )
 
+# Each route's own grounded-claim check, by the route that carries it. No single read
+# is common to both routes, so the check is per route rather than shared — and a claim
+# over both is a claim no trial decides.
+_GROUNDED_CLAIM_CHECKS = {
+    "divergence_between_the_api_layers": "the_note_quotes_the_value_the_served_read_returned",
+    "divergence_against_the_cache": "the_note_quotes_the_value_the_cache_held",
+}
+
 # The two order views the pack's bug is the divergence between: the poisoned redis
 # blob (``assets/build_seed.py``) and the postgres row (``shared/app-db/init.sql``).
 _STALE_ORDER = {
@@ -1430,16 +1832,34 @@ def test_each_cache_debug_route_scores_in_full_and_records_itself_the_winner(
     """Both diagnostic routes the pack's rubric reference names are worth full marks.
 
     The served-vs-source run is the one the shipped pack docked. Driven through the
-    fold at the pack's old weights it scored CORE ``(0.9333, True)`` on 2 of 3
-    ``required_actions`` and RUNNER ``(0.95, True)`` on 3 of 4 rule rows: docked on
-    both substrates for a route the task never required. The two numbers differ only
-    by the aggregation divergence #685 already owns — core multiplies action x comm x
-    legacy, the runner takes the fraction of rows — not by anything this pack says.
+    fold at the pack's old weights it scored ``(0.9333, True)`` on 2 of 3
+    ``required_actions`` and ``(0.95, True)`` on 3 of 4 rule rows: docked for a route
+    the task never required, which is what moved the weights rather than anything
+    this pack says.
     """
     result = _cache_debug_result(calls)
     assert result.score == pytest.approx(1.0)
     assert result.winning_path == winning_path
     assert _failed(result) == []
+
+
+@pytest.mark.parametrize(("calls", "winning_path"), _ROUTES_IN_FULL)
+def test_only_the_winning_routes_grounded_claim_check_reaches_a_trials_verdicts(
+    calls: Sequence[RecordedToolCall], winning_path: str
+) -> None:
+    """The two grounded-claim checks are never decided on one trial, which is why a
+    ``migration.yaml`` naming both is refused at load (``_route_span_rejection``).
+
+    ``tolokaforge reconcile`` recomputes a trial's constraint verdicts as
+    ``{constraint.id: constraint for constraint in result.constraints}`` — the scored decision
+    set, which is the shared constraints plus the winning route's — so a conjunction over one
+    id from each route has no verdict for one of them whichever route the trial took.
+    """
+    verdicts = {constraint.id: constraint for constraint in _cache_debug_result(calls).constraints}
+
+    assert [check for check in _GROUNDED_CLAIM_CHECKS.values() if check in verdicts] == [
+        _GROUNDED_CLAIM_CHECKS[winning_path]
+    ]
 
 
 def test_the_cache_debug_prompt_names_no_status_its_grounded_claim_binds() -> None:

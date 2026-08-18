@@ -83,9 +83,17 @@ message RegisterTrialResponse {
   // Tool schemas in OpenAI function calling format
   // These are returned to Host for LLM tool configuration
   // Format: [{"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}]
+  //
+  // Ordering contract: the agent's tools come first, then the user actor's,
+  // and num_agent_tools partitions the list exactly — tool_schemas[:n] is the
+  // agent's surface and tool_schemas[n:] the user actor's, with
+  // n + num_user_tools == len(tool_schemas). The host slices on this to decide
+  // which actor is offered which tool; a tool offered to the wrong actor is
+  // refused TOOL_NOT_FOUND at ExecuteTool, since each actor's registry holds
+  // only its own.
   repeated ToolSchema tool_schemas = 3;
 
-  // Number of agent tools registered
+  // Number of agent tools registered — the partition index into tool_schemas
   int32 num_agent_tools = 4;
 
   // Number of user tools registered (for dual-control scenarios)
@@ -119,18 +127,21 @@ message ExecuteToolRequest {
   // Must conform to the tool's parameter schema
   string arguments_json = 3;
 
-  // Timeout for this execution (seconds)
-  // If 0, uses default from RegisterTrial or tool schema
+  // Per-call budget (seconds). The engine always sends 0: only the runner
+  // knows which tool is about to run, so it resolves the budget that tool
+  // declares, falling back to the trial's default_tool_timeout_s. A positive
+  // value overrides that resolution and is retained for engine/image skew.
   double timeout_seconds = 4;
 
   // Which environment is making the call
   // "agent" for assistant tools, "user" for user-side tools
   string executor = 5;
 
-  // The provider's tool-call id (ToolCall.id) — the key that joins this call
-  // to the tool-result message it produced. Required: the runner rejects an
-  // empty value, because two calls to the same tool with identical arguments
-  // are otherwise indistinguishable in the recorded history.
+  // The trial's episode-unique tool-call id (ToolCall.id, after the agent loop
+  // has assigned it) — the key that joins this call to the tool-result message
+  // it produced. Required: the runner rejects an empty value, because two calls
+  // to the same tool with identical arguments are otherwise indistinguishable
+  // in the recorded history.
   string call_id = 6;
 }
 
@@ -187,8 +198,8 @@ message GradeTrialRequest {
   // result crosses as role "tool" carrying its tool_call_id.
   // An assistant or user turn that called tools also carries
   // tool_calls: [{"id", "function": {"name", "arguments"}}], where "id" is the
-  // provider's tool-call id and "arguments" is a JSON-encoded string. That id is
-  // the only key joining a call to its result — parallel calls to one tool with
+  // trial's episode-unique tool-call id and "arguments" is a JSON-encoded string.
+  // That id is what joins a call to its result — parallel calls to one tool with
   // identical arguments are otherwise indistinguishable — and
   // decode_transcript_wire rejects a payload whose tool_calls carry none.
   // The leading "system" message is the agent's policy, lifted out by
@@ -197,9 +208,9 @@ message GradeTrialRequest {
   // (TlkMcpCore, Tau) it can be omitted — the Runner has its own tool-call record.
   string llm_messages_json = 2;
 
-  // Optional: Skip golden path execution if expected hash is pre-computed
-  // If provided, Runner compares trial state hash directly
-  string precomputed_expected_hash = 3;
+  // An engine older than this schema may still put a string on field 3, and a
+  // new field inheriting that number would silently parse those bytes.
+  reserved 3;
 
   // Which grading components to compute
   // If empty, computes all configured in TaskDescription.grading

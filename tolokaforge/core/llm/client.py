@@ -537,6 +537,12 @@ class GenerationResult:
         # Stamped only by ``UserSimulator._llm_reply``; every other producer
         # of a result leaves it empty.
         self.guard_rejections: tuple[ReplyDefect, ...] = ()
+        # True iff ``UserSimulator._llm_reply`` substituted the fixed filler
+        # for a tool-call-only reply with no text. Callers whose downstream
+        # semantics depend on the model having written the text (the
+        # bootstrap seed the agent is graded against) refuse on this flag
+        # instead of accepting the engine's own words as the turn.
+        self.filler_substituted: bool = False
 
 
 class LLMClient:
@@ -1220,8 +1226,9 @@ class LLMClient:
         expects. See [`docs/LLM_LAYER.md`](../../../docs/LLM_LAYER.md)
         § ``cache_policy`` for the contract.
 
-        User tool calls are kept in Message objects for ActionEvaluator,
-        but stripped here since most LLM APIs don't support tool_use from USER role.
+        User tool calls are kept in Message objects so ``required_actions`` can
+        match them, but stripped here since most LLM APIs don't support tool_use
+        from USER role.
         """
         litellm_messages: list[dict[str, Any]] = []
 
@@ -2349,8 +2356,8 @@ class UserSimulator(Actor):
         tool_guidance = ""
         if self.tool_schemas:
             tool_guidance = """
-- You have access to tools to check device status and perform actions. Use them when the agent asks you about your device state.
-- ALWAYS use tools to ground your responses. For example, if the agent asks "what does your status bar show?", you must call check_status_bar tool first, then report the result.
+- You have access to tools. Use them whenever the agent asks you for something one of them can establish.
+- ALWAYS use a tool to ground your answer rather than answering from memory or assumption.
 - Never make up or hallucinate tool results. Always call the actual tool and report what it returns.
 - If unsure whether you need to use a tool, prefer using it over making assumptions."""
 
@@ -2459,13 +2466,16 @@ Rules:
                 observation=observation,
             )
             # The one substitution the reply guard wraps rather than forbids, and
-            # the only text the engine contributes to a user turn. Unreachable
-            # while the conductor wires no ``user_tool_executor``: the simulator
-            # is then handed no tool schemas, so no generation carries tool calls.
+            # the only text the engine contributes to a user turn. The conductor
+            # now wires a user_tool_executor when the spec declares user tools,
+            # so this branch is reachable in-tree — callers whose downstream
+            # semantics need the model's own text (the bootstrap seed the agent
+            # is graded against) read ``result.filler_substituted`` and refuse.
             # TODO(#1089): remove it — a universal filler is hazardous (AGENTS.md
             # gotcha 23), so the removal carries its own analysis.
             if result.tool_calls and not result.text.strip():
                 result.text = "Let me check that."
+                result.filler_substituted = True
             return result
 
         # The guard logs under its own logger name, so the trial identity has to

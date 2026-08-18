@@ -14,7 +14,7 @@ import json
 import logging
 import sqlite3
 from threading import Lock
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import FastAPI, HTTPException, Query
 from jsonpath_ng.ext import parse  # .ext: supports filter exprs, superset of base grammar
@@ -612,47 +612,93 @@ def error_response(error_type: str, message: str, details: dict[str, Any]) -> di
     return {"error": error_type, "message": message, "details": details}
 
 
+def _refuse_missing_key_fields(
+    table_name: str, missing: list[str], record: dict[str, Any], op_index: int, reason: str
+) -> NoReturn:
+    record_keys = sorted(record)
+    raise HTTPException(
+        status_code=400,
+        detail=error_response(
+            "InvalidOperation",
+            f"Upsert record for table '{table_name}' {reason} "
+            f"(operation {op_index}); record keys: {record_keys}",
+            {
+                "table_name": table_name,
+                "missing_components": missing,
+                "record_keys": record_keys,
+                "op_index": op_index,
+            },
+        ),
+    )
+
+
 def upsert_key_fields(
-    key: str | list[str] | None, record: dict[str, Any], table_name: str
+    key: str | list[str] | None, record: dict[str, Any], table_name: str, op_index: int
 ) -> list[str]:
     """Resolve an upsert's ``key`` to the field names the matcher compares.
 
-    A string (or omitted) key resolves to that single field with no record
-    check — the single-field hole where a record missing its key field matches
-    another keyless record is #920's scope. A composite key must name at least
-    one field, and every component must carry a non-null value in the record —
-    an absent component and an explicit ``None`` both match rows via
-    ``None == None``, so both are refused.
+    A string (or omitted, defaulting to ``id``) key resolves to that single
+    field, which the record must contain — an explicit ``None`` value is a
+    legal, addressable key value. A composite key must name at least one
+    field, and every component must carry a non-null value in the record —
+    a ``None`` component cannot address a row.
     """
     if not isinstance(key, list):
-        return [key or "id"]
+        field = key or "id"
+        if field not in record:
+            _refuse_missing_key_fields(
+                table_name,
+                [field],
+                record,
+                op_index,
+                f"does not contain key field '{field}'",
+            )
+        return [field]
     if not key:
         raise HTTPException(
             status_code=400,
             detail=error_response(
                 "InvalidOperation",
-                f"Upsert 'key' list for table '{table_name}' must name at least one field",
-                {"table_name": table_name},
+                f"Upsert 'key' list for table '{table_name}' must name at least "
+                f"one field (operation {op_index})",
+                {"table_name": table_name, "op_index": op_index},
             ),
         )
     missing = [field for field in key if record.get(field) is None]
     if missing:
-        record_keys = sorted(record)
-        raise HTTPException(
-            status_code=400,
-            detail=error_response(
-                "InvalidOperation",
-                f"Upsert record for table '{table_name}' is missing key "
-                f"component(s) {missing} (a null-valued component cannot "
-                f"address a row); record keys: {record_keys}",
-                {
-                    "table_name": table_name,
-                    "missing_components": missing,
-                    "record_keys": record_keys,
-                },
-            ),
+        _refuse_missing_key_fields(
+            table_name,
+            missing,
+            record,
+            op_index,
+            f"is missing key component(s) {missing} (a null-valued component cannot address a row)",
         )
     return key
+
+
+def validate_upsert_operations(
+    operations: list[MutationOperation], table_name: str
+) -> dict[int, list[str]]:
+    """Resolve and validate every upsert's key before any operation applies.
+
+    A refused batch mutates nothing: rows, version, and the SQL mirror stay
+    untouched, and no table is auto-created.
+    """
+    key_fields_by_op: dict[int, list[str]] = {}
+    for op_index, op in enumerate(operations):
+        if op.op != "upsert":
+            continue
+        if op.record is None:
+            raise HTTPException(
+                status_code=400,
+                detail=error_response(
+                    "InvalidOperation",
+                    "Upsert requires 'record'",
+                    {"op": op.op, "op_index": op_index},
+                ),
+            )
+        key_fields_by_op[op_index] = upsert_key_fields(op.key, op.record, table_name, op_index)
+    return key_fields_by_op
 
 
 def handle_trial_not_found(e: TrialNotFoundError):
@@ -841,6 +887,9 @@ async def get_state_hash(
 async def mutate_state(trial_id: str, table_name: str, req: MutationRequest) -> dict[str, Any]:
     """Apply mutations to a specific table.
 
+    Every upsert's key is validated before any operation applies, so a batch
+    refused over an upsert mutates nothing.
+
     Note: If the table doesn't exist and the first operation is an insert or upsert,
     the table will be auto-created. This allows tools to create new records in tables
     that weren't initialized during trial init.
@@ -860,28 +909,22 @@ async def mutate_state(trial_id: str, table_name: str, req: MutationRequest) -> 
         handle_trial_not_found(e)
 
     with trial._lock:
-        # Check if table exists - auto-create if first operation is insert/upsert
-        if table_name not in trial.data:
-            # Check if we can auto-create the table (first op must be insert or upsert)
-            if req.operations and req.operations[0].op in ("insert", "upsert"):
-                logger.info(
-                    "Auto-creating table for insert/upsert operation",
-                    extra={"trial_id": trial_id, "table_name": table_name},
-                )
-                trial.data[table_name] = []
-            else:
-                logger.warning(
-                    "Table not found for mutation",
-                    extra={"trial_id": trial_id, "table_name": table_name},
-                )
-                raise HTTPException(
-                    status_code=404,
-                    detail=error_response(
-                        "TableNotFound",
-                        f"Table '{table_name}' not found",
-                        {"table_name": table_name},
-                    ),
-                )
+        # A missing table is auto-created only when the first operation could
+        # seed it (insert/upsert), and only after the batch passed validation.
+        table_missing = table_name not in trial.data
+        if table_missing and not (req.operations and req.operations[0].op in ("insert", "upsert")):
+            logger.warning(
+                "Table not found for mutation",
+                extra={"trial_id": trial_id, "table_name": table_name},
+            )
+            raise HTTPException(
+                status_code=404,
+                detail=error_response(
+                    "TableNotFound",
+                    f"Table '{table_name}' not found",
+                    {"table_name": table_name},
+                ),
+            )
 
         # Check ETag for optimistic locking
         if req.etag and req.etag != trial.compute_full_hash():
@@ -896,10 +939,19 @@ async def mutate_state(trial_id: str, table_name: str, req: MutationRequest) -> 
                 ),
             )
 
+        upsert_key_fields_by_op = validate_upsert_operations(req.operations, table_name)
+
+        if table_missing:
+            logger.info(
+                "Auto-creating table for insert/upsert operation",
+                extra={"trial_id": trial_id, "table_name": table_name},
+            )
+            trial.data[table_name] = []
+
         affected_rows = 0
         table_data = trial.data[table_name]
 
-        for op in req.operations:
+        for op_index, op in enumerate(req.operations):
             if op.op == "insert":
                 if op.record is None:
                     raise HTTPException(
@@ -940,17 +992,10 @@ async def mutate_state(trial_id: str, table_name: str, req: MutationRequest) -> 
                 table_data = trial.data[table_name]
 
             elif op.op == "upsert":
-                if op.record is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=error_response(
-                            "InvalidOperation", "Upsert requires 'record'", {"op": op.op}
-                        ),
-                    )
-                key_fields = upsert_key_fields(op.key, op.record, table_name)
+                key_fields = upsert_key_fields_by_op[op_index]
                 found = False
                 for record in table_data:
-                    if all(record.get(f) == op.record.get(f) for f in key_fields):
+                    if all(f in record and record[f] == op.record[f] for f in key_fields):
                         record.update(op.record)
                         found = True
                         affected_rows += 1

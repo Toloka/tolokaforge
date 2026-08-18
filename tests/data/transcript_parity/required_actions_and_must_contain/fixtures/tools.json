@@ -1,0 +1,46 @@
+[
+  {
+    "name": "write_file",
+    "description": "Write content to a file",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Path to the file to write",
+          "title": "Path",
+          "type": "string"
+        },
+        "content": {
+          "description": "Content to write to the file",
+          "title": "Content",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "title": "write_fileArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "issue_refund",
+    "description": "Issue a refund against an order.",
+    "parameters": {
+      "properties": {
+        "order_id": {
+          "description": "Order identifier, e.g. 'O-001'",
+          "title": "Order Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "order_id"
+      ],
+      "title": "issue_refundArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]

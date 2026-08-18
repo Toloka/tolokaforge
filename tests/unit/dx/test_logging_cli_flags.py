@@ -22,6 +22,7 @@ from click.testing import CliRunner
 
 import tolokaforge.core.orchestrator as orchestrator_module
 import tolokaforge.dx.cli.main as cli_main
+from tests.utils.orchestrator_stubs import complete_run
 from tolokaforge.core.logging import (
     _TOLOKAFORGE_ROOT_HANDLER_SENTINEL,
     LogFormat,
@@ -100,6 +101,7 @@ class _RecordingOrchestrator:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.__class__.calls.append(kwargs)
         self.tasks: list = [object()]
+        self.grading_completeness = complete_run()
 
     def load_tasks(self) -> None:
         return None

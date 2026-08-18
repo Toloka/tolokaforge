@@ -148,12 +148,20 @@ message RegisterTrialResponse {
   // Tool schemas in OpenAI function calling format
   // These are returned to Host for LLM tool configuration
   // Format: [{"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}]
+  //
+  // Ordering contract: the agent's tools come first, then the user actor's,
+  // and num_agent_tools partitions the list exactly — tool_schemas[:n] is the
+  // agent's surface and tool_schemas[n:] the user actor's, with
+  // n + num_user_tools == len(tool_schemas). The host slices on this to decide
+  // which actor is offered which tool; a tool offered to the wrong actor is
+  // refused TOOL_NOT_FOUND at ExecuteTool, since each actor's registry holds
+  // only its own.
   repeated ToolSchema tool_schemas = 3;
 
-  // Number of agent tools registered
+  // Number of agent tools registered — the partition index into tool_schemas
   int32 num_agent_tools = 4;
 
-  // Number of user tools registered (for dual-control scenarios)
+  // Number of user tools registered — tool_schemas[num_agent_tools:] is theirs
   int32 num_user_tools = 5;
 }
 
@@ -184,18 +192,21 @@ message ExecuteToolRequest {
   // Must conform to the tool's parameter schema
   string arguments_json = 3;
 
-  // Timeout for this execution (seconds)
-  // If 0, uses default from RegisterTrial or tool schema
+  // Per-call budget (seconds). The engine always sends 0: only the runner
+  // knows which tool is about to run, so it resolves the budget that tool
+  // declares, falling back to the trial's default_tool_timeout_s. A positive
+  // value overrides that resolution and is retained for engine/image skew.
   double timeout_seconds = 4;
 
   // Which environment is making the call
   // "agent" for assistant tools, "user" for user-side tools
   string executor = 5;
 
-  // The provider's tool-call id (ToolCall.id) — the key that joins this call
-  // to the tool-result message it produced. Required: the runner rejects an
-  // empty value, because two calls to the same tool with identical arguments
-  // are otherwise indistinguishable in the recorded history.
+  // The trial's episode-unique tool-call id (ToolCall.id, after the agent loop
+  // has assigned it) — the key that joins this call to the tool-result message
+  // it produced. Required: the runner rejects an empty value, because two calls
+  // to the same tool with identical arguments are otherwise indistinguishable
+  // in the recorded history.
   string call_id = 6;
 }
 
@@ -247,8 +258,8 @@ message ToolMetrics {
 // - "agent": Tools called by the assistant (LLM agent)
 //   Examples: get_customer_by_phone, book_reservation, create_ticket
 //
-// - "user": Tools called by the user simulator (user-side device tools)
-//   Examples: toggle_airplane_mode, toggle_data, check_internet_speed
+// - "user": Tools called by the user simulator, from `tools.user.enabled`
+//   Examples: calculator, read_file
 //
 // This is important for Native adapter tasks with dual-control scenarios
 // where both agent and user have tools that mutate shared state.
@@ -272,8 +283,8 @@ message GradeTrialRequest {
   // result crosses as role "tool" carrying its tool_call_id.
   // An assistant or user turn that called tools also carries
   // tool_calls: [{"id", "function": {"name", "arguments"}}], where "id" is the
-  // provider's tool-call id and "arguments" is a JSON-encoded string. That id is
-  // the only key joining a call to its result — parallel calls to one tool with
+  // trial's episode-unique tool-call id and "arguments" is a JSON-encoded string.
+  // That id is what joins a call to its result — parallel calls to one tool with
   // identical arguments are otherwise indistinguishable — and
   // decode_transcript_wire rejects a payload whose tool_calls carry none.
   // The leading "system" message is the agent's policy, lifted out by
@@ -282,9 +293,9 @@ message GradeTrialRequest {
   // (TlkMcpCore, Tau) it can be omitted — the Runner has its own tool-call record.
   string llm_messages_json = 2;
 
-  // Optional: Skip golden path execution if expected hash is pre-computed
-  // If provided, Runner compares trial state hash directly
-  string precomputed_expected_hash = 3;
+  // An engine older than this schema may still put a string on field 3, and a
+  // new field inheriting that number would silently parse those bytes.
+  reserved 3;
 
   // Which grading components to compute
   // If empty, computes all configured in TaskDescription.grading
@@ -643,7 +654,7 @@ The tool execution flow:
    - Records the call in the trial's history under `call_id`, stamped with a trial-wide 0-based `sequence`
 4. Runner returns `ExecuteToolResponse` with output string
 
-**`call_id` is required.** It is the provider's `ToolCall.id`, and it is the only key that joins a recorded call to the `role: tool` message carrying its result — position does not resolve the same tool called twice with identical arguments. The runner raises on an empty value rather than answering with a non-success status: a tool-shaped failure is one the agent survives and retries, so it would burn the turn budget instead of surfacing. Every registered engine declares a protocol version that carries the field (see the version lock under [RegisterTrialRequest](#registertrialrequest)), so an empty `call_id` is a harness bug, not skew.
+**`call_id` is required.** It is the trial's episode-unique tool-call id — the agent loop assigns it before the call reaches this RPC, so what the runner records is already unambiguous ([GRADING.md G3](GRADING.md#guarantees): the provider's own id where the provider kept it unique within the episode, `<id>#<n>` for the n-th further occurrence where it did not). It is what joins a call to its result: position does not resolve the same tool called twice with identical arguments, and an empty value leaves the call with no key at all. The runner raises on an empty value rather than answering with a non-success status: a tool-shaped failure is one the agent survives and retries, so it would burn the turn budget instead of surfacing. Every registered engine declares a protocol version that carries the field (see the version lock under [RegisterTrialRequest](#registertrialrequest)), so an empty `call_id` is a harness bug, not skew.
 
 **Error Handling:**
 
@@ -654,9 +665,9 @@ The tool execution flow:
 | `TIMEOUT` | Execution exceeded timeout | Return timeout message to LLM | yes |
 | `TOOL_NOT_FOUND` | Tool name not registered | Log error, fail trial | yes |
 | `INVALID_ARGUMENTS` | Arguments don't match schema | Return validation error to LLM | yes, with empty `arguments` |
-| `TRIAL_NOT_FOUND` | Trial ID not registered | Log error, fail trial | no — there is no trial context to record into |
+| `TRIAL_NOT_FOUND` | Trial ID not registered | Abort the trial as `trial_lost` | no — on either side; the call reached no tool |
 
-A call the runner refuses before execution is still recorded, because the host appends a `role: tool` error message for it either way; a record that omitted it would read as a call the agent never attempted.
+A call the runner refuses before execution is still recorded, because the host appends a `role: tool` error message for it either way; a record that omitted it would read as a call the agent never attempted. `TRIAL_NOT_FOUND` is the exception, and it is not one: the runner holds no registration, so the call reached no tool and there is no outcome for either side to record. `GrpcRunnerClient` raises `TrialNotRegisteredError` instead of building a `ToolResult`, and the trial ends with `termination_reason: trial_lost` — see [RUNNER.md](RUNNER.md) § Retryability and countability are two questions.
 
 ### GradeTrialRequest
 
@@ -680,7 +691,8 @@ Three properties a consumer can rely on:
 - **Tool results are on the wire.** A result is a `role: tool` message carrying the
   `tool_call_id` of the call that produced it, positioned where it happened.
 - **Calls are joined to results by `id`, never by position.** Every `tool_calls`
-  entry carries the provider's tool-call id; `arguments` is a JSON-encoded string.
+  entry carries the trial's episode-unique tool-call id; `arguments` is a
+  JSON-encoded string.
   Parallel calls to one tool with identical arguments are distinguishable only by
   that id, so a payload whose `tool_calls` carry none is rejected rather than
   degraded — see `tolokaforge.core.grading.transcript_wire`.
@@ -787,16 +799,17 @@ def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
     )
 ```
 
-**CRITICAL: Hash Algorithm Compatibility**
+**CRITICAL: Hash Substrate Discipline**
 
-The `db_service.get_stable_hash()` call MUST use the canonical hash algorithm defined in [`TASK_DESCRIPTION_SCHEMA.md`](TASK_DESCRIPTION_SCHEMA.md#canonical-hash-algorithm):
-
-```python
-json_str = json.dumps(stable_state, sort_keys=True, separators=(",", ":"), default=str)
-return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
-```
-
-All components (DB Service, adapters, grading engine) MUST use this exact algorithm for hash comparison to work correctly.
+`db_service.get_stable_hash()` and every comparison against its output MUST stay
+within the runner substrate's persisted-digest algorithm —
+`tolokaforge/core/hash.py::compute_stable_hash`, defined in
+[`TASK_DESCRIPTION_SCHEMA.md` § Stable State Hash](TASK_DESCRIPTION_SCHEMA.md#stable-state-hash).
+That scope is db-service and the consumers of its digests, nothing wider. The
+grading engine's core substrate hashes state in a different algebra by design:
+the two agree on which states are equal and label every state differently, so a
+hash comparison computes both sides on one substrate and a digest never crosses
+substrates — see [`GRADING.md` § Substrate Parity](GRADING.md#substrate-parity).
 
 ### Component scores on the wire
 
@@ -853,11 +866,13 @@ what that costs the run's counts.
 | `error` | Cause |
 |---|---|
 | `Trial '<id>' not found` | The trial was never registered, or was already cleaned up |
-| `Trial '<id>' is not gradeable: TimelineInconsistencyError: …` | The transcript and the Runner's tool-call record cannot be joined into one timeline — a recorded call the transcript never asked for, or one `call_id` used twice. The error names the offending `call_id` |
+| `Trial '<id>' is not gradeable: TimelineInconsistencyError: …` | The transcript and the Runner's tool-call record cannot be joined into one timeline — a recorded call the transcript never asked for, a tool result answering one, or a recorded call naming a different tool than the declaration it paired with. The error names the offending call's key |
 | `Trial '<id>' is not gradeable: <ValueError subclass>: …` | `llm_messages_json` does not decode into a transcript — malformed JSON, a message missing `role` / `content`, a `tool_calls` entry carrying no `id`, or one whose `function` / `function.name` / `function.arguments` is absent. Every rejection is a `ValueError`, so it lands on this row rather than the catch-all below |
 | `Trial '<id>' is not gradeable: ValueError: state_checks.hash.weight is required …` | A hash verdict and a JSONPath score are both real and `state_checks.hash_weight` says nothing about how to fold them. Reachable only for a pack the presence gate accepts at `RegisterTrial` yet whose hash source materialises at grade time — a refusal-shaped pack (`hash_enabled` with empty `golden_actions`) carrying live assertions. An authored pack cannot be that shape: `hash.enabled` with no source is refused before the run ([GRADING.md](GRADING.md#what-is-validated-before-a-run)), so this row is reached by a `TaskDescription` built directly against the runner or recorded before that rule |
 | `Trial '<id>' is not gradeable: ValueError: state_checks.db_probes is the sole state source for a task that declares it …` | A probe score arrived at the fold beside a hash verdict or a JSONPath score — two verdicts for one `state_checks` component with no declared share between them, so `resolve_state_checks_component` refuses. It refuses *before* the weight is read, so a block refused outright is never answered with a demand for a `hash.weight`. An authored pack cannot be that shape: both config models reject a probe declared beside a non-empty `jsonpaths` or an enabled `hash` naming a source, so such a pack stops loading on either substrate ([GRADING.md](GRADING.md#substrate-grading-state_checksdb_probes)). One shape reaches here — `hash_enabled` true with **no** declared source beside non-empty `db_probes`, which neither model refuses because neither sees a source to conflict with, yet the runner grades that hash against the trial's initial state and so produces a real verdict at grade time — reachable from a `TaskDescription` built directly against the runner, or one recorded before the rule |
 | `Trial '<id>' is not gradeable: MissingComponentWeight: <component> was scored and combine.weights declares no weight for it …` | The fold evaluated a component `grading.weights` declares no share for. Neither `1.0` nor `0.0` is defensible, so the fold refuses rather than picking one. An authored pack cannot be that shape — a configured component with no weight is refused before the run ([GRADING.md](GRADING.md#what-is-validated-before-a-run)) — so this row is reached by a `TaskDescription` built directly against the runner, or by one recorded before that rule |
+| `Trial '<id>' cannot be graded as authored: state_checks.<jsonpaths\|hash> … reads the trial's database, but the task's initial_state provisions none …` | The pack asserts over a database `RegisterTrial` never provisioned — a `path:` addressing it, or `hash` enabled with or without a source, on a task declaring no tables, schemas or unstable fields. Refused ahead of every grading branch, so nothing reaches the DB client and no component is scored against state the grader never read. The message names the key, the assertion that triggered it and both ways out ([GRADING.md](GRADING.md#a-state_checks-block-the-trial-cannot-answer)) |
+| `Trial '<id>' cannot be graded as authored: state_checks.jsonpaths declares path '…', which addresses state the runner's JSONPath grading does not carry …` | The assertion is rooted where the runner composes nothing — `filesystem`, `agent`, `user`, `mock_web_url` or `rag_corpus_dir` — so it resolves on the core engine and never on the runner. Refused rather than evaluated, because evaluating it yields a `0.0` indistinguishable from an agent that failed the assertion. The message names the path and its remedy: `path_glob:` + `contains_ci:` for a file, `db` or `tables` for anything else the trial holds ([GRADING.md](GRADING.md#a-state_checks-block-the-trial-cannot-answer)) |
 | `Hash grading failed: UnresolvableGoldenAction: golden actions naming no tool the replay can call: …` | A `golden_actions` entry names a tool the trial never registered, or names nothing at all. Every offending action is named in one error with its index and the registered set, and the trial's database is untouched |
 | `Hash grading failed: …` | Golden replay or stable-state retrieval raised |
 | `Grading config populates scored keys the runner neither evaluated nor recorded a skip for: …` | The accounted-keys ledger (below) found a populated scored key with no evaluator result and no recorded skip |
@@ -880,6 +895,34 @@ written only inside a `trace_checks.alternatives` path is covered by the
 for the block rather than leaf by leaf there (#772). See
 [`GRADING.md`](GRADING.md#the-runtime-ledger) for the manifest behind it.
 
+**The component segments.** `Grade.reasons` is a `" | "`-joined list, and every
+component that took a verdict names itself in it:
+
+| Component | Segment |
+|---|---|
+| `state_checks` — hash | `State: hash match`, or `State: <diff summary>` / `State: hash mismatch` |
+| `state_checks` — jsonpath | `JSONPath: …` |
+| `state_checks` — db probes | `DB probes: …` |
+| `transcript_rules` | `Transcript: all N rules passed`, or the failing rules by message |
+| `trace_checks` | `Trace checks: score=…`, then `FAILED trace gates: …` and one `Trace check <id>: …` per failing constraint |
+| `llm_judge` | `Judge: score=… (…)` |
+| `custom_checks` | `Custom checks: …` — the suite's score, its counts and every check that did not pass by name and message; `no check reached a verdict — …` where every check skipped or the file declared none; or `the suite failed to run — <error>` |
+
+A component the trial did not score contributes nothing, with one deliberate
+exception: the `custom_checks` segment is emitted whenever the evaluator had
+something to say rather than on the component's score, because a suite that failed to
+run under `fail_on_error: false` is left unscored and its error is the only account of
+why the trial earned nothing. The segment is the same text on both substrates.
+
+A trial that scored **no** component therefore contributes no component segment —
+apart from that one exception — and carries no placeholder in their place: the fold
+decided that grade without reading a score, so the fold's own sentence — `no component was configured and no weight names
+one, so nothing was scored and nothing was owed` for a task declaring no grading, or
+the sentence naming what was asked for and not counted — is the whole account, beside
+any skip note the ledger filed. The segments are joined once rather than appended to
+each other, so a grade whose components said nothing opens with its first real
+sentence rather than with a separator.
+
 **The recorded skips.** A trial can legitimately reach `GradeTrial` with a
 populated key whose evaluator cannot run. Each such site records a skip rather
 than nothing, and the reason lands in `Grade.reasons` so the outcome is visible:
@@ -889,7 +932,6 @@ than nothing, and the reason lands in `Grade.reasons` so the outcome is visible:
 | `skipped: the trial's timeline carries no events` | The trial left neither a conversational turn nor a tool call, so the rule would score 0.0 against evidence that does not exist | every `transcript_rules.*` key **except** `min_assistant_turns`, which is evaluated there because absence is that key's answer |
 | `skipped: no transcript messages` | `llm_messages_json` is empty | `llm_judge` |
 | `skipped: hash grading not enabled` | `state_checks.hash_enabled` is false | the `state_checks.hash` members the hash evaluator reads, including `golden_actions`, which the adapter fills regardless of `hash.enabled` |
-| `skipped: core-only — no runner path reads it (#693)` | always | `state_checks.hash.expected_state_hash` — the adapter translates it onto `expected_hash` and no runner path reads it, so hash grading having run does not make it evaluated |
 | `skipped: custom checks not enabled` | The pack wrote a `custom_checks` block but left `enabled` false, so the executor never runs | `custom_checks` |
 | `skipped: the binding yielded no assignment` | A `trace_checks` constraint declaring a `bind` whose binder selected no event, or selected events carrying no value to bind, so its `require` tree was never entered | the `trace_checks.constraints.<kind>` keys **nested inside** that `require` tree. The tree's own top-level kind is `evaluated`: the constraint takes a verdict under it either way, decided by `on_unbound`. A kind any other constraint in the block did score stays `evaluated` too |
 
@@ -1005,5 +1047,5 @@ See [`DB_SERVICE_API.md`](DB_SERVICE_API.md) for full endpoint specifications.
 1. **Trial Isolation**: Each trial has isolated state in DB Service
 2. **Tool Sandboxing**: Tools execute in container with limited permissions
 3. **Input Validation**: All JSON inputs validated against schemas
-4. **Timeout Enforcement**: Hard timeouts prevent runaway execution
+4. **Timeout Enforcement**: `ExecuteTool` bands every call, so a wedged tool cannot hold the RPC open indefinitely. The band cancels the await; it does not terminate a tool already running on a worker thread, so a tool holding state across calls has its session rebuilt before the next one
 5. **Resource Limits**: Container resource limits prevent DoS

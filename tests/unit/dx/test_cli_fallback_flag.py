@@ -20,6 +20,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
+from tests.utils.orchestrator_stubs import complete_run
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.dx.cli.main import cli
@@ -65,6 +66,7 @@ def _make_capturing_orchestrator(
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             captured["deps"] = kwargs.get("deps")
             self.tasks = [object()]
+            self.grading_completeness = complete_run()
 
         def load_tasks(self) -> None:
             return None

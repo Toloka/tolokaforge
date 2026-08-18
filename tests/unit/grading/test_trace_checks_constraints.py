@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import itertools
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -1302,11 +1303,15 @@ def test_a_turn_window_restricts_the_binder_and_so_the_candidate_set():
     assert windowed.passed is True, "the write of Y is outside the window, so it binds nothing"
 
 
-_INTEGER_DELIVERY_BINDING = {
+_DELIVERY_BINDING = {
     "match": _call_of("open_delivery"),
     "values": {"delivery": {"field": "args.delivery_id"}},
 }
-"""A binding whose value is an ``int``, referenced below from a text field."""
+"""A binding over one argument, referenced below from a text field and from arguments.
+
+Its runtime type is whatever the trajectory's call carried, which is what lets one
+reference be read in both directions: an ``int`` bound against a text field, and text
+bound against a natively-typed one."""
 
 
 def _integer_delivery_timeline() -> TrialTimeline:
@@ -1316,14 +1321,26 @@ def _integer_delivery_timeline() -> TrialTimeline:
     )
 
 
-def _assert_names_the_unmakeable_comparison(message: str, operator: str) -> None:
-    assert "the text comparison was not made" in message
+def _assert_names_the_unmakeable_comparison(
+    message: str, *, field: str, operator: str, bound: str, json_type: str
+) -> None:
+    """The sentence a reference no candidate could compare prints, in either direction.
+
+    It names the binding, the value it holds and that value's JSON type, the field and
+    the operator — and no held type, which varies across the candidates it speaks for.
+    The remedy it carries is one this branch's own rules accept: a capture is text only
+    where the field beneath it holds text, so the claim that a capture is text whatever
+    it is taken off is asserted absent.
+    """
+    assert f"the {field} comparison was not made" in message
     assert "'delivery'" in message
-    assert "4021" in message
-    assert "of type int" in message
-    assert f"{operator} reads a text field as text" in message
+    assert bound in message
+    assert f"a JSON {json_type}" in message
+    assert f"{operator} can ever satisfy" in message
     assert "args predicate" in message
-    assert "regex capture" in message
+    assert "extract a regex capture off a field that holds text" in message
+    assert "reads a text field as text" not in message
+    assert "always text" not in message
 
 
 def test_a_type_mismatched_contains_binding_says_the_comparison_was_not_made():
@@ -1339,31 +1356,297 @@ def test_a_type_mismatched_contains_binding_says_the_comparison_was_not_made():
         }
     }
 
-    result = evaluate_constraint(
-        _integer_delivery_timeline(), require, bind=_INTEGER_DELIVERY_BINDING
-    )
+    result = evaluate_constraint(_integer_delivery_timeline(), require, bind=_DELIVERY_BINDING)
 
     assert result.passed is False
-    _assert_names_the_unmakeable_comparison(result.message, "contains_binding")
+    _assert_names_the_unmakeable_comparison(
+        result.message,
+        field="text",
+        operator="contains_binding",
+        bound="4021",
+        json_type="integer",
+    )
 
 
 def test_a_type_mismatched_equals_binding_says_the_comparison_was_not_made():
     """``eq`` over a string and an int is false outright, so this is never true either.
 
     The gate rejects this shape wherever the tool's schema types the extraction, and
-    the residue it cannot type is exactly what this backstop covers — so the operator
-    that the gate exempts on an ``args`` predicate is not exempt on a text field.
+    the residue it cannot type — no schema resolved, a path below its first segment, a
+    property the schema gives no single type — is exactly what this backstop covers. It
+    reads both operands' types, so it answers over that residue whichever of the two is
+    the text, and a text field is only the easier of the two places to provoke it.
     """
     require = {
         "present": {"match": {"kind": "assistant_message", "text": {"equals_binding": "delivery"}}}
     }
 
+    result = evaluate_constraint(_integer_delivery_timeline(), require, bind=_DELIVERY_BINDING)
+
+    assert result.passed is False
+    _assert_names_the_unmakeable_comparison(
+        result.message,
+        field="text",
+        operator="equals_binding",
+        bound="4021",
+        json_type="integer",
+    )
+
+
+def test_a_text_binding_against_a_natively_typed_field_says_the_same():
+    """The reverse direction earns the same sentence, off the same two JSON types.
+
+    A text binding correlated against an argument the trial carries as an integer is
+    false on every trajectory exactly as a bound integer against a text field is. The
+    sentence names the binding's own type rather than the value's, because it speaks
+    for every candidate and they need not agree on what they held.
+    """
     result = evaluate_constraint(
-        _integer_delivery_timeline(), require, bind=_INTEGER_DELIVERY_BINDING
+        _delivery_trajectory((("log", {"code": 40}),), bound="rep"),
+        {"present": {"match": _call_of("log", args={"code": {"equals_binding": "delivery"}})}},
+        bind=_DELIVERY_BINDING,
     )
 
     assert result.passed is False
-    _assert_names_the_unmakeable_comparison(result.message, "equals_binding")
+    _assert_names_the_unmakeable_comparison(
+        result.message,
+        field="args.code",
+        operator="equals_binding",
+        bound="'rep'",
+        json_type="string",
+    )
+
+
+def test_the_unmakeable_sentence_is_the_same_whatever_the_candidates_held():
+    """One sentence for the whole candidate set, so it names no candidate's own type.
+
+    Both trajectories carry a value ``equals_binding`` can never satisfy against an
+    integer binding — text on one, an array on the other — and what the author reads
+    is one sentence about the reference rather than one per event.
+    """
+
+    def message_for(held: object) -> str:
+        return evaluate_constraint(
+            _delivery_trajectory((("log", {"code": held}),)),
+            {"present": {"match": _call_of("log", args={"code": {"equals_binding": "delivery"}})}},
+            bind=_DELIVERY_BINDING,
+        ).message
+
+    text_held, array_held = message_for("x"), message_for(["x"])
+
+    assert "the args.code comparison was not made" in text_held
+    assert text_held == array_held
+
+
+_UNMAKEABLE_SENTENCE = re.compile(r"the (\S+) comparison was not made")
+
+
+def _comparisons_the_message_names(message: str) -> tuple[str, ...]:
+    """Every comparison the grade reports as unmade, in the order it names them."""
+    return tuple(_UNMAKEABLE_SENTENCE.findall(message))
+
+
+def _delivery_trajectory(
+    calls: Sequence[tuple[str, dict[str, Any]]], bound: Any = 4021
+) -> TrialTimeline:
+    """The binder's call in turn 0, then one call of ``calls`` per turn from turn 1 on.
+
+    ``bound`` is the value the binder's call carries and so the value the binding
+    holds — the trajectory's own way of choosing which direction the reference is
+    read in.
+
+    One call per turn because a ``within`` window is the only way to ask what the
+    constraint's window does to a comparison read outside it, and a window addresses
+    turns.
+    """
+    return build_turn_timeline(
+        [
+            Turn("user", "Open the delivery and log its code."),
+            Turn(
+                "assistant",
+                "Opening it.",
+                recorded=[
+                    recorded_call("open_delivery", sequence=0, arguments={"delivery_id": bound})
+                ],
+            ),
+            *(
+                Turn(
+                    "assistant",
+                    f"Calling {tool}.",
+                    recorded=[recorded_call(tool, sequence=index, arguments=arguments)],
+                )
+                for index, (tool, arguments) in enumerate(calls, start=1)
+            ),
+        ]
+    )
+
+
+@dataclass(frozen=True)
+class _MakeabilityCell:
+    """One trajectory read under one constraint kind, and what the grade says of it.
+
+    ``references`` are the argument paths the matcher correlates against the binding,
+    ``bound`` the value the binding holds — which is what selects the direction the
+    reference is read in — and ``reported`` the comparisons the message says were not
+    made, in the order it names them. The verdict and the report are separate claims
+    and every cell asserts both.
+    """
+
+    calls: tuple[tuple[str, dict[str, Any]], ...]
+    kind: str
+    passed: bool
+    reported: tuple[str, ...]
+    references: tuple[str, ...] = ("code",)
+    within: dict[str, int] | None = None
+    bound: Any = 4021
+
+
+_MATCHING_CALL = ("log", {"code": 4021})
+
+_MAKEABILITY_CELLS = (
+    pytest.param(
+        _MakeabilityCell((_MATCHING_CALL,), "present", True, ()),
+        id="a_call_that_made_the_comparison",
+    ),
+    pytest.param(
+        _MakeabilityCell((_MATCHING_CALL, ("log", {"code": "4021"})), "present", True, ()),
+        id="a_sibling_carrying_the_same_value_as_text",
+    ),
+    pytest.param(
+        _MakeabilityCell((_MATCHING_CALL, ("log", {"code": "x"})), "present", True, ()),
+        id="a_junk_sibling_on_the_same_tool",
+    ),
+    pytest.param(
+        _MakeabilityCell((_MATCHING_CALL, ("audit", {"code": "x"})), "present", True, ()),
+        id="a_junk_call_on_a_tool_the_matcher_rejects",
+    ),
+    pytest.param(
+        _MakeabilityCell((("audit", {"code": "x"}),), "present", False, ()),
+        id="only_a_call_on_a_tool_the_matcher_rejects",
+    ),
+    pytest.param(
+        _MakeabilityCell((("log", {"code": "4021"}),), "present", False, ("args.code",)),
+        id="the_residue_alone",
+    ),
+    pytest.param(
+        _MakeabilityCell((("log", {"code": 99}),), "present", False, ()),
+        id="a_comparison_made_and_come_out_false",
+    ),
+    pytest.param(
+        _MakeabilityCell((("log", {"code": "x"}),), "absent", False, ("args.code",)),
+        id="absent_over_the_residue_alone",
+    ),
+    pytest.param(
+        _MakeabilityCell((("log", {"code": 99}),), "absent", True, ()),
+        id="absent_over_a_comparison_made_and_come_out_false",
+    ),
+    pytest.param(
+        _MakeabilityCell((("log", {"code": "x"}), ("log", {})), "absent", False, ("args.code",)),
+        id="absent_over_the_residue_beside_a_call_omitting_the_argument",
+    ),
+    pytest.param(
+        _MakeabilityCell((("log", {"code": "x"}), ("log", {})), "present", False, ("args.code",)),
+        id="the_residue_beside_a_call_omitting_the_argument",
+    ),
+    pytest.param(
+        _MakeabilityCell(
+            (("log", {"a": "x", "b": "y"}),),
+            "present",
+            False,
+            ("args.a", "args.b"),
+            references=("a", "b"),
+        ),
+        id="two_references_neither_of_which_could_be_made",
+    ),
+    pytest.param(
+        _MakeabilityCell(
+            (("log", {"a": "x"}),), "present", False, ("args.a",), references=("a", "b")
+        ),
+        id="two_references_one_of_them_over_an_absent_argument",
+    ),
+    pytest.param(
+        _MakeabilityCell(
+            (("log", {"code": "x"}),),
+            "absent",
+            True,
+            (),
+            within={"first_turn": 0, "last_turn": 0},
+        ),
+        id="the_only_residue_outside_the_window",
+    ),
+    pytest.param(
+        _MakeabilityCell((("log", {"code": 40}),), "present", False, ("args.code",), bound="rep"),
+        id="a_text_binding_against_an_integer_field_alone",
+    ),
+    pytest.param(
+        _MakeabilityCell(
+            (("log", {"code": "rep"}), ("log", {"code": 40})), "present", True, (), bound="rep"
+        ),
+        id="a_text_binding_beside_a_call_it_could_compare",
+    ),
+    pytest.param(
+        _MakeabilityCell(
+            (("log", {"code": "rep"}), ("audit", {"code": 40})), "present", True, (), bound="rep"
+        ),
+        id="a_text_binding_beside_a_rejected_tools_call",
+    ),
+    pytest.param(
+        _MakeabilityCell(
+            (("log", {"code": 40}), ("log", {})), "present", False, ("args.code",), bound="rep"
+        ),
+        id="a_text_binding_over_the_residue_beside_a_call_omitting_the_argument",
+    ),
+    pytest.param(
+        _MakeabilityCell(
+            (("log", {"code": 40}), ("log", {})), "absent", False, ("args.code",), bound="rep"
+        ),
+        id="absent_over_a_text_bindings_residue_beside_a_call_omitting_the_argument",
+    ),
+    pytest.param(
+        _MakeabilityCell((("log", {"code": 40}),), "present", True, (), bound=40.0),
+        id="a_pair_of_types_the_table_admits",
+    ),
+)
+
+
+@pytest.mark.parametrize("cell", _MAKEABILITY_CELLS)
+def test_an_unmakeable_comparison_fails_the_candidate_it_was_read_on(
+    cell: _MakeabilityCell,
+) -> None:
+    """The report fires where no candidate made the comparison, and only there.
+
+    A candidate is an event the matcher's *other* readings admit, so a call to a tool
+    the matcher does not name, and a call the constraint's window excludes, speak for
+    no comparison at all — while a sibling call that made it is the standing proof
+    that the reference is reachable, and silences the report the residue would
+    otherwise earn.
+
+    The two claims move independently, which is why every cell asserts both: a
+    comparison that was made and came out false fails silently as the agent's miss,
+    an `absent` constraint over a residue fails *because* the comparison was
+    reported, and a call that simply omitted the argument made nothing and so
+    silences nothing.
+
+    Every cell is read in both directions, since the reading is over both operands'
+    JSON types: a bound integer against a text field and text bound against an
+    integer field reach the same verdicts, and a pair the per-operator table admits —
+    an `integer` field against a `number` binding — is not a mismatch at all.
+    """
+    fields: dict[str, Any] = {"bind": _DELIVERY_BINDING}
+    if cell.within is not None:
+        fields["within"] = cell.within
+    matcher = _call_of(
+        "log", args={name: {"equals_binding": "delivery"} for name in cell.references}
+    )
+
+    result = evaluate_constraint(
+        _delivery_trajectory(cell.calls, bound=cell.bound),
+        {cell.kind: {"match": matcher}},
+        **fields,
+    )
+
+    assert result.passed is cell.passed
+    assert _comparisons_the_message_names(result.message) == cell.reported
 
 
 # Every extraction the load rules admit, and the value it reads off the trajectory
@@ -1802,3 +2085,46 @@ def test_a_bound_shared_gate_applies_to_every_route():
     assert result.gate_failed is True
     assert result.score == 0.0
     assert "failed under (rec='Y')" in result.constraints[0].message
+
+
+@pytest.mark.parametrize(
+    ("recorded_text", "passes"),
+    [("order 42 is already refunded", True), ("the account is closed", False)],
+)
+def test_a_result_predicate_over_a_failed_call_is_decided_by_the_recorded_text(
+    recorded_text: str, passes: bool
+):
+    """An author may assert *why* a call failed, not only that it did.
+
+    The two rows share the ``error`` status and differ only in the text the tool
+    stated, so a constraint that passed on the status alone would pass both. Which
+    verdict this reaches is substrate-independent: both substrates record one text
+    for one failure, held byte-equal by the timeline parity suite, and the key
+    manifest names one evaluator for both.
+    """
+    timeline = build_timeline(
+        turns=(("user", "Refund the order."), ("assistant", "Refunding.")),
+        recorded=[recorded_call(_LOOKUP, status=ToolExecutionStatus.ERROR, output=recorded_text)],
+    )
+    config = TraceChecksConfig(
+        constraints=[
+            {
+                "id": "refused_as_already_refunded",
+                "description": "the refund failed saying the order was already refunded",
+                "require": {
+                    "present": {
+                        "match": {
+                            "kind": "tool_result",
+                            "status": {"equals": "error"},
+                            "result": {"contains": "already refunded"},
+                        }
+                    }
+                },
+            }
+        ]
+    )
+
+    verdict = evaluate_trace_checks(timeline, config).constraints[0]
+
+    assert verdict.passed is passes
+    assert verdict.undecided is False

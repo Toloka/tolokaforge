@@ -5,8 +5,7 @@ about grading reads the file, so a claim the pack contradicts is never discovere
 trial and would instead reach ``tolokaforge reconcile`` as evidence gathered against text
 the pack no longer has.
 
-Two rules are stated over the entry alone and are the reason the sidecar's shape is what
-it is:
+The rules below are the reason the sidecar's shape is what it is:
 
 * the **freed-share rule** — a scored criterion in ``narrowed`` / ``retired`` mode must
   declare ``combine_weights``, unconditionally. What the declared map *does* to any trial is
@@ -23,6 +22,14 @@ it is:
   entry's ``was.required`` and ``was.kind`` must equal the criterion the pack still holds.
   ``was.weight`` is deliberately free, and the standing case below that keeps the rule from
   over-reaching is a narrow reducing it.
+* the **corpus rule** — every entry names the corpus its claim is measured over, in every
+  mode, and the name has to resolve against the base the caller supplies. The standing cases
+  are the multi-part shape ``tolokaforge curate`` writes and the grandparent of one, which
+  bound the rule at the single level of nesting that command can produce.
+* the **one-route rule** — the route-scoped ids one entry is ``by`` must sit in one route,
+  since a trial's recomputed verdicts carry the shared constraints and the winning route's
+  alone. The two standing cases are a same-route pair and a shared id beside a route-scoped
+  one, which keep the rule off a conjunction a corpus can decide.
 
 What a shipped pack's candidacy looks like, and the rejections stated against a real
 rubric, are in ``tests/canonical/test_migration_declaration.py``.
@@ -37,7 +44,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from tests.utils.migration_packs import write_migration_pack
+from tests.utils.migration_packs import write_corpus_directory, write_migration_pack
 from tolokaforge.core.grading.migration_declaration import (
     MigrationMode,
     inspect_migration_declaration,
@@ -47,6 +54,9 @@ pytestmark = pytest.mark.unit
 
 _VETOING_DESCRIPTION = "The assistant listed the notes before adding one."
 _SCORED_DESCRIPTION = "The saved note captures what the user asked for."
+
+_CORPUS = "corpus"
+"""What every entry below names, written beside the pack so the pointer resolves."""
 
 
 def _present(tool: str) -> dict[str, Any]:
@@ -133,6 +143,7 @@ def _entry(**overrides: Any) -> dict[str, Any]:
         "criterion": "checked_first",
         "mode": "narrowed",
         "by": ["shared_gate"],
+        "corpus": _CORPUS,
         "was": {
             "description": _VETOING_DESCRIPTION,
             "kind": "binary",
@@ -140,7 +151,7 @@ def _entry(**overrides: Any) -> dict[str, Any]:
             "weight": 1.0,
         },
         "residual": {"kind": "text", "reason": "the warning to the user is still judged"},
-        "evidence": {"corpus": "tests/data/corpora/notes", "observations": 11, "kappa": 1.0},
+        "evidence": {"observations": 11, "kappa": 1.0},
     } | overrides
 
 
@@ -162,14 +173,17 @@ def _candidacy(**overrides: Any) -> dict[str, Any]:
     return _entry(**({"mode": "candidate", "evidence": None, "residual": None} | overrides))
 
 
-def _inspect(tmp_path: Path, *entries: dict[str, Any]):
-    return inspect_migration_declaration(
-        write_migration_pack(
-            tmp_path / "case",
-            grading_text=_grading_text(),
-            migration={"migrations": list(entries)},
-        )
+def _pack(tmp_path: Path, *entries: dict[str, Any]) -> Path:
+    """The pack's ``grading.yaml``, with the corpus every entry names written beside it."""
+    directory = tmp_path / "case"
+    write_corpus_directory(directory / _CORPUS, criterion="checked_first")
+    return write_migration_pack(
+        directory, grading_text=_grading_text(), migration={"migrations": list(entries)}
     )
+
+
+def _inspect(tmp_path: Path, *entries: dict[str, Any]):
+    return inspect_migration_declaration(_pack(tmp_path, *entries))
 
 
 def test_a_directory_without_a_sidecar_declares_no_migration(tmp_path: Path):
@@ -219,10 +233,45 @@ def test_a_route_scoped_scored_constraint_does_not_preserve_the_veto(tmp_path: P
 
 def test_a_candidate_naming_a_scored_constraint_keeps_its_veto_and_loads(tmp_path: Path):
     """A candidacy replaces nothing, so the criterion still vetoes whatever it names — which
-    is what both shipped candidacies are, each naming scored constraints."""
+    is what the shipped candidacy is, naming a scored constraint."""
     declaration = _inspect(tmp_path, _candidacy(by=["shared_scored"]))
     assert declaration is not None
     assert declaration.migrations[0].mode is MigrationMode.CANDIDATE
+
+
+# ---------------------------------------------------------------------------
+# The one-route rule: what a conjunction may name across `alternatives`.
+# ---------------------------------------------------------------------------
+
+
+def test_a_by_naming_a_constraint_from_each_route_is_refused(tmp_path: Path):
+    """A trial is scored on the route it took, so the recomputed verdicts hold the shared
+    constraints and one route's — an entry naming ``by_search``'s check beside
+    ``by_listing``'s has no verdict for one of them on every trial it could ever be measured
+    over. The refusal names both ids with the route each sits in, because which pair spans
+    the routes is the whole of what the author has to fix."""
+    with pytest.raises(ValueError) as refused:
+        _inspect(tmp_path, _candidacy(by=["route_scored", "route_scored_other"]))
+
+    written = str(refused.value)
+    assert "route_scored in route 'by_search'" in written, written
+    assert "route_scored_other in route 'by_listing'" in written, written
+
+
+def test_a_by_naming_two_constraints_of_one_route_loads(tmp_path: Path):
+    """The accepting direction: both ids are decided together on every trial that route won,
+    so their conjunction is a label a corpus can disagree with."""
+    declaration = _inspect(tmp_path, _candidacy(by=["route_gate", "route_scored"]))
+    assert declaration is not None
+    assert declaration.migrations[0].by == ["route_gate", "route_scored"]
+
+
+def test_a_by_mixing_a_shared_id_with_a_route_scoped_one_loads(tmp_path: Path):
+    """A shared constraint is decided whichever route won, so it rules no route out and
+    accompanies any route's ids."""
+    declaration = _inspect(tmp_path, _candidacy(by=["shared_scored", "route_scored"]))
+    assert declaration is not None
+    assert declaration.migrations[0].by == ["shared_scored", "route_scored"]
 
 
 # ---------------------------------------------------------------------------
@@ -486,9 +535,7 @@ def test_an_acknowledged_trial_under_the_corpus_loads(tmp_path: Path):
     declaration = _inspect(
         tmp_path,
         _narrowing(
-            acknowledged=[
-                {"trial": "tests/data/corpora/notes/met/trial_04", "reason": "the judge misread"}
-            ]
+            acknowledged=[{"trial": f"{_CORPUS}/met/trial_04", "reason": "the judge misread"}]
         ),
     )
     assert declaration is not None
@@ -498,41 +545,159 @@ def test_an_acknowledged_trial_under_the_corpus_loads(tmp_path: Path):
 def test_an_acknowledged_trial_outside_the_corpus_is_refused(tmp_path: Path):
     """A waiver addresses a disagreement the verdict measured, so a trial the verdict never
     read waives nothing."""
-    with pytest.raises(ValidationError, match="are not bundles under evidence.corpus"):
-        _inspect(
-            tmp_path,
-            _narrowing(
-                acknowledged=[{"trial": "tests/data/corpora/other/trial_01", "reason": "wrong"}]
-            ),
-        )
+    with pytest.raises(ValidationError, match="are not bundles under the corpus this entry names"):
+        _inspect(tmp_path, _narrowing(acknowledged=[{"trial": "other/trial_01", "reason": "no"}]))
 
 
 def test_an_acknowledged_trial_that_is_the_corpus_root_is_refused(tmp_path: Path):
     """The degenerate boundary: the root holds the bundles and is not one of them."""
-    with pytest.raises(ValidationError, match="are not bundles under evidence.corpus"):
-        _inspect(
-            tmp_path,
-            _narrowing(acknowledged=[{"trial": "tests/data/corpora/notes", "reason": "wrong"}]),
-        )
+    with pytest.raises(ValidationError, match="are not bundles under the corpus this entry names"):
+        _inspect(tmp_path, _narrowing(acknowledged=[{"trial": _CORPUS, "reason": "wrong"}]))
 
 
-def test_an_acknowledgement_without_evidence_is_refused(tmp_path: Path):
-    """A candidate cannot carry evidence, so it cannot waive a disagreement either — there
-    is no verdict for one to have disagreed with."""
-    with pytest.raises(ValidationError, match="without evidence to have disagreed with"):
-        _inspect(
-            tmp_path, _candidacy(acknowledged=[{"trial": "x/y", "reason": "the judge misread"}])
-        )
+def test_a_candidate_may_waive_a_disagreement_against_the_corpus_it_names(tmp_path: Path):
+    """A candidate carries no evidence and still names a corpus, so a waiver on one is a
+    statement about a disagreement the report prints — checkable rather than unstatable.
+
+    It gates nothing either way: a candidate's verdict converts nothing, which is what makes
+    recording the author's judgment about one worth keeping.
+    """
+    declaration = _inspect(
+        tmp_path,
+        _candidacy(
+            acknowledged=[{"trial": f"{_CORPUS}/met/trial_04", "reason": "the judge misread"}]
+        ),
+    )
+    assert declaration is not None
+    assert declaration.migrations[0].mode is MigrationMode.CANDIDATE
+
+
+def test_a_candidates_waiver_on_a_trial_outside_its_corpus_is_refused(tmp_path: Path):
+    """The rule is the entry's corpus in every mode, so the waiver a candidate may write is
+    held to the same bundle-under-the-corpus check a narrow's is."""
+    with pytest.raises(ValidationError, match="are not bundles under the corpus this entry names"):
+        _inspect(tmp_path, _candidacy(acknowledged=[{"trial": "other/y", "reason": "misread"}]))
 
 
 def test_a_blank_acknowledgement_reason_is_refused(tmp_path: Path):
     with pytest.raises(ValidationError, match="acknowledged.reason is empty"):
         _inspect(
             tmp_path,
-            _narrowing(
-                acknowledged=[{"trial": "tests/data/corpora/notes/met/trial_04", "reason": ""}]
-            ),
+            _narrowing(acknowledged=[{"trial": f"{_CORPUS}/met/trial_04", "reason": ""}]),
         )
+
+
+# ---------------------------------------------------------------------------
+# The corpus the entry is measured over, and the base it is read against.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        _candidacy(),
+        _narrowing(),
+        _entry(
+            criterion="withdrawn",
+            mode="retired",
+            residual={"kind": "none", "reason": "the ordering is the whole of it"},
+        ),
+    ],
+    ids=["candidate", "narrowed", "retired"],
+)
+def test_an_entry_naming_no_corpus_is_refused_whatever_its_mode(tmp_path: Path, entry: dict):
+    """The corpus is what a claim is measured over, and a candidacy is a claim under test as
+    much as a narrow is a decision — so the field is required in every mode, and a mode that
+    could omit it would be the one mode nothing could reconcile."""
+    with pytest.raises(ValidationError) as refused:
+        _inspect(tmp_path, {key: value for key, value in entry.items() if key != "corpus"})
+
+    assert [error["loc"] for error in refused.value.errors()] == [("migrations", 0, "corpus")]
+
+
+def test_a_corpus_resolving_to_no_corpus_directory_is_refused(tmp_path: Path):
+    """A pointer nothing checks rots: the value here named a plausible directory that was
+    never on disk, and every command reported a clean verdict over whatever corpus it was
+    handed instead.
+
+    The refusal names the resolved path and the base separately, because a run from the
+    wrong directory and a corpus that was never written are the same message otherwise.
+    """
+    with pytest.raises(ValueError) as refused:
+        _inspect(tmp_path, _narrowing(corpus="corpora/notes"))
+
+    written = str(refused.value)
+    assert "corpus: corpora/notes" in written, written
+    assert str(tmp_path / "case" / "corpora" / "notes") in written, written
+    assert f"read against {tmp_path / 'case'}" in written, written
+
+
+def test_an_absolute_corpus_is_refused_because_it_would_ignore_the_base(tmp_path: Path):
+    """An absolute value wins ``base / corpus`` outright, so it resolves to itself whatever
+    base the caller supplied — and the refusal for a corpus that does not resolve would go on
+    naming a base it never consulted.
+
+    Written against a corpus that **is** on disk, so what is refused is the shape rather than
+    a path nothing could have found.
+    """
+    written = write_corpus_directory(tmp_path / "case" / _CORPUS, criterion="checked_first")
+
+    with pytest.raises(ValidationError) as refused:
+        _inspect(tmp_path, _narrowing(corpus=str(written)))
+
+    assert "is an absolute path" in str(refused.value)
+    assert _inspect(tmp_path, _narrowing(corpus=_CORPUS)) is not None
+
+
+def test_a_multi_part_corpus_resolves_through_its_parent(tmp_path: Path):
+    """The shape ``tolokaforge curate`` writes for a two-arm corpus: each half a corpus of
+    its own, the parent a directory of them. ``reconcile`` discovers bundles recursively, so
+    a declaration pointing at the parent is pointing at the whole evidence."""
+    write_corpus_directory(
+        tmp_path / "case" / "halves", criterion="checked_first", parts=("met", "not_met")
+    )
+
+    declaration = _inspect(tmp_path, _narrowing(corpus="halves"))
+
+    assert declaration is not None
+    assert declaration.migrations[0].corpus == "halves"
+
+
+def test_the_grandparent_of_a_multi_part_corpus_does_not_resolve(tmp_path: Path):
+    """Exactly one level, because that is the shape the command can write. "A corpus.yaml
+    anywhere beneath" would let a directory of unrelated corpora resolve, and an entry
+    pointing there would claim every corpus in the tree at once."""
+    write_corpus_directory(
+        tmp_path / "case" / "nested" / "halves",
+        criterion="checked_first",
+        parts=("met", "not_met"),
+    )
+
+    with pytest.raises(ValueError, match="is not a corpus directory"):
+        _inspect(tmp_path, _narrowing(corpus="nested"))
+
+
+def test_the_base_a_corpus_is_read_against_is_the_callers_parameter(tmp_path: Path):
+    """One declaration, three bases, and the base is what decides: this module reads no
+    ambient state, so where a repo-root-relative value resolves is the caller's answer.
+
+    Unset, the base is the declaration's own directory — what an external pack needs for a
+    corpus to travel with it, and the reason the refusal names the base at all.
+    """
+    write_corpus_directory(tmp_path / "elsewhere" / _CORPUS, criterion="checked_first")
+    grading_path = write_migration_pack(
+        tmp_path / "case", grading_text=_grading_text(), migration={"migrations": [_narrowing()]}
+    )
+
+    assert inspect_migration_declaration(grading_path, corpus_base=tmp_path / "elsewhere")
+
+    with pytest.raises(ValueError) as elsewhere:
+        inspect_migration_declaration(grading_path, corpus_base=tmp_path / "nowhere")
+    assert f"read against {tmp_path / 'nowhere'}" in str(elsewhere.value)
+
+    with pytest.raises(ValueError) as unbased:
+        inspect_migration_declaration(grading_path)
+    assert f"read against {tmp_path / 'case'}" in str(unbased.value)
 
 
 # ---------------------------------------------------------------------------

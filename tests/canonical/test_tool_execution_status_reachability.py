@@ -7,11 +7,12 @@ of statuses it observed equals the enum. Adding a member without a producing
 path fails here.
 
 Four members come from the core in-process executor's four distinct branches;
-``TIMEOUT`` comes from the runner substrate, where a tool that outlives its
-budget is cancelled and the status crosses the wire. It is unproducible on the
-pure in-process path because that executor implements no timeout at all
-(``ToolPolicy.timeout_s`` is declared and never read — #691): a missing feature,
-not a recording gap, so there is no behaviour to record.
+``TIMEOUT`` comes from the runner substrate, the only one that bands a tool call
+from outside — a tool that outlives that band is cancelled and the status
+crosses the wire. It is unproducible on the pure in-process path because that
+executor runs a tool to completion: a tool exceeding its own
+``ToolPolicy.timeout_s`` reports that itself, as an ``ERROR``. So there is no
+timeout event in-process for a recording path to miss.
 """
 
 from __future__ import annotations

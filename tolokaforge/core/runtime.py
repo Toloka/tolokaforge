@@ -88,7 +88,7 @@ class EnvHandle(Protocol):
 # ---------------------------------------------------------------------------
 
 
-ProvisionStage = Literal["provision", "await_ready", "reset_recipe"]
+ProvisionStage = Literal["provision", "await_ready", "reset_recipe", "register_trial"]
 
 
 class ProvisionError(Exception):
@@ -221,18 +221,28 @@ class RuntimeBackend(Protocol):
         trial_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        timeout_seconds: float = 30.0,
         executor: str = "agent",
         *,
         call_id: str,
     ) -> ToolResult:
         """Execute a tool call registered for ``trial_id``.
 
+        No layer between the agent loop and the runner names a per-call
+        budget: only the runner knows which tool is about to run, so it is
+        the one layer that can resolve the budget that tool declares.
+
         ``executor`` names the caller environment (``"agent"`` or
         ``"user"``); the runtime routes the call to the matching tool
         registry inside the runner service. ``call_id`` is the provider's
         tool-call id, which the runner records so the call can be joined to
         the tool result it produced.
+
+        Raises:
+            TrialNotRegisteredError: the runner holds no registration for
+                ``trial_id``, so the call reached no tool. Distinct from a
+                failed :class:`ToolResult`: there is no tool outcome to
+                record, and the trial ends here rather than the agent
+                seeing a tool of its own fail.
         """
         ...
 
@@ -577,7 +587,6 @@ class InMemoryRuntimeBackend:
         trial_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        timeout_seconds: float = 30.0,
         executor: str = "agent",
         *,
         call_id: str,

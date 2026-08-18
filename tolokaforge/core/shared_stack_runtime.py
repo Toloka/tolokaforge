@@ -36,6 +36,7 @@ from tolokaforge.core.compose_materialisation import (
     cleanup_partial_materialisation,
     compose_container_to_snapshot,
     copy_compose_context,
+    inject_runner_credentials,
     make_project_temp_dir,
     mount_docker_socket_into_runner,
     resolve_env_endpoints,
@@ -62,7 +63,11 @@ from tolokaforge.runner import (
     runner_pb2,
     runner_pb2_grpc,
 )
-from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION, RECORDED_STATUS_BY_PROTO
+from tolokaforge.runner.protocol import (
+    ENGINE_PROTOCOL_VERSION,
+    TrialNotRegisteredError,
+    recorded_status,
+)
 from tolokaforge.tools.registry import ToolResult
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports for provisioning surface
@@ -77,6 +82,15 @@ _DEFAULT_DB_SERVICE_URL = "http://tolokaforge-db-service:8000"
 container at start (`tolokaforge/docker/stacks/core.py`). The orchestrator
 mirrors the value on ``TrialSpec.env_endpoints`` so a future out-of-process
 runner reads its service URLs from the spec instead of its own env."""
+
+RUNNER_RESOLVES_TOOL_TIMEOUT = 0.0
+"""The ``ExecuteToolRequest.timeout_seconds`` the engine sends on every call.
+
+Zero tells the runner to resolve the budget the tool itself declares — the
+runner is the only layer that knows which tool is about to run. The field stays
+on the wire for engine/image skew: an older engine naming a positive budget is
+still honoured by a new image, and a new engine's zero still resolves on an
+older one."""
 
 
 def _normalise_runner_url(runner_address: str) -> str:
@@ -147,11 +161,14 @@ class RunnerClient(Protocol):
         trial_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        timeout_seconds: float = 30.0,
         executor: str = "agent",
         *,
         call_id: str,
-    ) -> ToolResult: ...
+    ) -> ToolResult:
+        """Execute one tool call, under
+        :meth:`~tolokaforge.core.runtime.RuntimeBackend.execute_tool`'s contract —
+        including its ``TrialNotRegisteredError``."""
+        ...
 
     def grade_trial(
         self,
@@ -454,7 +471,6 @@ class GrpcRunnerClient:
         trial_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        timeout_seconds: float = 30.0,
         executor: str = "agent",
         *,
         call_id: str,
@@ -466,9 +482,9 @@ class GrpcRunnerClient:
             trial_id: Trial ID
             tool_name: Tool name to execute
             arguments: Tool arguments as dict
-            timeout_seconds: Execution timeout
             executor: Which environment is making the call ("agent" or "user")
-            call_id: Provider tool-call id the runner records with the call
+            call_id: The trial's episode-unique tool-call id, which the runner
+                records with the call
 
         Returns:
             ToolResult with execution results
@@ -481,30 +497,33 @@ class GrpcRunnerClient:
                 trial_id=trial_id,
                 tool_name=tool_name,
                 arguments_json=json.dumps(arguments),
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=RUNNER_RESOLVES_TOOL_TIMEOUT,
                 executor=executor,
                 call_id=call_id,
             )
 
             response = self.stub.ExecuteTool(request)
 
-            # Map ExecutionStatus to success/error
+            if response.status == ExecutionStatus.EXECUTION_STATUS_TRIAL_NOT_FOUND:
+                raise TrialNotRegisteredError(trial_id, tool_name)
+
+            # The fine-grained status the runner reported, carried through rather
+            # than collapsed to ``success`` — it is what makes TIMEOUT /
+            # TOOL_NOT_FOUND / INVALID_ARGUMENTS recordable on the docker path.
+            # Raises for a status no trial records, so a status added to the proto
+            # cannot arrive here and be recorded as an ordinary failure.
+            status = recorded_status(response.status)
+
             success = response.status == ExecutionStatus.EXECUTION_STATUS_SUCCESS
             error = None
             if not success:
                 error = response.error_message or self._status_to_error(response.status)
 
-            # The fine-grained status the runner reported, carried through rather
-            # than collapsed to ``success`` — it is what makes TIMEOUT /
-            # TOOL_NOT_FOUND / INVALID_ARGUMENTS recordable on the docker path.
-            # ``None`` for a status no trial records (a trial-not-found response
-            # names no tool outcome); the recorder then resolves ERROR, which is
-            # the truth stated less specifically.
             return ToolResult(
                 success=success,
                 output=response.output,
                 error=error,
-                status=RECORDED_STATUS_BY_PROTO.get(response.status),
+                status=status,
             )
 
         except grpc.RpcError as e:
@@ -512,16 +531,19 @@ class GrpcRunnerClient:
             return ToolResult(success=False, output="", error=f"gRPC error: {str(e)}")
 
     def _status_to_error(self, status: int) -> str:
-        """Convert ExecutionStatus enum to error message"""
+        """The sentence a failed call reports when the runner sent no message.
+
+        Keyed by the recordable failure statuses and nothing else: the caller has
+        already refused every status outside :data:`RECORDED_STATUS_BY_PROTO`, so
+        a miss here is a status that reached a recorder without being mappable.
+        """
         status_messages = {
-            ExecutionStatus.EXECUTION_STATUS_UNSPECIFIED: "Unknown error",
             ExecutionStatus.EXECUTION_STATUS_ERROR: "Tool execution error",
             ExecutionStatus.EXECUTION_STATUS_TIMEOUT: "Tool execution timed out",
             ExecutionStatus.EXECUTION_STATUS_TOOL_NOT_FOUND: "Tool not found",
             ExecutionStatus.EXECUTION_STATUS_INVALID_ARGUMENTS: "Invalid arguments",
-            ExecutionStatus.EXECUTION_STATUS_TRIAL_NOT_FOUND: "Trial not found",
         }
-        return status_messages.get(status, f"Unknown status: {status}")
+        return status_messages[status]
 
     def grade_trial(
         self,
@@ -1094,6 +1116,9 @@ class SharedStackRuntimeBackend:
                 manifest.limited_internet_allowlist,
                 restricted_services=manifest.restricted_services,
             )
+            inject_runner_credentials(
+                temp_dir / manifest.compose_file.name, manifest.runner_service
+            )
             if self._mount_docker_socket:
                 mount_docker_socket_into_runner(
                     temp_dir / manifest.compose_file.name, manifest.runner_service
@@ -1334,7 +1359,6 @@ class SharedStackRuntimeBackend:
         trial_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        timeout_seconds: float = 30.0,
         executor: str = "agent",
         *,
         call_id: str,
@@ -1343,7 +1367,6 @@ class SharedStackRuntimeBackend:
             trial_id=trial_id,
             tool_name=tool_name,
             arguments=arguments,
-            timeout_seconds=timeout_seconds,
             executor=executor,
             call_id=call_id,
         )

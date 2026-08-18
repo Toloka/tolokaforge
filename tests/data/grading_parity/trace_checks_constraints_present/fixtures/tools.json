@@ -1,0 +1,40 @@
+[
+  {
+    "name": "search_policy",
+    "description": "Search the policy library.",
+    "parameters": {
+      "properties": {
+        "query": {
+          "description": "Text to search the policy library for",
+          "title": "Query",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "title": "search_policyArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "billing_api_get_payment",
+    "description": "Fetch a payment record by its identifier.",
+    "parameters": {
+      "properties": {
+        "payment_id": {
+          "description": "Payment identifier, e.g. 'PAY-664306'",
+          "title": "Payment Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "payment_id"
+      ],
+      "title": "billing_api_get_paymentArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]

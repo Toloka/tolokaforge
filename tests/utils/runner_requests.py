@@ -16,18 +16,28 @@ from tolokaforge.runner.models import TaskDescription
 from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
 
 
-def trial_spec_json(task_dict: dict[str, Any], trial_id: str = "test:0") -> str:
+def trial_spec_json(
+    task_dict: dict[str, Any],
+    trial_id: str = "test:0",
+    judge_model_config: ModelConfig | None = None,
+) -> str:
     """Build a valid ``TrialSpec`` JSON wrapping ``task_dict``.
 
     The runner-side ``RegisterTrial`` handler validates the full ``TrialSpec``
     (not just ``spec.task``), so tests must construct a complete spec rather
     than a minimal ``{"task": ...}`` wrapper.
+
+    A complete spec for a task declaring an ``llm_judge`` rubric includes the
+    judge model: ``_grade_llm_judge`` raises before constructing the judge when
+    the spec carries none. Every other task leaves ``judge_model_config`` unset,
+    which is what the runner expects.
     """
     return TrialSpec(
         trial_id=trial_id,
         run_id="test_run",
         task=TaskDescription.model_validate(task_dict),
         agent_model_config=ModelConfig(name="test-model", provider="test"),
+        judge_model_config=judge_model_config,
         env_endpoints=EnvEndpoints(
             db_url="http://db.test:8000",
             runner_url="http://runner.test:50051",

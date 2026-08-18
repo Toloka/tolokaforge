@@ -1,0 +1,46 @@
+# Corpus-generation arm one: the shipped `dev.yaml` agent, `anthropic/claude-haiku-4-5`.
+#
+# This file and `corpus_generation_gpt_4o_mini.yaml` are the two arms of one
+# experiment, and the independent variable is the AGENT MODEL alone: same task,
+# same user simulator, same judge, same turn budget, same repeats. Neither arm
+# instructs the behaviour the `names_lot` migration candidate measures — a prompt
+# that did would buy the second label instead of measuring it, and the corpus would
+# then say more about the prompt than about the criterion
+# (`docs/RUBRIC_MIGRATION.md` § Reading the evidence).
+#
+# Together the two runs are the source of
+# `tests/data/migration_corpora/lot_ops_names_lot/`, curated with
+# `tolokaforge curate --criterion names_lot`. Change a model here and the corpus
+# stops being reproducible from what is committed.
+#
+# Run with:
+#   scripts/with_env.sh uv run tolokaforge run \
+#     --config examples/native/multi_service_lot_ops/run_configs/corpus_generation_haiku.yaml \
+#     --cost-limit 1.50
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-haiku-4-5"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+
+orchestrator:
+  workers: 1
+  repeats: 5
+  max_turns: 10
+  runtime: shared
+  queue_backend: sqlite
+
+evaluation:
+  projects:
+    - "examples/native/multi_service_lot_ops/dataset"
+  tasks_glob: "tasks/lot_ops_01/task.yaml"
+  output_dir: "results/lot_ops_corpus_haiku"

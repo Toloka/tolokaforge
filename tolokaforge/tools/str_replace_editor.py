@@ -482,7 +482,7 @@ class StrReplaceEditorTool(Tool):
                 "with new_str; 'insert' inserts insert_text after insert_line "
                 "(0 inserts before the first line)."
             ),
-            policy=ToolPolicy(timeout_s=30.0, category=ToolCategory.WRITE),
+            policy=ToolPolicy(timeout_s=_DEFAULT_EXEC_TIMEOUT_S, category=ToolCategory.WRITE),
         )
 
     def get_schema(self) -> dict[str, Any]:

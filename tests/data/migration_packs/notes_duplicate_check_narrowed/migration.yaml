@@ -2,6 +2,7 @@ migrations:
   - criterion: checked_duplicates_first
     mode: narrowed
     by: [the_notes_were_listed_before_the_note_was_added]
+    corpus: tests/data/migration_corpora/notes_duplicate_check
     was:
       kind: binary
       required: true
@@ -19,6 +20,5 @@ migrations:
         which no trace constraint can check from the tool record alone.
     combine_weights: { llm_judge: 0.5, trace_checks: 0.5 }
     evidence:
-      corpus: tests/data/migration_corpora/notes_duplicate_check
       observations: 17
       kappa: 1.0

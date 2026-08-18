@@ -7,8 +7,11 @@ substituted, with one carve-out inside the guarded closure:
 :meth:`~tolokaforge.core.llm.client.UserSimulator._llm_reply` replaces an empty
 reply that carried tool calls with a fixed placeholder before the detectors see
 it. That placeholder is the only text the engine contributes to a user turn, and
-it is unreachable in-tree — the simulator is handed tool schemas only alongside a
-``user_tool_executor``, and the conductor always passes ``None``. Its removal is
+it is reachable in-tree — the conductor wires a ``user_tool_executor`` when the
+task spec declares user tools, so the simulator can carry tool schemas and emit
+a tool-call-only reply. The substitution stamps ``filler_substituted`` on the
+result so the bootstrap can refuse a first message the engine authored rather
+than accept the filler as the agent's seeded task statement. Its removal is
 tracked in #1089. Apart from it, the engine has no path that can put words into a
 turn the model did not write. When the attempt budget
 (:data:`~tolokaforge.core.models.run_config.USER_REPLY_MAX_ATTEMPTS`) is spent,

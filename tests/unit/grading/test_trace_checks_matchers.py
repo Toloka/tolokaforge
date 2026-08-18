@@ -344,3 +344,32 @@ def test_an_operator_selects_the_call_whose_argument_it_holds_for(operator_name:
     assert len(holds.matched) == 1
     assert fails.matched == ()
     assert fails.undecidable == ()
+
+
+def test_a_status_literal_no_executor_produces_is_rejected_at_load() -> None:
+    """A status predicate naming a non-``ToolExecutionStatus`` value fails at load.
+
+    Loading ``status: {equals: "expired"}`` clean and only failing at grading
+    time would report the typo as an agent failure. The gate keeps this
+    syntactic — closed-vocabulary operators (``equals``, ``not_equals``,
+    ``in_``, ``not_in``) validate every literal against the enum.
+    """
+    with pytest.raises(ValueError, match="expired"):
+        TraceMatcher(
+            kind=TraceEventKind.TOOL_RESULT,
+            status=ValuePredicate(equals="expired"),
+        )
+    with pytest.raises(ValueError, match="pending"):
+        TraceMatcher(
+            kind=TraceEventKind.TOOL_RESULT,
+            status=ValuePredicate(in_=["success", "pending"]),
+        )
+
+
+def test_a_status_literal_that_is_a_real_enum_member_is_admitted() -> None:
+    """Every ``ToolExecutionStatus`` value stays a valid predicate literal."""
+    for admitted in ("success", "error", "timeout", "tool_not_found", "invalid_arguments"):
+        TraceMatcher(
+            kind=TraceEventKind.TOOL_RESULT,
+            status=ValuePredicate(equals=admitted),
+        )

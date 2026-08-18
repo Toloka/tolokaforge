@@ -17,7 +17,7 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 
 1. Copy [`0000-template.md`](0000-template.md) to `NNNN-kebab-case-title.md`, where `NNNN` is the next free number. **Never renumber existing ADRs.**
 2. Fill in the sections. Keep "Context" focused on the forces that drove the decision, not the implementation.
-3. Open the PR with status `Proposed`. Flip to `Accepted` when merged.
+3. An ADR implemented by the PR that introduces it lands `Accepted` — the decision is in effect the moment that PR merges. `Proposed` is for a design-first ADR opened ahead of its implementation, and flips to `Accepted` when the implementing PR merges.
 4. If a later decision overrides this one, set the old ADR's status to `Superseded by ADR-NNNN` and add the back-link in the new ADR's "Decision Drivers".
 
 ## Statuses
@@ -62,6 +62,8 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0029](0029-build-check-builtin-tool.md) | `build_check` as a generic peer-service HTTP probe in core | Accepted |
 | [0030](0030-tolokaforge-models-split.md) | Model data as a second PyPI wheel — `tolokaforge-models` from the same monorepo | Proposed |
 | [0031](0031-pull-vs-build-default-for-service-images.md) | Wheel consumers pull published images by default — `docker.image_source` policy | Proposed |
+| [0032](0032-agent-completion-is-structural.md) | The agent's completion is structural; `###STOP###` is the user simulator's | Accepted |
 | [0033](0033-external-harness-registry.md) | External harness registry — operator-overridable YAML for coding-CLI parity knobs | Accepted |
 | [0034](0034-external-harness-plugin-discovery.md) | External harness plugin discovery — pip-installable harness bundles | Accepted |
-| [0035](0035-tolokaforge-coding-harnesses-split.md) | Coding-harness code as a top-level workspace package — `tolokaforge_coding_harnesses` | Accepted |
+| [0035](0035-idle-turn-heuristic-deleted.md) | Whether an agent must act is a per-task assertion, not a stuck heuristic | Accepted |
+| [0036](0036-tolokaforge-coding-harnesses-split.md) | Coding-harness code as a top-level workspace package — `tolokaforge_coding_harnesses` | Accepted |

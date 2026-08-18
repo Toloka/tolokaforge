@@ -1,0 +1,65 @@
+[
+  {
+    "name": "read_audit_log",
+    "description": "Read the audit log kept for a table.",
+    "parameters": {
+      "properties": {
+        "table": {
+          "description": "Name of the table to act on",
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table"
+      ],
+      "title": "read_audit_logArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "verify_checksum",
+    "description": "Verify a table's checksum against the one on record.",
+    "parameters": {
+      "properties": {
+        "table": {
+          "description": "Name of the table to act on",
+          "title": "Table",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table"
+      ],
+      "title": "verify_checksumArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "delete_row",
+    "description": "Delete one row from a table.",
+    "parameters": {
+      "properties": {
+        "table": {
+          "description": "Name of the table to act on",
+          "title": "Table",
+          "type": "string"
+        },
+        "row_id": {
+          "description": "Row identifier within the table",
+          "title": "Row Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table",
+        "row_id"
+      ],
+      "title": "delete_rowArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]

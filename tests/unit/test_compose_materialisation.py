@@ -14,10 +14,12 @@ Here we stub :class:`DockerCompose` so the tests run in-process.
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 from testcontainers.compose.compose import ComposeContainer, PublishedPortModel
 
 from tolokaforge.core.compose_materialisation import (
@@ -33,6 +35,7 @@ from tolokaforge.core.compose_materialisation import (
     copy_compose_context,
     enforce_network_policy,
     first_published_port,
+    inject_runner_credentials,
     make_project_temp_dir,
     mount_docker_socket_into_runner,
     render_squid_config,
@@ -43,6 +46,7 @@ from tolokaforge.core.compose_materialisation import (
     shutdown_compose,
 )
 from tolokaforge.core.trial import NetworkPolicy
+from tolokaforge.secrets import CONTAINER_SECRETS_ENV_VAR, container_secrets_env
 
 pytestmark = pytest.mark.unit
 
@@ -889,6 +893,31 @@ class TestMountDockerSocketIntoRunner:
         volumes = yaml.safe_load(compose.read_text())["services"]["runner"]["volumes"]
         assert volumes.count("/var/run/docker.sock:/var/run/docker.sock") == 1
 
+    def test_a_service_aliasing_the_runner_volumes_does_not_gain_the_socket(
+        self, tmp_path: Path
+    ) -> None:
+        """An anchored ``volumes:`` list is one object after ``yaml.safe_load``,
+        so appending in place would hand the docker socket to every service
+        aliasing it — a far wider grant than the runner's."""
+        import yaml
+
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(
+            "services:\n"
+            "  runner:\n"
+            "    image: r:local\n"
+            "    volumes: &shared\n"
+            "      - ./data:/data\n"
+            "  sibling:\n"
+            "    image: s:local\n"
+            "    volumes: *shared\n"
+        )
+        mount_docker_socket_into_runner(compose, "runner")
+
+        services = yaml.safe_load(compose.read_text())["services"]
+        assert "/var/run/docker.sock:/var/run/docker.sock" in services["runner"]["volumes"]
+        assert services["sibling"]["volumes"] == ["./data:/data"]
+
     def test_idempotent_for_long_form_socket_mount(self, tmp_path: Path) -> None:
         import yaml
 
@@ -908,3 +937,265 @@ class TestMountDockerSocketIntoRunner:
         assert compose.read_text() == before
         volumes = yaml.safe_load(compose.read_text())["services"]["runner"]["volumes"]
         assert len(volumes) == 1
+
+
+_LOT_OPS_SHAPED_SERVICES: dict[str, dict] = {
+    "runner": {
+        "image": "tolokaforge-runner:local",
+        "environment": {"DB_SERVICE_URL": "http://db-service:8000"},
+    },
+    "db-service": {"image": "tolokaforge-db-service:local"},
+    "app-service": {
+        "image": "app-service:local",
+        "environment": {"APP_DB_DSN": "postgresql://app-db:5432/lots"},
+    },
+    "app-db": {
+        "image": "postgres:16",
+        "environment": {"POSTGRES_DB": "lots", "POSTGRES_USER": "lots"},
+    },
+}
+"""Four-service shape of the shipped ``multi_service_lot_ops`` stack: a runner
+with a mapping-form ``environment``, a service with none, and two siblings
+with their own."""
+
+
+def _write_compose(tmp_path: Path, services: dict[str, dict]) -> Path:
+    compose_file = tmp_path / "environment.compose.yaml"
+    compose_file.write_text(yaml.safe_dump({"services": copy.deepcopy(services)}, sort_keys=False))
+    return compose_file
+
+
+def _runner_environment(compose_file: Path):
+    return yaml.safe_load(compose_file.read_text())["services"]["runner"]["environment"]
+
+
+class TestInjectRunnerCredentials:
+    """The task-declared stack's runner receives the same credential payload
+    the engine-built stack's runner receives — and no sibling service does."""
+
+    def test_only_the_runner_gains_the_payload(
+        self, tmp_path: Path, installed_fake_secrets
+    ) -> None:
+        """A sweep over every service, not the runner alone: a payload landing
+        on a sibling would transport the operator's credentials to a container
+        that has no business holding them."""
+        compose_file = _write_compose(tmp_path, _LOT_OPS_SHAPED_SERVICES)
+        inject_runner_credentials(compose_file, "runner")
+
+        services = yaml.safe_load(compose_file.read_text())["services"]
+        assert CONTAINER_SECRETS_ENV_VAR in services["runner"]["environment"]
+        for name, service in services.items():
+            if name == "runner":
+                continue
+            rendered = yaml.safe_dump(service)
+            assert CONTAINER_SECRETS_ENV_VAR not in rendered, f"{name} carries the variable"
+            for value in installed_fake_secrets.values():
+                assert value not in rendered, f"{name} carries a credential verbatim"
+
+    def test_a_service_aliasing_the_runner_environment_stays_without_the_payload(
+        self, tmp_path: Path, installed_fake_secrets
+    ) -> None:
+        """``yaml.safe_load`` resolves a YAML alias to the *same* object, so a
+        compose file whose runner and a sibling share an anchored
+        ``environment:`` mapping leaks the payload into the sibling under an
+        in-place update. The transform assigns a new merged mapping instead."""
+        shared = {"SHARED_URL": "http://shared:8000"}
+        compose_file = tmp_path / "environment.compose.yaml"
+        compose_file.write_text(
+            "services:\n"
+            "  runner:\n"
+            "    image: r:local\n"
+            "    environment: &shared\n"
+            f"      SHARED_URL: {shared['SHARED_URL']}\n"
+            "  sibling:\n"
+            "    image: s:local\n"
+            "    environment: *shared\n"
+        )
+        inject_runner_credentials(compose_file, "runner")
+
+        services = yaml.safe_load(compose_file.read_text())["services"]
+        assert CONTAINER_SECRETS_ENV_VAR in services["runner"]["environment"]
+        assert services["sibling"]["environment"] == shared
+
+    def test_no_unescaped_dollar_survives_into_the_compose_file(
+        self, tmp_path: Path, installed_fake_secrets
+    ) -> None:
+        """Docker Compose interpolates ``$`` in ``environment`` values, so a
+        credential containing one is silently truncated unless it is doubled.
+        De-escaping must reproduce the payload the core stack sends."""
+        compose_file = _write_compose(tmp_path, _LOT_OPS_SHAPED_SERVICES)
+        inject_runner_credentials(compose_file, "runner")
+
+        written = _runner_environment(compose_file)[CONTAINER_SECRETS_ENV_VAR]
+        assert "$$" in written
+        assert "$" not in written.replace("$$", "")
+        assert written.replace("$$", "$") == container_secrets_env()[CONTAINER_SECRETS_ENV_VAR]
+
+    def test_mapping_form_environment_keeps_its_entries(
+        self, tmp_path: Path, installed_fake_secrets
+    ) -> None:
+        compose_file = _write_compose(tmp_path, _LOT_OPS_SHAPED_SERVICES)
+        inject_runner_credentials(compose_file, "runner")
+
+        environment = _runner_environment(compose_file)
+        assert environment["DB_SERVICE_URL"] == "http://db-service:8000"
+        assert CONTAINER_SECRETS_ENV_VAR in environment
+
+    def test_list_form_environment_gains_a_key_value_entry(
+        self, tmp_path: Path, installed_fake_secrets
+    ) -> None:
+        services = copy.deepcopy(_LOT_OPS_SHAPED_SERVICES)
+        services["runner"]["environment"] = ["DB_SERVICE_URL=http://db-service:8000"]
+        compose_file = _write_compose(tmp_path, services)
+        inject_runner_credentials(compose_file, "runner")
+
+        environment = _runner_environment(compose_file)
+        assert "DB_SERVICE_URL=http://db-service:8000" in environment
+        injected = [e for e in environment if e.startswith(f"{CONTAINER_SECRETS_ENV_VAR}=")]
+        assert len(injected) == 1
+
+    def test_absent_environment_gains_a_mapping(
+        self, tmp_path: Path, installed_fake_secrets
+    ) -> None:
+        services = copy.deepcopy(_LOT_OPS_SHAPED_SERVICES)
+        del services["runner"]["environment"]
+        compose_file = _write_compose(tmp_path, services)
+        inject_runner_credentials(compose_file, "runner")
+
+        assert list(_runner_environment(compose_file)) == [CONTAINER_SECRETS_ENV_VAR]
+
+    @pytest.mark.parametrize("installed_fake_secrets", [{}], indirect=True)
+    def test_a_host_with_no_secrets_leaves_the_file_byte_identical(
+        self, tmp_path: Path, installed_fake_secrets
+    ) -> None:
+        """No payload, no write: the runner then lazy-inits its own manager
+        rather than bootstrapping an empty one."""
+        compose_file = _write_compose(tmp_path, _LOT_OPS_SHAPED_SERVICES)
+        before = compose_file.read_text()
+
+        inject_runner_credentials(compose_file, "runner")
+
+        assert compose_file.read_text() == before
+
+    @pytest.mark.parametrize(
+        ("service", "declaration"),
+        [
+            ("runner", {CONTAINER_SECRETS_ENV_VAR: '{"K": "v"}'}),
+            ("runner", [f'{CONTAINER_SECRETS_ENV_VAR}={{"K": "v"}}']),
+            ("runner", [CONTAINER_SECRETS_ENV_VAR]),
+            ("app-service", {CONTAINER_SECRETS_ENV_VAR: '{"K": "v"}'}),
+            ("app-service", [f'{CONTAINER_SECRETS_ENV_VAR}={{"K": "v"}}']),
+            ("app-service", [CONTAINER_SECRETS_ENV_VAR]),
+        ],
+        ids=[
+            "runner-mapping",
+            "runner-key-value",
+            "runner-bare",
+            "sibling-mapping",
+            "sibling-key-value",
+            "sibling-bare",
+        ],
+    )
+    def test_a_pack_declaring_the_variable_is_refused(
+        self, tmp_path: Path, installed_fake_secrets, service: str, declaration
+    ) -> None:
+        """The variable is engine-owned: a pack declaring it is either
+        committing a credential or shadowing the engine's payload. All three
+        declaration forms count, on any service."""
+        services = copy.deepcopy(_LOT_OPS_SHAPED_SERVICES)
+        services[service]["environment"] = declaration
+        compose_file = _write_compose(tmp_path, services)
+        before = compose_file.read_text()
+
+        with pytest.raises(ValueError) as exc:
+            inject_runner_credentials(compose_file, "runner")
+
+        assert service in str(exc.value)
+        assert CONTAINER_SECRETS_ENV_VAR in str(exc.value)
+        assert compose_file.read_text() == before
+
+    @pytest.mark.parametrize("installed_fake_secrets", [{}], indirect=True)
+    def test_a_pack_declaring_the_variable_is_refused_without_any_secrets(
+        self, tmp_path: Path, installed_fake_secrets
+    ) -> None:
+        """A pack defect is a pack defect on a host that resolves nothing —
+        the refusal is checked before the empty-payload short-circuit."""
+        services = copy.deepcopy(_LOT_OPS_SHAPED_SERVICES)
+        services["runner"]["environment"][CONTAINER_SECRETS_ENV_VAR] = '{"K": "v"}'
+        compose_file = _write_compose(tmp_path, services)
+
+        with pytest.raises(ValueError, match=CONTAINER_SECRETS_ENV_VAR):
+            inject_runner_credentials(compose_file, "runner")
+
+    @pytest.mark.parametrize("service", ["runner", "app-service"], ids=["runner", "sibling"])
+    @pytest.mark.parametrize(
+        "mount",
+        [
+            ".:/ctx:ro",
+            "./:/ctx",
+            "./environment.compose.yaml:/etc/stack.yaml:ro",
+            {"type": "bind", "source": ".", "target": "/ctx"},
+            {"type": "bind", "source": "environment.compose.yaml", "target": "/etc/stack.yaml"},
+        ],
+        ids=["dot", "dot-slash", "the-file", "long-form-dot", "long-form-file"],
+    )
+    def test_a_bind_mount_that_would_read_the_payload_back_is_refused(
+        self, tmp_path: Path, installed_fake_secrets, service: str, mount
+    ) -> None:
+        """The payload rests in the compose file inside the project context dir,
+        so a service mounting that dir — or the file — reads it regardless of
+        which service the entry was written on. ``EnvironmentManifest``'s own
+        bind-mount validator accepts these: they are relative, carry no ``..``,
+        and stay inside the pack."""
+        services = copy.deepcopy(_LOT_OPS_SHAPED_SERVICES)
+        services[service]["volumes"] = [mount]
+        compose_file = _write_compose(tmp_path, services)
+        before = compose_file.read_text()
+
+        with pytest.raises(ValueError) as exc:
+            inject_runner_credentials(compose_file, "runner")
+
+        assert service in str(exc.value)
+        assert compose_file.read_text() == before
+
+    def test_a_bind_mount_below_the_context_root_is_accepted(
+        self, tmp_path: Path, installed_fake_secrets
+    ) -> None:
+        """The refusal is scoped to what reaches the compose file. Mounting a
+        named path under a subdirectory — what every shipped pack does — still
+        materialises."""
+        services = copy.deepcopy(_LOT_OPS_SHAPED_SERVICES)
+        services["app-db"]["volumes"] = ["./fixtures/seed.sql:/docker-entrypoint-initdb.d/s.sql:ro"]
+        compose_file = _write_compose(tmp_path, services)
+
+        inject_runner_credentials(compose_file, "runner")
+
+        assert CONTAINER_SECRETS_ENV_VAR in _runner_environment(compose_file)
+
+    def test_a_runner_service_absent_from_the_doc_is_refused(
+        self, tmp_path: Path, installed_fake_secrets
+    ) -> None:
+        """Unreachable through ``EnvironmentManifest`` — its validator
+        guarantees the service exists — so the refusal exists to keep an
+        internal inconsistency loud rather than silently credential-less."""
+        compose_file = _write_compose(tmp_path, _LOT_OPS_SHAPED_SERVICES)
+        before = compose_file.read_text()
+
+        with pytest.raises(ValueError) as exc:
+            inject_runner_credentials(compose_file, "worker")
+
+        assert "'worker'" in str(exc.value)
+        assert "'app-db', 'app-service', 'db-service', 'runner'" in str(exc.value)
+        assert compose_file.read_text() == before
+
+    def test_the_written_file_is_readable_only_by_its_owner(
+        self, tmp_path: Path, installed_fake_secrets
+    ) -> None:
+        """The payload sits in the temp project dir in cleartext until
+        teardown; ``copy_compose_context`` carries the repo file's ``0644`` in."""
+        compose_file = _write_compose(tmp_path, _LOT_OPS_SHAPED_SERVICES)
+        compose_file.chmod(0o644)
+
+        inject_runner_credentials(compose_file, "runner")
+
+        assert compose_file.stat().st_mode & 0o777 == 0o600

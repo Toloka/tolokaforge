@@ -77,7 +77,12 @@ class TestRunMethodSignature:
 
     def test_run_surface_excludes_oracle_fields(self) -> None:
         params = set(inspect.signature(Judge.run).parameters)
-        for forbidden in ("golden_actions", "expected_hash", "jsonpath_checks", "grading_config"):
+        for forbidden in (
+            "golden_actions",
+            "expect_initial_state",
+            "jsonpath_checks",
+            "grading_config",
+        ):
             assert forbidden not in params
 
 

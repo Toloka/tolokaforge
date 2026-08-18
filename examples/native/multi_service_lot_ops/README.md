@@ -93,11 +93,39 @@ Needs a running Docker daemon and `OPENROUTER_API_KEY` in `.env`. The first run
 is slower while postgres initialises and seeds; the runner container joins the
 task's docker network, so at grade time it reaches `app-db:5432` directly.
 
+### Regenerating the judge-labelled corpus
+
+`run_configs/corpus_generation_haiku.yaml` and `corpus_generation_gpt_4o_mini.yaml`
+are the two arms behind
+[`tests/data/migration_corpora/lot_ops_names_lot/`](../../../docs/RUBRIC_MIGRATION.md#the-committed-corpora),
+the corpus this pack's `names_lot` candidacy is measured against. They are
+identical but for the agent model — the arms' only independent variable — at five
+repeats each, and neither prompts for the behaviour the candidate constraint
+measures.
+
+```bash
+scripts/with_env.sh uv run tolokaforge run \
+  --config examples/native/multi_service_lot_ops/run_configs/corpus_generation_haiku.yaml \
+  --cost-limit 1.50
+scripts/with_env.sh uv run tolokaforge run \
+  --config examples/native/multi_service_lot_ops/run_configs/corpus_generation_gpt_4o_mini.yaml \
+  --cost-limit 1.50
+tolokaforge curate --criterion names_lot --source results/<haiku-run> \
+  --source results/<gpt-4o-mini-run> \
+  --into tests/data/migration_corpora/lot_ops_names_lot --replace
+```
+
+An arm is a whole config file because `RunConfig.models` holds one model per role
+and `tolokaforge run` has no agent-model override.
+
 ## Layout
 
 ```
 examples/native/multi_service_lot_ops/
-├── run_configs/dev.yaml          # haiku agent + user, sonnet judge
+├── run_configs/
+│   ├── dev.yaml                  # haiku agent + user, sonnet judge
+│   ├── corpus_generation_haiku.yaml         # corpus arm one: haiku agent
+│   └── corpus_generation_gpt_4o_mini.yaml   # corpus arm two: gpt-4o-mini agent
 ├── project.yaml                  # discovery glob + native defaults
 ├── README.md                     # this file
 ├── shared/
@@ -121,9 +149,14 @@ examples/native/multi_service_lot_ops/
   PostgREST packs.
 - **All four services `isolation: shared`.** This is the shared-runtime
   reference: the stack is materialised once and shared across trials, so
-  `app-db` is up throughout the run and reachable at grade time. The task uses
-  a single trial (`repeats: 1`) and does not require a per-trial baseline, so
-  no reset recipe is involved.
+  `app-db` is up throughout the run and reachable at grade time. There is no
+  reset recipe, so `corrective_actions` accumulates across the trials of one
+  run: `dev.yaml` takes a single trial (`repeats: 1`), while under the
+  five-repeat corpus arms every trial after the first sees the rows its
+  predecessors wrote and its `row_count` db_probe assertion fails. The trace
+  constraints and the judge's rubric read one trial's own transcript and report,
+  so both are unaffected — which is why the corpus those arms produce measures
+  `names_lot` cleanly.
 - **Task-local throwaway credentials.** The DSN in `grading.yaml` and the
   compose passwords are disposable, task-scoped credentials for a local
   container — the same posture as the plaintext compose credentials in the

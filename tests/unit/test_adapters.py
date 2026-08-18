@@ -56,13 +56,14 @@ def _isolate_adapter_discovery(monkeypatch: pytest.MonkeyPatch):
 
     Tests that inject entry-points under ``tolokaforge.adapters`` must clear
     the per-group cache so the next scan re-reads their injection instead of
-    a stale prior map, and must reset ``_ADAPTERS`` / ``_FAILED_ADAPTERS`` so
-    lazy rediscovery fires.
+    a stale prior map, and must reset ``_ADAPTERS`` / ``_DISCOVERED`` /
+    ``_FAILED_ADAPTERS`` so lazy rediscovery fires.
     """
     import tolokaforge.adapters as adapters_module
 
     plugin_registry._clear_discovery_cache()
     monkeypatch.setattr(adapters_module, "_ADAPTERS", {})
+    monkeypatch.setattr(adapters_module, "_DISCOVERED", False)
     monkeypatch.setattr(adapters_module, "_FAILED_ADAPTERS", {})
     yield
     plugin_registry._clear_discovery_cache()
@@ -100,7 +101,6 @@ class TestGetAdapter:
             "entry_points",
             lambda *, group: [broken] if group == "tolokaforge.adapters" else [],
         )
-
         caplog.set_level(logging.WARNING, logger="tolokaforge.adapters")
 
         # Drive the production path: get_adapter() triggers lazy discovery,

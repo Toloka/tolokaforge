@@ -197,7 +197,11 @@ status (an `__DONE_<uuid>__ $?` pattern); the reader consumes stdout up to the
 sentinel line and parses the trailing exit code.
 
 **Per-command timeout.** Default **120 s**, configurable via tool config
-(`timeout_s`).
+(`timeout_s`). This is the control the tool applies to itself; the runner's
+backstop (`ToolWrapper.effective_timeout_s`) sits a fixed grace above it, so the
+tool's own kill-safe termination is what fires. The tool's `ToolSchema.timeout_s`
+plays no part — a native pack pins it to 30 s for every builtin (#1147), which is
+why this budget is read from tool config.
 
 **Kill-safety.** On timeout the running command is killed (a signal to the
 foreground command's process group) **without leaking the parent shell** —

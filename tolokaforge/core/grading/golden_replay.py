@@ -1,4 +1,7 @@
-"""Whether the golden world a pack describes can be built at all.
+"""Whether the expected state a pack's hash compares against can be built at all.
+
+Two shapes of it: the golden world a pack's actions describe, and the state its task
+starts in, which a refusal task compares against directly.
 
 Substrate-neutral by construction: stdlib-only pure functions over what a pack and its
 task declare — the authored action names, the task-level facts the actions are replayed
@@ -77,6 +80,8 @@ _UNNAMEABLE_ACTION = "[{index}] {kind} ({value!r})"
 
 _NO_TASK_DIR = "this grading engine was given no task directory"
 
+_NO_INITIAL_STATE_DECLARED = "task.yaml declares no initial_state.json_db"
+
 # How a task withholding the initial state reads to whoever holds the engine, per shape
 # it withheld it in, and ``None`` for the shape that withholds nothing. Total over
 # :class:`InitialStateSource`, so a fourth shape cannot join the enum without an answer
@@ -84,7 +89,7 @@ _NO_TASK_DIR = "this grading engine was given no task directory"
 # the pack's author rather than to the engine's caller.
 _ABSENT_INITIAL_STATE: Mapping[InitialStateSource, str | None] = {
     InitialStateSource.JSON_FILE: None,
-    InitialStateSource.ABSENT: "task.yaml declares no initial_state.json_db",
+    InitialStateSource.ABSENT: _NO_INITIAL_STATE_DECLARED,
     InitialStateSource.INLINE: (
         "task.yaml declares initial_state.json_db inline, where the replay loads a JSON "
         "file under the task directory"
@@ -92,6 +97,25 @@ _ABSENT_INITIAL_STATE: Mapping[InitialStateSource, str | None] = {
 }
 
 _NO_MCP_SERVER = "task.yaml declares no tools.agent.mcp_server"
+
+_NO_INITIAL_STATE_TO_COMPARE = (
+    "state_checks.hash.expect_initial_state compares the trial against the state its task "
+    "starts in, and {because}. So there is no expected state, no hash verdict and no grade — "
+    "rather than a state_checks score the pack's other sources earned beside a hash nothing "
+    "computed. Write initial_state.json_db in task.yaml, or drop the source"
+)
+
+_NO_TASK_DIR_TO_RESOLVE_IT_UNDER = (
+    "task.yaml declares initial_state.json_db as the file {path!r}, which is resolved under "
+    "the task directory, and " + _NO_TASK_DIR
+)
+
+_UNREADABLE_INITIAL_STATE = (
+    "task.yaml declares initial_state.json_db as the file {path!r}, which holds no JSON "
+    "object: {problem}"
+)
+
+_AN_EMPTY_JSON_OBJECT = "it holds an empty JSON object"
 
 _INCOMPLETE_REPLAY = (
     "GOLDEN REPLAY ERRORS: {failed} of {authored} golden actions did not take effect, so the "
@@ -102,10 +126,11 @@ _FAILED_ACTION = "[{index}] {name} {kind} {error}"
 
 
 class GoldenReplayError(Exception):
-    """A golden-action replay could not be executed.
+    """The expected state a hash comparison needs could not be produced.
 
-    There is no expected state to compare against, so the trial has no
-    state-hash verdict — not a failing one.
+    A replay that could not be executed, or an initial state that could not be
+    resolved: either way there is no expected state to compare against, so the trial
+    has no state-hash verdict — not a failing one.
     """
 
 
@@ -119,6 +144,16 @@ class UnreplayableGoldenSource(GoldenReplayError):
     Distinct from an action the replay cannot resolve
     (:class:`UnresolvableGoldenAction`): that one is an action, while this is a source
     holding no actions at all, so there is no index to address.
+    """
+
+
+class UnresolvableInitialState(GoldenReplayError):
+    """The state a task starts in is not there to be compared against.
+
+    Distinct from a world a replay cannot be built in
+    (:class:`UnbuildableGoldenReplayWorld`): that one needs a JSON *file* under the task
+    directory and the tools to replay actions against it, while this one needs the state
+    itself and admits either shape a task writes it in.
     """
 
 
@@ -138,6 +173,98 @@ def classify_initial_state(json_db: str | Mapping[str, Any] | None) -> InitialSt
     if isinstance(json_db, str):
         return InitialStateSource.JSON_FILE
     return InitialStateSource.INLINE
+
+
+def read_declared_initial_state(
+    *, task_dir: Path | None, initial_state_json_db: str | Mapping[str, Any] | None
+) -> dict[str, Any] | None:
+    """The state a task declared it starts in, out of whichever shape it declared it in.
+
+    Both shapes are admitted, unlike :func:`require_golden_replay_world` beside it: a
+    replay needs a JSON *file* to load into the pack's own tools, while whoever reads
+    the state needs the state itself, which an inline mapping supplies as well as a
+    file does. A path is resolved under ``task_dir``, which is how an author writes one
+    in ``task.yaml``.
+
+    Neutral about what a missing state means, because that differs per reader: a task
+    declaring none answers ``None`` rather than raising, and every refusal names
+    ``initial_state.json_db``, the declared path and the problem without naming which
+    source wanted the state. The empty state is a state here — the reading that refuses
+    it belongs to whoever cannot use one, which is :func:`resolve_initial_state`.
+
+    Raises:
+        UnresolvableInitialState: the task declares a file and there is no ``task_dir``
+            to resolve it under, or the file cannot be read or holds no JSON object.
+    """
+    source = classify_initial_state(initial_state_json_db)
+    if source is InitialStateSource.ABSENT:
+        return None
+    if source is InitialStateSource.INLINE:
+        return dict(initial_state_json_db)  # type: ignore[arg-type]  # INLINE is a Mapping
+    if task_dir is None:
+        raise UnresolvableInitialState(
+            _NO_TASK_DIR_TO_RESOLVE_IT_UNDER.format(path=initial_state_json_db)
+        )
+    return _loaded_initial_state(task_dir / initial_state_json_db, initial_state_json_db)
+
+
+def resolve_initial_state(
+    *, task_dir: Path | None, initial_state_json_db: str | Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """The state a ``state_checks.hash`` comparison is computed against.
+
+    :func:`read_declared_initial_state` under the sentence a hash source is refused
+    with: this caller hashes what it gets back, so it admits neither an absent state nor
+    an empty one, and every refusal is addressed to the author of the source that wanted
+    it rather than to whoever else may hold the same task.
+
+    Raises:
+        UnresolvableInitialState: the task declares no initial state, or declares a file
+            no reader can resolve or parse as a JSON object. Never the empty state,
+            which hashes to a digest no trial can match and would read as an agent
+            failure.
+    """
+    try:
+        state = read_declared_initial_state(
+            task_dir=task_dir, initial_state_json_db=initial_state_json_db
+        )
+    except UnresolvableInitialState as error:
+        raise UnresolvableInitialState(_no_initial_state(str(error))) from error
+    if state is None:
+        raise UnresolvableInitialState(_no_initial_state(_NO_INITIAL_STATE_DECLARED))
+    if not state:
+        raise UnresolvableInitialState(
+            _no_initial_state(
+                _UNREADABLE_INITIAL_STATE.format(
+                    path=initial_state_json_db, problem=_AN_EMPTY_JSON_OBJECT
+                )
+            )
+        )
+    return state
+
+
+def _loaded_initial_state(path: Path, declared: Any) -> dict[str, Any]:
+    """The JSON object at ``path``, or raise naming what ``declared`` resolved to."""
+    try:
+        loaded = json.loads(path.read_text())
+    except (OSError, ValueError) as error:
+        raise UnresolvableInitialState(
+            _UNREADABLE_INITIAL_STATE.format(
+                path=declared, problem=f"{type(error).__name__}: {error}"
+            )
+        ) from error
+    if not isinstance(loaded, dict):
+        raise UnresolvableInitialState(
+            _UNREADABLE_INITIAL_STATE.format(
+                path=declared, problem=f"it holds a {type(loaded).__name__}"
+            )
+        )
+    return loaded
+
+
+def _no_initial_state(because: str) -> str:
+    """The one sentence every unresolvable initial state is refused with."""
+    return _NO_INITIAL_STATE_TO_COMPARE.format(because=because)
 
 
 @dataclass(frozen=True)
@@ -346,7 +473,7 @@ def unreplayable_golden_source(golden_actions: object) -> str | None:
     no replay rather than a malformed source, so every read site loads it as no actions
     to replay and the block is refused only where it declares no other source. What each
     substrate then *grades* for a replay of no actions is its own answer and still
-    differs (#693); no read of this source decides it.
+    differs; no read of this source decides it.
 
     A truthy value that is not a list has no reading at all: core hands it to the replay
     loop and the runner iterates it onto the wire, so each fails on the authored value

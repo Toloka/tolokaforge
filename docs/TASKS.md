@@ -74,7 +74,7 @@ grading: "grading.yaml"
 
 The only required fields are `task_id` and `description`. Everything above is
 optional and defaults to a sane value, with one exception: a native task owes a
-grading source, supplied either by its own `grading:` field or by a `grading.yaml`
+grading file on disk, named either by its own `grading:` field or by a `grading.yaml`
 beside its `task.yaml`. A Project cannot supply that source — `task_defaults`
 carries no `grading` field.
 
@@ -83,7 +83,7 @@ carries no `grading` field.
 | `initial_state` | empty state (no JSON DB, filesystem, mock-web, or RAG) |
 | `tools` | no tools enabled for agent or user |
 | `actors.user` | cooperative LLM user (`mode: llm`, `persona: cooperative`) |
-| `grading` | a `grading.yaml` sitting next to `task.yaml` is picked up automatically; a native task with neither is refused by `tolokaforge validate` and by the run's pre-flight, since the native adapter grades from that file (see [docs/GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run)) |
+| `grading` | a `grading.yaml` sitting next to `task.yaml` is picked up automatically; a native task with no such file — naming none, or naming a path with nothing at it — is refused by `tolokaforge validate` and by the run's pre-flight, since the native adapter grades from that file (see [docs/GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run)) |
 
 So a task that inherits everything from its Project needs only:
 
@@ -165,9 +165,18 @@ Field reference:
   else is refused with HTTP 403. HTTPS goes through the proxy via CONNECT with
   no TLS interception, so pinned certificates keep working and no CA plumbing is
   needed. The `runner_service` joins the edge network directly (not proxied),
-  keeping its grading egress, exactly as under `no_internet`. Entries are DNS
+  keeping its grading egress exactly as under `no_internet` — so the allowlist
+  constrains application services rather than the judge's provider call.
+  Entries are DNS
   hostnames only — schemes, ports, paths, IP literals, and duplicates are
   rejected at manifest load.
+
+Credential delivery is independent of `network_policy`. Under every policy,
+materialisation writes the engine's `TOLOKAFORGE_SECRETS_JSON` payload onto
+`runner_service` — and onto no other service — so the runner's in-container
+`llm_judge` grading can authenticate. Do not declare that variable yourself,
+and do not bind-mount the project context root or the compose file: both are
+refused (see below).
 
 Fields declared on the model but **not yet enforced by the provisioner** —
 declaring them is accepted for forward-compatibility but has no runtime
@@ -189,6 +198,17 @@ load:
   `image: nginx:1.27-alpine` is accepted.
 - `depends_on` targets must reference declared services.
 - `runner_service` must be declared in the compose file.
+
+Two further invariants are enforced at **materialisation** rather than at load,
+because both concern the credential payload the engine writes into the copied
+compose file rather than anything authored in the pack:
+
+- No service may declare `TOLOKAFORGE_SECRETS_JSON` — as a mapping key, a
+  `KEY=value` entry, or a bare pass-through name. The variable is engine-owned;
+  delete the entry.
+- No service may bind-mount the project context root (`.`, `./`) or the compose
+  file itself. Both read the credentialled compose file back out of the context
+  dir. Mount the specific paths a service needs from a subdirectory instead.
 
 For a full walkthrough anchored to a working example, see the
 [multi-container tasks guide](MULTI_CONTAINER_GUIDE.md). For the
@@ -259,6 +279,32 @@ its coordinator persona knows the shipment is delayed and after-hours, confirms
 the site has no cold storage or specialist only when asked, and never names the
 policy-correct resolution — so the agent must reconcile four services plus a
 policy corpus to derive it.
+
+### `###STOP###` is the simulator's token, not the agent's
+
+The exit token belongs to the **user simulator**. The engine reads it from
+simulator output only — a dispatched user reply that is the bare token ends the
+trial with `TerminationReason.USER_STOP`, and one that glues substantive text to
+it delivers that text first and stops on the next turn. The opening turn is the
+exception: a bootstrap reply carrying the token seeds it literally, rather than
+ending a trial before the agent has spoken. Write it into the
+`backstory` (or a scripted flow), never into a task's agent-facing prompt: the
+agent is never asked for the token and its output is never checked for it, so a
+prompt that instructed it would promise a signal nothing consumes.
+[`tests/canonical/test_agent_prompt_exit_token.py`](../tests/canonical/test_agent_prompt_exit_token.py)
+builds every example pack's agent system prompt and fails if one carries it.
+
+The agent's own completion is **structural**, not a phrase it emits: a trial ends
+with `TerminationReason.AGENT_DONE` when the agent takes a turn with no tool calls
+and no counterparty exists to ask it for more — the `agent_only` shape (see
+[ADR-0032](adr/0032-agent-completion-is-structural.md)). A `conversational` task
+is closed by its user, so nothing an agent writes ends one: the trial runs until
+the simulator stops it or the turn budget does.
+
+That makes the exit condition load-bearing for cost as well as for grading. A
+conversational pack whose exit condition never fires now runs to `max_turns` every
+time — check the termination-reason distribution on a pack's first calibration
+run.
 
 ## Browser vs Mobile Tool
 

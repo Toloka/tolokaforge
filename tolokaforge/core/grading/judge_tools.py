@@ -44,7 +44,7 @@ _MAX_OUTPUT_CHARS = 50_000
 
 
 def _read_only_policy(timeout_s: float = 15.0) -> ToolPolicy:
-    return ToolPolicy(timeout_s=timeout_s, category=ToolCategory.READ, visibility=["agent"])
+    return ToolPolicy(timeout_s=timeout_s, category=ToolCategory.READ)
 
 
 def _truncate(text: str) -> str:

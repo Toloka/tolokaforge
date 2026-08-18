@@ -33,12 +33,14 @@ For MCP tools that call db methods synchronously from async context:
 import asyncio
 import concurrent.futures
 import logging
+import math
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from tolokaforge.runner.db_client import DBServiceClient
 from tolokaforge.runner.id_resolution import (
@@ -54,6 +56,52 @@ T = TypeVar("T", bound=BaseModel)
 
 
 __all__ = ["DBServiceProxy", "SyncDBServiceProxy", "IdFieldResolutionError"]
+
+
+@dataclass(frozen=True)
+class _NameMatch:
+    """A table matched to a model class by name, and the rule that matched it."""
+
+    table: str
+    rule: str
+
+
+def _snake_case(class_name: str) -> str:
+    """Convert a CamelCase class name to snake_case."""
+    return "".join(["_" + c.lower() if c.isupper() else c for c in class_name]).lstrip("_")
+
+
+def _jsonpath_literal(value: Any) -> str | None:
+    """The JSONPath filter literal for ``value``, or ``None`` if it has none.
+
+    Encoded by JSON type, ``bool`` ahead of ``int`` because ``bool`` subclasses
+    it and the two spell different literals. A float renders only when its
+    ``repr`` carries no exponent — the dialect's number token rejects
+    ``1e+20``. ``None``, non-finite floats and containers have no literal at
+    all: ``==null`` and ``==None`` match nothing rather than matching a stored
+    ``null``.
+
+    A literal is a filter, never an authority: the dialect compares numerically
+    by coercing the stored value (``@.id==0`` matches a stored ``0.1``), so a
+    hit is a candidate the caller must still verify.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(int(value))
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        rendered = repr(float(value))
+        return None if "e" in rendered or "E" in rendered else rendered
+    if isinstance(value, str):
+        return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+    return None
+
+
+def _declares_default_key_field(model_cls: type[BaseModel]) -> bool:
+    """Whether ``model_cls`` carries the literal ``id`` the default key names."""
+    return "id" in getattr(model_cls, "model_fields", {})
 
 
 class DBServiceProxy:
@@ -153,9 +201,57 @@ class DBServiceProxy:
 
         self._model_name_to_table[model_key] = table_name
         self._table_to_model[table_name] = model_cls
-        logger.info(
+        logger.debug(
             f"DBServiceProxy.register_model: {model_cls.__name__} (key={model_key}) -> table '{table_name}' (dict_id={id(self._model_name_to_table)})"
         )
+
+    def _match_name(self, model_cls: type[BaseModel]) -> _NameMatch | None:
+        """
+        Find the table in db_table_names whose name matches the model's class name.
+
+        Five rules are tried per table, in order, so a table earlier in
+        db_table_names wins over a later one whatever rule matches it: suffix
+        match singular (``tau_manufacturing_capa`` ends with ``_capa``), suffix
+        match plural (``zendesk_users`` ends with ``_users``), ``-ies`` plural
+        suffix (``entries`` for ``entry``), exact singular, exact plural.
+
+        Pure: no registration, and no derived-name last resort.
+        """
+        snake_name = _snake_case(model_cls.__name__)
+        singular_suffix = f"_{snake_name}"
+        plural_suffix = f"_{snake_name}s"
+        ies_suffix = f"_{snake_name[:-1]}ies" if snake_name.endswith("y") else None
+
+        for db_table in self.db_table_names:
+            if db_table.endswith(singular_suffix):
+                return _NameMatch(db_table, f"singular suffix '{singular_suffix}'")
+            if db_table.endswith(plural_suffix):
+                return _NameMatch(db_table, f"plural suffix '{plural_suffix}'")
+            if ies_suffix and db_table.endswith(ies_suffix):
+                return _NameMatch(db_table, f"ies plural suffix '{ies_suffix}'")
+            if db_table == snake_name:
+                return _NameMatch(db_table, "exact singular match")
+            if db_table == f"{snake_name}s":
+                return _NameMatch(db_table, "exact plural match")
+        return None
+
+    def match_table_by_name(self, model_cls: type[BaseModel]) -> str | None:
+        """
+        Report which table an unregistered model resolves to by class name.
+
+        Query-only view of the same match _get_table_name falls back to, for
+        callers that need to say where a model will land before it lands there.
+        Registers nothing, and answers None where _get_table_name would go on to
+        derive a table name from the class name.
+
+        Args:
+            model_cls: The model class to match
+
+        Returns:
+            The matching table name, or None if no table name matches
+        """
+        match = self._match_name(model_cls)
+        return match.table if match else None
 
     def _get_table_name(self, model_cls: type[BaseModel]) -> str:
         """
@@ -166,8 +262,7 @@ class DBServiceProxy:
         """
         model_key = self._get_model_key(model_cls)
 
-        # Debug: check exact key matching
-        logger.info(
+        logger.debug(
             f"_get_table_name: model_key='{model_key}', "
             f"in_dict={model_key in self._model_name_to_table}, "
             f"dict_id={id(self._model_name_to_table)}, "
@@ -176,82 +271,26 @@ class DBServiceProxy:
 
         if model_key in self._model_name_to_table:
             table_name = self._model_name_to_table[model_key]
-            logger.info(f"_get_table_name: FOUND model_key='{model_key}' -> table='{table_name}'")
+            logger.debug(f"_get_table_name: FOUND model_key='{model_key}' -> table='{table_name}'")
             return table_name
 
-        # Log the mismatch for debugging
-        logger.warning(
+        logger.debug(
             f"Model key '{model_key}' not found in registered models. "
             f"Available keys: {list(self._model_name_to_table.keys())}"
         )
 
-        # Fallback: derive table name suffix from class name
-        # Convert CamelCase to snake_case
-        name = model_cls.__name__
-        snake_name = "".join(["_" + c.lower() if c.isupper() else c for c in name]).lstrip("_")
-
-        # Try to find a matching table in db_table_names
-        # This handles the case where tables have namespace prefixes (e.g., tau_manufacturing_capa)
-        if self.db_table_names:
-            # Build suffixes to match against (both singular and plural)
-            snake_suffix_singular = f"_{snake_name}"
-            snake_suffix_plural = f"_{snake_name}s"
-            # Handle -y -> -ies pluralization
-            if snake_name.endswith("y"):
-                snake_suffix_plural_ies = f"_{snake_name[:-1]}ies"
-            else:
-                snake_suffix_plural_ies = None
-
-            for db_table in self.db_table_names:
-                # Strategy 1: suffix match singular (e.g., "tau_manufacturing_capa" ends with "_capa")
-                if db_table.endswith(snake_suffix_singular):
-                    logger.info(
-                        f"_get_table_name: Matched model {model_cls.__name__} to table '{db_table}' "
-                        f"(singular suffix '{snake_suffix_singular}')"
-                    )
-                    # Register for future lookups
-                    self.register_model(db_table, model_cls)
-                    return db_table
-                # Strategy 2: suffix match plural (e.g., "zendesk_users" ends with "_users")
-                if db_table.endswith(snake_suffix_plural):
-                    logger.info(
-                        f"_get_table_name: Matched model {model_cls.__name__} to table '{db_table}' "
-                        f"(plural suffix '{snake_suffix_plural}')"
-                    )
-                    # Register for future lookups
-                    self.register_model(db_table, model_cls)
-                    return db_table
-                # Strategy 3: -ies plural suffix (e.g., "entries" for "entry")
-                if snake_suffix_plural_ies and db_table.endswith(snake_suffix_plural_ies):
-                    logger.info(
-                        f"_get_table_name: Matched model {model_cls.__name__} to table '{db_table}' "
-                        f"(ies plural suffix '{snake_suffix_plural_ies}')"
-                    )
-                    # Register for future lookups
-                    self.register_model(db_table, model_cls)
-                    return db_table
-                # Strategy 4: exact match with singular (e.g., "capa" == "capa")
-                if db_table == snake_name:
-                    logger.info(
-                        f"_get_table_name: Matched model {model_cls.__name__} to table '{db_table}' "
-                        f"(exact singular match)"
-                    )
-                    # Register for future lookups
-                    self.register_model(db_table, model_cls)
-                    return db_table
-                # Strategy 5: exact match with plural (e.g., "capas" == "capas")
-                if db_table == f"{snake_name}s":
-                    logger.info(
-                        f"_get_table_name: Matched model {model_cls.__name__} to table '{db_table}' "
-                        f"(exact plural match)"
-                    )
-                    # Register for future lookups
-                    self.register_model(db_table, model_cls)
-                    return db_table
+        match = self._match_name(model_cls)
+        if match is not None:
+            logger.info(
+                f"_get_table_name: Matched model {model_cls.__name__} to table "
+                f"'{match.table}' ({match.rule})"
+            )
+            # Register for future lookups
+            self.register_model(match.table, model_cls)
+            return match.table
 
         # Last resort fallback: derive table name from class name
-        # Simple pluralization
-        table_name = snake_name
+        table_name = _snake_case(model_cls.__name__)
         if not table_name.endswith("s"):
             table_name += "s"
 
@@ -299,7 +338,7 @@ class DBServiceProxy:
         table_name = self._get_table_name(model_cls)
         if self._id_fields.get(table_name):
             return table_key(table_name, self._id_fields)
-        if "id" in getattr(model_cls, "model_fields", {}):
+        if _declares_default_key_field(model_cls):
             return TableKey(("id",))
         raise IdFieldResolutionError(
             f"Cannot determine ID field for table '{table_name}' "
@@ -366,7 +405,7 @@ class DBServiceProxy:
         table_name = self._get_table_name(model_cls)
         model_key = self._get_model_key(model_cls)
 
-        logger.info(
+        logger.debug(
             f"get_all: model_cls={model_cls.__name__}, model_key={model_key}, "
             f"table_name={table_name}, registered_tables={list(self._model_name_to_table.keys())}"
         )
@@ -388,13 +427,21 @@ class DBServiceProxy:
         Get a single item by its ID from the database.
 
         Resolves the table's key from config (state_checks.id_fields, default
-        "id"). A single-field table takes a scalar, does one JSONPath lookup,
-        and falls back to a value-based full scan (comparing get_id()) if the
-        lookup misses — so reads succeed for any key shape even without config.
-        A composite-keyed table takes a mapping of component values (a scalar
-        or bare sequence raises IdFieldResolutionError naming the components)
-        and both the JSONPath lookup and the fallback scan compare every
-        component against the record dict.
+        "id"). A single-field table takes a scalar; a composite-keyed table
+        takes a mapping of component values (a scalar or bare sequence raises
+        IdFieldResolutionError naming the components).
+
+        Each shape's answer is defined by one predicate, evaluated by a full
+        scan: ``get_id(item) == value`` for a single-field key, and every
+        declared component equal to the record's own value for a composite one.
+        The JSONPath lookup is only an index over that predicate. A key whose
+        every component has a literal resolves in one query, but a hit counts
+        only once the validated model satisfies the same predicate, so a row
+        the dialect's numeric coercion dragged in — or one the model cannot
+        represent — is a miss rather than a second, looser notion of equality.
+        Every kind of miss (no literal, a query error, an unverified hit, no
+        usable key to query at all) falls to the scan, which is why the query
+        can only ever save a round trip, never change an answer.
 
         Args:
             model_cls: Pydantic model class
@@ -409,20 +456,30 @@ class DBServiceProxy:
         if len(key.fields) > 1:
             return await self._get_by_composite_key(model_cls, table_name, key, value)
 
-        id_field = key.fields[0]
-        jsonpath = f"$.{table_name}[?(@.{id_field}=='{value}')]"
-        try:
-            response = await self.db_client.query(self.trial_id, jsonpath)
-            # QueryResponse is a Pydantic model with .results attribute
-            if response.results:
-                return self._to_model(model_cls, response.results[0])
-        except Exception as e:
-            logger.debug(f"JSONPath lookup on '{id_field}' failed: {e}")
+        return await self._get_by_single_key(model_cls, table_name, key.fields[0], value)
 
-        # Fallback: full scan comparing the model's get_id() value. Handles keys
-        # not declared in id_fields (e.g. email) via a runtime VALUE call, never
-        # model source.
-        logger.debug(f"JSONPath lookup missed, full scan for {model_cls.__name__}")
+    async def _get_by_single_key(
+        self, model_cls: type[T], table_name: str, id_field: str, value: Any
+    ) -> T | None:
+        """Single-field lookup: one typed JSONPath predicate, then a full scan
+        comparing ``get_id()`` — a runtime value call, never model source, so a
+        key the config never declared (an email, say) still resolves."""
+        if not self._id_fields.get(table_name) and not _declares_default_key_field(model_cls):
+            logger.debug(
+                f"get_by_id: table '{table_name}' declares no key field and "
+                f"{model_cls.__name__} has no 'id' field — no query issued, full scan"
+            )
+        else:
+            hit = await self._query_key(
+                model_cls,
+                table_name,
+                f"{table_name}.{id_field}",
+                {id_field: value},
+                lambda model: self._get_id(model) == value,
+            )
+            if hit is not None:
+                return hit
+
         for item in await self.get_all(model_cls):
             if self._get_id(item) == value:
                 return item
@@ -431,26 +488,115 @@ class DBServiceProxy:
     async def _get_by_composite_key(
         self, model_cls: type[T], table_name: str, key: TableKey, value: Any
     ) -> T | None:
-        """Composite lookup: one JSONPath predicate per component, then a
+        """Composite lookup: one typed JSONPath predicate per component, then a
         component-wise full scan — never ``get_id()``, whose concatenation the
         engine cannot interpret."""
         components = self._composite_lookup_components(table_name, key, value)
 
-        predicate = " & ".join(f"@.{field}=='{components[field]}'" for field in key.fields)
-        jsonpath = f"$.{table_name}[?({predicate})]"
-        try:
-            response = await self.db_client.query(self.trial_id, jsonpath)
-            if response.results:
-                return self._to_model(model_cls, response.results[0])
-        except Exception as e:
-            logger.debug(f"Composite JSONPath lookup on {list(key.fields)!r} failed: {e}")
+        hit = await self._query_key(
+            model_cls,
+            table_name,
+            f"{table_name}.{'+'.join(key.fields)}",
+            components,
+            lambda model: self._satisfies_components(self._to_dict(model), components),
+        )
+        if hit is not None:
+            return hit
 
-        logger.debug(f"Composite lookup missed, full scan for {model_cls.__name__}")
         for item in await self.get_all(model_cls):
-            record = self._to_dict(item)
-            if all(record.get(field) == components[field] for field in key.fields):
+            if self._satisfies_components(self._to_dict(item), components):
                 return item
         return None
+
+    @staticmethod
+    def _satisfies_components(record: dict[str, Any], components: dict[str, Any]) -> bool:
+        """Whether ``record`` carries every declared key component's value."""
+        return all(record.get(field) == component for field, component in components.items())
+
+    async def _query_key(
+        self,
+        model_cls: type[T],
+        table_name: str,
+        target: str,
+        components: dict[str, Any],
+        satisfies: Callable[[T], bool],
+    ) -> T | None:
+        """One indexed lookup for ``components``, or ``None`` to fall to the scan.
+
+        Single-field and composite keys share this: the difference between them
+        is not how a key is queried but what "found" means, so each path passes
+        ``satisfies`` — *its own scan's predicate* — and a hit is a hit only if
+        it holds. That equality is the whole safety argument: the query is an
+        index over the scan, so it can save a round trip but never change an
+        answer, and every way of declining below falls through to the scan.
+
+        Declines at the level that matches who can act: a component with no
+        literal and a failed query are operator-facing (info, warning), while a
+        miss stays at debug because ``create()`` asks this question about every
+        record it is about to insert and legitimately expects "not there".
+        """
+        literals = {field: _jsonpath_literal(value) for field, value in components.items()}
+        unencodable = [field for field, literal in literals.items() if literal is None]
+        if unencodable:
+            detail = ", ".join(
+                f"{field}={components[field]!r} ({type(components[field]).__name__})"
+                for field in unencodable
+            )
+            logger.info(
+                f"get_by_id: key component(s) of '{target}' have no JSONPath literal in this "
+                f"dialect ({detail}) — no query issued, full scan"
+            )
+            return None
+
+        predicate = " & ".join(f"@.{field}=={literals[field]}" for field in components)
+        try:
+            response = await self.db_client.query(self.trial_id, f"$.{table_name}[?({predicate})]")
+        except (
+            Exception
+        ) as e:  # noqa: BLE001 — every miss falls to the scan (see docstring at 442-444)
+            # The docstring promises "Every kind of miss (no literal, a query error, an
+            # unverified hit, no usable key to query at all) falls to the scan, which is
+            # why the query can only ever save a round trip, never change an answer."
+            # ``db_client.query`` only wraps ``httpx.ConnectError``; narrowing to
+            # ``DBServiceError`` lets ``httpx.ReadTimeout``, ``httpx.RemoteProtocolError``
+            # and a ``QueryResponse.model_validate`` failure escape and fail the tool
+            # call instead of falling through to ``get_all``, a different endpoint that
+            # may be healthy. Every branch below already means "fall to the scan".
+            logger.warning(f"get_by_id: JSONPath lookup on '{target}' failed: {e} — full scan")
+            return None
+
+        for record in response.results:
+            verified = self._verified_hit(model_cls, record, satisfies)
+            if verified is not None:
+                return verified
+
+        logger.debug(
+            f"get_by_id: declared key lookup on '{target}' missed for {components!r} — full scan"
+        )
+        return None
+
+    def _verified_hit(
+        self, model_cls: type[T], record: dict[str, Any], satisfies: Callable[[T], bool]
+    ) -> T | None:
+        """``record`` as a model if it satisfies the caller's predicate, else ``None``.
+
+        A record the model cannot validate is a miss too, not an error: it is
+        the same coercion artifact this step exists to reject — a lookup of
+        ``7`` against a str-keyed model matches both a stored ``"7"``, which
+        the model contradicts, and a stored ``7``, which it cannot hold at all.
+        A record that genuinely belongs to the table and defeats its model
+        still surfaces, raised by the scan that reads the same rows.
+
+        Validating here is not an extra step either path could skip: both
+        scans read models, so a stored ``"2"`` in an ``int``-typed component is
+        a ``2`` to the predicate, and comparing the raw record instead would
+        make the query miss rows its own scan then finds.
+        """
+        try:
+            model = self._to_model(model_cls, record)
+        except ValidationError:
+            return None
+        return model if satisfies(model) else None
 
     async def create(self, obj: BaseModel) -> BaseModel:
         """

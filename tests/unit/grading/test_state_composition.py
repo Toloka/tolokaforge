@@ -14,6 +14,7 @@ from tolokaforge.core.grading.state_composition import (
     CONFLICTING_STATE_SOURCES_MESSAGE,
     INERT_HASH_WEIGHT_REASON,
     MISSING_HASH_WEIGHT_MESSAGE,
+    StateHashConfig,
     compose_state_checks_score,
     inert_hash_weight_reason,
     refuse_probes_beside_another_state_source,
@@ -41,7 +42,7 @@ _PROBES = [
 _DECLARATION_SPACE = tuple(
     product(
         (True, False),  # hash.enabled
-        ({"expected_state_hash": "aaaa"}, {"golden_actions": _GOLDEN_ACTIONS}, {}),
+        ({"expect_initial_state": True}, {"golden_actions": _GOLDEN_ACTIONS}, {}),
         (_ASSERTIONS, []),  # state_checks.jsonpaths
         (0.5, None),  # hash.weight
     ),
@@ -54,7 +55,7 @@ _EXCLUSIVITY_SPACE = tuple(
     product(
         (_PROBES, []),  # state_checks.db_probes
         (True, False),  # hash.enabled
-        ({"expected_state_hash": "aaaa"}, {"golden_actions": _GOLDEN_ACTIONS}, {}),
+        ({"expect_initial_state": True}, {"golden_actions": _GOLDEN_ACTIONS}, {}),
         (_ASSERTIONS, []),  # state_checks.jsonpaths
     ),
 )
@@ -156,16 +157,14 @@ class TestResolveHashWeight:
 
     The declaration space is swept exhaustively rather than sampled: the predicate's
     whole content is *which* shape is undecidable, and a sampled set cannot show that
-    dropping a condition widened the rejection. The sweep is over the untyped ``hash``
-    block an author actually writes, so it covers what counts as a hash source too.
+    dropping a condition widened the rejection. The sweep is over the ``hash`` block an
+    author actually writes, so it covers what counts as a hash source too.
     """
 
     def test_exactly_one_declaration_shape_is_undecidable(self):
         rejected = set()
         for enabled, source, jsonpaths, weight in _DECLARATION_SPACE:
-            hash_config = {"enabled": enabled, **source}
-            if weight is not None:
-                hash_config["weight"] = weight
+            hash_config = StateHashConfig(enabled=enabled, weight=weight, **source)
             shape = (enabled, tuple(source), bool(jsonpaths), weight)
             try:
                 returned = resolve_hash_weight(
@@ -180,7 +179,7 @@ class TestResolveHashWeight:
             assert returned == weight, shape
 
         assert rejected == {
-            (True, ("expected_state_hash",), True, None),
+            (True, ("expect_initial_state",), True, None),
             (True, ("golden_actions",), True, None),
         }, (
             "the rejected set is the whole predicate: hash grading on, a source to "
@@ -192,9 +191,18 @@ class TestResolveHashWeight:
     @pytest.mark.parametrize("declared_weight", (2.0, -0.1, "0.5", True))
     @pytest.mark.parametrize("jsonpaths", (_ASSERTIONS, []))
     def test_the_range_holds_even_where_the_weight_is_inert(self, declared_weight, jsonpaths):
+        """The fold re-checks a weight the block would never have loaded with.
+
+        Written past the block's own validator because that is the only way the value
+        arrives: the block refuses each of these at construction, and this read is what
+        answers a caller that reached past load and wrote one anyway.
+        """
+        hash_config = StateHashConfig(enabled=True, expect_initial_state=True, weight=0.5)
+        hash_config.weight = declared_weight
+
         with pytest.raises(ValueError, match="state_checks.hash.weight"):
             resolve_hash_weight(
-                {"enabled": True, "expected_state_hash": "aaaa", "weight": declared_weight},
+                hash_config,
                 jsonpaths=jsonpaths,
                 context="grading.yaml state_checks.hash.weight",
             )
@@ -223,7 +231,7 @@ class TestRefuseProbesBesideAnotherStateSource:
                 refuse_probes_beside_another_state_source(
                     db_probes=db_probes,
                     jsonpaths=jsonpaths,
-                    hash_config={"enabled": enabled, **source},
+                    hash_config=StateHashConfig(enabled=enabled, **source),
                     context=self._CONTEXT,
                 )
             except ValueError as exc:
@@ -231,12 +239,12 @@ class TestRefuseProbesBesideAnotherStateSource:
                 rejected.add(shape)
 
         assert rejected == {
-            (True, True, ("expected_state_hash",), True),
-            (True, True, ("expected_state_hash",), False),
+            (True, True, ("expect_initial_state",), True),
+            (True, True, ("expect_initial_state",), False),
             (True, True, ("golden_actions",), True),
             (True, True, ("golden_actions",), False),
             (True, True, (), True),
-            (True, False, ("expected_state_hash",), True),
+            (True, False, ("expect_initial_state",), True),
             (True, False, ("golden_actions",), True),
             (True, False, (), True),
         }, (

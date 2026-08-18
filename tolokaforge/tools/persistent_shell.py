@@ -24,6 +24,7 @@ accumulated state intact.
 
 from __future__ import annotations
 
+import math
 import os
 import pty
 import select
@@ -141,8 +142,7 @@ class _PtyBashSession:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return self._on_timeout(buf)
-            ready, _, _ = select.select([self._master_fd], [], [], min(remaining, 0.2))
-            if not ready:
+            if not self._wait_readable(min(remaining, 0.2)):
                 continue
             chunk = self._read()
             if not chunk:
@@ -255,14 +255,37 @@ class _PtyBashSession:
         except OSError:
             return b""
 
+    def _wait_readable(self, timeout_s: float) -> bool:
+        """Whether the pty master has something to read within ``timeout_s``.
+
+        ``poll`` rather than ``select``: ``select`` cannot name a descriptor at
+        or above ``FD_SETSIZE`` (1024) and raises ``ValueError`` when handed
+        one, however few are actually open. A runner holding a pty and a gRPC
+        socket per concurrent trial reaches those numbers while nowhere near
+        ``RLIMIT_NOFILE``, and every command on the session that drew a high
+        descriptor would fail. ``poll`` has no such ceiling.
+
+        ``POLLHUP``, ``POLLERR`` and ``POLLNVAL`` need no registering — they are
+        reported whatever the mask — so a shell that exited, and a descriptor
+        closed under a reader the backstop abandoned, both wake this the same
+        way a readable one does. :meth:`_read` turns either into the empty read
+        the callers treat as a closed pipe, where ``select`` would have raised
+        in the abandoned thread instead.
+        """
+        assert self._master_fd is not None
+        poller = select.poll()
+        poller.register(self._master_fd, select.POLLIN)
+        # Round up: poll() takes whole milliseconds, and truncating a sub-
+        # millisecond wait to 0 would spin the caller's loop instead of waiting.
+        return bool(poller.poll(math.ceil(timeout_s * 1000)))
+
     def _drain(self, timeout_s: float) -> bytes:
         if self._master_fd is None:
             return b""
         out = b""
         end = time.monotonic() + timeout_s
         while time.monotonic() < end:
-            ready, _, _ = select.select([self._master_fd], [], [], 0.1)
-            if not ready:
+            if not self._wait_readable(0.1):
                 continue
             chunk = self._read()
             if not chunk:

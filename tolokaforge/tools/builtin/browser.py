@@ -89,7 +89,6 @@ class BrowserTool(Tool):
         policy = ToolPolicy(
             timeout_s=60.0,
             category=ToolCategory.COMPUTE,
-            visibility=["agent"],
         )
         super().__init__(
             name="browser",

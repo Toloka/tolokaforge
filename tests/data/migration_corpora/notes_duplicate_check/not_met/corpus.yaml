@@ -1,0 +1,75 @@
+criterion: checked_duplicates_first
+task_ids:
+- notes_add_note_duplicate_check_gated
+curated_from:
+- native_shared_domain_example_20260629_133126
+- native_shared_domain_example_20260702_140836
+- native_shared_domain_gate_demo_20260625_184817
+- native_shared_domain_gate_demo_20260626_101928
+- native_shared_domain_gate_demo_20260626_102829
+curated_at: '2026-08-12T09:59:47.143589Z'
+bundles:
+- directory: native_shared_domain_example_20260629_133126_trial0
+  source_run: native_shared_domain_example_20260629_133126
+  task_id: notes_add_note_duplicate_check_gated
+  agent_model: anthropic/claude-sonnet-4-6
+  judge_model: openai/gpt-4.1-mini
+  met: false
+  record_carried: false
+- directory: native_shared_domain_example_20260702_140836_trial0
+  source_run: native_shared_domain_example_20260702_140836
+  task_id: notes_add_note_duplicate_check_gated
+  agent_model: anthropic/claude-sonnet-4-6
+  judge_model: openai/gpt-4.1-mini
+  met: false
+  record_carried: false
+- directory: native_shared_domain_gate_demo_20260625_184817_trial0
+  source_run: native_shared_domain_gate_demo_20260625_184817
+  task_id: notes_add_note_duplicate_check_gated
+  agent_model: openai/gpt-4o-mini
+  judge_model: null
+  met: false
+  record_carried: false
+- directory: native_shared_domain_gate_demo_20260626_101928_trial0
+  source_run: native_shared_domain_gate_demo_20260626_101928
+  task_id: notes_add_note_duplicate_check_gated
+  agent_model: openai/gpt-4o-mini
+  judge_model: null
+  met: false
+  record_carried: false
+- directory: native_shared_domain_gate_demo_20260626_102829_trial0
+  source_run: native_shared_domain_gate_demo_20260626_102829
+  task_id: notes_add_note_duplicate_check_gated
+  agent_model: openai/gpt-4o-mini
+  judge_model: openai/gpt-4.1-mini
+  met: false
+  record_carried: false
+excluded:
+- source: results/native_shared_domain_example_20260629_133126/trials/notes_add_first_note/0
+  reason: judge_incomplete
+  by: rule
+  observation: 'judge_status: ''unspecified'''
+- source: results/native_shared_domain_example_20260629_133126/trials/notes_recall_existing_note/0
+  reason: judge_incomplete
+  by: rule
+  observation: 'judge_status: ''unspecified'''
+- source: results/native_shared_domain_example_20260629_133126/trials/notes_summarize_notes_rubric/0
+  reason: criterion_not_judged
+  by: rule
+  observation: 'criteria judged: covers_all_notes, facts_accurate, clarity'
+- source: results/native_shared_domain_example_20260702_140836/trials/notes_add_first_note/0
+  reason: judge_incomplete
+  by: rule
+  observation: 'judge_status: ''unspecified'''
+- source: results/native_shared_domain_example_20260702_140836/trials/notes_recall_existing_note/0
+  reason: judge_incomplete
+  by: rule
+  observation: 'judge_status: ''unspecified'''
+- source: results/native_shared_domain_example_20260702_140836/trials/notes_summarize_notes_rubric/0
+  reason: criterion_not_judged
+  by: rule
+  observation: 'criteria judged: covers_all_notes, facts_accurate, clarity'
+- source: results/native_shared_domain_gate_demo_20260804_122027/trials/notes_add_note_duplicate_check_gated/0
+  reason: environment_dead
+  by: rule
+  observation: 'tool_calls: 4, succeeded: 0'

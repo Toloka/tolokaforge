@@ -1,8 +1,16 @@
 # What this pack's lot correlation is a candidate to replace, declared machine-readably
 # so `tolokaforge validate` checks the claim against the rubric that still holds it and
-# `tolokaforge reconcile` can decide it once recorded judge verdicts for this pack exist
-# (#793). Nothing about grading reads this file, and a candidate retires nothing:
-# `names_lot` still scores and still vetoes.
+# `tolokaforge reconcile` decides it against recorded judge verdicts. Nothing about grading
+# reads this file, and a candidate retires nothing: `names_lot` still scores and still vetoes.
+#
+# The evidence is in and it REFUSES this candidacy. Over
+# `tests/data/migration_corpora/lot_ops_names_lot/` — ten trials across two agent models —
+# the judge found `names_lot` met on every one and the correlation below failed on every one,
+# because no trial ever read the lot: the user's message supplies `lot_id 7` and the guidance
+# asks only for the reason-code catalog, so a compliant agent has no reason to GET it. That is
+# a strict disagreement, which no mode tolerates. The declaration stays because a candidate
+# converts nothing and gates nothing — this is the claim under test, and the corpus is what a
+# decision about it now has to answer to. See docs/RUBRIC_MIGRATION.md § The committed corpora.
 #
 # Two things a retirement here would have to answer for, and this pack answers neither yet.
 # `names_lot` is `required: true` — a trial-level veto carrying no score share — so a
@@ -23,6 +31,7 @@ migrations:
     mode: candidate
     by:
       - the_lot_was_read_before_the_action_was_opened
+    corpus: tests/data/migration_corpora/lot_ops_names_lot
     was:
       kind: binary
       required: true

@@ -67,7 +67,7 @@ class TrialStatus(str, Enum):
 class TerminationReason(str, Enum):
     """Reason why the dialogue was terminated"""
 
-    AGENT_DONE = "agent_done"  # Agent signaled task completion
+    AGENT_DONE = "agent_done"  # Agent had no further action and no party could ask for one
     USER_STOP = "user_stop"  # User signaled ###STOP###
     STUCK_DETECTED = "stuck_detected"  # Stuck condition detected
     TIMEOUT = "timeout"  # Episode timeout reached
@@ -77,6 +77,7 @@ class TerminationReason(str, Enum):
     API_TIMEOUT = "api_timeout"  # API call timed out after retries
     API_ERROR = "api_error"  # Other API errors
     PROVISION_ERROR = "provision_error"  # Substrate provisioning failed before the trial body ran
+    TRIAL_LOST = "trial_lost"  # The substrate no longer holds the trial the engine was running
 
 
 class FirstUserMessageSource(str, Enum):
@@ -565,7 +566,7 @@ class Trajectory(BaseModel):
     # is revised so that downstream analytics can gate comparisons across
     # runs. Stays on Trajectory because it's metadata about the
     # message-trace shape, not the prompt itself.
-    simulator_schema_version: int = 3
+    simulator_schema_version: int = 4
 
     @model_validator(mode="after")
     def _reject_graded_and_ungradeable(self) -> Self:

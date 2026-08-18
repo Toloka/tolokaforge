@@ -23,7 +23,7 @@ from tolokaforge.core.models import (
     OrchestratorConfig,
     RunConfig,
 )
-from tolokaforge.core.output.artifacts import FileArtifactWriter
+from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
 
 
 @dataclass(frozen=True)
@@ -51,7 +51,13 @@ def make_run_config(output_dir: Path, *, repeats: int = 1) -> RunConfig:
     )
 
 
-def make_conductor(config: RunConfig, output_dir: Path, grader: Any) -> InProcessConductor:
+def make_conductor(
+    config: RunConfig,
+    output_dir: Path,
+    grader: Any,
+    *,
+    artifact_writer: TrialArtifactWriter | None = None,
+) -> InProcessConductor:
     agent_client = MagicMock()
     agent_client.config = ModelConfig(provider="openai", name="gpt-4")
     agent_client.capabilities.schema_sanitizer.sanitize.return_value = []
@@ -59,7 +65,7 @@ def make_conductor(config: RunConfig, output_dir: Path, grader: Any) -> InProces
     adapter.get_grading_config.return_value = None
     return InProcessConductor(
         adapter=adapter,
-        artifact_writer=FileArtifactWriter(),
+        artifact_writer=artifact_writer or FileArtifactWriter(),
         config=config,
         logger=StructuredLogger("test-conductor-phases"),
         agent_client=agent_client,
@@ -79,6 +85,8 @@ def make_setup(output_dir: Path, task_id: str, trial_idx: int) -> _TrialSetup:
         adapter_env=MagicMock(),
         tool_schemas=[],
         tool_executor=MagicMock(),
+        user_tool_schemas=[],
+        user_tool_executor=None,
     )
 
 

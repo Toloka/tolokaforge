@@ -28,6 +28,7 @@ from tolokaforge.core.models import (
     RecordedToolCall,
     ReplyDefect,
     TerminationReason,
+    ToolCall,
     ToolExecutionStatus,
     ToolExecutorIdentity,
     Trajectory,
@@ -44,15 +45,9 @@ from tolokaforge.core.run_display_events import (
     RunDisplayEvents,
 )
 from tolokaforge.core.stuck import StuckDetector
-from tolokaforge.tools.registry import ToolExecutor, resolve_tool_output, resolve_tool_status
-
-# Import user tools support (optional for dual-control scenarios)
-try:
-    from tolokaforge.tools.user_tools import UserToolExecutor
-except ImportError:
-    UserToolExecutor = None
-
-_AGENT_DONE_MARKERS: tuple[str, ...] = ("###STOP###",)
+from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
+from tolokaforge.runner.protocol import TrialNotRegisteredError
+from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
 
 
 def _as_utc(ts: float | None) -> datetime | None:
@@ -121,13 +116,13 @@ class TrialRunner:
         trial_index: int,
         agent_client: LLMClient,
         user_simulator: UserSimulator | None,
-        tool_executor: ToolExecutor,
+        tool_executor: ToolExecuting,
         tool_schemas: list[dict[str, Any]],
         max_turns: int = 50,
         turn_timeout_s: int = 60,
         episode_timeout_s: int = 1200,
         stuck_detector: StuckDetector | None = None,
-        user_tool_executor: Any | None = None,  # UserToolExecutor for dual-control
+        user_tool_executor: ToolExecuting | None = None,
         request_limiter: GlobalRateLimiter | None = None,
         verbose: bool = False,
         strict: bool = False,
@@ -145,7 +140,7 @@ class TrialRunner:
         self.turn_timeout_s = turn_timeout_s
         self.episode_timeout_s = episode_timeout_s
         self.stuck_detector = stuck_detector
-        self.user_tool_executor = user_tool_executor  # For dual-control scenarios
+        self.user_tool_executor = user_tool_executor
         self.request_limiter = request_limiter
         self.verbose = verbose
         self.strict = strict
@@ -158,6 +153,10 @@ class TrialRunner:
 
         self.messages: list[Message] = []
         self.tool_call_recorder = TrialToolCallRecorder()
+        # One assigner for the whole trial, drawn from by both actors — the
+        # agent's loop takes it as an argument — so a raw provider id one actor
+        # used is disambiguated for the other rather than recorded twice.
+        self._call_ids = EpisodeUniqueCallIds()
         self.metrics = Metrics()
         self.start_time: float = 0.0
         self.logger: StructuredLogger | None = None  # Initialized in run()
@@ -351,6 +350,7 @@ class TrialRunner:
                     should_terminate=self._agent_termination,
                     user_turn=lambda messages: self._policy_user_turn(policy, messages),
                     recorder=self.tool_call_recorder,
+                    call_ids=self._call_ids,
                     request_limiter=self.request_limiter,
                     normalize_tool_arguments=self._normalize_tool_arguments,
                     classify_error=self.agent_client.classify_loop_error,
@@ -370,9 +370,29 @@ class TrialRunner:
                     self._effective_system_prompt_captured = True
 
             except Exception as e:
-                # Catch-all for initialization errors (first-user-message generation)
+                # Catch-all for initialization errors (first-user-message generation).
+                # The simulator's opening tool calls run here, before the loop and
+                # its classifier, so the one reason a tool call can end the trial
+                # under is named here too.
+                #
+                # Typed provider faults (API timeout, rate limit, …) that reach
+                # here from the opening ``client.completion`` are the same
+                # class the loop's ``classify_loop_error`` already routes to
+                # ``EXCLUDED_TYPED_REASONS``. Consulting the classifier here
+                # avoids pricing "one 429 on the opening generation" as a
+                # scored agent failure when "the identical 429 one turn later"
+                # is excluded. ``TrialNotRegisteredError`` beats the classifier
+                # (it is the "trial-lost" signal, unrelated to provider health).
                 status = TrialStatus.ERROR
-                termination_reason = TerminationReason.ERROR
+                if isinstance(e, TrialNotRegisteredError):
+                    termination_reason = TerminationReason.TRIAL_LOST
+                else:
+                    # ``classify_loop_error`` maps typed provider faults
+                    # (API_TIMEOUT, RATE_LIMIT) to reasons in
+                    # ``EXCLUDED_TYPED_REASONS`` and everything else back to
+                    # ``ERROR``. Reads them here so a 429 on the opening
+                    # generation and one turn later are classified alike.
+                    termination_reason = self.agent_client.classify_loop_error(e).reason
                 self.logger.error(
                     "Trial initialization error", error=str(e), error_type=type(e).__name__
                 )
@@ -414,15 +434,11 @@ class TrialRunner:
                 Built by the adapter, which owns every CLI's argv.
             instruction: The task text handed to the CLI, recorded as the
                 trial's user message.
-            timeout_s: Deadline for the invocation, enforced runner-side. Must
-                equal the target tool's registered ``timeout_s``: the runner
-                applies this to the RPC and the tool's own value to the
-                subprocess, and abandoning the former does not stop the latter.
-
-        Requires a ``tool_executor`` accepting ``timeout_seconds`` — the
-        per-trial :class:`~tolokaforge.core.docker_adapter.DockerRunnerAdapter`
-        does; the narrower :class:`~tolokaforge.tools.registry.ToolExecutor`
-        does not, and cannot reach a harness trial (which is Docker-only).
+            timeout_s: The harness deadline, for the engine's own accounting.
+                Must equal the target tool's registered ``timeout_s`` — the
+                budget the runner resolves and enforces is the one the tool
+                declares, so no per-call value rides the wire; passing the
+                same number here keeps the engine-side overrun warning honest.
         """
         trial_id = f"{self.task_id}:{self.trial_index}"
         with trial_id_scope(trial_id):
@@ -450,7 +466,6 @@ class TrialRunner:
             result = self.tool_executor.execute(
                 tool_name,
                 arguments,
-                timeout_seconds=timeout_s,
                 call_id=call_id,
             )
             output = resolve_tool_output(result)
@@ -506,12 +521,17 @@ class TrialRunner:
         self._apply_probe_stats()
 
         recorded_calls = self.tool_call_recorder.recorded
-        if recorded_calls:
+        # Both describe the agent's tool use — the scoping stuck detection
+        # and ``tool_expectations`` already apply. The guard is the agent
+        # slice too: a trial whose only calls were the user's would divide
+        # by zero here, and its true agent count is the sink's own 0.
+        agent_calls = self.tool_call_recorder.recorded_for(ToolExecutorIdentity.AGENT)
+        if agent_calls:
             success_count = sum(
-                1 for call in recorded_calls if call.status is ToolExecutionStatus.SUCCESS
+                1 for call in agent_calls if call.status is ToolExecutionStatus.SUCCESS
             )
-            self.metrics.tool_success_rate = success_count / len(recorded_calls)
-            self.metrics.tool_calls = len(recorded_calls)
+            self.metrics.tool_success_rate = success_count / len(agent_calls)
+            self.metrics.tool_calls = len(agent_calls)
 
         self.logger.info(
             "Trial execution finished",
@@ -624,15 +644,6 @@ class TrialRunner:
                 },
             )
 
-    def _is_done(self, text: str) -> bool:
-        """Whether the agent's text carries a completion marker.
-
-        Both operands are folded by the same call at the point of comparison,
-        so the match cannot be made case-blind on one side only.
-        """
-        folded = text.casefold()
-        return any(marker.casefold() in folded for marker in _AGENT_DONE_MARKERS)
-
     def _seed_first_user_message(
         self,
         task_config: TaskConfig,
@@ -657,11 +668,12 @@ class TrialRunner:
         seed = initial_user_message if initial_user_message.strip() else None
         decision = policy.bootstrap(task_config, seed)
 
+        first_user_calls: list[ToolCall] = []
         if decision.first_user_message is not None:
             first_user_text = decision.first_user_message
             self._first_user_message_source = FirstUserMessageSource.PINNED
         elif decision.bootstrap_via_simulator:
-            first_user_text = self._bootstrap_via_simulator()
+            first_user_text, first_user_calls = self._bootstrap_via_simulator()
             self._first_user_message_source = FirstUserMessageSource.SIMULATOR
         else:
             raise RuntimeError(
@@ -676,6 +688,7 @@ class TrialRunner:
             Message(
                 role=MessageRole.USER,
                 content=first_user_text,
+                tool_calls=first_user_calls if first_user_calls else None,
                 ts=datetime.now(tz=timezone.utc),
             )
         )
@@ -703,9 +716,15 @@ class TrialRunner:
             )
         )
 
-    def _bootstrap_via_simulator(self) -> str:
+    def _bootstrap_via_simulator(self) -> tuple[str, list[ToolCall]]:
         """Synthesise turn 0 by dispatching the user simulator against a canned
         agent greeting. Retries on rate limits only.
+
+        Returns the opening message text with any tool results inlined, and the
+        calls that produced them. Only the tool-call half of a user turn is
+        shared with :meth:`_dispatch_user_actor`: turn 0 keeps its own
+        ``###STOP###`` reading, which seeds the token literally rather than
+        terminating the trial before the agent has spoken.
 
         Probe mode collapses this to one attempt. The retry loop only ever
         catches 429s (see the ``is_rate_limit`` guard below), and under probe
@@ -747,13 +766,24 @@ class TrialRunner:
                 # turn: the simulator's flipped context then drops it, loses
                 # every trace of having asked, and restarts the conversation —
                 # the failure mode the seeded-opening fix exists to prevent.
-                if not first_user_result.text.strip():
+                # Read before inlining, so a reply that is only a tool call
+                # refuses rather than opening with the tool's own output.
+                #
+                # ``filler_substituted`` covers the tool-call-only opening the
+                # LLM client rewrites in-closure ("Let me check that."): the
+                # text is no longer empty by the time it reaches here, but the
+                # substituted filler is the engine's own words, not the task
+                # statement the agent must be graded against. Both empty and
+                # filler-only openings fail the same way.
+                if first_user_result.filler_substituted or not first_user_result.text.strip():
                     raise RuntimeError(
                         "User simulator bootstrap produced an empty first message; "
                         "a blank opening cannot seed the conversation."
                     )
                 self.logger.debug("User simulator generated first message")
-                return first_user_result.text
+                return self._run_user_tool_calls(
+                    first_user_result.text, first_user_result.tool_calls
+                )
             except UserReplyRefused as exc:
                 # Before the re-raise: the trial dies here, and the evidence for
                 # why has to outlive the exception. A refusal is never a rate
@@ -784,12 +814,14 @@ class TrialRunner:
     def _agent_termination(
         self, result: GenerationResult, turn: int, messages: list[Message]
     ) -> TerminationDecision | None:
-        """Agent termination policy: stuck detection then ``###STOP###``/_is_done.
+        """Agent termination policy: stuck detection, and nothing else.
 
-        Mirrors the historical order — stuck is checked before the done marker.
-        Stuck sets ``metrics.stuck_detected`` as a side effect, matching the
-        original loop.
+        The agent's prose is never read for a completion signal — who speaks
+        next, and whether anyone can, is the :class:`TurnPolicy`'s decision.
+        Stuck sets ``metrics.stuck_detected`` as a side effect, which is why it
+        lives here rather than in the policy.
         """
+        del result, turn
         if self.stuck_detector and self.stuck_detector.is_stuck(
             messages, self.tool_call_recorder.recorded_for(ToolExecutorIdentity.AGENT)
         ):
@@ -798,13 +830,6 @@ class TrialRunner:
             return TerminationDecision(
                 reason=TerminationReason.STUCK_DETECTED,
                 system_message="Stuck condition detected. Dialogue terminated.",
-            )
-
-        if self._is_done(result.text):
-            self.logger.info("Agent signaled completion")
-            return TerminationDecision(
-                reason=TerminationReason.AGENT_DONE,
-                system_message="Agent signaled task completion. Dialogue ended.",
             )
 
         return None
@@ -849,10 +874,6 @@ class TrialRunner:
     def _dispatch_user_actor(self, actor: Actor, messages: list[Message]) -> UserTurnResult:
         """Run one user actor turn: reply, ``###STOP###`` detection, user tools.
 
-        Embeds user tool-call results in the user message text (Anthropic does
-        not support ``tool_use`` from the USER role) while preserving the
-        original ``tool_calls`` so ``ActionEvaluator`` can track required actions.
-
         Stop-token handling has two shapes:
 
         * Bare ``###STOP###`` (or the token with only whitespace before it) —
@@ -896,7 +917,10 @@ class TrialRunner:
             pre_stop_text, _, _ = user_result.text.partition("###STOP###")
             pre_stop_text = pre_stop_text.rstrip()
             if not pre_stop_text:
-                self.logger.info("User signaled completion (###STOP###)")
+                self.logger.info(
+                    "User signaled completion (###STOP###)",
+                    dropped_tool_calls=len(user_result.tool_calls or []),
+                )
                 return UserTurnResult(
                     termination=TerminationDecision(
                         reason=TerminationReason.USER_STOP,
@@ -909,45 +933,82 @@ class TrialRunner:
             self._user_stop_pending = True
             user_result.text = pre_stop_text
 
-        user_message_text = user_result.text
-        if user_result.tool_calls and self.user_tool_executor:
-            tool_results_text = []
-            for tc in user_result.tool_calls:
-                tool_start = time.time()
-                tool_result = self.user_tool_executor.execute(tc.name, tc.arguments, call_id=tc.id)
-                tool_duration = time.time() - tool_start
-
-                self.tool_call_recorder.record(
-                    call_id=tc.id,
-                    tool_name=tc.name,
-                    arguments=tc.arguments or {},
-                    executor=ToolExecutorIdentity.USER,
-                    status=resolve_tool_status(tool_result),
-                    output=resolve_tool_output(tool_result),
-                    latency_seconds=tool_duration,
-                )
-
-                self.logger.debug(
-                    "User tool executed",
-                    tool=tc.name,
-                    success=tool_result.success,
-                    duration_s=tool_duration,
-                )
-
-                result_text = f"{tc.name}() result: {tool_result.output if tool_result.success else f'Error: {tool_result.error}'}"
-                tool_results_text.append(result_text)
-
-            if tool_results_text:
-                user_message_text = f"{user_result.text}\n\n" + "\n".join(tool_results_text)
+        user_message_text, executed_calls = self._run_user_tool_calls(
+            user_result.text, user_result.tool_calls
+        )
 
         return UserTurnResult(
             message=Message(
                 role=MessageRole.USER,
                 content=user_message_text,
-                tool_calls=user_result.tool_calls if user_result.tool_calls else None,
+                tool_calls=executed_calls if executed_calls else None,
                 ts=datetime.now(tz=timezone.utc),
             )
         )
+
+    def _run_user_tool_calls(
+        self, reply_text: str, tool_calls: list[ToolCall]
+    ) -> tuple[str, list[ToolCall]]:
+        """Execute one user reply's tool calls; return the message text and the calls.
+
+        Every call is keyed through the trial's assigner before it is executed,
+        recorded or written onto the message, so a raw provider id the agent
+        already used is disambiguated rather than recorded twice.
+
+        Results are embedded in the user message text — Anthropic does not
+        accept ``tool_use`` from the USER role — while the calls themselves ride
+        on the message so ``transcript_rules.required_actions`` can match them.
+
+        Raises:
+            RuntimeError: If the reply carries calls and the trial has no user-side
+                executor. The conductor builds the executor and offers the schemas
+                together, so a simulator with no executor is offered no tools and a
+                provider offered no tools emits no calls — the pair is unreachable
+                from a real run, and running on would silently drop the calls a rule
+                may be grading.
+        """
+        if not tool_calls:
+            return reply_text, []
+        if self.user_tool_executor is None:
+            raise RuntimeError(
+                f"the user simulator emitted {len(tool_calls)} tool call(s) "
+                f"({', '.join(call.name for call in tool_calls)}) and this trial has no "
+                "user-side executor to run them. The trial is built with both or neither"
+            )
+
+        executed: list[ToolCall] = []
+        results_text: list[str] = []
+        for call in tool_calls:
+            keyed = call.model_copy(update={"id": self._call_ids.assign(call.id)})
+            executed.append(keyed)
+
+            tool_start = time.time()
+            tool_result = self.user_tool_executor.execute(
+                keyed.name, keyed.arguments, call_id=keyed.id
+            )
+            tool_duration = time.time() - tool_start
+
+            self.tool_call_recorder.record(
+                call_id=keyed.id,
+                tool_name=keyed.name,
+                arguments=keyed.arguments or {},
+                executor=ToolExecutorIdentity.USER,
+                status=resolve_tool_status(tool_result),
+                output=resolve_tool_output(tool_result),
+                latency_seconds=tool_duration,
+            )
+
+            self.logger.debug(
+                "User tool executed",
+                tool=keyed.name,
+                success=tool_result.success,
+                duration_s=tool_duration,
+            )
+
+            outcome = tool_result.output if tool_result.success else f"Error: {tool_result.error}"
+            results_text.append(f"{keyed.name}() result: {outcome}")
+
+        return f"{reply_text}\n\n" + "\n".join(results_text), executed
 
 
 class _AgentMetricsSink(MetricsSink):

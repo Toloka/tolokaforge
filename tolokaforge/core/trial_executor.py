@@ -36,6 +36,7 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
+from tolokaforge.core.output_writer import METRICS_FILENAME
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
     RunDisplayEvents,
@@ -172,7 +173,26 @@ class ProvisioningTrialExecutor:
                 trial_index=trial_idx,
                 runner_url=real_endpoints.runner_url,
             )
-            result = self.conductor.run(final_spec, task_config)
+            try:
+                result = self.conductor.run(final_spec, task_config)
+            except ProvisionError as e:
+                # ``_setup_trial`` may refuse a registration after provisioning
+                # succeeded (e.g. runner-side search-plane refusal). Without
+                # this catch, the RuntimeError formerly raised there escaped
+                # ``conductor.run`` uncaught and reached the orchestrator's
+                # queue-only path — the trial vanished from ``self.results``
+                # and every rate was inflated after the retry budget burned
+                # on the deterministic refusal.
+                self.logger.error(
+                    "Registration refused after provisioning",
+                    task_id=task_id,
+                    trial_index=trial_idx,
+                    stage=e.stage,
+                    error=e.reason,
+                )
+                result = _synthesize_provision_failure_result(spec, e)
+                self._write_provision_failure_bundle(result.trajectory, e)
+                return result
             self._amend_trial_metrics(
                 task_id,
                 trial_idx,
@@ -263,7 +283,7 @@ class ProvisioningTrialExecutor:
         file is absent. Logs and continues on I/O failure so a diagnostic write
         never masks the trial result.
         """
-        metrics_path = self.output_dir / "trials" / task_id / str(trial_idx) / "metrics.yaml"
+        metrics_path = self.output_dir / "trials" / task_id / str(trial_idx) / METRICS_FILENAME
         if not metrics_path.exists():
             return
         try:

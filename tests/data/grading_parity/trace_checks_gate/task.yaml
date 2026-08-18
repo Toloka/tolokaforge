@@ -10,7 +10,10 @@ initial_state:
 
 tools:
   agent:
-    enabled: []
+    mcp_server: mcp_server.py
+    enabled:
+      - read_meter
+      - reset_meter
   user:
     enabled: []
 
