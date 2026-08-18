@@ -20,13 +20,13 @@ sync: install
 # =============================================================================
 
 test:
-	uv run pytest tests/ -v
+	uv run pytest tests/ tolokaforge_coding_harnesses/tests/ -v
 
 test-unit:
-	uv run pytest tests/ -v -m unit
+	uv run pytest tests/ tolokaforge_coding_harnesses/tests/ -v -m unit
 
 test-canonical:
-	uv run pytest tests/ -v -m canonical
+	uv run pytest tests/ tolokaforge_coding_harnesses/tests/ -v -m canonical
 
 test-coverage:
 	uv run pytest tests/ --cov=tolokaforge --cov-report=html --cov-report=term

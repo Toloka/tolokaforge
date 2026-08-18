@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 from tolokaforge_adapter_terminal_bench.compose_synthesis import ImageLayerSkillDelivery
-from tolokaforge_adapter_terminal_bench.harness import SkillsBundle
+
+from tolokaforge_coding_harnesses import SkillsBundle
 
 pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("env_backed_secrets")]
 

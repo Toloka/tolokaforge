@@ -3,8 +3,15 @@
 ``importlib.metadata.EntryPoint`` refuses attribute assignment, so a test
 cannot bind a fabricated distribution to a real one. These duck-typed
 substitutes carry exactly the attributes
-``discover_plugin_harness_registries`` reads: ``name``, ``dist`` (``None``
-for a programmatically registered entry point), and ``load()``.
+:func:`~tolokaforge_coding_harnesses.discover_plugin_harness_registries` reads:
+``name``, ``dist`` (``None`` for a programmatically registered entry point),
+and ``load()``.
+
+Shipped rather than kept in one suite's test utilities: the entry-point group is
+this package's extension contract, so every suite that exercises it — this
+package's own, the adapters that consume it, and an out-of-tree bundle's —
+fabricates the same installed set through one implementation. ``monkeypatch`` is
+taken as a parameter, so importing this module needs no test framework.
 """
 
 from __future__ import annotations
@@ -54,9 +61,7 @@ def install_plugins(monkeypatch: Any, *entry_points: FakeEntryPoint) -> None:
     """Make *entry_points* the installed set for the harness-registry group."""
     import importlib.metadata
 
-    from tolokaforge_adapter_terminal_bench.harness import (
-        HARNESS_REGISTRY_ENTRY_POINT_GROUP,
-    )
+    from tolokaforge_coding_harnesses import HARNESS_REGISTRY_ENTRY_POINT_GROUP
 
     real = importlib.metadata.entry_points
 

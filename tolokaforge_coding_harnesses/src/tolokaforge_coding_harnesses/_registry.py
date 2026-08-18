@@ -1,19 +1,16 @@
-"""Coding-harness CLI support for terminal-bench trials.
+"""The harness registry: what a CLI is, how it installs, how it is invoked.
 
-A harness trial replaces the engine's LLM turn loop with a single invocation
-of a vendor coding-harness CLI inside the task container. Several ends have to
-agree on the same small set of facts — the image layer that installs the CLI,
-the trial that invokes it, and the artifact that records what drove it — so
-all of them read :data:`HARNESSES`.
-
-The engine core never learns these names. The adapter resolves the harness to
-a concrete shell command and publishes it on
-``TaskDescription.metadata["agent_harness_command"]``; the conductor runs
-whatever command it finds there.
+One module because the three concerns are one contract: :class:`HarnessSpec`
+declares a CLI, :func:`load_harness_registry` and
+:func:`resolve_effective_registry` compose the shipped data with an operator
+overlay and installed plug-in bundles, and :func:`harness_command` turns the
+result into the shell command a trial runs. Callers import from the package
+root; the names here are re-exported there.
 """
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.resources
 import json
 import logging
@@ -28,8 +25,6 @@ import yaml
 from jinja2 import Environment, StrictUndefined, TemplateSyntaxError
 from jinja2.meta import find_undeclared_variables
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-
-from tolokaforge.core.plugin_registry import discover_entry_points
 
 from .path_resolvers import DEFAULT_PATH_RESOLVER, LinuxRootResolver
 from .protocols import PATH_CONSTRUCT_PATTERN, PathResolver, SkillDelivery, SkillsBundle
@@ -47,6 +42,7 @@ __all__ = [
     "PROVIDER_ENV_INPUT_PREFIX",
     "PROVIDER_ENV_KEYS",
     "SHIPPED_REGISTRY_FILE",
+    "DuplicateRegistrationError",
     "HarnessSpec",
     "LinuxRootResolver",
     "MIDDLEWARE_PROXY_SCRIPT",
@@ -293,20 +289,18 @@ class HarnessSpec(BaseModel):
 
     Either an absolute path or one rooted at a ``${HOME}`` /
     ``${CONFIG_HOME}`` construct the run's
-    :class:`~tolokaforge_adapter_terminal_bench.harness.protocols.PathResolver`
-    answers before
-    :class:`~tolokaforge_adapter_terminal_bench.harness.protocols.SkillDelivery`
-    sees it. Unlike a :attr:`config_files` key it may *not* be rooted at a
+    :class:`~tolokaforge_coding_harnesses.protocols.PathResolver` answers before
+    :class:`~tolokaforge_coding_harnesses.protocols.SkillDelivery` sees it.
+    Unlike a :attr:`config_files` key it may *not* be rooted at a
     brace-less ``$VAR``: no shell reads this path, so nothing would expand it
     the way the resolver does.
 
     The parity policy refuses the operator's own ``~/.claude/skills``: what a
     benchmark agent can read has to be versioned with the task rather than with
-    the laptop the eval ran on. A task declaring
-    :attr:`~tolokaforge_adapter_terminal_bench.task_parser.TerminalBenchTask.harness_skills_dir`
-    gets that directory delivered here, and the bundle's content hash is recorded
-    on the trial artifact. Left ``None``, the harness installs no skills and a
-    pack shipping them still runs — without them."""
+    the laptop the eval ran on. A task pack declaring a skills directory gets it
+    delivered here, and the bundle's content hash is recorded on the trial
+    artifact. Left ``None``, the harness installs no skills and a pack shipping
+    them still runs — without them."""
 
     strip_vendor_namespace: bool = False
     """Whether ``harness_model`` should strip a leading ``vendor/`` namespace
@@ -432,7 +426,7 @@ class HarnessSpec(BaseModel):
         return self
 
 
-SHIPPED_REGISTRY_FILE = Path(__file__).resolve().parent.parent / "data" / "harnesses.yaml"
+SHIPPED_REGISTRY_FILE = Path(__file__).resolve().parent / "data" / "harnesses.yaml"
 """Packaged registry data — the source of truth for the shipped harnesses.
 
 Data, not code: adding a harness or bumping a pinned CLI version is a YAML
@@ -569,6 +563,78 @@ class ResolvedHarnessRegistry:
     overlay_file: Path | None
 
 
+class DuplicateRegistrationError(ValueError):
+    """Two installed entry points share ``name`` within ``group``.
+
+    An unresolvable ambiguity: no pick is safe for anyone, so discovery fails
+    every lookup into the group and names both providing distributions.
+    ``ValueError`` rather than a bespoke hierarchy — a caller already refusing
+    malformed registry input catches this the same way.
+    """
+
+    def __init__(self, name: str, group: str, distributions: tuple[str, str]) -> None:
+        self.name = name
+        self.group = group
+        self.distributions = distributions
+        first, second = distributions
+        super().__init__(
+            f"Duplicate registration of {name!r} in entry-point group {group!r}: "
+            f"provided by both {first!r} and {second!r}. "
+            "Uninstall or rename one to resolve the ambiguity."
+        )
+
+
+_discovery_cache: dict[str, dict[str, importlib.metadata.EntryPoint]] = {}
+
+
+def _distribution_name(entry_point: importlib.metadata.EntryPoint) -> str:
+    dist = entry_point.dist
+    return dist.name if dist is not None else "<unknown distribution>"
+
+
+def _discover_entry_points(group: str) -> Mapping[str, importlib.metadata.EntryPoint]:
+    """Cached ``name → EntryPoint`` mapping for *group*, duplicates refused.
+
+    Enumerates names and distributions without importing any target — ``load()``
+    stays with the caller, so a broken plug-in fails only when its own name is
+    used while a duplicate name fails every lookup into the group. The raise
+    happens before the cache is written, so a group carrying a duplicate
+    re-raises instead of serving a partial map.
+
+    ``entry_points`` is read off :mod:`importlib.metadata` at call time rather
+    than bound at import: that is the seam
+    :func:`tolokaforge_coding_harnesses.testing.install_plugins` patches to make
+    a fabricated bundle the installed set.
+    """
+    cached = _discovery_cache.get(group)
+    if cached is not None:
+        return cached
+
+    mapping: dict[str, importlib.metadata.EntryPoint] = {}
+    for entry_point in importlib.metadata.entry_points(group=group):
+        existing = mapping.get(entry_point.name)
+        if existing is not None:
+            raise DuplicateRegistrationError(
+                entry_point.name,
+                group,
+                (_distribution_name(existing), _distribution_name(entry_point)),
+            )
+        mapping[entry_point.name] = entry_point
+
+    _discovery_cache[group] = mapping
+    return mapping
+
+
+def _clear_discovery_cache() -> None:
+    """Drop the cached per-group maps so the next discovery re-scans.
+
+    A test injecting a fabricated installed set calls this around every case:
+    without it the first scan answers every later one, and the case asserting
+    that nothing is installed would read a neighbour's plug-ins.
+    """
+    _discovery_cache.clear()
+
+
 def discover_plugin_harness_registries() -> PluginDiscovery:
     """Registry union of every installed :data:`HARNESS_REGISTRY_ENTRY_POINT_GROUP` plugin.
 
@@ -586,11 +652,13 @@ def discover_plugin_harness_registries() -> PluginDiscovery:
             is no safe pick — the two bundles disagree about what that name
             installs and how it is invoked — so the ambiguity is refused naming
             both distributions rather than resolved by install order.
+            :class:`DuplicateRegistrationError` for the narrower case of two
+            entry points claiming one *entry-point* name.
     """
     registry: dict[str, HarnessSpec] = {}
     declared_by: dict[str, str] = {}
     bundles: list[PluginBundle] = []
-    installed = discover_entry_points(HARNESS_REGISTRY_ENTRY_POINT_GROUP)
+    installed = _discover_entry_points(HARNESS_REGISTRY_ENTRY_POINT_GROUP)
     for name, entry_point in sorted(installed.items()):
         distribution = entry_point.dist.name if entry_point.dist is not None else name
         version = entry_point.dist.version if entry_point.dist is not None else None
@@ -702,9 +770,7 @@ deliberately blank vendor key, and fails with a 401. So a vendor harness gets
 the prefix stripped, while the engine loop keeps it (litellm needs it).
 """
 
-SHIPPED_REGISTRY_META_FILE: Path = (
-    Path(__file__).resolve().parent.parent / "data" / "registry_meta.yaml"
-)
+SHIPPED_REGISTRY_META_FILE: Path = Path(__file__).resolve().parent / "data" / "registry_meta.yaml"
 """Registry-wide catalog file: OpenRouter vendor namespaces + the closed
 allow-list of provider env-var names. Ships as data so a new namespace or
 env-var name is a YAML edit rather than a Python constant edit."""
@@ -751,8 +817,8 @@ def _load_registry_meta(path: Path) -> _RegistryMeta:
     """Read the registry-meta YAML at *path*, fail loud on missing / malformed input."""
     if not path.exists():
         raise FileNotFoundError(
-            f"registry_meta.yaml not found at {path}; the shipped file ships with "
-            "the tbench adapter wheel and its absence is a packaging error."
+            f"registry_meta.yaml not found at {path}; the shipped file ships inside "
+            "the tolokaforge-coding-harnesses wheel and its absence is a packaging error."
         )
     data = yaml.safe_load(path.read_text())
     if not isinstance(data, Mapping):

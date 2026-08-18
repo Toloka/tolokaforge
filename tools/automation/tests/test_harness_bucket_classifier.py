@@ -27,6 +27,18 @@ class TestClassifyHarnessPaths:
     def test_only_data_yaml_is_bucket_a(self) -> None:
         result = classify_harness_paths(
             [
+                "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml",
+            ]
+        )
+        assert result.bucket is HarnessBucket.A
+        assert result.adapter_paths == ()
+
+    def test_data_yaml_at_its_pre_adr_0035_path_is_still_bucket_a(self) -> None:
+        """Commits predating the package split keep the classification they
+        earned; the metric replays history, so reclassifying it would rewrite
+        what the historical distribution says."""
+        result = classify_harness_paths(
+            [
                 "external_adapters/tolokaforge-adapter-terminal-bench/src/"
                 "tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
             ]
@@ -63,6 +75,7 @@ class TestClassifyHarnessPaths:
             [
                 "docs/adr/0033-external-harness-registry.md",
                 "docs/adr/0034-external-harness-plugin-discovery.md",
+                "docs/adr/0035-tolokaforge-coding-harnesses-split.md",
             ]
         )
         assert result.bucket is HarnessBucket.A
@@ -70,10 +83,13 @@ class TestClassifyHarnessPaths:
     @pytest.mark.parametrize(
         "path",
         [
-            # Python module — where argv assembly + spec model live today.
+            # Python module — where argv assembly + spec model live.
+            "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
+            # Shell installer — the four-way install dispatcher.
+            "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/install-harness.sh",
+            # The same two files at their pre-ADR-0035 paths.
             "external_adapters/tolokaforge-adapter-terminal-bench/src/"
             "tolokaforge_adapter_terminal_bench/harness/__init__.py",
-            # Shell installer — the four-way install dispatcher.
             "external_adapters/tolokaforge-adapter-terminal-bench/src/"
             "tolokaforge_adapter_terminal_bench/harness/install-harness.sh",
             # Compose synthesis — skill-delivery mechanism lives here.
@@ -130,13 +146,14 @@ class TestAllowListShapeInvariants:
     """The allow-lists themselves are stable data; if either changes, the
     replay snapshot needs a deliberate regen."""
 
-    def test_files_allow_list_contains_three_documented_files(self) -> None:
+    def test_files_allow_list_contains_four_documented_files(self) -> None:
         assert (
             frozenset(
                 {
                     "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
                     "docs/adr/0033-external-harness-registry.md",
                     "docs/adr/0034-external-harness-plugin-discovery.md",
+                    "docs/adr/0035-tolokaforge-coding-harnesses-split.md",
                 }
             )
             == BUCKET_A_ALLOWED_FILES
@@ -144,6 +161,7 @@ class TestAllowListShapeInvariants:
 
     def test_prefix_allow_list_contains_documented_prefixes(self) -> None:
         assert set(BUCKET_A_ALLOWED_PREFIXES) == {
+            "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/",
             "external_adapters/tolokaforge-adapter-terminal-bench/src/"
             "tolokaforge_adapter_terminal_bench/data/",
             "tests/canonical/snapshots/tbench_echo_hello_harness/",

@@ -128,7 +128,6 @@ tests/
     ├── combine_method_verdicts.py  # The combine.method answer table both tiers hold
     ├── wire_grades.py        # A wire Grade driven through the real gRPC client lowering
     ├── fourth_wall_corpus.py  # The fourth-wall detector's pass/detect rows, read by two suites
-    ├── harness_plugins.py    # Fake entry points / distributions for an installed harness-registry plugin
     └── project_fixtures.py   # food_delivery_2 project data loaders
 ```
 

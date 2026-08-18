@@ -144,7 +144,7 @@ class TestTerminalBenchHarnessModeCanon:
         """ADR 0011 Pattern B: the spec's serialised shape is pinned, so a
         field added to ``HarnessSpec`` (or dropped from the shipped YAML)
         fails here rather than silently changing what a harness trial runs."""
-        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+        from tolokaforge_coding_harnesses import HARNESSES
 
         snap = canon_snapshot("tbench_echo_hello_harness")
         snap.assert_match(HARNESSES["claude-code"].model_dump(mode="json"), "harness_spec.json")
@@ -173,7 +173,8 @@ class TestTerminalBenchHarnessModeCanon:
         synthesis pass. This is a direct behavioural pin so a regression here
         is not merely a snapshot diff."""
         import yaml
-        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        from tolokaforge_coding_harnesses import HARNESSES
 
         env = tbench_harness_adapter._environment("echo-hello")
         with env.compose_file.open() as f:

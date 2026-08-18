@@ -136,7 +136,8 @@ both builds, base first.
 
 The layer's Dockerfile is generated into the staging directory as
 `_harness/harness.Dockerfile` and runs `_harness/install-harness.sh`, a copy
-of the adapter's own [`harness/install-harness.sh`](src/tolokaforge_adapter_terminal_bench/harness/install-harness.sh).
+of [`install-harness.sh`](../../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/install-harness.sh)
+from the `tolokaforge-coding-harnesses` package.
 That script is the single place a harness's install steps live; an
 unrecognised harness name aborts the image build rather than producing an
 image whose missing CLI would surface as a trial-time "command not found".
@@ -379,7 +380,7 @@ want expanded.
 ### The harness registry is data
 
 The shipped specs live in
-[`data/harnesses.yaml`](src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml),
+[`data/harnesses.yaml`](../../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml),
 loaded into `HARNESSES` at import. Adding a harness or bumping a pinned CLI
 version is a YAML edit; a typo (unknown field, missing required field,
 unparseable document) is refused at load naming the file and the harness key,

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Tiny stdlib HTTP proxy that forwards to *upstream* injecting body / header fields.
 
-Ships with the terminal-bench adapter and lands inside every trial image whose
-harness declares :attr:`HarnessSpec.request_middleware`. The CLI's provider
+Lands inside every trial image whose harness declares
+:attr:`HarnessSpec.request_middleware`. The CLI's provider
 base-URL env var is rewritten to ``http://localhost:<port>`` so its requests
 reach this proxy first; the proxy deep-merges the configured JSON body
 overrides, adds the configured headers, and forwards.

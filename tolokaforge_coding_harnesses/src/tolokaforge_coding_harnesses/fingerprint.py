@@ -22,7 +22,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
-from . import HARNESSES, HarnessSpec, PluginBundle, ResolvedHarnessRegistry
+from ._registry import HARNESSES, HarnessSpec, PluginBundle, ResolvedHarnessRegistry
 
 __all__ = ["HarnessFingerprint", "compute_harness_fingerprint"]
 

@@ -38,13 +38,19 @@ BUCKET_A_ALLOWED_FILES: frozenset[str] = frozenset(
         "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
         "docs/adr/0033-external-harness-registry.md",
         "docs/adr/0034-external-harness-plugin-discovery.md",
+        "docs/adr/0035-tolokaforge-coding-harnesses-split.md",
     }
 )
 
 
 BUCKET_A_ALLOWED_PREFIXES: tuple[str, ...] = (
     # Shipped YAML data (harnesses.yaml, registry_meta.yaml, and
-    # anything else the adapter ships under data/ later).
+    # anything else the harness package ships under data/ later).
+    "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/",
+    # Where that data lived before ADR-0035 moved it out of the adapter.
+    # Retained so historical commits keep the classification they earned:
+    # repointing rather than adding would reclassify the pre-move Bucket-A
+    # commits as B and zero the metric.
     "external_adapters/tolokaforge-adapter-terminal-bench/src/"
     "tolokaforge_adapter_terminal_bench/data/",
     # The two canonical-snapshot trees the harness surface pins. Regenerating

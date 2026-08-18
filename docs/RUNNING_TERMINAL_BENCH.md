@@ -108,7 +108,7 @@ Gemini CLI, etc.) instead of a bare model. The CLI installs into the trial
 image via `install-harness.sh`, and the trial exec invokes it directly.
 
 Six harnesses ship in-tree. Each is a data entry in
-`external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml`
+`tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml`
 — adding one is a YAML edit, not a code change.
 
 ### The recipe — same shape, changing `agent_harness` and `agent_model`
