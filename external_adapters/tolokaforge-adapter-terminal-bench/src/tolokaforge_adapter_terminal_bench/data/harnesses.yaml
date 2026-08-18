@@ -130,27 +130,42 @@ harnesses:
     argv_suffix: ["--yolo", "--prompt"]
     # gemini-cli's model catalog uses bare names.
     strip_vendor_namespace: true
-    # gemini-cli 0.55.1 introduces a `GATEWAY` auth type: setting
-    # `GOOGLE_GEMINI_BASE_URL` flips the CLI to talk to that endpoint using
-    # the Google GenAI wire protocol (`/v1beta/models/{model}:generateContent`)
-    # — the CLI still speaks Google-native, but the endpoint can be any
-    # gateway serving the same shape.
+    # The shipped default is a direct Google AI Studio route: a real
+    # ``GEMINI_API_KEY`` (Google AI Studio or Vertex SA), no base-URL
+    # override, and gemini-cli's default ``gemini-api-key`` auth type.
+    # Pure env is sufficient — no ``config_files`` write is needed for this
+    # path.
     #
-    # The shipped default is a direct Google AI Studio route (a plain
-    # `GEMINI_API_KEY`; no `GOOGLE_GEMINI_BASE_URL`). An operator running
-    # against a GATEWAY endpoint that speaks Google's native
-    # `generateContent` shape (e.g. a LiteLLM proxy exposing
-    # `/gemini/v1beta/models/*:generateContent`) declares the endpoint
-    # + settings-file flip in their run config's `agent_provider_env`
-    # overlay, not here — the wheel ships to PyPI and must not reference
-    # internal infrastructure.
+    # ``GEMINI_CLI_TRUST_WORKSPACE=true`` skips the interactive
+    # trusted-folder prompt that would otherwise block ``--yolo`` in a
+    # headless container.
+    container_env:
+      GEMINI_CLI_TRUST_WORKSPACE: "true"
+    provider_env:
+      GEMINI_API_KEY: "${secret:GEMINI_API_KEY}"
+    # --- Operator overlays ---
     #
-    # Worked overlay example ships at
-    # ``examples/terminal_bench/gemini_litellm_overlay.yaml`` — an operator
-    # names it in the run config's ``harness_presets_file`` param to
-    # whole-replace this entry with a GATEWAY-flavoured one.
+    # A team-hosted LiteLLM (or any) gateway that speaks Google's native
+    # ``generateContent`` shape reaches gemini-cli via its ``GATEWAY`` auth
+    # type. That path needs THREE additions the shipped default deliberately
+    # omits so nothing internal-hostname-shaped ships to PyPI:
+    #   1. ``GOOGLE_GEMINI_BASE_URL`` — the gateway endpoint that answers
+    #      ``/v1beta/models/{model}:generateContent``. Its mere presence
+    #      flips the CLI to GATEWAY mode.
+    #   2. ``config_files["${HOME}/.gemini/settings.json"]`` with
+    #      ``security.auth.selectedType: "gateway"`` + ``useExternal: true``
+    #      — gemini-cli 0.55.1's ``validateAuthMethod()`` has not been
+    #      taught about GATEWAY, so pure env raises "Invalid auth method"
+    #      without the settings-file override.
+    #   3. ``GEMINI_API_KEY`` set to whatever key the gateway expects (a
+    #      LiteLLM virtual key, not a Google credential).
     #
-    # For an ad-hoc single-key overlay (no separate presets file), a caller
+    # A worked overlay ships at
+    # ``examples/terminal_bench/gemini_litellm_overlay.yaml`` — the
+    # sanctioned path. An operator names it in the run config's
+    # ``harness_presets_file`` param and it whole-replaces this entry.
+    #
+    # For an ad-hoc single-key change (no whole-entry overlay), a caller
     # can also union values into ``provider_env`` from the run config:
     #
     #     harness_adapter:
@@ -159,30 +174,15 @@ harnesses:
     #           GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"
     #           GOOGLE_GEMINI_BASE_URL: "https://<your-litellm-host>/gemini"
     #
-    # (Gemini 3 Pro `gemini-3-pro-preview` was retired by Google — it now
+    # …but the settings-file flip still has to come from somewhere — a
+    # partial overlay that only touches ``provider_env`` will 400 on the
+    # first call. Use the shipped presets-file overlay in that case.
+    #
+    # (Gemini 3 Pro ``gemini-3-pro-preview`` was retired by Google — it now
     # sits under "Previous models (Shut down)" in Google's public docs;
     # 3.1 Pro Preview is the current Pro-tier flagship successor.
-    # OpenRouter's `~google/gemini-pro-latest` alias resolves to
-    # `google/gemini-3.1-pro-preview`, confirming.)
-    #
-    # The CLI reads its API credential from `GEMINI_API_KEY` and sends it
-    # in the `x-goog-api-key` header — we set that to the LiteLLM key.
-    #
-    # `~/.gemini/settings.json` needs `security.auth.selectedType: "gateway"`
-    # + `useExternal: true`: the CLI's `validateAuthMethod()` still hasn't
-    # been taught about GATEWAY, so pure env raises "Invalid auth method"
-    # without the settings-file override.
-    #
-    # `GEMINI_CLI_TRUST_WORKSPACE=true` skips the interactive
-    # trusted-folder prompt that would otherwise block `--yolo` in a
-    # headless container.
-    container_env:
-      GEMINI_CLI_TRUST_WORKSPACE: "true"
-    config_files:
-      "${HOME}/.gemini/settings.json": |-
-        {"security":{"auth":{"selectedType":"gateway","useExternal":true}}}
-    provider_env:
-      GEMINI_API_KEY: "${secret:GEMINI_API_KEY}"
+    # OpenRouter's ``~google/gemini-pro-latest`` alias resolves to
+    # ``google/gemini-3.1-pro-preview``, confirming.)
 
   kimi-code:
     install_method: "npm"

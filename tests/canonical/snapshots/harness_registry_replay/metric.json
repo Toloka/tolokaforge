@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 3,
-  "bucket_b_count": 14,
+  "bucket_b_count": 15,
   "commits": [
     {
       "adapter_paths": [
@@ -1698,6 +1698,27 @@
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/middleware_proxy.py",
         "tests/canonical/snapshots/harness_registry_replay/metric.json",
         "tests/unit/test_middleware_proxy.py",
+        "tests/unit/test_terminal_bench.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "docs/LLM_LAYER.md",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/unit/test_terminal_bench.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-18",
+      "pr": null,
+      "reason": "3 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "b0594fe517fa58f171d484ab60319e29c561e831",
+      "subject": "docs(tbench): pull #1172's LiteLLM-routing docs + example overlay into this PR",
+      "touched_files": [
+        "docs/LLM_LAYER.md",
+        "examples/terminal_bench/gemini_litellm_overlay.yaml",
+        "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
         "tests/unit/test_terminal_bench.py"
       ]
     }

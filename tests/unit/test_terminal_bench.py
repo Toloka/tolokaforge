@@ -1390,12 +1390,10 @@ class TestHarnessCommand:
 
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        # gemini-cli 0.55.1 GATEWAY auth needs a settings.json emitted in the
-        # preamble; the CLI argv itself sits after the final ``&&``.
-        _, _, cli_command = harness_command(
-            "gemini-cli", "do it", "google/gemini-2.5-flash"
-        ).rpartition(" && ")
-        assert shlex.split(cli_command) == [
+        # Shipped gemini-cli takes the direct Google AI Studio path — pure
+        # env, no ``config_files``, so no preamble. The command is the CLI
+        # argv verbatim.
+        assert shlex.split(harness_command("gemini-cli", "do it", "google/gemini-2.5-flash")) == [
             "gemini",
             "--model",
             "gemini-2.5-flash",
@@ -1421,20 +1419,20 @@ class TestHarnessCommand:
         assert "auth.json" in preamble
         assert "OPENAI_API_KEY" in preamble
 
-    def test_gemini_settings_json_is_written_before_the_cli(self):
-        """gemini-cli 0.55.1 needs a settings.json flip to accept the GATEWAY
-        auth type; the file is emitted via ``printf`` in the preamble."""
+    def test_shipped_gemini_default_writes_no_settings_json(self):
+        """The shipped default is the direct Google AI Studio route — pure
+        env, no config-file writes. A settings.json write is exclusive to
+        the operator overlay at
+        ``examples/terminal_bench/gemini_litellm_overlay.yaml`` (whose
+        resolution is locked by
+        ``TestHarnessPresetsFileOverlay.test_shipped_gemini_litellm_overlay_resolves``).
+        """
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        preamble, sep, cli_command = harness_command(
-            "gemini-cli", "go", "google/gemini-2.5-flash"
-        ).rpartition(" && ")
-        assert sep, "gemini-cli must chain a preamble before the CLI"
-        assert "settings.json" in preamble
-        # Preamble content is shell-escaped for a double-quoted printf, so
-        # the JSON reaches the file through backslash-escaped quotes.
-        assert r"\"selectedType\":\"gateway\"" in preamble
-        assert cli_command.startswith("gemini ")
+        command = harness_command("gemini-cli", "go", "google/gemini-2.5-flash")
+        assert " && " not in command
+        assert "settings.json" not in command
+        assert "printf" not in command
 
     def test_instruction_is_one_shell_argument(self):
         import shlex
@@ -1697,10 +1695,7 @@ class TestModelFlagStyle:
 
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        _, _, cli_command = harness_command(
-            "gemini-cli", "go", "google/gemini-2.5-flash"
-        ).rpartition(" && ")
-        argv = shlex.split(cli_command)
+        argv = shlex.split(harness_command("gemini-cli", "go", "google/gemini-2.5-flash"))
         assert argv[1:3] == ["--model", "gemini-2.5-flash"]
 
     def test_equals_style_is_one_argv_word(self):
@@ -1747,10 +1742,9 @@ class TestHarnessModelPrefix:
 
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        _, _, cli_command = harness_command(
-            "gemini-cli", "go", "openrouter/google/gemini-2.5-flash"
-        ).rpartition(" && ")
-        argv = shlex.split(cli_command)
+        argv = shlex.split(
+            harness_command("gemini-cli", "go", "openrouter/google/gemini-2.5-flash")
+        )
         assert argv[argv.index("--model") + 1] == "gemini-2.5-flash"
 
     def test_shipped_opencode_spec_declares_strip_openrouter_prefix_false(self):
@@ -1765,8 +1759,10 @@ class TestHarnessModelPrefix:
     def test_opencode_preserves_openrouter_prefix_so_config_provider_block_wins(self):
         """The user-visible behavior of the flag: an ``openrouter/vendor/model``
         slug reaches the opencode CLI intact so opencode routes to its
-        ``openrouter`` provider block. If this test flips, PR #1216's
-        `` fix regresses and opencode 401s again on Muse-family models."""
+        ``openrouter`` provider block. If this test flips, opencode 401s
+        again on Muse-family models — opencode's config declares no
+        ``meta`` / ``qwen`` provider, so a stripped slug re-routes into a
+        nonexistent block."""
         from tolokaforge_adapter_terminal_bench.harness import harness_model
 
         assert (
