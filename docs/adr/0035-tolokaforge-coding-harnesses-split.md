@@ -114,7 +114,7 @@ Callers import from the package root (`from tolokaforge_coding_harnesses import
 harness_command`); `_registry.py` is private, and the names it defines are
 re-exported. `install-harness.sh`, `middleware_proxy.py` and both YAML files are
 inside the wheel by hatchling's include-the-package-directory convention, which
-a wheel-content assertion verifies rather than assumes.
+a load-time package-sibling assertion verifies rather than assumes.
 
 ### The invariant is "no `tolokaforge.*` import", not "no dependencies"
 

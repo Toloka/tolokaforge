@@ -14,6 +14,8 @@ import pytest
 
 from tolokaforge_coding_harnesses import (
     HARNESSES,
+    INSTALL_SCRIPT,
+    MIDDLEWARE_PROXY_SCRIPT,
     SHIPPED_REGISTRY_FILE,
     SHIPPED_REGISTRY_META_FILE,
 )
@@ -56,15 +58,20 @@ def test_importing_the_package_pulls_in_no_engine_module() -> None:
 
 
 def test_the_shipped_data_resolves_as_a_package_sibling() -> None:
-    """Both YAML files sit beside the module that reads them.
+    """All four shipped siblings sit beside the module that reads them.
 
     The constants resolve relative to ``__file__``, so a wrong number of
-    ``parent`` hops escapes the package and every registry read fails at import
-    — including inside an installed wheel, where there is no repo layout to fall
-    back on.
+    ``parent`` hops escapes the package and every read fails at import — including
+    inside an installed wheel, where there is no repo layout to fall back on. The
+    scripts are asserted alongside the YAML files because
+    ``compose_synthesis._write_harness_build_context`` copies both into the trial
+    image and a hatchling misconfiguration that dropped the non-Python siblings
+    would ship a broken wheel.
     """
     assert SHIPPED_REGISTRY_FILE.is_file(), f"{SHIPPED_REGISTRY_FILE} is not a file"
     assert SHIPPED_REGISTRY_META_FILE.is_file(), f"{SHIPPED_REGISTRY_META_FILE} is not a file"
+    assert INSTALL_SCRIPT.is_file(), f"{INSTALL_SCRIPT} is not a file"
+    assert MIDDLEWARE_PROXY_SCRIPT.is_file(), f"{MIDDLEWARE_PROXY_SCRIPT} is not a file"
 
 
 def test_the_shipped_registry_declares_exactly_the_six_documented_harnesses() -> None:
