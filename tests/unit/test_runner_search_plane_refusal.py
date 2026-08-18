@@ -284,11 +284,6 @@ def test_a_usable_client_registers_the_trial(
     [
         ("no-search-block", None, GOOD_CORPUS),
         ("connection-configured-and-no-corpus-arrived", CONNECTION_ONLY_SEARCH, NO_CORPUS),
-        (
-            "kb-task-in-a-typesense-disabled-run",
-            {"enabled": False, "domain_name": DOMAIN, "documents_path": "docindex"},
-            GOOD_CORPUS,
-        ),
     ],
 )
 def test_a_task_without_both_halves_does_no_typesense_work(
@@ -301,18 +296,44 @@ def test_a_task_without_both_halves_does_no_typesense_work(
 ) -> None:
     """The gate is a conjunction: neither half alone reaches the search plane.
 
-    The first shape carries a corpus with no search declaration at all, which is
-    not the disagreement class — no plane was configured for it to contradict.
-    The third is the one both rejected gate formulations got wrong: a
-    knowledge-base task in a run that configured no TypeSense plane, which is
-    also what a ``mode: disabled`` run produces (the orchestrator emits no
-    connection details for it — ``tests/unit/test_orchestrator_logic.py``).
+    The first shape carries a corpus with no search declaration at all, so the
+    task never asked for one to fire; the second declares only a connection
+    with no corpus arriving, so there is nothing to serve. Neither shape is
+    the silently-broken class ``test_a_kb_task_in_a_no_plane_run_refuses`` locks.
     """
     registry = _install_registry(monkeypatch, _Registry())
 
     response = _register(service, mock_grpc_context, f"nokb_{shape}:0", _task(search, artifacts))
 
     assert response.success is True, response.error
+    assert registry.calls == []
+
+
+def test_a_kb_task_in_a_no_plane_run_refuses(
+    service: Any, mock_grpc_context: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A knowledge-base task in a run that resolves no TypeSense plane must refuse loudly.
+
+    An adapter mid-migration can produce this shape: ``search.documents_path``
+    declares a corpus, ``search.plane`` is unset, and the run configured no
+    connection details — the ``mode: disabled`` shape. Silent registration
+    would let every ``search_policy`` call fail on paid turns and grade the
+    agent for the misconfiguration.
+    """
+    registry = _install_registry(monkeypatch, _Registry())
+    search = {"enabled": False, "domain_name": DOMAIN, "documents_path": "docindex"}
+
+    response = _register(
+        service,
+        mock_grpc_context,
+        "nokb_kb-task-in-a-typesense-disabled-run:0",
+        _task(search, GOOD_CORPUS),
+    )
+
+    assert response.success is False
+    assert "neither plane serves" in response.error
+    assert "search.plane is unset" in response.error
+    assert DOMAIN in response.error
     assert registry.calls == []
 
 

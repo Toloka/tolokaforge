@@ -28,6 +28,7 @@ import pytest
 
 from tolokaforge.core import runner as runner_module
 from tolokaforge.core.conductor import InProcessConductor
+from tolokaforge.core.loop import classify_loop_error
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -193,6 +194,7 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         grader = _RecordingGrader()
         agent_client = MagicMock()
         agent_client.capabilities.schema_sanitizer.sanitize.side_effect = lambda s: s
+        agent_client.classify_loop_error.side_effect = lambda exc: classify_loop_error(exc, ())
 
         conductor = InProcessConductor(
             adapter=adapter,

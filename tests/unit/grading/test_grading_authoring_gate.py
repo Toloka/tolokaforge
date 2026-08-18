@@ -261,6 +261,13 @@ _A_FILESYSTEM_ROOTED_ASSERTION = {
     "contains": "def divide",
 }
 _A_FILE_ASSERTION = {"path_glob": "/env/fs/agent-visible/x.py", "contains_ci": "def divide"}
+# ``$.agent[…]`` roots at state only the core engine composes (from a run's live
+# env). The runner has no equivalent, so this remains an unreachable-path defect
+# after filesystem paths were promoted to runner-graded.
+_AN_UNREACHABLE_PATH_ASSERTION = {
+    "path": "$.agent.customers[0].balance",
+    "equals": "0",
+}
 
 
 def _keyed_state(id_fields: dict[str, Any]) -> dict[str, Any]:
@@ -312,9 +319,16 @@ _RULES: tuple[_Rule, ...] = (
         seeded_tables=_THE_TASK_SEEDS_NO_TABLES,
     ),
     _Rule(
-        label="a_path_addressing_the_filesystem",
+        # ``$.filesystem[…]`` is *reachable* on the runner (via
+        # ``_read_agent_visible_filesystem``), so the authoring gate should not
+        # refuse it — this rule now exercises the residual unreachable set
+        # (``agent`` / ``user`` / ``mock_web_url`` / ``rag_corpus_dir``), which
+        # the core engine composes from a run's live env and the runner does not.
+        label="a_path_addressing_beyond_the_runners_state",
         task=_HELPDESK,
-        grading={"state_checks": {"jsonpaths": [_A_FILESYSTEM_ROOTED_ASSERTION]}},
+        grading={
+            "state_checks": {"jsonpaths": [{"path": "$.agent.customers[0].balance", "equals": "0"}]}
+        },
         checker="_check_jsonpaths_address_a_reachable_state",
         channel="errors",
         message="addresses state the runner's JSONPath grading does not carry",
@@ -1356,7 +1370,7 @@ def test_an_unresolvable_layer_skips_the_seeded_read_and_still_refuses_the_path(
     read, and a silent pass there would be the shape this rule exists to close.
     """
     report = inspect_grading_authoring(
-        {"state_checks": {"jsonpaths": [_A_JSONPATH_ASSERTION, _A_FILESYSTEM_ROOTED_ASSERTION]}},
+        {"state_checks": {"jsonpaths": [_A_JSONPATH_ASSERTION, _AN_UNREACHABLE_PATH_ASSERTION]}},
         _inventory(_HELPDESK),
         seeded_tables=_NO_CALLER_READ_WHAT_THE_TASK_SEEDS,
     )

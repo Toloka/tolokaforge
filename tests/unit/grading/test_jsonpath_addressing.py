@@ -74,7 +74,11 @@ def test_an_unparseable_path_is_refused_by_name() -> None:
     ("assertion", "reads_the_database", "beyond_the_runner"),
     [
         (_A_DATABASE_ASSERTION, True, None),
-        (_A_FILESYSTEM_ASSERTION, False, JsonPathTarget.FILESYSTEM),
+        # ``$.filesystem[…]`` grades on the runner via
+        # ``_read_agent_visible_filesystem`` — it addresses runner-graded state
+        # (so ``unreachable_target`` returns ``None``) and reads the filesystem
+        # rather than the database (so ``addresses_the_database`` returns ``False``).
+        (_A_FILESYSTEM_ASSERTION, False, None),
         ({"path": "$.agent.customers[0].balance"}, False, JsonPathTarget.BEYOND_THE_RUNNERS_STATE),
         # A file assertion in its authored form addresses neither: it is not a
         # JSONPath expression at all.

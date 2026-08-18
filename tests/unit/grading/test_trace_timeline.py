@@ -219,6 +219,27 @@ def test_result_comes_from_the_record_not_the_message() -> None:
     assert result.result == "already refunded"
 
 
+def test_a_message_only_failure_carries_the_same_text_a_record_would() -> None:
+    """A bundle re-graded without ``tool_log.yaml`` reconstructs the failure text
+    identically: the ``Error: `` prefix ``core/loop.py`` writes onto the
+    message body is stripped so ``result:`` matchers see one text on both
+    substrates (#977).
+
+    Without the strip, ``result: {regex: "^already refunded"}`` would pass on
+    a bundle carrying the log and fail on the same bundle re-graded from
+    messages alone.
+    """
+    messages = [
+        _assistant("", _call("call_A", "refund", order_id="42")),
+        _tool_message("call_A", "Error: already refunded"),
+    ]
+
+    timeline = build_trial_timeline(messages, [], None)
+
+    (result,) = _of_kind(timeline, TraceEventKind.TOOL_RESULT)
+    assert result.result == "already refunded"
+
+
 def test_turn_index_follows_assistant_generations() -> None:
     """Every event of one assistant generation shares its index, and the initial
     user prompt carries turn 0 while preceding the first assistant message."""
@@ -546,9 +567,9 @@ def test_a_bundle_with_no_records_takes_each_result_from_its_tool_message() -> N
     is not written to ``trajectory.yaml``, but the ``role: tool`` messages are, so
     the tool output is on disk and only the record's own fields are missing.
 
-    ``call_B``'s text is the message view's wording, not the record's — the record
-    said ``{"error": ...}`` and this says ``Error: {"error": ...}``, which is the
-    proof this timeline read the messages.
+    ``call_B``'s text is the tool's own failure text — the ``core/loop.py``
+    ``Error: `` prefix is stripped on this branch so ``result:`` matchers see
+    the same text as a bundle re-graded with a ``tool_log.yaml`` (#977).
     """
     messages, _ = _refund_trial()
 
@@ -559,7 +580,7 @@ def test_a_bundle_with_no_records_takes_each_result_from_its_tool_message() -> N
     results = _of_kind(timeline, TraceEventKind.TOOL_RESULT)
     assert {event.call_id: event.result for event in results} == {
         "call_A": '{"ok": true}',
-        "call_B": 'Error: {"error": "already refunded"}',
+        "call_B": '{"error": "already refunded"}',
     }
     populated = {
         field

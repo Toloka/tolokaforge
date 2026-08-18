@@ -95,8 +95,12 @@ def unreachable_target(assertion: Mapping[str, Any]) -> JsonPathTarget | None:
 
     ``None`` for an assertion the runner can resolve, one writing no ``path`` at all,
     and one whose expression cannot be read as JSONPath — a malformed expression, or a
-    ``path`` that is not text. Only an expression that parses can be *shown* to address
-    state the runner lacks, and the evaluators name an unreadable one per assertion.
+    ``path`` that is not text. Only an expression that parses and rooting at a segment
+    the runner does not compose can be *shown* to be unreachable; the runner composes
+    both the trial's database and the agent-visible filesystem (see
+    :meth:`~tolokaforge.runner.service.RunnerServiceImpl._read_agent_visible_filesystem`),
+    so a ``$.filesystem[…]``-rooted path grades on both substrates. The evaluators
+    name an unreadable path per assertion.
     """
     path = assertion.get("path")
     if not isinstance(path, str):
@@ -105,19 +109,31 @@ def unreachable_target(assertion: Mapping[str, Any]) -> JsonPathTarget | None:
         target = jsonpath_target(path)
     except ValueError:
         return None
-    return None if target is JsonPathTarget.TRIAL_DATABASE else target
+    if target is JsonPathTarget.BEYOND_THE_RUNNERS_STATE:
+        return target
+    return None
 
 
 def addresses_the_database(assertion: Mapping[str, Any]) -> bool:
     """Whether one ``jsonpaths`` assertion reads the trial's database.
 
-    Every assertion writing a ``path`` at all does, unless that path is provably rooted
-    outside what the runner composes. Reading it the other way round — classifying
-    whatever cannot be parsed as addressing nothing — would drop those assertions out of
-    the state fetch and grade them against a state never read, replacing the evaluators'
-    own per-assertion diagnosis with ``DB state unavailable``.
+    A path is proven to read the database only when its JSONPath expression parses
+    and roots at a database segment. A ``$.filesystem[…]``-rooted path reads the
+    agent-visible filesystem — not the DB — so it stays out of the DB-fetch
+    population. Unparseable / non-string paths preserve the pre-existing route-to-DB
+    behaviour so the evaluator's per-assertion diagnosis reaches the author instead
+    of a ``DB state unavailable`` blanket message.
     """
-    return assertion.get("path") is not None and unreachable_target(assertion) is None
+    path = assertion.get("path")
+    if path is None:
+        return False
+    if not isinstance(path, str):
+        return True
+    try:
+        target = jsonpath_target(path)
+    except ValueError:
+        return True
+    return target is JsonPathTarget.TRIAL_DATABASE
 
 
 def block_addresses_the_database(state_checks: Mapping[str, Any]) -> bool:

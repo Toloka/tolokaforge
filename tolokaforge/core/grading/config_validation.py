@@ -55,7 +55,6 @@ from tolokaforge.core.grading.grade_components import (
     component_requested,
 )
 from tolokaforge.core.grading.jsonpath_addressing import (
-    JsonPathTarget,
     addresses_the_database,
     block_addresses_the_database,
     unreachable_target,
@@ -85,7 +84,7 @@ from tolokaforge.core.models import (
     TranscriptRulesConfig,
     ValuePredicate,
 )
-from tolokaforge.runner.id_resolution import id_fields_findings
+from tolokaforge.runner.id_resolution import IdFieldResolutionError, id_fields_findings
 from tolokaforge.runner.models import TRACE_PREDICATE_BINDING_OPERATORS
 
 logger = logging.getLogger(__name__)
@@ -1129,18 +1128,36 @@ def _check_tool_names(sites: tuple[_MatcherSite, ...], inventory: ToolInventory)
 def _check_tool_expectation_names(
     expectations: ToolExpectations | None, inventory: ToolInventory
 ) -> AuthoringReport:
-    """``tool_expectations`` may only name a tool some actor of the task can call."""
+    """``tool_expectations`` may only name a tool the agent of the task can call.
+
+    ``transcript.py`` filters ``call.executor is ToolExecutorIdentity.AGENT`` in
+    the evaluator (renamed ``_executed`` -> ``_executed_by_agent``), so a name
+    in the user's declared set is invisible to the check at runtime: a
+    ``required_tools`` name reaching only ``user_declared`` passes the gate and
+    fails on every trial, indistinguishable from the misspelling this gate
+    exists to catch; a ``disallowed_tools`` name reaching only ``user_declared``
+    passes on every trial even when the simulator calls it. Narrow the
+    membership check to the agent's set.
+    """
     if expectations is None:
         return AuthoringReport()
+    # ``declared_by`` refuses to answer on a recorded-trial inventory whose
+    # actor split is unknown; fall back to the union set there.
+    if inventory.actor_split_known:
+        declared_set = inventory.declared_by(ToolExecutorIdentity.AGENT)
+        actor_label = "for the agent, which the transcript-rules evaluator reads"
+    else:
+        declared_set = inventory.declared
+        actor_label = "for any actor of this task"
     errors = tuple(
         Finding(
             f"transcript_rules.tool_expectations.{expectation}",
-            f"tool {name!r} is not declared by this task, which gives its actors "
-            f"{sorted(inventory.declared)}: {hazard}",
+            f"tool {name!r} is not declared by this task {actor_label}. The declared "
+            f"set is {sorted(declared_set)}: {hazard}",
         )
         for expectation, hazard in _TOOL_EXPECTATION_HAZARDS.items()
         for name in getattr(expectations, expectation)
-        if name not in inventory.declared
+        if name not in declared_set
     )
     return AuthoringReport(errors=errors)
 
@@ -1576,7 +1593,18 @@ def _check_id_fields_against_seeded_tables(
     # __post_init__ makes a known layer with no view unconstructable; the assert
     # narrows ``tables`` for static analysis.
     assert seeded_tables.tables is not None
-    findings = id_fields_findings(id_fields, seeded_tables.tables)
+    # ``id_fields_findings`` calls ``table_key`` which raises
+    # ``IdFieldResolutionError`` for an invalid key component. That exception
+    # would propagate past ``report.fatal(fail_on)`` and become an
+    # unconditional per-task refusal at ``orchestrator.py`` — bypassing the
+    # ``fail_on`` severity, bypassing the ``relaxed_validation`` branch below,
+    # and turning the false-reject mode this gate's docstring says it does
+    # not have into the default. Catch the resolution error and route it
+    # through the same channels a regular finding takes.
+    try:
+        findings = id_fields_findings(id_fields, seeded_tables.tables)
+    except IdFieldResolutionError as exc:
+        findings = (str(exc),)
     if not findings:
         return AuthoringReport()
     if state_checks.get("relaxed_validation"):
@@ -1670,16 +1698,15 @@ def _check_jsonpaths_address_a_reachable_state(grading: Mapping[str, Any]) -> Au
         target = unreachable_target(assertion)
         if target is None:
             continue
+        # Only ``BEYOND_THE_RUNNERS_STATE`` reaches here now — ``FILESYSTEM``
+        # grades on the runner via ``_read_agent_visible_filesystem``, so the
+        # authoring gate no longer refuses ``$.filesystem[…]``-rooted paths.
         findings.append(
             Finding(
                 _JSONPATHS_ADDRESS,
                 _A_PATH_BEYOND_THE_RUNNERS_STATE.format(
                     path=assertion.get("path"),
-                    remedy=(
-                        _ADDRESS_A_FILE_BY_GLOB
-                        if target is JsonPathTarget.FILESYSTEM
-                        else _ADDRESS_THE_DATABASE
-                    ),
+                    remedy=_ADDRESS_THE_DATABASE,
                 ),
             )
         )
@@ -1798,13 +1825,26 @@ def _check_golden_action_names(
     elements — is refused as one resolving to nothing rather than tested for membership,
     which an unhashable value answers with a ``TypeError``.
     """
+    # The runner resolves ``golden_actions`` against the *agent* registry alone
+    # (``service.py`` ``_execute_hash_grading`` step 0 iterates
+    # ``trial_context.agent_tools.keys()``); a name reaching only ``user_declared``
+    # passes the gate here and blows up on the runner with
+    # ``UnresolvableGoldenAction``. Narrow the check to the agent's set when
+    # the inventory knows the split; a recorded-trial inventory that does not
+    # answers only the union ``inventory.declared``, so keep the old behaviour
+    # there (the report's ``unchecked`` channel handles the residual case).
+    declared_set = (
+        inventory.declared_by(ToolExecutorIdentity.AGENT)
+        if inventory.actor_split_known
+        else inventory.declared
+    )
     errors = tuple(
         Finding(
             _GOLDEN_ACTION_NAME_ADDRESS.format(index=index),
             _unreplayable_golden_action_message(name, inventory),
         )
         for index, name in enumerate(_authored_golden_action_names(grading))
-        if not name or not isinstance(name, str) or name not in inventory.declared
+        if not name or not isinstance(name, str) or name not in declared_set
     )
     return AuthoringReport(errors=errors)
 
