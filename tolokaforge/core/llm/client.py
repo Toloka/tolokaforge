@@ -537,6 +537,12 @@ class GenerationResult:
         # Stamped only by ``UserSimulator._llm_reply``; every other producer
         # of a result leaves it empty.
         self.guard_rejections: tuple[ReplyDefect, ...] = ()
+        # True iff ``UserSimulator._llm_reply`` substituted the fixed filler
+        # for a tool-call-only reply with no text. Callers whose downstream
+        # semantics depend on the model having written the text (the
+        # bootstrap seed the agent is graded against) refuse on this flag
+        # instead of accepting the engine's own words as the turn.
+        self.filler_substituted: bool = False
 
 
 class LLMClient:
@@ -2460,13 +2466,16 @@ Rules:
                 observation=observation,
             )
             # The one substitution the reply guard wraps rather than forbids, and
-            # the only text the engine contributes to a user turn. Unreachable
-            # while the conductor wires no ``user_tool_executor``: the simulator
-            # is then handed no tool schemas, so no generation carries tool calls.
+            # the only text the engine contributes to a user turn. The conductor
+            # now wires a user_tool_executor when the spec declares user tools,
+            # so this branch is reachable in-tree — callers whose downstream
+            # semantics need the model's own text (the bootstrap seed the agent
+            # is graded against) read ``result.filler_substituted`` and refuse.
             # TODO(#1089): remove it — a universal filler is hazardous (AGENTS.md
             # gotcha 23), so the removal carries its own analysis.
             if result.tool_calls and not result.text.strip():
                 result.text = "Let me check that."
+                result.filler_substituted = True
             return result
 
         # The guard logs under its own logger name, so the trial identity has to

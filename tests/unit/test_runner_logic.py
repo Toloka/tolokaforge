@@ -884,3 +884,23 @@ class TestUserSimulatorIntegration:
 
         with pytest.raises(RuntimeError, match="empty first message"):
             runner._bootstrap_via_simulator()
+
+    def test_a_filler_substituted_bootstrap_refuses(self) -> None:
+        """A tool-call-only opening the LLM client filled with ``"Let me check that."``
+        refuses instead of seeding the transcript with the engine's own words.
+
+        The filler is the only text the engine contributes to a user turn.
+        Accepting it as the bootstrap seed would grade the agent against the
+        engine's fixed placeholder rather than what the task adapter authored.
+        """
+        filled = GenerationResult(
+            text="Let me check that.",
+            tool_calls=[ToolCall(id="call_1", name="lookup_order", arguments={"id": "A-1"})],
+        )
+        filled.filler_substituted = True
+        user_sim = MagicMock()
+        user_sim.reply.return_value = filled
+        runner = _make_runner(user_simulator=user_sim)
+
+        with pytest.raises(RuntimeError, match="empty first message"):
+            runner._bootstrap_via_simulator()

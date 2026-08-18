@@ -150,6 +150,14 @@ _KIND_BY_ROLE = {
 }
 
 
+# The literal prefix ``core/loop.py`` writes onto a failed tool call's
+# message body. Stripping it in the message-only branch of trace-timeline
+# reconstruction is what keeps ``result:`` matchers reading the same on a
+# bundle carrying ``tool_log.yaml`` and on the same bundle re-graded from
+# messages alone (#977).
+_ERROR_MESSAGE_PREFIX = "Error: "
+
+
 @dataclass(frozen=True)
 class _DeclaredCall:
     """One call the message view asks for, under the key the trial joins it by."""
@@ -432,12 +440,23 @@ class _TimelineBuilder:
         )
 
     def _append_message_result(self, declared: _DeclaredCall) -> None:
-        """The result as the message view preserved it: text, and nothing a record carries."""
+        """The result as the message view preserved it: text, and nothing a record carries.
+
+        Strips the ``"Error: "`` prefix ``core/loop.py:460`` writes onto the
+        message body for a failed call, so ``result:`` reads the same on
+        this branch as on ``_append_result`` (which pulls raw ``record.output``).
+        Without this, ``result: {regex: "^insufficient funds"}`` passed on a
+        bundle carrying ``tool_log.yaml`` and failed on the same bundle
+        re-graded without it — the "one text on both substrates" claim (#977)
+        would hold only for records, not for messages.
+        """
+        raw = self._message_results[declared.key]
+        result = raw[len(_ERROR_MESSAGE_PREFIX) :] if raw.startswith(_ERROR_MESSAGE_PREFIX) else raw
         self._append(
             kind=TraceEventKind.TOOL_RESULT,
             call_id=declared.key,
             tool_name=declared.call.name,
-            result=self._message_results[declared.key],
+            result=result,
         )
 
     def _append(

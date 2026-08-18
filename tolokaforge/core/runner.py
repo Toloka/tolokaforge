@@ -768,7 +768,14 @@ class TrialRunner:
                 # the failure mode the seeded-opening fix exists to prevent.
                 # Read before inlining, so a reply that is only a tool call
                 # refuses rather than opening with the tool's own output.
-                if not first_user_result.text.strip():
+                #
+                # ``filler_substituted`` covers the tool-call-only opening the
+                # LLM client rewrites in-closure ("Let me check that."): the
+                # text is no longer empty by the time it reaches here, but the
+                # substituted filler is the engine's own words, not the task
+                # statement the agent must be graded against. Both empty and
+                # filler-only openings fail the same way.
+                if first_user_result.filler_substituted or not first_user_result.text.strip():
                     raise RuntimeError(
                         "User simulator bootstrap produced an empty first message; "
                         "a blank opening cannot seed the conversation."

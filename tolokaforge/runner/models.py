@@ -763,6 +763,39 @@ class TraceMatcher(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _reject_a_status_literal_no_execution_produces(self) -> TraceMatcher:
+        """Every ``status`` literal must be a real ``ToolExecutionStatus`` member.
+
+        Loading ``status: {equals: timeout}`` clean and only failing at grading
+        time reports a typo as an agent failure. The gate keeps the check
+        syntactic: closed-vocabulary operators (``equals``, ``not_equals``,
+        ``in_``, ``not_in``) validate every literal against the enum; open-form
+        operators (``regex``, ``contains``) reach status only as strings and
+        the enum's canonical members are already substring-safe.
+        """
+        if self.status is None:
+            return self
+        producible = {member.value for member in ToolExecutionStatus}
+        checked: list[tuple[str, Any]] = []
+        for operator in ("equals", "not_equals"):
+            value = getattr(self.status, operator)
+            if value is not None:
+                checked.append((operator, value))
+        for operator in ("in_", "not_in"):
+            values = getattr(self.status, operator)
+            if values is not None:
+                checked.extend((operator, v) for v in values)
+        unproducible = sorted(
+            {str(value) for operator, value in checked if value not in producible}
+        )
+        if unproducible:
+            raise ValueError(
+                f"status predicate names values {unproducible} that no tool executor "
+                f"produces. Executable statuses are {sorted(producible)}"
+            )
+        return self
+
 
 class BoundValue(BaseModel):
     """One name a binding extracts out of the event it selected.

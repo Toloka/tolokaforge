@@ -59,7 +59,7 @@ from tolokaforge.core.run_display_events import (
     _NullRunDisplayEvents,
 )
 from tolokaforge.core.runner import TrialRunner
-from tolokaforge.core.runtime import RuntimeBackend
+from tolokaforge.core.runtime import ProvisionError, RuntimeBackend
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.system_prompt import build_system_prompt
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialResult, TrialSpec
@@ -589,8 +589,18 @@ class InProcessConductor:
         )
         if not register_result["success"]:
             error = register_result.get("error", "Unknown error")
-            raise RuntimeError(
-                f"Failed to register trial with executor for trial {trial_id}: {error}"
+            # Raised typed so the trial executor synthesises a
+            # PROVISION_ERROR trajectory (``trial_executor.py:_synthesize_
+            # provision_failure_result``) and the orchestrator records a row
+            # for it. A bare ``RuntimeError`` here escapes uncaught into the
+            # orchestrator's queue-only path, dropping the trial out of
+            # ``self.results`` entirely — inflating every rate by silently
+            # burning the retry budget on a deterministic refusal with
+            # nothing in the output to show for it.
+            raise ProvisionError(
+                trial_id=trial_id,
+                stage="register_trial",
+                reason=f"Failed to register trial with executor: {error}",
             )
 
         # Tool schemas from register_trial (converted to OpenAI format).
