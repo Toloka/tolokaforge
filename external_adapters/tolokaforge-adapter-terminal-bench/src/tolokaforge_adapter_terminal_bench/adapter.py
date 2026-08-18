@@ -55,25 +55,23 @@ from tolokaforge_adapter_terminal_bench.compose_synthesis import (
     materialise_task_environment,
     skills_bundle_digest,
 )
-from tolokaforge_adapter_terminal_bench.harness import (
+from tolokaforge_adapter_terminal_bench.task_parser import (
+    TerminalBenchTask,
+    discover_tasks,
+)
+from tolokaforge_coding_harnesses import (
     DEFAULT_PATH_RESOLVER,
     ENGINE_LOOP,
     HarnessSpec,
     PathResolver,
     ResolvedHarnessRegistry,
     SkillDelivery,
+    compute_harness_fingerprint,
     harness_command,
     provider_env_input,
     resolve_effective_registry,
     validate_harness,
     validate_provider_env_keys,
-)
-from tolokaforge_adapter_terminal_bench.harness.fingerprint import (
-    compute_harness_fingerprint,
-)
-from tolokaforge_adapter_terminal_bench.task_parser import (
-    TerminalBenchTask,
-    discover_tasks,
 )
 
 _AGENT_TOOL_TIMEOUT_S = 120.0

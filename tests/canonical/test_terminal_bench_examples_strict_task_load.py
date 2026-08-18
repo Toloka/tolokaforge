@@ -1,10 +1,16 @@
-"""Every bundled terminal-bench example opts in to ``strict_task_load``.
+"""Every bundled terminal-bench example is a whole document of its own kind.
+
+Two kinds ship side by side under ``examples/terminal_bench/``: run configs, and
+``*_overlay.yaml`` harness-registry fragments an operator points
+``harness_presets_file`` at. Each is asserted against its own contract — a run
+config opts in to ``strict_task_load`` and survives ``RunConfig`` validation, an
+overlay loads as a registry document — so neither a new example missing the
+opt-in nor a fragment with a typo can ship past review, and neither is asserted
+against the other's shape.
 
 Terminal-bench adapters synthesise their environment from the task's
-``docker-compose.yaml`` — a task-pack that fails to load is a config error
-the operator must see, not a task silently dropped from the run.  The
-assertion runs over a glob so a newly added example config cannot ship
-without the opt-in and slip past review.
+``docker-compose.yaml``, so a task-pack that fails to load is a config error the
+operator must see rather than a task silently dropped from the run.
 """
 
 from __future__ import annotations
@@ -18,16 +24,39 @@ pytestmark = pytest.mark.canonical
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLES_DIR = _REPO_ROOT / "examples" / "terminal_bench"
+_OVERLAY_SUFFIX = "_overlay.yaml"
 
 
 def _example_run_configs() -> list[Path]:
-    return sorted(_EXAMPLES_DIR.glob("*.yaml"))
+    return sorted(p for p in _EXAMPLES_DIR.glob("*.yaml") if not p.name.endswith(_OVERLAY_SUFFIX))
+
+
+def _example_overlays() -> list[Path]:
+    return sorted(_EXAMPLES_DIR.glob(f"*{_OVERLAY_SUFFIX}"))
 
 
 def test_terminal_bench_examples_dir_has_run_configs() -> None:
     """Guard the glob: an empty match set would pass every parametrised case."""
     configs = _example_run_configs()
     assert configs, f"no run configs found under {_EXAMPLES_DIR}"
+
+
+@pytest.mark.parametrize(
+    "overlay_path",
+    _example_overlays(),
+    ids=lambda path: path.name,
+)
+def test_terminal_bench_overlay_is_a_loadable_registry_document(overlay_path: Path) -> None:
+    """The naming convention that excuses a file from the run-config assertions
+    is itself asserted: a fragment named ``*_overlay.yaml`` must load as a
+    harness registry, so a run config given that name fails here on its unknown
+    top-level keys instead of quietly escaping both contracts."""
+    from tolokaforge_coding_harnesses import load_harness_registry
+
+    assert load_harness_registry(overlay_path), (
+        f"{overlay_path.relative_to(_REPO_ROOT)} declares no harness; an "
+        "`*_overlay.yaml` example exists to document the overlay shape."
+    )
 
 
 @pytest.mark.parametrize(
@@ -99,9 +128,8 @@ def test_a_harness_example_exists_and_is_fully_specified() -> None:
     Without one, ``examples/terminal_bench/`` documents only the engine loop
     and the next operator has to reverse-engineer the shape.
     """
-    from tolokaforge_adapter_terminal_bench.harness import ENGINE_LOOP, HARNESSES
-
     from tolokaforge.core.models import RunConfig
+    from tolokaforge_coding_harnesses import ENGINE_LOOP, HARNESSES
 
     harness_configs = []
     for config_path in _example_run_configs():

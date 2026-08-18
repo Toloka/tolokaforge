@@ -9,6 +9,7 @@ See :mod:`automation.harness_bucket_classifier` for the classifier."""
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -51,7 +52,7 @@ def _build_metric() -> dict[str, Any]:
     }
 
 
-def test_replay_matches_baseline(canon_snapshot) -> None:
+def test_replay_matches_baseline(canon_snapshot, pytestconfig) -> None:
     """Live replay of every harness-touching commit reachable from HEAD."""
     metric = _build_metric()
     # Captured by pytest and surfaced on the CI log; carries the current
@@ -61,7 +62,19 @@ def test_replay_matches_baseline(canon_snapshot) -> None:
         f"Bucket B: {metric['bucket_b_count']}  |  "
         f"total: {len(metric['commits'])}"
     )
-    canon_snapshot("harness_registry_replay").assert_match(metric, "metric.json")
+    snapshot = canon_snapshot("harness_registry_replay")
+    if not pytestconfig.getoption("--update-canon"):
+        baseline = json.loads((snapshot.snapshot_dir / "metric.json").read_text())
+        unreachable = {e["sha"] for e in baseline["commits"]} - {
+            e["sha"] for e in metric["commits"]
+        }
+        assert not unreachable, (
+            f"baseline names commit(s) unreachable from HEAD ({sorted(unreachable)}): "
+            "history was rewritten (squash-merge, rebase), so the metric did not "
+            "regress. Regenerate the baseline against the rewritten history "
+            "(`update_canonical_snapshots`). See #1234."
+        )
+    snapshot.assert_match(metric, "metric.json")
 
 
 def test_git_walk_returns_expected_shape() -> None:

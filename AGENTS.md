@@ -111,24 +111,25 @@ uv run ruff format .
 
 # Format check (CI)
 uv run ruff format --check tolokaforge tests scripts tools
-
-# All-in-one lint script
-scripts/lint/run_ruff.sh
 ```
 
 ### Testing
 
-Three test categories with distinct markers:
+Three test categories with distinct markers. Tests live in three roots — `tests/` plus a
+root inside each workspace package that owns a contract (`tolokaforge_models/tests/`,
+`tolokaforge_coding_harnesses/tests/`). `[tool.pytest.ini_options] testpaths` names all
+three, so omit the path; a command naming only `tests/` overrides `testpaths`, runs a
+subset, and still reports green.
 
 ```bash
 # Unit tests — no external services needed
-uv run pytest tests/ -v -m unit
+uv run pytest -v -m unit
 
 # Canonical tests — snapshot/contract tests, no external services
-uv run pytest tests/ -v -m canonical
+uv run pytest -v -m canonical
 
 # Integration tests — require API keys and/or services; run in parallel
-scripts/with_env.sh uv run pytest tests/ -v -m integration -n auto
+scripts/with_env.sh uv run pytest -v -m integration -n auto
 
 # Validate task definitions — exits 1 on an invalid task or on a glob matching nothing
 tolokaforge validate --tasks "tasks/**/task.yaml"
@@ -340,6 +341,8 @@ When extending an existing contract, follow the existing choice unless you have 
 - `tools/pricing-updater` — LLM pricing data updates
 - `tools/rubric-calibrator` — Rubric-judge calibration: agreement metrics + trust gate
 - `external_adapters/tolokaforge-adapter-terminal-bench` — Terminal-Bench adapter
+- `tolokaforge_models` — model data + per-model policy subclasses
+- `tolokaforge_coding_harnesses` — coding-harness registry, installer, middleware proxy
 
 ### Virtual Environment
 
@@ -414,7 +417,7 @@ No scripts, data files, temporary documents, or logs in root.
 
 ### Script Organization
 
-- Bash scripts in `scripts/` organized by subdirectory: `benchmark/`, `setup/`, `lint/`, `tests/`, `release/`, `analysis/`
+- Bash scripts in `scripts/` organized by subdirectory: `analysis/`, `docker/`, `hatch/`, `setup/`, `tests/`
 - Shared utilities (`common.sh`, `with_env.sh`) at `scripts/` root
 - Exceptions: `tests/` for test helpers, `tasks/` for benchmark data, `.devcontainer/` for container setup, Docker entrypoints alongside Dockerfiles
 - Complex Python logic → `tools/` as uv workspace member

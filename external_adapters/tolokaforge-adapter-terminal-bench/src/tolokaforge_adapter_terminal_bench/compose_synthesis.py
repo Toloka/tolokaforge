@@ -43,7 +43,8 @@ import yaml
 # fails in the adapter with the adapter's own message rather than deep inside
 # a Pydantic validator on the synthesised compose file.
 from tolokaforge.runner.models import _FLOATING_IMAGE_TAGS
-from tolokaforge_adapter_terminal_bench.harness import (
+from tolokaforge_adapter_terminal_bench.task_parser import TerminalBenchTask
+from tolokaforge_coding_harnesses import (
     DEFAULT_PATH_RESOLVER,
     ENGINE_LOOP,
     HARNESSES,
@@ -58,7 +59,6 @@ from tolokaforge_adapter_terminal_bench.harness import (
     provider_env_input,
     validate_harness,
 )
-from tolokaforge_adapter_terminal_bench.task_parser import TerminalBenchTask
 
 AGENT_SERVICE_DEFAULT = "main"
 PROJECT_PREFIX = "tbench_"
@@ -155,7 +155,7 @@ def materialise_task_environment(
         db_service_image: Pinned image for the injected ``db-service``.
         path_resolver: Answers the runtime's filesystem conventions for the
             harness's ``skills_dir_target``. Defaults to
-            :data:`~tolokaforge_adapter_terminal_bench.harness.DEFAULT_PATH_RESOLVER`.
+            :data:`~tolokaforge_coding_harnesses.DEFAULT_PATH_RESOLVER`.
         skill_delivery: Puts the task's skills bundle where the CLI reads it.
             Defaults to :data:`DEFAULT_SKILL_DELIVERY`, an image-layer ``COPY``.
 
@@ -408,7 +408,7 @@ def _write_harness_build_context(staging_dir: Path, *, base_image: str, spec: Ha
     sources, tests, log mountpoints) out of the layer's build context —
     everything the layer copies has to be re-included by name.
 
-    A :class:`~tolokaforge_adapter_terminal_bench.harness.SkillDelivery` may
+    A :class:`~tolokaforge_coding_harnesses.SkillDelivery` may
     append to either file afterwards; :class:`ImageLayerSkillDelivery` does.
     """
     harness_dir = staging_dir / _HARNESS_STAGING_DIR

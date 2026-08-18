@@ -66,3 +66,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0033](0033-external-harness-registry.md) | External harness registry — operator-overridable YAML for coding-CLI parity knobs | Accepted |
 | [0034](0034-external-harness-plugin-discovery.md) | External harness plugin discovery — pip-installable harness bundles | Accepted |
 | [0035](0035-idle-turn-heuristic-deleted.md) | Whether an agent must act is a per-task assertion, not a stuck heuristic | Accepted |
+| [0036](0036-tolokaforge-coding-harnesses-split.md) | Coding-harness code as a top-level workspace package — `tolokaforge_coding_harnesses` | Accepted |

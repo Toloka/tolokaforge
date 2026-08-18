@@ -6,9 +6,14 @@ The test suite is organized into **3 categories**: unit, canonical, and integrat
 
 | Category | Directory | Speed | External deps | Marker |
 |----------|-----------|-------|---------------|--------|
-| Unit | `tests/unit/` | Fast (< 1s each) | None | `@pytest.mark.unit` |
+| Unit | `tests/unit/`, `tolokaforge_models/tests/unit/`, `tolokaforge_coding_harnesses/tests/unit/` | Fast (< 1s each) | None | `@pytest.mark.unit` |
 | Canonical | `tests/canonical/` | Fast (< 5s each), except the packaging tests that build a wheel from the current tree — the subset partition audit builds one per module, and the packaging/entry-point smoke tests build one per session and install it into a scratch venv (~10–25s) | Golden snapshots; the packaging/entry-point smoke tests also require the `uv` CLI (they skip loud without it) | `@pytest.mark.canonical` |
-| Integration | `tests/integration/` | Slow (5-60s each) | Docker, API keys | `@pytest.mark.integration` |
+| Integration | `tests/integration/`, `tolokaforge_models/tests/integration/` | Slow (5-60s each) | Docker, API keys | `@pytest.mark.integration` |
+
+Each workspace package that owns a contract keeps its own test root beside its source, so
+a future repo split takes the tests with the code. Passing a path to pytest overrides
+`[tool.pytest.ini_options] testpaths`, so a command naming only `tests/` runs a subset and
+still reports green — name all three roots, or pass no path at all.
 
 Current baseline: run the lane you care about (`mcp__dev__run_tests marker=unit`,
 `marker=canonical`) — the counts move with every merge, so they are not written down
@@ -16,17 +21,18 @@ here.
 
 ## Running Tests
 
-Unit and canonical tests run without API keys or Docker:
+Unit and canonical tests run without API keys or Docker. Omit the path and pytest reads
+`testpaths` from `pyproject.toml`, which names all three roots:
 
 ```bash
 # All non-integration tests
-uv run pytest tests/unit/ tests/canonical/ -v
+uv run pytest -v -m "not integration"
 
 # Unit tests only
-uv run pytest tests/ -v -m unit
+uv run pytest -v -m unit
 
 # Canonical tests only
-uv run pytest tests/ -v -m canonical
+uv run pytest -v -m canonical
 
 # Regenerate golden snapshots
 uv run pytest tests/canonical/ --update-canon -v
@@ -36,10 +42,10 @@ Integration tests need `.env` variables (API keys, service URLs) — use `script
 
 ```bash
 # Integration tests (needs Docker + API keys in .env)
-scripts/with_env.sh uv run pytest tests/ -v -m integration -n auto
+scripts/with_env.sh uv run pytest -v -m integration -n auto
 
 # Full suite
-scripts/with_env.sh uv run pytest tests/ -v
+scripts/with_env.sh uv run pytest -v
 ```
 
 Under `-n auto`, `tests/integration/reset_recipes/conftest.py` assigns each xdist worker a unique `COMPOSE_PROJECT_NAME` for the reset-recipe suite, whose stacks all share the `compose` basename and would otherwise collide across workers. The rest of the integration suite derives per-test project names from slug-encoded `make_project_temp_dir` basenames, so it stays in disjoint namespaces without the env pin.
@@ -139,7 +145,6 @@ tests/
     ├── golden_source_shapes.py  # Non-list golden_actions shapes every reading surface must refuse
     ├── wire_grades.py        # A wire Grade driven through the real gRPC client lowering
     ├── fourth_wall_corpus.py  # The fourth-wall detector's pass/detect rows, read by two suites
-    ├── harness_plugins.py    # Fake entry points / distributions for an installed harness-registry plugin
     └── project_fixtures.py   # food_delivery_2 project data loaders
 ```
 
