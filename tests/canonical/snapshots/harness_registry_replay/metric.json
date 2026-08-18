@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 11,
+  "bucket_b_count": 12,
   "commits": [
     {
       "adapter_paths": [
@@ -1657,6 +1657,51 @@
         "docs/adr/0034-external-harness-plugin-discovery.md",
         "docs/adr/0035-tolokaforge-coding-harnesses-split.md",
         "docs/adr/README.md"
+      ]
+    },
+    {
+      "adapter_paths": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release-gate.yml",
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "Makefile",
+        "pyproject.toml",
+        "tests/unit/test_terminal_bench.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/fingerprint.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/testing.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_harness_fingerprint.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_install_script.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_plugin_discovery.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_registry.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_registry_composition.py",
+        "tools/dev-mcp/src/dev_mcp/server.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-18",
+      "pr": null,
+      "reason": "16 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "e4acd164f4e6f2de7c96d50e10058034a3b1514b",
+      "subject": "fix(coding-harnesses): reviewer round 2 \u2014 release-gate coverage, delegate to testpaths uniformly, typing cleanup",
+      "touched_files": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release-gate.yml",
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "Makefile",
+        "pyproject.toml",
+        "tests/unit/test_terminal_bench.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/registry_meta.yaml",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/fingerprint.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/testing.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_harness_fingerprint.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_install_script.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_plugin_discovery.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_registry.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_registry_composition.py",
+        "tools/dev-mcp/src/dev_mcp/server.py"
       ]
     },
     {
