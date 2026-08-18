@@ -199,7 +199,10 @@ def _daemonize() -> None:
         os.dup2(devnull, stream.fileno())
 
 
-def main(argv: list[str] | None = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
+    """Argv parser for the sidecar. Module-level so ``main`` does not rebuild
+    it per call and so tests can import it if they want to inspect flag
+    metadata."""
     parser = argparse.ArgumentParser(description="tolokaforge middleware proxy")
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--upstream", required=True, help="Upstream base URL to forward to.")
@@ -219,7 +222,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Only inject on paths starting with this prefix (default: every POST).",
     )
     parser.add_argument("--daemon", action="store_true", help="Fork and return when port is open.")
-    args = parser.parse_args(argv)
+    return parser
+
+
+_PARSER = _build_parser()
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _PARSER.parse_args(argv)
 
     try:
         body_inject = json.loads(args.body_inject)

@@ -1552,6 +1552,61 @@ class TestHarnessRequestMiddleware:
                 request_middleware=RequestMiddleware(upstream_env_key="X_BASE_URL"),
             )
 
+    def test_if_the_validator_ever_loosens_the_preamble_order_is_middleware_first(self):
+        """Defensive positive test: the validator refuses the combo today, so
+        the assembler's ordering of middleware boot → env rewrite →
+        config_files write → CLI is unreachable in production. If the
+        validator ever loosens (see the ADR-0033 sibling entry that names the
+        two features), a CLI reading its endpoint from an on-disk config file
+        MUST see the redirected localhost URL, not the upstream. Construct a
+        spec with both fields via ``model_construct`` (which bypasses the
+        validator) and assert that ordering, so a future loosening does not
+        silently regress the proxy path."""
+        from tolokaforge_adapter_terminal_bench.harness import (
+            HarnessSpec,
+            RequestMiddleware,
+            harness_command,
+        )
+
+        # ``model_construct`` is Pydantic v2's documented escape hatch for
+        # bypassing validators — the escape hatch exists for exactly this
+        # kind of test.
+        spec = HarnessSpec.model_construct(
+            install_method="npm",
+            install_source="fake-cli",
+            version="1.0.0",
+            argv_prefix=("fake",),
+            argv_suffix=("--prompt",),
+            config_files={"${HOME}/.fake/endpoint.conf": "endpoint={{ base_url }}"},
+            request_middleware=RequestMiddleware(
+                upstream_env_key="FAKE_BASE_URL",
+                body_injections={},
+                header_injections={},
+            ),
+            provider_env={"FAKE_BASE_URL": "https://upstream.example"},
+            container_env={},
+            env_model_vars=(),
+            model_flag="--model",
+            model_flag_style="space",
+            flags_pre_permission=(),
+            instruction_channel="argv",
+            skills_dir_target=None,
+            strip_vendor_namespace=False,
+            strip_openrouter_prefix=True,
+        )
+
+        command = harness_command(
+            "fake", "do it", "some-model", registry={"fake": spec}, provider_env=spec.provider_env
+        )
+        steps = command.split(" && ")
+        middleware_boot = next(i for i, s in enumerate(steps) if "middleware_proxy.py" in s)
+        env_rewrite = next(i for i, s in enumerate(steps) if s.startswith("export FAKE_BASE_URL="))
+        config_write = next(i for i, s in enumerate(steps) if "endpoint.conf" in s)
+        assert middleware_boot < env_rewrite < config_write, (
+            f"middleware+config_files preamble order broke: "
+            f"boot={middleware_boot}, rewrite={env_rewrite}, config={config_write}"
+        )
+
 
 class TestHarnessConfigFiles:
     """CLIs configured by file: rendered from the declared variables only."""
