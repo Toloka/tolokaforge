@@ -10,7 +10,10 @@ initial_state:
 
 tools:
   agent:
-    enabled: []
+    mcp_server: mcp_server.py
+    enabled:
+      - search_policy
+      - billing_api_get_payment
   user:
     enabled: []
 

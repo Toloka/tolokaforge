@@ -12,10 +12,11 @@ Example:
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING
 
-from tolokaforge.secrets.providers import SecretProvider
+from tolokaforge.secrets.providers import RuntimeSecretProvider, SecretProvider
 
 if TYPE_CHECKING:
     from tolokaforge.secrets.config import SecretConfig
@@ -42,6 +43,22 @@ class MissingSecretError(Exception):
         providers_str = ", ".join(providers) if providers else "none"
         super().__init__(
             f"Required secret '{key}' not found in any provider. Checked providers: {providers_str}"
+        )
+
+
+class RuntimeSecretConflictError(Exception):
+    """Raised when a runtime-registered key is registered again with another value.
+
+    Attributes:
+        key: The secret key that was registered twice.
+    """
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+        super().__init__(
+            f"Runtime secret '{key}' is already registered with a different value. "
+            f"One credential resolving to two values in a single process is a bug, "
+            f"not a configuration."
         )
 
 
@@ -382,6 +399,43 @@ def get_default_or_none() -> SecretManager | None:
     return _default_manager
 
 
+CONTAINER_SECRETS_ENV_VAR = "TOLOKAFORGE_SECRETS_JSON"
+"""Environment variable carrying the serialised credential payload from the
+host to a container. Spelled once: the engine-built core stack and the
+materialised task-declared compose stack both inject it, and the runner
+bootstrap reads it back."""
+
+
+def compose_escaped(value: str) -> str:
+    """Return ``value`` as it must be written into a Docker Compose
+    ``environment:`` value, with ``$`` doubled.
+
+    Compose interpolates a single ``$``, so an unescaped credential containing
+    one is silently truncated. Deliberately *not* applied inside
+    :func:`container_secrets_env`: the engine-built stack hands its value to the
+    Docker SDK, which interpolates nothing, and would deliver doubled dollars.
+    Two consumers spell the rule through here — the materialisation transform
+    that writes the value, and the log redactor, whose scrub set must hold the
+    written form or a compose error quoting the file back leaks it.
+    """
+    return value.replace("$", "$$")
+
+
+def container_secrets_env() -> dict[str, str]:
+    """Return the host→container credential entry for a runner container.
+
+    ``{CONTAINER_SECRETS_ENV_VAR: <json payload>}``, or an empty mapping when
+    the default manager resolves no secrets. The empty case is behavioural,
+    not cosmetic: an unset variable makes the runner lazy-init its own
+    manager from its own environment, while an empty payload would bootstrap
+    an empty manager and suppress that.
+    """
+    payload = get_default().serialize()
+    if not payload:
+        return {}
+    return {CONTAINER_SECRETS_ENV_VAR: json.dumps(payload)}
+
+
 def init_default_from(manager: SecretManager) -> SecretManager:
     """Replace the default singleton with a pre-built SecretManager.
 
@@ -398,3 +452,54 @@ def init_default_from(manager: SecretManager) -> SecretManager:
     global _default_manager
     _default_manager = manager
     return manager
+
+
+def register_runtime_secret(key: str, value: str) -> SecretManager:
+    """Admit a credential resolved at runtime into the default SecretManager.
+
+    The value becomes indistinguishable from a ``.env`` key to every consumer:
+    ``get_secret``, ``serialize`` (hence ``TOLOKAFORGE_SECRETS_JSON``),
+    ``list_all_keys`` and ``known_values`` (hence log redaction). This is the only
+    sanctioned way to admit a credential the process generated or resolved for
+    itself rather than read from a provider.
+
+    The singleton is *replaced* rather than mutated: the log redactor caches the
+    scrub set keyed by manager identity, and it is typically already warm by the
+    time a credential is resolved, so an in-place mutation would leave the new
+    value unredacted.
+
+    Args:
+        key: Secret name, spelled as any other provider would spell it.
+        value: The resolved credential.
+
+    Returns:
+        The manager now installed as the default.
+
+    Raises:
+        RuntimeSecretConflictError: ``key`` is already registered with a
+            different value.
+        ValueError: ``value`` is empty, which would shadow the configured chain.
+    """
+    if not value:
+        raise ValueError(
+            f"Runtime secret '{key}' was registered with an empty value; it would "
+            f"shadow the configured provider chain."
+        )
+
+    current = get_default()
+    registered: dict[str, str] = {}
+    inherited: list[SecretProvider] = []
+    for provider in current.providers:
+        if isinstance(provider, RuntimeSecretProvider):
+            registered.update(provider.as_dict())
+        else:
+            inherited.append(provider)
+
+    if registered.get(key) == value:
+        return current
+    if key in registered:
+        raise RuntimeSecretConflictError(key)
+
+    return init_default_from(
+        SecretManager([RuntimeSecretProvider({**registered, key: value}), *inherited])
+    )

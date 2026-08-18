@@ -14,13 +14,13 @@ combine:
 state_checks:
   hash:
     enabled: true
-    expected_state_hash: "0000000000000000000000000000000000000000000000000000000000000000"
     weight: 0.75
-    golden_actions:
-      - name: write_file
-        kwargs:
-          path: reports/W1.md
-          content: Widget W1 closed
+    description: the widget table is the one the task started with
+    # Not golden_actions: a replay loads a JSON file under the task directory and calls
+    # the tools of an mcp_server, neither of which this task declares. That key is
+    # carried by tests/data/tasks/shop_orders_02, whose task supplies both, and the two
+    # sources exclude each other besides.
+    expect_initial_state: true
   jsonpaths:
     - path: "$.db.widgets[0].status"
       equals: closed

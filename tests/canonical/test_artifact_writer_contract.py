@@ -24,6 +24,7 @@ from tolokaforge.core.output.artifacts import (
     TrialArtifactBundle,
     TrialArtifactWriter,
 )
+from tolokaforge.core.redaction import NoRedaction, RedactionPolicy
 
 pytestmark = pytest.mark.canonical
 
@@ -59,13 +60,13 @@ def _make_env_state() -> dict[str, Any]:
 class _FakeStructuredLogger:
     """Minimal stand-in for ``StructuredLogger`` for tests that need to invoke
     the writers without pulling in the real logging stack. The disk-backed
-    ``OutputWriter.write_logs`` calls ``logger.save_to_file(path)``; the
+    ``OutputWriter.write_logs`` calls ``logger.save_to_file(path, policy)``; the
     fake honours that contract by emitting a tiny YAML."""
 
     def __init__(self) -> None:
         self.records: list[dict[str, Any]] = []
 
-    def save_to_file(self, path: Path) -> None:
+    def save_to_file(self, path: Path, redaction: RedactionPolicy = NoRedaction()) -> None:
         path.write_text("records: []\n", encoding="utf-8")
 
 

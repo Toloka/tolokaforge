@@ -11,6 +11,19 @@ load-bearing: a key added to either substrate's config model without an entry
 here fails that suite, and every entry claiming both substrates at
 :attr:`Enforcement.DIFFERENTIAL_CANONICAL` must demonstrably move both
 substrates' component scores.
+
+Every entry addresses a *declared model field*, and ``*_element_path`` is the one
+way to name a position below one. A key living inside a field whose contents no
+model declares therefore has no address here: give that field a model, or add an
+addressing mechanism the parity suite can walk. A hand-declared address the suite
+cannot introspect is the invisibility this manifest exists to prevent.
+
+A :attr:`SubstrateCoverage.CORE_ONLY` :attr:`KeyKind.SCORED_CHECK` that still names
+a ``runner_field`` needs a standing-skip record and a recording site filing it. Such
+a key arrives populated on a real ``GradeTrial`` request, and
+``tolokaforge.runner.grading_ledger`` fails the RPC for a populated scored key with
+neither an evaluator result nor a recorded skip. Coverage that only one substrate
+reads is not a reason to leave the wire silent about it.
 """
 
 from collections.abc import Mapping
@@ -31,7 +44,8 @@ class KeyKind(str, Enum):
     """Produces a component score from a trajectory or a final state."""
 
     CONFIG_INPUT = "CONFIG_INPUT"
-    """Shapes how another check behaves; carries no score of its own."""
+    """Shapes how another check behaves or how its verdict is reported; carries no
+    score of its own."""
 
     AGGREGATION = "AGGREGATION"
     """Combines component scores into the final score."""
@@ -74,9 +88,7 @@ class GradingKey:
 
     ``core_field`` / ``runner_field`` are dotted *model attribute* paths
     (``"StateChecksConfig.jsonpaths"``), ``None`` when that substrate does not
-    declare the key at all. When the author key lives inside an untyped dict
-    field, ``*_field`` names the dict field and ``*_dict_key`` the key inside it
-    — the dict half is declared data, not introspection-verified.
+    declare the key at all.
 
     When the author key lives *inside the elements* of a ``list[BaseModel]``
     field, ``*_field`` names the list and ``*_element_path`` is a dotted path
@@ -94,7 +106,10 @@ class GradingKey:
 
     ``enforcing_test`` is a pytest nodeid — ``<module path>::<test function>`` —
     so the claim names the function that runs the differential rather than a file
-    that merely contains one.
+    that merely contains one. It is required at ``DIFFERENTIAL_INTEGRATION`` and
+    permitted at any tier, and it is resolved wherever it is present: on an entry
+    proven canonically it records where the same claim was additionally observed in
+    production, which is a pointer rather than the enforcement.
     """
 
     author_key: str
@@ -103,8 +118,6 @@ class GradingKey:
     enforcement: Enforcement
     core_field: str | None
     runner_field: str | None
-    core_dict_key: str | None = None
-    runner_dict_key: str | None = None
     core_element_path: str | None = None
     runner_element_path: str | None = None
     core_evaluator: str | None = None
@@ -131,19 +144,12 @@ class GradingKey:
                 "pytest nodeid. Name the test function that runs the differential: "
                 "<module path>::<test function>"
             )
-        for substrate, field, dict_key, element_path in (
-            ("core", self.core_field, self.core_dict_key, self.core_element_path),
-            ("runner", self.runner_field, self.runner_dict_key, self.runner_element_path),
+        for substrate, field, element_path in (
+            ("core", self.core_field, self.core_element_path),
+            ("runner", self.runner_field, self.runner_element_path),
         ):
             if element_path is None:
                 continue
-            if dict_key is not None:
-                raise ValueError(
-                    f"{self.author_key}: {substrate}_element_path {element_path!r} and "
-                    f"{substrate}_dict_key {dict_key!r} address the same field two ways. A "
-                    "dict key is declared data inside an untyped field; an element path is "
-                    "walked against the element model. Keep one"
-                )
             if field is None:
                 raise ValueError(
                     f"{self.author_key}: {substrate}_element_path {element_path!r} is walked "
@@ -162,8 +168,7 @@ class GradingKey:
             )
 
 
-_CORE_TRANSCRIPT_EVALUATOR = "tolokaforge.core.grading.transcript.TranscriptChecker.grade"
-_RUNNER_TRANSCRIPT_EVALUATOR = "tolokaforge.runner.grading.evaluate_transcript_rules"
+_TRANSCRIPT_EVALUATOR = "tolokaforge.core.grading.transcript.evaluate_transcript_rules"
 _CORE_HASH_EVALUATOR = "tolokaforge.core.grading.state_checks.StateChecker.check_hash"
 
 RUNNER_HASH_EVALUATOR = "tolokaforge.runner.service.RunnerServiceImpl._execute_hash_grading"
@@ -181,26 +186,50 @@ _HASH_COMPOSITION_WIRE_TEST = (
 )
 """Drives the runner's own golden-replay hash verdict into the shared composer.
 
-A matching and a diverging final state, at two weights strictly inside ``(0, 1)``,
-over real gRPC and a real db-service. The hash family's differential cannot run
-in-process: the evaluator replays golden actions against db-service over HTTP.
+A matching and a diverging final state, at two weights strictly inside ``(0, 1)``. What
+it alone covers is the transport the verdict crosses: a real ``GradeTrial`` over gRPC
+against a real db-service, where the canonical differentials drive the servicer and its
+db-service in process.
+"""
+
+_NUMERIC_STRING_FOLDING_WIRE_TEST = (
+    "tests/integration/test_docker_grading_hash_composition.py"
+    "::test_the_deployed_db_service_folds_a_listed_numeric_string_field"
+)
+"""Where the per-field folding claim was additionally observed in production.
+
+One representation difference under three field lists, graded over real gRPC against
+the containerised db-service. The enforcement itself is canonical — this records that
+the deployed service honours the query parameter the runner sends it, which no
+in-process differential can speak for.
 """
 
 _HASH_SOURCE_SHAPE_REASON = (
-    "both substrates fold the hash verdict by one shared rule, and of the two authorable "
-    "hash-source shapes only one is proven to hand them the same verdict. Proven: "
-    "golden_actions, by the enforcing_test — both replay the actions and compare against the "
-    "resulting state. Not proven: expected_state_hash alone, because no runner path reads the "
-    "translated expected_hash (#693), so the runner compares the trial against the *initial* "
-    "state where core compares it against the author's literal. An enabled hash with no "
-    "declared source is refused at the authoring gate, so the third shape is unauthorable — it "
-    "survives only in a bundle recorded before that rule, where core produces no verdict at "
-    "all while the runner's refusal semantics produce a binary one, and retrace replays it "
-    "unchanged. Golden actions with no world to replay them in is a fourth shape, unauthorable "
-    "the same way: core raises and leaves the trial unscored where the runner replays against "
-    "the live trial — the tools RegisterTrial registered, over db-service's state — and grades "
-    "it, so that divergence too survives only in a config no gate saw. Moving #693's shape "
-    "moves refusal-task verdicts, which needs its own corpus measurement"
+    "both substrates fold the hash verdict by one shared rule, and both authorable "
+    "hash-source shapes are proven to hand them the same verdict: golden_actions by the "
+    "enforcing_test, both replaying the actions and comparing against the resulting state, "
+    "and expect_initial_state by its own canonical differential. What is not proven is the "
+    "shapes no gate admits. An enabled hash with no declared source is refused at the "
+    "authoring gate, so it survives only in a bundle recorded before that rule, where core "
+    "produces no verdict at all while the runner's refusal semantics produce a binary one, "
+    "and retrace replays it unchanged. Golden actions with no world to replay them in is the "
+    "second, unauthorable the same way: core raises and leaves the trial unscored where the "
+    "runner replays against the live trial — the tools RegisterTrial registered, over "
+    "db-service's state — and grades it, so that divergence too survives only in a config no "
+    "gate saw"
+)
+
+_EXPECT_INITIAL_STATE_READ_REASON = (
+    "both substrates score the same proposition — the trial's final state is the state the "
+    "task started in — each in its own hash algebra, so the verdict is portable where a "
+    "stored digest is not (#915): core hashes the task's declared initial state and the "
+    "runner resets its database and hashes that. No *config* discriminates the runner's read "
+    "on the score, because this source's semantics coincide with an enabled block declaring "
+    "no source at all and the block refuses it beside either other source. What the read is "
+    "enforced by is the recording site: the evaluator selects its comparison basis once, "
+    "returns it, and the runtime ledger accounts for this key from that returned basis — so "
+    "an evaluator that stopped reading the key files nothing for it and the audit fails "
+    "GradeTrial"
 )
 
 _COMBINE_METHOD_PARITY_REASON = (
@@ -224,24 +253,6 @@ _COMBINE_WEIGHTS_MEMBERSHIP_REASON = (
     "the disagreement is a verdict flip rather than a magnitude"
 )
 
-_TRANSCRIPT_AGGREGATION_REASON = (
-    "core averages four fixed buckets while the runner scores one sub-check per "
-    "declared entry, so the two component scores differ in magnitude"
-)
-
-_TRANSCRIPT_PHRASE_REASON = (
-    "two independent divergences, and the second one flips the verdict rather than "
-    "scaling it. Aggregation: core averages four fixed buckets while the runner scores "
-    "one sub-check per declared entry, so the magnitudes differ. Evidence set: core "
-    "searches user turns, assistant turns and tool results, while the runner searches "
-    "assistant turns alone — so a phrase that appears only in a tool result is FOUND "
-    "core-side and MISSING runner-side for the same trial. Measured on a records-present "
-    "timeline: must_contain(['refunds allowed']) against a tool result carrying it returns "
-    "1.0 on core and 0.0 on the runner. Both predate #676; the runner's narrower set is "
-    "pinned by test_must_contain_only_searches_assistant_turns, so it is deliberate rather "
-    "than an oversight, and #685 must reconcile the evidence sets and not only the averaging"
-)
-
 _TRACE_CHECKS_EVALUATOR = "tolokaforge.core.grading.trace_checks.evaluate_trace_checks"
 """The one evaluator both substrates score ``trace_checks`` with.
 
@@ -251,17 +262,6 @@ implementations kept in step, and the block crosses the adapter as the same clas
 — there is no per-key translation for either to drift through.
 """
 
-_TRACE_CHECKS_EVIDENCE_LIMITS = (
-    "three declared limits on the evidence a matcher may read, so none of them "
-    "surfaces as undeclared drift. #717: a failed call's recorded result text is not "
-    "identical on the two substrates, so a result predicate is admitted only beside a "
-    "status predicate reading exactly {equals: success}, and rejected at load "
-    "otherwise. #688: no timeline event carries executor: user, so an executor "
-    "predicate selecting it matches nothing on either substrate. #727: a "
-    "TRIAL_NOT_FOUND harness fault is recorded as a tool error, so a status predicate "
-    "reading error can select a call whose failure was not the agent's"
-)
-
 _TRACE_CHECKS_ALTERNATIVES_NARROWING = (
     "the alternative routes a pack declares, each scored as a whole against the "
     "shared constraints plus its own. An entry carries one runner_field, and the "
@@ -270,7 +270,7 @@ _TRACE_CHECKS_ALTERNATIVES_NARROWING = (
     "by this key rather than by its own "
     "— #772 narrows the ledger's populated-implies-accounted guarantee there. The "
     "parity claim is untouched: one function reads a TraceConstraint identically "
-    "whichever list it came from. "
+    "whichever list it came from."
 )
 
 _TRACE_CHECKS_FAMILY_ROOT_REASON = (
@@ -278,7 +278,7 @@ _TRACE_CHECKS_FAMILY_ROOT_REASON = (
     "leaves live under, and every score under it is a leaf's. CONFIG_INPUT is what "
     "that is — the root shapes nothing and scores nothing of its own — and the "
     "differential its enforcement claims is the family's, run by the leaves' own "
-    "fixture packs. " + _TRACE_CHECKS_EVIDENCE_LIMITS
+    "fixture packs."
 )
 
 
@@ -322,7 +322,6 @@ def _trace_constraint_kind_key(kind: str) -> GradingKey:
         runner_element_path=f"require.{kind}",
         core_evaluator=_TRACE_CHECKS_EVALUATOR,
         runner_evaluator=_TRACE_CHECKS_EVALUATOR,
-        reason=_TRACE_CHECKS_EVIDENCE_LIMITS,
     )
 
 
@@ -381,7 +380,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
-        core_field="StateChecksConfig.hash",
+        core_field=None,
         runner_field=None,
         core_evaluator=_CORE_HASH_EVALUATOR,
         runner_evaluator=RUNNER_HASH_EVALUATOR,
@@ -394,9 +393,8 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
-        core_field="StateChecksConfig.hash",
+        core_field="StateHashConfig.enabled",
         runner_field="RunnerStateChecksConfig.hash_enabled",
-        core_dict_key="enabled",
         core_evaluator=_CORE_HASH_EVALUATOR,
         runner_evaluator=RUNNER_HASH_EVALUATOR,
         enforcing_test=_HASH_COMPOSITION_WIRE_TEST,
@@ -407,9 +405,8 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
-        core_field="StateChecksConfig.hash",
+        core_field="StateHashConfig.golden_actions",
         runner_field="RunnerStateChecksConfig.golden_actions",
-        core_dict_key="golden_actions",
         core_evaluator=(
             "tolokaforge.core.grading.state_checks.StateChecker.check_hash_against_golden_replay"
         ),
@@ -417,32 +414,39 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         enforcing_test=_HASH_COMPOSITION_WIRE_TEST,
     ),
     GradingKey(
-        author_key="state_checks.hash.expected_state_hash",
+        author_key="state_checks.hash.expect_initial_state",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.CORE_ONLY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
-        core_field="StateChecksConfig.hash",
-        runner_field="RunnerStateChecksConfig.expected_hash",
-        core_dict_key="expected_state_hash",
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
+        core_field="StateHashConfig.expect_initial_state",
+        runner_field="RunnerStateChecksConfig.expect_initial_state",
         core_evaluator=_CORE_HASH_EVALUATOR,
-        reason=(
-            "the adapter translates it onto the runner's expected_hash field and no "
-            "runner code path reads it: hash grading always recomputes a golden hash "
-            "from golden_actions, and the proto's precomputed_expected_hash is never "
-            "populated by the host"
-        ),
-        tracking_issue=693,
+        runner_evaluator=RUNNER_HASH_EVALUATOR,
+        reason=_EXPECT_INITIAL_STATE_READ_REASON,
     ),
     GradingKey(
         author_key="state_checks.hash.weight",
         kind=KeyKind.CONFIG_INPUT,
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
-        core_field="StateChecksConfig.hash",
+        core_field="StateHashConfig.weight",
         runner_field="RunnerStateChecksConfig.hash_weight",
-        core_dict_key="weight",
         core_evaluator="tolokaforge.core.grading.state_composition.compose_state_checks_score",
         runner_evaluator="tolokaforge.runner.grading.resolve_state_checks_component",
+    ),
+    GradingKey(
+        author_key="state_checks.hash.description",
+        kind=KeyKind.CONFIG_INPUT,
+        coverage=SubstrateCoverage.CORE_ONLY,
+        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        core_field="StateHashConfig.description",
+        runner_field=None,
+        core_evaluator="tolokaforge.core.grading.combine.GradingEngine._check_state_hash",
+        reason=(
+            "the runner's flattened hash block declares no description field, so there is "
+            "nothing on that substrate for the key to resolve against: the wire carries the "
+            "runner's hash verdict, not the reason text an author writes beside it"
+        ),
     ),
     GradingKey(
         author_key="state_checks.jsonpaths",
@@ -458,12 +462,12 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         author_key="state_checks.numeric_string_fields",
         kind=KeyKind.CONFIG_INPUT,
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="StateChecksConfig.numeric_string_fields",
         runner_field="RunnerStateChecksConfig.numeric_string_fields",
         core_evaluator="tolokaforge.core.hash.compute_stable_hash",
         runner_evaluator=RUNNER_HASH_EVALUATOR,
-        tracking_issue=687,
+        enforcing_test=_NUMERIC_STRING_FOLDING_WIRE_TEST,
     ),
     GradingKey(
         author_key="state_checks.id_fields",
@@ -506,38 +510,32 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
     GradingKey(
         author_key="transcript_rules.must_contain",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.must_contain",
-        runner_field="RunnerTranscriptRulesConfig.must_contain",
-        core_evaluator=_CORE_TRANSCRIPT_EVALUATOR,
-        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_PHRASE_REASON,
-        tracking_issue=685,
+        runner_field="TranscriptRulesConfig.must_contain",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_TRANSCRIPT_EVALUATOR,
     ),
     GradingKey(
         author_key="transcript_rules.disallow_regex",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.disallow_regex",
-        runner_field="RunnerTranscriptRulesConfig.disallow_regex",
-        core_evaluator=_CORE_TRANSCRIPT_EVALUATOR,
-        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_PHRASE_REASON,
-        tracking_issue=685,
+        runner_field="TranscriptRulesConfig.disallow_regex",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_TRANSCRIPT_EVALUATOR,
     ),
     GradingKey(
         author_key="transcript_rules.max_turns",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.max_turns",
-        runner_field="RunnerTranscriptRulesConfig.max_turns",
-        core_evaluator=_CORE_TRANSCRIPT_EVALUATOR,
-        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_AGGREGATION_REASON,
-        tracking_issue=685,
+        runner_field="TranscriptRulesConfig.max_turns",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_TRANSCRIPT_EVALUATOR,
     ),
     GradingKey(
         author_key="transcript_rules.min_assistant_turns",
@@ -545,54 +543,39 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.min_assistant_turns",
-        runner_field="RunnerTranscriptRulesConfig.min_assistant_turns",
-        core_evaluator=_CORE_TRANSCRIPT_EVALUATOR,
-        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
+        runner_field="TranscriptRulesConfig.min_assistant_turns",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_TRANSCRIPT_EVALUATOR,
     ),
     GradingKey(
         author_key="transcript_rules.required_actions",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.required_actions",
-        runner_field="RunnerTranscriptRulesConfig.required_actions",
-        core_evaluator="tolokaforge.core.evaluators.action_evaluator.ActionEvaluator.evaluate_actions",
-        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_AGGREGATION_REASON,
-        tracking_issue=685,
+        runner_field="TranscriptRulesConfig.required_actions",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_TRANSCRIPT_EVALUATOR,
     ),
     GradingKey(
         author_key="transcript_rules.communicate_info",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.communicate_info",
-        runner_field="RunnerTranscriptRulesConfig.communicate_info",
-        core_evaluator=(
-            "tolokaforge.core.evaluators.communicate_evaluator."
-            "CommunicateEvaluator.evaluate_communication"
-        ),
-        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_AGGREGATION_REASON,
-        tracking_issue=685,
+        runner_field="TranscriptRulesConfig.communicate_info",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_TRANSCRIPT_EVALUATOR,
     ),
     GradingKey(
         author_key="transcript_rules.tool_expectations",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.tool_expectations",
-        runner_field="RunnerTranscriptRulesConfig.tool_expectations",
-        core_evaluator=(
-            "tolokaforge.core.grading.transcript.TranscriptChecker.check_tool_expectations"
-        ),
-        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
-        reason=(
-            "core folds both tool lists into one of four averaged buckets and ignores call "
-            "status; the runner scores one sub-check per declared tool and requires a "
-            "required tool's call to have succeeded"
-        ),
-        tracking_issue=685,
+        runner_field="TranscriptRulesConfig.tool_expectations",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_TRANSCRIPT_EVALUATOR,
     ),
     GradingKey(
         author_key="trace_checks",
@@ -615,7 +598,6 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_field="TraceChecksConfig.constraints",
         core_evaluator=_TRACE_CHECKS_EVALUATOR,
         runner_evaluator=_TRACE_CHECKS_EVALUATOR,
-        reason=_TRACE_CHECKS_EVIDENCE_LIMITS,
     ),
     GradingKey(
         author_key="trace_checks.alternatives",
@@ -626,37 +608,36 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_field="TraceChecksConfig.alternatives",
         core_evaluator=_TRACE_CHECKS_EVALUATOR,
         runner_evaluator=_TRACE_CHECKS_EVALUATOR,
-        reason=_TRACE_CHECKS_ALTERNATIVES_NARROWING + _TRACE_CHECKS_EVIDENCE_LIMITS,
+        reason=_TRACE_CHECKS_ALTERNATIVES_NARROWING,
     ),
     *(_trace_constraint_kind_key(kind) for kind in _TRACE_CONSTRAINT_MANIFEST_KINDS),
     _trace_constraint_field_key(
         "weight",
         "the share of the component score a constraint carries, which both substrates "
-        "fold by the same weighted fraction. " + _TRACE_CHECKS_EVIDENCE_LIMITS,
+        "fold by the same weighted fraction.",
     ),
     _trace_constraint_field_key(
         "on_missing",
         "what an anchor that matched nothing decides, which is a policy over the "
-        "constraint's verdict rather than a check of its own. " + _TRACE_CHECKS_EVIDENCE_LIMITS,
+        "constraint's verdict rather than a check of its own.",
     ),
     _trace_constraint_field_key(
         "severity",
         "whether a constraint carries a share of the component or is a gate that must "
         "hold, which decides whether it enters the weighted average at all and whether "
-        "its violation takes the component to 0.0. " + _TRACE_CHECKS_EVIDENCE_LIMITS,
+        "its violation takes the component to 0.0.",
     ),
     _trace_constraint_field_key(
         "within",
         "the inclusive turn window every matcher in a constraint is restricted to, "
-        "which narrows what the kinds select. " + _TRACE_CHECKS_EVIDENCE_LIMITS,
+        "which narrows what the kinds select.",
     ),
     _trace_constraint_field_key(
         "bind",
         "the values a constraint draws out of one event, which every matcher in its "
         "require tree then resolves a binding reference against — so the kinds are "
         "read once per candidate assignment rather than once, and the policy for a "
-        "binder that yielded none decides the constraint on its own. "
-        + _TRACE_CHECKS_EVIDENCE_LIMITS,
+        "binder that yielded none decides the constraint on its own.",
     ),
     GradingKey(
         author_key="llm_judge",
@@ -739,6 +720,14 @@ NO_TIMELINE_EVENTS_SKIP = KeyAccountingRecord(
 UNBOUND_BINDING_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="the binding yielded no assignment"
 )
+
+MUST_CONTAIN_KEY = checked_author_key("transcript_rules.must_contain")
+DISALLOW_REGEX_KEY = checked_author_key("transcript_rules.disallow_regex")
+MAX_TURNS_KEY = checked_author_key("transcript_rules.max_turns")
+MIN_ASSISTANT_TURNS_KEY = checked_author_key("transcript_rules.min_assistant_turns")
+TOOL_EXPECTATIONS_KEY = checked_author_key("transcript_rules.tool_expectations")
+REQUIRED_ACTIONS_KEY = checked_author_key("transcript_rules.required_actions")
+COMMUNICATE_INFO_KEY = checked_author_key("transcript_rules.communicate_info")
 
 TRACE_CONSTRAINTS_KEY = checked_author_key("trace_checks.constraints")
 

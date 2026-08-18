@@ -14,12 +14,14 @@ from typing import get_args as _get_type_args
 import click
 import yaml
 from rich.console import Console
+from rich.markup import escape
 
 from tolokaforge.core import pricing
 from tolokaforge.core.budgets import LimitHitMarker, make_budget
 from tolokaforge.core.dry_run import load_tasks_for_dry_run, materialize_dry_run_sample
 from tolokaforge.core.duration import parse_duration
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
+from tolokaforge.core.grading.corpus_curation import CurationError, curate_corpus
 from tolokaforge.core.grading.replay import (
     KnowledgeSearchMode,
     ReplayOutcomeStatus,
@@ -29,10 +31,13 @@ from tolokaforge.core.grading.replay import (
     load_grading_override,
     run_replay_batch,
 )
+from tolokaforge.core.grading.replay_layout import JUDGE_REPLAY_DIRNAME
 from tolokaforge.core.grading.rubric_migration import (
     DEFAULT_PACKS_ROOT,
     ReconcileError,
+    ReconcileReport,
     reconcile_corpus,
+    reconcile_declared_corpora,
     reconcile_root,
 )
 from tolokaforge.core.grading.trace_replay import (
@@ -60,7 +65,14 @@ from tolokaforge.core.logging import (
 )
 from tolokaforge.core.models import ModelConfig, ProjectConfig, RunConfig, TaskConfig
 from tolokaforge.core.models.docker_config import ImageSource as _ImageSourceLiteral
-from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps, resolve_run_directory
+from tolokaforge.core.orchestrator import (
+    GradingCompleteness,
+    Orchestrator,
+    OrchestratorDeps,
+    resolve_run_directory,
+)
+from tolokaforge.core.output.artifacts import RedactedBundleError
+from tolokaforge.core.output_writer import GRADE_FILENAME, METRICS_FILENAME
 from tolokaforge.core.project_loader import (
     construct_config,
     find_project_yaml,
@@ -81,6 +93,7 @@ from tolokaforge.dx.banners import (
     print_run_end_banner,
     print_run_start_banner,
 )
+from tolokaforge.dx.curation_render import render_curation
 from tolokaforge.dx.dry_run_render import render_dry_run
 from tolokaforge.dx.live_panel import LiveRunDisplay
 from tolokaforge.dx.rubric_migration_render import render_reconcile_report
@@ -205,6 +218,7 @@ class _GroupedCommandsGroup(click.Group):
         "status": "Runs",
         "analyze": "Runs",
         "browse": "Runs",
+        "curate": "Runs",
         "reconcile": "Runs",
         "rejudge": "Runs",
         "retrace": "Runs",
@@ -442,6 +456,37 @@ def _activate_presets_overlay(
     if resolved is not None:
         validate_overlay_file(resolved)
     return resolved
+
+
+_UNGRADEABLE_TRIALS_NAMED = 5
+"""How many ungradeable trial ids the error line names before it stops counting
+and states the total. A lossy run can lose hundreds; the ids are all in
+``aggregate.json`` and the operator needs the shape, not the list."""
+
+
+def _fail_on_ungradeable_trials(completeness: GradingCompleteness) -> None:
+    """Exit 1 when the run finished without a verdict for something it measured.
+
+    Called after the run has completed normally — every artifact written, the end
+    banner printed, the run directory already emitted on stdout. The run
+    executed, so the banner's success axis stays true; this is the separate
+    question of whether it measured everything it attempted, and the exit code
+    plus this line are its only channel.
+    """
+    if completeness.is_complete:
+        return
+    named = completeness.ungradeable_trial_ids[:_UNGRADEABLE_TRIALS_NAMED]
+    trailing = completeness.ungradeable - len(named)
+    # A trial id is task-authored text; escape it so Rich prints a bracket in
+    # one literally instead of reading it as markup.
+    listed = escape(", ".join(named) + (f", and {trailing} more" if trailing else ""))
+    console.print(
+        "[red]Run incomplete:[/red] "
+        f"{completeness.ungradeable} of {completeness.total_attempts} attempts "
+        f"could not be graded ({listed}). See 'ungradeable' in aggregate.json, "
+        "and each trial's trajectory.yaml 'grading_error' for why."
+    )
+    raise SystemExit(1)
 
 
 def _run_dry_run(
@@ -879,19 +924,40 @@ def run(
             stopped_reason=stopped_reason,
         )
     emit_artifact_path(output_dir)
+    _fail_on_ungradeable_trials(orchestrator.grading_completeness)
+
+
+def _relative_bundle(bundle: Path, source: Path) -> str:
+    """A bundle's path as the operator named the source, or its own name from outside it."""
+    try:
+        return str(bundle.relative_to(source))
+    except ValueError:
+        return bundle.name
 
 
 def _print_rejudge_summary(
     outcomes: list[TrialReplayOutcome], *, replay_id: str, source: Path, dry_run: bool
 ) -> None:
-    """Print the batch disposition per trial + the aggregate counts."""
+    """Print one line per discovered bundle, then the census over the whole batch."""
     label = "Would re-judge" if dry_run else "Re-judged"
     for outcome in outcomes:
-        rel = outcome.bundle
+        rel = _relative_bundle(outcome.bundle, source)
         if outcome.status is ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE:
             console.print(f"[yellow]skip (not applicable)[/yellow] {rel}")
+        elif outcome.status is ReplayOutcomeStatus.SKIPPED_NO_GRADE:
+            # The reason embeds recorded grading_error free text; escape it so a
+            # bracketed fragment prints rather than vanishing as console markup.
+            reason = escape(outcome.reason or "")
+            console.print(f"[yellow]skip (no grade)[/yellow] {rel} — {reason}")
         elif outcome.status is ReplayOutcomeStatus.FAILED:
-            console.print(f"[red]failed[/red] {rel} — {outcome.reason}")
+            # ``outcome.reason`` is ``str(exc)`` for a ``MissingReplayInputError``
+            # or a pydantic ``ValidationError`` — user-authored text can carry
+            # rich-markup brackets that Rich would either fail to parse
+            # (``MarkupError``) or silently truncate. Match the sibling SKIP
+            # branch above and escape the reason (and ``rel``, since bundle
+            # paths are authored-adjacent).
+            reason = escape(outcome.reason or "")
+            console.print(f"[red]failed[/red] {escape(rel)} — {reason}")
         else:
             prov = outcome.provenance
             model = prov.judge_model if prov else "?"
@@ -907,13 +973,14 @@ def _print_rejudge_summary(
         for o in outcomes
     )
     skipped = sum(o.status is ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE for o in outcomes)
+    no_grade = sum(o.status is ReplayOutcomeStatus.SKIPPED_NO_GRADE for o in outcomes)
     failed = sum(o.status is ReplayOutcomeStatus.FAILED for o in outcomes)
     console.print(
-        f"\n[bold]{label}:[/bold] {eligible} eligible, "
-        f"{skipped} skipped-not-applicable, {failed} failed-with-reason"
+        f"\n[bold]{label}:[/bold] {len(outcomes)} discovered: {eligible} eligible, "
+        f"{skipped} not-applicable, {no_grade} no-grade, {failed} failed"
     )
     if not dry_run and eligible:
-        console.print(f"Replay artifacts: {source / 'replays' / replay_id}")
+        console.print(f"Replay artifacts: {source / JUDGE_REPLAY_DIRNAME / replay_id}")
 
 
 def _print_replay_report(report: ReplayReport) -> None:
@@ -944,8 +1011,9 @@ def _print_replay_report(report: ReplayReport) -> None:
     type=click.Path(exists=True, file_okay=False),
     help=(
         "Recorded run dir (trials/<task>/<idx> subtree), a flat collection of trial "
-        "bundle dirs, or a single bundle dir. A directory is a bundle iff it contains "
-        "grade.yaml + task.yaml."
+        "bundle dirs, or a single bundle dir. A directory is a bundle iff it directly "
+        "contains trajectory.yaml; a trial that produced no grade is discovered and "
+        "reported as a no-grade skip."
     ),
 )
 @click.option(
@@ -1006,8 +1074,10 @@ def rejudge(
     Re-executes only the rubric judge over recorded trajectories — no agent re-run,
     no live services — so judge changes (schema, prompt, wording, model) can be
     A/B-tested against a recorded run. Execution is sequential with no concurrency
-    cap; inspect --dry-run first. Exits non-zero when any trial fails to classify
-    or reconstruct (the report for the replayed subset is still written). See
+    cap; inspect --dry-run first. Every discovered bundle gets a line and the batch
+    closes with a census over all of them. Exits non-zero when any trial fails to
+    classify or reconstruct (the report for the replayed subset is still written),
+    and when --source discovers no bundle at all. A skip never does. See
     docs/JUDGE_REPLAY.md.
     """
     source_path = Path(source)
@@ -1015,15 +1085,23 @@ def rejudge(
     grading_override = load_grading_override(Path(grading)) if grading else None
 
     console.print(f"[bold blue]Re-judging trials under {source_path}...[/bold blue]")
-    outcomes = run_replay_batch(
-        source_path,
-        replay_id=replay_id,
-        trial=Path(trial) if trial else None,
-        grading_override=grading_override,
-        judge_model_override=judge_model,
-        knowledge_search=KnowledgeSearchMode(knowledge_search),
-        dry_run=dry_run,
-    )
+    try:
+        outcomes = run_replay_batch(
+            source_path,
+            replay_id=replay_id,
+            trial=Path(trial) if trial else None,
+            grading_override=grading_override,
+            judge_model_override=judge_model,
+            knowledge_search=KnowledgeSearchMode(knowledge_search),
+            dry_run=dry_run,
+        )
+    except RedactedBundleError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not outcomes:
+        raise click.ClickException(
+            f"no trial bundle under {source_path} — a batch that discovered nothing "
+            "re-judges nothing. A bundle is a directory holding trajectory.yaml"
+        )
     _print_rejudge_summary(outcomes, replay_id=replay_id, source=source_path, dry_run=dry_run)
 
     if not dry_run:
@@ -1063,9 +1141,9 @@ def _checked_replay_id(ctx: click.Context, param: click.Parameter, value: str | 
     type=click.Path(exists=True, file_okay=False),
     help=(
         "Recorded run dir (trials/<task>/<idx> subtree), a flat collection of trial "
-        "bundle dirs, or a single bundle dir. A directory is a bundle iff it contains "
-        "task.yaml + trajectory.yaml — a trial is worth re-checking whether or not it "
-        "was graded."
+        "bundle dirs, or a single bundle dir. A directory is a bundle iff it directly "
+        "contains trajectory.yaml — a trial is worth re-checking whether or not it was "
+        "graded, and one that never ran is reported rather than dropped."
     ),
 )
 @click.option(
@@ -1154,7 +1232,7 @@ def retrace(
     if report is None:
         raise click.ClickException(
             f"no trial bundle under {source_path} — a selector matching nothing validates "
-            "nothing. A bundle is a directory holding task.yaml + trajectory.yaml"
+            "nothing. A bundle is a directory holding trajectory.yaml"
         )
 
     render_trace_replay_report(
@@ -1166,14 +1244,126 @@ def retrace(
         raise SystemExit(1)
 
 
+def _named_exclusions(
+    ctx: click.Context, param: click.Parameter, value: tuple[str, ...]
+) -> dict[Path, str]:
+    """Parse ``--exclude <bundle-dir>=<reason>`` into the paths and the reasons given."""
+    exclusions: dict[Path, str] = {}
+    for item in value:
+        directory, separator, reason = item.partition("=")
+        if not (separator and directory and reason.strip()):
+            raise click.BadParameter(
+                f"{item!r} is not <bundle-dir>=<reason>. An exclusion is the author's own "
+                "judgment about one bundle, and the corpus records the reason beside the path",
+                ctx=ctx,
+                param=param,
+            )
+        exclusions[Path(directory)] = reason.strip()
+    return exclusions
+
+
+@cli.command(name="curate")
+@click.option(
+    "--source",
+    "sources",
+    required=True,
+    multiple=True,
+    type=click.Path(exists=True, file_okay=False),
+    help=(
+        "Recorded run dir (trials/<task>/<idx> subtree) or a single bundle dir; repeatable, "
+        "because a corpus is often assembled from several runs. A directory is a bundle iff "
+        "it directly contains trajectory.yaml."
+    ),
+)
+@click.option(
+    "--into",
+    required=True,
+    type=click.Path(file_okay=False),
+    help="Corpus directory to write. A multi-part corpus is a directory of corpora: one "
+    "invocation per part, each with its own --into.",
+)
+@click.option(
+    "--criterion",
+    required=True,
+    help="Rubric criterion id the corpus carries the judge's recorded verdicts for.",
+)
+@click.option(
+    "--exclude",
+    "exclusions",
+    multiple=True,
+    metavar="DIR=REASON",
+    callback=_named_exclusions,
+    help="Reject one discovered bundle by the author's own judgment, recorded in the "
+    "manifest as 'by: author' with this reason; repeatable. It does not cover a bundle "
+    "that cannot be read: an unreadable one aborts the run before any exclusion applies.",
+)
+@click.option(
+    "--replace",
+    is_flag=True,
+    help="Rewrite the whole --into directory. Without it, a destination that already holds "
+    "a corpus.yaml is an error.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Classify every discovered bundle and report what would be curated, writing nothing.",
+)
+def curate(
+    sources: tuple[str, ...],
+    into: str,
+    criterion: str,
+    exclusions: dict[Path, str],
+    replace: bool,
+    dry_run: bool,
+):
+    """Write a judge-labelled corpus from recorded runs, spending nothing.
+
+    A bundle enters the corpus iff it carries task.yaml, trajectory.yaml and grade.yaml,
+    its judge completed, its criterion_results holds a verdict for --criterion, and it is
+    not environment-dead — carrying a tool-call record whose calls all failed. Every trial
+    that does not enter is named with its reason, and both halves are written into the
+    corpus's own corpus.yaml, so the composition outlives the run directories it came from.
+
+    A bundle whose artifacts cannot be read aborts the run naming the file, and --exclude
+    does not reach it: classification reads the bundle, so there is nothing to exclude it
+    on. Point --source at the directories that survive instead.
+
+    Exits non-zero when no bundle is admitted. See docs/RUBRIC_MIGRATION.md.
+    """
+    source_paths = [Path(source) for source in sources]
+    console.print(
+        f"[bold blue]Curating {criterion} from {len(source_paths)} source(s)...[/bold blue]"
+    )
+    try:
+        outcome = curate_corpus(
+            sources=source_paths,
+            into=Path(into),
+            criterion=criterion,
+            exclusions=exclusions,
+            replace=replace,
+            dry_run=dry_run,
+        )
+    except CurationError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    render_curation(outcome, dry_run=dry_run, console=console)
+    if not outcome.manifest.bundles:
+        raise click.ClickException(
+            f"no bundle under {', '.join(str(source) for source in source_paths)} is admissible "
+            f"evidence for {criterion} — a corpus of nothing is evidence of nothing"
+        )
+
+
 @cli.command(name="reconcile")
 @click.option(
     "--source",
-    required=True,
+    default=None,
     type=click.Path(exists=True, file_okay=False),
     help=(
         "Corpus of recorded trial bundles the migration's evidence comes from — a run dir, "
-        "a flat collection of bundle dirs, or a single bundle dir."
+        "a flat collection of bundle dirs, or a single bundle dir. Omitted, every migration "
+        "declared under --packs is reconciled over the corpus its own declaration names, "
+        "which writes nothing and so needs --dry-run and takes no --replay-id."
     ),
 )
 @click.option(
@@ -1181,9 +1371,10 @@ def retrace(
     multiple=True,
     type=click.Path(exists=True, file_okay=False),
     help=(
-        "Directory searched recursively for the pack each bundle's task_id names; repeatable. "
-        f"A task_id resolving in none of them, or in more than one, is an error naming the id "
-        f"and the roots searched. Default: {DEFAULT_PACKS_ROOT}."
+        "Directory searched recursively for the pack each bundle's task_id names, and for the "
+        "declarations the sweep reconciles; repeatable. A task_id resolving in none of them, "
+        f"or in more than one, is an error naming the id and the roots searched. "
+        f"Default: {DEFAULT_PACKS_ROOT}."
     ),
 )
 @click.option(
@@ -1198,7 +1389,7 @@ def retrace(
     is_flag=True,
     help="Reconcile and report, writing no artifact.",
 )
-def reconcile(source: str, packs: tuple[str, ...], replay_id: str | None, dry_run: bool):
+def reconcile(source: str | None, packs: tuple[str, ...], replay_id: str | None, dry_run: bool):
     """Check a pack's declared rubric migration against recorded judge verdicts.
 
     For every criterion a pack's migration.yaml declares, recomputes the trace constraints
@@ -1207,36 +1398,82 @@ def reconcile(source: str, packs: tuple[str, ...], replay_id: str | None, dry_ru
     with the judge's own justification. Spends nothing — no agent, no judge, no containers —
     and edits no pack whatever the verdict.
 
+    With no --source, every migration declared under --packs is reconciled over the corpus
+    its own declaration names, which is the invocation CI runs: it writes nothing, and there
+    the declared evidence must match the measurement exactly rather than bound it.
+
     Exits zero only when every narrowed/retired entry reaches `no_counter_evidence`: an
     undefined κ (`insufficient_evidence`) and a refusal both exit non-zero, as does an
     unreadable bundle. A `candidate` entry's verdict is reported and gates nothing. See
     docs/RUBRIC_MIGRATION.md.
     """
-    source_path = Path(source)
-    replay_id = replay_id or f"reconcile_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    roots = [Path(root) for root in packs] or None
+    reports = (
+        _every_declaration_reconciled(roots, replay_id=replay_id, dry_run=dry_run)
+        if source is None
+        else (_one_corpus_reconciled(Path(source), roots, replay_id=replay_id, dry_run=dry_run),)
+    )
+    blocking = [reason for report in reports for reason in report.blocking]
+    if not blocking:
+        return
+    for reason in blocking:
+        console.print(f"[error]blocks the migration[/error] {reason}")
+    raise SystemExit(1)
 
-    console.print(f"[bold blue]Reconciling declared migrations under {source_path}...[/bold blue]")
+
+def _one_corpus_reconciled(
+    source: Path, roots: list[Path] | None, *, replay_id: str | None, dry_run: bool
+) -> ReconcileReport:
+    """The corpus somebody pointed at, against every declaration its trials reach."""
+    replay_id = replay_id or f"reconcile_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    console.print(f"[bold blue]Reconciling declared migrations under {source}...[/bold blue]")
     try:
         report = reconcile_corpus(
-            source_path,
-            replay_id=replay_id,
-            packs=[Path(root) for root in packs] or None,
-            dry_run=dry_run,
+            source, replay_id=replay_id, packs=roots, dry_run=dry_run, corpus_base=Path.cwd()
         )
     except ReconcileError as exc:
         raise click.ClickException(str(exc)) from exc
 
     render_reconcile_report(
         report,
-        artifacts_dir=None if dry_run else reconcile_root(source_path, replay_id),
+        artifacts_dir=None if dry_run else reconcile_root(source, replay_id),
         console=console,
     )
-    blocking = report.blocking
-    if not blocking:
-        return
-    for reason in blocking:
-        console.print(f"[error]blocks the migration[/error] {reason}")
-    raise SystemExit(1)
+    return report
+
+
+def _every_declaration_reconciled(
+    roots: list[Path] | None, *, replay_id: str | None, dry_run: bool
+) -> tuple[ReconcileReport, ...]:
+    """Every declaration under the searched packs, over the corpus each of them names.
+
+    The two invocations this mode cannot honour are refused rather than ignored: it writes
+    nothing at all, so a name for an artifact and a request to keep one are both about a
+    report that will not exist.
+    """
+    if replay_id is not None:
+        raise click.ClickException(
+            "--replay-id names the subdirectory a report is written to, and reconciling every "
+            "declaration writes none: the corpora are committed, so a report inside one would "
+            "dirty the tree. Drop --replay-id, or pass --source to reconcile one corpus"
+        )
+    if not dry_run:
+        raise click.ClickException(
+            "reconciling every declaration writes nothing, because a report lands under the "
+            "corpus it read and every corpus here is committed. Pass --dry-run to say so, or "
+            "pass --source to reconcile one corpus and keep its report"
+        )
+    console.print(
+        "[bold blue]Reconciling every declared migration over the corpus it names...[/bold blue]"
+    )
+    try:
+        reports = reconcile_declared_corpora(packs=roots, corpus_base=Path.cwd())
+    except ReconcileError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    for report in reports:
+        render_reconcile_report(report, artifacts_dir=None, console=console)
+    return reports
 
 
 @cli.command(name="prepare")
@@ -1363,6 +1600,7 @@ def worker(
             **summary
         )
     )
+    _fail_on_ungradeable_trials(orchestrator.grading_completeness)
 
 
 @cli.command()
@@ -1395,13 +1633,13 @@ def analyze(trajectory: str):
     logs = []
 
     if metrics is None:
-        metrics_path = traj_path.parent / "metrics.yaml"
+        metrics_path = traj_path.parent / METRICS_FILENAME
         if metrics_path.exists():
             with open(metrics_path) as f:
                 metrics = yaml.safe_load(f)
 
     if grade is None:
-        grade_path = traj_path.parent / "grade.yaml"
+        grade_path = traj_path.parent / GRADE_FILENAME
         if grade_path.exists():
             with open(grade_path) as f:
                 grade = yaml.safe_load(f)
@@ -1527,6 +1765,7 @@ def validate(tasks: str):
         grading_source_under_adapter,
         hash_source_layer_under_adapter,
         replay_world_under_adapter,
+        seeded_tables_under_adapter,
         tool_inventory_under_adapter,
         validate_grading_yaml,
     )
@@ -1560,12 +1799,19 @@ def validate(tasks: str):
                         task_config, task_dir, task_config.adapter_type
                     ),
                     replay_world=replay_world_under_adapter(task_config, task_config.adapter_type),
-                    hash_sources=hash_source_layer_under_adapter(task_config.adapter_type),
+                    hash_sources=hash_source_layer_under_adapter(
+                        task_config, task_dir, task_config.adapter_type
+                    ),
+                    seeded_tables=seeded_tables_under_adapter(
+                        task_config, task_dir, task_config.adapter_type
+                    ),
                     combine_layer=CombineLayer(project_combine),
                 )
                 # Only here, and deliberately not in the pre-run gate: a migration
                 # declaration cannot affect a grade, so a run must not abort on it.
-                inspect_migration_declaration(source.path)
+                # The base each entry's corpus resolves against is this layer's to
+                # supply: the loader takes it as a parameter and reads no ambient state.
+                inspect_migration_declaration(source.path, corpus_base=Path.cwd())
             console.print(f"[green]✓ {task_file}[/green]")
             for skip in report.unchecked:
                 console.print(f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]")

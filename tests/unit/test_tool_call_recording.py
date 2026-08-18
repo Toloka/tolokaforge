@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tolokaforge.core.grading.trace_timeline import TraceEventKind, build_trial_timeline
 from tolokaforge.core.llm import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import get_logger
@@ -27,15 +28,17 @@ from tolokaforge.core.loop import (
 )
 from tolokaforge.core.models import (
     Message,
+    MessageRole,
     ToolCall,
     ToolExecutionStatus,
     ToolExecutorIdentity,
+    Trajectory,
 )
 from tolokaforge.core.runner import TrialRunner, TrialToolCallRecorder
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import Tool, ToolExecutor, ToolRegistry, ToolResult
-from tolokaforge.tools.user_tools import UserToolExecutor
 
 pytestmark = pytest.mark.unit
 
@@ -112,6 +115,26 @@ class _Boom(Tool):
         raise RuntimeError("kaboom")
 
 
+class _Silent(Tool):
+    """Fails without saying why: ``error`` is left unset, not merely empty."""
+
+    def __init__(self) -> None:
+        super().__init__("silent", "Fail without saying why")
+
+    def get_schema(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+    def execute(self, **kwargs: Any) -> ToolResult:
+        return ToolResult(success=False, output="")
+
+
 class _Secretive(Tool):
     """Takes an argument whose name the deleted redaction rewrote."""
 
@@ -141,6 +164,23 @@ def _registry(*tools: Tool) -> ToolRegistry:
     for tool in tools:
         registry.register(tool)
     return registry
+
+
+class _CallIdWatchingExecutor(ToolExecutor):
+    """The real executor, plus the ``call_id`` every call arrived with.
+
+    A second observation, not a restatement of the recorder's: the id the
+    executor receives is the id the gRPC client puts on the wire, and therefore
+    the one the runner's own trial-context record keys on.
+    """
+
+    def __init__(self, registry: ToolRegistry) -> None:
+        super().__init__(registry)
+        self.call_ids: list[str] = []
+
+    def execute(self, tool_name: str, arguments: dict[str, Any], *, call_id: str) -> ToolResult:
+        self.call_ids.append(call_id)
+        return super().execute(tool_name, arguments, call_id=call_id)
 
 
 class _ScriptedClient:
@@ -174,12 +214,14 @@ def _drive_loop(
     tool_calls: list[list[ToolCall]],
     executor: ToolExecutor,
     recorder: TrialToolCallRecorder | None,
-) -> None:
-    """Run the real loop over ``tool_calls``, one assistant turn per element."""
+) -> list[Message]:
+    """Run the real loop over ``tool_calls``, one assistant turn per element,
+    and return the transcript it built."""
     results = [
         GenerationResult(text="", tool_calls=calls, usage=Usage(prompt_tokens=1))
         for calls in tool_calls
     ]
+    messages: list[Message] = []
     ToolCallingLoop(
         llm_client=_ScriptedClient(results),
         tool_executor=executor,
@@ -190,7 +232,8 @@ def _drive_loop(
         classify_error=_classify_no_patterns,
         logger=get_logger("recording-test", strict=False),
         recorder=recorder,
-    ).run("sys", [], time.time())
+    ).run("sys", messages, time.time())
+    return messages
 
 
 def _record_one(
@@ -211,6 +254,54 @@ def _record_one(
         "the loop makes must produce exactly one"
     )
     return recorder.recorded[0]
+
+
+def _message_and_record(tool: Tool) -> tuple[Message, Any]:
+    """One call to ``tool``: the ``role: tool`` message the agent reads, and the
+    record a matcher reads."""
+    recorder = TrialToolCallRecorder()
+    messages = _drive_loop(
+        [[ToolCall(id="toolu_A", name=tool.name, arguments={})]],
+        ToolExecutor(_registry(tool)),
+        recorder,
+    )
+    message = next(message for message in messages if message.tool_call_id == "toolu_A")
+    return message, recorder.recorded[0]
+
+
+def _run_two_actor_trial(
+    agent_results: list[GenerationResult],
+    simulator_replies: list[GenerationResult],
+    *,
+    agent_registry: ToolRegistry,
+    user_registry: ToolRegistry,
+    initial_user_message: str = "go",
+) -> Trajectory:
+    """Run one real trial in which both actors can execute tools.
+
+    The user branch is driven on :class:`TrialRunner` — the seam the conductor
+    hands a user-side executor to — over a real :class:`ToolExecutor`, not a
+    mock of one. An empty ``initial_user_message`` routes turn 0 through the
+    simulator, so the first reply in ``simulator_replies`` is the opening turn.
+    """
+    simulator = MagicMock()
+    simulator.last_system_prompt = None
+    simulator.reply.side_effect = simulator_replies
+
+    return TrialRunner(
+        task_id="two-actors",
+        trial_index=0,
+        agent_client=_ScriptedClient(agent_results),
+        user_simulator=simulator,
+        tool_executor=ToolExecutor(agent_registry),
+        tool_schemas=[],
+        user_tool_executor=ToolExecutor(user_registry),
+        max_turns=6,
+    ).run("sys", initial_user_message=initial_user_message)
+
+
+def _agent_turn(text: str, *calls: ToolCall) -> GenerationResult:
+    return GenerationResult(text=text, tool_calls=list(calls), usage=Usage(prompt_tokens=1))
 
 
 # ---------------------------------------------------------------------------
@@ -308,8 +399,9 @@ class TestArgumentsAreRecordedVerbatim:
         redacted, so a core-side rewrite of ``token`` / ``password`` / ``secret``
         / ``api_key`` made the two substrates disagree on the same call — and a
         matcher over arguments would pass on one substrate and fail on the
-        other. Redacting an *artifact* is tracked separately (#694); redacting
-        the grader's input is a correctness bug."""
+        other. Redacting an *artifact* is a separate concern, handled by the
+        write policy in ``OutputWriter``; redacting the grader's input is a
+        correctness bug."""
         record = _record_one(
             "authorize", {"token": "sk-live-abc123"}, registry=_registry(_Secretive())
         )
@@ -344,56 +436,33 @@ class TestOneOrderedRecordPerTrial:
 
         The replaced implementation read one list per executor and concatenated
         them, so this trial recorded agent, agent, user: interleaved order was
-        destroyed by construction, and order looked right only because no run
-        has a live user executor (#688). The user branch is therefore driven
-        directly on :class:`TrialRunner`, which is the seam #688's fix will make
-        reachable, not a mock of it.
+        destroyed by construction. The user branch is therefore driven directly
+        on :class:`TrialRunner`, which is the seam the conductor hands a
+        user-side executor to, not a mock of it.
         """
-        agent_registry = _registry(_Echo("agent_tool"))
-        user_executor = UserToolExecutor(env_state=None, use_default_tools=False)
-        user_executor.register_tool(_Echo("user_tool"))
-
-        user_simulator = MagicMock()
-        user_simulator.last_system_prompt = None
-        user_simulator.reply.side_effect = [
-            GenerationResult(
-                text="over to you",
-                tool_calls=[ToolCall(id="toolu_U", name="user_tool", arguments={"payload": "u"})],
-            ),
-            GenerationResult(text="###STOP###"),
-        ]
-
-        runner = TrialRunner(
-            task_id="interleaving",
-            trial_index=0,
-            agent_client=_ScriptedClient(
-                [
-                    GenerationResult(
-                        text="",
-                        tool_calls=[
-                            ToolCall(id="toolu_A", name="agent_tool", arguments={"payload": "a"})
-                        ],
-                        usage=Usage(prompt_tokens=1),
-                    ),
-                    GenerationResult(text="your turn", tool_calls=[], usage=Usage(prompt_tokens=1)),
-                    GenerationResult(
-                        text="",
-                        tool_calls=[
-                            ToolCall(id="toolu_B", name="agent_tool", arguments={"payload": "b"})
-                        ],
-                        usage=Usage(prompt_tokens=1),
-                    ),
-                    GenerationResult(text="over to you", usage=Usage(prompt_tokens=1)),
-                ]
-            ),
-            user_simulator=user_simulator,
-            tool_executor=ToolExecutor(agent_registry),
-            tool_schemas=[],
-            user_tool_executor=user_executor,
-            max_turns=6,
+        trajectory = _run_two_actor_trial(
+            [
+                _agent_turn(
+                    "", ToolCall(id="toolu_A", name="agent_tool", arguments={"payload": "a"})
+                ),
+                _agent_turn("your turn"),
+                _agent_turn(
+                    "", ToolCall(id="toolu_B", name="agent_tool", arguments={"payload": "b"})
+                ),
+                _agent_turn("over to you"),
+            ],
+            [
+                GenerationResult(
+                    text="over to you",
+                    tool_calls=[
+                        ToolCall(id="toolu_U", name="user_tool", arguments={"payload": "u"})
+                    ],
+                ),
+                GenerationResult(text="###STOP###"),
+            ],
+            agent_registry=_registry(_Echo("agent_tool")),
+            user_registry=_registry(_Echo("user_tool")),
         )
-
-        trajectory = runner.run("sys", initial_user_message="go")
 
         assert [(call.sequence, call.call_id, call.executor) for call in trajectory.tool_log] == [
             (0, "toolu_A", ToolExecutorIdentity.AGENT),
@@ -461,6 +530,233 @@ class TestOneOrderedRecordPerTrial:
 
 
 # ---------------------------------------------------------------------------
+# The loop assigns the episode-unique id before anything downstream reads it
+# ---------------------------------------------------------------------------
+
+
+class TestTheLoopAssignsAnEpisodeUniqueCallId:
+    """A provider that numbers its tool calls within a turn reuses an id across
+    turns. The loop assigns the trial's episode-unique id at ingestion, so all
+    four consumers — the executor (hence the runner's own record), the core
+    recorder, the assistant message and the ``role: tool`` message — carry one
+    unambiguous id per call rather than one id for two calls.
+    """
+
+    @staticmethod
+    def _drive_reused_id(executor: ToolExecutor, recorder: TrialToolCallRecorder) -> list[Message]:
+        """Two turns whose provider minted the same id, with different arguments
+        so a mis-pairing shows up in the output rather than only in the id."""
+        return _drive_loop(
+            [
+                [ToolCall(id="echo:0", name="echo", arguments={"payload": "first"})],
+                [ToolCall(id="echo:0", name="echo", arguments={"payload": "second"})],
+            ],
+            executor,
+            recorder,
+        )
+
+    def test_the_executor_is_called_with_two_distinct_ids(self) -> None:
+        executor = _CallIdWatchingExecutor(_registry(_Echo()))
+
+        self._drive_reused_id(executor, TrialToolCallRecorder())
+
+        assert executor.call_ids == ["echo:0", "echo:0#2"]
+
+    def test_the_recorder_holds_two_records_with_distinct_ids(self) -> None:
+        recorder = TrialToolCallRecorder()
+
+        self._drive_reused_id(ToolExecutor(_registry(_Echo())), recorder)
+
+        assert [(call.call_id, call.output) for call in recorder.recorded] == [
+            ("echo:0", "first"),
+            ("echo:0#2", "second"),
+        ]
+
+    def test_each_tool_message_answers_the_assistant_entry_it_names(self) -> None:
+        """The two sides of the conversation the id is echoed into must agree, or
+        the provider is handed a transcript naming a call it cannot resolve."""
+        messages = self._drive_reused_id(ToolExecutor(_registry(_Echo())), TrialToolCallRecorder())
+
+        declared = [call.id for message in messages for call in (message.tool_calls or [])]
+        answered = [
+            message.tool_call_id for message in messages if message.tool_call_id is not None
+        ]
+        assert declared == ["echo:0", "echo:0#2"]
+        assert answered == declared
+
+    def test_a_provider_that_minted_unique_ids_records_exactly_those_ids(self) -> None:
+        """The no-movement guarantee at the runtime end: every Anthropic / OpenAI
+        trial records the provider's own ids, so no bundle changes shape."""
+        executor = _CallIdWatchingExecutor(_registry(_Echo()))
+        recorder = TrialToolCallRecorder()
+
+        messages = _drive_loop(
+            [
+                [
+                    ToolCall(id="toolu_01", name="echo", arguments={"payload": "a"}),
+                    ToolCall(id="toolu_02", name="echo", arguments={"payload": "b"}),
+                ],
+                [ToolCall(id="toolu_03", name="echo", arguments={"payload": "c"})],
+            ],
+            executor,
+            recorder,
+        )
+
+        expected = ["toolu_01", "toolu_02", "toolu_03"]
+        assert executor.call_ids == expected
+        assert [call.call_id for call in recorder.recorded] == expected
+        assert [call.id for message in messages for call in (message.tool_calls or [])] == expected
+        assert [
+            message.tool_call_id for message in messages if message.tool_call_id is not None
+        ] == expected
+
+
+# ---------------------------------------------------------------------------
+# One id sequence per trial, drawn from by both actors
+# ---------------------------------------------------------------------------
+
+
+class TestBothActorsDrawFromOneIdSequence:
+    """The agent's loop and the user's turn are two ingestion points into one
+    record, so an id sequence owned by the loop alone lets the second actor
+    record a key the first already issued — and the record's ``call_id`` is what
+    joins a call to the result it produced.
+    """
+
+    def test_two_actors_emitting_one_raw_id_record_two_distinct_keys(self) -> None:
+        """Both actors' providers mint ``call_1``; the trial records ``call_1``
+        and ``call_1#2``, and the timeline joins each call to its own result."""
+        trajectory = _run_two_actor_trial(
+            [
+                _agent_turn(
+                    "", ToolCall(id="call_1", name="agent_tool", arguments={"payload": "a"})
+                ),
+                _agent_turn("your turn"),
+                _agent_turn("bye"),
+            ],
+            [
+                GenerationResult(
+                    text="over to you",
+                    tool_calls=[
+                        ToolCall(id="call_1", name="user_tool", arguments={"payload": "u"})
+                    ],
+                ),
+                GenerationResult(text="###STOP###"),
+            ],
+            agent_registry=_registry(_Echo("agent_tool")),
+            user_registry=_registry(_Echo("user_tool")),
+        )
+
+        assert [(call.call_id, call.executor) for call in trajectory.tool_log] == [
+            ("call_1", ToolExecutorIdentity.AGENT),
+            ("call_1#2", ToolExecutorIdentity.USER),
+        ]
+
+        timeline = build_trial_timeline(
+            trajectory.messages, trajectory.tool_log, trajectory.termination_reason
+        )
+        results = [
+            (event.call_id, event.tool_name, event.executor, event.result)
+            for event in timeline.events
+            if event.kind is TraceEventKind.TOOL_RESULT
+        ]
+        assert results == [
+            ("call_1", "agent_tool", ToolExecutorIdentity.AGENT, "a"),
+            ("call_1#2", "user_tool", ToolExecutorIdentity.USER, "u"),
+        ]
+
+    def test_an_opening_tool_call_executes_and_rides_the_first_user_message(self) -> None:
+        """The simulator's opening reply is a user turn like any other: its calls
+        run, record under ``executor=user`` at sequence 0, and reach the message
+        the transcript rules read. The opening turn used to return its text
+        alone, so the call was executed by nobody and declared by nothing."""
+        trajectory = _run_two_actor_trial(
+            [_agent_turn("bye")],
+            [
+                GenerationResult(
+                    text="my meter reads low",
+                    tool_calls=[
+                        ToolCall(id="call_open", name="user_tool", arguments={"payload": "o"})
+                    ],
+                ),
+                GenerationResult(text="###STOP###"),
+            ],
+            agent_registry=_registry(_Echo("agent_tool")),
+            user_registry=_registry(_Echo("user_tool")),
+            initial_user_message="",
+        )
+
+        assert [
+            (call.sequence, call.call_id, call.tool_name, call.executor)
+            for call in trajectory.tool_log
+        ] == [(0, "call_open", "user_tool", ToolExecutorIdentity.USER)]
+
+        opening = trajectory.messages[0]
+        assert opening.role is MessageRole.USER
+        assert [(call.id, call.name) for call in (opening.tool_calls or [])] == [
+            ("call_open", "user_tool")
+        ]
+        assert opening.content == "my meter reads low\n\nuser_tool() result: o"
+
+
+# ---------------------------------------------------------------------------
+# The trial's metrics count the agent's tool use
+# ---------------------------------------------------------------------------
+
+
+class TestMetricsCountTheAgentsCalls:
+    """``metrics.tool_calls`` and ``tool_success_rate`` describe the agent — the
+    same scoping stuck detection and ``tool_expectations`` apply. The trajectory's
+    ``tool_log`` keeps every executor's calls, so nothing is lost by the scoping.
+    """
+
+    @staticmethod
+    def _user_reply() -> GenerationResult:
+        """The user calls a tool that raises, so the two candidate sources
+        disagree about the rate as well as the count: over every executor these
+        trials are 2 of 3 and 0 of 1, over the agent's own 2 of 2 and none."""
+        return GenerationResult(
+            text="over to you",
+            tool_calls=[ToolCall(id="toolu_U", name="boom", arguments={})],
+        )
+
+    def test_two_agent_calls_beside_one_user_call_report_two(self) -> None:
+        trajectory = _run_two_actor_trial(
+            [
+                _agent_turn(
+                    "", ToolCall(id="toolu_A", name="agent_tool", arguments={"payload": "a"})
+                ),
+                _agent_turn("your turn"),
+                _agent_turn(
+                    "", ToolCall(id="toolu_B", name="agent_tool", arguments={"payload": "b"})
+                ),
+                _agent_turn("bye"),
+            ],
+            [self._user_reply(), GenerationResult(text="###STOP###")],
+            agent_registry=_registry(_Echo("agent_tool")),
+            user_registry=_registry(_Boom()),
+        )
+
+        assert trajectory.metrics.tool_calls == 2
+        assert trajectory.metrics.tool_success_rate == 1.0
+        assert len(trajectory.tool_log) == 3
+
+    def test_a_trial_whose_only_call_was_the_users_reports_no_agent_calls(self) -> None:
+        """The agent's true count is zero, and computing a success rate over an
+        empty agent slice would divide by zero rather than report it."""
+        trajectory = _run_two_actor_trial(
+            [_agent_turn("your turn"), _agent_turn("bye")],
+            [self._user_reply(), GenerationResult(text="###STOP###")],
+            agent_registry=_registry(_Echo("agent_tool")),
+            user_registry=_registry(_Boom()),
+        )
+
+        assert trajectory.metrics.tool_calls == 0
+        assert trajectory.metrics.tool_success_rate == 0.0
+        assert [call.executor for call in trajectory.tool_log] == [ToolExecutorIdentity.USER]
+
+
+# ---------------------------------------------------------------------------
 # The docker path keeps the wire's fine-grained status
 # ---------------------------------------------------------------------------
 
@@ -500,17 +796,30 @@ class TestTheWireStatusSurvivesTheClient:
 
         assert result.status is ToolExecutionStatus.SUCCESS
 
-    def test_a_trial_not_found_response_carries_no_recordable_status(self) -> None:
-        """There is no tool outcome to name, so the field stays ``None`` and the
-        recorder resolves ``ERROR`` — the truth, stated less specifically."""
-        result = self._client_for(
-            pb2.ExecuteToolResponse(
-                status=pb2.EXECUTION_STATUS_TRIAL_NOT_FOUND,
-                error_message="Trial 't:0' not found",
-            )
-        ).execute_tool("t:0", "calculator", {}, call_id="toolu_A")
+    def test_a_trial_not_found_response_refuses_instead_of_returning_a_result(self) -> None:
+        """The runner holds no registration, so the call reached no tool and has
+        no outcome to record. A ``ToolResult`` here is a failure the agent reads
+        as its own, so the client raises and names what was lost instead."""
+        with pytest.raises(TrialNotRegisteredError) as raised:
+            self._client_for(
+                pb2.ExecuteToolResponse(
+                    status=pb2.EXECUTION_STATUS_TRIAL_NOT_FOUND,
+                    error_message="Trial 't:0' not found",
+                )
+            ).execute_tool("t:0", "calculator", {}, call_id="toolu_A")
 
-        assert result.status is None
+        assert raised.value.trial_id == "t:0"
+        assert raised.value.tool_name == "calculator"
+        assert "t:0" in str(raised.value)
+
+    def test_a_status_no_trial_records_refuses_rather_than_degrading_to_error(self) -> None:
+        """The translation is total. ``UNSPECIFIED`` names no outcome, and the
+        next status added to the proto will name none either until it is mapped
+        — neither may arrive at a recorder as an ordinary tool failure."""
+        with pytest.raises(ValueError, match="no recordable ToolExecutionStatus"):
+            self._client_for(
+                pb2.ExecuteToolResponse(status=pb2.EXECUTION_STATUS_UNSPECIFIED)
+            ).execute_tool("t:0", "calculator", {}, call_id="toolu_A")
 
 
 def test_messages_are_unaffected_by_recording() -> None:
@@ -518,28 +827,17 @@ def test_messages_are_unaffected_by_recording() -> None:
     message still holds the loop's own ``Error: `` prefixed text, which is not
     the text the record holds — the timeline resolves that by taking ``result``
     from the record."""
-    recorder = TrialToolCallRecorder()
-    messages: list[Message] = []
-    ToolCallingLoop(
-        llm_client=_ScriptedClient(
-            [
-                GenerationResult(
-                    text="",
-                    tool_calls=[ToolCall(id="toolu_A", name="boom", arguments={})],
-                    usage=Usage(prompt_tokens=1),
-                )
-            ]
-        ),
-        tool_executor=ToolExecutor(_registry(_Boom())),
-        tool_schemas=[],
-        config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
-        metrics=_CountingSink(),
-        should_terminate=lambda result, turn, messages: None,
-        classify_error=_classify_no_patterns,
-        logger=get_logger("recording-test", strict=False),
-        recorder=recorder,
-    ).run("sys", messages, time.time())
+    message, record = _message_and_record(_Boom())
 
-    tool_message = next(message for message in messages if message.tool_call_id == "toolu_A")
-    assert tool_message.content.startswith("Error: Tool execution failed: kaboom")
-    assert recorder.recorded[0].output == "Tool execution failed: kaboom"
+    assert message.content == "Error: kaboom"
+    assert record.output == "kaboom"
+
+
+def test_a_failure_with_no_message_of_its_own_states_the_shared_sentence() -> None:
+    """A tool that fails without saying why is recorded as a sentence rather
+    than as nothing. An empty text would reach the host as the gRPC client's own
+    wording instead, so the agent and a matcher would read different failures."""
+    message, record = _message_and_record(_Silent())
+
+    assert record.output == "Tool returned failure with no error message"
+    assert message.content == "Error: Tool returned failure with no error message"

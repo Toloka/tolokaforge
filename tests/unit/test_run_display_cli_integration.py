@@ -28,6 +28,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
+from tests.utils.orchestrator_stubs import complete_run
 from tolokaforge.core.logging import _TOLOKAFORGE_ROOT_HANDLER_SENTINEL
 from tolokaforge.core.run_display_events import _NULL_EVENTS
 from tolokaforge.dx._display import DisplayMode
@@ -138,6 +139,7 @@ class _RecordingStubOrchestrator:
         type(self)._events_recorder.append(events)
         self._events = events
         self.tasks = [object()]
+        self.grading_completeness = complete_run()
 
     def load_tasks(self) -> None:
         type(self)._ordering.append("load_tasks")

@@ -101,7 +101,7 @@ def classify_trial_outcome(trajectory: Trajectory) -> TrialOutcomeClass:
     reason = trajectory.termination_reason
     if reason in EXCLUDED_TYPED_REASONS:
         return TrialOutcomeClass.INFRASTRUCTURE_ABORT
-    if reason is TerminationReason.ERROR:
+    if reason in (TerminationReason.ERROR, TerminationReason.TRIAL_LOST):
         return TrialOutcomeClass.HARNESS_ERROR
     if reason is None and trajectory.status in (
         TrialStatus.ERROR,
@@ -137,6 +137,19 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         evidence.append({"kind": "grading_error", "error": trajectory.grading_error})
     elif trajectory.termination_reason == TerminationReason.PROVISION_ERROR:
         failure_class = "provision_failure"
+        deterministic = True
+        evidence.append(
+            {
+                "kind": "termination_reason",
+                "value": trajectory.termination_reason.value,
+                "status": trajectory.status.value,
+            }
+        )
+    elif trajectory.termination_reason == TerminationReason.TRIAL_LOST:
+        # A lost trial has no failed call to scan for — the call that hit the
+        # fault was never recorded — so without this branch it falls through to
+        # ``model_reasoning``, which is the conflation this reason exists to end.
+        failure_class = "infrastructure"
         deterministic = True
         evidence.append(
             {

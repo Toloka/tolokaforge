@@ -12,17 +12,28 @@ reported in. :func:`test_every_checker_the_module_declares_is_provoked_by_a_rule
 holds the table against the module by running it: a checker no row provokes is a
 rule nothing exercises, and a row naming a checker the module lost fails there too.
 
-Every inventory is built from a real task pack, and every schema is the tool's own —
-a mocked registry would let the severity table drift from what the tools declare.
+Every schema is the tool's own — a mocked registry would let the severity table
+drift from what the tools declare. Where one pack cannot express a shape, several
+are unioned rather than a schema invented. The one exception is written out and
+says so: no pack types a property outside the six JSON type names, and the rule
+that answers for those has to be given one.
+
+**A finding is asserted by its message as well as its address.** The address says
+which rule answered; only the message says what the author is told, and the two
+fail independently. A dispatch that renders one sentence for every case leaves
+every address right and every finding wrong — a shape an address-only suite reads
+as green, and the content assertions here catch on the first run.
 """
 
 from __future__ import annotations
 
 import ast
+import json
+import logging
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
 import pytest
 import yaml
@@ -32,24 +43,35 @@ from tests.utils.golden_source_shapes import sources_no_replay_can_iterate
 from tolokaforge.adapters._task_loader import (
     build_tool_inventory,
     load_task_yaml,
+    seeded_tables_under_adapter,
     validate_grading_yaml,
 )
+from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading import config_validation
 from tolokaforge.core.grading.config_validation import (
     _A_NON_EMPTY_SECTION_STILL_DECLARES,
+    _HOW_TO_CORRELATE,
+    _MATCHER_FIELD_ATTRIBUTES,
     _NO_INITIAL_STATE_FILE,
     _NO_MCP_SERVER_MODULE,
     _TEXTUAL_MATCHER_FIELDS,
     _TOOL_EXPECTATION_HAZARDS,
     _TRANSCRIPT_RULE_KEYS,
+    _UNCORRELATABLE_JSON_TYPES,
     _WHAT_EACH_SECTION_MUST_DECLARE,
     UNRESOLVED_COMBINE_REASON,
+    AdapterHashSource,
     AuthoringReport,
     CombineLayer,
     Finding,
     HashSourceLayer,
     ReplayWorld,
+    SeededTablesLayer,
+    SuppliedSourceState,
     ToolInventory,
+    _authored_hash_is_a_state_source,
+    _BoundTypeSource,
+    _is_a_string_at_runtime,
     inspect_grading_authoring,
 )
 from tolokaforge.core.grading.golden_replay import (
@@ -67,12 +89,16 @@ from tolokaforge.core.grading.grade_components import (
 from tolokaforge.core.grading.state_composition import (
     CONFLICTING_STATE_SOURCES_MESSAGE,
     HASH_SOURCE_KEYS,
+    StateHashConfig,
+    hash_block_is_a_state_source,
 )
+from tolokaforge.core.grading.trace_replay import tool_inventory_from_bundle
 from tolokaforge.core.grading.trace_timeline import TraceEvent
 from tolokaforge.core.models import (
     GradingCombineConfig,
     GradingConfig,
     GradingFindingSeverity,
+    ToolExecutorIdentity,
     ToolExpectations,
     TranscriptRulesConfig,
 )
@@ -133,6 +159,17 @@ def _tool_call(tool: str, **args: dict[str, Any]) -> dict[str, Any]:
     return match
 
 
+def _required_action(name: str, requestor: str) -> dict[str, Any]:
+    """One ``required_actions`` entry, in the shape an author writes it."""
+    return {
+        "transcript_rules": {
+            "required_actions": [
+                {"action_id": "the_declared_call", "requestor": requestor, "name": name}
+            ]
+        }
+    }
+
+
 def _bound_block(
     binder: dict[str, Any], values: dict[str, Any], require: dict[str, Any]
 ) -> dict[str, Any]:
@@ -183,13 +220,59 @@ _NO_INITIAL_STATE = ReplayWorld(initial_state=InitialStateSource.ABSENT, mcp_ser
 _AN_INLINE_INITIAL_STATE = ReplayWorld(initial_state=InitialStateSource.INLINE, mcp_server=True)
 _A_TASK_SUPPLYING_NEITHER = ReplayWorld(initial_state=InitialStateSource.ABSENT, mcp_server=False)
 
-# The two answers a caller can give the hash-source rule. The resolved layer is what both
+# The answers a caller can give the hash-source rule. The resolved layer is what both
 # pack gates report for a native task — the authored block is the only place a source can
 # come from — and what every row here means by grading natively. The unresolvable one is
 # the answer for a task an external adapter grades, whose source may live in fixtures the
-# block never names.
+# block never names. The last three are that adapter naming the fixture it reads and the
+# state it found it in, which is the only thing that separates its convention from a pack
+# that costs a trial and grades nothing.
+_A_FIXTURE_AN_ADAPTER_READS = "fixtures/golden_actions.json"
 _THE_BLOCK_IS_THE_WHOLE_LAYER = HashSourceLayer()
 _AN_ADAPTER_MAY_SUPPLY_THE_SOURCE = HashSourceLayer.unresolvable()
+_AN_ADAPTER_SUPPLIES_A_USABLE_SOURCE = HashSourceLayer(
+    supplied=AdapterHashSource(where=_A_FIXTURE_AN_ADAPTER_READS, state=SuppliedSourceState.USABLE)
+)
+_AN_ADAPTER_SUPPLIES_A_MISSING_SOURCE = HashSourceLayer(
+    supplied=AdapterHashSource(where=_A_FIXTURE_AN_ADAPTER_READS, state=SuppliedSourceState.MISSING)
+)
+_AN_ADAPTER_SUPPLIES_AN_EMPTY_SOURCE = HashSourceLayer(
+    supplied=AdapterHashSource(where=_A_FIXTURE_AN_ADAPTER_READS, state=SuppliedSourceState.EMPTY)
+)
+
+# What a caller can say about the tables a task seeds, which its ``id_fields``
+# declaration keys. The resolved layer seeds two rows one component alone cannot tell
+# apart, so a declaration is held against real records rather than against an empty
+# view every declaration would be wrong about. The unresolvable one is the answer for a
+# caller holding no task.yaml, and the default every row that is not about the seeded
+# tables carries.
+_TWO_ROWS_ONE_COMPONENT_CANNOT_KEY = {
+    "positions": [
+        {"account_id": "A1", "symbol": "AAPL"},
+        {"account_id": "A1", "symbol": "MSFT"},
+    ]
+}
+_NO_CALLER_READ_WHAT_THE_TASK_SEEDS = SeededTablesLayer.unresolvable()
+_THE_TASK_SEEDS_THESE_TABLES = SeededTablesLayer(tables=_TWO_ROWS_ONE_COMPONENT_CANNOT_KEY)
+_THE_TASK_SEEDS_NO_TABLES = SeededTablesLayer(tables={})
+
+_A_FILESYSTEM_ROOTED_ASSERTION = {
+    "path": "$.filesystem['/env/fs/agent-visible/x.py']",
+    "contains": "def divide",
+}
+_A_FILE_ASSERTION = {"path_glob": "/env/fs/agent-visible/x.py", "contains_ci": "def divide"}
+# ``$.agent[…]`` roots at state only the core engine composes (from a run's live
+# env). The runner has no equivalent, so this remains an unreachable-path defect
+# after filesystem paths were promoted to runner-graded.
+_AN_UNREACHABLE_PATH_ASSERTION = {
+    "path": "$.agent.customers[0].balance",
+    "equals": "0",
+}
+
+
+def _keyed_state(id_fields: dict[str, Any]) -> dict[str, Any]:
+    """A state block declaring *id_fields* beside a source that makes it evaluable."""
+    return {"state_checks": {"jsonpaths": [_A_JSONPATH_ASSERTION], "id_fields": id_fields}}
 
 
 def _quotes(operator: str, name: str) -> dict[str, Any]:
@@ -208,7 +291,9 @@ class _Rule:
     nothing in either finding channel, so only the row that is about the world says
     what the task supplies. ``hash_sources`` defaults to the native reading — the
     authored block is the whole layer — so only the rows about the layer say who else
-    may supply the source.
+    may supply the source. ``seeded_tables`` defaults the other way, to unresolvable:
+    no other row's fixture declares ``id_fields``, so the rows about the seeded tables
+    are the only ones that name what the task seeds.
     """
 
     label: str
@@ -220,9 +305,46 @@ class _Rule:
     combine: GradingCombineConfig | None = None
     world: ReplayWorld = ReplayWorld.unresolvable()
     hash_sources: HashSourceLayer = _THE_BLOCK_IS_THE_WHOLE_LAYER
+    seeded_tables: SeededTablesLayer = _NO_CALLER_READ_WHAT_THE_TASK_SEEDS
 
 
 _RULES: tuple[_Rule, ...] = (
+    _Rule(
+        label="state_read_on_a_task_that_seeds_no_database",
+        task=_HELPDESK,
+        grading={"state_checks": {"jsonpaths": [_A_JSONPATH_ASSERTION]}},
+        checker="_check_state_reads_a_database_the_task_seeds",
+        channel="errors",
+        message="seeds no tables",
+        seeded_tables=_THE_TASK_SEEDS_NO_TABLES,
+    ),
+    _Rule(
+        # ``$.filesystem[…]`` is *reachable* on the runner (via
+        # ``_read_agent_visible_filesystem``), so the authoring gate should not
+        # refuse it — this rule now exercises the residual unreachable set
+        # (``agent`` / ``user`` / ``mock_web_url`` / ``rag_corpus_dir``), which
+        # the core engine composes from a run's live env and the runner does not.
+        label="a_path_addressing_beyond_the_runners_state",
+        task=_HELPDESK,
+        grading={
+            "state_checks": {"jsonpaths": [{"path": "$.agent.customers[0].balance", "equals": "0"}]}
+        },
+        checker="_check_jsonpaths_address_a_reachable_state",
+        channel="errors",
+        message="addresses state the runner's JSONPath grading does not carry",
+    ),
+    _Rule(
+        label="a_path_glob_the_runner_cannot_read",
+        task=_HELPDESK,
+        grading={
+            "state_checks": {
+                "jsonpaths": [{"path_glob": "/env/fs/agent-visible/x.py", "contains": "def divide"}]
+            }
+        },
+        checker="_check_path_glob_is_compared_the_way_the_runner_reads_it",
+        channel="errors",
+        message="which the runner's file-content evaluator does not read",
+    ),
     _Rule(
         label="matcher_names_an_undeclared_tool",
         task=_HELPDESK,
@@ -238,6 +360,27 @@ _RULES: tuple[_Rule, ...] = (
         checker="_check_tool_expectation_names",
         channel="errors",
         message="short a required tool on every trial",
+    ),
+    _Rule(
+        label="required_action_naming_an_undeclared_tool",
+        task=_HELPDESK,
+        grading=_required_action("http_reqest", "assistant"),
+        checker="_check_required_action_names",
+        channel="errors",
+        # The tool, the set the task does declare, and what the action costs: an
+        # author shown only the hazard has nothing to correct the name against.
+        message="tool 'http_reqest' is not declared by this task, which gives its actors "
+        "['http_request', 'write_file']: no actor can call it, so the transcript component "
+        "is short a required action on every trial",
+    ),
+    _Rule(
+        label="required_action_whose_requestor_declares_no_such_tool",
+        task=_HELPDESK,
+        grading=_required_action("http_request", "user"),
+        checker="_check_required_action_names",
+        channel="errors",
+        message="tools.user.enabled declares []: ['tools.agent.enabled'] declares the tool "
+        "instead, so the executor filter never matches",
     ),
     _Rule(
         label="argument_outside_a_closed_schema",
@@ -280,6 +423,46 @@ _RULES: tuple[_Rule, ...] = (
         message="probable typo rather than a certainty",
     ),
     _Rule(
+        label="capture_pattern_over_an_argument_the_schema_types_non_string",
+        task=_CODING,
+        grading=_bound_block(
+            _tool_call("read_file"),
+            {"start": {"field": "args.offset", "pattern": "([0-9]+)"}},
+            _quotes("contains_binding", "start"),
+        ),
+        checker="_check_bound_extractions",
+        channel="errors",
+        message="A capture is taken off text alone",
+    ),
+    _Rule(
+        label="args_correlation_neither_type_can_satisfy_on_closed_schemas",
+        task=_CODING,
+        grading=_bound_block(
+            _tool_call("read_file"),
+            {"start": {"field": "args.offset"}},
+            {"present": {"match": _tool_call("read_file", path={"equals_binding": "start"})}},
+        ),
+        checker="_check_bound_comparisons",
+        channel="errors",
+        message="Correlate two arguments the tools type the same way",
+    ),
+    _Rule(
+        label="args_correlation_neither_type_can_satisfy_on_an_open_schema",
+        task=_SHOP_ORDERS,
+        grading=_bound_block(
+            _tool_call("place_order"),
+            {"ordered": {"field": "args.items"}},
+            {
+                "present": {
+                    "match": _tool_call("place_order", customer_id={"equals_binding": "ordered"})
+                }
+            },
+        ),
+        checker="_check_bound_comparisons",
+        channel="advisories",
+        message="Correlate two arguments the tools type the same way",
+    ),
+    _Rule(
         label="matcher_regex_that_does_not_compile",
         task=_HELPDESK,
         grading=_trace_block({"kind": "tool_call", "tool": {"regex": "http_(request"}}),
@@ -298,7 +481,7 @@ _RULES: tuple[_Rule, ...] = (
     _Rule(
         label="hash_source_without_the_flag",
         task=_HELPDESK,
-        grading={"state_checks": {"hash": {"enabled": False, "expected_state_hash": "aaaa"}}},
+        grading={"state_checks": {"hash": {"enabled": False, "expect_initial_state": True}}},
         checker="_check_hash_source_declared",
         channel="errors",
         message="the comparison never runs",
@@ -309,7 +492,7 @@ _RULES: tuple[_Rule, ...] = (
         grading={"state_checks": {"hash": {"enabled": True}}},
         checker="_check_hash_source_declared",
         channel="errors",
-        message="Declare expected_state_hash or golden_actions",
+        message="Declare golden_actions or expect_initial_state",
     ),
     _Rule(
         label="enabled_hash_whose_source_an_adapter_may_supply",
@@ -323,11 +506,40 @@ _RULES: tuple[_Rule, ...] = (
     _Rule(
         label="hash_source_without_the_flag_under_an_unresolved_layer",
         task=_HELPDESK,
-        grading={"state_checks": {"hash": {"enabled": False, "expected_state_hash": "aaaa"}}},
+        grading={"state_checks": {"hash": {"enabled": False, "expect_initial_state": True}}},
         checker="_check_hash_source_declared",
         channel="unchecked",
         message="an external adapter may compute the source",
         hash_sources=_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE,
+    ),
+    _Rule(
+        label="enabled_hash_whose_supplied_source_is_missing",
+        task=_HELPDESK,
+        grading={"state_checks": {"hash": {"enabled": True}}},
+        checker="_check_hash_source_declared",
+        channel="errors",
+        # The fixture and its state together: a refusal naming neither leaves the author
+        # with the generic "declare a source" fix, which is not the one that repairs this.
+        message=f"{_A_FIXTURE_AN_ADAPTER_READS}, which is missing",
+        hash_sources=_AN_ADAPTER_SUPPLIES_A_MISSING_SOURCE,
+    ),
+    _Rule(
+        label="enabled_hash_whose_supplied_source_is_empty",
+        task=_HELPDESK,
+        grading={"state_checks": {"hash": {"enabled": True}}},
+        checker="_check_hash_source_declared",
+        channel="errors",
+        message=f"{_A_FIXTURE_AN_ADAPTER_READS}, which is empty",
+        hash_sources=_AN_ADAPTER_SUPPLIES_AN_EMPTY_SOURCE,
+    ),
+    _Rule(
+        label="hash_source_without_the_flag_beside_a_supplied_source",
+        task=_HELPDESK,
+        grading={"state_checks": {"hash": {"enabled": False, "expect_initial_state": True}}},
+        checker="_check_hash_source_declared",
+        channel="errors",
+        message="the comparison never runs",
+        hash_sources=_AN_ADAPTER_SUPPLIES_A_USABLE_SOURCE,
     ),
     _Rule(
         label="probes_beside_a_source_that_scores_the_same_component",
@@ -415,6 +627,26 @@ _RULES: tuple[_Rule, ...] = (
         combine=GradingCombineConfig(weights={}),
     ),
     _Rule(
+        label="an_id_fields_declaration_nothing_resolved_the_seeded_tables_for",
+        task=_HELPDESK,
+        grading=_keyed_state({"positions": ["account_id", "symbol"]}),
+        checker="_check_id_fields_against_seeded_tables",
+        channel="unchecked",
+        message="no caller resolved the tables this task seeds",
+    ),
+    _Rule(
+        label="an_id_fields_component_no_seeded_record_carries",
+        task=_HELPDESK,
+        grading=_keyed_state({"positions": ["account_id", "ticker"]}),
+        checker="_check_id_fields_against_seeded_tables",
+        channel="errors",
+        # The table and the component together: the author has to know which key of
+        # which table to go and fix.
+        message="declares key component(s) ['ticker'] absent from every seeded record "
+        "of table 'positions'",
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
+    ),
+    _Rule(
         label="weight_naming_a_component_the_pack_never_configures",
         task=_HELPDESK,
         grading={},
@@ -449,6 +681,7 @@ def test_each_rule_is_reported_in_its_own_channel_naming_the_fix(rule: _Rule) ->
         effective_combine=rule.combine,
         replay_world=rule.world,
         hash_sources=rule.hash_sources,
+        seeded_tables=rule.seeded_tables,
     )
 
     reported = _texts(report, rule.channel)
@@ -493,6 +726,7 @@ def test_every_checker_the_module_declares_is_provoked_by_a_rule(
             effective_combine=rule.combine,
             replay_world=rule.world,
             hash_sources=rule.hash_sources,
+            seeded_tables=rule.seeded_tables,
         )
 
     assert answered == declared
@@ -520,6 +754,24 @@ def _write_grading(tmp_path: Path, grading: dict[str, Any]) -> Path:
     grading_path = tmp_path / "grading.yaml"
     grading_path.write_text(yaml.safe_dump(grading))
     return grading_path
+
+
+def test_a_path_with_no_file_at_it_is_not_a_clean_bill_of_health(tmp_path: Path) -> None:
+    """This gate reads a file, and a path with none behind it is nobody's silent pass.
+
+    Whether a task has a block to read at all is resolved upstream, by
+    :func:`grading_source_under_adapter` off the adapter the task declares, so a path
+    reaching here has already been stat'd and one that is gone by the time this opens it
+    is a vanished file rather than a task naming no source. Both callers turn the raise
+    into a named per-task failure, where an empty report would have read as a pack that
+    passed every rule.
+    """
+    absent = tmp_path / "grading.yaml"
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        validate_grading_yaml(absent, inventory=ToolInventory.unresolvable())
+
+    assert str(absent) in str(excinfo.value)
 
 
 _HAZARDS = (
@@ -575,7 +827,7 @@ _A_PATTERN_THAT_DOES_NOT_COMPILE = {"transcript_rules": {"disallow_regex": ["unt
     "beside",
     [
         {"jsonpaths": [_A_JSONPATH_ASSERTION]},
-        {"hash": {"enabled": True, "expected_state_hash": "aaaa"}},
+        {"hash": {"enabled": True, "expect_initial_state": True}},
     ],
     ids=["jsonpaths", "hash"],
 )
@@ -692,7 +944,7 @@ def test_an_unresolvable_inventory_still_runs_the_rules_that_need_no_tools(
     """
     grading = {
         **_trace_block({"kind": "tool_call", "tool": {"regex": "http_(request"}}),
-        "state_checks": {"hash": {"enabled": False, "expected_state_hash": "aaaa"}},
+        "state_checks": {"hash": {"enabled": False, "expect_initial_state": True}},
     }
 
     with pytest.raises(ValueError) as excinfo:
@@ -864,9 +1116,14 @@ def test_a_truthy_hash_flag_is_not_a_finding(enabled: Any) -> None:
     pack that works — the opposite failure to the one the rule exists to catch,
     and one no sweep over shipped packs finds because they all write ``true``.
     """
-    grading = {"state_checks": {"hash": {"enabled": enabled, "expected_state_hash": "aaaa"}}}
+    grading = {"state_checks": {"hash": {"enabled": enabled, "expect_initial_state": True}}}
 
-    assert inspect_grading_authoring(grading, _inventory(_HELPDESK)) == AuthoringReport()
+    assert (
+        inspect_grading_authoring(
+            grading, _inventory(_HELPDESK), seeded_tables=_THE_TASK_SEEDS_THESE_TABLES
+        )
+        == AuthoringReport()
+    )
 
 
 @pytest.mark.parametrize("enabled", _HASH_FLAGS_BOTH_SUBSTRATES_GRADE_ON)
@@ -936,7 +1193,10 @@ def test_the_frozen_adapter_convention_is_unchecked_rather_than_refused() -> Non
     grading = {"state_checks": {"hash": {"enabled": True, "weight": 1.0}}}
 
     report = inspect_grading_authoring(
-        grading, ToolInventory.unresolvable(), hash_sources=_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE
+        grading,
+        ToolInventory.unresolvable(),
+        hash_sources=_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE,
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert report.errors == ()
@@ -953,28 +1213,337 @@ def test_a_block_the_hash_rule_accepts_reports_nothing_on_an_unresolved_layer() 
     means something under one per healthy pack: the rule found nothing to refuse, so
     there is nothing it failed to check.
     """
-    grading = {"state_checks": {"hash": {"enabled": True, "expected_state_hash": "aaaa"}}}
+    grading = {"state_checks": {"hash": {"enabled": True, "expect_initial_state": True}}}
 
     report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), hash_sources=_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE
+        grading,
+        _inventory(_HELPDESK),
+        hash_sources=_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE,
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert report == AuthoringReport()
+
+
+def test_an_adapter_supplying_a_usable_source_leaves_the_bare_block_clean() -> None:
+    """An answered layer makes the frozen-core convention a plain pass.
+
+    The same bare block an unresolved layer leaves unchecked, under an adapter that says
+    which fixture it reads and that the fixture is usable: the pack is checked, not
+    merely unrefused, so it draws nothing on any channel. A skip here would report every
+    healthy external pack as something a caller failed to check, which is exactly what
+    an answer removes.
+    """
+    grading = {"state_checks": {"hash": {"enabled": True, "weight": 1.0}}}
+
+    report = inspect_grading_authoring(
+        grading,
+        _inventory(_HELPDESK),
+        hash_sources=_AN_ADAPTER_SUPPLIES_A_USABLE_SOURCE,
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
+    )
+
+    assert report == AuthoringReport()
+
+
+def test_an_unresolvable_hash_source_layer_may_not_carry_a_supplied_source() -> None:
+    """The two states decide opposite things, so a hybrid decides neither.
+
+    ``known=False`` skips the rule that reads the layer, so a fixture reported beside it
+    is resolved and then ignored — a lost source read as merely unchecked, which is the
+    silence this rule exists to break. The same guard the tool inventory, the replay
+    world and the combine layer carry, for the same reason.
+    """
+    with pytest.raises(ValueError, match="unresolvable hash-source layer carries facts"):
+        HashSourceLayer(
+            known=False,
+            supplied=AdapterHashSource(
+                where=_A_FIXTURE_AN_ADAPTER_READS, state=SuppliedSourceState.MISSING
+            ),
+        )
+
+    assert HashSourceLayer.unresolvable().supplied is None
+
+
+# ---------------------------------------------------------------------------
+# The id_fields declaration, held against what the task seeds
+# ---------------------------------------------------------------------------
+
+
+def test_a_relaxed_declaration_is_downgraded_to_a_log_line_and_nothing_else(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The escape hatch has to leave every report channel empty, advisories included.
+
+    The default ``fail_on`` is ADVISORY, so reporting the downgrade as an advisory
+    would fail precisely the packs ``relaxed_validation`` exists to pass — the gentler
+    channel is the harsher answer here. A logged warning is the whole observable, which
+    is what the run path already does with the same findings.
+    """
+    grading = {
+        "state_checks": {
+            "jsonpaths": [_A_JSONPATH_ASSERTION],
+            "id_fields": {"positions": ["account_id", "ticker"]},
+            "relaxed_validation": True,
+        }
+    }
+
+    with caplog.at_level(logging.WARNING):
+        report = inspect_grading_authoring(
+            grading, _inventory(_HELPDESK), seeded_tables=_THE_TASK_SEEDS_THESE_TABLES
+        )
+
+    assert (report.errors, report.advisories, report.unchecked) == ((), (), ())
+    warned = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert any("'ticker'" in message for message in warned), warned
+
+
+def test_a_declaration_the_seeded_records_answer_reports_nothing() -> None:
+    """The positive half: a key that does address the seeded rows draws no line at all.
+
+    Without it the rows above would pass against a checker that reported every
+    declaration, and the ``?`` line for an unresolvable layer would read as the only
+    outcome an author ever sees.
+    """
+    report = inspect_grading_authoring(
+        _keyed_state({"positions": ["account_id", "symbol"]}),
+        _inventory(_HELPDESK),
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
+    )
+
+    assert (report.errors, report.advisories, report.unchecked) == ((), (), ())
+
+
+@pytest.mark.parametrize(
+    "seeded_tables",
+    [
+        pytest.param(_NO_CALLER_READ_WHAT_THE_TASK_SEEDS, id="nothing_resolved_the_tables"),
+        pytest.param(_THE_TASK_SEEDS_THESE_TABLES, id="the_tables_are_resolved"),
+    ],
+)
+@pytest.mark.parametrize(
+    "state_checks",
+    [
+        pytest.param({"jsonpaths": [_A_JSONPATH_ASSERTION]}, id="no_id_fields_key"),
+        pytest.param({"jsonpaths": [_A_JSONPATH_ASSERTION], "id_fields": {}}, id="an_empty_map"),
+    ],
+)
+def test_a_pack_declaring_no_key_draws_nothing_under_either_layer(
+    state_checks: dict[str, Any], seeded_tables: SeededTablesLayer
+) -> None:
+    """A pack that declares no key is not owed a ``?`` line about one.
+
+    The unresolvable layer is every caller's default, so a skip for a declaration
+    nobody wrote would print an unchecked line beside every task in the corpus.
+
+    The claim is about the ``id_fields`` address alone. These blocks assert over the
+    trial's database, so under an unresolvable layer the sibling rule asking whether
+    the task seeds one reports its own skip — at ``state_checks``, about a declaration
+    the author did write.
+    """
+    report = inspect_grading_authoring(
+        {"state_checks": state_checks}, _inventory(_HELPDESK), seeded_tables=seeded_tables
+    )
+
+    assert (report.errors, report.advisories) == ((), ())
+    assert [skip for skip in report.unchecked if skip.where == "state_checks.id_fields"] == []
+
+
+def test_a_database_reading_block_is_clean_on_a_task_that_seeds_the_tables() -> None:
+    """The accepting half: the rule refuses an absent database, not a present one."""
+    report = inspect_grading_authoring(
+        {"state_checks": {"jsonpaths": [_A_JSONPATH_ASSERTION]}},
+        _inventory(_HELPDESK),
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
+    )
+
+    assert report == AuthoringReport()
+
+
+def test_an_unresolvable_layer_skips_the_seeded_read_and_still_refuses_the_path() -> None:
+    """One unresolvable input silences one rule, not the block.
+
+    The two rules read different things: what the task seeds is a fact about the
+    ``task.yaml``, and where a path is rooted is a fact about the block. So a caller
+    that cannot resolve the first still gets the second — which matters because the
+    gate is skipped wholesale for exactly the tasks whose seeded tables no caller can
+    read, and a silent pass there would be the shape this rule exists to close.
+    """
+    report = inspect_grading_authoring(
+        {"state_checks": {"jsonpaths": [_A_JSONPATH_ASSERTION, _AN_UNREACHABLE_PATH_ASSERTION]}},
+        _inventory(_HELPDESK),
+        seeded_tables=_NO_CALLER_READ_WHAT_THE_TASK_SEEDS,
+    )
+
+    assert [skip.where for skip in report.unchecked] == ["state_checks"]
+    assert "not checkable here" in report.unchecked[0].reason
+    assert [finding.where for finding in report.errors] == ["state_checks.jsonpaths"]
+    assert "does not carry" in report.errors[0].message
+
+
+def test_a_source_less_hash_block_on_a_task_that_seeds_nothing_is_refused() -> None:
+    """The hash half of the same rule, in the shape that declares no source at all.
+
+    ``_execute_hash_grading`` reads the trial's stable hash before it consults either
+    source, so this block reaches the database exactly as one declaring both does. It
+    is addressed to the flag, which is the key that put it there.
+    """
+    report = inspect_grading_authoring(
+        {"state_checks": {"hash": {"enabled": True}}},
+        _inventory(_HELPDESK),
+        hash_sources=_AN_ADAPTER_SUPPLIES_A_USABLE_SOURCE,
+        seeded_tables=_THE_TASK_SEEDS_NO_TABLES,
+    )
+
+    assert [finding.where for finding in report.errors] == ["state_checks.hash.enabled"]
+    assert "seeds no tables" in report.errors[0].message
+
+
+def test_a_path_glob_compared_with_contains_ci_is_the_shape_the_rule_accepts() -> None:
+    """The operator both substrates read draws nothing — the pairing the docs prescribe."""
+    report = inspect_grading_authoring(
+        {"state_checks": {"jsonpaths": [_A_FILE_ASSERTION]}},
+        _inventory(_HELPDESK),
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
+    )
+
+    assert report == AuthoringReport()
+
+
+def test_relaxed_validation_does_not_downgrade_a_block_that_cannot_grade() -> None:
+    """The escape hatch that passes an ``id_fields`` pack does not pass this one.
+
+    ``relaxed_validation`` exists for a declaration whose keys no longer resolve
+    against seeded records — a pack that still grades. A block reading a database its
+    task does not provision grades on neither substrate, so downgrading it would hand
+    the author a green gate and a failed run.
+    """
+    report = inspect_grading_authoring(
+        {"state_checks": {"jsonpaths": [_A_JSONPATH_ASSERTION], "relaxed_validation": True}},
+        _inventory(_HELPDESK),
+        seeded_tables=_THE_TASK_SEEDS_NO_TABLES,
+    )
+
+    assert [finding.where for finding in report.errors] == ["state_checks.jsonpaths"]
+
+
+def test_a_probe_expectation_is_not_addressed_against_the_trials_jsonpath_state() -> None:
+    """The new rules read ``jsonpaths`` and nothing else — a check on their domain.
+
+    A ``db_probes`` expectation writes ``path:`` too, but against the probe's own query
+    result — ``{rows, row_count}``, fetched over the probe's ``dsn`` with no trial id.
+    Ten such assertions ship in two packs that grade correctly, and every one of them is
+    rooted where the trial's JSONPath state carries nothing. A rule helpfully widened to
+    walk expectations would refuse them all.
+    """
+    report = inspect_grading_authoring(
+        {
+            "state_checks": {
+                "db_probes": [
+                    {
+                        "name": "orders_shipped",
+                        "dsn": "postgresql://grader@app-db:5432/app",
+                        "query": "SELECT status FROM orders",
+                        "expect": [{"path": "$.rows[0].status", "equals": "shipped"}],
+                    }
+                ]
+            }
+        },
+        _inventory(_HELPDESK),
+        seeded_tables=_THE_TASK_SEEDS_NO_TABLES,
+    )
+
+    assert report.errors == ()
+    assert report.advisories == ()
+
+
+def test_a_seeded_tables_layer_is_resolved_or_it_is_not() -> None:
+    """Both halves of the invariant, because both are incoherent in the same way.
+
+    A resolved layer with no view would hold every declaration against nothing and
+    refuse every table as unknown; an unresolvable one carrying tables has them
+    resolved and then ignored, since the rule that reads them is skipped.
+    """
+    with pytest.raises(ValueError, match="resolved seeded-tables layer carries no view"):
+        SeededTablesLayer(tables=None)
+    with pytest.raises(ValueError, match="unresolvable seeded-tables layer carries facts"):
+        SeededTablesLayer(tables={}, known=False)
+
+    assert SeededTablesLayer.unresolvable().tables is None
+    assert SeededTablesLayer(tables={}).known is True
+
+
+def test_the_same_defect_reads_the_same_at_the_adapter_and_at_validate(tmp_path: Path) -> None:
+    """One pack, both gates, one sentence — the guard against re-divergence.
+
+    ``tolokaforge validate`` and ``NativeAdapter.to_task_description`` refuse the same
+    declaration, and an author who fixes what one of them said has fixed what the other
+    would have said. Locking the sentence rather than the fact of refusal is the point:
+    two implementations agreeing that a pack is broken while disagreeing about which
+    table and which component is the state this check was written to end.
+    """
+    task_dir = tmp_path / "tasks" / "positions"
+    task_dir.mkdir(parents=True)
+    (task_dir / "initial_state.json").write_text(json.dumps(_TWO_ROWS_ONE_COMPONENT_CANNOT_KEY))
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "task_id": "positions",
+                "description": "one defective declaration, read by both gates",
+                "initial_state": {"json_db": "initial_state.json"},
+                "tools": {"agent": {"enabled": []}},
+                "grading": "grading.yaml",
+            }
+        )
+    )
+    (task_dir / "grading.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "combine": {"method": "weighted", "weights": {"state_checks": 1.0}},
+                "state_checks": {
+                    "jsonpaths": [_A_JSONPATH_ASSERTION],
+                    "id_fields": {"positions": ["account_id", "ticker"]},
+                },
+            }
+        )
+    )
+    task, effective_dir = load_task_yaml(task_dir / "task.yaml")
+
+    with pytest.raises(ValueError) as at_the_adapter:
+        NativeAdapter(
+            {"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"}
+        ).to_task_description("positions")
+    with pytest.raises(ValueError) as at_validate:
+        validate_grading_yaml(
+            task_dir / "grading.yaml",
+            inventory=ToolInventory.unresolvable(),
+            seeded_tables=seeded_tables_under_adapter(task, effective_dir, task.adapter_type),
+        )
+
+    sentence = (
+        "state_checks.id_fields['positions'] declares key component(s) ['ticker'] absent "
+        "from every seeded record of table 'positions'"
+    )
+    assert sentence in str(at_the_adapter.value)
+    assert sentence in str(at_validate.value)
 
 
 def test_golden_actions_alone_are_a_hash_source() -> None:
     """Standing single case: the source shape both substrates are proven to share.
 
     The replay is what every shipped golden-action pack grades by, so a rule reading
-    only ``expected_state_hash`` as a source would refuse the one hash shape whose
-    verdict is the same on both substrates. The action names a tool the task declares
+    only its sibling source would refuse the hash shape most in-tree packs are
+    authored in. The action names a tool the task declares
     and the task gives the replay a world to be built in, which are the other two
     things a replayable source needs.
     """
     grading = _golden_actions({"name": "write_file"})
 
     report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+        grading,
+        _inventory(_HELPDESK),
+        replay_world=_A_BUILDABLE_WORLD,
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert report == AuthoringReport()
@@ -1079,8 +1648,8 @@ def test_a_golden_action_under_a_disabled_flag_is_refused_at_the_source(
 #: key the table names. A source added to ``HASH_SOURCE_KEYS`` with no value here fails
 #: that lock with a ``KeyError`` naming it.
 _A_TRUTHY_HASH_SOURCE: dict[str, Any] = {
-    "expected_state_hash": "aaaa",
     "golden_actions": [{"name": "write_file"}],
+    "expect_initial_state": True,
 }
 
 
@@ -1112,6 +1681,13 @@ _HASH_FLAGS_NEITHER_SUBSTRATE_GRADES_ON = (
     pytest.param({"enabled": 0}, id="written_zero"),
     pytest.param({"enabled": None}, id="written_null"),
     pytest.param({}, id="no_enabled_key_at_all"),
+    # The four YAML spellings a raw truthiness read gets backwards: every one of them is
+    # a non-empty string, and every one of them is the ``False`` Pydantic hands both
+    # substrates before either evaluator branches on the flag.
+    pytest.param({"enabled": "false"}, id="written_false_quoted"),
+    pytest.param({"enabled": "no"}, id="written_no"),
+    pytest.param({"enabled": "off"}, id="written_off"),
+    pytest.param({"enabled": "0"}, id="written_zero_quoted"),
 )
 
 
@@ -1121,12 +1697,13 @@ def test_every_flag_spelling_that_reads_no_source_refuses_the_one_declared(
 ) -> None:
     """The mirror of the truthy spellings, over the source that used to escape.
 
-    However the flag is written, neither substrate reads a source behind one that is not
-    truthy, so every spelling is the same defect and draws the same finding — a block
-    omitting ``enabled`` altogether included, which is what an author reaches by deleting
-    the flag rather than the source. The message quotes the value the rule read, because
-    ``enabled: 0`` and ``enabled: null`` are fixed by writing ``true`` where a reader
-    told "the flag is off" would go looking for a ``false`` that is not there.
+    However the flag is written, neither substrate reads a source behind one a run
+    switches off, so every spelling is the same defect and draws the same finding — a
+    block omitting ``enabled`` altogether included, which is what an author reaches by
+    deleting the flag rather than the source. The message quotes the author's own text
+    rather than the coerced flag the rule branched on, because ``enabled: 0`` and
+    ``enabled: null`` are fixed by writing ``true`` where a reader told "the flag is
+    off" would go looking for a ``false`` that is not there.
     """
     grading = {"state_checks": {"hash": {**flag, "golden_actions": [{"name": "write_file"}]}}}
 
@@ -1141,6 +1718,139 @@ def test_every_flag_spelling_that_reads_no_source_refuses_the_one_declared(
     assert f"hash.enabled is {flag.get('enabled')!r}" in report.errors[0].message
 
 
+@pytest.mark.parametrize("flag", _HASH_FLAGS_NEITHER_SUBSTRATE_GRADES_ON)
+def test_a_flag_no_run_switches_on_reads_no_database_the_task_must_seed(
+    flag: dict[str, Any],
+) -> None:
+    """The falsy mirror of the truthy standing lock, over the rule that costs a pack.
+
+    A block a run reads as off grades no hash, so it reaches no DB service and the task
+    beneath it needs to seed nothing. Refusing it would reject a pack that loads and
+    grades cleanly — the failure this rule's own remedy cannot repair, since seeding
+    tables for a hash nobody computes buys the author nothing.
+
+    The block declares a source so it is the shape an author writes, and the hash-source
+    layer is left unresolved so the sibling rule above skips rather than answering here:
+    this cell speaks for the seeded-tables rule alone.
+    """
+    grading = {"state_checks": {"hash": {**flag, "expect_initial_state": True}}}
+
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), seeded_tables=_THE_TASK_SEEDS_NO_TABLES
+    )
+
+    assert report.errors == ()
+    assert [skip.where for skip in report.unchecked] == ["state_checks.hash.expect_initial_state"]
+
+
+#: Every row's verdict is written here rather than derived from either side, so a row
+#: pins what "the hash is a state source" *means* instead of asserting the two readings
+#: agree — two readings that drifted together would still fail. ``model_accepts`` is
+#: ``False`` where ``StateHashConfig`` refuses the block outright; ``is_a_state_source``
+#: is then ``False`` too, because a pack that cannot load is not a pack the probe
+#: exclusivity rule reports a second finding over.
+_HASH_BLOCK_STATE_SOURCE_VERDICTS = (
+    pytest.param({}, True, False, id="empty_block"),
+    pytest.param({"enabled": True}, True, False, id="flag_with_no_source"),
+    pytest.param({"enabled": True, "golden_actions": []}, True, False, id="empty_replay"),
+    pytest.param(
+        {"enabled": False, "golden_actions": [{"name": "write_file"}]},
+        True,
+        False,
+        id="replay_under_a_false_flag",
+    ),
+    pytest.param(
+        {"enabled": True, "expect_initial_state": True}, True, True, id="flag_and_an_initial_state"
+    ),
+    pytest.param(
+        {"enabled": True, "expect_initial_state": False},
+        True,
+        False,
+        id="an_initial_state_written_off",
+    ),
+    pytest.param(
+        {"enabled": True, "expect_initial_state": True, "golden_actions": [{"name": "write_file"}]},
+        False,
+        False,
+        id="two_expected_states",
+    ),
+    pytest.param(
+        {"enabled": "false", "expect_initial_state": True},
+        True,
+        False,
+        id="yaml_string_false",
+    ),
+    pytest.param({"enabled": "no"}, True, False, id="yaml_string_no_alone"),
+    pytest.param({"enabled": "no", "expect_initial_state": True}, True, False, id="yaml_string_no"),
+    pytest.param(
+        {"enabled": "off", "golden_actions": [{"name": "write_file"}]},
+        True,
+        False,
+        id="yaml_string_off",
+    ),
+    pytest.param({"enabled": 1}, True, False, id="one_with_no_source"),
+    pytest.param(
+        {"enabled": 1, "expect_initial_state": True}, True, True, id="one_and_an_initial_state"
+    ),
+    pytest.param(
+        {"enabled": "maybe", "expect_initial_state": True}, False, False, id="unparsable_flag"
+    ),
+    pytest.param(
+        {"enabled": True, "expect_initial_state": 123}, False, False, id="source_not_a_bool"
+    ),
+    pytest.param(
+        {"enabled": True, "expect_initial_state": True, "weight": 2.0},
+        False,
+        False,
+        id="weight_out_of_domain",
+    ),
+    pytest.param(
+        {"enabled": True, "expect_initial_state": True, "enalbed": True},
+        False,
+        False,
+        id="undeclared_key",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("block", "model_accepts", "is_a_state_source"), _HASH_BLOCK_STATE_SOURCE_VERDICTS
+)
+def test_the_gate_and_the_model_answer_one_state_source_rule(
+    block: dict[str, Any], model_accepts: bool, is_a_state_source: bool
+) -> None:
+    """The gate reads the block the way a run does, coercion included.
+
+    ``StateHashConfig`` is what a run grades on, and Pydantic coerces the YAML string
+    ``"false"`` — and ``"no"`` and ``"off"`` — to ``False``. A gate re-reading
+    ``enabled`` off the raw mapping would read those as truthy and refuse a pack that
+    loads and grades cleanly, so the two would disagree on which packs declare a hash
+    source at all. Both sides are pinned to the table's own verdict, which is what
+    stops the pair drifting together onto a rule neither should have.
+    """
+    if model_accepts:
+        hash_config = StateHashConfig.model_validate(block)
+        assert hash_block_is_a_state_source(hash_config) is is_a_state_source
+    else:
+        assert is_a_state_source is False, "a refused block declares nothing"
+        with pytest.raises(ValidationError):
+            StateHashConfig.model_validate(block)
+
+    assert _authored_hash_is_a_state_source({"state_checks": {"hash": block}}) is is_a_state_source
+
+
+def test_the_state_source_table_holds_all_three_answers() -> None:
+    """A table of one answer would pass against a rule that always gives it.
+
+    The lock above compares nothing across rows, so it is only as strong as the answers
+    the table asks for: without a source row a rule returning ``False`` outright passes
+    it, and without a refusal row the coercion the fix turns on is never reached.
+    """
+    answers = {(param.values[1], param.values[2]) for param in _HASH_BLOCK_STATE_SOURCE_VERDICTS}
+
+    assert answers == {(True, True), (True, False), (False, False)}
+
+
 def test_an_unresolvable_inventory_leaves_a_golden_action_name_unchecked() -> None:
     """The name rule needs the task's tools, so it is skipped with the rest of that group.
 
@@ -1153,7 +1863,10 @@ def test_an_unresolvable_inventory_leaves_a_golden_action_name_unchecked() -> No
     grading = _golden_actions({"name": "close_widget"})
 
     report = inspect_grading_authoring(
-        grading, ToolInventory.unresolvable(), replay_world=_A_BUILDABLE_WORLD
+        grading,
+        ToolInventory.unresolvable(),
+        replay_world=_A_BUILDABLE_WORLD,
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert report.errors == ()
@@ -1203,7 +1916,10 @@ def test_every_replay_fact_a_task_withholds_from_its_golden_path_is_its_own_erro
     loads a file under the task directory.
     """
     report = inspect_grading_authoring(
-        _golden_actions({"name": "write_file"}), _inventory(_HELPDESK), replay_world=world
+        _golden_actions({"name": "write_file"}),
+        _inventory(_HELPDESK),
+        replay_world=world,
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert [finding.where for finding in report.errors] == [
@@ -1251,26 +1967,6 @@ def test_both_withheld_world_vocabularies_name_the_same_task_yaml_keys(
     assert named == _THE_KEYS_A_WITHHELD_WORLD_NAMES
 
 
-def test_a_literal_expected_hash_beside_golden_actions_needs_no_world() -> None:
-    """The shape ``tests/data/grading_parity/all_keys`` ships, and the rule's exclusion.
-
-    Core reads the two hash sources in order: a truthy ``expected_state_hash`` is
-    compared in process and returned before ``golden_actions`` is read at all, so the
-    replay world is consulted by nobody and the golden actions are never replayed.
-    Refusing this pack would send its author to declare an initial-state file and an MCP
-    server module that nothing then reads, and would refuse a fixture both substrates
-    grade today. Whether declaring two sources is itself a defect is a rule of its own.
-    """
-    grading = _golden_actions({"name": "write_file"})
-    grading["state_checks"]["hash"]["expected_state_hash"] = "aaaa"
-
-    report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), replay_world=_A_TASK_SUPPLYING_NEITHER
-    )
-
-    assert report == AuthoringReport()
-
-
 def test_a_world_no_caller_resolved_leaves_the_golden_replay_unchecked() -> None:
     """The unresolvable arm, which no corpus walk can reach.
 
@@ -1285,6 +1981,7 @@ def test_a_world_no_caller_resolved_leaves_the_golden_replay_unchecked() -> None
         _golden_actions({"name": "write_file"}),
         _inventory(_HELPDESK),
         replay_world=ReplayWorld.unresolvable(),
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert report.errors == ()
@@ -1310,7 +2007,10 @@ def test_a_pack_that_replays_nothing_draws_no_skip_for_a_world() -> None:
     grading = {"state_checks": {"jsonpaths": [{"path": "$.widgets[0].status", "equals": "closed"}]}}
 
     report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), replay_world=ReplayWorld.unresolvable()
+        grading,
+        _inventory(_HELPDESK),
+        replay_world=ReplayWorld.unresolvable(),
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert report == AuthoringReport()
@@ -1393,33 +2093,6 @@ def test_a_golden_source_no_replay_can_iterate_is_refused_at_the_source(
     assert "state_checks.hash.golden_actions" not in [skip.where for skip in report.unchecked]
 
 
-def test_a_golden_source_no_replay_can_iterate_is_refused_beside_a_literal() -> None:
-    """The rule reads the source the runner reads, not the one core reads.
-
-    ``NativeAdapter.to_task_description`` iterates the authored ``golden_actions`` with no
-    literal short-circuit, so a pack declaring both sources cannot be registered at all —
-    where core compares the trial against the author's literal and never reads them. A rule
-    that copied the world rule's exclusion of a literal-declaring pack would accept a pack
-    no trial can be started for.
-    """
-    grading = {
-        "state_checks": {
-            "hash": {
-                "enabled": True,
-                "expected_state_hash": "aaaa",
-                "golden_actions": {"name": "write_file"},
-            }
-        }
-    }
-
-    report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
-    )
-
-    assert [finding.where for finding in report.errors] == ["state_checks.hash.golden_actions"]
-    assert "the list of actions a golden replay executes" in report.errors[0].message
-
-
 def test_a_golden_source_no_replay_can_iterate_under_a_falsy_flag_is_the_flags_finding() -> None:
     """The two hash rules partition the flag, so the pack draws one finding either way.
 
@@ -1443,26 +2116,29 @@ def test_a_golden_source_no_replay_can_iterate_under_a_falsy_flag_is_the_flags_f
 
 
 @pytest.mark.parametrize("golden_actions", _GOLDEN_SOURCES_THAT_REPLAY_NOTHING)
-def test_a_falsy_golden_source_beside_a_literal_is_no_finding_at_all(golden_actions: Any) -> None:
+def test_a_falsy_golden_source_beside_the_other_source_is_no_finding(golden_actions: Any) -> None:
     """The domain's edge: a falsy source is no replay, not a malformed one.
 
     Every read site loads a falsy value as no actions to replay, which is what the
     no-source rule and every other rule in this family already read it as — so the shape
-    rule may not widen from *truthy* to *declared*. The literal beside it is what keeps
-    the no-source rule out of the way, leaving an empty report the only answer left.
+    rule may not widen from *truthy* to *declared*. The sibling source beside it is what
+    keeps the no-source rule out of the way, leaving an empty report the only answer left.
     """
     grading = {
         "state_checks": {
             "hash": {
                 "enabled": True,
-                "expected_state_hash": "aaaa",
+                "expect_initial_state": True,
                 "golden_actions": golden_actions,
             }
         }
     }
 
     report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+        grading,
+        _inventory(_HELPDESK),
+        replay_world=_A_BUILDABLE_WORLD,
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert report == AuthoringReport()
@@ -1590,25 +2266,14 @@ _SOURCELESS_STATE_CHECKS = (
         id="the_flag_off_over_an_empty_replay",
     ),
     pytest.param(
-        {"hash": {"enabled": False, "expected_state_hash": "aaaa"}},
-        "state_checks.hash.expected_state_hash",
-        id="a_literal_the_flag_never_reads",
+        {"hash": {"enabled": False, "expect_initial_state": True}},
+        "state_checks.hash.expect_initial_state",
+        id="an_initial_state_the_flag_never_reads",
     ),
     pytest.param(
         {"hash": {"enabled": False, "golden_actions": [{"name": "write_file"}]}},
         "state_checks.hash.golden_actions",
         id="a_replay_the_flag_never_runs",
-    ),
-    pytest.param(
-        {
-            "hash": {
-                "enabled": False,
-                "expected_state_hash": "aaaa",
-                "golden_actions": [{"name": "write_file"}],
-            }
-        },
-        "state_checks.hash.expected_state_hash",
-        id="both_sources_the_flag_never_reads",
     ),
 )
 
@@ -1625,10 +2290,6 @@ def test_every_state_block_that_evaluates_nothing_draws_exactly_one_finding(
     rule's. Asserting the *whole* list rather than membership is what holds the
     partition — a rule widened to cover a shape the other already owns shows up here
     as two findings for one defect, and one narrowed shows up as none.
-
-    A block declaring *both* sources under a falsy flag is one defect fixed by one edit,
-    so it draws one finding rather than one per source, addressed at the literal — the
-    source core reads first.
     """
     report = inspect_grading_authoring(
         {"state_checks": state_checks},
@@ -1652,9 +2313,9 @@ _A_PROBE_BESIDE = (
         {"jsonpaths": [_A_JSONPATH_ASSERTION]}, ["state_checks.db_probes"], id="one_assertion"
     ),
     pytest.param(
-        {"hash": {"enabled": True, "expected_state_hash": "aaaa"}},
+        {"hash": {"enabled": True, "expect_initial_state": True}},
         ["state_checks.db_probes"],
-        id="an_enabled_hash_over_a_literal",
+        id="an_enabled_hash_over_an_initial_state",
     ),
     pytest.param(
         {"hash": {"enabled": True, "golden_actions": [{"name": "write_file"}]}},
@@ -1662,7 +2323,7 @@ _A_PROBE_BESIDE = (
         id="an_enabled_hash_over_a_replay",
     ),
     pytest.param(
-        {"hash": {"enabled": 1, "expected_state_hash": "aaaa"}},
+        {"hash": {"enabled": 1, "expect_initial_state": True}},
         ["state_checks.db_probes"],
         id="a_flag_written_one_rather_than_true",
     ),
@@ -1677,8 +2338,8 @@ _A_PROBE_BESIDE = (
         id="an_enabled_hash_over_an_empty_replay",
     ),
     pytest.param(
-        {"hash": {"enabled": False, "expected_state_hash": "aaaa"}},
-        ["state_checks.hash.expected_state_hash"],
+        {"hash": {"enabled": False, "expect_initial_state": True}},
+        ["state_checks.hash.expect_initial_state"],
         id="a_source_the_flag_never_reads",
     ),
 )
@@ -1823,12 +2484,226 @@ def test_an_unresolvable_inventory_may_not_carry_tools() -> None:
     resolved and then ignored — a name checked against nothing, reading as clean.
     """
     with pytest.raises(ValueError, match="unresolvable inventory carries tools"):
-        ToolInventory(declared=frozenset({"http_request"}), parameters={}, known=False)
+        ToolInventory(
+            declared=frozenset({"http_request"}),
+            agent_declared=frozenset({"http_request"}),
+            user_declared=frozenset(),
+            actor_split_known=False,
+            parameters={},
+            known=False,
+        )
 
     with pytest.raises(ValueError, match="unresolvable inventory carries tools"):
-        ToolInventory(declared=frozenset(), parameters={"http_request": {}}, known=False)
+        ToolInventory(
+            declared=frozenset(),
+            agent_declared=frozenset(),
+            user_declared=frozenset(),
+            actor_split_known=False,
+            parameters={"http_request": {}},
+            known=False,
+        )
 
     assert ToolInventory.unresolvable().known is False
+
+
+def test_the_declared_set_is_the_union_of_the_two_actors() -> None:
+    """Three sets that can disagree are three sets a rule can read differently.
+
+    ``declared`` answers "does the task give anyone this tool"; the two actor sets
+    answer "may *this* actor call it". A producer reporting a union that is not one
+    would make an undeclared-tool rule and an actor rule contradict each other over
+    the same name, each reading as clean.
+    """
+    with pytest.raises(ValueError, match="not the union of the actors"):
+        ToolInventory(
+            declared=frozenset({"calculator"}),
+            agent_declared=frozenset(),
+            user_declared=frozenset(),
+            actor_split_known=True,
+            parameters={},
+            known=True,
+        )
+
+    with pytest.raises(ValueError, match="not the union of the actors"):
+        ToolInventory(
+            declared=frozenset({"read_file"}),
+            agent_declared=frozenset({"read_file"}),
+            user_declared=frozenset({"calculator"}),
+            actor_split_known=True,
+            parameters={},
+            known=True,
+        )
+
+    assert ToolInventory(
+        declared=frozenset({"read_file", "calculator"}),
+        agent_declared=frozenset({"read_file"}),
+        user_declared=frozenset({"calculator"}),
+        actor_split_known=True,
+        parameters={},
+        known=True,
+    ).declared == frozenset({"read_file", "calculator"})
+
+
+# ---------------------------------------------------------------------------
+# A required action names an actor, and that actor has to have the tool
+# ---------------------------------------------------------------------------
+
+
+def _two_actor_pack(tmp_path: Path, *, agent: list[str], user: list[str]) -> ToolInventory:
+    """The inventory of a pack giving each actor its own builtin tools.
+
+    Written to disk and read back through the loader and the inventory producer,
+    rather than constructed, so what separates the two actors here is what the
+    adapter separates them by at run time.
+    """
+    task_path = tmp_path / "task.yaml"
+    task_path.write_text(
+        yaml.safe_dump(
+            {
+                "task_id": "two_actors",
+                "description": "a task whose two actors each declare a tool",
+                "tools": {"agent": {"enabled": agent}, "user": {"enabled": user}},
+            }
+        )
+    )
+    task, task_dir = load_task_yaml(task_path)
+    return build_tool_inventory(task, task_dir)
+
+
+_THE_REQUESTORS_ADDRESS = "transcript_rules.required_actions[0].requestor"
+
+_AN_ACTION_PER_ACTOR = (
+    pytest.param("calculator", "user", None, id="the_users_tool_asked_of_the_user"),
+    pytest.param("write_file", "assistant", None, id="the_agents_tool_asked_of_the_agent"),
+    pytest.param(
+        "calculator", "assistant", _THE_REQUESTORS_ADDRESS, id="the_users_tool_asked_of_the_agent"
+    ),
+    pytest.param(
+        "write_file", "user", _THE_REQUESTORS_ADDRESS, id="the_agents_tool_asked_of_the_user"
+    ),
+)
+
+
+@pytest.mark.parametrize(("name", "requestor", "address"), _AN_ACTION_PER_ACTOR)
+def test_a_required_action_is_read_against_the_actor_its_requestor_names(
+    tmp_path: Path, name: str, requestor: str, address: str | None
+) -> None:
+    """Both columns of the same pack, because either half alone reads as clean.
+
+    ``requestor`` is matched against the recorded executor at grade time, so an
+    action naming the other actor's tool selects nothing however the trial went —
+    the cost a misspelling carries, from a name that is spelled right. A rule
+    reading only the union would pass both offending rows; one reading only the
+    user's tools would refuse the agent's own action.
+    """
+    inventory = _two_actor_pack(tmp_path, agent=["write_file"], user=["calculator"])
+
+    report = inspect_grading_authoring(_required_action(name, requestor), inventory)
+
+    if address is None:
+        assert report.errors == (), _texts(report, "errors")
+        return
+    assert [finding.where for finding in report.errors] == [address]
+    message = report.errors[0].message
+    assert name in message, message
+    assert "tools.agent.enabled" in message and "tools.user.enabled" in message, message
+
+
+def test_a_requestor_is_unchecked_where_the_tool_set_came_off_a_recorded_trial(
+    tmp_path: Path,
+) -> None:
+    """A replayed trial's tool list says *what* was offered, never *to whom*.
+
+    ``tools_schemas.yaml`` is one list, so the inventory built from it files every
+    tool under the agent because a set has to go somewhere. Reading that placement
+    as a fact would refuse every ``requestor: user`` action a replay re-checks — an
+    authoring that may well be right, failed on evidence the bundle does not hold.
+    The half the bundle *can* answer keeps its teeth: a name no recorded tool
+    carries is still an error.
+    """
+    bundle = tmp_path / "trial0"
+    bundle.mkdir()
+    (bundle / "tools_schemas.yaml").write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "calculator",
+                        "description": "Perform safe arithmetic calculations",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"expression": {"type": "string"}},
+                            "additionalProperties": False,
+                        },
+                    },
+                }
+            ]
+        )
+    )
+    inventory = tool_inventory_from_bundle(bundle)
+
+    on_the_recorded_tool = inspect_grading_authoring(
+        _required_action("calculator", "user"), inventory
+    )
+    assert on_the_recorded_tool.errors == (), _texts(on_the_recorded_tool, "errors")
+    assert [skip.where for skip in on_the_recorded_tool.unchecked] == [_THE_REQUESTORS_ADDRESS]
+
+    on_a_tool_it_never_recorded = inspect_grading_authoring(
+        _required_action("totally_absent", "user"), inventory
+    )
+    assert [finding.where for finding in on_a_tool_it_never_recorded.errors] == [
+        "transcript_rules.required_actions[0].name"
+    ]
+
+
+def test_an_actor_blind_inventory_refuses_to_say_what_an_actor_may_call() -> None:
+    """The method behind the routing above, asked directly.
+
+    ``declared_by`` answers off two sets that exist whatever the producer knew, so
+    an inventory that cannot tell the actors apart has to refuse rather than hand
+    back the agent's whole set as the agent's own.
+    """
+    inventory = ToolInventory(
+        declared=frozenset({"calculator"}),
+        agent_declared=frozenset({"calculator"}),
+        user_declared=frozenset(),
+        actor_split_known=False,
+        parameters={},
+        known=True,
+    )
+
+    with pytest.raises(ValueError, match="does not know which actor declared what"):
+        inventory.declared_by(ToolExecutorIdentity.USER)
+
+
+def test_an_absent_user_side_call_is_no_finding_on_a_pack_with_no_user_tools() -> None:
+    """A ``trace_checks`` matcher may name an actor the task gives no tools.
+
+    ``absent`` over ``executor: user`` asserts that no user-side call happened,
+    which a pack declaring no user tools satisfies — and is true of. Extending the
+    actor rule to trace matchers would refuse packs that grade correctly, so it
+    stops at ``required_actions``, where the declaration is a positive claim.
+
+    The typo beside it is the positive control: the same matcher, one letter wrong
+    in the tool, is an error — so this rule reading nothing is a decision about the
+    executor rather than a site the gate never walked.
+    """
+    user_side = {
+        "kind": "tool_call",
+        "tool": {"equals": "http_request"},
+        "executor": {"equals": "user"},
+    }
+
+    clean = inspect_grading_authoring(_trace_block(user_side, kind="absent"), _inventory(_HELPDESK))
+    assert clean.errors == (), _texts(clean, "errors")
+    assert clean.advisories == (), _texts(clean, "advisories")
+
+    typo = inspect_grading_authoring(
+        _trace_block({**user_side, "tool": {"equals": "http_reqest"}}, kind="absent"),
+        _inventory(_HELPDESK),
+    )
+    assert [finding.where for finding in typo.errors] == ["trace_checks.probe.absent.match.tool"]
 
 
 # ---------------------------------------------------------------------------
@@ -2148,6 +3023,7 @@ def test_an_extraction_the_schema_cannot_answer_for_is_unchecked(
 # smallest edit to its neighbour that changes the answer.
 
 _EXTRACTION_ADDRESS = "trace_checks.probe.bind.values.start.field"
+_ARGUMENT_ADDRESS = "trace_checks.probe.present.match.args.path"
 _INTEGER_ARGUMENT = {"start": {"field": "args.offset"}}
 
 
@@ -2194,11 +3070,13 @@ def test_a_bound_array_read_as_text_is_an_advisory_on_an_open_schema() -> None:
 
 
 def test_a_capture_pattern_on_the_extraction_is_not_flagged_for_its_type() -> None:
-    """A regex capture is a string whatever field it was taken off.
+    """The type rule does not fire at the extraction's own address under a pattern.
 
-    Scoped to the type rule's own address rather than to an empty report: the gate
-    answers nothing else about this block, and asserting that would pin the absence
-    of every rule rather than the presence of this exemption.
+    A capture is not the value the schema typed, so what the reference compares is
+    settled at ``.pattern`` and not here — where the rule that owns the shape does
+    report this block. Scoped to the type rule's own address rather than to an
+    empty report, which this block is not: asserting emptiness would pin the
+    absence of every rule rather than the presence of this exemption.
     """
     grading = _bound_block(
         _tool_call("read_file"),
@@ -2210,6 +3088,106 @@ def test_a_capture_pattern_on_the_extraction_is_not_flagged_for_its_type() -> No
 
     flagged = [finding.where for finding in report.errors + report.advisories]
     assert _EXTRACTION_ADDRESS not in flagged, flagged
+
+
+_PATTERN_ADDRESS = "trace_checks.probe.bind.values.start.pattern"
+
+
+def test_a_capture_pattern_over_a_non_string_argument_is_an_error_on_a_closed_schema() -> None:
+    """A pattern binds a capture off text alone, and nothing off an integer.
+
+    ``_extracted`` narrows by pattern only where the value is a ``str`` and yields
+    nothing otherwise, so the name binds on no event however the agent behaved and
+    the default ``on_unbound`` charges the miss to it — the message a genuine agent
+    failure carries. Which predicate reads the name does not enter into it.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        {"start": {"field": "args.offset", "pattern": "([0-9]+)"}},
+        _quotes("contains_binding", "start"),
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors] == [_PATTERN_ADDRESS]
+    assert "type 'integer'" in report.errors[0].message
+    assert report.advisories == ()
+
+
+def test_a_capture_pattern_over_a_non_string_argument_is_an_advisory_on_an_open_schema() -> None:
+    """The severity rests on the one schema the rule reads, as its neighbour's does.
+
+    A schema permitting arguments it does not declare describes its tool loosely,
+    and hard-failing on it would enforce a claim the schema does not make.
+    """
+    grading = _bound_block(
+        _tool_call("place_order"),
+        {"ordered": {"field": "args.items", "pattern": "(W[0-9]+)"}},
+        _quotes("contains_binding", "ordered"),
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_SHOP_ORDERS))
+
+    assert report.errors == ()
+    assert [finding.where for finding in report.advisories] == [
+        "trace_checks.probe.bind.values.ordered.pattern"
+    ]
+    assert "type 'array'" in report.advisories[0].message
+
+
+def test_a_capture_pattern_over_a_string_argument_is_not_flagged() -> None:
+    """The shape the feature exists for, one token from the flagged one.
+
+    "Bind the directory out of the path the agent read" is a capture over an
+    argument the schema types ``string``, separated from the error above only by
+    which argument ``read_file`` was asked about.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        {"start": {"field": "args.path", "pattern": "([a-z]+)"}},
+        _quotes("contains_binding", "start"),
+    )
+
+    assert inspect_grading_authoring(grading, _inventory(_CODING)) == AuthoringReport()
+
+
+def test_a_capture_pattern_over_the_whole_argument_mapping_is_flagged() -> None:
+    """``field: args`` binds the mapping itself, which no pattern reads either.
+
+    The one extraction whose type no schema declares and the gate knows anyway:
+    ``TraceEvent`` types ``arguments`` as a mapping, so the capture yields nothing
+    for the same reason it yields nothing off an integer.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        {"start": {"field": "args", "pattern": "([0-9]+)"}},
+        _quotes("contains_binding", "start"),
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors] == [_PATTERN_ADDRESS]
+    assert "type 'object'" in report.errors[0].message
+
+
+def test_an_uncompilable_pattern_over_a_non_string_argument_names_both_repairs() -> None:
+    """Two findings at one key, because they are two mistakes with two fixes.
+
+    The rule does not read whether the pattern compiles, and it must not: making
+    the regex valid does not make an integer capturable, so an author shown only
+    the compile error would fix it and still bind nothing.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        {"start": {"field": "args.offset", "pattern": "([0-9]+"}},
+        _quotes("contains_binding", "start"),
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors] == [_PATTERN_ADDRESS, _PATTERN_ADDRESS]
+    assert "does not compile" in report.errors[0].message
+    assert "type 'integer'" in report.errors[1].message
 
 
 def test_a_bound_integer_correlated_with_another_argument_is_not_flagged() -> None:
@@ -2226,6 +3204,496 @@ def test_a_bound_integer_correlated_with_another_argument_is_not_flagged() -> No
     )
 
     assert inspect_grading_authoring(grading, _inventory(_CODING)) == AuthoringReport()
+
+
+def _correlated(task: Path, binder: str, values: dict[str, Any], match: dict[str, Any]) -> Any:
+    """One binder over *binder*'s calls, correlated into *match*, against *task*."""
+    grading = _bound_block(_tool_call(binder), values, {"present": {"match": match}})
+    return inspect_grading_authoring(grading, _inventory(task))
+
+
+def test_a_string_argument_correlated_with_an_integer_binding_is_an_error() -> None:
+    """The wholesale ``args`` exemption was as wide as "both sides are arguments".
+
+    Two arguments correlate natively only where the tools type them the same way.
+    ``read_file`` types ``path`` a string and ``offset`` an integer, and no string
+    equals an integer, so this is red on every trajectory — and the message it
+    fails with is the one a genuine agent miss carries.
+    """
+    report = _correlated(
+        _CODING,
+        "read_file",
+        {"n": {"field": "args.offset"}},
+        _tool_call("read_file", path={"equals_binding": "n"}),
+    )
+
+    assert [finding.where for finding in report.errors] == [_ARGUMENT_ADDRESS]
+    assert "type 'string'" in report.errors[0].message
+    assert "type 'integer'" in report.errors[0].message
+    assert "'read_file'" in report.errors[0].message
+    assert report.advisories == ()
+
+
+def test_an_integer_argument_correlated_with_a_string_binding_is_an_error() -> None:
+    """The reverse direction, answered at both tiers.
+
+    The gate refuses it before the run wherever both schemas type the arguments;
+    the evaluator's backstop reads both operands' runtime JSON types over the
+    residue the gate cannot type. This test locks the pre-run half.
+    """
+    report = _correlated(
+        _CODING,
+        "read_file",
+        {"p": {"field": "args.path"}},
+        _tool_call("read_file", offset={"equals_binding": "p"}),
+    )
+
+    assert [finding.where for finding in report.errors] == [
+        "trace_checks.probe.present.match.args.offset"
+    ]
+    assert "type 'integer'" in report.errors[0].message
+
+
+def test_the_same_correlation_on_open_schemas_is_an_advisory() -> None:
+    """The finding rests on two schemas' claims, so the weaker one decides.
+
+    A schema permitting arguments it does not declare describes its tool loosely,
+    and this is the one rule reading two of them — hard-failing here would enforce
+    against both packs a claim neither makes.
+    """
+    report = _correlated(
+        _SHOP_ORDERS,
+        "place_order",
+        {"it": {"field": "args.items"}},
+        _tool_call("place_order", customer_id={"equals_binding": "it"}),
+    )
+
+    assert report.errors == ()
+    assert [finding.where for finding in report.advisories] == [
+        "trace_checks.probe.present.match.args.customer_id"
+    ]
+    assert "type 'array'" in report.advisories[0].message
+
+
+def _one_task_worth_of_tools(*tasks: Path) -> ToolInventory:
+    """Every tool of several packs in one inventory, each keeping its own schema.
+
+    No task in this repository declares a closed schema beside an open one — each
+    pack's tools are strict together or loose together — so the pairing that
+    separates "both schemas forbid extras" from "either does" cannot be resolved
+    from a single pack. Unioning two real inventories reaches it without inventing
+    a schema: every claim still comes from the tool that made it.
+    """
+    resolved = [_inventory(task) for task in tasks]
+    return ToolInventory(
+        declared=frozenset(name for one in resolved for name in one.declared),
+        agent_declared=frozenset(name for one in resolved for name in one.agent_declared),
+        user_declared=frozenset(name for one in resolved for name in one.user_declared),
+        actor_split_known=True,
+        parameters={name: schema for one in resolved for name, schema in one.parameters.items()},
+        known=True,
+    )
+
+
+_A_CLOSED_TOOL_BESIDE_AN_OPEN_ONE = _one_task_worth_of_tools(_CODING, _SHOP_ORDERS)
+
+_MIXED_STRICTNESS_PAIRS = (
+    pytest.param(
+        "read_file",
+        {"n": {"field": "args.offset"}},
+        _tool_call("place_order", customer_id={"equals_binding": "n"}),
+        "trace_checks.probe.present.match.args.customer_id",
+        id="the_loose_schema_types_the_argument",
+    ),
+    pytest.param(
+        "place_order",
+        {"it": {"field": "args.items"}},
+        _tool_call("read_file", path={"equals_binding": "it"}),
+        "trace_checks.probe.present.match.args.path",
+        id="the_loose_schema_types_the_binding",
+    ),
+)
+
+
+@pytest.mark.parametrize(("binder", "values", "match", "address"), _MIXED_STRICTNESS_PAIRS)
+def test_a_correlation_resting_on_one_loose_schema_is_an_advisory(
+    binder: str, values: dict[str, Any], match: dict[str, Any], address: str
+) -> None:
+    """The finding rests on two claims, so the weaker one decides — from either side.
+
+    A schema permitting arguments it does not declare describes its tool loosely,
+    and it is loose about the *type* it wrote for the same reason. Hard-failing on
+    a pair where either half is that loose would enforce a claim only one of them
+    makes, and the two rows here are that reading in both directions.
+    """
+    grading = _bound_block(_tool_call(binder), values, {"present": {"match": match}})
+
+    report = inspect_grading_authoring(grading, _A_CLOSED_TOOL_BESIDE_AN_OPEN_ONE)
+
+    assert report.errors == ()
+    assert [finding.where for finding in report.advisories] == [address]
+
+
+def test_an_argument_correlated_with_a_bare_result_extraction_is_an_error() -> None:
+    """An extraction no schema describes still has a type, and the event gives it.
+
+    ``field: result`` binds text — ``TraceEvent`` types it that way and no tool
+    schema mentions it — so correlating it against an integer argument is never
+    true. Calling that side unresolved would lose the finding and add an
+    ``unchecked`` line saying nothing.
+    """
+    report = _correlated(
+        _CODING,
+        "read_file",
+        {"r": {"field": "result"}},
+        _tool_call("read_file", offset={"equals_binding": "r"}),
+    )
+
+    assert [finding.where for finding in report.errors] == [
+        "trace_checks.probe.present.match.args.offset"
+    ]
+    assert "the event types it" in report.errors[0].message
+
+
+def test_a_capture_correlated_with_a_natively_typed_argument_names_the_capture() -> None:
+    """A capture is text, and the author is owed the repair they have not taken.
+
+    Three things settle a bound type — a schema, the event, and a ``pattern`` — and
+    the finding must not collapse them: an author who already wrote a capture and
+    is told to write a capture is given no repair at all, and the event did not
+    type this one, the pattern did. The verdict is unchanged either way, since
+    ``"123" == 123`` is false on every trajectory.
+    """
+    report = _correlated(
+        _CODING,
+        "read_file",
+        {"digits": {"field": "args.path", "pattern": "([0-9]+)"}},
+        _tool_call("read_file", offset={"equals_binding": "digits"}),
+    )
+
+    assert [finding.where for finding in report.errors] == [
+        "trace_checks.probe.present.match.args.offset"
+    ]
+    message = report.errors[0].message
+    assert "the capture pattern makes it text" in message
+    assert "the event types it" not in message
+    assert "compare a regex capture" not in message
+    assert "drop the pattern" in message
+
+
+def test_every_rule_naming_a_repair_names_the_same_one() -> None:
+    """A repair one rule recommends and another refuses is worse than no repair.
+
+    Two rules answer for a binding whose type cannot hold against what reads it —
+    the extraction's own type rule and the correlation rule — and both close by
+    naming what the author should write instead. Narrowing one and not the other
+    leaves the branch recommending, in one release, a shape it refuses in another.
+    """
+    read_as_text = _correlated(
+        _CODING,
+        "read_file",
+        _INTEGER_ARGUMENT,
+        {"kind": "assistant_message", "text": {"contains_binding": "start"}},
+    )
+    correlated = _correlated(
+        _CODING,
+        "read_file",
+        _INTEGER_ARGUMENT,
+        _tool_call("read_file", path={"equals_binding": "start"}),
+    )
+
+    repair = _HOW_TO_CORRELATE[_BoundTypeSource.SCHEMA]
+    assert read_as_text.errors[0].message.endswith(repair)
+    assert correlated.errors[0].message.endswith(repair)
+
+
+def test_a_bare_args_binding_is_typed_without_resolving_the_binders_tool() -> None:
+    """``TraceEvent`` types ``arguments`` a mapping whatever tool the binder selected.
+
+    So the answer never rested on a schema, and reaching for one first would lose
+    the finding on every binder whose matcher names no single tool — a shape that
+    still draws its own ``unchecked`` line at the extraction, beside this error.
+    """
+    grading = _bound_block(
+        {"kind": "tool_call"},
+        {"a": {"field": "args"}},
+        {"present": {"match": _tool_call("read_file", offset={"equals_binding": "a"})}},
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors] == [
+        "trace_checks.probe.present.match.args.offset"
+    ]
+    assert "type 'object'" in report.errors[0].message
+    assert [skip.where for skip in report.unchecked] == ["trace_checks.probe.bind.values.a.field"]
+
+
+def test_a_number_argument_correlated_with_an_integer_binding_is_not_flagged() -> None:
+    """Two types that differ and correlate anyway, which a difference rule refuses.
+
+    ``search_kb`` types ``alpha`` a number and ``top_k`` an integer, and Python
+    equates ``1`` with ``1.0``, so this holds on any trajectory where the agent
+    passes the same figure to both.
+    """
+    report = _correlated(
+        _RAG,
+        "search_kb",
+        {"k": {"field": "args.top_k"}},
+        _tool_call("search_kb", alpha={"equals_binding": "k"}),
+    )
+
+    assert report == AuthoringReport()
+
+
+def test_a_container_needle_is_flagged_against_a_container_haystack() -> None:
+    """``contains`` descends into a haystack and never compares it to the needle.
+
+    Both sides are the same declared type here, so a rule reading "do the types
+    differ" would pass it — and the descent reaches only the scalars inside, so an
+    array is found in nothing at all.
+    """
+    report = _correlated(
+        _SHOP_ORDERS,
+        "place_order",
+        {"it": {"field": "args.items"}},
+        _tool_call("place_order", items={"contains_binding": "it"}),
+    )
+
+    assert [finding.where for finding in report.advisories] == [
+        "trace_checks.probe.present.match.args.items"
+    ]
+    assert "contains_binding" in report.advisories[0].message
+
+
+def test_a_scalar_needle_against_a_container_haystack_is_not_flagged() -> None:
+    """The asymmetry the table exists for, one token from its flagged neighbour.
+
+    The same ``array`` argument, the same operator, and only the binding's type
+    changed: a string is found inside a list of strings by descent, which is the
+    correlation "the order carried the customer the lookup returned" is written as.
+    """
+    report = _correlated(
+        _SHOP_ORDERS,
+        "place_order",
+        {"c": {"field": "args.customer_id"}},
+        _tool_call("place_order", items={"contains_binding": "c"}),
+    )
+
+    assert report == AuthoringReport()
+
+
+def test_two_binding_operators_on_one_predicate_draw_two_findings() -> None:
+    """A predicate is a conjunction, so two operators are two comparisons.
+
+    Both must hold for the predicate to, so an author who wrote two never-true
+    comparisons made two mistakes and is owed the address of each operator.
+    """
+    report = _correlated(
+        _SHOP_ORDERS,
+        "place_order",
+        {"it": {"field": "args.items"}},
+        _tool_call("place_order", customer_id={"equals_binding": "it", "contains_binding": "it"}),
+    )
+
+    assert len(report.advisories) == 2
+    named = sorted(
+        operator
+        for operator in ("equals_binding", "contains_binding")
+        for finding in report.advisories
+        if finding.message.startswith(operator)
+    )
+    assert named == ["contains_binding", "equals_binding"]
+
+
+_REGEX_BESIDE_A_REFERENCE = (
+    pytest.param(
+        {"r": {"field": "result"}},
+        "trace_checks.probe.present.match.args.offset",
+        id="a_non_args_extraction_the_shipped_rule_exits_on",
+    ),
+    pytest.param(
+        {"r": {"field": "args.path", "pattern": "([0-9]+)"}},
+        "trace_checks.probe.present.match.args.offset",
+        id="a_capture_the_shipped_rule_exits_on",
+    ),
+    pytest.param(
+        {"r": {"field": "args.offset"}},
+        "trace_checks.probe.bind.values.r.field",
+        id="an_args_extraction_the_shipped_rule_reaches",
+    ),
+    pytest.param(
+        {"r": {"field": "args"}},
+        "trace_checks.probe.bind.values.r.field",
+        id="a_bare_args_extraction_the_shipped_rule_reaches",
+    ),
+)
+
+
+@pytest.mark.parametrize(("values", "address"), _REGEX_BESIDE_A_REFERENCE)
+def test_a_regex_beside_the_reference_draws_exactly_one_finding(
+    values: dict[str, Any], address: str
+) -> None:
+    """One mistake, one report — and standing down is scoped to where the other rule reports.
+
+    A ``regex`` on the predicate says the argument holds text whatever the schema
+    types it, which is what makes the reference textual to the extraction rule. But
+    that rule exits on a non-``args`` field and on a ``pattern`` before it resolves
+    anything, so deferring wherever a ``regex`` appears would leave the first two
+    rows here unreported at both tiers rather than reported once. The address is
+    what says which rule answered.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        values,
+        {
+            "present": {
+                "match": _tool_call("read_file", offset={"regex": "[0-9]+", "equals_binding": "r"})
+            }
+        },
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors + report.advisories] == [address]
+
+
+def test_a_path_below_its_first_segment_draws_exactly_one_skip() -> None:
+    """The shipped skip already lands at this address, so this rule stands down.
+
+    A second ``unchecked`` row at one address reports one gap twice and reads as
+    two unanswered questions.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        _INTEGER_ARGUMENT,
+        {
+            "present": {
+                "match": {
+                    "kind": "tool_call",
+                    "tool": {"equals": "mobile"},
+                    "args": {"actions.deep": {"equals_binding": "start"}},
+                }
+            }
+        },
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_MOBILE))
+
+    assert [skip.where for skip in report.unchecked] == [
+        "trace_checks.probe.present.match.args.actions.deep"
+    ]
+    assert report.errors + report.advisories == ()
+
+
+def test_an_argument_path_is_read_as_authored_rather_than_split_out_of_its_address() -> None:
+    """``args: {"path.args.offset": …}`` addresses one path, and it is below a head.
+
+    Recovering the path from the finding's address by its last ``.args.`` would
+    read ``'offset'`` — a real ``read_file`` argument of another type — and report
+    a correlation the author never wrote. The path travels with the predicate, so
+    this is one skip and no finding.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        {"p": {"field": "args.path"}},
+        {
+            "present": {
+                "match": {
+                    "kind": "tool_call",
+                    "tool": {"equals": "read_file"},
+                    "args": {"path.args.offset": {"equals_binding": "p"}},
+                }
+            }
+        },
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [skip.where for skip in report.unchecked] == [
+        "trace_checks.probe.present.match.args.path.args.offset"
+    ]
+    assert report.errors + report.advisories == ()
+
+
+def test_a_matcher_naming_no_tool_draws_exactly_one_skip() -> None:
+    """Which schema types the argument is already unanswered one address up.
+
+    ``_one_matchers_argument_paths`` reports it for the matcher as a whole, and a
+    second row per predicate would multiply one gap by however many arguments the
+    matcher happens to carry.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        _INTEGER_ARGUMENT,
+        {
+            "present": {
+                "match": {"kind": "tool_call", "args": {"path": {"equals_binding": "start"}}}
+            }
+        },
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [skip.where for skip in report.unchecked] == ["trace_checks.probe.present.match.args"]
+    assert report.errors + report.advisories == ()
+
+
+def test_an_argument_the_schema_gives_no_type_leaves_the_comparison_unchecked() -> None:
+    """A property writing an ``anyOf`` and no ``type`` settles nothing either way.
+
+    Reported rather than passed over: the comparison may well be never-true, and
+    the author is owed the difference between "checked and fine" and "not
+    checkable". ``mobile.actions`` is the corpus's only such property.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        _INTEGER_ARGUMENT,
+        {"present": {"match": _tool_call("mobile", actions={"equals_binding": "start"})}},
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_MOBILE))
+
+    assert [skip.where for skip in report.unchecked] == [
+        "trace_checks.probe.present.match.args.actions"
+    ]
+    assert "no single type for 'actions'" in report.unchecked[0].reason
+    assert report.errors + report.advisories == ()
+
+
+def test_an_argument_typed_outside_the_json_type_names_leaves_it_unchecked() -> None:
+    """A schema may write a ``type`` the table has no answer for, and must not crash.
+
+    ``type: "null"`` is legal JSON Schema and a typo is legal YAML. Either reaches
+    ``ever_satisfiable`` as an author-supplied string, and the gate answers without
+    a false-reject mode, so the comparison is unchecked rather than refused — and
+    rather than a ``KeyError`` inside ``tolokaforge validate``. Written out because
+    no in-repo schema types a property outside the six names; the packs this
+    answers for are maintained outside this repository.
+    """
+    inventory = ToolInventory(
+        declared=frozenset({"read_file"}),
+        agent_declared=frozenset({"read_file"}),
+        user_declared=frozenset(),
+        actor_split_known=True,
+        parameters={
+            "read_file": {
+                "additionalProperties": False,
+                "properties": {"path": {"type": "null"}, "offset": {"type": "integer"}},
+            }
+        },
+        known=True,
+    )
+    grading = _bound_block(
+        _tool_call("read_file"),
+        _INTEGER_ARGUMENT,
+        {"present": {"match": _tool_call("read_file", path={"equals_binding": "start"})}},
+    )
+
+    report = inspect_grading_authoring(grading, inventory)
+
+    assert [skip.where for skip in report.unchecked] == [_ARGUMENT_ADDRESS]
+    assert report.errors + report.advisories == ()
 
 
 def test_a_bound_integer_equated_against_text_is_flagged_like_a_containment() -> None:
@@ -2302,6 +3770,36 @@ def test_every_json_type_that_is_never_text_is_reported(
     assert f"type {declared!r}" in reported[0].message
 
 
+def test_an_argument_typed_outside_the_json_type_names_is_not_flagged() -> None:
+    """A schema is free to write a ``type`` the table has no answer for.
+
+    ``type: "null"`` is legal JSON Schema and a typo is legal YAML, and the gate
+    answers without a false-reject mode, so a name it cannot read is no evidence
+    rather than a finding — and rather than a raise inside ``tolokaforge validate``.
+    The inventory is written out rather than resolved from a pack because no in-repo
+    schema types a property outside the six names; the packs this answers for are
+    maintained outside this repository.
+    """
+    inventory = ToolInventory(
+        declared=frozenset({"read_file"}),
+        agent_declared=frozenset({"read_file"}),
+        user_declared=frozenset(),
+        actor_split_known=True,
+        parameters={
+            "read_file": {
+                "additionalProperties": False,
+                "properties": {"offset": {"type": "null"}},
+            }
+        },
+        known=True,
+    )
+    grading = _bound_block(
+        _tool_call("read_file"), _INTEGER_ARGUMENT, _quotes("contains_binding", "start")
+    )
+
+    assert inspect_grading_authoring(grading, inventory) == AuthoringReport()
+
+
 _REFERENCES_THAT_COMPARE_TEXT = (
     pytest.param(_quotes("contains_binding", "start"), "text", id="text"),
     pytest.param(
@@ -2323,6 +3821,32 @@ _REFERENCES_THAT_COMPARE_TEXT = (
         "result",
         id="result",
     ),
+    pytest.param(
+        {
+            "present": {
+                "match": {
+                    "kind": "tool_call",
+                    "tool": {"equals": "read_file"},
+                    "status": {"equals_binding": "start"},
+                }
+            }
+        },
+        "status",
+        id="status",
+    ),
+    pytest.param(
+        {
+            "present": {
+                "match": {
+                    "kind": "tool_call",
+                    "tool": {"equals": "read_file"},
+                    "executor": {"equals_binding": "start"},
+                }
+            }
+        },
+        "executor",
+        id="executor",
+    ),
 )
 
 
@@ -2330,10 +3854,12 @@ _REFERENCES_THAT_COMPARE_TEXT = (
 def test_every_event_field_holding_text_flags_a_binding_of_another_type(
     require: dict[str, Any], field: str
 ) -> None:
-    """``TraceEvent`` declares three fields as ``str | None``, and all three compare text.
+    """Five ``TraceEvent`` fields hold a ``str`` at runtime, and all five compare text.
 
-    A rule naming only the field a cell happened to use would let the identical
-    never-true check through on the other two.
+    ``status`` and ``executor`` reach a predicate as members of a closed vocabulary
+    typed ``str``, so the value compared is text exactly as ``result``'s is. A rule
+    naming only the field a cell happened to use would let the identical never-true
+    check through on the other four.
     """
     grading = _bound_block(_tool_call("read_file"), _INTEGER_ARGUMENT, require)
 
@@ -2383,37 +3909,52 @@ def test_a_matcher_carrying_no_predicate_at_all_is_not_a_finding() -> None:
     assert report == AuthoringReport()
 
 
-# Which attribute of ``TraceEvent`` each matchable field reads, written out here so
-# the type check below compares the gate's set against the dataclass rather than
-# against itself. ``args`` addresses ``arguments``, whose members are typed by the
-# tool schema and not by the event.
-_MATCHER_FIELD_ATTRIBUTES = {
-    "tool": "tool_name",
-    "text": "text",
-    "result": "result",
-    "executor": "executor",
-    "status": "status",
-    "args": "arguments",
-}
-
-
-def test_the_textual_matcher_fields_are_the_events_string_fields() -> None:
-    """A field the event types as text is one every reference compares correctly.
+def test_the_textual_matcher_fields_are_the_fields_whose_value_is_a_string() -> None:
+    """A field whose runtime value is a ``str`` is one every reference compares correctly.
 
     The gate flags a binding reference sitting on one of these against a schema-typed
-    non-string extraction, and exempts the rest. So a field retyped to ``str | None``
-    on ``TraceEvent`` and left out of the gate's set is a never-true check the gate
-    stops reporting — the same class it exists to catch — and one typed as anything
-    else but listed here is a correct native comparison the gate starts rejecting.
+    non-string extraction, and exempts the rest. So a field the event types as text
+    and the gate leaves out is a never-true check the gate stops reporting — the same
+    class it exists to catch — and one typed as anything else but held here is a
+    correct native comparison the gate starts rejecting.
+
+    Three assertions, each falsifiable on its own. The mapping is held against the
+    matchable union, so a field the model gains cannot go untyped. The membership is
+    written out, so retyping an attribute on ``TraceEvent`` reds here rather than
+    moving the gate's set and the derivation together in silence. And the gate's set
+    is held against one computed here through the shipped predicate, so a constant
+    that stops being derived at all — the shape that let ``status`` and ``executor``
+    stay out while the comment claimed they were the event's string fields — cannot
+    pass beside the written-out membership.
+
+    The predicate itself is called rather than re-implemented: a second walk here
+    would move with the first under a retype and take the independence with it.
     """
     matchable = {field for fields in TRACE_MATCHABLE_FIELDS_BY_KIND.values() for field in fields}
     assert set(_MATCHER_FIELD_ATTRIBUTES) == matchable
 
-    annotations = TraceEvent.__annotations__
+    annotations = get_type_hints(TraceEvent)
     textual = {
         field
         for field, attribute in _MATCHER_FIELD_ATTRIBUTES.items()
-        if annotations[attribute] == "str | None"
+        if _is_a_string_at_runtime(annotations[attribute])
     }
 
+    assert textual == {"tool", "text", "result", "status", "executor"}
     assert textual == _TEXTUAL_MATCHER_FIELDS
+
+
+def test_the_types_no_reference_can_correlate_with_text_are_read_off_the_table() -> None:
+    """The five types the rule refuses, derived rather than listed beside the rule.
+
+    The membership is what this holds, and it would hold just as well against a
+    hand-written set — the derivation itself is carried by
+    ``test_each_table_cell_agrees_with_the_shipped_operator_over_real_values``,
+    which measures every cell against the operators. What this adds is the answer
+    the rule must give whatever the derivation is: a type is uncorrelatable with
+    text exactly when neither binding operator can ever hold between a string the
+    event yields and a value of that type.
+    """
+    never_text = frozenset({"integer", "number", "boolean", "array", "object"})
+
+    assert never_text == _UNCORRELATABLE_JSON_TYPES

@@ -13,13 +13,20 @@ a truthiness test, so a gate mirroring that would answer ``[{enabled: true}]`` a
 absent block, so the pack builds a description that grades that component as nothing
 and the trial is paid for before anything notices.
 
-**One tier below those keys, and one errand refuses it.** ``state_checks.hash.golden_actions``
+**One tier below those keys, and both errands refuse it.** ``state_checks.hash`` is a block
+inside ``state_checks`` rather than a grading key, so the shape gate above never walks it —
+and each errand constructs it for itself, ``to_task_description`` reading the file without
+``get_grading_config`` ever having run. A key the block does not declare requests nothing, so
+dropping it silently at either read grades the component as absent and scores the pack
+*higher* than the same block spelled correctly.
+
+**One tier below those keys again, and one errand refuses it.** ``state_checks.hash.golden_actions``
 is the list of actions a golden replay executes, and :meth:`to_task_description` is the read
 that lowers each action onto the wire — so it is the one that refuses a shape it cannot
-lower. :meth:`get_grading_config` hands the untyped block on to the core engine, which
-refuses the same shape at its own read
+lower. :meth:`get_grading_config` hands the block's unclaimed ``golden_actions`` on to the
+core engine, which refuses the same shape at its own read
 (``tests/unit/grading/test_state_checks_composition.py``), and :meth:`compute_golden_hash`
-reads the source for truth alone and returns no hash for any other shape (#836). So the rows
+resolves no source at all and answers ``None`` for every shape (#836). So the rows
 below are not parametrised over the errands. A *falsy* source is no replay rather than a
 malformed one and loads as no actions to replay; only a truthy value that is not a list is
 refused.
@@ -35,6 +42,7 @@ from typing import Any
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from tests.utils.golden_source_shapes import (
     elements_that_are_no_action,
@@ -193,6 +201,39 @@ def test_an_empty_grading_file_is_answered_by_each_read_site_as_it_was(
         _read(empty, "get_grading_config")
 
 
+@pytest.mark.parametrize("site", _READ_SITES)
+def test_a_populated_retired_hash_key_is_refused_at_each_read_site(
+    tmp_path: Path, site: str
+) -> None:
+    """A stored hash stops the pack at whichever read a run reaches first.
+
+    Parametrised over the errands rather than driven through one, because the two share
+    a file and not an object: ``tolokaforge run-trial`` runs no grading pre-flight, so
+    the description build is the only read a trial started there passes through, and a
+    refusal that lived on the other errand alone would let such a trial be paid for. Each
+    row builds its own adapter and calls one method, so what it measures is that read's
+    refusal and not a neighbour's.
+
+    Both replacements are asserted rather than the message as a whole: naming only the
+    shape a refusal task cannot use is the failure this retirement exists to avoid.
+    """
+    adapter = _pack(
+        tmp_path,
+        grading_yaml=yaml.safe_dump(
+            {"state_checks": {"hash": {"enabled": True, "expected_state_hash": "a" * 64}}}
+        ),
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        _read(adapter, site)
+
+    message = str(excinfo.value)
+    assert str(tmp_path / "tasks" / _TASK_ID / "grading.yaml") in message
+    assert "state_checks.hash.expected_state_hash has been retired" in message
+    assert "golden_actions" in message
+    assert "expect_initial_state" in message
+
+
 #: Both shape tables are shared with the gate's rows and core's, over a tool name this
 #: pack's grading file can carry.
 _GOLDEN_SOURCES_NO_REPLAY_CAN_ITERATE = sources_no_replay_can_iterate("place_order")
@@ -211,11 +252,6 @@ _GOLDEN_SOURCES_THAT_REPLAY_NOTHING = (
     pytest.param(False, id="false"),
 )
 
-_SOURCES_BESIDE_THE_GOLDEN_ONE = (
-    pytest.param({}, id="the_replay_as_the_only_source"),
-    pytest.param({"expected_state_hash": "aaaa"}, id="a_literal_declared_beside_it"),
-)
-
 
 def _replaying_pack(tmp_path: Path, golden_actions: Any, **hash_keys: Any) -> NativeAdapter:
     """A pack whose enabled ``hash`` block declares *golden_actions*, in any shape."""
@@ -231,21 +267,17 @@ def _replaying_pack(tmp_path: Path, golden_actions: Any, **hash_keys: Any) -> Na
     )
 
 
-@pytest.mark.parametrize("beside", _SOURCES_BESIDE_THE_GOLDEN_ONE)
 @pytest.mark.parametrize(("golden_actions", "kind"), _GOLDEN_SOURCES_NO_REPLAY_CAN_ITERATE)
 def test_a_golden_source_no_replay_can_iterate_is_refused_at_the_wire_read(
-    tmp_path: Path, golden_actions: Any, kind: str, beside: dict[str, Any]
+    tmp_path: Path, golden_actions: Any, kind: str
 ) -> None:
     """The last surface before a trial is registered, so it is the one that has to say so.
 
     Iterating the authored value lands a bare ``AttributeError`` / ``TypeError`` on
     whoever asked for a description — the run's pre-flight resolves it before the per-task
     catch (#880), so it aborts the whole run naming neither the pack, the key nor a fix.
-    The literal row is the load-bearing one: this read has no literal short-circuit, so a
-    pack declaring both sources is unregisterable where core would never read the actions
-    at all.
     """
-    adapter = _replaying_pack(tmp_path, golden_actions, **beside)
+    adapter = _replaying_pack(tmp_path, golden_actions)
 
     with pytest.raises(UnreplayableGoldenSource) as excinfo:
         _read(adapter, "to_task_description")
@@ -266,7 +298,7 @@ def test_a_falsy_golden_source_loads_as_no_actions_to_replay(
     is not coerced off, because the author did ask for hash grading. This is a load-tier
     lock and asserts nothing about the verdict that description later earns: the runner
     grades an empty replay against the trial's initial state where core takes no verdict at
-    all, which is #693's asymmetry and untouched here.
+    all, an asymmetry no gate admits and this lock does not reach.
 
     The rows that are not the empty list are the ones a truthiness-mirroring read gets
     wrong: ``golden_actions: null`` is what an author reaches by commenting their actions
@@ -300,6 +332,106 @@ def test_an_action_that_is_no_mapping_is_refused_before_anything_is_built(
     assert f"{type(element).__name__} ({element!r})" in str(excinfo.value)
 
 
+_KEYS_THE_HASH_BLOCK_DOES_NOT_DECLARE = (
+    pytest.param({"enalbed": True, "expect_initial_state": True}, ["enalbed"], id="a_typod_flag"),
+    pytest.param(
+        {"enabled": True, "expect_inital_state": True},
+        ["expect_inital_state"],
+        id="a_typod_source",
+    ),
+    pytest.param(
+        {"hash_enabled": True, "hash_weight": 0.5},
+        ["hash_enabled", "hash_weight"],
+        id="the_runners_own_flattened_names",
+    ),
+    pytest.param(
+        {"enabled": True, "expect_initial_state": True, "weigth": 0.6},
+        ["weigth"],
+        id="a_typod_weight",
+    ),
+)
+"""Blocks that request *nothing* the author asked for, each with every key that does it.
+
+The flattened row is the sharpest: those are the names the *runner* declares for this
+block and the ones an author meets in this repo's own substrate tables, so the block
+reads as configured hash grading and lowers as none. Every offending key is named in
+one raise, which is what lets an author fix the block in a single pass.
+"""
+
+
+@pytest.mark.parametrize(("block", "offending_keys"), _KEYS_THE_HASH_BLOCK_DOES_NOT_DECLARE)
+def test_a_hash_key_the_block_does_not_declare_is_refused_at_the_wire_read(
+    tmp_path: Path, block: dict[str, Any], offending_keys: list[str]
+) -> None:
+    """The description build reads the block on its own, so it has to refuse on its own.
+
+    ``get_grading_config`` constructs ``StateHashConfig`` through ``GradingConfig`` and has
+    refused these since the block was typed — but it is never called here, and that is the
+    assertion: the two errands share a *file*, not an object, and a description built by
+    reading the file a second time reaches ``RegisterTrial`` without the first read ever
+    having happened (``run-trial`` runs no grading pre-flight at all). A block dropping the
+    key silently here lowers ``hash_enabled=False`` onto the wire, so the trial is paid for
+    and grades the component it configured as absent — scoring *higher* than the same block
+    spelled correctly.
+    """
+    adapter = _pack(tmp_path, grading_yaml=yaml.safe_dump({"state_checks": {"hash": block}}))
+
+    with pytest.raises(ValidationError) as excinfo:
+        adapter.to_task_description(_TASK_ID)
+
+    errors = excinfo.value.errors()
+    assert sorted(error["loc"] for error in errors) == [(key,) for key in offending_keys]
+    assert {error["type"] for error in errors} == {"extra_forbidden"}
+
+
+@pytest.mark.parametrize(
+    "hash_block",
+    [
+        pytest.param(None, id="the_key_carrying_nothing"),
+        pytest.param({}, id="an_empty_mapping"),
+    ],
+)
+def test_a_hash_block_declaring_nothing_reaches_the_wire_as_an_absent_one(
+    tmp_path: Path, hash_block: Any
+) -> None:
+    """The positive control for the rows above, and the one shape that must not refuse.
+
+    ``hash:`` written bare, an empty mapping and no ``hash`` key at all are one block on
+    the wire. Reading the raw value for *truthiness* rather than for ``None`` would keep
+    them equal by swallowing ``hash: 0`` beside them, which the grading config refuses.
+    """
+    declared = _pack(
+        tmp_path / "declared",
+        grading_yaml=yaml.safe_dump({"state_checks": {"hash": hash_block, "jsonpaths": []}}),
+    )
+    absent = _pack(
+        tmp_path / "absent", grading_yaml=yaml.safe_dump({"state_checks": {"jsonpaths": []}})
+    )
+
+    assert _wire_grading(declared).state_checks == _wire_grading(absent).state_checks
+
+
+@pytest.mark.parametrize("shape", _TRUTHY_SHAPES + _FALSY_SHAPES)
+def test_a_hash_block_that_is_not_a_mapping_is_refused_at_the_wire_read(
+    tmp_path: Path, shape: Any
+) -> None:
+    """One tier below the keys ``refuse_malformed_grading_shapes`` walks, and unwalked by it.
+
+    That gate answers the six top-level grading keys; ``hash`` sits inside ``state_checks``
+    and reaches this read whatever its shape. The falsy half is the expensive one — it is
+    read as a block requesting no hash at all, so the trial is paid for before anything
+    notices — and it is the half a truthiness test cannot answer.
+    """
+    adapter = _pack(tmp_path, grading_yaml=yaml.safe_dump({"state_checks": {"hash": shape}}))
+
+    with pytest.raises(ValidationError) as excinfo:
+        adapter.to_task_description(_TASK_ID)
+
+    assert [(error["loc"], error["type"], error["input"]) for error in excinfo.value.errors()] == [
+        ((), "model_type", shape)
+    ]
+
+
 def test_the_run_trial_path_refuses_a_falsy_grading_shape(tmp_path: Path) -> None:
     """``tolokaforge run-trial`` runs no grading pre-flight, so the read site is the gate.
 
@@ -318,3 +450,52 @@ def test_the_run_trial_path_refuses_a_falsy_grading_shape(tmp_path: Path) -> Non
         adapter.to_task_description(task.task_id)
 
     assert "'transcript_rules'" in str(excinfo.value)
+
+
+_A_REQUIRED_ACTION: dict[str, Any] = {
+    "action_id": "cancel_the_order",
+    "requestor": "assistant",
+    "name": "cancel_order",
+    "arguments": {"order_id": "O1"},
+}
+"""One well-formed ``required_actions`` element, in the spelling an author writes."""
+
+
+def _transcript_pack(tmp_path: Path, required_actions: list[Any]) -> NativeAdapter:
+    return _pack(
+        tmp_path,
+        grading_yaml=yaml.safe_dump({"transcript_rules": {"required_actions": required_actions}}),
+    )
+
+
+def test_a_required_action_reaches_the_wire_under_the_name_its_author_wrote(
+    tmp_path: Path,
+) -> None:
+    """One model serves the block and the wire, so the read validates instead of copying.
+
+    The positive control for the rows below: without it, a read that dropped
+    ``required_actions`` on the floor entirely would satisfy every rejection here.
+    """
+    action = _wire_grading(_transcript_pack(tmp_path, [_A_REQUIRED_ACTION])).transcript_rules
+    assert [a.name for a in action.required_actions] == ["cancel_order"]
+    assert [a.action_id for a in action.required_actions] == ["cancel_the_order"]
+
+
+@pytest.mark.parametrize("omitted", ["name", "action_id", "requestor"])
+def test_a_required_action_missing_a_field_it_must_declare_is_refused_at_the_wire_read(
+    tmp_path: Path, omitted: str
+) -> None:
+    """A field the read once substituted a default for now fails before the trial is paid for.
+
+    Each of these was read off the raw mapping with a fallback — ``""`` for the tool and
+    the id, ``"user"`` for the requestor — so a pack omitting one registered cleanly and
+    graded a required action nothing could satisfy, or one whose requestor the author
+    never wrote.
+    """
+    element = {key: value for key, value in _A_REQUIRED_ACTION.items() if key != omitted}
+    adapter = _transcript_pack(tmp_path, [element])
+
+    with pytest.raises(ValidationError) as excinfo:
+        adapter.to_task_description(_TASK_ID)
+
+    assert [error["loc"] for error in excinfo.value.errors()] == [("required_actions", 0, omitted)]

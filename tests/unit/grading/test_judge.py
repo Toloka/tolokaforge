@@ -1162,7 +1162,7 @@ def test_opening_message_gated_omits_agent_policy_section():
 
 
 def test_opening_message_ignores_the_tool_call_id_on_the_wire():
-    """The transcript wire carries the provider's call id on every ``tool_calls``
+    """The transcript wire carries the trial's episode-unique call id on every ``tool_calls``
     entry so grading can join a call to its result. The judge reads only
     ``function.name`` / ``function.arguments``, so what the judge sees is
     byte-identical with and without it — the id is grading input, not judge

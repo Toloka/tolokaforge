@@ -8,8 +8,20 @@ so it intentionally diverges from that byte-for-byte output. Numeric-looking
 STRINGS ("130.00" == "130.0") fold only for the per-field opt-in set
 ``numeric_string_fields`` — see :func:`compute_stable_hash`.
 
-All hash computations across the codebase should use compute_stable_hash()
-to ensure consistent results.
+:func:`compute_stable_hash` is the RUNNER substrate's digest: db-service state
+hashes, ETags (:func:`compute_etag`), snapshot hashes, and the
+``ResetTrialResponse.state_hash`` / ``GetStateResponse.stable_hash`` wire
+fields. Core grading's digest is a different algebra —
+``state_digest`` (``consistent_hash(to_hashable(...))``) in
+``tolokaforge/core/grading/state_checks.py``. The two agree on which states are
+equal (both fold through :func:`canonical_number`) and disagree on every label,
+so a hash comparison hashes both sides with one function, on one substrate,
+and a digest never crosses substrates. The two algebras stay separate
+deliberately: this module's digests are persisted and core's reproduce the
+digests recorded bundles carry, so changing either function invalidates
+digests that already exist — while nothing needs a digest to travel between
+substrates. Locked by
+``tests/canonical/test_expected_state_hash_is_not_portable.py``.
 """
 
 import hashlib
@@ -269,6 +281,16 @@ def compute_stable_hash(
     mcp_core.utils.validation.calculate_database_hash() for identical state
     dictionaries. The default (True) additionally folds numerically-equal
     representations, intentionally diverging from that byte-for-byte output.
+
+    This is the runner substrate's digest, and it is frozen: its output is
+    persisted — db-service ETags (:func:`compute_etag`), snapshot hashes, and
+    the ``ResetTrialResponse.state_hash`` / ``GetStateResponse.stable_hash``
+    wire fields — so a serialisation change invalidates every digest already
+    stored. Core grading's ``state_digest``
+    (``tolokaforge/core/grading/state_checks.py``) is a different algebra over
+    the same equivalence relation: a comparison hashes both sides with one
+    function, and a digest never crosses substrates
+    (``tests/canonical/test_expected_state_hash_is_not_portable.py``).
 
     Algorithm:
     1. Filter out unstable fields (if specified)

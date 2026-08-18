@@ -1,0 +1,65 @@
+[
+  {
+    "name": "write_file",
+    "description": "Write content to a file",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Path to the file to write",
+          "title": "Path",
+          "type": "string"
+        },
+        "content": {
+          "description": "Content to write to the file",
+          "title": "Content",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "title": "write_fileArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "cancel_order",
+    "description": "Cancel an order that has not shipped.",
+    "parameters": {
+      "properties": {
+        "order_id": {
+          "description": "Order identifier, e.g. 'O-001'",
+          "title": "Order Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "order_id"
+      ],
+      "title": "cancel_orderArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "delete_customer",
+    "description": "Delete a customer record.",
+    "parameters": {
+      "properties": {
+        "customer_id": {
+          "description": "Customer identifier, e.g. 'C-101'",
+          "title": "Customer Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "customer_id"
+      ],
+      "title": "delete_customerArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]

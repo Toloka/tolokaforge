@@ -11,27 +11,27 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
-from tolokaforge.core.deprecations import canonicalize_actor_config
+from tolokaforge.core.deprecations import canonicalize_actor_config, drop_retired_max_idle_turns
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
 from tolokaforge.core.grading.state_composition import (
+    AUTHORED_HASH_WEIGHT_CONTEXT,
+    StateHashConfig,
     refuse_probes_beside_another_state_source,
     resolve_hash_weight,
 )
-from tolokaforge.core.grading.turn_bounds import validate_turn_window
 from tolokaforge.core.models.run_config import RunDefaults
 from tolokaforge.runner.models import (
     EnvironmentPatch,
     JudgeCustomization,
     LLMJudgeConfig,
-    ToolExpectations,
     TraceChecksConfig,
+    TranscriptRulesConfig,
 )
 
 __all__ = [
     "ActorSpec",
     "AssetsConfig",
-    "CommunicateInfo",
     "GradingCombineConfig",
     "GradingConfig",
     "GradingDefaults",
@@ -41,7 +41,6 @@ __all__ = [
     "LLMJudgeDefaults",
     "ProjectConfig",
     "RETIRED_STATE_CHECK_KEYS",
-    "RequiredAction",
     "SEED_KIND_BY_EXTENSION",
     "SeedKind",
     "SeedRef",
@@ -54,7 +53,6 @@ __all__ = [
     "TaskMetadata",
     "TimeoutDefaults",
     "ToolsConfig",
-    "TranscriptRulesConfig",
     "UserSimulatorConfig",
 ]
 
@@ -66,8 +64,8 @@ InteractionMode = Literal["conversational", "agent_only"]
   Matches τ-bench-style benchmarks where the user is a genuine
   information source.
 - ``agent_only``: no user turn dispatched after the first message.
-  The agent runs to ``###STOP###`` (routed to
-  :attr:`TerminationReason.AGENT_DONE`), ``max_turns``, or
+  The agent runs until it takes a turn without calling a tool (routed
+  to :attr:`TerminationReason.AGENT_DONE`), or to ``max_turns`` or
   ``episode_timeout_s``. Matches code-migration / agent-driven eval
   shape where the task lives entirely in the system prompt and the
   agent decides when it's done. The user simulator is never
@@ -196,6 +194,47 @@ def _validate_actors_map(
     return value
 
 
+_A_USER_TOOL_NOTHING_CAN_CALL = (
+    "tools.user.enabled declares {tools}, and {because}, so the declared tools are "
+    "registered for every trial and no turn can ever call one. {remedy}, or drop "
+    "tools.user.enabled."
+)
+
+_AGENT_ONLY_DISPATCHES_NO_USER_TURN = (
+    "interaction_mode is agent_only, which dispatches no user turn at all"
+)
+_TO_DISPATCH_A_USER_TURN = "Write interaction_mode: conversational"
+
+_A_SCRIPTED_SIMULATOR_EMITS_NO_TOOL_CALL = (
+    "the user simulator resolves to mode scripted, whose reply is text and never a tool call"
+)
+_TO_LET_THE_SIMULATOR_CALL = "Write actors.user.mode: llm"
+
+_A_SECOND_MCP_SERVER = (
+    "tools.user.mcp_server is {user_server} and tools.agent.mcp_server is {agent_server}. "
+    "A task ships one MCP server: every block's schemas are read from the one "
+    "fixtures/tools.json beside the task, so the second server's tools would be "
+    "resolved from the first server's fixture — the simulator would be offered tools "
+    "that do not exist, and grading rules naming them would be checked against "
+    "arguments that are not theirs. Point both blocks at one server, or declare the "
+    "user's tools as builtins."
+)
+
+
+def _why_no_user_turn_can_call_a_tool(task: "TaskConfig") -> tuple[str, str] | None:
+    """Why no turn of *task* can make a user-side call, and the fix, or ``None``.
+
+    Ordered outward-in: the interaction mode decides whether a user turn is
+    dispatched at all, and only then does the simulator's own mode decide what a
+    dispatched turn can emit.
+    """
+    if task.interaction_mode == "agent_only":
+        return _AGENT_ONLY_DISPATCHES_NO_USER_TURN, _TO_DISPATCH_A_USER_TURN
+    if task.resolve_user_simulator().mode == "scripted":
+        return _A_SCRIPTED_SIMULATOR_EMITS_NO_TOOL_CALL, _TO_LET_THE_SIMULATOR_CALL
+    return None
+
+
 class TaskMetadata(BaseModel):
     """Optional metadata used for analytics slicing."""
 
@@ -221,14 +260,18 @@ class TimeoutDefaults(BaseModel):
 class StuckHeuristicsDefaults(BaseModel):
     """Task-shape stuck-detection knobs applied to every task via
     ``task_defaults``. The canonical home for stuck-heuristic config;
-    ``OrchestratorConfig.stuck_heuristics`` is deprecated and no longer
-    read by the conductor."""
+    the deprecated ``OrchestratorConfig.stuck_heuristics`` is what the
+    conductor falls back to for a task declaring no block of its own."""
 
     model_config = {"extra": "ignore"}
 
     enabled: bool = True
     max_repeated_tool_calls: int = Field(default=5, ge=1)
-    max_idle_turns: int = Field(default=3, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_keys(cls, data: Any) -> Any:
+        return drop_retired_max_idle_turns(data)
 
 
 def _lift_user_simulator_kwarg(data: Any) -> Any:
@@ -279,8 +322,8 @@ class TaskConfig(BaseModel):
     interaction_mode: InteractionMode = "conversational"
     """Turn-loop shape. ``conversational`` (default) dispatches the user
     simulator every turn — backward-compatible with every existing pack.
-    ``agent_only`` skips user-turn dispatch entirely; the agent runs to
-    ``###STOP###`` / ``max_turns`` / ``episode_timeout_s``. Selects a
+    ``agent_only`` skips user-turn dispatch entirely; the agent runs to its
+    first tool-call-free turn, ``max_turns`` or ``episode_timeout_s``. Selects a
     concrete :class:`TurnPolicy` via the ``tolokaforge.turn_policies``
     entry-point registry (see ADR-0027)."""
     initial_state: InitialStateConfig = Field(default_factory=InitialStateConfig)
@@ -303,8 +346,8 @@ class TaskConfig(BaseModel):
     """Task-scope stuck-detection knobs. Populated by the M2 loader
     merge chain when ``project.task_defaults.stuck_heuristics`` is set;
     the task's own ``task.yaml`` overrides win on conflict. The
-    conductor reads from here; ``OrchestratorConfig.stuck_heuristics``
-    is deprecated."""
+    conductor reads from here when it is set and from the deprecated
+    ``OrchestratorConfig.stuck_heuristics`` when it is not."""
 
     timeouts: TimeoutDefaults | None = None
     """Task-scope timeouts. Populated by the M2 loader merge chain;
@@ -371,6 +414,47 @@ class TaskConfig(BaseModel):
             "adapter's get_task() — to have the user simulator open the conversation."
         )
 
+    @model_validator(mode="after")
+    def _refuse_user_tools_no_turn_can_call(self) -> Self:
+        """Refuse a ``tools.user.enabled`` no user turn of this task can ever call.
+
+        Nothing downstream fails on such a pack: the tools are registered for the
+        trial like any other, so a ``requestor: user`` action or an ``executor: user``
+        matcher grades against a call that could not have happened, on every trial.
+        The refusal is here because the three keys that decide it — the tool block,
+        the interaction mode and the simulator's mode — are all in ``task.yaml``.
+        """
+        declared = self.tools.user.get("enabled")
+        if not declared:
+            return self
+        reason = _why_no_user_turn_can_call_a_tool(self)
+        if reason is None:
+            return self
+        because, remedy = reason
+        raise ValueError(
+            _A_USER_TOOL_NOTHING_CAN_CALL.format(
+                tools=sorted(declared), because=because, remedy=remedy
+            )
+        )
+
+    @model_validator(mode="after")
+    def _refuse_a_second_mcp_server(self) -> Self:
+        """One task, one MCP server: the fixture that answers for it is per-task.
+
+        Schemas for an ``mcp_server`` block come from ``<task_dir>/fixtures/tools.json``,
+        which is keyed on the task and not on the server, so a second server resolves
+        against the first one's fixture rather than its own. A user block naming the
+        agent's server is fine, and so is a user-only server: the ambiguity needs two
+        different names.
+        """
+        user_server = self.tools.user.get("mcp_server")
+        agent_server = self.tools.agent.get("mcp_server")
+        if user_server and agent_server and user_server != agent_server:
+            raise ValueError(
+                _A_SECOND_MCP_SERVER.format(user_server=user_server, agent_server=agent_server)
+            )
+        return self
+
     def resolve_user_simulator(self) -> UserSimulatorConfig:
         """Return the effective user-simulator config from ``actors.user``.
 
@@ -387,18 +471,6 @@ class TaskConfig(BaseModel):
             backstory=spec.backstory,
             scripted_flow=spec.scripted_flow,
         )
-
-
-class RequiredAction(BaseModel):
-    """Required tool call that must appear in trajectory"""
-
-    model_config = {"extra": "ignore"}
-
-    action_id: str  # unique identifier for this action
-    requestor: Literal["assistant", "user"]  # who should make the call
-    name: str  # tool name
-    arguments: dict[str, Any] = Field(default_factory=dict)  # tool arguments
-    compare_args: list[str] | None = None  # args to compare, None = all
 
 
 RETIRED_STATE_CHECK_KEYS: frozenset[str] = frozenset({"env_assertions", "db_hash_check"})
@@ -424,7 +496,7 @@ class StateChecksConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
     jsonpaths: list[dict[str, Any]] = Field(default_factory=list)
-    hash: dict[str, Any] | None = None
+    hash: StateHashConfig | None = None
     db_probes: list[dict[str, Any]] = Field(default_factory=list)
     # Opt-in, per-field: record field names whose numeric-looking STRING values
     # fold ("130.00" == "130.0") when hashing state. Mirrors the runner-side
@@ -440,8 +512,8 @@ class StateChecksConfig(BaseModel):
     # config-driven rather than introspecting model source (which breaks when the
     # domain source is not on disk).
     id_fields: dict[str, str | list[str]] = Field(default_factory=dict)
-    # Escape hatch for legacy tasks: downgrade the adapter's id_fields cross-check
-    # (id_fields keys must appear in initial_state.tables) from a raise to a warning.
+    # Escape hatch for legacy tasks: downgrade the id_fields cross-check (id_fields
+    # keys must appear in initial_state.tables) to a warning at every gate that runs it.
     # New tasks should fix typos or add the table, not enable this.
     relaxed_validation: bool = False
 
@@ -479,7 +551,7 @@ class StateChecksConfig(BaseModel):
                 "  state_checks:\n"
                 "    hash:\n"
                 "      enabled: true\n"
-                "      golden_actions: [...]        # or expected_state_hash\n"
+                "      golden_actions: [...]        # or expect_initial_state: true\n"
                 "  — or —\n"
                 "  # state_checks.db_probes — substrate SQL assertions\n"
                 "  state_checks:\n"
@@ -499,7 +571,7 @@ class StateChecksConfig(BaseModel):
                 "  state_checks:\n"
                 "    hash:\n"
                 "      enabled: true\n"
-                "      golden_actions: [...]        # or expected_state_hash"
+                "      golden_actions: [...]        # or expect_initial_state: true"
             )
         return {key: value for key, value in data.items() if key not in RETIRED_STATE_CHECK_KEYS}
 
@@ -530,49 +602,7 @@ class StateChecksConfig(BaseModel):
         resolve_hash_weight(
             self.hash,
             jsonpaths=self.jsonpaths,
-            context="grading.yaml state_checks.hash.weight",
-        )
-        return self
-
-
-class CommunicateInfo(BaseModel):
-    """Information that should be communicated to user"""
-
-    model_config = {"extra": "ignore"}
-
-    info: str  # information text to check for
-    required: bool = True  # whether this info is required
-
-
-class TranscriptRulesConfig(BaseModel):
-    """Transcript rules configuration.
-
-    ``extra="forbid"`` for the reason the nested ``tool_expectations`` already carries:
-    every rule here defaults to asserting nothing, so a dropped key graded the trial by
-    the rules that survived. A ``must_contian`` typo scored ``1.0`` and passing on a
-    transcript the authored ``must_contain`` scored ``0.75`` and failing.
-    """
-
-    model_config = {"extra": "forbid"}
-
-    must_contain: list[str] = Field(default_factory=list)
-    disallow_regex: list[str] = Field(default_factory=list)
-    # Both bounds are declarable from 1 up. A ceiling below 1 admits no
-    # assistant-turn count at all, and a floor of 0 asserts nothing — and the
-    # runtime key ledger tests a declared key by truthiness, so a floor of 0 would
-    # be an unpoliced declaration.
-    max_turns: int | None = Field(default=None, ge=1)
-    min_assistant_turns: int | None = Field(default=None, ge=1)
-    tool_expectations: ToolExpectations | None = None
-    required_actions: list[RequiredAction] = Field(default_factory=list)  # NEW
-    communicate_info: list[CommunicateInfo] = Field(default_factory=list)  # NEW
-
-    @model_validator(mode="after")
-    def _validate_turn_window(self) -> Self:
-        validate_turn_window(
-            min_assistant_turns=self.min_assistant_turns,
-            max_turns=self.max_turns,
-            context="grading.yaml transcript_rules",
+            context=AUTHORED_HASH_WEIGHT_CONTEXT,
         )
         return self
 

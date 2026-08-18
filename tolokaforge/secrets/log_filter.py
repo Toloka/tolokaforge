@@ -27,10 +27,11 @@ Engineers must still avoid logging secret-bearing objects directly.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
-from tolokaforge.secrets.manager import SecretManager, get_default_or_none
+from tolokaforge.secrets.manager import SecretManager, compose_escaped, get_default_or_none
 
 PLACEHOLDER = "***REDACTED***"
 
@@ -50,7 +51,31 @@ def _current_redaction_values() -> frozenset[str]:
         return frozenset()
     if manager is not _cached_manager:
         _cached_manager = manager
-        _cached_values = manager.known_values()
+        resolved = manager.known_values()
+        # A credential travels in three surfaces the log stream may quote:
+        #   1. The raw value the manager holds.
+        #   2. Its compose-escaped form (``$`` -> ``$$``), written into a
+        #      materialised compose file. A compose error quoting the file
+        #      back would leak the doubled form without this entry.
+        #   3. Its JSON-encoded form (`` `` -> ``\`` -> ``\\``, quotes -> ``\"``,
+        #      non-ASCII -> ``\uXXXX``), written to ``TOLOKAFORGE_SECRETS_JSON``
+        #      by :func:`~tolokaforge.secrets.manager.container_secrets_env`.
+        #      Without this a log line quoting the materialised env-file back
+        #      would leak a value that carries a backslash or a non-ASCII byte
+        #      — the raw form is not a substring of the on-disk form there.
+        #   The three-way union grows only for values that carry chars the
+        #   escapes touch; alphanumeric values collapse to the raw entry.
+        json_forms: set[str] = set()
+        for value in resolved:
+            json_encoded = json.dumps(value)[1:-1]  # strip the surrounding quotes
+            if json_encoded and json_encoded != value:
+                json_forms.add(json_encoded)
+                # And the compose-escape of the JSON form, for the file the
+                # engine-built stack materialises for the runner container.
+                json_compose_escaped = compose_escaped(json_encoded)
+                if json_compose_escaped != json_encoded:
+                    json_forms.add(json_compose_escaped)
+        _cached_values = resolved | {compose_escaped(value) for value in resolved} | json_forms
     return _cached_values
 
 

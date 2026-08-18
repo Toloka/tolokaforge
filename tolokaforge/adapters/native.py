@@ -9,16 +9,25 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from tolokaforge.adapters._task_loader import (
+    ToolActor,
     _detect_task_root,
-    agent_tool_configs,
+    actor_tool_block,
+    declared_tool_names,
     load_task_yaml,
     refuse_malformed_grading_shapes,
-    resolve_agent_tool_schemas,
+    resolve_tool_schemas,
+    seeded_tables_from_task,
+    tool_configs,
 )
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
-from tolokaforge.core.grading.config_validation import CombineLayer
+from tolokaforge.core.grading.config_validation import (
+    CombineLayer,
+    HashSourceLayer,
+    authored_hash_block,
+)
 from tolokaforge.core.grading.golden_replay import require_replayable_golden_actions
+from tolokaforge.core.grading.state_composition import StateHashConfig, refuse_retired_hash_keys
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
 from tolokaforge.core.project_loader import (
@@ -31,9 +40,82 @@ from tolokaforge.core.project_loader import resolve as resolve_environment
 from tolokaforge.runner.id_resolution import check_id_fields_against_seeded_tables
 
 if TYPE_CHECKING:
-    from tolokaforge.runner.models import SearchConfig, TaskDescription
+    from tolokaforge.runner.models import SearchConfig, TaskDescription, ToolSchema
 
 logger = get_logger(__name__)
+
+
+def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> list["ToolSchema"]:
+    """The wire tool set ``tools.<actor>`` declares, with every schema resolved.
+
+    A builtin carries no :class:`ToolSource` — the runner's source-less dispatch
+    arm routes it by name via the unified builtin registry, and ``tool_config``
+    carries any per-task init kwargs. A block naming an ``mcp_server`` carries the
+    script relative to the task dir, which the runner resolves against its
+    extracted artifacts dir.
+
+    Raises:
+        RuntimeError: If the block names an ``mcp_server`` script that is absent.
+        ValueError: If a ``tools.<actor>.<name>`` block is not a mapping.
+    """
+    from tolokaforge.runner.models import InvocationStyle, ToolSchema, ToolSource
+    from tolokaforge.runner.tool_factory import create_search_kb_schema
+
+    block = actor_tool_block(task, actor)
+    mcp_server_ref: str | None = block.get("mcp_server")
+    if mcp_server_ref is None and actor is ToolActor.USER:
+        # A ``tools.user.enabled`` block that names an mcp-served tool but
+        # declares no ``mcp_server`` of its own falls back to the agent's
+        # server (``task_config.py`` permits the shape). Without this fallback
+        # the ``ToolSource`` is built as ``None`` and the runner's
+        # source-less-dispatch arm routes to the ``builtin`` registry — an 8-
+        # tool name (bash / calculator / browser / http_request / db_query /
+        # db_update / read_file / write_file) can shadow the pack's MCP tool
+        # of the same name, silently substituting the wrong implementation.
+        # A name with no builtin instead raises ``ToolConfigurationError``
+        # at RegisterTrial. Reading the agent block as the fallback matches
+        # the ``core/actors`` convention documented at ``task_config.py:450``.
+        mcp_server_ref = actor_tool_block(task, ToolActor.AGENT).get("mcp_server")
+    if mcp_server_ref and not (task_dir / mcp_server_ref).exists():
+        raise RuntimeError(f"MCP server script not found: {task_dir / mcp_server_ref}")
+
+    configs = tool_configs(task, actor)
+    rich_schemas = resolve_tool_schemas(task, task_dir, actor, allow_subprocess=True)
+
+    schemas: list[ToolSchema] = []
+    for tool_name in block.get("enabled", []):
+        if tool_name == "search_kb":
+            # The runner reconstructs search_kb as a RAGSearchToolWrapper
+            # (source-less, RAG dispatch). Carry the canonical schema so
+            # the LLM sees the real {query, top_k, alpha} parameters.
+            schemas.append(create_search_kb_schema())
+            continue
+        rich = rich_schemas.get(tool_name, {})
+        source = (
+            ToolSource(
+                toolset=task.category or "native",
+                module_path="mcp_server",
+                class_name=tool_name,
+                invocation_style=InvocationStyle.MCP_SERVER,
+                mcp_server_script=mcp_server_ref,
+            )
+            if mcp_server_ref
+            else None
+        )
+        schemas.append(
+            ToolSchema(
+                name=tool_name,
+                description=rich.get(
+                    "description", f"{actor.value.capitalize()} tool: {tool_name}"
+                ),
+                parameters=rich.get("parameters", {"type": "object", "properties": {}}),
+                category="compute",
+                timeout_s=30.0,
+                source=source,
+                tool_config=configs.get(tool_name, {}),
+            )
+        )
+    return schemas
 
 
 class NativeAdapter(BaseAdapter):
@@ -308,7 +390,8 @@ class NativeAdapter(BaseAdapter):
 
         Raises:
             ValueError: If the task names no grading file, or names one that is not
-                on disk.
+                on disk, or its ``state_checks.hash`` block populates a key in
+                :data:`~tolokaforge.core.grading.state_composition.RETIRED_HASH_KEYS`.
             RuntimeError: If the file, or any grading key it declares, is neither a
                 mapping nor absent.
         """
@@ -326,6 +409,10 @@ class NativeAdapter(BaseAdapter):
             with open(grading_path) as f:
                 grading_data = yaml.safe_load(f)
             refuse_malformed_grading_shapes(grading_data, grading_path=grading_path)
+            refuse_retired_hash_keys(
+                authored_hash_block(grading_data or {}),
+                context=f"Grading file {grading_path}",
+            )
             task_combine = grading_data.pop("combine", None)
             combine = resolve_effective_grading_combine(
                 self._project_combine_defaults(), task_combine
@@ -341,6 +428,15 @@ class NativeAdapter(BaseAdapter):
 
     def grading_combine_layer(self) -> CombineLayer:
         return CombineLayer(self._project_combine_defaults())
+
+    @classmethod
+    def grading_hash_source_layer(cls, task: TaskConfig, task_dir: Path) -> HashSourceLayer:
+        """Nothing beneath the block: a native pack's authored keys are the whole layer.
+
+        An answer rather than an inability to answer, which is what makes an enabled
+        hash declaring no source the authoring defect the gates refuse.
+        """
+        return HashSourceLayer()
 
     def _project_combine_defaults(self) -> dict[str, Any] | None:
         return project_grading_combine(self._project_task_defaults)
@@ -362,28 +458,13 @@ class NativeAdapter(BaseAdapter):
         pass
 
     def compute_golden_hash(self, task_id: str, env: AdapterEnvironment) -> str | None:
+        """Return ``None``: no hash source a native pack can declare resolves here.
+
+        Both remaining sources are evaluated by the substrate grading the trial, each in
+        its own hash algebra — golden actions need the MCP server the grading engine
+        holds, and the initial state is hashed beside the trial's own. #836 owns
+        deleting the method.
         """
-        Compute golden hash for state comparison.
-
-        For native tasks, uses golden_actions from grading.yaml if present.
-        Returns None if no hash-based grading configured.
-        """
-        grading = self.get_grading_config(task_id)
-
-        if not grading.state_checks or not grading.state_checks.hash:
-            return None
-
-        hash_config = grading.state_checks.hash
-        if not hash_config.get("enabled", False):
-            return None
-
-        golden_actions = hash_config.get("golden_actions", [])
-        if not golden_actions:
-            # Pre-computed hash
-            return hash_config.get("expected_state_hash")
-
-        # Execute golden actions to compute hash dynamically
-        # This requires MCP server access - delegated to grading engine
         return None
 
     def to_task_description(self, task_id: str) -> "TaskDescription":
@@ -407,6 +488,10 @@ class NativeAdapter(BaseAdapter):
             ValueError: If task_id not found
             RuntimeError: If required files cannot be loaded, or if the grading file
                 or any grading key it declares is neither a mapping nor absent
+            pydantic.ValidationError: If a block the description is built from declares
+                a key its model does not, or a value its model refuses —
+                ``state_checks.hash`` included, which this errand constructs for itself
+                rather than reading key by key.
             GoldenReplayError: ``state_checks.hash.golden_actions`` is truthy and is not
                 the list of actions to replay, or an element of it is no mapping at all.
                 Refused here rather than lowered onto the wire, this being the last
@@ -420,21 +505,15 @@ class NativeAdapter(BaseAdapter):
             AdapterType,
             DbProbe,
             GoldenAction,
-            InvocationStyle,
             RunnerGradingConfig,
             RunnerInitializationAction,
             RunnerInitialStateConfig,
-            RunnerRequiredAction,
             RunnerStateChecksConfig,
-            RunnerTranscriptRulesConfig,
             RunnerUserSimulatorConfig,
             TaskDescription,
-            ToolExpectations,
-            ToolSchema,
-            ToolSource,
             TraceChecksConfig,
+            TranscriptRulesConfig,
         )
-        from tolokaforge.runner.tool_factory import create_search_kb_schema
 
         logger.info(
             "Building TaskDescription", task_id=task_id, adapter_type=AdapterType.NATIVE.value
@@ -458,107 +537,11 @@ class NativeAdapter(BaseAdapter):
             else:
                 raise RuntimeError(f"System prompt file not found: {system_prompt_path}")
 
-        # Build agent tools from MCP server
-        agent_tools: list[ToolSchema] = []
-        user_tools: list[ToolSchema] = []  # always empty: user.enabled is [] in all native tasks
+        agent_tools = _actor_tool_schemas(task, task_dir, ToolActor.AGENT)
+        user_tools = _actor_tool_schemas(task, task_dir, ToolActor.USER)
+        mcp_server_ref: str | None = actor_tool_block(task, ToolActor.AGENT).get("mcp_server")
 
-        enabled_agent_tools: list[str] = task.tools.agent.get("enabled", [])
-
-        # Get MCP server path for agent tools
-        mcp_server_ref: str | None = None
-        if task.tools and task.tools.agent:
-            mcp_server_ref = task.tools.agent.get("mcp_server")
-            if mcp_server_ref:
-                mcp_server_path = task_dir / mcp_server_ref
-                if not mcp_server_path.exists():
-                    raise RuntimeError(f"MCP server script not found: {mcp_server_path}")
-
-            tool_configs = agent_tool_configs(task)
-            rich_schemas = resolve_agent_tool_schemas(task, task_dir, allow_subprocess=True)
-
-            for tool_name in enabled_agent_tools:
-                if tool_name == "search_kb":
-                    # The runner reconstructs search_kb as a RAGSearchToolWrapper
-                    # (source-less, RAG dispatch). Carry the canonical schema so
-                    # the LLM sees the real {query, top_k, alpha} parameters.
-                    agent_tools.append(create_search_kb_schema())
-                    continue
-                rich = rich_schemas.get(tool_name, {})
-                # Only wire up MCP_SERVER source when the task provides an mcp_server
-                # script. Builtin tools (read_file, write_file, bash, …) have no
-                # script and no ToolSource — the runner's source-less dispatch
-                # arm routes them by name via the unified builtin registry, and
-                # ``tool_config`` carries any per-task init kwargs.
-                source = (
-                    ToolSource(
-                        toolset=task.category or "native",
-                        module_path="mcp_server",
-                        class_name=tool_name,
-                        invocation_style=InvocationStyle.MCP_SERVER,
-                        # Relative path — Runner resolves it against the extracted artifacts dir.
-                        mcp_server_script=mcp_server_ref,
-                    )
-                    if mcp_server_ref
-                    else None
-                )
-                tool_schema = ToolSchema(
-                    name=tool_name,
-                    description=rich.get("description", f"Agent tool: {tool_name}"),
-                    parameters=rich.get("parameters", {"type": "object", "properties": {}}),
-                    category="compute",
-                    timeout_s=30.0,
-                    source=source,
-                    tool_config=tool_configs.get(tool_name, {}),
-                )
-                agent_tools.append(tool_schema)
-
-        # Build initial state from json_db
-        initial_tables: dict[str, list[dict[str, Any]]] = {}
-        if task.initial_state and task.initial_state.json_db:
-            json_db = task.initial_state.json_db
-            if isinstance(json_db, str):
-                json_db_path = task_dir / json_db
-                if json_db_path.exists():
-                    with open(json_db_path) as f:
-                        data = json.load(f)
-                    # Convert data to table format
-                    for collection_name, collection_data in data.items():
-                        if isinstance(collection_data, list):
-                            # List of records
-                            records = collection_data
-                        elif isinstance(collection_data, dict):
-                            # Check if this is a single record or a dict of records
-                            # A single record has primitive values (str, int, bool, etc.)
-                            # A dict of records has dict values
-                            values = list(collection_data.values())
-                            if values and all(isinstance(v, dict) for v in values):
-                                # Dict of records keyed by ID
-                                records = values
-                            else:
-                                # Single record - wrap in list
-                                records = [collection_data]
-                        else:
-                            records = [collection_data]
-                        initial_tables[collection_name] = records
-                else:
-                    raise RuntimeError(f"JSON DB file not found: {json_db_path}")
-            elif isinstance(json_db, dict):
-                for collection_name, collection_data in json_db.items():
-                    if isinstance(collection_data, list):
-                        # List of records
-                        records = collection_data
-                    elif isinstance(collection_data, dict):
-                        # Check if this is a single record or a dict of records
-                        values = list(collection_data.values())
-                        if values and all(isinstance(v, dict) for v in values):
-                            # Dict of records keyed by ID
-                            records = values
-                        else:
-                            # Single record - wrap in list
-                            records = [collection_data]
-                    else:
-                        records = [collection_data]
-                    initial_tables[collection_name] = records
+        initial_tables = seeded_tables_from_task(task, task_dir)
 
         # Build initialization actions. The core-side ``InitializationAction``
         # names the invoked tool ``func_name`` (author-facing); the runner-side
@@ -582,6 +565,10 @@ class NativeAdapter(BaseAdapter):
                 with open(grading_path) as f:
                     grading_data = yaml.safe_load(f)
                 refuse_malformed_grading_shapes(grading_data, grading_path=grading_path)
+                refuse_retired_hash_keys(
+                    authored_hash_block(grading_data or {}),
+                    context=f"Grading file {grading_path}",
+                )
 
         # Build grading config
         state_checks = None
@@ -593,10 +580,20 @@ class NativeAdapter(BaseAdapter):
             if state_checks_data:
                 # Extract golden actions
                 golden_actions: list[GoldenAction] = []
-                hash_config = state_checks_data.get("hash", {})
-                if hash_config and hash_config.get("enabled", False):
+                # This errand never runs ``get_grading_config``, so the block is
+                # constructed here too: a key it does not declare would otherwise reach
+                # the wire as an absent hash. Only ``None`` — the key written bare — is
+                # the empty block; every other value is the model's to answer, so
+                # ``hash: 0`` is refused on both errands rather than on only one.
+                raw_hash = state_checks_data.get("hash")
+                hash_config = (
+                    StateHashConfig()
+                    if raw_hash is None
+                    else StateHashConfig.model_validate(raw_hash)
+                )
+                if hash_config.enabled:
                     for golden_action in require_replayable_golden_actions(
-                        hash_config.get("golden_actions"),
+                        hash_config.golden_actions,
                         context=f"Grading file {grading_path}",
                     ):
                         golden_actions.append(
@@ -620,10 +617,10 @@ class NativeAdapter(BaseAdapter):
                     raise ValueError(err)
 
                 state_checks = RunnerStateChecksConfig(
-                    hash_enabled=bool(hash_config and hash_config.get("enabled", False)),
-                    expected_hash=hash_config.get("expected_state_hash") if hash_config else None,
+                    hash_enabled=hash_config.enabled,
+                    expect_initial_state=hash_config.expect_initial_state,
                     golden_actions=golden_actions,
-                    hash_weight=hash_config.get("weight") if hash_config else None,
+                    hash_weight=hash_config.weight,
                     jsonpath_checks=state_checks_data.get("jsonpaths", []),
                     db_probes=db_probes,
                     numeric_string_fields=list(state_checks_data.get("numeric_string_fields", [])),
@@ -631,35 +628,13 @@ class NativeAdapter(BaseAdapter):
                     relaxed_validation=relaxed_validation,
                 )
 
-            # Build transcript rules
+            # Build transcript rules. One model serves the authored block and the
+            # wire, so the block is validated rather than copied field by field:
+            # a key it does not declare, or an element missing one it requires, is
+            # refused here instead of reaching the runner as a default.
             transcript_data = grading_data.get("transcript_rules", {})
             if transcript_data:
-                required_actions: list[RunnerRequiredAction] = []
-                for action in transcript_data.get("required_actions", []):
-                    required_actions.append(
-                        RunnerRequiredAction(
-                            action_id=action.get("action_id", ""),
-                            requestor=action.get("requestor", "user"),
-                            tool_name=action.get("name", ""),
-                            arguments=action.get("arguments", {}),
-                            compare_args=action.get("compare_args"),
-                        )
-                    )
-
-                tool_expectations_data = transcript_data.get("tool_expectations")
-                transcript_rules = RunnerTranscriptRulesConfig(
-                    must_contain=transcript_data.get("must_contain", []),
-                    disallow_regex=transcript_data.get("disallow_regex", []),
-                    max_turns=transcript_data.get("max_turns"),
-                    min_assistant_turns=transcript_data.get("min_assistant_turns"),
-                    tool_expectations=(
-                        ToolExpectations(**tool_expectations_data)
-                        if tool_expectations_data
-                        else None
-                    ),
-                    required_actions=required_actions,
-                    communicate_info=transcript_data.get("communicate_info", []),
-                )
+                transcript_rules = TranscriptRulesConfig(**transcript_data)
 
         # Build LLM judge config
         #
@@ -756,8 +731,14 @@ class NativeAdapter(BaseAdapter):
         # filesystem, so we transfer all necessary files via gRPC/TaskDescription.
         # Custom checks packs (with or without an MCP server) also need the
         # bundle so the runner can resolve ``custom_checks.file`` and every
-        # ``relative_imports`` path under the trial's ``artifacts_dir``.
-        needs_bundle = mcp_server_ref or custom_checks_enabled(custom_checks_data)
+        # ``relative_imports`` path under the trial's ``artifacts_dir``. Either
+        # actor's server counts: a user tool is reconstructed from the same
+        # script path the agent's is.
+        needs_bundle = (
+            mcp_server_ref
+            or actor_tool_block(task, ToolActor.USER).get("mcp_server")
+            or custom_checks_enabled(custom_checks_data)
+        )
         tool_artifacts = self._bundle_task_artifacts(task_dir) if needs_bundle else {}
 
         # mcp_server.py loads its initial state from ``initial_state.json``
@@ -783,7 +764,7 @@ class NativeAdapter(BaseAdapter):
         # Resolve per-trial RAG search from ``initial_state.rag``. When a
         # corpus is declared, its files travel in ``tool_artifacts`` (keyed
         # under the declared ``corpus_dir``) so the runner can index them.
-        search_config = self._resolve_search_config(task, task_dir, task_id, enabled_agent_tools)
+        search_config = self._resolve_search_config(task, task_dir, task_id)
         if search_config.documents_path:
             tool_artifacts.update(
                 self._bundle_corpus_artifacts(task_dir, search_config.documents_path)
@@ -844,7 +825,6 @@ class NativeAdapter(BaseAdapter):
         task: TaskConfig,
         task_dir: Path,
         task_id: str,
-        enabled_agent_tools: list[str],
     ) -> "SearchConfig":
         """Build the trial's ``SearchConfig`` from ``initial_state.rag``.
 
@@ -852,15 +832,17 @@ class NativeAdapter(BaseAdapter):
         per-trial RAG indexing: the corpus files travel in ``tool_artifacts``
         and the runner indexes them so ``search_kb`` returns the corpus's
         documents. ``documents_path`` is the declared ``corpus_dir`` verbatim,
-        resolved runner-side against the extracted artifacts dir. Tasks that
+        resolved runner-side against the extracted artifacts dir, and the plane
+        serving it is declared ``rag_service`` so a run that also configures
+        TypeSense does not pull the corpus onto the other plane. Tasks that
         declare no corpus keep search disabled.
 
         Raises:
-            ValueError: if a corpus is declared without ``search_kb`` in the
-                agent tools (the corpus could never be searched), or the
+            ValueError: if a corpus is declared without ``search_kb`` in either
+                actor's tools (the corpus could never be searched), or the
                 declared ``corpus_dir`` does not resolve to a directory.
         """
-        from tolokaforge.runner.models import SearchConfig
+        from tolokaforge.runner.models import SearchConfig, SearchPlane
 
         rag = task.initial_state.rag
         corpus_dir = rag.get("corpus_dir") if rag else None
@@ -872,12 +854,12 @@ class NativeAdapter(BaseAdapter):
                 f"got {type(corpus_dir).__name__}={corpus_dir!r}"
             )
 
-        if "search_kb" not in enabled_agent_tools:
+        if "search_kb" not in declared_tool_names(task):
             raise ValueError(
                 f"Task {task_id!r} declares initial_state.rag.corpus_dir "
-                f"{corpus_dir!r} but does not enable the 'search_kb' agent tool; "
+                f"{corpus_dir!r} but no actor enables the 'search_kb' tool; "
                 f"the corpus would never be searchable. Add 'search_kb' to "
-                f"tools.agent.enabled or drop the rag corpus."
+                f"tools.agent.enabled or tools.user.enabled, or drop the rag corpus."
             )
 
         corpus_path = task_dir / corpus_dir
@@ -889,6 +871,7 @@ class NativeAdapter(BaseAdapter):
 
         return SearchConfig(
             enabled=True,
+            plane=SearchPlane.RAG_SERVICE,
             domain_name=task.category or task_id,
             documents_path=corpus_dir,
         )

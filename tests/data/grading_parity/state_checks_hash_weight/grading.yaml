@@ -7,8 +7,7 @@ combine:
 state_checks:
   hash:
     enabled: true
-    # consistent_hash(to_hashable(...)) of the hash_matching case's state.db.
-    expected_state_hash: "63cf4e09175402b51fe23589cfae7f6ee9054534483db4821f873097ad8f45d3"
+    expect_initial_state: true
     weight: 0.25
   jsonpaths:
     - path: "$.db.orders[0].status"

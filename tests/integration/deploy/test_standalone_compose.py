@@ -21,11 +21,12 @@ ADR-0024 ``run-trial`` exec wire (``requires_api``): a bundled db-service trial
 and a rag_search trial (``search_kb`` → rag-service), each proving its peer
 functionally participates in a graded ``TrialResult`` through the stack.
 
-``docker compose up --wait`` blocks on all four healthchecks. rag-service loads
-``all-MiniLM-L6-v2`` eagerly and downloads it from HuggingFace on a cold cache, so
-the wait floor is 300s — the local lane inherits the same HF-download/network
-dependency the repo's existing rag Docker tests already tolerate (their health
-timeout is 180s).
+``docker compose up --wait`` blocks on all four healthchecks, and the wait each
+mode needs is different. A tree-built rag-service carries ``all-MiniLM-L6-v2``
+inside the image and stands up offline in seconds, so the local lane waits 120s
+— ample over a four-service bring-up. The published lane pulls
+``tolokasoft1/…:latest``, which predates that bake and still downloads the model
+on first start, so its wait stays download-sized at 300s.
 """
 
 from __future__ import annotations
@@ -57,10 +58,14 @@ pytestmark = [
     pytest.mark.slow,
 ]
 
-# rag-service's cold-start HuggingFace model download can take well over two
-# minutes; floor the compose wait above the repo's existing 180s rag health
-# timeout so `up --wait` does not trip on a cold cache.
-_COMPOSE_WAIT_TIMEOUT_S = 300
+_IMAGE_SOURCE_MODES: tuple[str, ...] = ("local", "published")
+
+# Keyed by image source, because the two sources start differently. Local images
+# are built from this tree, where rag-service carries its embedding model and
+# contacts nothing at startup. Published images are pulled, and no stable publish
+# carries that bake yet, so `latest` still downloads all-MiniLM-L6-v2 on first
+# start — a flat reduction would red the published lane on a cold runner.
+_COMPOSE_WAIT_TIMEOUT_S: dict[str, int] = {"local": 120, "published": 300}
 
 _RUNNER_ADDR = "localhost:50051"
 
@@ -84,7 +89,7 @@ _RAG_TASK = REPO_ROOT / "examples/native/rag_search/dataset/tasks/kb_lookup_01/t
 _RAG_PLANTED_FACT = "HX49-QORVEN-7731"
 
 
-@pytest.fixture(scope="module", params=["local", "published"])
+@pytest.fixture(scope="module", params=_IMAGE_SOURCE_MODES)
 def composed_stack(request: pytest.FixtureRequest, docker_daemon: None) -> Iterator[StackHandle]:
     """Bring the standalone recipe up in the requested image-source mode.
 
@@ -102,7 +107,7 @@ def composed_stack(request: pytest.FixtureRequest, docker_daemon: None) -> Itera
     project = f"tf-standalone-{mode}"
     up = compose(
         project,
-        ["up", "-d", "--wait", "--wait-timeout", str(_COMPOSE_WAIT_TIMEOUT_S)],
+        ["up", "-d", "--wait", "--wait-timeout", str(_COMPOSE_WAIT_TIMEOUT_S[mode])],
         tag,
     )
     try:
@@ -126,7 +131,9 @@ def test_stack_all_services_healthy(composed_stack: StackHandle) -> None:
     """Every service in the composed stack reaches Docker ``healthy``."""
     for component in IMAGE_COMPONENTS:
         container_id = _service_container_id(composed_stack, component)
-        status = wait_for_health(container_id, timeout_s=_COMPOSE_WAIT_TIMEOUT_S)
+        status = wait_for_health(
+            container_id, timeout_s=_COMPOSE_WAIT_TIMEOUT_S[composed_stack.mode]
+        )
         assert status == "healthy", f"{component} never became healthy (last status: {status!r})"
 
 

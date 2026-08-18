@@ -22,10 +22,11 @@ API Endpoints:
 import hashlib
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 from rank_bm25 import BM25Okapi
 
@@ -41,6 +42,8 @@ logger = logging.getLogger(__name__)
 
 # Service version
 SERVICE_VERSION = "1.0.0"
+
+DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # Try to import sentence-transformers for FAISS search
 try:
@@ -136,6 +139,51 @@ class HealthResponse(BaseModel):
     version: str
     active_indices: int
     faiss_available: bool
+    reason: str | None = None
+
+
+# =============================================================================
+# Health Verdict
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class HealthVerdict:
+    """HTTP status, wire status string and reason the health rule arrived at."""
+
+    status_code: int
+    status: str
+    reason: str | None
+
+
+def evaluate_health(
+    *,
+    semantic_backend_installed: bool,
+    model_loaded: bool,
+    model_name: str,
+    load_error: str | None,
+) -> HealthVerdict:
+    """Decide whether the service can serve the semantic backend it advertises.
+
+    A build without ``sentence_transformers`` is an honest BM25-only build and
+    reports healthy. A build that has it but whose embedding model did not load
+    serves BM25-only results under a semantic contract, and reports degraded so
+    every consumer's non-200 path fires.
+    """
+    if not semantic_backend_installed or model_loaded:
+        return HealthVerdict(status_code=200, status="healthy", reason=None)
+
+    if load_error is None:
+        raise ValueError(
+            "the semantic backend is installed and its model is not loaded, but no load "
+            "error was recorded — a degraded verdict cannot say what failed"
+        )
+
+    return HealthVerdict(
+        status_code=503,
+        status="degraded",
+        reason=f"embedding model '{model_name}' failed to load: {load_error}",
+    )
 
 
 # =============================================================================
@@ -328,20 +376,18 @@ class RAGServiceState:
     def __init__(self):
         self.indices: dict[str, TrialIndex] = {}
         self.embedding_model: Any | None = None
+        self.embedding_model_name = os.environ.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
+        self.embedding_load_error: str | None = None
 
         # Load embedding model if available
         if FAISS_AVAILABLE:
-            model_name = os.environ.get(
-                "EMBEDDING_MODEL",
-                "sentence-transformers/all-MiniLM-L6-v2",
-            )
             try:
-                logger.info(f"Loading embedding model: {model_name}")
-                self.embedding_model = SentenceTransformer(model_name)
+                logger.info(f"Loading embedding model: {self.embedding_model_name}")
+                self.embedding_model = SentenceTransformer(self.embedding_model_name)
                 logger.info("Embedding model loaded successfully")
             except Exception as e:
                 logger.error(f"Failed to load embedding model: {e}")
-                self.embedding_model = None
+                self.embedding_load_error = str(e)
 
     def create_index(
         self,
@@ -495,15 +541,27 @@ async def search_legacy(request: SearchRequest) -> list[SearchResult]:
 
 
 @app.get("/health", response_model=HealthResponse)
-async def health_check() -> HealthResponse:
+async def health_check(response: Response) -> HealthResponse:
     """
-    Health check endpoint.
+    Report whether the service can serve the semantic backend it advertises.
+
+    503 when the backend is installed but its model did not load; the body's
+    ``reason`` names the model and the failure.
     """
+    verdict = evaluate_health(
+        semantic_backend_installed=FAISS_AVAILABLE,
+        model_loaded=state.embedding_model is not None,
+        model_name=state.embedding_model_name,
+        load_error=state.embedding_load_error,
+    )
+    response.status_code = verdict.status_code
+
     return HealthResponse(
-        status="healthy",
+        status=verdict.status,
         version=SERVICE_VERSION,
         active_indices=len(state.indices),
         faiss_available=FAISS_AVAILABLE and state.embedding_model is not None,
+        reason=verdict.reason,
     )
 
 

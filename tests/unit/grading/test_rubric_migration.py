@@ -26,7 +26,8 @@ from typing import Any
 import pytest
 import yaml
 
-from tests.utils.migration_packs import write_migration_pack
+from tests.utils.migration_packs import write_corpus_directory, write_migration_pack
+from tests.utils.provision_failure import write_provision_failure_bundle
 from tolokaforge.core.grading.migration_declaration import (
     MIGRATION_FILENAME,
     MigratedCriterion,
@@ -58,6 +59,10 @@ _COMMITTED_CORPUS = _REPO / "tests/data/migration_corpora/notes_duplicate_check/
 _CORPUS_TASK_ID = "notes_add_note_duplicate_check_gated"
 _CRITERION = "checked_duplicates_first"
 _CONSTRAINT = "the_notes_were_listed_before_the_note_was_added"
+
+#: What every fixture declaration names, written beside its pack so the pointer resolves
+#: against the declaration's own directory — the default base, which no caller here overrides.
+_CORPUS_DIRNAME = "corpus"
 
 #: The pre-migration criterion text the committed bundles recorded, written out here so a
 #: corpus refreshed against a different rubric reds these tests rather than re-basing them.
@@ -134,12 +139,13 @@ def _entry(
         criterion=criterion,
         mode=mode,
         by=[_CONSTRAINT],
+        corpus=_CORPUS_DIRNAME,
         was=was or _was(),
         residual=residual,
         evidence=(
             None
             if mode is MigrationMode.CANDIDATE
-            else MigrationEvidence(corpus="corpus", observations=7, kappa=0.72)
+            else MigrationEvidence(observations=7, kappa=0.72)
         ),
         acknowledged=[
             MigrationAcknowledgement(trial=trial, reason="the judge misread the transcript")
@@ -535,8 +541,8 @@ def test_a_candidate_is_not_charged_the_recorded_rubric_check() -> None:
 @pytest.mark.parametrize(
     ("declared", "names"),
     [
-        (MigrationEvidence(corpus="corpus", observations=5, kappa=0.72), "measured 7"),
-        (MigrationEvidence(corpus="corpus", observations=7, kappa=0.5), "declares 0.5"),
+        (MigrationEvidence(observations=5, kappa=0.72), "measured 7"),
+        (MigrationEvidence(observations=7, kappa=0.5), "declares 0.5"),
     ],
     ids=["more-observations-than-the-declaration-counted", "a-kappa-the-run-does-not-reach"],
 )
@@ -566,28 +572,44 @@ def test_a_declared_evidence_block_the_measurement_contradicts_is_refused(
     assert "corpus" in refusal.message
 
 
-def test_a_reconciliation_over_part_of_the_declared_corpus_charges_the_declaration_nothing() -> (
-    None
-):
-    """The rule is a bound, and this is the boundary it exists for.
+@pytest.mark.parametrize(
+    ("over_the_declared_corpus", "kinds", "verdict"),
+    [
+        (False, [], ReconcileVerdict.NO_COUNTER_EVIDENCE),
+        (
+            True,
+            [RefusalKind.DECLARED_EVIDENCE_CONTRADICTS_MEASUREMENT],
+            ReconcileVerdict.REFUSED,
+        ),
+    ],
+    ids=["over-part-of-the-corpus-it-names", "over-the-corpus-it-names"],
+)
+def test_a_count_below_the_declared_one_is_charged_only_where_the_source_is_that_corpus(
+    over_the_declared_corpus: bool, kinds: list[RefusalKind], verdict: ReconcileVerdict
+) -> None:
+    """What the declared count is compared with depends on what was read, and this is the pair.
 
     Pointing ``--source`` at part of the declared corpus is a documented diagnostic — it is how
-    each half of the committed two-arm corpus is shown to be the other's falsifier — so a run
-    measuring fewer observations than the declaration counted says nothing about it. The κ
-    written here is wrong on purpose: below the declared count, neither field is charged, which
-    is the residue the docs state rather than a case this tier can close.
+    each half of the committed two-arm corpus is shown to be the other's falsifier — so there a
+    run measuring fewer observations than the declaration counted says nothing about it. Over
+    the corpus the entry *itself* names there is no part left out, so the same shortfall is
+    bundles gone missing. The κ written here is wrong on purpose: below the declared count in
+    the first cell neither field is charged, and the refusal in the second is about the count.
     """
     entry = _entry(MigrationMode.NARROWED).model_copy(
-        update={"evidence": MigrationEvidence(corpus="corpus", observations=100, kappa=0.5)}
+        update={"evidence": MigrationEvidence(observations=100, kappa=0.5)}
     )
 
     reconciled = reconcile_entry(
-        entry, task_ids=[_CORPUS_TASK_ID], trials=_n7(disagreeing="permissive")
+        entry,
+        task_ids=[_CORPUS_TASK_ID],
+        trials=_n7(disagreeing="permissive"),
+        over_the_declared_corpus=over_the_declared_corpus,
     )
 
     assert reconciled.observations == 7
-    assert reconciled.refusals == []
-    assert reconciled.verdict is ReconcileVerdict.NO_COUNTER_EVIDENCE
+    assert [refusal.kind for refusal in reconciled.refusals] == kinds
+    assert reconciled.verdict is verdict
 
 
 def test_a_declared_kappa_written_at_the_precision_it_is_reported_is_not_a_contradiction() -> None:
@@ -711,6 +733,7 @@ def _identity_map_retirement() -> MigrationEntry:
         criterion=_SCORED_CRITERION,
         mode=MigrationMode.RETIRED,
         by=[_CONSTRAINT],
+        corpus=_CORPUS_DIRNAME,
         was=MigratedCriterion(
             description="explains that the write does not invalidate the cached key",
             kind="graded",
@@ -719,7 +742,7 @@ def _identity_map_retirement() -> MigrationEntry:
         ),
         residual=MigrationResidual(kind=ResidualKind.NONE, reason="the check reads it whole"),
         combine_weights=dict(_RECORDED_WEIGHTS),
-        evidence=MigrationEvidence(corpus="corpus", observations=1, kappa=0.72),
+        evidence=MigrationEvidence(observations=1, kappa=0.72),
     )
 
 
@@ -1062,15 +1085,30 @@ def _corpus(tmp_path: Path, *, keep: int | None = None) -> Path:
     destination = tmp_path / "corpus"
     shutil.copytree(_COMMITTED_CORPUS, destination)
     if keep is not None:
-        for bundle in sorted(destination.iterdir())[keep:]:
+        for bundle in _trial_bundles(destination)[keep:]:
             shutil.rmtree(bundle)
     return destination
+
+
+def _trial_bundles(corpus: Path) -> list[Path]:
+    """The trial bundles a corpus holds — every directory beside its ``corpus.yaml``."""
+    return sorted(path for path in corpus.iterdir() if path.is_dir())
+
+
+def _write_pack(directory: Path, *, grading_text: str, task_id: str, migration: Any) -> None:
+    """A fixture pack, with the corpus its declaration names written beside it.
+
+    Every declaration here names ``corpus`` and the load resolves it against the pack's own
+    directory, so a pack written without one is refused before any bundle is read.
+    """
+    write_corpus_directory(directory / _CORPUS_DIRNAME, criterion=_CRITERION)
+    write_migration_pack(directory, grading_text=grading_text, task_id=task_id, migration=migration)
 
 
 def _packs(tmp_path: Path, *, name: str = "packs", **pack: Any) -> Path:
     """A search root holding one fixture pack for the corpus's task id."""
     root = tmp_path / name
-    write_migration_pack(
+    _write_pack(
         root / "notes",
         grading_text=_GRADING,
         task_id=pack.pop("task_id", _CORPUS_TASK_ID),
@@ -1090,8 +1128,9 @@ def _declared(**overrides: Any) -> dict[str, Any]:
             "weight": 1.0,
             "description": _PRE_MIGRATION_TEXT,
         },
+        "corpus": _CORPUS_DIRNAME,
         "residual": {"kind": "text", "reason": "the warning still reaches the judge"},
-        "evidence": {"corpus": "corpus", "observations": 5, "kappa": None},
+        "evidence": {"observations": 5, "kappa": None},
     }
     declared.update(overrides)
     return declared
@@ -1133,7 +1172,7 @@ def test_a_trial_the_judge_never_labelled_is_excluded_with_its_reason(
     visible rather than a corpus that quietly got smaller.
     """
     corpus = _corpus(tmp_path)
-    patched = sorted(corpus.iterdir())[0]
+    patched = _trial_bundles(corpus)[0]
     _patch_grade(patched, **patch)
 
     (entry,) = _reconcile(corpus, _packs(tmp_path)).entries
@@ -1175,28 +1214,28 @@ def test_a_task_id_resolving_in_two_roots_names_every_pack_that_claims_it(tmp_pa
     assert str(first) in str(raised.value) and str(second) in str(raised.value)
 
 
-def _gradeless_pack(tmp_path: Path, *, adapter_type: str) -> Path:
-    """A search root holding one pack for the corpus's task id that names no grading block.
+def _gradeless_pack(tmp_path: Path, *, adapter_type: str, grading_ref: str | None = None) -> Path:
+    """A search root holding one pack for the corpus's task id with no grading block on disk.
 
     Written out rather than taken from ``write_migration_pack``, which returns the
     ``grading.yaml`` it always writes and declares in its ``task.yaml``: the loader
-    auto-picks a sibling, so a pack naming no grading source is one with no such file.
+    auto-picks a sibling, so a pack with no block to read is one with no such file —
+    whether it names *grading_ref* or nothing at all.
     """
     pack = tmp_path / "gradeless" / "notes"
     pack.mkdir(parents=True)
-    (pack / "task.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "task_id": _CORPUS_TASK_ID,
-                "name": f"a pack declaring no grading block, under {adapter_type}",
-                "description": "A fixture task directory that names no grading source.",
-                "adapter_type": adapter_type,
-                "initial_state": {},
-                "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
-                "actors": {"user": {"mode": "scripted", "scripted_flow": []}},
-            }
-        )
-    )
+    task: dict[str, Any] = {
+        "task_id": _CORPUS_TASK_ID,
+        "name": f"a pack with no grading block on disk, under {adapter_type}",
+        "description": "A fixture task directory with no grading file to read.",
+        "adapter_type": adapter_type,
+        "initial_state": {},
+        "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
+        "actors": {"user": {"mode": "scripted", "scripted_flow": []}},
+    }
+    if grading_ref is not None:
+        task["grading"] = grading_ref
+    (pack / "task.yaml").write_text(yaml.safe_dump(task))
     return pack.parent
 
 
@@ -1205,25 +1244,30 @@ def _gradeless_pack(tmp_path: Path, *, adapter_type: str) -> Path:
     ["native", "tau"],
     ids=["the_adapter_that_grades_from_a_file", "an_adapter_that_resolves_its_own"],
 )
-def test_a_pack_declaring_no_grading_block_is_refused_naming_the_pack(
-    tmp_path: Path, adapter_type: str
+@pytest.mark.parametrize(
+    "grading_ref", [None, "grading.yaml"], ids=["naming_none", "naming_a_file_that_is_not_there"]
+)
+def test_a_pack_with_no_grading_block_on_disk_is_refused_naming_the_pack(
+    tmp_path: Path, adapter_type: str, grading_ref: str | None
 ) -> None:
     """Both declared adapters refuse here, where ``tolokaforge validate`` refuses only one.
 
     Validate passes a pack whose declared adapter resolves its own grading config, because
-    that adapter decides what an absent source means. Reconcile reads the migration declared
-    beside that file and the ``trace_checks`` block it names, and a synthesised config
-    supplies neither — so a corpus recording this task's verdicts has nothing to reconcile
-    them against either way, and the refusal names the pack instead of leaking the path
-    join's ``TypeError``.
+    that adapter decides what having no block to read means. Reconcile reads the migration
+    declared beside that file and the ``trace_checks`` block it names, and a synthesised
+    config supplies neither — so a corpus recording this task's verdicts has nothing to
+    reconcile them against either way, and the refusal names the pack instead of leaking
+    the path join's ``TypeError``. A ``grading:`` ref with no file at it is that same
+    state: reconcile would otherwise read a declaration off a path nothing wrote and
+    report the task as declaring no migration.
     """
-    root = _gradeless_pack(tmp_path, adapter_type=adapter_type)
+    root = _gradeless_pack(tmp_path, adapter_type=adapter_type, grading_ref=grading_ref)
 
     with pytest.raises(ReconcileError) as raised:
         _reconcile(_corpus(tmp_path), root)
 
     assert str(root / "notes" / "task.yaml") in str(raised.value)
-    assert "no grading block" in str(raised.value)
+    assert "no grading block is on disk" in str(raised.value)
     assert "unsupported operand type(s)" not in str(raised.value)
 
 
@@ -1240,7 +1284,7 @@ def _second_task(
     tmp_path: Path, corpus: Path, *, task_id: str, grading_text: str = _GRADING, **pack: Any
 ) -> Path:
     """A second task's bundles, re-stamped from the first task's, and its own pack."""
-    for bundle in sorted(corpus.iterdir())[:2]:
+    for bundle in _trial_bundles(corpus)[:2]:
         twin = corpus.parent / f"{task_id}_{bundle.name}"
         shutil.copytree(bundle, twin)
         task = yaml.safe_load((twin / "task.yaml").read_text())
@@ -1248,7 +1292,7 @@ def _second_task(
         (twin / "task.yaml").write_text(yaml.safe_dump(task))
         shutil.move(str(twin), str(corpus / twin.name))
     root = tmp_path / "packs"
-    write_migration_pack(
+    _write_pack(
         root / task_id,
         grading_text=grading_text,
         task_id=task_id,
@@ -1333,7 +1377,7 @@ def test_two_tasks_claiming_one_criterion_under_different_modes_cannot_be_pooled
 
 
 def _the_veto_rule_refuses_it(root: Path) -> None:
-    write_migration_pack(
+    _write_pack(
         root / "notes",
         grading_text=_GRADING.replace("severity: gate", "severity: scored"),
         task_id=_CORPUS_TASK_ID,
@@ -1342,7 +1386,7 @@ def _the_veto_rule_refuses_it(root: Path) -> None:
 
 
 def _the_sidecar_is_a_list(root: Path) -> None:
-    write_migration_pack(
+    _write_pack(
         root / "notes",
         grading_text=_GRADING,
         task_id=_CORPUS_TASK_ID,
@@ -1351,7 +1395,7 @@ def _the_sidecar_is_a_list(root: Path) -> None:
 
 
 def _the_sidecar_is_not_yaml(root: Path) -> None:
-    write_migration_pack(
+    _write_pack(
         root / "notes",
         grading_text=_GRADING,
         task_id=_CORPUS_TASK_ID,
@@ -1394,6 +1438,71 @@ def test_a_declaration_that_will_not_load_is_a_named_refusal_and_not_a_traceback
     assert names in str(raised.value)
 
 
+def test_a_trial_that_never_ran_is_excluded_by_name_and_the_corpus_still_reconciles(
+    tmp_path: Path,
+) -> None:
+    """A provisioning failure in the run is not a defect in the corpus.
+
+    Such a bundle records no ``task.yaml``, so nothing names the pack whose migration
+    it could speak to — but it is discovered now, and a corpus that reconciled fine
+    yesterday must not start blocking because one trial's environment did not come
+    up. It is named in its own list, absent from ``unreadable_trials``, and does not
+    block. The remaining trials are reconciled exactly as before.
+    """
+    packs = _packs(tmp_path)
+    without = _reconcile(_corpus(tmp_path / "without"), packs)
+    corpus = _corpus(tmp_path / "with")
+    aborted = write_provision_failure_bundle(corpus / "never_ran", task_id="notes")
+
+    report = _reconcile(corpus, packs)
+
+    (excluded,) = report.excluded_bundles
+    assert excluded.bundle == str(aborted)
+    assert "aborted before it was measured" in excluded.reason
+    assert report.unreadable_trials == []
+    assert report.entries[0].observations == without.entries[0].observations
+    # Whatever this corpus's verdict is, the trial that never ran does not change it.
+    assert report.blocking == without.blocking
+    assert not any(str(aborted) in reason for reason in report.blocking)
+
+
+def test_a_task_less_bundle_that_recorded_an_episode_still_blocks(tmp_path: Path) -> None:
+    """The exclusion is narrow: only a trial that never ran is excused the file.
+
+    A bundle whose trajectory records a real episode and whose ``task.yaml`` is gone
+    has lost what it was graded against — a defect in the corpus, so it stays in
+    ``unreadable_trials`` and keeps blocking. A rule that excused every missing
+    ``task.yaml`` would trade a silent exclusion for a silent excuse.
+    """
+    corpus = _corpus(tmp_path)
+    stripped = _trial_bundles(corpus)[0]
+    (stripped / "task.yaml").unlink()
+
+    report = _reconcile(corpus, _packs(tmp_path))
+
+    assert report.excluded_bundles == []
+    (unreadable,) = report.unreadable_trials
+    assert unreadable.trial == str(stripped)
+    assert "task.yaml" in unreadable.reason
+    assert any(str(stripped) in reason for reason in report.blocking)
+
+
+def test_a_corpus_of_nothing_but_trials_that_never_ran_says_so(tmp_path: Path) -> None:
+    """The degenerate case names the exclusions rather than the pack search.
+
+    "No pack behind the trials declares a migration (task ids: [])" is a message
+    about packs for a corpus that had no trial to resolve one from.
+    """
+    corpus = tmp_path / "corpus"
+    write_provision_failure_bundle(corpus, task_id="notes")
+
+    with pytest.raises(ReconcileError) as raised:
+        _reconcile(corpus, _packs(tmp_path))
+
+    assert "excluded from the corpus" in str(raised.value)
+    assert "no pack behind the trials" not in str(raised.value)
+
+
 def test_a_bundle_that_cannot_be_read_is_named_and_blocks_the_migration(tmp_path: Path) -> None:
     """An unreadable bundle is a defect in the corpus, not a thin denominator.
 
@@ -1402,7 +1511,7 @@ def test_a_bundle_that_cannot_be_read_is_named_and_blocks_the_migration(tmp_path
     a verdict over an unknown denominator.
     """
     corpus = _corpus(tmp_path)
-    broken = sorted(corpus.iterdir())[0]
+    broken = _trial_bundles(corpus)[0]
     (broken / "trajectory.yaml").write_text("- not a mapping\n")
 
     report = _reconcile(corpus, _packs(tmp_path))
@@ -1450,7 +1559,7 @@ def test_a_grade_the_counterfactual_cannot_read_costs_its_own_trial_only(
     other four are still measured — the containment ``retrace`` already gives the same class.
     """
     corpus = _corpus(tmp_path)
-    patched = sorted(corpus.iterdir())[0]
+    patched = _trial_bundles(corpus)[0]
     _patch_grade(patched, **patch)
 
     report = _reconcile(corpus, _packs(tmp_path))
@@ -1476,7 +1585,7 @@ def test_a_bundle_file_that_is_not_utf_8_costs_its_own_trial_only(
     Every file a bundle carries is read through one reader for that reason.
     """
     corpus = _corpus(tmp_path)
-    patched = sorted(corpus.iterdir())[0]
+    patched = _trial_bundles(corpus)[0]
     (patched / artifact).write_bytes(b"\xff\xfe\x00not utf-8")
 
     report = _reconcile(corpus, _packs(tmp_path))
@@ -1496,7 +1605,7 @@ def test_a_block_the_corpus_cannot_be_graded_against_stops_the_run(tmp_path: Pat
     against the tool set each bundle *recorded*, before any trial is re-checked.
     """
     root = tmp_path / "packs"
-    write_migration_pack(
+    _write_pack(
         root / "notes",
         grading_text=_GRADING.replace("equals: list_notes", "equals: list_notez"),
         task_id=_CORPUS_TASK_ID,
@@ -1528,7 +1637,7 @@ def test_a_blank_recorded_description_is_bundle_data_and_not_an_authoring_defect
     unreadable trial and not a raise.
     """
     corpus = _corpus(tmp_path)
-    patched = sorted(corpus.iterdir())[0]
+    patched = _trial_bundles(corpus)[0]
     _patch_recorded_criterion(patched, description="   ")
 
     report = _reconcile(corpus, _packs(tmp_path))
@@ -1553,7 +1662,7 @@ def test_a_recorded_rubric_that_does_not_read_as_one_is_one_unreadable_bundle(
     holding rather than the one that could not be read.
     """
     corpus = _corpus(tmp_path)
-    patched = sorted(corpus.iterdir())[0]
+    patched = _trial_bundles(corpus)[0]
     _patch_recorded_criterion(patched, weight_hint=0.5)
 
     report = _reconcile(corpus, _packs(tmp_path))

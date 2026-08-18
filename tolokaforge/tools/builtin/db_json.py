@@ -34,7 +34,6 @@ class DBQueryTool(Tool):
         policy = ToolPolicy(
             timeout_s=10.0,
             category=ToolCategory.READ,
-            visibility=["agent"],
         )
         super().__init__(
             name="db_query",
@@ -99,7 +98,6 @@ class DBUpdateTool(Tool):
         policy = ToolPolicy(
             timeout_s=10.0,
             category=ToolCategory.WRITE,
-            visibility=["agent"],
         )
         super().__init__(
             name="db_update",
@@ -173,7 +171,6 @@ class SQLQueryTool(Tool):
         policy = ToolPolicy(
             timeout_s=30.0,
             category=ToolCategory.READ,
-            visibility=["agent"],
         )
         super().__init__(
             name="sql_query",
@@ -238,7 +235,6 @@ class SQLSchemaToolDB(Tool):
         policy = ToolPolicy(
             timeout_s=10.0,
             category=ToolCategory.READ,
-            visibility=["agent"],
         )
         super().__init__(
             name="get_db_schema",

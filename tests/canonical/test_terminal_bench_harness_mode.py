@@ -28,6 +28,7 @@ import pytest
 
 from tolokaforge.core import runner as runner_module
 from tolokaforge.core.conductor import InProcessConductor
+from tolokaforge.core.loop import classify_loop_error
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -193,6 +194,7 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         grader = _RecordingGrader()
         agent_client = MagicMock()
         agent_client.capabilities.schema_sanitizer.sanitize.side_effect = lambda s: s
+        agent_client.classify_loop_error.side_effect = lambda exc: classify_loop_error(exc, ())
 
         conductor = InProcessConductor(
             adapter=adapter,
@@ -223,9 +225,13 @@ class TestHarnessTrialBypassesTheTurnLoop:
         assert call["arguments"] == {"command": _HARNESS_COMMAND}
         assert call["executor"] == "agent"
 
-    def test_the_tools_own_timeout_is_the_harness_deadline(self, harness_trial):
+    def test_no_per_call_budget_rides_the_wire(self, harness_trial):
+        """The budget the runner enforces is the one the tool declares
+        (registered ``timeout_s``), so the harness RPC names none of its own —
+        a wire-carried value could only agree with or contradict it."""
         _, runtime, _ = harness_trial()
-        assert runtime.executed_tools[0]["timeout_seconds"] == _HARNESS_TIMEOUT_S
+        assert "timeout_seconds" not in runtime.executed_tools[0]
+        assert "timeout_seconds" not in runtime.executed_tools[0]["arguments"]
 
     def test_a_run_budget_below_the_harness_budget_is_refused(self, harness_trial):
         """The exec cannot be cut short, so a shorter run budget must not be

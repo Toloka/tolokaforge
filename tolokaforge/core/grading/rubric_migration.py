@@ -37,16 +37,23 @@ re-checked against is resolved through the bundle's ``task_id`` to the pack whos
 override: pinning a fixture would make a CI re-verification decorative, where resolving from
 the pack makes editing the shipped constraint red the lock over the frozen corpus.
 
-Nothing here spends anything. It reaches the trace-replay reader, the one production trace
-evaluator, the pure agreement maths and the task loader ``tolokaforge validate`` already
-uses, and stops there — measured: no ``litellm`` / ``openai`` / ``anthropic`` module and no
-judge module enters ``sys.modules`` on import.
+**Two sources, one bar.** A reconciliation reads either a corpus somebody pointed at, or —
+for every declared migration at once — the corpus each declaration itself names. Every rule
+is the same across the two but one: where the source *is* the declared corpus there is no
+subset of it to allow for, so ``evidence.observations`` is checked for equality rather than
+as a lower bound.
+
+Nothing here spends anything. It reaches the trace-replay reader and its bundle discovery,
+the one production trace evaluator, the outcome classifier a run's own attribution uses,
+the pure agreement maths and the task loader ``tolokaforge validate`` already uses, and
+stops there — measured: no ``litellm`` / ``openai`` / ``anthropic`` module and no judge
+module enters ``sys.modules`` on import.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from math import isclose
 from pathlib import Path
@@ -71,18 +78,21 @@ from tolokaforge.core.grading.grade_components import (
 )
 from tolokaforge.core.grading.migration_declaration import (
     EVERY_DECLARED_FIELD,
+    MIGRATION_FILENAME,
     MigratedCriterion,
     MigrationEntry,
     MigrationMode,
     MigrationResidual,
+    corpus_base_for,
     criterion_shape_disagreement,
     inspect_migration_declaration,
 )
+from tolokaforge.core.grading.replay_layout import discover_trial_bundles
 from tolokaforge.core.grading.rubric import aggregate_rubric
 from tolokaforge.core.grading.trace_replay import (
     MissingTraceReplayInputError,
     TraceChecksOverride,
-    discover_trace_bundles,
+    aborted_without_a_task_snapshot,
     read_trace_replay_inputs,
     recorded_grade,
     recorded_task,
@@ -98,6 +108,7 @@ from tolokaforge.core.models import (
     TraceChecksResult,
     TraceConstraintSeverity,
 )
+from tolokaforge.core.output_writer import GRADE_FILENAME, TASK_FILENAME
 from tolokaforge.runner.grading import RunnerTrialVerdict, compose_runner_trial_verdict
 
 __all__ = [
@@ -128,6 +139,7 @@ __all__ = [
     "emit_reconcile_report",
     "migration_counterfactual",
     "reconcile_corpus",
+    "reconcile_declared_corpora",
     "reconcile_entry",
     "reconcile_root",
 ]
@@ -368,6 +380,23 @@ class UnreadableTrial(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class CorpusExclusion(BaseModel):
+    """A discovered bundle that is no part of the corpus, and why it is not.
+
+    A trial the substrate killed before it ran records no ``task.yaml``, so nothing
+    names the pack whose migration it could speak to. It is neither an
+    :class:`UnreadableTrial` — nothing about it is broken — nor an
+    :class:`ExcludedTrial`, which is a statement about one entry's label pool. It
+    never blocks: a corpus is not defective for containing a trial that never
+    happened.
+    """
+
+    bundle: str
+    reason: str
+
+    model_config = {"extra": "forbid"}
+
+
 class ReconciledEntry(BaseModel):
     """One declared migration, measured against the corpus.
 
@@ -410,16 +439,23 @@ class ReconciledEntry(BaseModel):
 
 
 class ReconcileReport(BaseModel):
-    """Every declared migration the corpus under ``source`` could speak to."""
+    """Every declared migration the corpus under ``source`` could speak to.
+
+    ``replay_id`` is the name this reconciliation is filed under — the artifact
+    subdirectory a written report lands in. It is ``None`` for a reconciliation that takes
+    no name because it can write nothing: the declaration sweep reads committed corpora,
+    and a report inside one would dirty the tree.
+    """
 
     source: str
-    replay_id: str
+    replay_id: str | None
     packs_searched: list[str]
     reference_labeller: str
     candidate_labeller: str
     trials_read: int
     entries: list[ReconciledEntry]
     unreadable_trials: list[UnreadableTrial]
+    excluded_bundles: list[CorpusExclusion]
 
     model_config = {"extra": "forbid"}
 
@@ -428,7 +464,9 @@ class ReconcileReport(BaseModel):
         """Every reason this reconciliation is not a clean pass, in the order found.
 
         Empty is what exit ``0`` means, and it means one thing: every converting entry
-        reached ``no_counter_evidence`` and every bundle was readable.
+        reached ``no_counter_evidence`` and every bundle that is part of the corpus was
+        readable. An excluded bundle is not: a trial that never ran is reported, not a
+        defect.
         """
         blocking = [f"{trial.trial}: {trial.reason}" for trial in self.unreadable_trials]
         blocking.extend(
@@ -770,26 +808,43 @@ def _same_kappa(declared: float | None, measured: float | None) -> bool:
 
 
 def _declared_evidence_refusal(
-    entry: MigrationEntry, *, observations: int, kappa: float | None
+    entry: MigrationEntry,
+    *,
+    observations: int,
+    kappa: float | None,
+    over_the_declared_corpus: bool,
 ) -> Refusal | None:
     """Where the numbers the entry declares contradict the ones this run measured.
 
     ``evidence`` is what a reviewer reads *instead of* re-running the command, so it is the
-    measurement or it is nothing. The rule is stated as a bound rather than an equality because
-    ``evidence.observations`` counts the whole corpus the entry names while ``--source`` may
-    deliberately be a part of it: pointing at one arm of a two-arm corpus is how each half is
-    shown to be the other's falsifier, and refusing that invocation would turn a diagnostic into
-    an authoring error. So a run measuring **fewer** observations says nothing, one measuring
-    **more** has read a corpus the declaration under-counts, and one reaching the declared count
-    must reproduce the declared κ.
+    measurement or it is nothing. How far below the declared count is charged depends on what
+    was read: ``evidence.observations`` counts the whole corpus the entry names, and a
+    ``--source`` may deliberately be a part of it — pointing at one arm of a two-arm corpus is
+    how each half is shown to be the other's falsifier, and refusing that invocation would turn
+    a diagnostic into an authoring error. So over an arbitrary source the rule is a **bound**: a
+    run measuring fewer observations says nothing. Over the corpus the entry *itself* names
+    (``over_the_declared_corpus``) it is an **equality**, because there is no subset to allow
+    for and a count below the declared one means bundles went missing.
 
-    The residue, stated because the tier cannot close it: a declaration over-counting its own
-    corpus is indistinguishable from a reconciliation over a subset, so only a run that reaches
-    the declared count catches a κ that drifted.
+    Either way a run measuring **more** has read a corpus the declaration under-counts, and one
+    reaching the declared count must reproduce the declared κ.
     """
     declared = entry.evidence
-    if declared is None or observations < declared.observations:
+    if declared is None:
         return None
+    if observations < declared.observations:
+        if not over_the_declared_corpus:
+            return None
+        return Refusal(
+            kind=RefusalKind.DECLARED_EVIDENCE_CONTRADICTS_MEASUREMENT,
+            message=(
+                f"evidence.observations declares {declared.observations} and this "
+                f"reconciliation measured {observations} over {entry.corpus}, the corpus the "
+                "entry itself names. There is no part of the corpus left out for the count to "
+                "be short of, so the bundles the declaration was written against are gone: "
+                "restore them, or re-run reconcile over the corpus and write what it reports"
+            ),
+        )
     if observations > declared.observations:
         return Refusal(
             kind=RefusalKind.DECLARED_EVIDENCE_CONTRADICTS_MEASUREMENT,
@@ -797,7 +852,7 @@ def _declared_evidence_refusal(
                 f"evidence.observations declares {declared.observations} and this "
                 f"reconciliation measured {observations}, so the corpus carries more evidence "
                 "than the declaration was written against and the numbers a reviewer reads are "
-                f"not the ones the command reaches. Re-run reconcile over {declared.corpus} and "
+                f"not the ones the command reaches. Re-run reconcile over {entry.corpus} and "
                 "write what it reports"
             ),
         )
@@ -809,7 +864,7 @@ def _declared_evidence_refusal(
             f"evidence.kappa declares {declared.kappa} and this reconciliation measured "
             f"{kappa} over the {declared.observations} observations the declaration claims. A "
             "reviewer reads the declared evidence instead of re-running the command, so it is "
-            f"the measurement or it is nothing. Re-run reconcile over {declared.corpus} and "
+            f"the measurement or it is nothing. Re-run reconcile over {entry.corpus} and "
             "write the kappa it reports"
         ),
     )
@@ -882,21 +937,21 @@ def _refuse_a_recorded_grade_the_counterfactual_cannot_read(
     components = grade.get("components") or {}
     if not isinstance(components, Mapping):
         raise MissingTraceReplayInputError(
-            f"{bundle / 'grade.yaml'} holds {type(components).__name__} where the component "
+            f"{bundle / GRADE_FILENAME} holds {type(components).__name__} where the component "
             "scores belong, so nothing says what this trial scored"
         )
     for where, value in (("score", grade.get("score")), *sorted(components.items())):
         if value is None or isinstance(value, (int, float)):
             continue
         raise MissingTraceReplayInputError(
-            f"{bundle / 'grade.yaml'} records {where} as {value!r}, which is not a number, so "
+            f"{bundle / GRADE_FILENAME} records {where} as {value!r}, which is not a number, so "
             "the recomposition has nothing to check itself against"
         )
     try:
         _recorded_judge_verdicts(grade)
     except (TypeError, ValidationError) as exc:
         raise MissingTraceReplayInputError(
-            f"{bundle / 'grade.yaml'} records a criterion_results entry that does not read as "
+            f"{bundle / GRADE_FILENAME} records a criterion_results entry that does not read as "
             f"a judge verdict, so nothing says what the judge concluded on this trial: {exc}"
         ) from exc
 
@@ -1167,7 +1222,11 @@ def migration_counterfactual(
 
 
 def reconcile_entry(
-    entry: MigrationEntry, *, task_ids: Sequence[str], trials: Sequence[TrialEvidence]
+    entry: MigrationEntry,
+    *,
+    task_ids: Sequence[str],
+    trials: Sequence[TrialEvidence],
+    over_the_declared_corpus: bool = False,
 ) -> ReconciledEntry:
     """Measure one declared migration against the trials that can speak to it.
 
@@ -1176,6 +1235,10 @@ def reconcile_entry(
     ``insufficient_evidence`` where κ is undefined, else ``no_counter_evidence``. Refusal
     wins over undefined κ because a contradicted declaration is an authoring defect, and
     reporting it as thin evidence would send the author to collect more trials.
+
+    ``over_the_declared_corpus`` says the trials came from the corpus the entry itself names
+    rather than from a source somebody pointed at, which is what turns the declared-evidence
+    bound into an equality.
     """
     excluded = [found for trial in trials if (found := _exclusion(trial, entry)) is not None]
     excluded_trials = {row.trial for row in excluded}
@@ -1195,7 +1258,12 @@ def reconcile_entry(
         for trial in contributing
     ]
     kappa = cohen_kappa(observations)
-    declared = _declared_evidence_refusal(entry, observations=len(observations), kappa=kappa)
+    declared = _declared_evidence_refusal(
+        entry,
+        observations=len(observations),
+        kappa=kappa,
+        over_the_declared_corpus=over_the_declared_corpus,
+    )
     refusals = [
         *_recorded_rubric_refusals(entry, contributing),
         *_direction_and_waiver_refusals(entry, contributing, rows),
@@ -1255,7 +1323,7 @@ def _declaring_task_files(task_id: str, roots: Sequence[Path]) -> list[Path]:
     return [
         task_file
         for root in roots
-        for task_file in sorted(Path(root).rglob("task.yaml"))
+        for task_file in sorted(Path(root).rglob(TASK_FILENAME))
         if _declares_task_id(task_file, task_id)
     ]
 
@@ -1272,11 +1340,11 @@ def _grading_path_of(task_id: str, roots: Sequence[Path]) -> Path:
     and both are named with the roots searched, because a corpus recorded against one tree
     reconciled against another is otherwise silently reconciled against nothing.
 
-    A pack that resolves and names no grading source is refused too, under every declared
-    adapter — unlike ``tolokaforge validate``, which passes such a pack where its declared
-    adapter resolves its own grading config, because a config resolved that way carries no
-    migration declaration and no ``trace_checks`` block for a recorded verdict to be
-    recomputed from.
+    A pack that resolves and has no grading block on disk — naming none, or naming a path
+    with no file at it — is refused too, under every declared adapter, unlike
+    ``tolokaforge validate``, which passes such a pack where its declared adapter resolves
+    its own grading config: a config resolved that way carries no migration declaration and
+    no ``trace_checks`` block for a recorded verdict to be recomputed from.
     """
     written = ", ".join(str(root) for root in roots)
     found = _declaring_task_files(task_id, roots)
@@ -1297,29 +1365,32 @@ def _grading_path_of(task_id: str, roots: Sequence[Path]) -> Path:
     source = grading_source_under_adapter(task_config, task_dir, adapter_type)
     if source.path is None:
         raise ReconcileError(
-            f"{found[0]} declares task_id {task_id!r} and no grading block — no `grading:` "
-            "field and no sibling grading.yaml — so a corpus recording this task's verdicts "
-            "has nothing to reconcile them against: the migration is declared beside that "
-            "file, and the trace_checks block it names is what every recorded verdict is "
-            f"recomputed from. That holds under every declared adapter, {adapter_type!r} "
-            "included: one that grades from the file has none to read, and one that resolves "
-            "its own grading config writes neither. Declare `grading:` pointing at the block "
-            "this pack grades by, or add a grading.yaml beside its task.yaml"
+            f"{found[0]} declares task_id {task_id!r} and no grading block is on disk for it, "
+            "so a corpus recording this task's verdicts has nothing to reconcile them "
+            "against: the migration is declared beside that file, and the trace_checks block "
+            "it names is what every recorded verdict is recomputed from. That holds under "
+            f"every declared adapter, {adapter_type!r} included: one that grades from the "
+            "file has none to read, and one that resolves its own grading config writes "
+            "neither. Point `grading:` at the block this pack grades by, or add a "
+            "grading.yaml beside its task.yaml"
         )
     return source.path
 
 
-def _resolve_pack(task_id: str, roots: Sequence[Path]) -> _ResolvedPack | None:
+def _resolve_pack(
+    task_id: str, roots: Sequence[Path], *, corpus_base: Path | None
+) -> _ResolvedPack | None:
     """The pack ``task_id`` names, or ``None`` where it declares no migration.
 
     The declaration goes through the same ``inspect_migration_declaration`` gate
     ``tolokaforge validate`` applies, so a pack the bar reads is a pack that already loads:
     every rule the sidecar is refused for at authoring time is refused here too, before any
-    evidence is weighed against it.
+    evidence is weighed against it — the corpus each entry names among them, read against
+    ``corpus_base``.
     """
     grading_path = _grading_path_of(task_id, roots)
     try:
-        declaration = inspect_migration_declaration(grading_path)
+        declaration = inspect_migration_declaration(grading_path, corpus_base=corpus_base)
     except (ValueError, ValidationError, RuntimeError, yaml.YAMLError) as exc:
         raise ReconcileError(
             f"the migration declared beside {grading_path} does not load, so there is no "
@@ -1614,7 +1685,7 @@ def _refuse_pooling_two_different_claims(pools: Mapping[_PoolKey, _Pool]) -> Non
 
 
 def _pooled_evidence(
-    packs: Mapping[str, _ResolvedPack], by_task: Mapping[str, list[Path]]
+    packs: Mapping[str, _ResolvedPack], by_task: Mapping[str, Sequence[Path]]
 ) -> tuple[dict[_PoolKey, _Pool], list[UnreadableTrial]]:
     """Read every bundle once and file its evidence under each entry it can speak to.
 
@@ -1680,7 +1751,7 @@ def _file_one_bundle(
         return UnreadableTrial(
             trial=str(bundle),
             reason=(
-                f"the rubric recorded in {bundle / 'task.yaml'} does not read as one, so nothing "
+                f"the rubric recorded in {bundle / TASK_FILENAME} does not read as one, so nothing "
                 f"says what shape the criterion had when this trial was graded: {exc}. Drop the "
                 "bundle from the corpus, or reconcile it against the tree that wrote it"
             ),
@@ -1710,12 +1781,38 @@ def reconcile_root(source: Path, replay_id: str) -> Path:
     return Path(source) / RECONCILE_DIRNAME / replay_id
 
 
+def _excluded_from_the_corpus(bundle: Path) -> CorpusExclusion:
+    """A discovered bundle carrying no ``task.yaml``, excluded by name.
+
+    Only a trial the substrate killed before it ran is excused the file: it records
+    no pack to resolve a migration against, and a corpus is not defective for
+    holding one. A task-less bundle that recorded a real episode lost what it was
+    graded against, which is a defect, so it is raised into ``unreadable_trials``
+    and keeps blocking the exit code.
+    """
+    termination = aborted_without_a_task_snapshot(bundle)
+    if termination is None:
+        raise MissingTraceReplayInputError(
+            f"{bundle / TASK_FILENAME} is missing, so nothing names the task whose "
+            "migration this trial could speak to"
+        )
+    return CorpusExclusion(
+        bundle=str(bundle),
+        reason=(
+            "the trial was aborted before it was measured "
+            f"(termination_reason: {termination}), so it recorded no task.yaml and "
+            "speaks to no pack's migration"
+        ),
+    )
+
+
 def reconcile_corpus(
     source: Path,
     *,
     replay_id: str,
     packs: Sequence[Path] | None = None,
     dry_run: bool = False,
+    corpus_base: Path | None = None,
 ) -> ReconcileReport:
     """Reconcile every migration the packs behind ``source``'s trials declare.
 
@@ -1724,62 +1821,251 @@ def reconcile_corpus(
     reconciliation itself is performed either way, because the verdict is the thing worth
     having for free.
 
+    ``corpus_base`` is the directory each declaration's ``corpus`` is read against, defaulting
+    to the declaration's own directory. It is a parameter rather than an ambient read so this
+    module resolves nothing off the working directory; the CLI supplies one.
+
     Raises:
-        ReconcileError: If ``source`` holds no bundle, if no pack behind it declares a
-            migration, if a ``task_id`` resolves to no pack or to several, if a pack's block
-            cannot be graded against what a bundle recorded, or if one criterion is pooled
-            across tasks declaring different things.
+        ReconcileError: If ``source`` holds no bundle, if every bundle it holds is
+            excluded from the corpus, if no pack behind it declares a migration, if a
+            ``task_id`` resolves to no pack or to several, if a pack's block cannot be
+            graded against what a bundle recorded, or if one criterion is pooled across
+            tasks declaring different things.
     """
     source = Path(source)
     roots = tuple(Path(root) for root in (packs or (DEFAULT_PACKS_ROOT,)))
-    bundles = discover_trace_bundles(source)
+    reading = _read_the_corpus(source)
+    declaring = {
+        task_id: pack
+        for task_id in sorted(reading.by_task)
+        if (pack := _resolve_pack(task_id, roots, corpus_base=corpus_base)) is not None
+    }
+    if not declaring:
+        raise ReconcileError(
+            f"no pack behind the trials under {source} declares a migration "
+            f"(task ids: {sorted(reading.by_task)}; "
+            f"searched {', '.join(str(r) for r in roots)}). "
+            "There is nothing to reconcile: write a migration.yaml beside the pack's "
+            "grading.yaml, or point --packs at the tree that carries one"
+        )
+
+    report = _reconciled(
+        source,
+        reading,
+        declaring,
+        replay_id=replay_id,
+        roots=roots,
+        over_the_declared_corpus=False,
+    )
+    if not dry_run:
+        emit_reconcile_report(report, source=source, replay_id=replay_id)
+    return report
+
+
+@dataclass(frozen=True)
+class _CorpusReading:
+    """What one corpus directory holds: its bundles by task, and what could not be filed."""
+
+    bundles: tuple[Path, ...]
+    by_task: Mapping[str, Sequence[Path]]
+    unreadable: tuple[UnreadableTrial, ...]
+    excluded: tuple[CorpusExclusion, ...]
+
+
+def _read_the_corpus(source: Path) -> _CorpusReading:
+    """Discover ``source``'s bundles and file each under the task it recorded.
+
+    Raises:
+        ReconcileError: If ``source`` holds no bundle, or if every bundle it holds records no
+            task and is therefore excluded from the corpus.
+    """
+    bundles = discover_trial_bundles(source)
     if not bundles:
         raise ReconcileError(
             f"no trial bundle under {source} — a corpus holding nothing reconciles nothing. A "
-            "bundle is a directory holding task.yaml + trajectory.yaml"
+            "bundle is a directory holding trajectory.yaml"
         )
 
     by_task: dict[str, list[Path]] = {}
     unreadable: list[UnreadableTrial] = []
+    excluded: list[CorpusExclusion] = []
     for bundle in bundles:
         try:
+            if not (bundle / TASK_FILENAME).exists():
+                excluded.append(_excluded_from_the_corpus(bundle))
+                continue
             task_id = recorded_task_id(bundle, recorded_task(bundle))
         except MissingTraceReplayInputError as exc:
             unreadable.append(UnreadableTrial(trial=str(bundle), reason=str(exc)))
             continue
         by_task.setdefault(task_id, []).append(bundle)
 
-    declaring = {
-        task_id: pack
-        for task_id in sorted(by_task)
-        if (pack := _resolve_pack(task_id, roots)) is not None
-    }
-    if not declaring:
+    if not by_task and excluded:
         raise ReconcileError(
-            f"no pack behind the trials under {source} declares a migration "
-            f"(task ids: {sorted(by_task)}; searched {', '.join(str(r) for r in roots)}). "
-            "There is nothing to reconcile: write a migration.yaml beside the pack's "
-            "grading.yaml, or point --packs at the tree that carries one"
+            f"no trial under {source} names a task whose migration could be reconciled: "
+            f"{len(excluded)} of {len(bundles)} discovered bundles are excluded from the "
+            "corpus, recording no task.yaml because the trial never ran. Reconcile a corpus "
+            "whose trials reached the agent"
         )
+    return _CorpusReading(
+        bundles=tuple(bundles),
+        by_task=by_task,
+        unreadable=tuple(unreadable),
+        excluded=tuple(excluded),
+    )
 
-    pools, read_failures = _pooled_evidence(declaring, by_task)
+
+def _reconciled(
+    source: Path,
+    reading: _CorpusReading,
+    declaring: Mapping[str, _ResolvedPack],
+    *,
+    replay_id: str | None,
+    roots: Sequence[Path],
+    over_the_declared_corpus: bool,
+) -> ReconcileReport:
+    """Weigh every entry ``declaring`` holds against the trials ``reading`` filed for it."""
+    pools, read_failures = _pooled_evidence(declaring, reading.by_task)
     _refuse_pooling_two_different_claims(pools)
-    report = ReconcileReport(
+    return ReconcileReport(
         source=str(source),
         replay_id=replay_id,
         packs_searched=[str(root) for root in roots],
         reference_labeller=REFERENCE_LABELLER,
         candidate_labeller=CANDIDATE_LABELLER,
-        trials_read=len(bundles),
+        trials_read=len(reading.bundles),
         entries=[
-            reconcile_entry(pool.entry, task_ids=pool.task_ids, trials=pool.trials)
+            reconcile_entry(
+                pool.entry,
+                task_ids=pool.task_ids,
+                trials=pool.trials,
+                over_the_declared_corpus=over_the_declared_corpus,
+            )
             for _, pool in sorted(pools.items())
         ],
-        unreadable_trials=unreadable + read_failures,
+        unreadable_trials=[*reading.unreadable, *read_failures],
+        excluded_bundles=list(reading.excluded),
     )
-    if not dry_run:
-        emit_reconcile_report(report, source=source, replay_id=replay_id)
-    return report
+
+
+def reconcile_declared_corpora(
+    *, packs: Sequence[Path] | None = None, corpus_base: Path | None = None
+) -> tuple[ReconcileReport, ...]:
+    """Reconcile every migration declared under ``packs``, each over the corpus it names.
+
+    One report per declared corpus, ordered by its path: the entries measured over a corpus
+    are the ones whose own declaration names it, so an entry is evidence about that corpus and
+    about no other. Nothing is written — the corpora are committed, and a report inside one
+    would dirty the tree — and because the source *is* the corpus each declaration names, the
+    declared-evidence rule is an equality rather than a bound.
+
+    ``corpus_base`` is the directory each declaration's ``corpus`` is read against, defaulting
+    to the declaration's own directory. It is a parameter rather than an ambient read so this
+    module resolves nothing off the working directory; the CLI supplies one.
+
+    Raises:
+        ReconcileError: If no pack under ``packs`` declares a migration, if a sidecar names no
+            resolvable pack, if a declared corpus holds no trial of the task declaring it, and
+            for everything :func:`reconcile_corpus` raises over one corpus.
+    """
+    roots = tuple(Path(root) for root in (packs or (DEFAULT_PACKS_ROOT,)))
+    by_corpus = _declarations_by_corpus(roots, corpus_base=corpus_base)
+    if not by_corpus:
+        raise ReconcileError(
+            f"no pack under {', '.join(str(root) for root in roots)} declares a migration, so "
+            "there is nothing to reconcile. Write a migration.yaml beside a pack's "
+            "grading.yaml, or point --packs at the tree that carries one"
+        )
+    return tuple(
+        _reconciled_over_the_corpus_it_names(corpus, declaring, roots=roots)
+        for corpus, declaring in sorted(by_corpus.items())
+    )
+
+
+def _reconciled_over_the_corpus_it_names(
+    corpus: Path, declaring: Mapping[str, _ResolvedPack], *, roots: Sequence[Path]
+) -> ReconcileReport:
+    """One corpus, weighed against the entries that named it."""
+    reading = _read_the_corpus(corpus)
+    absent = sorted(set(declaring) - set(reading.by_task))
+    if absent:
+        raise ReconcileError(
+            f"{corpus} is named by the migration {', '.join(absent)} declares and holds no "
+            "trial of it, so that declaration is measured over nothing. A corpus is the "
+            "recorded trials of the task whose criterion it is evidence about: curate one "
+            "from runs of that task, or point the entry's corpus at the one that has them"
+        )
+    return _reconciled(
+        corpus, reading, declaring, replay_id=None, roots=roots, over_the_declared_corpus=True
+    )
+
+
+def _declarations_by_corpus(
+    roots: Sequence[Path], *, corpus_base: Path | None
+) -> dict[Path, dict[str, _ResolvedPack]]:
+    """Every declaring pack under ``roots``, filed under the corpus each of its entries names.
+
+    A pack whose entries name two corpora is filed under both, carrying only the entries
+    measured over each.
+    """
+    filed: dict[Path, dict[str, _ResolvedPack]] = {}
+    for sidecar in _declared_sidecars(roots):
+        task_id = _task_id_declaring(sidecar)
+        pack = _resolve_pack(task_id, roots, corpus_base=corpus_base)
+        if pack is None:
+            raise ReconcileError(
+                f"{sidecar} is not beside the grading.yaml the pack declaring task_id "
+                f"{task_id!r} resolves to, so nothing reads it: a migration is declared beside "
+                "the file whose rubric it migrates. Point the task's grading field at the file "
+                "the sidecar sits beside, or move the sidecar"
+            )
+        for corpus, entries in _entries_by_corpus(pack, corpus_base=corpus_base).items():
+            filed.setdefault(corpus, {})[task_id] = replace(pack, entries=entries)
+    return filed
+
+
+def _declared_sidecars(roots: Sequence[Path]) -> list[Path]:
+    """Every ``migration.yaml`` under ``roots``.
+
+    The sidecar is what is searched for rather than the packs that might carry one, because a
+    tree holds packs that do not load at all and loading each to ask whether it declares a
+    migration would make an unrelated defect this command's problem.
+    """
+    return sorted({found for root in roots for found in Path(root).rglob(MIGRATION_FILENAME)})
+
+
+def _task_id_declaring(sidecar: Path) -> str:
+    """The ``task_id`` of the pack ``sidecar`` sits in — the join to a recorded trial.
+
+    Read raw for the reason :func:`_declaring_task_files` reads raw: the id is the lookup key,
+    and the pack it selects is then loaded properly.
+    """
+    task_file = sidecar.parent / TASK_FILENAME
+    if not task_file.exists():
+        raise ReconcileError(
+            f"{sidecar} declares a migration and no task.yaml sits beside it, so no task_id "
+            "names the pack it migrates and no recorded trial resolves to it. A migration is "
+            "declared beside the task.yaml and grading.yaml of the pack it is about"
+        )
+    declared = yaml.safe_load(task_file.read_text(encoding="utf-8"))
+    task_id = declared.get("task_id") if isinstance(declared, Mapping) else None
+    if isinstance(task_id, str) and task_id:
+        return task_id
+    raise ReconcileError(
+        f"{task_file} declares no task_id and {sidecar} declares a migration of its rubric, so "
+        "no recorded trial resolves to this pack and its claim is measured over nothing"
+    )
+
+
+def _entries_by_corpus(
+    pack: _ResolvedPack, *, corpus_base: Path | None
+) -> dict[Path, tuple[MigrationEntry, ...]]:
+    """One pack's entries grouped by the corpus directory each of them names."""
+    base = corpus_base_for(pack.grading_path, corpus_base=corpus_base)
+    grouped: dict[Path, list[MigrationEntry]] = {}
+    for entry in pack.entries:
+        grouped.setdefault(base / entry.corpus, []).append(entry)
+    return {corpus: tuple(entries) for corpus, entries in grouped.items()}
 
 
 def emit_reconcile_report(report: ReconcileReport, *, source: Path, replay_id: str) -> Path:

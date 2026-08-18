@@ -39,7 +39,7 @@ from pydantic import BaseModel, Field
 from tolokaforge.runner.compose_naming import compose_container_name
 from tolokaforge.runner.db_client import DBServiceClient
 from tolokaforge.runner.db_proxy import DBServiceProxy, SyncDBServiceProxy
-from tolokaforge.runner.id_resolution import compute_diff_ops
+from tolokaforge.runner.id_resolution import TableKey, compute_diff_ops, table_key
 from tolokaforge.runner.models import (
     InvocationStyle,
 )
@@ -60,6 +60,7 @@ from tolokaforge.tools.persistent_shell import (
     DockerComposeBashSession,
     LocalBashSession,
 )
+from tolokaforge.tools.registry import TOOL_FAILURE_WITHOUT_MESSAGE, raised_tool_failure_text
 from tolokaforge.tools.str_replace_editor import (
     DockerComposeEditor,
     EditorBackend,
@@ -115,12 +116,17 @@ class ToolExecutionError(Exception):
     Raising this from a wrapper's execute() lets the runner service record
     EXECUTION_STATUS_ERROR so tool_success_rate, failure_attribution, and
     error_count reflect reality.
+
+    ``str`` is the tool's own message alone, because the runner records it as
+    the failed call's result text and the in-process substrate records the same
+    text verbatim from ``ToolResult.error``. ``tool_name`` stays an attribute
+    and the runner's log names the tool independently.
     """
 
     def __init__(self, tool_name: str, message: str):
         self.tool_name = tool_name
         self.message = message
-        super().__init__(f"{tool_name}: {message}")
+        super().__init__(message)
 
 
 # =============================================================================
@@ -150,6 +156,28 @@ class ToolCallOutcome:
     declared_failure: bool
 
 
+BACKSTOP_GRACE_S = 5.0
+"""Slack between a tool's own per-call budget and the runner's backstop.
+
+It covers what a tool spends finishing *after* its own budget elapses, and the
+two engines spend it differently:
+
+* local shell — measured 0.7 s worst case: SIGINT, then SIGKILL 0.2 s later,
+  then a 0.3 s drain, on top of a 0.2 s poll interval. 5 s clears it ~7x.
+* compose shell — SIGKILL, then ``proc.wait(5)``, then a reopened ``docker
+  exec`` whose readiness and ``cd`` round trips are bounded at
+  ``_OPEN_TIMEOUT_S`` each. Warm, a local exec reopens in milliseconds and 5 s
+  clears it comfortably; at those bounds it would not.
+
+That second worst case is accepted rather than covered, because covering it
+would mean holding a wedged trial ~35 s past its budget on every engine. When it
+happens the backstop fires mid-reopen and the call reports a plain timeout —
+``DockerComposeExecToolWrapper`` rebuilds no session of the runner's, so the
+degradation is a lost reopen, not a poisoned pipe.
+
+Resizing this downward needs both engines re-measured, not just the local one."""
+
+
 class ToolWrapper(ABC):
     """
     Base class for tool wrappers.
@@ -166,10 +194,52 @@ class ToolWrapper(ABC):
     # lifecycle off this capability, never off the adapter type.
     has_lifecycle: bool = False
 
+    # Consulted only for a ``has_lifecycle`` tool the runner's backstop fires on:
+    # does closing and reopening this tool clear state an abandoned worker could
+    # otherwise serve to the next call? True for a tool holding a pipe or session
+    # of its own. False for a tool whose start() only resolves configuration —
+    # rebuilding that clears nothing, so the call must not tell the agent its
+    # session was reset. Defaults True so a new lifecycle tool is rebuilt rather
+    # than silently left holding a poisoned pipe.
+    rebuild_clears_backstopped_state: bool = True
+
     def __init__(self, tool_schema: ToolSchemaModel):
         self.tool_schema = tool_schema
         self.name = tool_schema.name
         self.timeout_s = tool_schema.timeout_s
+
+    @property
+    def own_budget_s(self) -> float | None:
+        """The per-call budget this wrapper applies to its own work, if any.
+
+        Override in a wrapper that hands a number to its own timeout mechanism
+        — an ``httpx`` ``timeout=``, a ``subprocess`` ``timeout=``, a session's
+        per-command budget. A wrapper that bounds nothing leaves this ``None``
+        and is banded by its declared ``timeout_s`` alone.
+
+        This is the one place a self-bounding wrapper has to override:
+        :attr:`effective_timeout_s` derives the backstop from it.
+        """
+        return None
+
+    @property
+    def effective_timeout_s(self) -> float:
+        """The band the runner's backstop applies to a call on this tool.
+
+        Strictly greater than :attr:`own_budget_s` whenever the wrapper names
+        one. The backstop abandons the worker thread rather than killing it,
+        while a tool's own timeout terminates the work and leaves its session
+        usable — so the tool's control must be the one that fires, and equality
+        between the two is a race.
+
+        The declared ``timeout_s`` is kept as a floor, so a tool bounding
+        itself well inside its declaration keeps the wider band rather than
+        being tightened to a value nothing asked for.
+        """
+        own = self.own_budget_s
+        if own is None:
+            return self.timeout_s
+        return max(self.timeout_s, own + BACKSTOP_GRACE_S)
 
     @abstractmethod
     async def execute(self, arguments: dict[str, Any]) -> str:
@@ -745,10 +815,7 @@ class BuiltinFileToolWrapper(ToolWrapper):
         # preserving correct tool_success_rate and failure attribution.
         # The runner's exception handler sends the error message back to
         # the LLM, so the agent can still self-correct.
-        raise ToolExecutionError(
-            self.name,
-            result.error or "Tool returned failure with no error message",
-        )
+        raise ToolExecutionError(self.name, result.error or TOOL_FAILURE_WITHOUT_MESSAGE)
 
 
 # =============================================================================
@@ -806,6 +873,18 @@ class BuiltinGenericToolWrapper(ToolWrapper):
                 f"Failed to instantiate builtin tool '{tool_schema.name}': {exc}",
             ) from exc
 
+    @property
+    def own_budget_s(self) -> float:
+        """The budget the wrapped builtin applies to its own I/O.
+
+        Read from the tool, not from the schema: the schema carries one pinned
+        value for every builtin of every native pack (#1147), and several
+        builtins bound themselves above it — ``build_check`` at 300 s,
+        ``browser`` and ``mobile`` at 60 s, against a pinned 30 s. Banding on
+        the schema alone cuts a healthy call short and records it a timeout.
+        """
+        return self._tool.policy.timeout_s
+
     async def execute(self, arguments: dict[str, Any]) -> str:
         result = self._tool.execute(**arguments)
         if result.success:
@@ -814,10 +893,7 @@ class BuiltinGenericToolWrapper(ToolWrapper):
         # preserving correct tool_success_rate and failure attribution.
         # The runner's exception handler sends the error message back to
         # the LLM, so the agent can still self-correct.
-        raise ToolExecutionError(
-            self.name,
-            result.error or "Tool returned failure with no error message",
-        )
+        raise ToolExecutionError(self.name, result.error or TOOL_FAILURE_WITHOUT_MESSAGE)
 
 
 # =============================================================================
@@ -847,6 +923,17 @@ class RAGSearchToolWrapper(ToolWrapper):
         super().__init__(tool_schema)
         self.rag_client = rag_client
         self.trial_id = trial_id
+
+    @property
+    def own_budget_s(self) -> float:
+        """The declared budget, which this wrapper hands to the RAG request.
+
+        The same shape the in-process ``search_kb`` uses
+        (:mod:`tolokaforge.tools.builtin.rag_search` passes its declared budget
+        to ``httpx``), so the two substrates bound the same call the same way
+        rather than one inheriting whatever the shared client was built with.
+        """
+        return self.timeout_s
 
     async def execute(self, arguments: dict[str, Any]) -> str:
         """
@@ -888,6 +975,7 @@ class RAGSearchToolWrapper(ToolWrapper):
                 query=query,
                 limit=top_k,
                 alpha=alpha,
+                timeout=self.own_budget_s,
             )
 
             # Format results for LLM consumption
@@ -1018,6 +1106,9 @@ def create_search_kb_schema() -> ToolSchemaModel:
 # =============================================================================
 
 
+_COMPOSE_EXEC_DEFAULT_TIMEOUT_S = 120.0
+
+
 class DockerComposeExecToolWrapper(ToolWrapper):
     """Execute a command inside an already-running compose service via ``docker exec``.
 
@@ -1036,6 +1127,11 @@ class DockerComposeExecToolWrapper(ToolWrapper):
     # in start() — the compose stack is brought up by the per-trial runtime.
     has_lifecycle = True
 
+    # Which is also why rebuilding this wrapper clears nothing: it holds a
+    # container *name*, not a session, and the exec that outlived the backstop
+    # is inside a container the per-trial runtime owns.
+    rebuild_clears_backstopped_state = False
+
     def __init__(
         self,
         tool_schema: ToolSchemaModel,
@@ -1052,11 +1148,14 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         self._trial_id = ctx.trial_id
         self._container = compose_container_name(ctx.trial_id, self._service, self._project_prefix)
 
+    @property
+    def own_budget_s(self) -> float:
+        return self.timeout_s or _COMPOSE_EXEC_DEFAULT_TIMEOUT_S
+
     async def execute(self, arguments: dict[str, Any]) -> str:
         command = arguments.get("command", "")
-        timeout = self.timeout_s or 120.0
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._exec_sync, command, timeout)
+        return await loop.run_in_executor(None, self._exec_sync, command, self.own_budget_s)
 
     def _exec_sync(self, command: str, timeout: float) -> str:
         if self._container is None:
@@ -1121,6 +1220,10 @@ class PersistentShellToolWrapper(ToolWrapper):
         self._trial_id: str | None = None
         self._session: BashSession | None = None
         self._cwd: str | None = None
+
+    @property
+    def own_budget_s(self) -> float:
+        return self._timeout_s
 
     def start(self, ctx: "ToolLifecycleContext") -> None:
         self._trial_id = ctx.trial_id
@@ -1246,7 +1349,7 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
         try:
             return await loop.run_in_executor(None, self._dispatch, arguments)
         except EditorError as exc:
-            raise ToolExecutionError(self.name, str(exc)) from exc
+            raise ToolExecutionError(self.name, raised_tool_failure_text(exc)) from exc
 
     def _dispatch(self, arguments: dict[str, Any]) -> str:
         command = arguments.get("command")
@@ -1318,10 +1421,12 @@ class ToolFactory:
             db_table_names: Optional list of actual table names from initial_state.
                            These are the source of truth for table name registration.
             initial_state_data: Optional dict mapping table names to their records.
-                               Used for ID field matching during model registration.
+                               Used for declared-key matching and validation during
+                               model registration.
             id_fields: Optional per-table primary-key overrides (table_name -> key
                        field or ordered component list), from grading config
-                       state_checks.id_fields. Forwarded to the DB proxy and to
+                       state_checks.id_fields. Drives declared-key matching during
+                       model registration and is forwarded to the DB proxy and to
                        TauSyncToolWrapper diff-sync so key resolution is
                        data-driven; a table absent resolves to ``"id"``.
         """
@@ -1503,35 +1608,91 @@ class ToolFactory:
                 f"Class '{source.class_name}' not found in module '{module_path}': {e}",
             )
 
-    def _get_id_field_name(self, model_cls: type) -> str | None:
+    def _match_table_by_declared_key(
+        self, model_cls: type[BaseModel], claimed_tables: set[str]
+    ) -> str | None:
         """
-        Extract the ID field name from a model's get_id() method.
+        Find the seeded table whose declared primary key ``model_cls`` carries.
 
-        Parses the source code of get_id() to find 'return self.FIELD_NAME'
-        and extracts FIELD_NAME.
-
-        Examples:
-            Review.get_id → self.review_id → "review_id"
-            QualityReview.get_id → self.quality_review_id → "quality_review_id"
-            Sku.get_id → self.sku_id → "sku_id"
+        A seeded table is a candidate when every component of its key — resolved
+        from ``state_checks.id_fields``, defaulting to ``"id"`` — is both a field
+        of the model and present in the table's first record. Candidates are
+        tried with explicitly declared tables ahead of ``"id"``-defaulted ones,
+        so a model carrying both a declared table's key and an incidental ``id``
+        field claims the declared table; within each rank ``db_table_names``
+        order decides. The first candidate whose first record validates against
+        the model wins — validation is what discriminates two tables sharing a
+        key shape.
 
         Args:
-            model_cls: The model class with a get_id() method
+            model_cls: The model class to match
+            claimed_tables: Table names already claimed by an earlier model
 
         Returns:
-            The ID field name, or None if extraction fails
+            The matching table name, or None if no candidate validates
         """
-        import inspect
+        declared: list[tuple[str, TableKey, dict[str, Any]]] = []
+        defaulted: list[tuple[str, TableKey, dict[str, Any]]] = []
+        for table in self.db_table_names:
+            if table in claimed_tables:
+                continue
+            records = self._initial_state_data.get(table, [])
+            if not records:
+                continue
+            key = table_key(table, self.id_fields)
+            if any(f not in model_cls.model_fields or f not in records[0] for f in key.fields):
+                continue
+            rank = declared if self.id_fields.get(table) else defaulted
+            rank.append((table, key, records[0]))
 
-        try:
-            source = inspect.getsource(model_cls.get_id)
-            for line in source.split("\n"):
-                line = line.strip()
-                if line.startswith("return self."):
-                    return line.replace("return self.", "").strip()
-        except (TypeError, OSError):
-            pass
+        for table, key, record in declared + defaulted:
+            try:
+                model_cls.model_validate(record)
+            except Exception:
+                logger.debug(
+                    f"Declared key matched but validation failed: {model_cls.__name__} vs '{table}'"
+                )
+                continue
+            logger.info(
+                f"Matched {model_cls.__name__} to '{table}' via declared key "
+                f"{list(key.fields)} + validation"
+            )
+            return table
         return None
+
+    def _report_unregistered(self, model_cls: type[BaseModel], claimed_tables: set[str]) -> None:
+        """
+        Report what becomes of a model the registration pass could not match.
+
+        The DB proxy's class-name fallback resolves many of them on first use,
+        which is a working case rather than a failure: that outcome is reported
+        at info, naming the table the proxy will reach, and only a model nothing
+        will resolve draws a warning — with the declaration that would fix it.
+
+        Args:
+            model_cls: The model class no strategy matched
+            claimed_tables: Table names already claimed by an earlier model
+        """
+        lazy_table = self._async_proxy.match_table_by_name(model_cls)
+        if lazy_table is not None:
+            logger.info(
+                f"Model {model_cls.__name__} is not registered eagerly; the DB proxy "
+                f"resolves it by class name to table '{lazy_table}' on first use"
+            )
+            return
+
+        unclaimed = {
+            t: list(table_key(t, self.id_fields).fields)
+            for t in self.db_table_names
+            if t not in claimed_tables
+        }
+        logger.warning(
+            f"Cannot match model {model_cls.__name__} "
+            f"(fields={sorted(model_cls.model_fields)}) to any table, and no table name "
+            f"matches its class name. Skipping registration. "
+            f"Unclaimed tables and their declared keys: {unclaimed}. "
+            f"Declare the intended table's key under state_checks.id_fields to register it."
+        )
 
     def _register_toolset_models(self, toolset: str) -> None:
         """
@@ -1545,23 +1706,21 @@ class ToolFactory:
         1. table_name ClassVar: If model has a table_name attribute, use it directly
            or find a table ending with that name.
 
-        2. ID field matching (universal): Extract the ID field name from get_id(),
-           then find the table whose records contain that field. This is the most
-           reliable approach as it works for ANY domain without code changes.
-           Examples:
-             Review.get_id → self.review_id → table with review_id → review_api_reviews ✅
-             QualityReview.get_id → self.quality_review_id → table with quality_review_id → content_api_quality_reviews ✅
+        2. Declared-key matching (universal): Match the model against the primary
+           key each seeded table declares under ``state_checks.id_fields``
+           (default ``"id"``), single or composite — see
+           :meth:`_match_table_by_declared_key`. Works for ANY domain without
+           code changes, since the declaration travels with the task.
 
         3. Suffix matching (only for empty tables): Falls back to suffix matching
            only for tables with no records in initial_state.
 
-        4. FAIL LOUD: If no match found, raise RuntimeError to surface the issue.
+        4. Report and skip: a model matching nothing is left unregistered — at
+           info where the DB proxy's class-name fallback will resolve it on
+           first use, at warning where nothing will.
 
         Args:
             toolset: The toolset path (e.g., 'consulting.zendesk', 'external_retail_toolset.oms')
-
-        Raises:
-            RuntimeError: If any model cannot be matched to a table
         """
         # Only register once per toolset
         if hasattr(self, "_registered_toolsets"):
@@ -1607,33 +1766,9 @@ class ToolFactory:
                                 )
                                 break
 
-                # Strategy 2: ID field matching (universal)
+                # Strategy 2: declared-key matching (universal)
                 if matched_table is None:
-                    id_field = self._get_id_field_name(model_cls)
-                    if id_field:
-                        # Collect all candidates with matching first key
-                        candidates = []
-                        for t in self.db_table_names:
-                            if t in claimed_tables:
-                                continue
-                            records = initial_data.get(t, [])
-                            if records and list(records[0].keys())[0] == id_field:
-                                candidates.append((t, records))
-
-                        # Always validate before claiming - prevents wrong model from claiming table
-                        for t, records in candidates:
-                            try:
-                                model_cls.model_validate(records[0])
-                                matched_table = t
-                                logger.info(
-                                    f"Matched {model_cls.__name__} to '{t}' via ID field '{id_field}' + validation"
-                                )
-                                break
-                            except Exception:
-                                logger.debug(
-                                    f"ID field matched but validation failed: {model_cls.__name__} vs '{t}'"
-                                )
-                                continue
+                    matched_table = self._match_table_by_declared_key(model_cls, claimed_tables)
 
                 # Strategy 3: Suffix matching ONLY for empty tables
                 if matched_table is None:
@@ -1666,15 +1801,10 @@ class ToolFactory:
                             )
                             break
 
-                # Strategy 4: WARN and skip (don't crash on missing optional tables)
+                # Strategy 4: report where the model lands, and skip (don't crash on
+                # missing optional tables)
                 if matched_table is None:
-                    id_field = self._get_id_field_name(model_cls) or "unknown"
-                    unclaimed = [t for t in self.db_table_names if t not in claimed_tables]
-                    logger.warning(
-                        f"Cannot match model {model_cls.__name__} (id_field={id_field}) "
-                        f"to any table. Skipping registration. "
-                        f"Available unclaimed: {unclaimed}"
-                    )
+                    self._report_unregistered(model_cls, claimed_tables)
                     continue  # Skip this model, don't register
 
                 # Register the model with the matched table

@@ -15,7 +15,6 @@ class HTTPRequestTool(Tool):
         policy = ToolPolicy(
             timeout_s=20.0,
             category=ToolCategory.COMPUTE,
-            visibility=["agent"],
         )
         super().__init__(
             name="http_request",

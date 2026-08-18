@@ -26,12 +26,18 @@ import yaml
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import orchestrator as orchestrator_module
 from tolokaforge.core.conductor import InMemoryConductor
+from tolokaforge.core.grading.config_validation import (
+    AdapterHashSource,
+    HashSourceLayer,
+    SuppliedSourceState,
+)
 from tolokaforge.core.models import (
     EvaluationConfig,
     GradingFindingSeverity,
     ModelConfig,
     OrchestratorConfig,
     RunConfig,
+    TaskConfig,
 )
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
@@ -100,6 +106,26 @@ A_GOLDEN_REPLAY = {
     "state_checks": {"hash": {"enabled": True, "golden_actions": [{"name": "http_request"}]}},
 }
 
+# A declaration held against the state the task seeds: two rows ``account_id`` alone
+# cannot tell apart, keyed by the composite that can. The relaxed twin declares a
+# component no seeded record carries, which the escape hatch downgrades on both gates.
+A_KEYED_STATE: dict[str, Any] = {
+    "combine": {"weights": {"state_checks": 1.0}},
+    "state_checks": {
+        "jsonpaths": [{"path": "$.db.positions[0].qty", "equals": 5}],
+        "id_fields": {"positions": ["account_id", "symbol"]},
+    },
+}
+
+A_RELAXED_DEFECTIVE_KEY: dict[str, Any] = {
+    "combine": {"weights": {"state_checks": 1.0}},
+    "state_checks": {
+        "jsonpaths": [{"path": "$.db.positions[0].qty", "equals": 5}],
+        "id_fields": {"positions": ["account_id", "ticker"]},
+        "relaxed_validation": True,
+    },
+}
+
 # The frozen-core adapter convention #911 was filed for: hash grading on, nothing
 # declared to compare against, the source living in fixtures the block never names.
 AN_ADAPTER_SUPPLIED_HASH = {
@@ -121,10 +147,21 @@ _MCP_TOOLS_FIXTURE = [
 
 
 def _write_builtin_task(root: Path, task_id: str, grading: dict[str, Any]) -> None:
-    """A task whose one tool is a builtin — a closed schema the gate can read."""
+    """A task whose one tool is a builtin — a closed schema the gate can read.
+
+    It seeds a table, because a block reading the trial's database is authorable only
+    on a task that provisions one and several of these fixtures enable the hash.
+    """
     task_dir = root / "tasks" / task_id
     task_dir.mkdir(parents=True)
-    _write_task_yaml(task_dir, task_id, {"agent": {"enabled": ["http_request"]}}, grading)
+    (task_dir / "initial_state.json").write_text(json.dumps({"widgets": [{"id": "W1"}]}))
+    _write_task_yaml(
+        task_dir,
+        task_id,
+        {"agent": {"enabled": ["http_request"]}},
+        grading,
+        initial_state="initial_state.json",
+    )
 
 
 def _write_mcp_task(root: Path, task_id: str, grading: dict[str, Any]) -> None:
@@ -168,6 +205,29 @@ def _write_replaying_task(root: Path, task_id: str, *, mcp_server: str | None) -
     )
 
 
+def _write_keyed_task(root: Path, task_id: str, grading: dict[str, Any]) -> None:
+    """A task seeding two rows one component alone cannot key, and its declaration."""
+    task_dir = root / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    (task_dir / "initial_state.json").write_text(
+        json.dumps(
+            {
+                "positions": [
+                    {"account_id": "A1", "symbol": "AAPL", "qty": 5},
+                    {"account_id": "A1", "symbol": "MSFT", "qty": 7},
+                ]
+            }
+        )
+    )
+    _write_task_yaml(
+        task_dir,
+        task_id,
+        {"agent": {"enabled": ["http_request"]}},
+        grading,
+        initial_state="initial_state.json",
+    )
+
+
 def _write_gradeless_task(root: Path, task_id: str) -> None:
     """A task naming no grading source at all: no ``grading:`` key, no sibling file.
 
@@ -182,6 +242,26 @@ def _write_gradeless_task(root: Path, task_id: str) -> None:
                 "task_id": task_id,
                 "description": f"pack {task_id}",
                 "tools": {"agent": {"enabled": ["http_request"]}},
+            }
+        )
+    )
+
+
+def _write_dangling_grading_task(root: Path, task_id: str) -> None:
+    """A task naming a ``grading.yaml`` that was never written beside it.
+
+    Nothing else about the pack is unusual — its one tool is the builtin every clean
+    pack here declares — so the only thing the gate can refuse it for is the dangling ref.
+    """
+    task_dir = root / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "task_id": task_id,
+                "description": f"pack {task_id}",
+                "tools": {"agent": {"enabled": ["http_request"]}},
+                "grading": "grading.yaml",
             }
         )
     )
@@ -376,6 +456,33 @@ def test_a_task_declaring_no_grading_source_aborts_before_the_first_trial(tmp_pa
     message = str(excinfo.value)
     assert "TASK-NO-GRADING-SOURCE" in message, message
     assert "`grading:`" in message, message
+    assert "TASK-B-CLEAN" not in message, message
+
+
+def test_a_task_whose_declared_grading_file_is_absent_aborts_before_the_first_trial(
+    tmp_path: Path,
+) -> None:
+    """A ``grading:`` ref with no file at it costs the run the same as naming none.
+
+    ``get_grading_config`` opens the path the task names while artifacts are written —
+    the last phase of a trial whose tokens are already spent — and the gate used to wave
+    such a pack through, because a declared path was taken as a source without anyone
+    looking for the file. The clean sibling is the control: a gate that refused every
+    pack would abort this run identically without it.
+    """
+    root = tmp_path / "pack"
+    _write_dangling_grading_task(root, "TASK-DANGLING-GRADING")
+    _write_builtin_task(root, "TASK-B-CLEAN", CLEAN)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+
+    with pytest.raises(ValueError) as excinfo:
+        orchestrator.run()
+
+    assert conductor.call_log.runs == []
+    message = str(excinfo.value)
+    assert "TASK-DANGLING-GRADING" in message, message
+    assert str(root / "tasks" / "TASK-DANGLING-GRADING" / "grading.yaml") in message, message
+    assert "create that file" in message, message
     assert "TASK-B-CLEAN" not in message, message
 
 
@@ -632,11 +739,20 @@ class _NativeAdapterResolvingToAnExternalType(NativeAdapter):
     loader reads can reach the non-native arm on its own. ``terminal_bench`` is a
     registered adapter, so the description still passes the registration guard the
     gate resolves through.
+
+    It models an external adapter that has not implemented the hash-source hook, so it
+    answers ``unresolvable`` rather than inheriting the native "nothing beneath": the
+    pre-run gate asks the adapter instance, and inheriting an answer this stand-in has
+    no business giving would turn both locks below into refusals.
     """
 
     def to_task_description(self, task_id: str) -> TaskDescription:
         description = super().to_task_description(task_id)
         return description.model_copy(update={"adapter_type": "terminal_bench"})
+
+    @classmethod
+    def grading_hash_source_layer(cls, task: TaskConfig, task_dir: Path) -> HashSourceLayer:
+        return HashSourceLayer.unresolvable()
 
 
 def test_a_gradeless_pack_an_adapter_answers_for_itself_reaches_its_trials(
@@ -697,6 +813,126 @@ def test_an_enabled_sourceless_hash_an_adapter_supplies_reaches_its_trials(
     }
     reason = warned[("TASK-ADAPTER-HASH", "state_checks.hash.enabled")]
     assert "an external adapter may compute the source" in reason
+    assert len(conductor.call_log.runs) == 1
+
+
+_A_FIXTURE_THE_ADAPTER_READS = "fixtures/golden_actions.json"
+
+
+def _an_adapter_supplying(state: SuppliedSourceState) -> type[NativeAdapter]:
+    """An adapter that answers the hash-source question with a fixture in *state*."""
+
+    class _AnAdapterSupplyingItsOwnHashSource(NativeAdapter):
+        @classmethod
+        def grading_hash_source_layer(cls, task: TaskConfig, task_dir: Path) -> HashSourceLayer:
+            return HashSourceLayer(
+                supplied=AdapterHashSource(where=_A_FIXTURE_THE_ADAPTER_READS, state=state)
+            )
+
+    return _AnAdapterSupplyingItsOwnHashSource
+
+
+def test_a_hash_source_the_adapter_has_lost_refuses_the_run_before_any_trial(
+    tmp_path: Path,
+) -> None:
+    """The lost-fixture blind spot is closed at the gate that spends the tokens.
+
+    The same bare block as the pass above, but the adapter now says the fixture it
+    grades against is gone. Nothing downstream can recover: every trial would be paid
+    for and then take no hash verdict. So the run is refused before the first one, and
+    the refusal names the fixture, because the adapter's vocabulary is the only place
+    an author can go and fix it.
+    """
+    root = tmp_path / "pack"
+    _write_builtin_task(root, "TASK-LOST-HASH", AN_ADAPTER_SUPPLIED_HASH)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+    orchestrator.adapter = _an_adapter_supplying(SuppliedSourceState.MISSING)(
+        {"task_packs": [str(root)], "tasks_glob": "**/task.yaml"}
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        orchestrator.run()
+
+    assert _A_FIXTURE_THE_ADAPTER_READS in str(excinfo.value)
+    assert "missing" in str(excinfo.value)
+    assert conductor.call_log.runs == []
+
+
+def test_the_same_pack_reaches_its_trials_when_the_adapter_supplies_the_source(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The other half: an answered layer is checked, so a healthy pack draws nothing.
+
+    Same pack, same gate, one fact different — the fixture is there. Without this the
+    refusal above would be satisfied by a gate that refuses every pack an adapter
+    answers for, and the hash block would draw no skip either, because the question
+    was answered rather than left open.
+    """
+    root = tmp_path / "pack"
+    _write_builtin_task(root, "TASK-SUPPLIED-HASH", AN_ADAPTER_SUPPLIED_HASH)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+    orchestrator.adapter = _an_adapter_supplying(SuppliedSourceState.USABLE)(
+        {"task_packs": [str(root)], "tasks_glob": "**/task.yaml"}
+    )
+
+    with caplog.at_level(logging.WARNING):
+        orchestrator.run()
+
+    assert [
+        record.where
+        for record in caplog.records
+        if "could not check" in record.getMessage() and record.where == "state_checks.hash.enabled"
+    ] == []
+    assert len(conductor.call_log.runs) == 1
+
+
+def test_a_declaration_the_seeded_state_answers_draws_no_unchecked_line(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The pre-run gate resolves the seeded tables rather than leaving them defaulted.
+
+    Left defaulted the rule would report every native pack's declaration as something
+    nobody could check — a "not checked" warning on every run whose pack declares
+    ``id_fields``, for a check that had in fact already run one frame earlier while the
+    task description was built.
+    """
+    root = tmp_path / "pack"
+    _write_keyed_task(root, "TASK-KEYED", A_KEYED_STATE)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+
+    with caplog.at_level(logging.WARNING):
+        orchestrator.run()
+
+    assert [
+        record.where for record in caplog.records if "could not check" in record.getMessage()
+    ] == []
+    assert len(conductor.call_log.runs) == 1
+
+
+def test_the_gates_rule_does_run_on_a_pack_the_description_build_lets_through(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The reachability half: silence above must mean checked, not skipped.
+
+    A strict defect aborts inside ``to_task_description`` before the gate's rule is
+    reached, so the only pack that proves the rule runs on this path is one the
+    description build lets through — a relaxed defective declaration, which both gates
+    downgrade to a warning. The gate's own logger emitting it is what says the rule ran
+    against the seeded tables rather than being skipped for want of them.
+    """
+    root = tmp_path / "pack"
+    _write_keyed_task(root, "TASK-RELAXED-KEY", A_RELAXED_DEFECTIVE_KEY)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+
+    with caplog.at_level(logging.WARNING):
+        orchestrator.run()
+
+    from_the_gates_rule = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "tolokaforge.core.grading.config_validation"
+    ]
+    assert any("'ticker'" in message for message in from_the_gates_rule), from_the_gates_rule
     assert len(conductor.call_log.runs) == 1
 
 

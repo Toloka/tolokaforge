@@ -14,7 +14,6 @@ class CalculatorTool(Tool):
         policy = ToolPolicy(
             timeout_s=5.0,
             category=ToolCategory.COMPUTE,
-            visibility=["agent"],
         )
         super().__init__(
             name="calculator",

@@ -24,7 +24,13 @@ import pytest
 
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
-from tolokaforge.core.models import Grade, GradingConfig, Trajectory
+from tolokaforge.core.models import (
+    Grade,
+    GradingConfig,
+    Message,
+    MessageRole,
+    Trajectory,
+)
 
 pytestmark = [pytest.mark.unit, pytest.mark.grading]
 
@@ -80,7 +86,9 @@ def test_a_config_weighting_its_only_scored_component_to_zero_names_the_share() 
 
     The two component assertions are what stop this from locking the empty-scored-set cell a
     second time: with ``transcript_rules`` unscored the sum-to-zero clause is unreachable and
-    the reason below would come from the other branch entirely.
+    the reason below would come from the other branch entirely. The trial therefore carries an
+    assistant turn — a timeline with no events leaves ``transcript_rules`` unscored on either
+    substrate, which is that same unreachable cell.
     """
     grade = GradingEngine(
         GradingConfig(
@@ -108,7 +116,7 @@ def test_a_config_weighting_its_only_scored_component_to_zero_names_the_share() 
             trial_index=0,
             start_ts=_FIXTURE_TIMESTAMP,
             end_ts=_FIXTURE_TIMESTAMP,
-            messages=[],
+            messages=[Message(role=MessageRole.ASSISTANT, content="One turn, within the limit.")],
         ),
         {},
     )

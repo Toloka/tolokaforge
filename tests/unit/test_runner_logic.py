@@ -1,7 +1,7 @@
 """Unit tests for tolokaforge/core/runner.py — TrialRunner logic.
 
-Covers: constructor, rate limit detection, tool argument normalization,
-completion detection, and basic run loop mechanics.
+Covers: constructor, rate limit detection, tool argument normalization, who
+ends a conversational trial, and basic run loop mechanics.
 """
 
 import time
@@ -21,6 +21,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.runner import TrialRunner
+from tolokaforge.tools.registry import ToolResult
 
 pytestmark = pytest.mark.unit
 
@@ -32,6 +33,17 @@ pytestmark = pytest.mark.unit
 def _make_tool_executor() -> MagicMock:
     """Create a mock ToolExecutor."""
     return MagicMock()
+
+
+class _EchoingUserToolExecutor:
+    """A user-side executor that answers every call, satisfying ``ToolExecuting``.
+
+    Real rather than a ``MagicMock`` because the runner records what it returns and
+    ``RecordedToolCall`` refuses a mock's attributes for ``status`` and ``output``.
+    """
+
+    def execute(self, tool_name: str, arguments: dict | None = None, *, call_id: str) -> ToolResult:
+        return ToolResult(success=True, output=f"{tool_name} ran")
 
 
 def _make_user_simulator() -> MagicMock:
@@ -62,7 +74,7 @@ def _make_agent_client(responses: list[GenerationResult] | None = None) -> Magic
         client.generate.side_effect = responses
     else:
         client.generate.return_value = GenerationResult(
-            text="I've completed the task. ###STOP###",
+            text="I've completed the task.",
             tool_calls=[],
             usage=Usage(prompt_tokens=100, completion_tokens=50),
             cost_usd=0.01,
@@ -263,38 +275,65 @@ class TestNormalizeToolArguments:
 
 
 # ===================================================================
-# _is_done
+# The agent's own text never terminates a conversational trial
 # ===================================================================
 
 
 @pytest.mark.unit
-class TestIsDone:
-    """The completion marker is matched whatever case the agent emitted it in."""
+class TestAgentTextNeverTerminates:
+    """``###STOP###`` is the user simulator's exit token, read only from the
+    simulator's own replies.
 
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "Here is the result. ###STOP###",
-            "###STOP###",
-            "###stop###",
-            "###Stop###",
-            "###STOP### and some trailing chatter",
-        ],
-    )
-    def test_marker_present_in_any_case(self, text: str) -> None:
-        assert _make_runner()._is_done(text) is True
+    An agent turn carrying that text — quoting the instruction back at the user,
+    say — is dispatched to the user actor like any other tool-call-free turn, and
+    the trial ends when the user closes it or the turn budget runs out.
+    """
 
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "Task is complete, all done.",
-            "",
-            "###STOP",
-            "##STOP##",
-        ],
-    )
-    def test_no_marker(self, text: str) -> None:
-        assert _make_runner()._is_done(text) is False
+    def test_the_exit_token_in_agent_text_is_dispatched_to_the_user(self) -> None:
+        agent = _make_agent_client(
+            [
+                GenerationResult(
+                    text="When the refund lands, reply with ###STOP### and I'll close the ticket.",
+                    tool_calls=[],
+                    usage=Usage(prompt_tokens=10, completion_tokens=5),
+                ),
+            ]
+        )
+        user_sim = _make_user_simulator()
+
+        traj = _make_runner(agent_client=agent, user_simulator=user_sim).run(
+            "System", "Where is my refund?"
+        )
+
+        assert user_sim.reply.call_count == 1
+        assert traj.termination_reason == TerminationReason.USER_STOP
+
+    def test_a_tool_call_sharing_that_turn_runs_and_is_recorded(self) -> None:
+        agent = _make_agent_client(
+            [
+                GenerationResult(
+                    text="Reply with ###STOP### once you see the refund.",
+                    tool_calls=[ToolCall(id="tc1", name="lookup_order", arguments={"id": "42"})],
+                    usage=Usage(prompt_tokens=10, completion_tokens=5),
+                ),
+                GenerationResult(
+                    text="The refund is posted.",
+                    tool_calls=[],
+                    usage=Usage(prompt_tokens=10, completion_tokens=5),
+                ),
+            ]
+        )
+        tool_exec = _make_tool_executor()
+        tool_exec.execute.return_value = ToolResult(success=True, output="order 42: refunded")
+
+        traj = _make_runner(agent_client=agent, tool_executor=tool_exec).run(
+            "System", "Where is my refund?"
+        )
+
+        assert [(record.tool_name, record.arguments) for record in traj.tool_log] == [
+            ("lookup_order", {"id": "42"})
+        ]
+        assert traj.termination_reason == TerminationReason.USER_STOP
 
 
 # ===================================================================
@@ -307,7 +346,7 @@ class TestTrialRunnerRun:
     """Tests for the main run() method."""
 
     def test_agent_response_then_user_stop(self) -> None:
-        """Agent responds without a completion marker, user sends ###STOP###."""
+        """Agent responds with plain text; the user closes the dialogue."""
         agent = _make_agent_client(
             [
                 GenerationResult(
@@ -473,7 +512,7 @@ class TestTrialRunnerRun:
         """Simulator reply with both tool_calls and text-glued ``###STOP###``.
 
         The stop-token strip must not drop the ``tool_calls`` — they still
-        need to reach ``ActionEvaluator`` for required-action tracking.
+        need to reach the transcript-rules evaluator for required-action matching.
         """
         sim_tool_call = ToolCall(id="uc1", name="user_lookup", arguments={"id": "42"})
         agent = _make_agent_client(
@@ -497,7 +536,14 @@ class TestTrialRunnerRun:
                 tool_calls=[sim_tool_call],
             ),
         ]
-        runner = _make_runner(agent_client=agent, user_simulator=user_sim)
+        # A trial whose simulator can call a tool is a trial that was built one an
+        # executor: the two are handed over together, and the runner refuses the
+        # half-built shape rather than dropping the calls this test is about.
+        runner = _make_runner(
+            agent_client=agent,
+            user_simulator=user_sim,
+            user_tool_executor=_EchoingUserToolExecutor(),
+        )
         traj = runner.run("System", "Hi")
 
         assert traj.termination_reason == TerminationReason.USER_STOP
@@ -514,7 +560,7 @@ class TestTrialRunnerRun:
         agent = _make_agent_client(
             [
                 GenerationResult(
-                    text="###STOP###",
+                    text="All done.",
                     tool_calls=[],
                     usage=Usage(prompt_tokens=200, completion_tokens=100),
                     cost_usd=0.05,
@@ -613,7 +659,7 @@ class TestTrialRunnerRun:
         agent = _make_agent_client(
             [
                 GenerationResult(
-                    text="###STOP###",
+                    text="All done.",
                     tool_calls=[],
                     usage=Usage(prompt_tokens=10, completion_tokens=5),
                 ),
@@ -631,8 +677,14 @@ class TestTrialRunnerRun:
         assert traj.status == TrialStatus.TIMEOUT
 
     def test_agent_error_terminates(self) -> None:
-        """Agent API error → ERROR termination."""
-        agent = MagicMock()
+        """Agent API error → ERROR termination.
+
+        Uses ``_make_agent_client`` so ``classify_loop_error`` is wired to the
+        real helper — the runner's initialization branch routes the opening
+        exception through the classifier to keep pricing consistent between
+        opening-generation faults and mid-loop faults.
+        """
+        agent = _make_agent_client()
         agent.generate.side_effect = Exception("Connection failed")
 
         runner = _make_runner(agent_client=agent)
@@ -727,7 +779,7 @@ class TestTrialRunnerRun:
         agent = _make_agent_client(
             [
                 GenerationResult(
-                    text="###STOP###",
+                    text="All done.",
                     tool_calls=[],
                     usage=Usage(prompt_tokens=10, completion_tokens=5),
                 ),
@@ -744,7 +796,7 @@ class TestTrialRunnerRun:
         agent = _make_agent_client(
             [
                 GenerationResult(
-                    text="###STOP###",
+                    text="All done.",
                     tool_calls=[],
                     usage=Usage(prompt_tokens=10, completion_tokens=5),
                 ),
@@ -765,7 +817,7 @@ class TestTrialRunnerRun:
                 cost_usd=0.01,
             ),
             GenerationResult(
-                text="Part 2. ###STOP###",
+                text="Part 2.",
                 tool_calls=[],
                 usage=Usage(prompt_tokens=20, completion_tokens=10),
                 cost_usd=0.02,
@@ -794,6 +846,27 @@ class TestTrialRunnerRun:
 class TestUserSimulatorIntegration:
     """Tests for user simulator message flow in TrialRunner."""
 
+    def test_a_stop_token_in_the_opening_reply_is_seeded_literally(self) -> None:
+        """Turn 0 reads ``###STOP###`` as text, not as a terminator.
+
+        The opening turn shares the tool-call half of a user turn and nothing
+        else. Routed through the dispatch path, this reply would deliver only
+        the pre-token text and arm the pending stop — so the trial would end one
+        agent turn later, for every conversational pack in the field.
+        """
+        user_sim = MagicMock()
+        user_sim.reply.return_value = GenerationResult(
+            text="I need help with my order ###STOP###",
+            tool_calls=[],
+        )
+        runner = _make_runner(user_simulator=user_sim)
+
+        traj = runner.run("System", "")
+
+        assert traj.messages[0].role == MessageRole.USER
+        assert traj.messages[0].content == "I need help with my order ###STOP###"
+        assert runner._user_stop_pending is False
+
     def test_empty_bootstrap_first_message_fails_loud(self) -> None:
         """A simulator bootstrap that returns empty/whitespace text raises.
 
@@ -807,6 +880,26 @@ class TestUserSimulatorIntegration:
             text="   \n\t ",
             tool_calls=[],
         )
+        runner = _make_runner(user_simulator=user_sim)
+
+        with pytest.raises(RuntimeError, match="empty first message"):
+            runner._bootstrap_via_simulator()
+
+    def test_a_filler_substituted_bootstrap_refuses(self) -> None:
+        """A tool-call-only opening the LLM client filled with ``"Let me check that."``
+        refuses instead of seeding the transcript with the engine's own words.
+
+        The filler is the only text the engine contributes to a user turn.
+        Accepting it as the bootstrap seed would grade the agent against the
+        engine's fixed placeholder rather than what the task adapter authored.
+        """
+        filled = GenerationResult(
+            text="Let me check that.",
+            tool_calls=[ToolCall(id="call_1", name="lookup_order", arguments={"id": "A-1"})],
+        )
+        filled.filler_substituted = True
+        user_sim = MagicMock()
+        user_sim.reply.return_value = filled
         runner = _make_runner(user_simulator=user_sim)
 
         with pytest.raises(RuntimeError, match="empty first message"):

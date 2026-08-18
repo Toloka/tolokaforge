@@ -1,0 +1,664 @@
+task_id: lot_ops_01
+trial_index: 2
+category: multi_service
+description: A shop-floor operator reports a contamination issue on a production lot.
+  The agent must look the lot up over the manufacturing REST API, open a corrective-action
+  record with the right reason code, and write an operator-facing completion report.
+grading_config:
+  combine:
+    method: weighted
+    weights:
+      state_checks: 0.5
+      trace_checks: 0.2
+      llm_judge: 0.3
+    pass_threshold: 0.5
+  state_checks:
+    jsonpaths: []
+    hash: null
+    db_probes:
+    - name: contamination_ca_opened
+      dsn: postgresql://grader:grader_pw@app-db:5432/mfg
+      query: SELECT reason_code, status FROM corrective_actions WHERE lot_id = 7
+      expect:
+      - path: $.rows[0].reason_code
+        equals: CAPA-01
+        description: corrective action uses the contamination reason code
+      - path: $.rows[0].status
+        equals: open
+        description: the action is open
+      - path: $.row_count
+        equals: 1
+        description: exactly one corrective action exists for lot 7
+      description: an open contamination corrective action exists for lot 7 in the
+        substrate
+    numeric_string_fields: []
+    id_fields: {}
+    relaxed_validation: false
+  transcript_rules: null
+  trace_checks:
+    constraints:
+    - id: the_reason_code_posted_was_read_from_the_catalog
+      description: the reason code the agent posted came back in a successful API
+        result before the action was opened, so it was looked up rather than guessed
+      weight: 1.0
+      on_missing: null
+      severity: scored
+      within: null
+      bind:
+        match:
+          kind: tool_call
+          tool:
+            equals: http_request
+            equals_ci: null
+            contains: null
+            contains_ci: null
+            not_equals: null
+            regex: null
+            gt: null
+            gte: null
+            lt: null
+            lte: null
+            in_: null
+            not_in: null
+            len_gt: null
+            len_gte: null
+            exists: null
+            equals_binding: null
+            contains_binding: null
+          executor: null
+          args:
+            method:
+              equals: POST
+              equals_ci: null
+              contains: null
+              contains_ci: null
+              not_equals: null
+              regex: null
+              gt: null
+              gte: null
+              lt: null
+              lte: null
+              in_: null
+              not_in: null
+              len_gt: null
+              len_gte: null
+              exists: null
+              equals_binding: null
+              contains_binding: null
+            url:
+              equals: null
+              equals_ci: null
+              contains: null
+              contains_ci: null
+              not_equals: null
+              regex: /lots/[0-9]+/corrective-actions$
+              gt: null
+              gte: null
+              lt: null
+              lte: null
+              in_: null
+              not_in: null
+              len_gt: null
+              len_gte: null
+              exists: null
+              equals_binding: null
+              contains_binding: null
+          status: null
+          result: null
+          text: null
+        values:
+          code:
+            field: args.json.reason_code
+            pattern: null
+        on_unbound: fail
+      require:
+        present: null
+        absent: null
+        count: null
+        before:
+          left:
+            quantifier: any
+            match:
+              kind: tool_call
+              tool:
+                equals: http_request
+                equals_ci: null
+                contains: null
+                contains_ci: null
+                not_equals: null
+                regex: null
+                gt: null
+                gte: null
+                lt: null
+                lte: null
+                in_: null
+                not_in: null
+                len_gt: null
+                len_gte: null
+                exists: null
+                equals_binding: null
+                contains_binding: null
+              executor: null
+              args: null
+              status:
+                equals: success
+                equals_ci: null
+                contains: null
+                contains_ci: null
+                not_equals: null
+                regex: null
+                gt: null
+                gte: null
+                lt: null
+                lte: null
+                in_: null
+                not_in: null
+                len_gt: null
+                len_gte: null
+                exists: null
+                equals_binding: null
+                contains_binding: null
+              result:
+                equals: null
+                equals_ci: null
+                contains: null
+                contains_ci: null
+                not_equals: null
+                regex: null
+                gt: null
+                gte: null
+                lt: null
+                lte: null
+                in_: null
+                not_in: null
+                len_gt: null
+                len_gte: null
+                exists: null
+                equals_binding: null
+                contains_binding: code
+              text: null
+          right:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool:
+                equals: http_request
+                equals_ci: null
+                contains: null
+                contains_ci: null
+                not_equals: null
+                regex: null
+                gt: null
+                gte: null
+                lt: null
+                lte: null
+                in_: null
+                not_in: null
+                len_gt: null
+                len_gte: null
+                exists: null
+                equals_binding: null
+                contains_binding: null
+              executor: null
+              args:
+                method:
+                  equals: POST
+                  equals_ci: null
+                  contains: null
+                  contains_ci: null
+                  not_equals: null
+                  regex: null
+                  gt: null
+                  gte: null
+                  lt: null
+                  lte: null
+                  in_: null
+                  not_in: null
+                  len_gt: null
+                  len_gte: null
+                  exists: null
+                  equals_binding: null
+                  contains_binding: null
+                url:
+                  equals: null
+                  equals_ci: null
+                  contains: null
+                  contains_ci: null
+                  not_equals: null
+                  regex: /lots/[0-9]+/corrective-actions$
+                  gt: null
+                  gte: null
+                  lt: null
+                  lte: null
+                  in_: null
+                  not_in: null
+                  len_gt: null
+                  len_gte: null
+                  exists: null
+                  equals_binding: null
+                  contains_binding: null
+              status: null
+              result: null
+              text: null
+        immediately_before: null
+        absent_before: null
+        absent_between: null
+        all_of: null
+        any_of: null
+        negate: null
+    - id: the_lot_was_read_before_the_action_was_opened
+      description: the lot the action was opened against was read over the API first,
+        so the action is not opened against a lot the agent never looked at
+      weight: 1.0
+      on_missing: null
+      severity: scored
+      within: null
+      bind:
+        match:
+          kind: tool_call
+          tool:
+            equals: http_request
+            equals_ci: null
+            contains: null
+            contains_ci: null
+            not_equals: null
+            regex: null
+            gt: null
+            gte: null
+            lt: null
+            lte: null
+            in_: null
+            not_in: null
+            len_gt: null
+            len_gte: null
+            exists: null
+            equals_binding: null
+            contains_binding: null
+          executor: null
+          args:
+            method:
+              equals: POST
+              equals_ci: null
+              contains: null
+              contains_ci: null
+              not_equals: null
+              regex: null
+              gt: null
+              gte: null
+              lt: null
+              lte: null
+              in_: null
+              not_in: null
+              len_gt: null
+              len_gte: null
+              exists: null
+              equals_binding: null
+              contains_binding: null
+            url:
+              equals: null
+              equals_ci: null
+              contains: null
+              contains_ci: null
+              not_equals: null
+              regex: /lots/[0-9]+/corrective-actions$
+              gt: null
+              gte: null
+              lt: null
+              lte: null
+              in_: null
+              not_in: null
+              len_gt: null
+              len_gte: null
+              exists: null
+              equals_binding: null
+              contains_binding: null
+          status: null
+          result: null
+          text: null
+        values:
+          lot_url:
+            field: args.url
+            pattern: (http://[^/]+/lots/[0-9]+)
+        on_unbound: fail
+      require:
+        present: null
+        absent: null
+        count: null
+        before:
+          left:
+            quantifier: any
+            match:
+              kind: tool_call
+              tool:
+                equals: http_request
+                equals_ci: null
+                contains: null
+                contains_ci: null
+                not_equals: null
+                regex: null
+                gt: null
+                gte: null
+                lt: null
+                lte: null
+                in_: null
+                not_in: null
+                len_gt: null
+                len_gte: null
+                exists: null
+                equals_binding: null
+                contains_binding: null
+              executor: null
+              args:
+                method:
+                  equals: GET
+                  equals_ci: null
+                  contains: null
+                  contains_ci: null
+                  not_equals: null
+                  regex: null
+                  gt: null
+                  gte: null
+                  lt: null
+                  lte: null
+                  in_: null
+                  not_in: null
+                  len_gt: null
+                  len_gte: null
+                  exists: null
+                  equals_binding: null
+                  contains_binding: null
+                url:
+                  equals: null
+                  equals_ci: null
+                  contains: null
+                  contains_ci: null
+                  not_equals: null
+                  regex: null
+                  gt: null
+                  gte: null
+                  lt: null
+                  lte: null
+                  in_: null
+                  not_in: null
+                  len_gt: null
+                  len_gte: null
+                  exists: null
+                  equals_binding: lot_url
+                  contains_binding: null
+              status: null
+              result: null
+              text: null
+          right:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool:
+                equals: http_request
+                equals_ci: null
+                contains: null
+                contains_ci: null
+                not_equals: null
+                regex: null
+                gt: null
+                gte: null
+                lt: null
+                lte: null
+                in_: null
+                not_in: null
+                len_gt: null
+                len_gte: null
+                exists: null
+                equals_binding: null
+                contains_binding: null
+              executor: null
+              args:
+                method:
+                  equals: POST
+                  equals_ci: null
+                  contains: null
+                  contains_ci: null
+                  not_equals: null
+                  regex: null
+                  gt: null
+                  gte: null
+                  lt: null
+                  lte: null
+                  in_: null
+                  not_in: null
+                  len_gt: null
+                  len_gte: null
+                  exists: null
+                  equals_binding: null
+                  contains_binding: null
+                url:
+                  equals: null
+                  equals_ci: null
+                  contains: null
+                  contains_ci: null
+                  not_equals: null
+                  regex: /lots/[0-9]+/corrective-actions$
+                  gt: null
+                  gte: null
+                  lt: null
+                  lte: null
+                  in_: null
+                  not_in: null
+                  len_gt: null
+                  len_gte: null
+                  exists: null
+                  equals_binding: null
+                  contains_binding: null
+              status: null
+              result: null
+              text: null
+        immediately_before: null
+        absent_before: null
+        absent_between: null
+        all_of: null
+        any_of: null
+        negate: null
+    - id: exactly_one_corrective_action_was_opened
+      description: 'the corrective action is opened once: a repeated POST writes a
+        duplicate record the operator has to reconcile'
+      weight: 1.0
+      on_missing: null
+      severity: gate
+      within: null
+      bind: null
+      require:
+        present: null
+        absent: null
+        count:
+          match:
+            kind: tool_call
+            tool:
+              equals: http_request
+              equals_ci: null
+              contains: null
+              contains_ci: null
+              not_equals: null
+              regex: null
+              gt: null
+              gte: null
+              lt: null
+              lte: null
+              in_: null
+              not_in: null
+              len_gt: null
+              len_gte: null
+              exists: null
+              equals_binding: null
+              contains_binding: null
+            executor: null
+            args:
+              method:
+                equals: POST
+                equals_ci: null
+                contains: null
+                contains_ci: null
+                not_equals: null
+                regex: null
+                gt: null
+                gte: null
+                lt: null
+                lte: null
+                in_: null
+                not_in: null
+                len_gt: null
+                len_gte: null
+                exists: null
+                equals_binding: null
+                contains_binding: null
+              url:
+                equals: null
+                equals_ci: null
+                contains: null
+                contains_ci: null
+                not_equals: null
+                regex: /lots/[0-9]+/corrective-actions$
+                gt: null
+                gte: null
+                lt: null
+                lte: null
+                in_: null
+                not_in: null
+                len_gt: null
+                len_gte: null
+                exists: null
+                equals_binding: null
+                contains_binding: null
+            status: null
+            result: null
+            text: null
+          min: null
+          max: 1
+        before: null
+        immediately_before: null
+        absent_before: null
+        absent_between: null
+        all_of: null
+        any_of: null
+        negate: null
+    alternatives: null
+  llm_judge:
+    rubric:
+      criteria:
+      - id: names_lot
+        description: |
+          The report identifies the affected lot (LOT-1007 or lot 7).
+        weight: 1.0
+        kind: binary
+        required: true
+        expected: null
+      - id: states_reason
+        description: |
+          The report states the corrective action was opened for a contamination issue (the reason it was raised), not a generic or unrelated cause.
+        weight: 1.0
+        kind: graded
+        required: false
+        expected: null
+      - id: operator_facing
+        description: |
+          The report reads as a concise, clear operator-facing completion note rather than raw API output or a debug dump.
+        weight: 0.5
+        kind: graded
+        required: false
+        expected: null
+      reference: |
+        The operator reported a contamination hit on lot LOT-1007 (lot_id 7) and
+        asked for a corrective action to be opened and a short completion report
+        written under submissions/. A correct report names the lot, states that a
+        corrective action was opened for a contamination issue, and reads as a
+        note an operator could hand to a shift lead.
+    customization: null
+  custom_checks: null
+tools:
+  agent:
+    enabled:
+    - http_request
+    - write_file
+    http_request:
+      allowed_hosts:
+      - app-service:8000
+  user:
+    enabled: []
+policies:
+  guidance:
+  - Reach the API with the `http_request` tool against `http://app-service:8000` —
+    GET the reason-code catalog to find the contamination code before opening the
+    action; do not guess it.
+  - Open the corrective action by POSTing to the lot's corrective-actions endpoint;
+    it must reference lot 7 and the contamination reason code.
+  - Open exactly one corrective action for the lot. If the POST returns a success
+    response, do not send it again — read the response to confirm, then move on to
+    writing the completion report.
+model_config:
+  agent:
+    provider: openrouter
+    name: anthropic/claude-haiku-4-5
+    temperature: 0.0
+    max_tokens: 4096
+    seed: null
+    reasoning:
+      mode: 'off'
+      budget_tokens: null
+      effort_hint: null
+      display: visible
+    top_p: null
+    capabilities: null
+    openrouter: null
+    fallbacks: []
+    resolved:
+      effective_preset: anthropic
+      schema_sanitizer: passthrough
+      prompt_policy: none
+      content_policy: anthropic
+      response_policy: standard
+      reasoning_codec: anthropic
+      cache_policy: anthropic_ephemeral
+  user:
+    provider: openrouter
+    name: anthropic/claude-haiku-4-5
+    temperature: 0.2
+    max_tokens: null
+    seed: null
+    reasoning:
+      mode: 'off'
+      budget_tokens: null
+      effort_hint: null
+      display: visible
+    top_p: null
+    capabilities: null
+    openrouter: null
+    fallbacks: []
+    resolved:
+      effective_preset: anthropic
+      schema_sanitizer: passthrough
+      prompt_policy: none
+      content_policy: anthropic
+      response_policy: standard
+      reasoning_codec: anthropic
+      cache_policy: anthropic_ephemeral
+  judge:
+    provider: openrouter
+    name: anthropic/claude-sonnet-4-6
+    temperature: 0.0
+    max_tokens: null
+    seed: null
+    reasoning:
+      mode: 'off'
+      budget_tokens: null
+      effort_hint: null
+      display: visible
+    top_p: null
+    capabilities: null
+    openrouter: null
+    fallbacks: []
+    resolved:
+      effective_preset: anthropic
+      schema_sanitizer: passthrough
+      prompt_policy: none
+      content_policy: anthropic
+      response_policy: standard
+      reasoning_codec: anthropic
+      cache_policy: anthropic_ephemeral

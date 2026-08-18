@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.utils.secret_state import cold_secret_manager
 from tolokaforge.docker.wheel_resolver import WheelArtifact
 
 
@@ -34,6 +35,34 @@ class FakeMutatingDBClient:
     async def mutate(self, trial_id: str, table_name: str, operations: list[dict]) -> Any:
         self.mutations.append((table_name, operations))
         return SimpleNamespace(success=True)
+
+
+@pytest.fixture
+def isolated_secret_manager():
+    """A fresh default SecretManager and a cold redaction cache, restored after.
+
+    ``register_runtime_secret`` replaces the process-wide singleton, and the
+    log redactor caches its scrub set keyed by that manager's identity. Any
+    test that registers a runtime credential has to hand both back, or it
+    leaks a credential into every test that runs after it — and a second
+    registration of the same name with a different value raises.
+    """
+    with cold_secret_manager():
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_typesense_stack(monkeypatch: pytest.MonkeyPatch):
+    """Strip a developer machine's TYPESENSE_HOST / TYPESENSE_PORT from every test.
+
+    The runner resolves its TypeSense address from these variables with
+    precedence over the task's own connection details, so an exported host on
+    the machine running the suite would flip precedence under every test that
+    does not set them itself. Tests that want a stack address set the variables
+    in their own body, which always runs after fixture setup.
+    """
+    monkeypatch.delenv("TYPESENSE_HOST", raising=False)
+    monkeypatch.delenv("TYPESENSE_PORT", raising=False)
 
 
 @pytest.fixture(autouse=True)

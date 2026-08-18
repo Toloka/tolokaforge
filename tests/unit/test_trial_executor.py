@@ -165,6 +165,37 @@ class TestProvisionErrorBranches:
         assert conductor.call_log.runs == []
         assert backend.call_log.torn_down_trials, "teardown must fire after await_ready failure"
 
+    def test_register_trial_refusal_synthesises_failed_result_and_tears_down(self) -> None:
+        """A registration refusal after provisioning succeeds surfaces as
+        a synthesised PROVISION_ERROR row, not an uncaught RuntimeError.
+
+        Before the typed conversion, a runner-side refusal (e.g. the
+        search-plane gate) crossed as a bare ``RuntimeError`` and escaped
+        ``conductor.run`` uncaught. The orchestrator's queue-only path
+        dropped the trial out of ``self.results`` and inflated every rate,
+        after the retry budget burned on a deterministic refusal.
+        """
+
+        def _refuse_register(_task_id: str, _idx: int):
+            raise ProvisionError(
+                trial_id="task_registration_refused:0",
+                stage="register_trial",
+                reason="Failed to register trial with executor: search plane unusable",
+            )
+
+        backend = InMemoryRuntimeBackend()
+        conductor = InMemoryConductor(trajectory_factory=_refuse_register)
+        executor, _, _, logger = _make_executor(backend=backend, conductor=conductor)
+
+        result = executor.execute(make_trial_spec(), make_task_config())
+
+        assert result.trajectory.status == TrialStatus.ERROR
+        assert result.trajectory.termination_reason == TerminationReason.PROVISION_ERROR
+        assert result.trajectory.grade is None
+        assert backend.call_log.torn_down_trials, "teardown must fire after register_trial refusal"
+        logger.error.assert_called_once()
+        assert logger.error.call_args.args[0] == "Registration refused after provisioning"
+
 
 class TestSafeTeardown:
     """Teardown after a failed body / failed await_ready is best-effort:

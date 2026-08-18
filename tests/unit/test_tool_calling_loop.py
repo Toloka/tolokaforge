@@ -212,6 +212,73 @@ def test_each_executed_call_carries_its_own_provider_call_id():
     ]
 
 
+class _FailingTransportExecutor:
+    """A ToolExecutor-shaped seam whose transport fails on one named call.
+
+    In a Docker run the executor is the gRPC client, so a transport failure
+    raises out of ``execute`` rather than coming back as a failed ``ToolResult``.
+    A tool that fails *in band* is recorded and the loop carries on, which is why
+    that case cannot stand in for this one.
+    """
+
+    def __init__(self, raise_on: str) -> None:
+        self._raise_on = raise_on
+        self.attempted: list[str] = []
+
+    def execute(self, tool_name, arguments, *, call_id):
+        self.attempted.append(call_id)
+        if call_id == self._raise_on:
+            raise RuntimeError("runner unreachable")
+        return ToolResult(success=True, output=f"ran {tool_name}")
+
+
+def test_a_failed_call_leaves_its_turns_remaining_calls_unexecuted_and_ends_the_episode():
+    """The suffix invariant, asserted rather than assumed.
+
+    The timeline joins a call to its result by occurrence order, which is sound
+    only if the k-th declared occurrence of an id is the k-th executed one — that
+    is, if the declarations that never executed are a trailing *suffix* of the
+    trial rather than a gap in the middle. Two things make it one: a turn's calls
+    run in declaration order and stop at the first failure, and the episode stops
+    with them, so no later turn declares anything either.
+    """
+    executor = _FailingTransportExecutor(raise_on="b1")
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="",
+                tool_calls=[ToolCall(id="a1", name="query", arguments={"q": 1})],
+                usage=Usage(prompt_tokens=5),
+            ),
+            GenerationResult(
+                text="",
+                tool_calls=[
+                    ToolCall(id="b1", name="query", arguments={"q": 2}),
+                    ToolCall(id="b2", name="query", arguments={"q": 3}),
+                    ToolCall(id="b3", name="query", arguments={"q": 4}),
+                ],
+                usage=Usage(prompt_tokens=5),
+            ),
+            GenerationResult(text="never reached", usage=Usage(prompt_tokens=5)),
+        ]
+    )
+    messages: list[Message] = []
+
+    outcome = _loop(client, should_terminate=_never_terminate, executor=executor, max_turns=3).run(
+        "sys", messages, time.time()
+    )
+
+    assert executor.attempted == ["a1", "b1"]
+    assert outcome.status == TrialStatus.ERROR
+    assert outcome.termination_reason == TerminationReason.ERROR
+    assert client.calls == 2, "the episode continued past the failure and declared more calls"
+    declared = [call.id for message in messages for call in (message.tool_calls or [])]
+    assert declared == ["a1", "b1", "b2", "b3"], (
+        "the unexecuted calls must still reach the message view — they are the suffix "
+        "the join relies on being a suffix"
+    )
+
+
 def test_episode_timeout_terminates_before_first_generation():
     client = _ScriptedClient([GenerationResult(text="never", usage=Usage())])
     loop = ToolCallingLoop(

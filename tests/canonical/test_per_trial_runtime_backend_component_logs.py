@@ -9,6 +9,10 @@ publishes for per-trial containers
 underlying docker log streams are severed. A provision failure that
 happens before the router-build step (compose-up or reset-recipe) must
 leave no routers running because none were constructed on that path.
+
+Materialisation runs for real here, credential injection included, so the
+package-level ``_pin_fake_secrets`` pins the manager whose payload reaches the
+compose file.
 """
 
 from __future__ import annotations

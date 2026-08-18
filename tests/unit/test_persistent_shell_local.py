@@ -10,6 +10,7 @@ timeout. Also locks that the schema provider advertises ``command`` +
 from __future__ import annotations
 
 import os
+import resource
 import subprocess
 import time
 
@@ -25,6 +26,9 @@ from tolokaforge.runner.tool_factory import (
 from tolokaforge.tools.persistent_shell import DockerComposeBashSession, LocalBashSession
 
 pytestmark = pytest.mark.unit
+
+_FD_SETSIZE = 1024
+"""The descriptor ceiling ``select`` is compiled with; ``poll`` has none."""
 
 
 @pytest.fixture
@@ -228,3 +232,43 @@ def test_schema_advertised_when_compose_service_configured():
     assert "bash_session" in schemas
     props = schemas["bash_session"]["parameters"]["properties"]
     assert set(props) == {"command", "restart"}
+
+
+def test_a_session_works_on_a_descriptor_past_select_s_ceiling(tmp_path):
+    """A busy process hands the pty a high descriptor, and the session still runs.
+
+    ``select`` cannot name a descriptor at or above ``FD_SETSIZE`` (1024) and
+    raises ``ValueError`` when handed one, however few are actually open — so a
+    runner holding a pty and a socket per concurrent trial breaks on sessions it
+    opens late, while nowhere near ``RLIMIT_NOFILE``.
+
+    The descriptors are held open, not merely counted: the point is that the
+    session's own pty lands past the ceiling.
+    """
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    needed = _FD_SETSIZE + 64
+    if hard < needed:
+        pytest.skip(f"RLIMIT_NOFILE hard cap {hard} cannot reach {needed}")
+    resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, needed), hard))
+
+    held: list[tuple[int, int]] = []
+    session = LocalBashSession()
+    try:
+        while len(os.listdir("/proc/self/fd")) < _FD_SETSIZE + 4:
+            held.append(os.pipe())
+
+        session.open(str(tmp_path))
+        assert session._master_fd >= _FD_SETSIZE, (
+            f"the pty landed at fd {session._master_fd}, below the {_FD_SETSIZE} ceiling — "
+            "this run did not exercise the condition it is here for"
+        )
+
+        result = session.run("echo past_the_ceiling", timeout_s=10)
+        assert "past_the_ceiling" in result.output
+        assert result.timed_out is False
+    finally:
+        session.close()
+        for read_fd, write_fd in held:
+            os.close(read_fd)
+            os.close(write_fd)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))

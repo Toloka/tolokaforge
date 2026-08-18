@@ -65,7 +65,7 @@ orchestrator:
   workers: 2
   repeats: 3
   timeouts:
-    turn_s: 60
+    turn_s: 60        # declared, not yet enforced — #1147
     episode_s: 600
   max_turns: 20
 

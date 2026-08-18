@@ -1,8 +1,9 @@
 """Driving a real ``GradeTrial`` against the in-process runner servicer.
 
-:class:`ServicerBackend` runs the real ``GrpcRunnerClient.grade_trial``
-proto→dict mapping against a real servicer, so the host grader sees the dict
-production builds — no Docker, no gRPC channel.
+:class:`ServicerBackend` runs the real ``GrpcRunnerClient`` mappings against a real
+servicer — ``grade_trial``'s proto→dict and ``execute_tool``'s proto→``ToolResult`` —
+so a host grader or a trial's tool executor sees what production builds, with no
+Docker and no gRPC channel.
 :func:`register_collided_trial` stages the cheapest deterministic refusal that
 servicer can be made to produce, and :func:`produce_grading_refusal` drives the
 production grader against it and hands back what it raised — so a test that
@@ -34,6 +35,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
 from tolokaforge.core.trial_grader import GradingFailedError, RunnerRPCTrialGrader
 from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.tools.registry import ToolResult
 
 DUPLICATE_CALL_ID = "toolu_dup"
 """The ``call_id`` :func:`register_collided_trial` records twice."""
@@ -51,9 +53,18 @@ class ServicerStub:
     def GradeTrial(self, request):  # noqa: N802 — matches the gRPC stub method name
         return self._service.GradeTrial(request, self._context)
 
+    def ExecuteTool(self, request):  # noqa: N802 — matches the gRPC stub method name
+        return self._service.ExecuteTool(request, self._context)
+
 
 class ServicerBackend:
-    """``RuntimeBackend.grade_trial`` backed by the in-process servicer."""
+    """The ``RuntimeBackend`` methods a trial takes, backed by the in-process servicer.
+
+    Every one routes through the real :class:`GrpcRunnerClient`, so a caller sees the
+    proto→Python mapping production builds — including the recorded status a
+    ``ToolResult`` carries — with the channel and the container removed and nothing
+    else.
+    """
 
     def __init__(self, service: Any, context: Any) -> None:
         self._client = GrpcRunnerClient(runner_address="unused:0")
@@ -73,6 +84,23 @@ class ServicerBackend:
             termination_reason=termination_reason,
         )
 
+    def execute_tool(
+        self,
+        trial_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        executor: str = "agent",
+        *,
+        call_id: str,
+    ) -> ToolResult:
+        return self._client.execute_tool(
+            trial_id=trial_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            executor=executor,
+            call_id=call_id,
+        )
+
 
 def register_collided_trial(
     service: Any,
@@ -83,9 +111,11 @@ def register_collided_trial(
 ) -> str:
     """Register *trial_id* and record two tool calls sharing one ``call_id``.
 
-    Nothing rejects a duplicate at record time, so the collision reaches grade
-    time and the timeline cannot join a call to its result — ``GradeTrial``
-    then refuses without a live provider or a hand-written error string.
+    Nothing rejects a duplicate at record time, so the record holds two
+    occurrences of an id :func:`collided_trajectory`'s message view declares
+    once. The timeline keys the second occurrence ``<id>#2``, which matches no
+    declaration, and refuses to reconcile the two views — so ``GradeTrial``
+    refuses without a live provider or a hand-written error string.
     Returns *trial_id*.
     """
     registered = service.RegisterTrial(
@@ -137,8 +167,10 @@ def produce_grading_refusal(service: Any, context: Any) -> str:
 
 def collided_trajectory(*, task_id: str, trial_index: int = 0) -> Trajectory:
     """The transcript half of the collision staged by
-    :func:`register_collided_trial` — one assistant turn whose tool call carries
-    :data:`DUPLICATE_CALL_ID`, against two recorded results."""
+    :func:`register_collided_trial` — one assistant turn declaring
+    :data:`DUPLICATE_CALL_ID` **once**, against two recorded results. The
+    asymmetry is what makes the two views irreconcilable; a view declaring it
+    twice would join cleanly."""
     return make_trajectory(
         task_id=task_id,
         trial_index=trial_index,

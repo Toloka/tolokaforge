@@ -6,14 +6,14 @@ combine:
   pass_threshold: 0.8
 state_checks:
   jsonpaths:
-    - path: "$.filesystem['/env/fs/agent-visible/data_parser.py']"
-      contains: "replace(',', '')"
+    - path_glob: "/env/fs/agent-visible/data_parser.py"
+      contains_ci: "replace(',', '')"
       description: "Parser normalizes comma-separated numeric input"
-    - path: "$.filesystem['/env/fs/agent-visible/data_parser.py']"
-      contains: "replace('_', '')"
+    - path_glob: "/env/fs/agent-visible/data_parser.py"
+      contains_ci: "replace('_', '')"
       description: "Parser normalizes underscore-separated numeric input"
-    - path: "$.filesystem['/env/fs/agent-visible/data_parser.py']"
-      contains: "except (ValueError, TypeError)"
+    - path_glob: "/env/fs/agent-visible/data_parser.py"
+      contains_ci: "except (ValueError, TypeError)"
       description: "Parser handles malformed and null-like input safely"
     - path_glob: "/env/fs/agent-visible/submissions/*"
       contains_ci: "backward"

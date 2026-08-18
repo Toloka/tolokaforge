@@ -35,10 +35,11 @@ pytestmark = pytest.mark.unit
 
 
 class _StubTools:
-    """Minimal ToolsConfig stand-in: exposes an ``agent`` dict."""
+    """Minimal ToolsConfig stand-in: exposes an ``agent`` and a ``user`` dict."""
 
-    def __init__(self, agent: dict) -> None:
+    def __init__(self, agent: dict, user: dict | None = None) -> None:
         self.agent = agent
+        self.user = user if user is not None else {"enabled": []}
 
 
 class _StubTask:
@@ -138,6 +139,32 @@ def test_bash_session_config_without_being_enabled_does_not_trigger():
         )
     )
     assert _tasks_use_compose_variant_tools([task]) is False
+
+
+def test_a_user_declared_compose_variant_triggers_and_reads_its_own_block():
+    """The ``service:`` key is read from the block that enabled the tool.
+
+    A user-declared ``bash_session`` needs the docker CLI for the same reason the
+    agent's does. The second task is the discriminating half: the agent's block
+    names a service for a tool the agent does not enable, and the user's block
+    enables it without one — so a reader crossing the two blocks would fire on a
+    task that routes nothing.
+    """
+    routed = _StubTask(
+        tools=_StubTools(
+            agent={"enabled": []},
+            user={"enabled": ["bash_session"], "bash_session": {"service": "mb-server"}},
+        )
+    )
+    crossed = _StubTask(
+        tools=_StubTools(
+            agent={"enabled": [], "bash_session": {"service": "mb-server"}},
+            user={"enabled": ["bash_session"], "bash_session": {"timeout_s": 60}},
+        )
+    )
+
+    assert _tasks_use_compose_variant_tools([routed]) is True
+    assert _tasks_use_compose_variant_tools([crossed]) is False
 
 
 def test_no_tools_config_does_not_trigger():

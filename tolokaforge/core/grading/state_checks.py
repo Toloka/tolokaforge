@@ -81,8 +81,36 @@ def to_hashable(
 
 
 def consistent_hash(value: Hashable) -> str:
-    """Compute consistent SHA256 hash (tau-bench compatible)"""
+    """Compute consistent SHA256 hash (tau-bench compatible).
+
+    This is the CORE substrate's digest algebra: SHA-256 over ``str`` of the
+    :func:`to_hashable` tuple tree. The runner's is
+    :func:`tolokaforge.core.hash.compute_stable_hash` — same equivalence
+    relation (both fold through ``canonical_number``), different label for
+    every state — so a digest this function produced is comparable only
+    against another one it produced, and never crosses to the runner
+    substrate (``tests/canonical/test_expected_state_hash_is_not_portable.py``).
+    """
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def state_digest(state: dict[str, Any], *, numeric_string_fields: list[str] | None = None) -> str:
+    """The digest core writes a state in, for either side of one comparison.
+
+    Both sides of a hash verdict go through here, so a caller holding the expected state
+    rather than a stored digest — the ``expect_initial_state`` source — hashes it by the
+    same rule :meth:`StateChecker.check_hash` hashes the trial's state by. Two spellings
+    of this expression would let one side fold a numeric-looking string the other did
+    not, and the verdict would read as an agent failure.
+
+    The rule reaches across the substrate boundary too: this is core's algebra, the
+    runner's is :func:`tolokaforge.core.hash.compute_stable_hash`, and the two label
+    every state differently while agreeing on which states are equal — so a
+    comparison computes both sides on one substrate, and a digest never crosses to
+    the other.
+    """
+    string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
+    return consistent_hash(to_hashable(state, string_fields))
 
 
 def _tool_in_pack(name: str, tools: Collection[str]) -> str | None:
@@ -97,12 +125,12 @@ def _tool_in_pack(name: str, tools: Collection[str]) -> str | None:
 def _authored_action_name(action: object) -> str | None:
     """The name an action declares, or ``None`` where it declares no string at all.
 
-    The ``hash`` block is untyped (#730), so a name may arrive as a list or a mapping and
-    the action carrying it may be no mapping at all. Every one of those declares a name as
-    little as an absent key does, and each draws the same ``UnresolvableGoldenAction``
-    naming its index — where reading a name off a bare string raises an ``AttributeError``
-    attributable to nobody, and reaching the matcher with an unhashable name answers its
-    membership test with a ``TypeError``.
+    ``golden_actions`` claims nothing about its elements (#907), so a name may arrive as a
+    list or a mapping and the action carrying it may be no mapping at all. Every one of
+    those declares a name as little as an absent key does, and each draws the same
+    ``UnresolvableGoldenAction`` naming its index — where reading a name off a bare string
+    raises an ``AttributeError`` attributable to nobody, and reaching the matcher with an
+    unhashable name answers its membership test with a ``TypeError``.
     """
     name = action.get("name") if isinstance(action, Mapping) else None
     return name if isinstance(name, str) else None
@@ -321,9 +349,7 @@ class StateChecker:
             (score 0 or 1, reason)
         """
         try:
-            # Use tau-bench compatible hashing
-            string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
-            actual_hash = consistent_hash(to_hashable(state, string_fields))
+            actual_hash = state_digest(state, numeric_string_fields=numeric_string_fields)
 
             if actual_hash == expected_hash:
                 return 1.0, "State hash matches (tau-bench algorithm)"
@@ -485,9 +511,8 @@ class StateChecker:
             raise GoldenReplayError(f"Error executing golden actions: {e}") from e
 
         # Compute hashes
-        string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
-        expected_hash = consistent_hash(to_hashable(expected_state, string_fields))
-        actual_hash = consistent_hash(to_hashable(db_state, string_fields))
+        expected_hash = state_digest(expected_state, numeric_string_fields=numeric_string_fields)
+        actual_hash = state_digest(db_state, numeric_string_fields=numeric_string_fields)
 
         # Calculate diff if states don't match
         diff_result = None

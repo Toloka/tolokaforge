@@ -21,6 +21,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
 from tolokaforge.core.budgets import (
     CompositeBudget,
@@ -84,15 +85,36 @@ def _cost_factory(cost_per_trial: float) -> Callable[[str, int], Trajectory]:
 
 
 def _task_config(task_id: str) -> TaskConfig:
+    """The task every budget test runs, sized to what the run's pre-flight reads.
+
+    It seeds a table because the grading block beside it asserts a ``path:`` over
+    the trial's database, which is authorable only on a task that provisions one.
+    """
     return TaskConfig(
         task_id=task_id,
         name=f"Test Task {task_id}",
         category="tool_use",
         description="A test task",
-        initial_state=InitialStateConfig(),
+        initial_state=InitialStateConfig(json_db={"items": [{"id": "I1"}]}),
         tools=ToolsConfig(),
         user_simulator=UserSimulatorConfig(mode="scripted"),
         grading="grading.yaml",
+    )
+
+
+def _write_grading_yaml(task_dir: Path) -> None:
+    """The block every task here declares, so the run's pre-flight has one to read.
+
+    These runs are about the budget, not about grading, so the block is the smallest
+    gradeable one: a single state check carrying the whole weight.
+    """
+    (task_dir / "grading.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "combine": {"method": "weighted", "weights": {"state_checks": 1.0}},
+                "state_checks": {"jsonpaths": [{"path": "$.items", "operator": "exists"}]},
+            }
+        )
     )
 
 
@@ -154,8 +176,7 @@ def _build_orchestrator(
     adapter.to_task_description.side_effect = lambda tid: _task_description(tid)
     adapter.docker_stack_requirements.return_value = MagicMock(needs_rag_service=False)
     adapter.trial_grader_name = "runner_rpc"
-    # A real directory carrying no grading.yaml: the run's pre-flight resolves
-    # each task's grading file under it and has nothing to check.
+    _write_grading_yaml(tmp_path)
     adapter.get_task_dir.return_value = tmp_path
     adapter.fingerprint.return_value = None
     orch.adapter = adapter

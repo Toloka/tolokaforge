@@ -43,7 +43,7 @@ wire uncovers:
 
 The problem this ADR resolves: **which shape does the executor take so the
 subprocess variant lands without forking runner-side wire, and so tests inject
-a real fixture instead of a mock — without a public-API break to the 27
+a real fixture instead of a mock — without a public-API break to the 32
 `CheckRunner()` instantiation sites?**
 
 ## Decision Drivers
@@ -52,12 +52,11 @@ a real fixture instead of a mock — without a public-API break to the 27
   `InMemory*` fixture + canonical contract test. The custom-checks executor is
   the last first-class grading-plane runtime component that pre-dates the
   pattern.
-- **Zero public-API break.** `CheckRunner` is a *published class* re-exported at
-  27 instantiation sites across 5 files (`combine.py`, `check_runner.py` incl.
-  `run_custom_checks`, `tests/unit/grading/test_custom_checks_runner.py`,
-  `tests/unit/grading/test_custom_checks.py`, `tests/canonical/
-  test_custom_checks_canon.py`). A repoint of the name to a Protocol would turn
-  every one into `TypeError` and force a rename migration for aesthetics.
+- **Zero public-API break.** `CheckRunner` is a *published class* instantiated at
+  32 sites across 9 files — `combine.py`, `service.py` and `check_runner.py` on
+  the production side, six test modules beside them. A repoint of the name to a
+  Protocol would turn every one into `TypeError` and force a rename migration for
+  aesthetics.
 - **The evidence surface is the invariant worth pinning.** An executor must
   never accept the deterministic-oracle fields of `GradingConfig`
   (`golden_actions`, `expected_hash`, `jsonpath_checks`, `grading_config`); the
@@ -125,7 +124,7 @@ ADR-0011 requires *Protocol + prod impl + `InMemory*` + contract test*; it
 does **not** require the Protocol take the "clean" name. Unlike ADR-0020 —
 where the concrete surface was a top-level *function* `run_rubric_judge` (not
 a class, not on any `__all__`), leaving `Judge` free — the name `CheckRunner`
-is an already-published *class* instantiated at 27 sites across 5 files. A
+is an already-published *class* instantiated at 32 sites across 9 files. A
 repoint to a Protocol would turn every `CheckRunner()` call into `TypeError`,
 force a rename of every site, and create a published-API migration line for
 aesthetics.
@@ -183,8 +182,8 @@ satisfied either way.
 
 ## Alternatives considered
 
-**Repoint `CheckRunner` to a Protocol (Option 2).** Rejected: 27 instantiation
-sites across 5 files break with `TypeError`, forcing a rename migration + a
+**Repoint `CheckRunner` to a Protocol (Option 2).** Rejected: 32 instantiation
+sites across 9 files break with `TypeError`, forcing a rename migration + a
 CHANGELOG line for a public-API break with no user-visible benefit. The
 `Judge` / `LLMJudge` naming symmetry it would deliver is aesthetic; the
 ADR-0011 boundary is fully satisfied by Option 1.
@@ -208,5 +207,5 @@ pattern AGENTS Rule 5 rejects.
 - External references: GH #669 (finish runner-side custom checks — this ADR
   is Stage 1 of that PR), #406 (finish or delete the custom-checks seam),
   #217 (dead-plumbing follow-up), #673 (subprocess-isolated executor —
-  first named second variant), #674 (remove dead `run_custom_checks` /
-  `result_to_score` convenience helpers).
+  first named second variant), #674 (remove the dead `run_custom_checks`
+  convenience helper).
