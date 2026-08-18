@@ -1,10 +1,14 @@
 #!/bin/bash
-# Reclaim Docker disk during a long matrix run.
+# Reclaim Docker disk between many-trial runs.
 #
-# Reserved for use BETWEEN rows in a matrix loop — never mid-row. A
-# per-trial container that is currently up owns its layer set and
-# `docker system prune` will refuse to touch it, so this is safe to
-# run at any time, but the reclaim only pays off between rows.
+# A run that sweeps many models × tasks accumulates harness-image layers
+# and per-trial containers. Enough of them fill Docker's disk budget and
+# the next trial's `apt-get install` fails with `You don't have enough
+# free space in /var/cache/apt/archives/`. Run this between rows or in a
+# scheduled maintenance loop.
+#
+# Safe to run at any time — `docker system prune` refuses to touch layers
+# held by a running container, so a live trial keeps its state.
 #
 # What it prunes:
 #   - dangling build layers older than 1 hour (harness-image builds
@@ -20,8 +24,8 @@
 # What it does NOT prune:
 #   - volumes (task-fixture data lives there)
 #   - the local image registry `tolokaforge/docker/registry.py`
-#     owns — that has its own `.prune(keep_latest=3)` API the matrix
-#     loop should call in Python
+#     owns — that has its own `.prune(keep_latest=3)` API a runner
+#     loop can call in Python
 set -euo pipefail
 
 echo "[prune] before:"

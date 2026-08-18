@@ -6,9 +6,9 @@ harnesses:
   claude-code:
     install_method: "npm"
     install_source: "@anthropic-ai/claude-code"
-    # Pinned to the version the out-of-tree host we compared against resolved
-    # when the matrix comparison was baselined. The pin closes the CLI-code
-    # delta with that host while keeping reproducibility.
+    # Pinned to the reference vendor-CLI invocation's resolved version so a
+    # bump only lands with an explicit re-baseline; keeps reproducibility of
+    # scored runs across contributor machines.
     version: "2.1.233"
     argv_prefix: ["claude"]
     # `--verbose --output-format=stream-json` matches the reference vendor-CLI

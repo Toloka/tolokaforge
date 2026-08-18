@@ -1,6 +1,6 @@
 {
-  "bucket_a_count": 3,
-  "bucket_b_count": 15,
+  "bucket_a_count": 1,
+  "bucket_b_count": 7,
   "commits": [
     {
       "adapter_paths": [
@@ -1360,61 +1360,6 @@
     },
     {
       "adapter_paths": [
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/path_resolvers.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/protocols.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/task_parser.py",
-        "tests/canonical/snapshots/harness_registry_replay/metric.json",
-        "tests/data/terminal_bench_tasks/echo-hello-skills/skills/README.md",
-        "tests/unit/test_harness_path_resolver.py",
-        "tests/unit/test_harness_skill_delivery.py",
-        "tests/unit/test_terminal_bench.py"
-      ],
-      "bucket": "B",
-      "date": "2026-08-14",
-      "pr": 1208,
-      "reason": "11 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "43d84c1d2ac555e1d3da6dc2410defe3ffdb6b9e",
-      "subject": "feat(tbench): PathResolver + SkillDelivery \u2014 runtime seams for the harness surface (#1208)",
-      "touched_files": [
-        "docs/adr/0033-external-harness-registry.md",
-        "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/path_resolvers.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/protocols.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/task_parser.py",
-        "tests/canonical/snapshots/harness_registry_replay/metric.json",
-        "tests/canonical/snapshots/tbench_echo_hello_harness/harness_spec.json",
-        "tests/data/terminal_bench_tasks/echo-hello-skills/skills/README.md",
-        "tests/unit/test_harness_path_resolver.py",
-        "tests/unit/test_harness_skill_delivery.py",
-        "tests/unit/test_terminal_bench.py"
-      ]
-    },
-    {
-      "adapter_paths": [
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "tests/unit/test_terminal_bench.py"
-      ],
-      "bucket": "B",
-      "date": "2026-08-14",
-      "pr": 1174,
-      "reason": "2 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "a7e4a60a88e1ce48da97f8d1c35fd09a33ea295f",
-      "subject": "feat(tbench): move _VENDOR_NAMESPACE_PREFIXES + PROVIDER_ENV_KEYS to data/registry_meta.yaml (#1174)",
-      "touched_files": [
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/registry_meta.yaml",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "tests/unit/test_terminal_bench.py"
-      ]
-    },
-    {
-      "adapter_paths": [
         "CHANGELOG.md",
         "docs/RUNTIME_BACKENDS.md",
         "docs/adr/README.md",
@@ -1516,20 +1461,36 @@
       "adapter_paths": [
         "docs/ADAPTER_INTERFACE.md",
         "docs/ARCHITECTURE.md",
+        "docs/LLM_LAYER.md",
         "docs/OUTPUT_FORMAT.md",
+        "docs/RUNNING_TERMINAL_BENCH.md",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/fingerprint.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/middleware_proxy.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/path_resolvers.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/protocols.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/task_parser.py",
+        "scripts/matrix/README.md",
+        "scripts/matrix/prune-docker.sh",
         "tests/README.md",
+        "tests/canonical/_harness_registry_replay/__init__.py",
+        "tests/canonical/_harness_registry_replay/git_walk.py",
         "tests/canonical/snapshots/harness_registry_replay/metric.json",
         "tests/canonical/test_engine_run_state_fingerprint.py",
         "tests/canonical/test_engine_run_state_harness_fingerprint.py",
+        "tests/canonical/test_harness_registry_replay.py",
         "tests/canonical/test_run_trial_composition.py",
+        "tests/data/terminal_bench_tasks/echo-hello-skills/skills/README.md",
         "tests/integration/test_preset_overlay_subprocess.py",
         "tests/unit/dx/test_cli_resume.py",
         "tests/unit/llm/test_preset_overlay_worker_propagation.py",
         "tests/unit/test_adapters.py",
         "tests/unit/test_harness_fingerprint.py",
+        "tests/unit/test_harness_path_resolver.py",
+        "tests/unit/test_harness_skill_delivery.py",
+        "tests/unit/test_middleware_proxy.py",
         "tests/unit/test_orchestrator_budget_shutdown.py",
         "tests/unit/test_orchestrator_logic.py",
         "tests/unit/test_resume_resolver.py",
@@ -1539,187 +1500,76 @@
         "tests/utils/harness_plugins.py",
         "tolokaforge/adapters/base.py",
         "tolokaforge/core/engine_run_state.py",
-        "tolokaforge/core/orchestrator.py"
+        "tolokaforge/core/orchestrator.py",
+        "tools/automation/src/automation/harness_bucket_classifier.py",
+        "tools/automation/tests/test_harness_bucket_classifier.py"
       ],
       "bucket": "B",
-      "date": "2026-08-14",
-      "pr": 1212,
-      "reason": "26 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "d0dfe4e56ca1808ad4b50e328c718364d1ba95bd",
-      "subject": "feat(engine+tbench): a run names the harness registry it ran on (#1212)",
+      "date": "2026-08-18",
+      "pr": 1228,
+      "reason": "44 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "53ae81ed66cb07b97af63792677f6eed7ff2511d",
+      "subject": "feat(tbench): consolidated matrix harness fixes \u2014 Kimi K2.7 middleware, opencode routing/auth, Gemini via LiteLLM, supervisord, disk hygiene (#1228)",
       "touched_files": [
         "docs/ADAPTER_INTERFACE.md",
         "docs/ARCHITECTURE.md",
+        "docs/LLM_LAYER.md",
         "docs/OUTPUT_FORMAT.md",
+        "docs/RUNNING_TERMINAL_BENCH.md",
+        "docs/adr/0033-external-harness-registry.md",
+        "examples/terminal_bench/fix-billing-holds/environment/Dockerfile",
+        "examples/terminal_bench/fix-billing-holds/environment/entrypoint.sh",
+        "examples/terminal_bench/fix-billing-holds/environment/start-billing-service",
+        "examples/terminal_bench/fix-billing-holds/environment/supervisord.conf",
+        "examples/terminal_bench/fix-billing-holds/task.yaml",
+        "examples/terminal_bench/gemini_litellm_overlay.yaml",
         "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/registry_meta.yaml",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/fingerprint.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/middleware_proxy.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/path_resolvers.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/protocols.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/task_parser.py",
+        "scripts/matrix/README.md",
+        "scripts/matrix/prune-docker.sh",
         "tests/README.md",
-        "tests/canonical/snapshots/harness_registry_replay/metric.json",
-        "tests/canonical/test_engine_run_state_fingerprint.py",
-        "tests/canonical/test_engine_run_state_harness_fingerprint.py",
-        "tests/canonical/test_run_trial_composition.py",
-        "tests/integration/test_preset_overlay_subprocess.py",
-        "tests/unit/dx/test_cli_resume.py",
-        "tests/unit/llm/test_preset_overlay_worker_propagation.py",
-        "tests/unit/test_adapters.py",
-        "tests/unit/test_harness_fingerprint.py",
-        "tests/unit/test_orchestrator_budget_shutdown.py",
-        "tests/unit/test_orchestrator_logic.py",
-        "tests/unit/test_resume_resolver.py",
-        "tests/unit/test_run_display_wiring.py",
-        "tests/unit/test_terminal_bench.py",
-        "tests/unit/test_ungradeable_trial_accounting.py",
-        "tests/utils/harness_plugins.py",
-        "tolokaforge/adapters/base.py",
-        "tolokaforge/core/engine_run_state.py",
-        "tolokaforge/core/orchestrator.py"
-      ]
-    },
-    {
-      "adapter_paths": [
-        "tests/canonical/snapshots/harness_registry_replay/metric.json"
-      ],
-      "bucket": "B",
-      "date": "2026-08-16",
-      "pr": null,
-      "reason": "1 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "218396c0daf8ab19d1e5943d8ae1b0a83fba58b4",
-      "subject": "fix(tbench): opencode routes openrouter/<vendor>/<model> through OpenRouter, not vendor-native",
-      "touched_files": [
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
+        "tests/canonical/_harness_registry_replay/__init__.py",
+        "tests/canonical/_harness_registry_replay/git_walk.py",
         "tests/canonical/snapshots/harness_registry_replay/metric.json",
         "tests/canonical/snapshots/tbench_echo_hello_harness/harness_dockerfile.json",
         "tests/canonical/snapshots/tbench_echo_hello_harness/harness_spec.json",
         "tests/canonical/snapshots/tbench_echo_hello_harness/synthesised_compose.json",
         "tests/canonical/snapshots/tbench_echo_hello_skills_harness/harness_dockerfile.json",
-        "tests/canonical/snapshots/tbench_echo_hello_skills_harness/synthesised_compose.json"
-      ]
-    },
-    {
-      "adapter_paths": [
-        "tests/canonical/snapshots/harness_registry_replay/metric.json"
-      ],
-      "bucket": "B",
-      "date": "2026-08-16",
-      "pr": null,
-      "reason": "1 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "6acad3c0539659cebb17aad512e697f95dbf932d",
-      "subject": "fixup: reuse ANTHROPIC_API_KEY in opencode's openrouter provider",
-      "touched_files": [
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
-        "tests/canonical/snapshots/harness_registry_replay/metric.json"
-      ]
-    },
-    {
-      "adapter_paths": [],
-      "bucket": "A",
-      "date": "2026-08-16",
-      "pr": null,
-      "reason": "all touched paths in Bucket-A allow-list",
-      "sha": "b5a4b04357e49958cb03e98f87c336a724a8d1bf",
-      "subject": "fix(tbench-tasks): fix-billing-holds \u2014 supervisord auto-restart for uvicorn",
-      "touched_files": [
-        "examples/terminal_bench/fix-billing-holds/environment/Dockerfile",
-        "examples/terminal_bench/fix-billing-holds/environment/entrypoint.sh",
-        "examples/terminal_bench/fix-billing-holds/environment/start-billing-service",
-        "examples/terminal_bench/fix-billing-holds/environment/supervisord.conf",
-        "examples/terminal_bench/fix-billing-holds/task.yaml"
-      ]
-    },
-    {
-      "adapter_paths": [],
-      "bucket": "A",
-      "date": "2026-08-16",
-      "pr": null,
-      "reason": "all touched paths in Bucket-A allow-list",
-      "sha": "f4b67e6a42716dd53c2c0e95265e4a6c82dc585d",
-      "subject": "fix(tbench): pin claude-code to 2.1.233 to close matrix \u0394 vs harbor",
-      "touched_files": [
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml"
-      ]
-    },
-    {
-      "adapter_paths": [
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/middleware_proxy.py",
-        "tests/unit/test_terminal_bench.py"
-      ],
-      "bucket": "B",
-      "date": "2026-08-17",
-      "pr": null,
-      "reason": "4 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "80aa8f995117d95ead3f0f774ffa299627d79355",
-      "subject": "feat(tbench): unblock Kimi K2.7 / Muse Glimmer / Gemini via new harness surface",
-      "touched_files": [
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/middleware_proxy.py",
-        "tests/unit/test_terminal_bench.py"
-      ]
-    },
-    {
-      "adapter_paths": [
-        "tests/canonical/snapshots/harness_registry_replay/metric.json"
-      ],
-      "bucket": "B",
-      "date": "2026-08-17",
-      "pr": null,
-      "reason": "1 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "80ce9c12b26c82f328b785128094e2795f9c9f20",
-      "subject": "test(canon): regenerate snapshots for new HarnessSpec fields",
-      "touched_files": [
-        "tests/canonical/snapshots/harness_registry_replay/metric.json",
-        "tests/canonical/snapshots/tbench_echo_hello_harness/harness_spec.json"
-      ]
-    },
-    {
-      "adapter_paths": [
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/middleware_proxy.py",
-        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/snapshots/tbench_echo_hello_skills_harness/synthesised_compose.json",
+        "tests/canonical/test_engine_run_state_fingerprint.py",
+        "tests/canonical/test_engine_run_state_harness_fingerprint.py",
+        "tests/canonical/test_harness_registry_replay.py",
+        "tests/canonical/test_run_trial_composition.py",
+        "tests/data/terminal_bench_tasks/echo-hello-skills/skills/README.md",
+        "tests/integration/test_preset_overlay_subprocess.py",
+        "tests/unit/dx/test_cli_resume.py",
+        "tests/unit/llm/test_preset_overlay_worker_propagation.py",
+        "tests/unit/test_adapters.py",
+        "tests/unit/test_harness_fingerprint.py",
+        "tests/unit/test_harness_path_resolver.py",
+        "tests/unit/test_harness_skill_delivery.py",
         "tests/unit/test_middleware_proxy.py",
-        "tests/unit/test_terminal_bench.py"
-      ],
-      "bucket": "B",
-      "date": "2026-08-17",
-      "pr": null,
-      "reason": "5 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "b81edf61c79a7cb086350b8f825c44250123a164",
-      "subject": "fix(tbench): address PR #1228 code-review findings",
-      "touched_files": [
-        "docs/adr/0033-external-harness-registry.md",
-        "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/middleware_proxy.py",
-        "tests/canonical/snapshots/harness_registry_replay/metric.json",
-        "tests/unit/test_middleware_proxy.py",
-        "tests/unit/test_terminal_bench.py"
-      ]
-    },
-    {
-      "adapter_paths": [
-        "docs/LLM_LAYER.md",
-        "tests/canonical/snapshots/harness_registry_replay/metric.json",
-        "tests/unit/test_terminal_bench.py"
-      ],
-      "bucket": "B",
-      "date": "2026-08-18",
-      "pr": null,
-      "reason": "3 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "b0594fe517fa58f171d484ab60319e29c561e831",
-      "subject": "docs(tbench): pull #1172's LiteLLM-routing docs + example overlay into this PR",
-      "touched_files": [
-        "docs/LLM_LAYER.md",
-        "examples/terminal_bench/gemini_litellm_overlay.yaml",
-        "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml",
-        "tests/canonical/snapshots/harness_registry_replay/metric.json",
-        "tests/unit/test_terminal_bench.py"
+        "tests/unit/test_orchestrator_budget_shutdown.py",
+        "tests/unit/test_orchestrator_logic.py",
+        "tests/unit/test_resume_resolver.py",
+        "tests/unit/test_run_display_wiring.py",
+        "tests/unit/test_terminal_bench.py",
+        "tests/unit/test_ungradeable_trial_accounting.py",
+        "tests/utils/harness_plugins.py",
+        "tolokaforge/adapters/base.py",
+        "tolokaforge/core/engine_run_state.py",
+        "tolokaforge/core/orchestrator.py",
+        "tools/automation/src/automation/harness_bucket_classifier.py",
+        "tools/automation/tests/test_harness_bucket_classifier.py"
       ]
     }
   ]

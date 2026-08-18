@@ -15,10 +15,6 @@ Both modes produce the same per-trial bundle layout at
 `<output-dir>/trials/<task_id>/<trial_index>/`, so downstream tooling reads one
 shape regardless of which produced it.
 
-For a head-to-head **tolokaforge-vs-Harbor** matrix comparison, see the
-`tbench-compare` guide in the internal
-[`tolokaforge-tools`](https://github.com/toloka-partners/tolokaforge-tools) repo.
-
 ## Prerequisites
 
 - A local Docker daemon. Every trial provisions at least one container
@@ -229,21 +225,16 @@ gateway's own credential.
 Pro-tier slugs that resolve today. Google retired `gemini-3-pro-preview` and
 moved it to "Previous models (Shut down)" — 3.1 Pro Preview is the successor.
 
-## Running many models × tasks at once
+## Reclaiming Docker disk between many-trial runs
 
-The v2 matrix driver at `scripts/matrix/` (invoked via the same
-`tolokaforge run` command with a matrix config) generates one run per
-(model × task × pipeline) cell and writes a rolled-up `matrix.json`. For the
-TF-vs-Harbor comparison shape used in the priority-model tracking doc, use
-`tbench-compare` from the internal tolokaforge-tools repo — see its
-[`RUNNING_MATRIX_COMPARISON.md`](https://github.com/toloka-partners/tolokaforge-tools/blob/main/docs/RUNNING_MATRIX_COMPARISON.md)
-guide for the end-to-end recipe.
-
-Between rows on long matrix runs, invoke the docker prune helper so
-`/var/cache/apt/archives/` doesn't fill up:
+A run that sweeps many models × tasks accumulates harness-image layers
+and per-trial containers — enough that `apt-get install` inside the
+next trial can fail with `You don't have enough free space in
+/var/cache/apt/archives/`. `scripts/prune-docker.sh` reclaims disk
+without touching layers held by a running container:
 
 ```bash
-scripts/matrix/prune-docker.sh
+scripts/prune-docker.sh
 ```
 
 ## Reading the results
@@ -269,7 +260,7 @@ Every trial produces the same bundle:
 ## Common pitfalls
 
 - **"docker compose up failed: no available IPv4 pool"** — Docker Desktop has
-  a fixed number of subnet pools; long matrix runs exhaust them. Fix:
+  a fixed number of subnet pools; a many-trial sweep can exhaust them. Fix:
   `docker network prune -f`.
 - **"container not running" at grade time on `fix-billing-holds`** — uvicorn
   died mid-session. The task now runs uvicorn under supervisord with
@@ -295,5 +286,3 @@ Every trial produces the same bundle:
   configured and why it is engine-loop-only.
 - **[ADR-0033](adr/0033-external-harness-registry.md)** — the
   `HarnessSpec` field list + why the registry is data.
-- **[Priority-model evaluation tracking](https://github.com/toloka-partners/eval-tracking/blob/main/evaluation-tracking.md)**
-  (internal) — the running matrix results.
