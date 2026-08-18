@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 9,
+  "bucket_b_count": 10,
   "commits": [
     {
       "adapter_paths": [
@@ -1591,6 +1591,25 @@
         "tolokaforge/core/orchestrator.py",
         "tools/automation/src/automation/harness_bucket_classifier.py",
         "tools/automation/tests/test_harness_bucket_classifier.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "docs/RUNNING_TERMINAL_BENCH.md",
+        "docs/adr/README.md"
+      ],
+      "bucket": "B",
+      "date": "2026-08-18",
+      "pr": null,
+      "reason": "2 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "ba6132e6654a56cacb790ac44a453fb81d317df9",
+      "subject": "docs(adr): record the coding-harnesses hoist as ADR-0035",
+      "touched_files": [
+        "docs/RUNNING_TERMINAL_BENCH.md",
+        "docs/adr/0033-external-harness-registry.md",
+        "docs/adr/0034-external-harness-plugin-discovery.md",
+        "docs/adr/0035-tolokaforge-coding-harnesses-split.md",
+        "docs/adr/README.md"
       ]
     },
     {
