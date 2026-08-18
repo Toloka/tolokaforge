@@ -58,11 +58,15 @@ finds without being told.
 - **Reproducibility on demand.** A run whose result is an audit artefact must
   be able to pin the registry to what the adapter ships, independent of what
   else is installed in the same environment.
-- **Align with the engine's existing plugin surface.** The repo already
-  discovers adapters, runtime backends, trial graders, conductors, readiness
-  probes and turn policies through `importlib.metadata` entry points and one
-  fail-loud primitive (`tolokaforge.core.plugin_registry.discover_entry_points`).
-  A seventh mechanism would be a seventh thing to learn.
+- **Align with the engine's existing plugin surface.** The repo discovers
+  adapters, runtime backends, trial graders, conductors, readiness probes and
+  turn policies through `importlib.metadata` entry points behind one fail-loud
+  scan shape: enumerate names and distributions without loading any target,
+  refuse a duplicate name for every lookup into the group, cache per group. The
+  harness registry follows that shape rather than inventing a seventh mechanism
+  to learn — it implements the scan inside `tolokaforge_coding_harnesses` so the
+  package stays free of engine imports
+  ([ADR-0035](0035-tolokaforge-coding-harnesses-split.md)).
 
 ## Considered Options
 
@@ -99,12 +103,17 @@ my_org = "my_org.tolokaforge_harnesses"
 ```
 
 - The group name lives in exactly one place,
-  `HARNESS_REGISTRY_ENTRY_POINT_GROUP` in
-  `tolokaforge_adapter_terminal_bench.harness`, and is exported.
-- It is **adapter-namespaced**, not `tolokaforge.*`: the harness registry is
-  the terminal-bench adapter's surface, and the engine core never learns these
-  names ([ADR-0033](0033-external-harness-registry.md) § Context). A
-  `tolokaforge.harness_registries` group would imply the engine consumes it.
+  `HARNESS_REGISTRY_ENTRY_POINT_GROUP` in `tolokaforge_coding_harnesses`, and is
+  exported.
+- It is not `tolokaforge.*`: the engine core never learns these names
+  ([ADR-0033](0033-external-harness-registry.md) § Context) — it receives an
+  assembled command and runs it, so a `tolokaforge.harness_registries` group
+  would imply the engine consumes the registry. The string it *does* carry,
+  `tolokaforge_adapter_terminal_bench.harness_registries`, is a compatibility
+  artefact: the group is declared and consumed by the package that owns the
+  registry, and renaming it would break every installed bundle registered under
+  the published name. [ADR-0035](0035-tolokaforge-coding-harnesses-split.md)
+  records why it is retained and defers the rename to its own migration.
 - The entry point's **value is the plugin's Python package**; the package
   ships its registry beside its `__init__.py` as `harnesses.yaml`, read
   through `importlib.resources`. The file name is a convention
@@ -143,11 +152,17 @@ the intent.
 Two installed plugins declaring the same harness name raise `ValueError`
 naming **both distributions** and the harness. There is no safe pick: the two
 bundles disagree about what that name installs and how it is invoked, so
-install order must not decide which agent a benchmark measures. This mirrors
-`DuplicateRegistrationError`, which the engine's plugin registry raises for
-the same ambiguity one level up (two distributions claiming one entry-point
-*name*) — and which this adapter inherits for free by scanning through
-`discover_entry_points`.
+install order must not decide which agent a benchmark measures.
+
+The same ambiguity one level up — two distributions claiming one entry-point
+*name* — raises `DuplicateRegistrationError`, again naming both distributions,
+from the same scan. That class is
+`tolokaforge_coding_harnesses.DuplicateRegistrationError`, a `ValueError`
+subclass local to the package holding the registry, and it is **not** the
+engine's identically-named `tolokaforge.core.plugin_registry.DuplicateRegistrationError`,
+which governs the engine's own entry-point seams. The name and the message are
+deliberately the same; [ADR-0035](0035-tolokaforge-coding-harnesses-split.md)
+records why there are two classes and which one a caller catches.
 
 ### Discovery is opt-out
 
@@ -179,8 +194,10 @@ No plugin, no line: the common case stays silent.
   behaviour ADR-0033 decided is bit-identical, and the existing canonical
   snapshots stay valid — a plugin bundle produces the same `HarnessSpec`
   through the same loader, so there is no new wire shape to pin.
-- One discovery primitive across the repo's seven entry-point groups, one
-  duplicate-registration failure mode, one thing to learn.
+- One discovery *shape* across the repo's seven entry-point groups — same
+  enumerate-without-loading scan, same duplicate-registration failure mode, same
+  error name — so there is one thing to learn even though the harness group is
+  scanned by its own package.
 
 ### Negative / Trade-offs
 
@@ -223,13 +240,18 @@ No plugin, no line: the common case stays silent.
   - [ADR-0011](0011-seam-and-declaration-conventions.md) Pattern B — a plugin
     bundle is a data declaration, validated by the same model as the shipped
     file.
+  - [ADR-0035](0035-tolokaforge-coding-harnesses-split.md) — where the group,
+    the scan and the shipped registry live now; the retained group name and the
+    package-local duplicate-registration class are recorded there.
 - Related code:
   - `external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py`
     — `HARNESS_REGISTRY_ENTRY_POINT_GROUP`, `PLUGIN_REGISTRY_RESOURCE`,
     `discover_plugin_harness_registries`, `resolve_effective_registry`.
   - `external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py`
     — `disable_harness_plugins` param, effective-registry wiring.
-  - `tolokaforge/core/plugin_registry.py` — `discover_entry_points`, the
-    fail-loud scan this reuses.
+  - `tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py`
+    — the fail-loud scan behind the group, and `DuplicateRegistrationError`.
+  - `tolokaforge/core/plugin_registry.py` — `discover_entry_points`, the same
+    scan shape for the engine's own entry-point seams.
 - External references:
   - [Python packaging: entry points](https://packaging.python.org/en/latest/specifications/entry-points/).

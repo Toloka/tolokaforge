@@ -286,3 +286,6 @@ Every trial produces the same bundle:
   configured and why it is engine-loop-only.
 - **[ADR-0033](adr/0033-external-harness-registry.md)** — the
   `HarnessSpec` field list + why the registry is data.
+- **[ADR-0035](adr/0035-tolokaforge-coding-harnesses-split.md)** — the
+  `tolokaforge_coding_harnesses` package the registry, the installer and the
+  middleware proxy live in, and what a second consumer imports.

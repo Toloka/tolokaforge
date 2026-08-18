@@ -7,6 +7,13 @@
 - **Superseded by:** —
 - **Related:** [ADR-0002](0002-external-model-registry.md) — the same shape for
   the model preset registry.
+- **Extended by:** [ADR-0035](0035-tolokaforge-coding-harnesses-split.md) — the
+  registry lives in the `tolokaforge_coding_harnesses` package rather than inside
+  the terminal-bench adapter. Everything this ADR decided — the `HarnessSpec`
+  field list, load-time validation, the operator overlay, the `provider_env`
+  union — is unchanged; only the address is. The "Related code" paths below are
+  the record of what *this* decision delivered, so they name the layout of the
+  day; ADR-0035 names the current one.
 
 ## Context and Problem Statement
 
@@ -286,6 +293,8 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
 - Related ADRs:
   - [ADR-0002](0002-external-model-registry.md) — the same pattern for
     the model registry.
+  - [ADR-0035](0035-tolokaforge-coding-harnesses-split.md) — where this
+    registry lives now, and why the move changed nothing it decided.
   - [ADR-0011](0011-seam-and-declaration-conventions.md) Pattern B —
     HarnessSpec is a data declaration crossing the adapter → artifact
     boundary.
