@@ -10,6 +10,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from tests.utils.harness_plugins import (
+    FakeEntryPoint,
+    build_plugin,
+    bundle_yaml,
+    install_plugins,
+)
 from tolokaforge.docker.policy import Capability
 from tolokaforge.docker.stacks.core import core_stack
 from tolokaforge.runner.models import (
@@ -1137,6 +1143,94 @@ class TestInstallHarnessScript:
         assert recorded == []
 
 
+class TestHarnessRegistryMeta:
+    """``data/registry_meta.yaml`` — registry-wide catalogs (OpenRouter vendor
+    namespaces + provider env-var allow-list) that used to be Python
+    constants. Fail-loud on malformed data; adding a namespace or a key is a
+    YAML edit."""
+
+    def test_shipped_file_populates_the_module_globals(self):
+        from tolokaforge_adapter_terminal_bench.harness import (
+            _VENDOR_NAMESPACE_PREFIXES,
+            PROVIDER_ENV_KEYS,
+            SHIPPED_REGISTRY_META_FILE,
+        )
+
+        assert SHIPPED_REGISTRY_META_FILE.is_file()
+        assert _VENDOR_NAMESPACE_PREFIXES  # non-empty
+        assert PROVIDER_ENV_KEYS  # non-empty
+        # Existing shipped harnesses' provider_env keys all belong to the
+        # allow-list.
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        for spec in HARNESSES.values():
+            for key in spec.provider_env:
+                assert key in PROVIDER_ENV_KEYS, (
+                    f"harness ships provider_env key {key!r} outside PROVIDER_ENV_KEYS — "
+                    "either add the key to registry_meta.yaml or the harness is broken."
+                )
+
+    def test_missing_file_names_the_path(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import _load_registry_meta
+
+        with pytest.raises(FileNotFoundError, match="registry_meta.yaml"):
+            _load_registry_meta(tmp_path / "does_not_exist.yaml")
+
+    def test_non_mapping_yaml_is_refused(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import _load_registry_meta
+
+        target = tmp_path / "registry_meta.yaml"
+        target.write_text("- one\n- two\n")  # a list at the top level
+        with pytest.raises(ValueError, match="must be a YAML mapping"):
+            _load_registry_meta(target)
+
+    def test_unknown_top_level_key_is_refused(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import _load_registry_meta
+
+        target = tmp_path / "registry_meta.yaml"
+        target.write_text(
+            "openrouter_vendor_namespaces: [foo/]\n"
+            "provider_env_keys: [A_KEY]\n"
+            "extra_key: hi\n"
+        )
+        with pytest.raises(ValueError):
+            _load_registry_meta(target)
+
+    def test_empty_namespaces_list_is_refused(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import _load_registry_meta
+
+        target = tmp_path / "registry_meta.yaml"
+        target.write_text("openrouter_vendor_namespaces: []\nprovider_env_keys: [A_KEY]\n")
+        with pytest.raises(ValueError, match="openrouter_vendor_namespaces must not be empty"):
+            _load_registry_meta(target)
+
+    def test_empty_env_keys_list_is_refused(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import _load_registry_meta
+
+        target = tmp_path / "registry_meta.yaml"
+        target.write_text("openrouter_vendor_namespaces: [foo/]\nprovider_env_keys: []\n")
+        with pytest.raises(ValueError, match="provider_env_keys must not be empty"):
+            _load_registry_meta(target)
+
+    def test_duplicate_namespace_entry_is_refused(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import _load_registry_meta
+
+        target = tmp_path / "registry_meta.yaml"
+        target.write_text(
+            "openrouter_vendor_namespaces: [foo/, foo/]\nprovider_env_keys: [A_KEY]\n"
+        )
+        with pytest.raises(ValueError, match="duplicates"):
+            _load_registry_meta(target)
+
+    def test_blank_entry_is_refused(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import _load_registry_meta
+
+        target = tmp_path / "registry_meta.yaml"
+        target.write_text('openrouter_vendor_namespaces: ["foo/"]\nprovider_env_keys: [" "]\n')
+        with pytest.raises(ValueError, match="non-blank"):
+            _load_registry_meta(target)
+
+
 class TestHarnessSpecRegistry:
     """The shipped registry is packaged YAML data, loaded at import."""
 
@@ -1296,6 +1390,9 @@ class TestHarnessCommand:
 
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
+        # Shipped gemini-cli takes the direct Google AI Studio path — pure
+        # env, no ``config_files``, so no preamble. The command is the CLI
+        # argv verbatim.
         assert shlex.split(harness_command("gemini-cli", "do it", "google/gemini-2.5-flash")) == [
             "gemini",
             "--model",
@@ -1322,16 +1419,20 @@ class TestHarnessCommand:
         assert "auth.json" in preamble
         assert "OPENAI_API_KEY" in preamble
 
-    def test_gemini_has_no_preamble_no_stdin(self):
-        """A CLI without config_files, without env_model_vars, and with
-        argv-channel instruction publishes the CLI command alone — no shell
-        scaffolding for readers of the metadata to peel off."""
+    def test_shipped_gemini_default_writes_no_settings_json(self):
+        """The shipped default is the direct Google AI Studio route — pure
+        env, no config-file writes. A settings.json write is exclusive to
+        the operator overlay at
+        ``examples/terminal_bench/gemini_litellm_overlay.yaml`` (whose
+        resolution is locked by
+        ``TestHarnessPresetsFileOverlay.test_shipped_gemini_litellm_overlay_resolves``).
+        """
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
         command = harness_command("gemini-cli", "go", "google/gemini-2.5-flash")
-        assert "&&" not in command
+        assert " && " not in command
+        assert "settings.json" not in command
         assert "printf" not in command
-        assert command.startswith("gemini ")
 
     def test_instruction_is_one_shell_argument(self):
         import shlex
@@ -1365,6 +1466,146 @@ class TestHarnessCommand:
         assert "terminus-2" not in accepted_harnesses()
         with pytest.raises(ValueError, match="not supported"):
             validate_harness("terminus-2")
+
+
+class TestHarnessRequestMiddleware:
+    """The ``HarnessSpec.request_middleware`` slot + its shipped kimi-code use.
+
+    Locks the preamble shape so a refactor of ``_middleware_preamble`` cannot
+    silently change what runs inside the trial container. Real-container
+    end-to-end coverage lives in the matrix rerun; these tests exist so a
+    plain unit run catches regressions before a trial is spent.
+    """
+
+    def test_shipped_kimi_code_pins_moonshotai_provider_via_body_injection(self):
+        """The row that motivated the whole slot: kimi-k2.7-code on OpenRouter
+        fans out across 14 providers, and only Moonshot AI first-party returns
+        non-empty completions on tool-call continuation. If this test flips,
+        we're back to deterministic 0.433/0.6 baselines."""
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        mw = HARNESSES["kimi-code"].request_middleware
+        assert mw is not None
+        assert mw.upstream_env_key == "KIMI_MODEL_BASE_URL"
+        assert mw.body_injections == {
+            "provider": {"only": ["moonshotai"], "allow_fallbacks": False}
+        }
+        assert mw.path_filter == "/chat/completions"
+
+    def test_no_other_shipped_harness_declares_a_middleware(self):
+        """Middleware boots a proxy inside every trial container it's set on —
+        make the shipped scope explicit so a copy-paste edit is caught."""
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        with_middleware = {
+            name for name, spec in HARNESSES.items() if spec.request_middleware is not None
+        }
+        assert with_middleware == {"kimi-code"}
+
+    def test_middleware_preamble_boots_proxy_then_rewrites_env_before_cli(self):
+        """The three-step preamble the CLI depends on:
+        (1) daemon-mode proxy boot reading the ORIGINAL env-var value as
+            upstream (so it forwards to the real provider);
+        (2) env-var rewrite to localhost so the CLI reaches the proxy;
+        (3) CLI invocation.
+        A refactor that reorders these breaks either the forwarding chain
+        (proxy hits localhost recursively) or the CLI's routing.
+        """
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        steps = harness_command("kimi-code", "do it", "openrouter/moonshotai/kimi-k2.7-code").split(
+            " && "
+        )
+        # First non-config step boots the proxy against the ORIGINAL URL
+        boot = next(s for s in steps if "middleware_proxy.py" in s)
+        assert '"${KIMI_MODEL_BASE_URL}"' in boot
+        assert '"only": ["moonshotai"]' in boot
+        assert "/chat/completions" in boot
+        assert boot.rstrip().endswith("--daemon")
+        # Env rewrite MUST come after the boot (so the boot reads upstream)
+        # and MUST come before the CLI (so the CLI reaches localhost)
+        boot_idx = steps.index(boot)
+        rewrite_idx = next(
+            i for i, s in enumerate(steps) if s.startswith("export KIMI_MODEL_BASE_URL=")
+        )
+        cli_idx = next(i for i, s in enumerate(steps) if s.startswith("kimi "))
+        assert boot_idx < rewrite_idx < cli_idx
+        assert steps[rewrite_idx] == "export KIMI_MODEL_BASE_URL=http://127.0.0.1:8899"
+
+    def test_a_spec_that_declares_both_middleware_and_config_files_is_refused(self):
+        """The two features do not compose today: ``config_files`` templates
+        interpolate provider_env at Python-assembly time, while the middleware
+        rewrite happens at bash time. A CLI reading its endpoint from an
+        on-disk config would bake in the upstream URL and bypass the proxy."""
+        from tolokaforge_adapter_terminal_bench.harness import (
+            HarnessSpec,
+            RequestMiddleware,
+        )
+
+        with pytest.raises(Exception, match="request_middleware and config_files"):
+            HarnessSpec(
+                install_source="some-pkg",
+                version="1.0.0",
+                argv_prefix=("cli",),
+                argv_suffix=(),
+                config_files={"/etc/cli.conf": "endpoint={{ base_url }}"},
+                request_middleware=RequestMiddleware(upstream_env_key="X_BASE_URL"),
+            )
+
+    def test_if_the_validator_ever_loosens_the_preamble_order_is_middleware_first(self):
+        """Defensive positive test: the validator refuses the combo today, so
+        the assembler's ordering of middleware boot → env rewrite →
+        config_files write → CLI is unreachable in production. If the
+        validator ever loosens (see the ADR-0033 sibling entry that names the
+        two features), a CLI reading its endpoint from an on-disk config file
+        MUST see the redirected localhost URL, not the upstream. Construct a
+        spec with both fields via ``model_construct`` (which bypasses the
+        validator) and assert that ordering, so a future loosening does not
+        silently regress the proxy path."""
+        from tolokaforge_adapter_terminal_bench.harness import (
+            HarnessSpec,
+            RequestMiddleware,
+            harness_command,
+        )
+
+        # ``model_construct`` is Pydantic v2's documented escape hatch for
+        # bypassing validators — the escape hatch exists for exactly this
+        # kind of test.
+        spec = HarnessSpec.model_construct(
+            install_method="npm",
+            install_source="fake-cli",
+            version="1.0.0",
+            argv_prefix=("fake",),
+            argv_suffix=("--prompt",),
+            config_files={"${HOME}/.fake/endpoint.conf": "endpoint={{ base_url }}"},
+            request_middleware=RequestMiddleware(
+                upstream_env_key="FAKE_BASE_URL",
+                body_injections={},
+                header_injections={},
+            ),
+            provider_env={"FAKE_BASE_URL": "https://upstream.example"},
+            container_env={},
+            env_model_vars=(),
+            model_flag="--model",
+            model_flag_style="space",
+            flags_pre_permission=(),
+            instruction_channel="argv",
+            skills_dir_target=None,
+            strip_vendor_namespace=False,
+            strip_openrouter_prefix=True,
+        )
+
+        command = harness_command(
+            "fake", "do it", "some-model", registry={"fake": spec}, provider_env=spec.provider_env
+        )
+        steps = command.split(" && ")
+        middleware_boot = next(i for i, s in enumerate(steps) if "middleware_proxy.py" in s)
+        env_rewrite = next(i for i, s in enumerate(steps) if s.startswith("export FAKE_BASE_URL="))
+        config_write = next(i for i, s in enumerate(steps) if "endpoint.conf" in s)
+        assert middleware_boot < env_rewrite < config_write, (
+            f"middleware+config_files preamble order broke: "
+            f"boot={middleware_boot}, rewrite={env_rewrite}, config={config_write}"
+        )
 
 
 class TestHarnessConfigFiles:
@@ -1561,6 +1802,40 @@ class TestHarnessModelPrefix:
         )
         assert argv[argv.index("--model") + 1] == "gemini-2.5-flash"
 
+    def test_shipped_opencode_spec_declares_strip_openrouter_prefix_false(self):
+        """Opencode's config template defines a provider literally named
+        ``openrouter`` — stripping the prefix would re-route
+        ``openrouter/<vendor>/<model>`` to a provider its config never
+        declared. Lock the shipped default."""
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        assert HARNESSES["opencode"].strip_openrouter_prefix is False
+
+    def test_opencode_preserves_openrouter_prefix_so_config_provider_block_wins(self):
+        """The user-visible behavior of the flag: an ``openrouter/vendor/model``
+        slug reaches the opencode CLI intact so opencode routes to its
+        ``openrouter`` provider block. If this test flips, opencode 401s
+        again on Muse-family models — opencode's config declares no
+        ``meta`` / ``qwen`` provider, so a stripped slug re-routes into a
+        nonexistent block."""
+        from tolokaforge_adapter_terminal_bench.harness import harness_model
+
+        assert (
+            harness_model("openrouter/meta/muse-glimmer-30b", "opencode")
+            == "openrouter/meta/muse-glimmer-30b"
+        )
+
+    def test_default_strip_openrouter_prefix_removes_the_prefix(self):
+        """Default preserves the pre-existing behavior for every harness
+        besides opencode — kimi-code, claude-code, codex, grok-build,
+        gemini-cli all rely on the strip."""
+        from tolokaforge_adapter_terminal_bench.harness import harness_model
+
+        assert (
+            harness_model("openrouter/anthropic/claude-sonnet-5", "claude-code")
+            == "anthropic/claude-sonnet-5"
+        )
+
     def test_a_bare_model_name_is_untouched_for_claude_code(self):
         from tolokaforge_adapter_terminal_bench.harness import harness_model
 
@@ -1637,7 +1912,7 @@ class TestComposeSynthesisHarnessLayer:
         assert base["profiles"] == ["tolokaforge-build"]
 
         main = compose["services"]["main"]
-        assert main["image"] == "tbench-layered:local-claude-code-2.1.231"
+        assert main["image"] == "tbench-layered:local-claude-code-2.1.233"
         assert main["build"] == {
             "context": ".",
             "dockerfile": "_harness/harness.Dockerfile",
@@ -1687,7 +1962,7 @@ class TestComposeSynthesisHarnessLayer:
         compose = _load_synthesised(env)
         assert "main-base" not in compose["services"]
         assert env.base_build_service is None
-        assert compose["services"]["main"]["image"] == "tbench-prebuilt:local-claude-code-2.1.231"
+        assert compose["services"]["main"]["image"] == "tbench-prebuilt:local-claude-code-2.1.233"
 
     def test_registry_base_is_pulled_not_built(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
@@ -2023,18 +2298,44 @@ class TestHarnessSkillsBundle:
         metadata = adapter.to_task_description("echo-hello-skills").metadata
         assert "harness_skills_bundle_sha" not in metadata
 
-    def test_a_relative_skills_target_is_refused_at_registry_load(self):
-        """A ``COPY`` target resolving against WORKDIR is not a skills path."""
+    @staticmethod
+    def _spec_with_target(target: str):
         from tolokaforge_adapter_terminal_bench.harness import HarnessSpec
 
+        return HarnessSpec(
+            install_source="cli",
+            version="1.0.0",
+            argv_prefix=("cli",),
+            argv_suffix=(),
+            skills_dir_target=target,
+        )
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "~/.claude/skills/",
+            "$HOME/.claude/skills/",
+            ".claude/skills/",
+        ],
+    )
+    def test_a_target_nothing_will_expand_is_refused_at_registry_load(self, target):
+        """Only two shapes are a skills path: absolute, or rooted at a
+        ``${VAR}`` construct the resolver answers.
+
+        A brace-less ``$HOME/...`` is the case worth naming: it is legal in a
+        ``config_files`` key, because a shell writes that file. Nothing expands
+        it here — the resolver leaves it alone and Docker would read it off the
+        image's own ``ENV``, so the bundle would land somewhere the CLI never
+        looks and the trial would still record skills.
+        """
         with pytest.raises(ValueError, match="skills_dir_target"):
-            HarnessSpec(
-                install_source="cli",
-                version="1.0.0",
-                argv_prefix=("cli",),
-                argv_suffix=(),
-                skills_dir_target="~/.claude/skills/",
-            )
+            self._spec_with_target(target)
+
+    def test_a_construct_rooted_target_is_accepted(self):
+        """The resolver answers it before delivery sees it."""
+        assert self._spec_with_target("${HOME}/.claude/skills/").skills_dir_target == (
+            "${HOME}/.claude/skills/"
+        )
 
 
 class TestTerminalBenchAdapterHarnessImageBuilds:
@@ -2439,26 +2740,28 @@ class TestHarnessPresetsFileOverlay:
 
         assert self._adapter(fixture_dir, tmp_path, None).harnesses == HARNESSES
 
-
-class _FakeDistribution:
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-
-class _FakeEntryPoint:
-    """Stand-in for a plugin's ``importlib.metadata`` entry point.
-
-    ``importlib.metadata.EntryPoint`` refuses attribute assignment, so a test
-    cannot bind a fabricated distribution to a real one.
-    """
-
-    def __init__(self, name: str, distribution: str, module) -> None:
-        self.name = name
-        self.dist = _FakeDistribution(distribution)
-        self._module = module
-
-    def load(self):
-        return self._module
+    def test_shipped_gemini_litellm_overlay_resolves(self, fixture_dir, tmp_path, monkeypatch):
+        """The shipped overlay example at
+        ``examples/terminal_bench/gemini_litellm_overlay.yaml`` is the
+        sanctioned path to route gemini-cli via a LiteLLM gateway. It must
+        resolve into a valid ``HarnessSpec`` — a stale field name or a
+        missed allow-list widen surfaces here rather than as a load-time
+        crash on the operator's machine."""
+        monkeypatch.setenv("LITELLM_API_KEY", "sk-litellm-test")
+        monkeypatch.setenv("LITELLM_BASE_URL", "https://litellm.example.test")
+        examples_dir = Path(__file__).parent.parent.parent / "examples" / "terminal_bench"
+        overlay = examples_dir / "gemini_litellm_overlay.yaml"
+        adapter = self._adapter(
+            fixture_dir,
+            tmp_path,
+            overlay,
+            agent_harness="gemini-cli",
+            agent_model="gemini-3.1-pro-preview",
+        )
+        spec = adapter.harnesses["gemini-cli"]
+        assert spec.container_env["GEMINI_CLI_TRUST_WORKSPACE"] == "true"
+        assert spec.container_env["GOOGLE_GEMINI_BASE_URL"] == ("${secret:LITELLM_BASE_URL}/gemini")
+        assert spec.provider_env == {"GEMINI_API_KEY": "${secret:LITELLM_API_KEY}"}
 
 
 class TestHarnessRegistryPluginDiscovery:
@@ -2483,48 +2786,19 @@ class TestHarnessRegistryPluginDiscovery:
     @pytest.fixture
     def plugin(self, tmp_path, monkeypatch):
         """Build an importable plugin package shipping a registry YAML."""
-        import importlib
-        import sys
 
-        def _build(package: str, distribution: str, harnesses: str) -> _FakeEntryPoint:
-            root = tmp_path / distribution
-            (root / package).mkdir(parents=True)
-            (root / package / "__init__.py").write_text("")
-            (root / package / "harnesses.yaml").write_text(harnesses)
-            monkeypatch.syspath_prepend(str(root))
-            monkeypatch.delitem(sys.modules, package, raising=False)
-            return _FakeEntryPoint(package, distribution, importlib.import_module(package))
+        def _build(
+            package: str,
+            distribution: str | None,
+            harnesses: str,
+            version: str = "1.0.0",
+        ) -> FakeEntryPoint:
+            return build_plugin(tmp_path, monkeypatch, package, distribution, harnesses, version)
 
         return _build
 
-    @staticmethod
-    def _install(monkeypatch, *entry_points):
-        """Make *entry_points* the installed set for the harness-registry group."""
-        import importlib.metadata
-
-        from tolokaforge_adapter_terminal_bench.harness import (
-            HARNESS_REGISTRY_ENTRY_POINT_GROUP,
-        )
-
-        real = importlib.metadata.entry_points
-
-        def _entry_points(**kwargs):
-            if kwargs.get("group") == HARNESS_REGISTRY_ENTRY_POINT_GROUP:
-                return list(entry_points)
-            return real(**kwargs)
-
-        monkeypatch.setattr(importlib.metadata, "entry_points", _entry_points)
-
-    @staticmethod
-    def _bundle(name: str, version: str) -> str:
-        return (
-            "harnesses:\n"
-            f"  {name}:\n"
-            f"    install_source: '@acme/{name}'\n"
-            f"    version: '{version}'\n"
-            f"    argv_prefix: [{name}]\n"
-            f"    argv_suffix: ['--go']\n"
-        )
+    _install = staticmethod(install_plugins)
+    _bundle = staticmethod(bundle_yaml)
 
     def test_nothing_installed_contributes_nothing(self):
         """The common case: no plugin, no change to what the adapter ships."""
@@ -2532,21 +2806,87 @@ class TestHarnessRegistryPluginDiscovery:
             discover_plugin_harness_registries,
         )
 
-        assert discover_plugin_harness_registries() == {}
+        discovered = discover_plugin_harness_registries()
+        assert discovered.harnesses == {}
+        assert discovered.bundles == ()
+
+    def test_baseline_resolution_names_no_plugin_and_no_overlay(self):
+        """A run with nothing installed and no overlay says so, rather than
+        leaving a reader to infer it from a registry that happens to match."""
+        from tolokaforge_adapter_terminal_bench.harness import (
+            HARNESSES,
+            resolve_effective_registry,
+        )
+
+        resolved = resolve_effective_registry()
+        assert resolved.harnesses == HARNESSES
+        assert resolved.plugin_bundles == ()
+        assert resolved.overlay_file is None
 
     def test_installed_bundle_is_loaded_from_its_packaged_yaml(self, monkeypatch, plugin):
+        from tolokaforge_adapter_terminal_bench.harness import (
+            PluginBundle,
+            discover_plugin_harness_registries,
+        )
+
+        self._install(
+            monkeypatch,
+            plugin(
+                "acme_harnesses",
+                "acme-tbench-harnesses",
+                self._bundle("acme-cli", "4.5.6"),
+                version="2.3.4",
+            ),
+        )
+        discovered = discover_plugin_harness_registries()
+        assert list(discovered.harnesses) == ["acme-cli"]
+        assert discovered.harnesses["acme-cli"].version == "4.5.6"
+        assert discovered.harnesses["acme-cli"].argv_prefix == ("acme-cli",)
+        assert discovered.bundles == (
+            PluginBundle(
+                distribution="acme-tbench-harnesses",
+                version="2.3.4",
+                harnesses=("acme-cli",),
+            ),
+        )
+
+    def test_bundles_are_ordered_by_distribution(self, monkeypatch, plugin):
+        """Distribution order, not entry-point order: the two disagree here,
+        and the recorded order must not depend on how a plugin names its
+        package."""
         from tolokaforge_adapter_terminal_bench.harness import (
             discover_plugin_harness_registries,
         )
 
         self._install(
             monkeypatch,
-            plugin("acme_harnesses", "acme-tbench-harnesses", self._bundle("acme-cli", "4.5.6")),
+            plugin("acme_harnesses", "zeta-harnesses", self._bundle("acme-cli", "4.5.6")),
+            plugin("globex_harnesses", "alpha-harnesses", self._bundle("globex-cli", "7.8.9")),
         )
         discovered = discover_plugin_harness_registries()
-        assert list(discovered) == ["acme-cli"]
-        assert discovered["acme-cli"].version == "4.5.6"
-        assert discovered["acme-cli"].argv_prefix == ("acme-cli",)
+        assert [bundle.distribution for bundle in discovered.bundles] == [
+            "alpha-harnesses",
+            "zeta-harnesses",
+        ]
+        assert [bundle.harnesses for bundle in discovered.bundles] == [
+            ("globex-cli",),
+            ("acme-cli",),
+        ]
+
+    def test_entry_point_without_a_distribution_reports_no_version(self, monkeypatch, plugin):
+        """A programmatically registered entry point has no distribution to
+        read a version off, and a fabricated one would be a lie."""
+        from tolokaforge_adapter_terminal_bench.harness import (
+            discover_plugin_harness_registries,
+        )
+
+        self._install(
+            monkeypatch,
+            plugin("acme_harnesses", None, self._bundle("acme-cli", "4.5.6")),
+        )
+        (bundle,) = discover_plugin_harness_registries().bundles
+        assert bundle.distribution == "acme_harnesses"
+        assert bundle.version is None
 
     def test_two_plugins_claiming_one_harness_name_are_refused(self, monkeypatch, plugin):
         """No safe pick: the two bundles disagree about what the name installs
@@ -2579,7 +2919,7 @@ class TestHarnessRegistryPluginDiscovery:
             monkeypatch,
             plugin("acme_harnesses", "acme-tbench-harnesses", self._bundle("codex", "9.9.9")),
         )
-        effective = resolve_effective_registry()
+        effective = resolve_effective_registry().harnesses
         assert effective["codex"].version == "9.9.9"
         assert effective["codex"].config_files == {}
         assert HARNESSES["codex"].config_files != {}
@@ -2594,8 +2934,22 @@ class TestHarnessRegistryPluginDiscovery:
         )
         overlay = tmp_path / "harness_presets.yaml"
         overlay.write_text(self._bundle("acme-cli", "0.0.0-overlay"))
-        effective = resolve_effective_registry(str(overlay))
-        assert effective["acme-cli"].version == "0.0.0-overlay"
+        resolved = resolve_effective_registry(str(overlay))
+        assert resolved.harnesses["acme-cli"].version == "0.0.0-overlay"
+        assert resolved.overlay_file == overlay.resolve()
+
+    def test_relative_overlay_is_recorded_as_its_resolved_path(self, monkeypatch, tmp_path):
+        """The recorded overlay must name one file whatever directory the run
+        started in, so a relative argument is recorded resolved."""
+        from tolokaforge_adapter_terminal_bench.harness import resolve_effective_registry
+
+        overlay = tmp_path / "harness_presets.yaml"
+        overlay.write_text(self._bundle("acme-cli", "4.5.6"))
+        monkeypatch.chdir(tmp_path)
+        recorded = resolve_effective_registry("harness_presets.yaml").overlay_file
+        assert recorded is not None
+        assert recorded.is_absolute()
+        assert recorded == overlay.resolve()
 
     def test_disable_harness_plugins_bypasses_discovery(self, monkeypatch, tmp_path):
         """An audit run pins the registry to what the adapter ships, whatever
@@ -2604,12 +2958,18 @@ class TestHarnessRegistryPluginDiscovery:
         import importlib.metadata
 
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
-        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+        from tolokaforge_adapter_terminal_bench.harness import (
+            HARNESSES,
+            resolve_effective_registry,
+        )
 
         def _refuse(**kwargs):
             raise AssertionError(f"entry-point discovery ran for group {kwargs.get('group')!r}")
 
         monkeypatch.setattr(importlib.metadata, "entry_points", _refuse)
+        resolved = resolve_effective_registry(discover_plugins=False)
+        assert resolved.harnesses == HARNESSES
+        assert resolved.plugin_bundles == ()
         adapter = TerminalBenchAdapter(
             {
                 "terminal_bench_dir": str(self._TASKS_DIR),
@@ -2674,7 +3034,7 @@ class TestHarnessTaskDescriptionMetadata:
             "claude --verbose --output-format=stream-json "
             "--permission-mode=bypassPermissions --print"
         )
-        assert td.metadata["agent_harness_version"] == "2.1.231"
+        assert td.metadata["agent_harness_version"] == "2.1.233"
 
     def test_default_harness_publishes_no_command(self, fixture_dir, tmp_path):
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter

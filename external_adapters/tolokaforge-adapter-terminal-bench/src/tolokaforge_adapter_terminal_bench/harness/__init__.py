@@ -15,31 +15,48 @@ whatever command it finds there.
 from __future__ import annotations
 
 import importlib.resources
+import json
 import logging
 import re
 import shlex
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from jinja2 import Environment, StrictUndefined, TemplateSyntaxError
 from jinja2.meta import find_undeclared_variables
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
 from tolokaforge.core.plugin_registry import discover_entry_points
+
+from .path_resolvers import DEFAULT_PATH_RESOLVER, LinuxRootResolver
+from .protocols import PATH_CONSTRUCT_PATTERN, PathResolver, SkillDelivery, SkillsBundle
 
 __all__ = [
     "CONFIG_TEMPLATE_VARIABLES",
+    "DEFAULT_PATH_RESOLVER",
     "ENGINE_LOOP",
     "HARNESSES",
     "HARNESS_REGISTRY_ENTRY_POINT_GROUP",
     "INSTALL_SCRIPT",
     "OPENROUTER_PREFIX",
+    "PATH_CONSTRUCT_PATTERN",
     "PLUGIN_REGISTRY_RESOURCE",
     "PROVIDER_ENV_INPUT_PREFIX",
     "PROVIDER_ENV_KEYS",
     "SHIPPED_REGISTRY_FILE",
     "HarnessSpec",
+    "LinuxRootResolver",
+    "MIDDLEWARE_PROXY_SCRIPT",
+    "RequestMiddleware",
+    "PathResolver",
+    "PluginBundle",
+    "PluginDiscovery",
+    "ResolvedHarnessRegistry",
+    "SkillDelivery",
+    "SkillsBundle",
     "accepted_harnesses",
     "discover_plugin_harness_registries",
     "harness_command",
@@ -92,6 +109,63 @@ its own system prompt, and the adapter's ``bash`` tool — a different scaffold
 from terminal-bench's Terminus-2 agent, which this repo does not install. A
 trial recorded as ``terminus-2`` would be claiming a comparison it did not run.
 """
+
+
+class RequestMiddleware(BaseModel):
+    """Per-harness HTTP proxy that mutates outbound provider requests.
+
+    Ships with :mod:`~.middleware_proxy` — a stdlib-only HTTP forwarder that
+    lands in the image alongside ``install-harness.sh`` and starts
+    on-demand in the harness_command preamble. Configured here as data:
+    which env-var value gets redirected, what port to bind, what body /
+    header fields to inject.
+
+    Motivating case: ``moonshotai/kimi-k2.7-code`` on OpenRouter fans out to
+    14 possible providers, mostly INT4/FP4 third-parties whose tool-call
+    continuation returns empty completions. Forcing Moonshot AI first-party
+    routing via ``{"provider": {"only": ["moonshotai"]}}`` fixes it, but the
+    kimi-code CLI (through 0.36.1) has no user-facing body-passthrough. The
+    same shape covers any vendor / model whose OpenRouter routing needs
+    pinning, any custom-header injection a CLI does not surface, and any
+    on-the-wire body repair a downstream provider needs. Every future user
+    of this slot is a HarnessSpec YAML edit — no code change.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    upstream_env_key: str
+    """Which :attr:`HarnessSpec.provider_env` key's value is the URL to be
+    proxied. Non-empty. That variable's value in the container is rewritten
+    to ``http://127.0.0.1:<port>`` for the CLI process, while the real URL
+    reaches the middleware as its ``--upstream``. Naming the env key rather
+    than the URL itself keeps the routing (LiteLLM overlay, direct-provider
+    override, alternate gateway) as an operator overlay concern — the
+    middleware wraps whatever the run's ``provider_env`` finally resolves
+    to."""
+
+    port: int = 8899
+    """Local port :mod:`middleware_proxy` listens on inside the container.
+    Fixed rather than dynamic so a caller inspecting the CLI's traffic can
+    predict where it goes. Distinct across concurrent harnesses on the same
+    host is not required — each trial runs in its own container namespace."""
+
+    body_injections: dict[str, Any] = Field(default_factory=dict)
+    """JSON object deep-merged into every request body (only on
+    :attr:`path_filter`). Overlay values win on key conflict; nested dicts
+    merge recursively; non-dict overlay values replace. Empty on default —
+    the middleware becomes a passthrough forwarder, useful when only headers
+    are being injected."""
+
+    header_injections: dict[str, str] = Field(default_factory=dict)
+    """Extra HTTP headers added to every forwarded request. Values are string
+    literals — no template expansion, since the middleware runs inside the
+    container after :attr:`HarnessSpec.provider_env` interpolation."""
+
+    path_filter: str | None = None
+    """Only inject on request paths starting with this prefix. ``None`` (the
+    default) injects on every ``POST`` with a JSON body; set to
+    ``"/chat/completions"`` when the provider serves both chat and
+    non-chat endpoints and only chat needs a body override."""
 
 
 class HarnessSpec(BaseModel):
@@ -167,13 +241,18 @@ class HarnessSpec(BaseModel):
     load-time error, since a silently empty substitution would surface as a
     provider auth failure many layers from the typo.
 
-    The path may start with ``$`` (``${CODEX_HOME:-$HOME/.codex}/config.toml``)
-    so a harness need not assume the container's user. Both path and content
-    are written through a double-quoted ``printf``, so ``$VAR`` references
-    expand inside the container: that is how a credential reaches the file
-    without the assembled command — which is recorded on
-    ``TaskDescription.metadata`` — ever carrying its value. A template must
-    therefore not carry a literal ``$`` it does not want expanded."""
+    A path is an absolute one, a
+    :data:`~.protocols.PATH_CONSTRUCT_PATTERN` construct over the vocabulary
+    the run's :class:`~.protocols.PathResolver` knows (``${HOME}`` /
+    ``${CONFIG_HOME}`` under the shipped
+    :class:`~.path_resolvers.LinuxRootResolver`), or any other ``$``-rooted
+    reference — which reaches the container verbatim, so a harness need not
+    assume the container's user. Both path and content are written through a
+    double-quoted ``printf``, so those references expand inside the container:
+    that is how a credential reaches the file without the assembled command —
+    which is recorded on ``TaskDescription.metadata`` — ever carrying its
+    value. A template must therefore not carry a literal ``$`` it does not want
+    expanded."""
 
     flags_pre_permission: tuple[str, ...] = ()
     """Flags inserted between the CLI executable and the model flag / argv
@@ -209,14 +288,23 @@ class HarnessSpec(BaseModel):
     :data:`PROVIDER_ENV_KEYS` (a run-config would then shadow this)."""
 
     skills_dir_target: str | None = None
-    """Absolute container directory a task pack's skills bundle is copied into
-    during the harness image build, or ``None`` for a CLI that reads no skills.
+    """Runtime directory a task pack's skills bundle is delivered to, or
+    ``None`` for a CLI that reads no skills.
+
+    Either an absolute path or one rooted at a ``${HOME}`` /
+    ``${CONFIG_HOME}`` construct the run's
+    :class:`~tolokaforge_adapter_terminal_bench.harness.protocols.PathResolver`
+    answers before
+    :class:`~tolokaforge_adapter_terminal_bench.harness.protocols.SkillDelivery`
+    sees it. Unlike a :attr:`config_files` key it may *not* be rooted at a
+    brace-less ``$VAR``: no shell reads this path, so nothing would expand it
+    the way the resolver does.
 
     The parity policy refuses the operator's own ``~/.claude/skills``: what a
     benchmark agent can read has to be versioned with the task rather than with
     the laptop the eval ran on. A task declaring
     :attr:`~tolokaforge_adapter_terminal_bench.task_parser.TerminalBenchTask.harness_skills_dir`
-    gets that directory copied here, and the bundle's content hash is recorded
+    gets that directory delivered here, and the bundle's content hash is recorded
     on the trial artifact. Left ``None``, the harness installs no skills and a
     pack shipping them still runs — without them."""
 
@@ -228,6 +316,25 @@ class HarnessSpec(BaseModel):
     <name> not found" and the CLI silently drops OpenRouter routing to hit
     the vendor's default endpoint. The reference vendor-CLI invocation
     sidesteps the same trap by taking the last path segment."""
+
+    request_middleware: RequestMiddleware | None = None
+    """When set, ships a stdlib HTTP proxy inside the trial container and
+    routes the CLI's provider calls through it, injecting the declared body /
+    header fields. See :class:`RequestMiddleware` — the docstring names the
+    motivating case (OpenRouter provider-preference pinning for
+    ``moonshotai/kimi-k2.7-code``) and the future shape."""
+
+    strip_openrouter_prefix: bool = True
+    """Whether ``harness_model`` should strip a leading ``openrouter/`` route
+    marker before handing the model name to the CLI. ``True`` for CLIs whose
+    provider registry uses the ``openrouter/`` prefix to select a direct-vendor
+    handler (claude-code, codex, grok-build, kimi-code, gemini-cli) — the
+    prefix would land on ``api.openrouter.ai/openrouter/...`` and 404. ``False``
+    for CLIs whose config template defines a provider *literally* named
+    ``openrouter`` and expects the caller to route ``openrouter/<vendor>/<model>``
+    to it (opencode). Stripping the prefix for those CLIs re-routes
+    ``openrouter/meta/muse-glimmer-30b`` to a nonexistent ``meta`` provider
+    and crashes with ``UnknownError`` in ~2s."""
 
     provider_env: dict[str, str] = Field(default_factory=dict)
     """Default provider-env envelope for this harness — the shape the CLI
@@ -266,13 +373,43 @@ class HarnessSpec(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _skills_target_is_an_absolute_path(self) -> HarnessSpec:
-        """Refuse a target the image build would resolve somewhere unintended."""
-        if self.skills_dir_target is not None and not self.skills_dir_target.startswith("/"):
+    def _skills_target_is_resolvable(self) -> HarnessSpec:
+        """Refuse a target no resolver and no build step would place."""
+        target = self.skills_dir_target
+        if target is None or target.startswith("/") or PATH_CONSTRUCT_PATTERN.match(target):
+            return self
+        raise ValueError(
+            f"skills_dir_target {target!r} is neither absolute nor rooted at a "
+            "`${VAR}` construct the run's PathResolver answers. A Dockerfile `COPY` "
+            "target resolves against the image's WORKDIR, and Docker expands neither "
+            "`~` nor a brace-less `$VAR` the way a shell would — `$HOME/.claude/skills/` "
+            "would be read off the image's own `ENV`, which is nobody's answer. Give the "
+            "absolute path the CLI reads skills from, or `${HOME}/...`."
+        )
+
+    @model_validator(mode="after")
+    def _config_files_and_request_middleware_do_not_coexist(self) -> HarnessSpec:
+        """Refuse a spec that would silently bake the upstream URL into a config file.
+
+        :attr:`config_files` templates render at Python assembly time from
+        :attr:`provider_env` — the ``base_url`` variable interpolates the
+        pre-rewrite ``*_BASE_URL`` value. :attr:`request_middleware`
+        rewrites that env var at bash time, AFTER the config files have
+        already been written. A CLI that reads its endpoint from an on-disk
+        config file bakes in the upstream URL and bypasses the proxy —
+        silently, since the CLI never touches the env var again after
+        startup. Reject the combination at load rather than at trial time
+        with a broken run to diagnose.
+        """
+        if self.request_middleware is not None and self.config_files:
             raise ValueError(
-                f"skills_dir_target {self.skills_dir_target!r} is relative; a Dockerfile "
-                "`COPY` target resolves against the image's WORKDIR, so give the absolute "
-                "path the CLI reads skills from. `~` is not expanded either."
+                "HarnessSpec: request_middleware and config_files cannot both be "
+                "set. config_files render at assembly time with the upstream URL "
+                "from provider_env; the middleware rewrite only reaches env-driven "
+                "routing. A CLI that reads its endpoint from a config file would "
+                "bake in the upstream and bypass the proxy. Route the CLI's "
+                "endpoint through an env var, or land the config template "
+                "referencing http://127.0.0.1:<port> directly."
             )
         return self
 
@@ -394,7 +531,45 @@ disk. Same shape as :data:`SHIPPED_REGISTRY_FILE`'s ``harnesses:`` mapping.
 """
 
 
-def discover_plugin_harness_registries() -> dict[str, HarnessSpec]:
+class PluginBundle(BaseModel):
+    """One installed registry plugin and the harness names it declared.
+
+    Pydantic rather than a dataclass: this value is written verbatim into the
+    run bundle, so it crosses a serialisation boundary.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    distribution: str
+    """Installing distribution's name, or the entry-point name when the entry
+    point carries no distribution."""
+
+    version: str | None
+    """The distribution's version. ``None`` for a programmatically registered
+    entry point, which has no distribution to read one off."""
+
+    harnesses: tuple[str, ...]
+    """Harness names this bundle declared, sorted."""
+
+
+@dataclass(frozen=True)
+class PluginDiscovery:
+    """What the installed registry plugins contributed, and who contributed it."""
+
+    harnesses: Mapping[str, HarnessSpec]
+    bundles: tuple[PluginBundle, ...]
+
+
+@dataclass(frozen=True)
+class ResolvedHarnessRegistry:
+    """The registry one adapter runs on, and which layers composed it."""
+
+    harnesses: Mapping[str, HarnessSpec]
+    plugin_bundles: tuple[PluginBundle, ...]
+    overlay_file: Path | None
+
+
+def discover_plugin_harness_registries() -> PluginDiscovery:
     """Registry union of every installed :data:`HARNESS_REGISTRY_ENTRY_POINT_GROUP` plugin.
 
     Each entry point is loaded to its package, whose
@@ -402,8 +577,9 @@ def discover_plugin_harness_registries() -> dict[str, HarnessSpec]:
     :func:`load_harness_registry` — so a plugin's typo is refused with the same
     message an operator overlay's would be, naming the file and the harness key.
 
-    Returns an empty mapping when nothing is installed, which is the common
-    case and the one that must stay free of surprises: no plugin, no change.
+    Returns an empty registry and no bundles when nothing is installed, which is
+    the common case and the one that must stay free of surprises: no plugin, no
+    change.
 
     Raises:
         ValueError: two installed plugins declare the same harness name. There
@@ -412,35 +588,49 @@ def discover_plugin_harness_registries() -> dict[str, HarnessSpec]:
             both distributions rather than resolved by install order.
     """
     registry: dict[str, HarnessSpec] = {}
-    provenance: dict[str, str] = {}
+    declared_by: dict[str, str] = {}
+    bundles: list[PluginBundle] = []
     installed = discover_entry_points(HARNESS_REGISTRY_ENTRY_POINT_GROUP)
     for name, entry_point in sorted(installed.items()):
         distribution = entry_point.dist.name if entry_point.dist is not None else name
+        version = entry_point.dist.version if entry_point.dist is not None else None
         resource = importlib.resources.files(entry_point.load()) / PLUGIN_REGISTRY_RESOURCE
         with importlib.resources.as_file(resource) as path:
             bundle = load_harness_registry(path)
         for harness_name in sorted(bundle):
-            owner = provenance.get(harness_name)
+            owner = declared_by.get(harness_name)
             if owner is not None:
                 raise ValueError(
                     f"terminal-bench adapter: harness {harness_name!r} is declared by two "
                     f"installed registry plugins, {owner!r} and {distribution!r}. Uninstall "
                     "one, or rename the harness in one of the bundles."
                 )
-            provenance[harness_name] = distribution
+            declared_by[harness_name] = distribution
         registry.update(bundle)
+        bundles.append(
+            PluginBundle(
+                distribution=distribution, version=version, harnesses=tuple(sorted(bundle))
+            )
+        )
         logger.info(
             "terminal-bench adapter: harness registry plugin %s contributed %s",
             distribution,
             sorted(bundle),
         )
-    return registry
+    return PluginDiscovery(
+        harnesses=registry,
+        bundles=tuple(sorted(bundles, key=lambda entry: entry.distribution)),
+    )
 
 
 def resolve_effective_registry(
     presets_file: str | None = None, *, discover_plugins: bool = True
-) -> dict[str, HarnessSpec]:
+) -> ResolvedHarnessRegistry:
     """The registry one adapter runs on, composed from all three sources.
+
+    The result carries both the composed registry and the layers that composed
+    it, from the one resolution pass that runs: a second pass could disagree
+    with the registry the adapter is actually using.
 
     Precedence, lowest to highest, whole-entry replacement at each transition::
 
@@ -469,9 +659,10 @@ def resolve_effective_registry(
             two installed plugins collide.
     """
     registry = dict(HARNESSES)
+    bundles: tuple[PluginBundle, ...] = ()
     if discover_plugins:
-        plugins = discover_plugin_harness_registries()
-        shadowed = sorted(set(plugins) & set(HARNESSES))
+        discovery = discover_plugin_harness_registries()
+        shadowed = sorted(set(discovery.harnesses) & set(HARNESSES))
         if shadowed:
             logger.warning(
                 "terminal-bench adapter: installed registry plugin(s) replace shipped "
@@ -479,13 +670,27 @@ def resolve_effective_registry(
                 "for those names are not what runs.",
                 shadowed,
             )
-        registry.update(plugins)
+        registry.update(discovery.harnesses)
+        bundles = discovery.bundles
+    overlay_file: Path | None = None
     if presets_file:
-        registry.update(load_harness_registry(Path(presets_file).expanduser().resolve()))
-    return registry
+        overlay_file = Path(presets_file).expanduser().resolve()
+        registry.update(load_harness_registry(overlay_file))
+    return ResolvedHarnessRegistry(
+        harnesses=registry, plugin_bundles=bundles, overlay_file=overlay_file
+    )
 
 
 INSTALL_SCRIPT = Path(__file__).parent / "install-harness.sh"
+
+MIDDLEWARE_PROXY_SCRIPT = Path(__file__).parent / "middleware_proxy.py"
+"""Path to the stdlib HTTP proxy that ships alongside :data:`INSTALL_SCRIPT`.
+
+Copied into every image whose harness declares
+:attr:`HarnessSpec.request_middleware`; started on-demand from the
+:func:`harness_command` preamble. See :mod:`~.middleware_proxy` for the
+proxy itself and :class:`RequestMiddleware` for the per-harness config
+shape."""
 
 OPENROUTER_PREFIX = "openrouter/"
 """Route marker litellm reads to select its OpenRouter handler.
@@ -497,56 +702,84 @@ deliberately blank vendor key, and fails with a 401. So a vendor harness gets
 the prefix stripped, while the engine loop keeps it (litellm needs it).
 """
 
-_VENDOR_NAMESPACE_PREFIXES: tuple[str, ...] = (
-    "anthropic/",
-    "openai/",
-    "google/",
-    "x-ai/",
-    "meta-llama/",
-    "moonshotai/",
-    "qwen/",
-    "deepseek/",
+SHIPPED_REGISTRY_META_FILE: Path = (
+    Path(__file__).resolve().parent.parent / "data" / "registry_meta.yaml"
 )
-"""OpenRouter ``vendor/`` namespaces that :func:`harness_model` drops from the
-model name for harnesses declaring ``strip_vendor_namespace=True``. A new
-OpenRouter namespace would surface as the same "metadata not found" warning
-the field's docstring cites."""
+"""Registry-wide catalog file: OpenRouter vendor namespaces + the closed
+allow-list of provider env-var names. Ships as data so a new namespace or
+env-var name is a YAML edit rather than a Python constant edit."""
 
-PROVIDER_ENV_KEYS: frozenset[str] = frozenset(
-    {
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_BASE_URL",
-        "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
-        "GOOGLE_API_KEY",
-        # gemini-cli reads ``GEMINI_API_KEY`` natively (Google's own name for
-        # a Google-AI-Studio key). ``GOOGLE_API_KEY`` was previously the only
-        # Google-shaped key here, but it's the name Vertex uses; gemini-cli
-        # itself insists on ``GEMINI_API_KEY``. Both are here to accept
-        # whichever a run config declares.
-        "GEMINI_API_KEY",
-        # OpenRouter as its own named provider surface — Grok Build reads
-        # ``env_key = "OPENROUTER_API_KEY"`` from its config.toml when
-        # routing via OpenRouter rather than through the OpenAI-compat
-        # slot. Adding the two names doesn't reduce safety (the set
-        # stays a closed allow-list); a harness declaring an unknown
-        # OpenRouter-shaped variable still fails validate_provider_env_keys.
-        "OPENROUTER_API_KEY",
-        "OPENROUTER_BASE_URL",
-        # Kimi Code CLI reads ``KIMI_MODEL_API_KEY`` / ``KIMI_MODEL_BASE_URL``
-        # natively. No pre-existing OpenRouter alias name covers this — the
-        # CLI's own credentials-loader looks up these two names verbatim.
-        "KIMI_MODEL_API_KEY",
-        "KIMI_MODEL_BASE_URL",
-    }
-)
+
+class _RegistryMeta(BaseModel):
+    """Loader-shape for ``data/registry_meta.yaml``.
+
+    Kept private: no caller outside this module needs the model itself,
+    only :data:`_VENDOR_NAMESPACE_PREFIXES` and :data:`PROVIDER_ENV_KEYS`
+    populated from it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    openrouter_vendor_namespaces: tuple[str, ...]
+    provider_env_keys: frozenset[str]
+
+    @model_validator(mode="after")
+    def _every_entry_is_a_non_blank_string(self) -> _RegistryMeta:
+        for value in self.openrouter_vendor_namespaces:
+            if not value or value.strip() != value:
+                raise ValueError(
+                    f"registry_meta.yaml: openrouter_vendor_namespaces entry "
+                    f"{value!r} must be a non-blank string without leading/trailing whitespace."
+                )
+        for value in self.provider_env_keys:
+            if not value or value.strip() != value:
+                raise ValueError(
+                    f"registry_meta.yaml: provider_env_keys entry {value!r} "
+                    "must be a non-blank string without leading/trailing whitespace."
+                )
+        if len(self.openrouter_vendor_namespaces) != len(set(self.openrouter_vendor_namespaces)):
+            raise ValueError(
+                "registry_meta.yaml: openrouter_vendor_namespaces contains duplicates."
+            )
+        if not self.openrouter_vendor_namespaces:
+            raise ValueError("registry_meta.yaml: openrouter_vendor_namespaces must not be empty.")
+        if not self.provider_env_keys:
+            raise ValueError("registry_meta.yaml: provider_env_keys must not be empty.")
+        return self
+
+
+def _load_registry_meta(path: Path) -> _RegistryMeta:
+    """Read the registry-meta YAML at *path*, fail loud on missing / malformed input."""
+    if not path.exists():
+        raise FileNotFoundError(
+            f"registry_meta.yaml not found at {path}; the shipped file ships with "
+            "the tbench adapter wheel and its absence is a packaging error."
+        )
+    data = yaml.safe_load(path.read_text())
+    if not isinstance(data, Mapping):
+        raise ValueError(
+            f"registry_meta.yaml at {path} must be a YAML mapping; got {type(data).__name__}."
+        )
+    try:
+        return _RegistryMeta.model_validate(dict(data))
+    except ValidationError as exc:
+        raise ValueError(f"registry_meta.yaml at {path}: {exc}") from exc
+
+
+_REGISTRY_META = _load_registry_meta(SHIPPED_REGISTRY_META_FILE)
+
+_VENDOR_NAMESPACE_PREFIXES: tuple[str, ...] = _REGISTRY_META.openrouter_vendor_namespaces
+"""OpenRouter ``vendor/`` namespaces that :func:`harness_model` drops from the
+model name for harnesses declaring ``strip_vendor_namespace=True``. Loaded from
+``data/registry_meta.yaml`` at import; adding a namespace is a YAML edit."""
+
+PROVIDER_ENV_KEYS: frozenset[str] = _REGISTRY_META.provider_env_keys
 """Environment variables a harness CLI may be given inside the task container.
 
 An allow-list, not an open surface: every forwarded value lands in the
 per-trial compose ``.env`` and then in the container the agent works in, so an
 open surface would let a run config shadow the task's own environment with
-arbitrary values."""
+arbitrary values. Loaded from ``data/registry_meta.yaml`` at import; adding a
+key is a YAML edit."""
 
 PROVIDER_ENV_INPUT_PREFIX = "TBENCH_PROVIDER_"
 """Prefix for the compose variable that carries a provider value.
@@ -603,9 +836,15 @@ def harness_model(
 ) -> str:
     """Model name as *agent_harness*'s CLI must receive it.
 
-    Always strips the ``openrouter/`` route marker (see
-    :data:`OPENROUTER_PREFIX`); a vendor CLI does not go through litellm and
-    would otherwise select its own direct-vendor handler and fail with 401.
+    Strips the ``openrouter/`` route marker (see :data:`OPENROUTER_PREFIX`)
+    by default; a vendor CLI does not go through litellm and would otherwise
+    select its own direct-vendor handler and fail with 401. Gated by
+    :attr:`HarnessSpec.strip_openrouter_prefix` — a harness whose config
+    template defines a provider literally named ``openrouter`` (opencode)
+    sets it to ``False`` so the caller's ``openrouter/<vendor>/<model>``
+    slug reaches the config's ``openrouter`` provider block; stripping the
+    prefix for those CLIs routes the trial to a nonexistent vendor provider
+    and crashes.
 
     When *agent_harness* names a harness whose spec declares
     :attr:`HarnessSpec.strip_vendor_namespace`, also strips a leading
@@ -613,17 +852,64 @@ def harness_model(
     (``gpt-5-mini`` from ``openrouter/openai/gpt-5-mini``).
 
     *agent_harness* defaults to ``None`` for callers that only need the
-    ``openrouter/`` strip (or for the engine loop, which keeps everything).
+    ``openrouter/`` strip (or for the engine loop, which keeps everything);
+    with ``None``, the default of ``strip_openrouter_prefix=True`` applies.
     """
-    if model.startswith(OPENROUTER_PREFIX):
+    spec = registry.get(agent_harness) if agent_harness is not None else None
+    strip_prefix = spec.strip_openrouter_prefix if spec is not None else True
+    if strip_prefix and model.startswith(OPENROUTER_PREFIX):
         model = model[len(OPENROUTER_PREFIX) :]
-    if agent_harness is not None:
-        spec = registry.get(agent_harness)
-        if spec is not None and spec.strip_vendor_namespace:
-            for prefix in _VENDOR_NAMESPACE_PREFIXES:
-                if model.startswith(prefix):
-                    return model[len(prefix) :]
+    if spec is not None and spec.strip_vendor_namespace:
+        for prefix in _VENDOR_NAMESPACE_PREFIXES:
+            if model.startswith(prefix):
+                return model[len(prefix) :]
     return model
+
+
+MIDDLEWARE_PROXY_CONTAINER_PATH = "/opt/tolokaforge/middleware_proxy.py"
+"""Where ``install-harness.sh`` writes the middleware proxy script inside
+every image whose harness declares :attr:`HarnessSpec.request_middleware`."""
+
+
+def _middleware_preamble(middleware: RequestMiddleware) -> list[str]:
+    """Preamble steps that boot the middleware proxy and redirect the CLI to it.
+
+    Emitted BEFORE ``config_files`` / env-model-vars exports so the CLI's
+    template renders and its environment inherit the redirected base-URL.
+    Two steps: start the proxy in daemon mode against the current value of
+    :attr:`RequestMiddleware.upstream_env_key`; then rewrite that env var to
+    ``http://127.0.0.1:<port>`` for everything downstream.
+
+    The proxy's ``--daemon`` mode double-forks and only returns when the
+    listener is bound, so the CLI's first request cannot race the proxy's
+    startup.
+    """
+    # The upstream URL is an ``${ENV_VAR}`` reference that MUST expand at
+    # shell time — the CLI process's provider_env supplies its value; the
+    # adapter never sees the resolved URL, so binding it here would freeze
+    # a stale one. Quote the fixed tokens (path, JSON payloads) but pass
+    # the reference itself inside a double-quoted string that bash expands
+    # before ``python3`` sees it. ``shlex.quote`` uses single quotes, which
+    # would suppress the expansion.
+    upstream_ref = f'"${{{middleware.upstream_env_key}}}"'
+    boot_args: list[str] = [
+        "python3",
+        shlex.quote(MIDDLEWARE_PROXY_CONTAINER_PATH),
+        "--port",
+        str(middleware.port),
+        "--upstream",
+        upstream_ref,
+        "--body-inject",
+        shlex.quote(json.dumps(middleware.body_injections)),
+        "--header-inject",
+        shlex.quote(json.dumps(middleware.header_injections)),
+    ]
+    if middleware.path_filter is not None:
+        boot_args += ["--path-filter", shlex.quote(middleware.path_filter)]
+    boot_args.append("--daemon")
+    boot = " ".join(boot_args)
+    rewrite = f"export {middleware.upstream_env_key}=http://127.0.0.1:{middleware.port}"
+    return [boot, rewrite]
 
 
 def _shell_string(value: str) -> str:
@@ -675,6 +961,8 @@ def harness_command(
     model: str,
     registry: Mapping[str, HarnessSpec] = HARNESSES,
     provider_env: Mapping[str, str] | None = None,
+    *,
+    path_resolver: PathResolver | None = None,
 ) -> str:
     """Shell command that runs *agent_harness* against *instruction*.
 
@@ -684,6 +972,12 @@ def harness_command(
     harness's own :attr:`HarnessSpec.provider_env`, and only its ``*_BASE_URL``
     value is ever read — a credential reaches a config file by name, through
     the container's environment, never through this command.
+
+    *path_resolver* answers where each :attr:`HarnessSpec.config_files` key
+    lands in the runtime this command will run in, defaulting to
+    :data:`~.path_resolvers.DEFAULT_PATH_RESOLVER`. File *contents* never go
+    through it: their template vocabulary is closed and already
+    runtime-neutral.
 
     Assembly order (blank pieces drop out):
 
@@ -714,12 +1008,17 @@ def harness_command(
 
     # Pre-exec preamble: on-disk config-file emission + env-quartet exports.
     preamble_parts: list[str] = []
+    if spec.request_middleware is not None:
+        preamble_parts.extend(_middleware_preamble(spec.request_middleware))
     if spec.config_files:
         variables = _config_template_variables(
             resolved_model, model, spec.provider_env if provider_env is None else provider_env
         )
+        resolver = DEFAULT_PATH_RESOLVER if path_resolver is None else path_resolver
         preamble_parts.extend(
-            _config_file_write(path, _TEMPLATES.from_string(template).render(variables))
+            _config_file_write(
+                resolver.resolve(path), _TEMPLATES.from_string(template).render(variables)
+            )
             for path, template in spec.config_files.items()
         )
     for var in spec.env_model_vars:

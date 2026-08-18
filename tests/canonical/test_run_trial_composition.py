@@ -107,6 +107,7 @@ def _orchestrator_trajectory(base_dir: Path, task, output_dir: Path) -> Trajecto
     adapter_stub.get_task_dir.side_effect = adapter.get_task_dir
     adapter_stub.grading_hash_source_layer.side_effect = adapter.grading_hash_source_layer
     adapter_stub.grading_combine_layer.side_effect = adapter.grading_combine_layer
+    adapter_stub.fingerprint.return_value = None
     orch.adapter = adapter_stub
     orch.run()
     (trajectory,) = orch.results

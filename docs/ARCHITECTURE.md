@@ -149,7 +149,7 @@ flowchart TB
     Base --> Ext2
 ```
 
-Every adapter implements the same `BaseAdapter` contract — including `get_task`, `create_environment`, `get_registry_tools`, `get_grading_config`, `grade`, `compute_golden_hash`, `to_task_description` (for Docker Runner registration), `docker_stack_requirements` (to declare bind-mounts, Docker socket access, or DinD needs), and `trial_grader_name` (to declare which `TrialGrader` the orchestrator loads, default `"runner_rpc"`). The orchestrator only sees the contract, never the concrete adapter. New benchmark formats — public or private — plug in by publishing a Python package that registers under `[project.entry-points."tolokaforge.adapters"]`.
+Every adapter implements the same `BaseAdapter` contract — including `get_task`, `create_environment`, `get_registry_tools`, `get_grading_config`, `grade`, `compute_golden_hash`, `to_task_description` (for Docker Runner registration), `docker_stack_requirements` (to declare bind-mounts, Docker socket access, or DinD needs), `trial_grader_name` (to declare which `TrialGrader` the orchestrator loads, default `"runner_rpc"`), and `fingerprint()` (to report what the adapter resolved for the run, recorded on `engine_run_state.json`, default `None`). The orchestrator only sees the contract, never the concrete adapter. New benchmark formats — public or private — plug in by publishing a Python package that registers under `[project.entry-points."tolokaforge.adapters"]`.
 
 ### Extension points (where external repos plug in)
 

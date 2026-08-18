@@ -1,0 +1,49 @@
+# Registry-wide metadata: catalogs that apply across every harness entry
+# rather than being expressible on ``HarnessSpec`` itself.
+#
+# Both fields were Python constants in ``harness/__init__.py`` before Stage 2
+# of the harness detachment plan; they moved to data so a new OpenRouter
+# vendor namespace or an additional provider env-var name ships as a YAML
+# edit against a canonical snapshot regen, rather than a Python edit that
+# forces an adapter release. Read-side contract lives in
+# ``harness.load_registry_meta``.
+
+# OpenRouter ``vendor/`` namespaces that ``harness_model`` drops from the model
+# name for harnesses declaring ``strip_vendor_namespace=True``. A new
+# OpenRouter namespace (e.g., ``mistralai/``) surfaces here as a one-line
+# YAML addition rather than a Python constant edit.
+openrouter_vendor_namespaces:
+  - "anthropic/"
+  - "openai/"
+  - "google/"
+  - "x-ai/"
+  - "meta-llama/"
+  - "moonshotai/"
+  - "qwen/"
+  - "deepseek/"
+
+# Environment variables a harness CLI may be given inside the task container.
+# A closed allow-list: every forwarded value lands in the per-trial compose
+# ``.env`` and then in the container the agent works in, so an open surface
+# would let a run config shadow the task's own environment with arbitrary
+# values.
+#
+# The Google/Gemini split, the OpenRouter/Kimi vendor-specific slots, and the
+# LiteLLM entries (added when PR #1172 widened the surface) all live here so
+# an operator adding a new CLI's native env-var name does so with a YAML edit
+# instead of a Python edit.
+provider_env_keys:
+  - "ANTHROPIC_API_KEY"
+  - "ANTHROPIC_AUTH_TOKEN"
+  - "ANTHROPIC_BASE_URL"
+  - "OPENAI_API_KEY"
+  - "OPENAI_BASE_URL"
+  - "GOOGLE_API_KEY"
+  - "GEMINI_API_KEY"
+  - "GOOGLE_GEMINI_BASE_URL"
+  - "OPENROUTER_API_KEY"
+  - "OPENROUTER_BASE_URL"
+  - "KIMI_MODEL_API_KEY"
+  - "KIMI_MODEL_BASE_URL"
+  - "LITELLM_API_KEY"
+  - "LITELLM_BASE_URL"

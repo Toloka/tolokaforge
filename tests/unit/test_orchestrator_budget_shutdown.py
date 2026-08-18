@@ -178,6 +178,7 @@ def _build_orchestrator(
     adapter.trial_grader_name = "runner_rpc"
     _write_grading_yaml(tmp_path)
     adapter.get_task_dir.return_value = tmp_path
+    adapter.fingerprint.return_value = None
     orch.adapter = adapter
     return orch, tmp_path / "results" / "run"
 

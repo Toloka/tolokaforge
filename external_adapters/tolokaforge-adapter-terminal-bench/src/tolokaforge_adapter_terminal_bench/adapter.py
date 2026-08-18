@@ -12,6 +12,7 @@ bash tool only ``docker exec``s into the already-running agent container.
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,7 @@ from tolokaforge.runner.models import (
 )
 from tolokaforge.secrets import expand_secret_refs, get_default
 from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+    DEFAULT_SKILL_DELIVERY,
     PROJECT_PREFIX,
     MaterialisedEnvironment,
     installable_skills_dir,
@@ -54,13 +56,20 @@ from tolokaforge_adapter_terminal_bench.compose_synthesis import (
     skills_bundle_digest,
 )
 from tolokaforge_adapter_terminal_bench.harness import (
+    DEFAULT_PATH_RESOLVER,
     ENGINE_LOOP,
     HarnessSpec,
+    PathResolver,
+    ResolvedHarnessRegistry,
+    SkillDelivery,
     harness_command,
     provider_env_input,
     resolve_effective_registry,
     validate_harness,
     validate_provider_env_keys,
+)
+from tolokaforge_adapter_terminal_bench.harness.fingerprint import (
+    compute_harness_fingerprint,
 )
 from tolokaforge_adapter_terminal_bench.task_parser import (
     TerminalBenchTask,
@@ -142,13 +151,29 @@ class TerminalBenchAdapter(BaseAdapter):
     :class:`~tolokaforge.core.per_trial_runtime.PerTrialRuntimeBackend`.
     """
 
-    def __init__(self, params: dict[str, Any]):
+    def __init__(
+        self,
+        params: dict[str, Any],
+        *,
+        path_resolver: PathResolver | None = None,
+        skill_delivery: SkillDelivery | None = None,
+    ):
         for removed, replacement in _REMOVED_PARAMS.items():
             if removed in params:
                 raise ValueError(
                     f"terminal-bench adapter: param {removed!r} was removed — {replacement}."
                 )
         super().__init__(params)
+        # Construction seams, not run-config keys: which filesystem the CLI
+        # lands on and how a skills bundle gets there are properties of the
+        # runtime driving this adapter, and `get_adapter` builds every adapter
+        # as `AdapterClass(params)`.
+        self.path_resolver: PathResolver = (
+            DEFAULT_PATH_RESOLVER if path_resolver is None else path_resolver
+        )
+        self.skill_delivery: SkillDelivery = (
+            DEFAULT_SKILL_DELIVERY if skill_delivery is None else skill_delivery
+        )
         first_pack = self.task_packs[0] if self.task_packs else None
         first_pack_str = str(first_pack) if first_pack else None
 
@@ -160,10 +185,11 @@ class TerminalBenchAdapter(BaseAdapter):
             params.get("network_policy", NetworkPolicy.FULL_INTERNET.value)
         )
         self.prebuild_images: bool = params.get("prebuild_images", True)
-        self.harnesses: dict[str, HarnessSpec] = resolve_effective_registry(
+        self._resolved_registry: ResolvedHarnessRegistry = resolve_effective_registry(
             params.get("harness_presets_file"),
             discover_plugins=not params.get("disable_harness_plugins", False),
         )
+        self.harnesses: Mapping[str, HarnessSpec] = self._resolved_registry.harnesses
         self.agent_harness: str = validate_harness(
             params.get("agent_harness", ENGINE_LOOP), self.harnesses
         )
@@ -195,6 +221,14 @@ class TerminalBenchAdapter(BaseAdapter):
     def harness_spec(self) -> HarnessSpec | None:
         """This run's harness spec. ``None`` under the engine loop, which runs no CLI."""
         return self.harnesses.get(self.agent_harness)
+
+    def fingerprint(self) -> dict[str, Any]:
+        """The harness registry this run resolved, under a ``harness`` namespace."""
+        return {
+            "harness": compute_harness_fingerprint(
+                self._resolved_registry, self.agent_harness
+            ).model_dump(mode="json")
+        }
 
     # -- discovery ------------------------------------------------------------
 
@@ -232,6 +266,8 @@ class TerminalBenchAdapter(BaseAdapter):
             agent_harness=self.agent_harness,
             harness_registry=self.harnesses,
             provider_env_keys=sorted(self.agent_provider_env),
+            path_resolver=self.path_resolver,
+            skill_delivery=self.skill_delivery,
         )
         self._environments[task_id] = env
         return env
@@ -434,6 +470,7 @@ class TerminalBenchAdapter(BaseAdapter):
                 self.agent_model,
                 self.harnesses,
                 self.agent_provider_env,
+                path_resolver=self.path_resolver,
             )
             skills_dir = installable_skills_dir(meta, self.harness_spec)
             if skills_dir is not None:

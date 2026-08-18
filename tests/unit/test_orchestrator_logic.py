@@ -1497,6 +1497,7 @@ class TestPrepareRunIdempotency:
         )
         _write_grading_yaml(tmp_path)
         adapter.get_task_dir.return_value = tmp_path
+        adapter.fingerprint.return_value = None
         orch.adapter = adapter
         return orch
 

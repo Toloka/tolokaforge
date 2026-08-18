@@ -780,6 +780,7 @@ def _adapter_for_run(task_dir: Path) -> Any:
     adapter.docker_stack_requirements.return_value = None
     adapter.trial_grader_name = "runner_rpc"
     adapter.get_task_dir.return_value = task_dir
+    adapter.fingerprint.return_value = None
     return adapter
 
 

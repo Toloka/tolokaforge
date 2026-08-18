@@ -566,6 +566,23 @@ class Orchestrator:
         # messages emit even when root sits at WARNING.
         logging.getLogger("tolokaforge.docker").setLevel(log_level)
 
+    def _adapter_fingerprints(self) -> dict[str, Any]:
+        """The installed adapter's self-report, keyed by its adapter type.
+
+        Empty when no adapter is loaded or the loaded one reports nothing.
+        The key mirrors :meth:`_create_adapter`'s resolution, as a plain
+        ``str``: ``HarnessAdapterConfig.type`` already is one, so only the
+        enum constant of the unconfigured branch needs ``.value``.
+        """
+        if self.adapter is None:
+            return {}
+        payload = self.adapter.fingerprint()
+        if payload is None:
+            return {}
+        adapter_config = self.config.evaluation.harness_adapter
+        adapter_type = adapter_config.type if adapter_config else AdapterType.NATIVE.value
+        return {adapter_type: payload}
+
     def _create_adapter(self) -> BaseAdapter:
         """Create adapter based on configuration"""
         adapter_config = self.config.evaluation.harness_adapter
@@ -1852,6 +1869,7 @@ class Orchestrator:
             run_id=run_id,
             presets_file=get_overlay_path(),
             models_fingerprint=compute_models_fingerprint(),
+            adapter_fingerprints=self._adapter_fingerprints(),
         )
 
         # Create agent and user clients
@@ -2730,15 +2748,16 @@ class Orchestrator:
             counts = run_queue.get_counts()
             queued_attempts = len(items)
 
-        # Persist engine-level run state for subprocess workers (the preset
-        # overlay path is the only field today). Worker CLIs read this so the
-        # overlay set at ``prepare`` time propagates without the operator
-        # threading --presets-file through every ``worker`` invocation.
+        # Persist engine-level run state for subprocess workers. Worker CLIs
+        # read this so the overlay set at ``prepare`` time propagates without
+        # the operator threading --presets-file through every ``worker``
+        # invocation.
         write_engine_run_state(
             output_dir,
             run_id=run_id,
             presets_file=get_overlay_path(),
             models_fingerprint=compute_models_fingerprint(),
+            adapter_fingerprints=self._adapter_fingerprints(),
         )
 
         summary = {

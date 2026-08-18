@@ -9,7 +9,7 @@ harnesses:
     # Pinned to the version the out-of-tree host we compared against resolved
     # when the matrix comparison was baselined. The pin closes the CLI-code
     # delta with that host while keeping reproducibility.
-    version: "2.1.231"
+    version: "2.1.233"
     argv_prefix: ["claude"]
     # `--verbose --output-format=stream-json` matches the reference vendor-CLI
     # invocation. Aligning the flag block aligns the CLI's internal reasoning
@@ -47,15 +47,21 @@ harnesses:
     # `CLAUDE_CONFIG_DIR` names the directory the CLI discovers skills under.
     # It matches the default for the container's root user, stated rather than
     # inherited so `skills_dir_target` below and the CLI's search path cannot
-    # drift apart when a task image sets `HOME` elsewhere.
+    # drift apart when a task image sets `HOME` elsewhere. It is a literal
+    # rather than a `${HOME}` construct because compose interpolates `${...}`
+    # in the `environment:` block against the *invoking* shell, which would
+    # substitute the operator's host home. That asymmetry is why the pair is
+    # kept consistent by hand: `skills_dir_target` goes through the run's
+    # PathResolver and this value does not, so a runtime whose HOME is not
+    # `/root` desyncs them silently unless both are changed together.
     container_env:
       IS_SANDBOX: "1"
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
       CLAUDE_CONFIG_DIR: "/root/.claude"
-    # Where a task pack's own `harness_skills_dir` bundle is copied in the
-    # image layer. Only a task that ships skills installs any; the operator's
-    # `~/.claude/skills` is never a source (README, parity policy).
-    skills_dir_target: "/root/.claude/skills/"
+    # Where a task pack's own `harness_skills_dir` bundle is delivered to. Only
+    # a task that ships skills installs any; the operator's `~/.claude/skills`
+    # is never a source (README, parity policy).
+    skills_dir_target: "${HOME}/.claude/skills/"
     # Anthropic-shaped OpenRouter endpoint. `ANTHROPIC_BASE_URL` is a literal
     # URL (not a secret); the key value comes from the operator via the
     # `OPENROUTER_API_KEY` secret.
@@ -98,7 +104,9 @@ harnesses:
     # The reference vendor-CLI invocation writes both files too.
     # `CODEX_HOME` defaults to `$HOME/.codex`. The key is written as
     # a `$`-reference so it reaches the file from the container's environment
-    # rather than through the recorded command.
+    # rather than through the recorded command — it stays outside the
+    # `PathResolver` vocabulary on purpose, since only the container knows
+    # whether an operator set it, so the resolver defers the construct.
     config_files:
       "${CODEX_HOME:-$HOME/.codex}/config.toml": |
         openai_base_url = "{{ base_url }}"
@@ -122,19 +130,59 @@ harnesses:
     argv_suffix: ["--yolo", "--prompt"]
     # gemini-cli's model catalog uses bare names.
     strip_vendor_namespace: true
-    # gemini-cli speaks Google's native Gemini schema (`generateContent`),
-    # not OpenAI-compat, so an OpenRouter key does not authenticate its
-    # requests — pointing `GOOGLE_GEMINI_BASE_URL` at OpenRouter returns 400.
-    # The reference vendor-CLI invocation reads `GEMINI_API_KEY` and 401s otherwise
-    # (empirically verified: no matrix run of any pipeline ever produced a
-    # real gemini trajectory without a real Google AI Studio key).
-    # The operator supplies `GEMINI_API_KEY=<google-key>` in `.env`; the
-    # secret ref below is honest about what is required. Without the secret,
-    # SecretManager fails at trial start (loudly), which is the right shape:
-    # a run measuring a model against a laptop the operator can't
-    # authenticate would silently degrade to the baseline container score.
+    # The shipped default is a direct Google AI Studio route: a real
+    # ``GEMINI_API_KEY`` (Google AI Studio or Vertex SA), no base-URL
+    # override, and gemini-cli's default ``gemini-api-key`` auth type.
+    # Pure env is sufficient — no ``config_files`` write is needed for this
+    # path.
+    #
+    # ``GEMINI_CLI_TRUST_WORKSPACE=true`` skips the interactive
+    # trusted-folder prompt that would otherwise block ``--yolo`` in a
+    # headless container.
+    container_env:
+      GEMINI_CLI_TRUST_WORKSPACE: "true"
     provider_env:
       GEMINI_API_KEY: "${secret:GEMINI_API_KEY}"
+    # --- Operator overlays ---
+    #
+    # A team-hosted LiteLLM (or any) gateway that speaks Google's native
+    # ``generateContent`` shape reaches gemini-cli via its ``GATEWAY`` auth
+    # type. That path needs THREE additions the shipped default deliberately
+    # omits so nothing internal-hostname-shaped ships to PyPI:
+    #   1. ``GOOGLE_GEMINI_BASE_URL`` — the gateway endpoint that answers
+    #      ``/v1beta/models/{model}:generateContent``. Its mere presence
+    #      flips the CLI to GATEWAY mode.
+    #   2. ``config_files["${HOME}/.gemini/settings.json"]`` with
+    #      ``security.auth.selectedType: "gateway"`` + ``useExternal: true``
+    #      — gemini-cli 0.55.1's ``validateAuthMethod()`` has not been
+    #      taught about GATEWAY, so pure env raises "Invalid auth method"
+    #      without the settings-file override.
+    #   3. ``GEMINI_API_KEY`` set to whatever key the gateway expects (a
+    #      LiteLLM virtual key, not a Google credential).
+    #
+    # A worked overlay ships at
+    # ``examples/terminal_bench/gemini_litellm_overlay.yaml`` — the
+    # sanctioned path. An operator names it in the run config's
+    # ``harness_presets_file`` param and it whole-replaces this entry.
+    #
+    # For an ad-hoc single-key change (no whole-entry overlay), a caller
+    # can also union values into ``provider_env`` from the run config:
+    #
+    #     harness_adapter:
+    #       params:
+    #         agent_provider_env:
+    #           GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"
+    #           GOOGLE_GEMINI_BASE_URL: "https://<your-litellm-host>/gemini"
+    #
+    # …but the settings-file flip still has to come from somewhere — a
+    # partial overlay that only touches ``provider_env`` will 400 on the
+    # first call. Use the shipped presets-file overlay in that case.
+    #
+    # (Gemini 3 Pro ``gemini-3-pro-preview`` was retired by Google — it now
+    # sits under "Previous models (Shut down)" in Google's public docs;
+    # 3.1 Pro Preview is the current Pro-tier flagship successor.
+    # OpenRouter's ``~google/gemini-pro-latest`` alias resolves to
+    # ``google/gemini-3.1-pro-preview``, confirming.)
 
   kimi-code:
     install_method: "npm"
@@ -201,6 +249,27 @@ harnesses:
     provider_env:
       KIMI_MODEL_API_KEY: "${secret:OPENROUTER_API_KEY}"
       KIMI_MODEL_BASE_URL: "https://openrouter.ai/api/v1"
+    # Force OpenRouter first-party Moonshot AI routing for every request.
+    # OpenRouter fans `moonshotai/kimi-k2.7-code` out across 14 providers,
+    # mostly INT4/FP4 quantized third-parties whose tool-call continuation
+    # returns truly empty completions (`APIEmptyResponseError` after n
+    # retries → kimi-code falls back to the baseline score). Injecting
+    # `provider.only=["moonshotai"]` into every /chat/completions body
+    # via the shipped middleware proxy is the only path — kimi-code 0.28.1
+    # (and 0.36.1) has no user-facing body-passthrough, so the CLI itself
+    # cannot be asked to add the parameter. The proxy is stdlib only
+    # (~200 LOC in ../middleware_proxy.py) and boots inside the
+    # harness_command preamble; the CLI reaches it at localhost:8899 and
+    # is unaware of the redirect. `k3` and `k2.5` are unaffected by this
+    # setting (fewer/no INT4 endpoints), so the pin is safe as a default.
+    request_middleware:
+      upstream_env_key: "KIMI_MODEL_BASE_URL"
+      port: 8899
+      body_injections:
+        provider:
+          only: ["moonshotai"]
+          allow_fallbacks: false
+      path_filter: "/chat/completions"
 
   opencode:
     install_method: "npm"
@@ -239,6 +308,19 @@ harnesses:
     # opencode requires `provider/model` — a bare name raises — so we keep
     # the OpenRouter namespace on the model name.
     strip_vendor_namespace: false
+    # opencode's config template defines a provider *literally* named
+    # `openrouter` (see the config_files entry below). Callers using
+    # `openrouter/<vendor>/<model>` slugs (e.g. `openrouter/meta/muse-glimmer-30b`,
+    # `openrouter/qwen/qwen3.7-max`) rely on the ``openrouter/`` prefix
+    # reaching that provider block. Stripping it here (the default for the
+    # other CLIs) re-routes the trial to a vendor provider opencode's config
+    # never declared (``meta``, ``qwen``, ``moonshotai``), and opencode
+    # crashes with ``UnknownError: Unexpected server error`` in ~2s. Every
+    # `openrouter/<vendor>/*` route besides `openrouter/anthropic/*` hits
+    # this trap — the anthropic path escaped notice by accidentally
+    # matching opencode's separate ``anthropic`` provider block after the
+    # strip.
+    strip_openrouter_prefix: false
     # opencode's config-dir env vars point at a scratch path under the
     # log volume so anything opencode writes ends up captured.
     # OPENCODE_FAKE_VCS keeps opencode happy under `/app` (which isn't a
@@ -249,9 +331,19 @@ harnesses:
       XDG_STATE_HOME: "/logs/agent/opencode/xdg-state"
     # opencode's provider baseURL is read from ~/.config/opencode/opencode.json,
     # not from an env var. Config-file emission via
-    # HarnessSpec.config_files. Default: OpenRouter's Anthropic-compat
-    # surface (matches claude-code's routing). An operator targeting an
-    # OpenAI or Gemini variant overlays this via harness_presets_file.
+    # HarnessSpec.config_files. Two provider blocks:
+    #
+    # 1. `anthropic` — points at OpenRouter's Anthropic-compat surface so
+    #    Claude-family models (`anthropic/claude-*`, `openrouter/anthropic/*`)
+    #    reach OpenRouter through the SDK opencode bundles.
+    # 2. `openrouter` — an explicit OpenAI-compat provider named `openrouter`
+    #    so a caller using an `openrouter/<vendor>/<model>` slug (e.g.
+    #    `openrouter/meta/muse-spark-1.1`, `openrouter/qwen/qwen3.7-max`)
+    #    reaches OpenRouter's OpenAI-compat endpoint rather than opencode's
+    #    bundled vendor-native provider for that prefix. Without this block,
+    #    opencode parses `moonshotai/`, `meta/`, `qwen/` as vendor selectors
+    #    and routes to `api.moonshot.ai` / etc., which 401s on the
+    #    OpenRouter key.
     #
     # `ANTHROPIC_BASE_URL` MUST end in `/v1`. opencode 1.x routes
     # anthropic-provider traffic through `@ai-sdk/anthropic` (bundled;
@@ -264,9 +356,28 @@ harnesses:
     # comes back, and `deriveStepStopReason` falls to the default
     # `"unknown"`. Diagnostic signature of this misconfiguration:
     # `step_finish reason:"unknown"`, 0 tokens, ~3 s wall-clock.
+    #
+    # The `openrouter` provider uses `@ai-sdk/openai-compatible`, which
+    # opencode bundles for arbitrary OpenAI-compat endpoints. The models
+    # dict must be present but can be empty — opencode uses the model
+    # name from the CLI arg verbatim as the slug the endpoint receives.
+    #
+    # NOTE on ``apiKey``: opencode 1.18.x reads its own ``${env:VAR}``
+    # substitutions on the ``anthropic`` provider block (which opencode
+    # bundles via ``@ai-sdk/anthropic``) but not on the ``openrouter``
+    # block (via ``@ai-sdk/openai-compatible``). The block ships an
+    # unresolved ``${env:ANTHROPIC_API_KEY}`` string, opencode reads the
+    # apiKey as empty, and OpenRouter answers 401 "Missing Authentication
+    # header" on every request. Fix: use bash ``$ANTHROPIC_API_KEY``
+    # expansion at printf time (``_shell_string`` writes config files with
+    # double-quoted ``printf``, leaving ``$`` expandable), so the config
+    # file lands with the resolved key value inside the container.
+    # ``harness_command`` metadata records the shell reference, never the
+    # resolved value — so the credential does not surface in the trial
+    # artifact.
     config_files:
-      "/root/.config/opencode/opencode.json": |-
-        {"provider":{"anthropic":{"options":{"baseURL":"{{ base_url }}"}}}}
+      "${CONFIG_HOME}/opencode/opencode.json": |-
+        {"provider":{"anthropic":{"options":{"baseURL":"{{ base_url }}"}},"openrouter":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"https://openrouter.ai/api/v1","apiKey":"$ANTHROPIC_API_KEY"},"models":{}}}}
     provider_env:
       ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
       ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1"
@@ -330,7 +441,7 @@ harnesses:
     # targeting a different provider does a whole-entry replacement per
     # ADR 0033.
     config_files:
-      "/root/.grok/config.toml": |
+      "${HOME}/.grok/config.toml": |
         [cli]
         auto_update = false
 

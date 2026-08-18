@@ -338,6 +338,7 @@ def _run_orchestrator(
     adapter.docker_stack_requirements.return_value = None
     adapter.trial_grader_name = "runner_rpc"
     adapter.get_grading_config.return_value = None
+    adapter.fingerprint.return_value = None
     orch.adapter = adapter
 
     return _CompletedRun(run_dir=orch.run(), completeness=orch.grading_completeness)
