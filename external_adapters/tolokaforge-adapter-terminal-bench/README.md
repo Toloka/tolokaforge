@@ -201,11 +201,10 @@ complete working config.
 Values resolve through `expand_secret_refs`, so a run config names a
 credential rather than carrying it. A value containing a newline or a `$` is
 refused: each becomes one line of the per-trial `.env`, where a newline splits
-the line and a `$` starts an interpolation. Keys are checked against an
-allow-list —
-`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
-`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `GOOGLE_API_KEY` — and anything else is
-refused naming the accepted set.
+the line and a `$` starts an interpolation. Keys are checked against the
+`provider_env_keys` allow-list in
+[`registry_meta.yaml`](../../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/registry_meta.yaml)
+— anything else is refused naming the accepted set.
 
 The path from config to container:
 
@@ -249,8 +248,8 @@ so the shipped default targets Google directly and `GEMINI_API_KEY` is required.
 credentials and can serve wire protocols OpenRouter does not — most notably
 Google's `generateContent`, via LiteLLM's Gemini passthrough at
 `{base}/gemini/v1beta/models/…`. The route is a `harness_presets_file` overlay
-that whole-replaces the harness entry with a LiteLLM-flavoured `provider_env`
-and `container_env`. A worked example ships at
+that whole-replaces the harness entry with a LiteLLM-flavoured `provider_env`.
+A worked example ships at
 [`examples/terminal_bench/gemini_litellm_overlay.yaml`](../../examples/terminal_bench/gemini_litellm_overlay.yaml)
 for gemini-cli.
 
@@ -260,10 +259,12 @@ gemini-cli through LiteLLM by naming a `harness_presets_file` that only overlays
 the gemini-cli entry — the other five stay as shipped. This is the current
 recommended shape for Toloka's own matrix runs.
 
-`LITELLM_API_KEY`, `LITELLM_BASE_URL`, and `GOOGLE_GEMINI_BASE_URL` are all in
-`PROVIDER_ENV_KEYS` (allow-listed by the adapter), so switching a harness to
-LiteLLM does not need an adapter release — it is a data-only change on the
-overlay side.
+Switching a harness to LiteLLM is a data-only change on the overlay side:
+`GOOGLE_GEMINI_BASE_URL` — the env var gemini-cli reads to enter GATEWAY mode —
+is already in `PROVIDER_ENV_KEYS`, and the gateway's own credential and URL
+reach the overlay as `${secret:LITELLM_API_KEY}` / `${secret:LITELLM_BASE_URL}`.
+Those are secret names the `SecretManager` resolves, a separate namespace from
+the forwarded env-var names the allow-list governs.
 
 ### Harness parity policy
 

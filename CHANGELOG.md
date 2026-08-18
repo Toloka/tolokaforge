@@ -27,6 +27,10 @@ All notable changes to this project are documented in this file.
 
 - **runner**: `RunnerUserSimulatorConfig.first_message` and `RunnerUserSimulatorConfig.user_context` (the `user_simulator.first_message` / `user_simulator.user_context` keys on the `TaskDescription` wire schema). Neither was read anywhere — the conversation loop is orchestrator-side and reads `TaskConfig.actors.user`. A payload still carrying either key is refused with a message naming both remedies rather than a bare `extra_forbidden`. Migration for an out-of-tree adapter: delete the `first_message=…` argument from its `get_task()` / `to_task_description()` call and set the opener on `TaskConfig.initial_user_message` instead, where it is delivered verbatim as the first user message; `user_context` has no replacement. (#1075)
 
+### Fixed
+
+- **harness**: the shipped gemini-cli/LiteLLM overlay (`examples/terminal_bench/gemini_litellm_overlay.yaml`) declares the gateway endpoint `GOOGLE_GEMINI_BASE_URL` under `provider_env`, not `container_env`. `container_env` is copied verbatim into the synthesised compose `environment:` block, so the declared `${secret:LITELLM_BASE_URL}/gemini` reached docker as a literal and compose refused the whole file (`invalid interpolation format for services.main.environment`) — every trial run through the overlay ended in `provision_error` with an empty trajectory. `provider_env` expands `${secret:NAME}` through `expand_secret_refs` and hands the value to the container through the per-trial `.env`, so the compose file carries `GOOGLE_GEMINI_BASE_URL=${TBENCH_PROVIDER_GOOGLE_GEMINI_BASE_URL}` and never the value itself. Migration for an operator running a copied overlay: move any `container_env` entry whose value carries a `$` — a `${secret:NAME}` reference or a bare `$FOO` — to `provider_env`, whose keys must be on the `provider_env_keys` allow-list. (#1237)
+
 ## v0.18.1 (2026-08-12)
 
 ### Feat
