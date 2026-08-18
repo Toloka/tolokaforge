@@ -204,7 +204,11 @@ def test_a_pinned_key_never_renders_in_the_start_blocks_log_output(
     def _factory(**kwargs) -> _Manager:
         # A start-path record carrying the key in its message text — the shape
         # the redaction set must already cover when the start block runs.
-        stdlib_logger.info("probing TypeSense with api key %s", kwargs["api_key"])
+        # The buffer assertion below proves the redactor rewrites it in place;
+        # this log line is the input the redactor must catch.
+        stdlib_logger.info(  # lgtm[py/clear-text-logging-sensitive-data]
+            "probing TypeSense with api key %s", kwargs["api_key"]
+        )
         return _Manager(started=True, port=8199, api_key=kwargs["api_key"])
 
     monkeypatch.setattr(typesense_server_module, "create_typesense_server", _factory)
