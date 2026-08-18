@@ -3,12 +3,12 @@
 Discovery reads ``importlib.metadata.entry_points`` off the module on every
 call and caches the result per group. Both halves are load-bearing: the
 attribute read is the seam a fabricated installed set replaces, and the cache is
-why ``install_plugins`` drops it — a warm cache answers before the patched
+why ``install_plugins`` substitutes it — a warm cache answers before the patched
 attribute is ever read.
 """
 
 import pytest
-from tolokaforge_coding_harnesses._registry import _clear_discovery_cache, _discover_entry_points
+from tolokaforge_coding_harnesses._registry import _discover_entry_points
 from tolokaforge_coding_harnesses.testing import (
     FakeDistribution,
     FakeEntryPoint,
@@ -24,13 +24,6 @@ from tolokaforge_coding_harnesses import (
 )
 
 pytestmark = pytest.mark.unit
-
-
-@pytest.fixture(autouse=True)
-def _isolated_discovery():
-    _clear_discovery_cache()
-    yield
-    _clear_discovery_cache()
 
 
 def test_a_fabricated_installed_set_is_the_one_discovery_reads(
@@ -124,8 +117,8 @@ def test_installing_a_second_set_needs_no_cache_clearing_by_the_caller(
     registries with no manual cache drop in between.
 
     Discovery answers from the cache before it reads the patched attribute, so
-    ``install_plugins`` clears it — otherwise the second call here would be a
-    silent no-op and this case would read ``acme-cli`` twice while asserting
+    ``install_plugins`` substitutes it — otherwise the second call here would be
+    a silent no-op and this case would read ``acme-cli`` twice while asserting
     nothing about the injection.
     """
     install_plugins(

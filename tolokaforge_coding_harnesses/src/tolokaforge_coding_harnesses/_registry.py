@@ -63,11 +63,11 @@ def _is_package_name(value: str) -> bool:
 ENGINE_LOOP = "engine-loop"
 """The default: tolokaforge's own turn loop drives the trial.
 
-Named for what actually runs. The trial goes through
-:class:`~tolokaforge.core.loop.ToolCallingLoop` with the run config's model,
-its own system prompt, and the adapter's ``bash`` tool — a different scaffold
-from terminal-bench's Terminus-2 agent, which this repo does not install. A
-trial recorded as ``terminus-2`` would be claiming a comparison it did not run.
+Named for what actually runs. The trial goes through the calling runtime's own
+tool-calling loop with the run config's model, its own system prompt, and the
+adapter's ``bash`` tool — a different scaffold from terminal-bench's Terminus-2
+agent, which this repo does not install. A trial recorded as ``terminus-2``
+would be claiming a comparison it did not run.
 """
 
 
@@ -299,8 +299,8 @@ class HarnessSpec(BaseModel):
     needs to reach its provider through OpenRouter (or wherever). Populated
     once per harness (``ANTHROPIC_API_KEY`` + ``ANTHROPIC_BASE_URL`` for
     claude-code, ``OPENAI_*`` for codex, ``GOOGLE_API_KEY`` for gemini-cli).
-    Values may be literal (URLs pointing at OpenRouter) or reference
-    :data:`SecretManager`-resolvable ``${secret:NAME}`` refs.
+    Values may be literal (URLs pointing at OpenRouter) or ``${secret:NAME}``
+    refs the calling runtime's secret manager resolves.
 
     The adapter's ``agent_provider_env`` run-config param overlays this
     map key-by-key (union with run-config keys winning on conflict), so a
@@ -589,16 +589,6 @@ def _discover_entry_points(group: str) -> Mapping[str, importlib.metadata.EntryP
 
     _discovery_cache[group] = mapping
     return mapping
-
-
-def _clear_discovery_cache() -> None:
-    """Drop the cached per-group maps so the next discovery re-scans.
-
-    A test injecting a fabricated installed set calls this around every case:
-    without it the first scan answers every later one, and the case asserting
-    that nothing is installed would read a neighbour's plug-ins.
-    """
-    _discovery_cache.clear()
 
 
 def discover_plugin_harness_registries() -> PluginDiscovery:

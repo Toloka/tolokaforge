@@ -10,12 +10,12 @@ precedence.
 from pathlib import Path
 
 import pytest
-from tolokaforge_coding_harnesses._registry import _clear_discovery_cache
 from tolokaforge_coding_harnesses.testing import (
     FakeEntryPoint,
     build_plugin,
     bundle_yaml,
     install_plugins,
+    isolate_discovery,
 )
 
 from tolokaforge_coding_harnesses import (
@@ -29,16 +29,10 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def _isolated_discovery():
-    """Drop the per-group entry-point cache around every case.
-
-    Discovery caches its scan, so an injected plugin set would otherwise leak
-    into the next case — including into the no-plugin-installed case, which
-    asserts the opposite.
-    """
-    _clear_discovery_cache()
-    yield
-    _clear_discovery_cache()
+def _isolated_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every case its own discovery cache, including the two that install
+    nothing and assert the registry is exactly what the package ships."""
+    isolate_discovery(monkeypatch)
 
 
 @pytest.fixture

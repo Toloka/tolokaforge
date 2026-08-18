@@ -19,22 +19,20 @@ sync: install
 # Testing
 # =============================================================================
 
-# Every test root in the workspace (mirrors pyproject `testpaths`). A path
-# argument overrides `testpaths`, so an incomplete list runs a subset and still
-# reports green.
-TEST_ROOTS = tests/ tolokaforge_models/tests/ tolokaforge_coding_harnesses/tests/
+# No path argument: pytest reads `testpaths`, which names every test root the
+# workspace ships. A path here would override it and run a silent subset.
 
 test:
-	uv run pytest $(TEST_ROOTS) -v
+	uv run pytest -v
 
 test-unit:
-	uv run pytest $(TEST_ROOTS) -v -m unit
+	uv run pytest -v -m unit
 
 test-canonical:
-	uv run pytest $(TEST_ROOTS) -v -m canonical
+	uv run pytest -v -m canonical
 
 test-coverage:
-	uv run pytest $(TEST_ROOTS) --cov=tolokaforge --cov-report=html --cov-report=term
+	uv run pytest --cov --cov-report=html --cov-report=term
 
 # =============================================================================
 # Code Quality

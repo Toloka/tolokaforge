@@ -1,6 +1,7 @@
 # Registry-wide metadata: catalogs that apply across every harness entry
-# rather than being expressible on ``HarnessSpec`` itself. Read-side contract
-# lives in ``tolokaforge_coding_harnesses.load_registry_meta``.
+# rather than being expressible on ``HarnessSpec`` itself. The file this
+# package reads as ``tolokaforge_coding_harnesses.SHIPPED_REGISTRY_META_FILE``;
+# the contract validating every value below is private to ``_registry.py``.
 
 # OpenRouter ``vendor/`` namespaces that ``harness_model`` drops from the model
 # name for harnesses declaring ``strip_vendor_namespace=True``. A new

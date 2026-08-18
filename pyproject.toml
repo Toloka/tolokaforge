@@ -397,7 +397,9 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["tolokaforge"]
+# Every package the workspace ships. `--cov` with no value reads this list, so a
+# `--cov=<pkg>` on a command line would replace it with a narrower one.
+source = ["tolokaforge", "tolokaforge_models", "tolokaforge_coding_harnesses"]
 omit = [
     "tolokaforge/*/tests/*",
     "*/test_*",

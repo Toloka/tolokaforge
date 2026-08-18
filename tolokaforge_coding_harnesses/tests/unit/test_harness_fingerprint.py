@@ -16,7 +16,6 @@ import json
 from pathlib import Path
 
 import pytest
-from tolokaforge_coding_harnesses._registry import _clear_discovery_cache
 from tolokaforge_coding_harnesses.fingerprint import _digest, compute_harness_fingerprint
 from tolokaforge_coding_harnesses.testing import build_plugin, bundle_yaml, install_plugins
 
@@ -28,15 +27,6 @@ from tolokaforge_coding_harnesses import (
 )
 
 pytestmark = pytest.mark.unit
-
-
-@pytest.fixture(autouse=True)
-def _isolated_discovery():
-    """Drop the per-group entry-point cache around every case, so an injected
-    plugin set cannot leak into a case asserting there is none."""
-    _clear_discovery_cache()
-    yield
-    _clear_discovery_cache()
 
 
 def _overlay(tmp_path: Path, name: str, version: str) -> Path:

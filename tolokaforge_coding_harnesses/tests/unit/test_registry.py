@@ -54,9 +54,7 @@ class TestHarnessRegistryMeta:
 
         target = tmp_path / "registry_meta.yaml"
         target.write_text(
-            "openrouter_vendor_namespaces: [foo/]\n"
-            "provider_env_keys: [A_KEY]\n"
-            "extra_key: hi\n"
+            "openrouter_vendor_namespaces: [foo/]\nprovider_env_keys: [A_KEY]\nextra_key: hi\n"
         )
         with pytest.raises(ValueError):
             _load_registry_meta(target)

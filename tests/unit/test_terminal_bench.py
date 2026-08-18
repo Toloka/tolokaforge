@@ -12,6 +12,7 @@ from tolokaforge_coding_harnesses.testing import (
     build_plugin,
     bundle_yaml,
     install_plugins,
+    isolate_discovery,
 )
 
 from tolokaforge.docker.policy import Capability
@@ -1970,16 +1971,13 @@ class TestHarnessRegistryPluginDiscovery:
 
     @pytest.fixture(autouse=True)
     def _isolated_discovery(self, monkeypatch):
-        """Drop the per-group entry-point cache around every case.
+        """Give every case its own discovery cache.
 
-        Harness-registry discovery caches its scan, so an injected plugin set
-        would otherwise leak into the next case.
+        The ``disable_harness_plugins`` case proves discovery never runs by
+        making ``entry_points`` raise; a cache warmed by an earlier case would
+        answer before that guard is reached and the proof would be vacuous.
         """
-        from tolokaforge_coding_harnesses._registry import _clear_discovery_cache
-
-        _clear_discovery_cache()
-        yield
-        _clear_discovery_cache()
+        isolate_discovery(monkeypatch)
 
     @pytest.fixture
     def plugin(self, tmp_path, monkeypatch):

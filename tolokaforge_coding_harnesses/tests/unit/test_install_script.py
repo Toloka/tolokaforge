@@ -60,10 +60,7 @@ class TestInstallHarnessScript:
         # branch so the assertion is on what ``npm`` receives.
         fake_node = bin_dir / "node"
         fake_node.write_text(
-            '#!/bin/sh\ncase "$*" in\n'
-            "  -e*process.exit*) exit 0 ;;\n"
-            '  *) echo "v20.0.0" ;;\n'
-            "esac\n"
+            '#!/bin/sh\ncase "$*" in\n  -e*process.exit*) exit 0 ;;\n  *) echo "v20.0.0" ;;\nesac\n'
         )
         fake_node.chmod(0o755)
         proc = subprocess.run(

@@ -110,9 +110,6 @@ uv run ruff format .
 
 # Format check (CI)
 uv run ruff format --check tolokaforge tests scripts tools
-
-# All-in-one lint script
-scripts/lint/run_ruff.sh
 ```
 
 ### Testing
@@ -419,7 +416,7 @@ No scripts, data files, temporary documents, or logs in root.
 
 ### Script Organization
 
-- Bash scripts in `scripts/` organized by subdirectory: `benchmark/`, `setup/`, `lint/`, `tests/`, `release/`, `analysis/`
+- Bash scripts in `scripts/` organized by subdirectory: `analysis/`, `docker/`, `hatch/`, `setup/`, `tests/`
 - Shared utilities (`common.sh`, `with_env.sh`) at `scripts/` root
 - Exceptions: `tests/` for test helpers, `tasks/` for benchmark data, `.devcontainer/` for container setup, Docker entrypoints alongside Dockerfiles
 - Complex Python logic → `tools/` as uv workspace member

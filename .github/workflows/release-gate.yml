@@ -61,7 +61,7 @@ jobs:
 
       - name: Run unit + canonical tests
         run: |
-          uv run pytest tests/ -m "unit or canonical" -v --tb=short
+          uv run pytest -m "unit or canonical" -v --tb=short
 
       - name: Build Docker images for integration tests
         run: |
