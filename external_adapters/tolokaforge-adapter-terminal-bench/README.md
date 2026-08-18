@@ -201,11 +201,10 @@ complete working config.
 Values resolve through `expand_secret_refs`, so a run config names a
 credential rather than carrying it. A value containing a newline or a `$` is
 refused: each becomes one line of the per-trial `.env`, where a newline splits
-the line and a `$` starts an interpolation. Keys are checked against an
-allow-list —
-`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
-`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `GOOGLE_API_KEY` — and anything else is
-refused naming the accepted set.
+the line and a `$` starts an interpolation. Keys are checked against the
+`provider_env_keys` allow-list in
+[`registry_meta.yaml`](../../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/registry_meta.yaml)
+— anything else is refused naming the accepted set.
 
 The path from config to container:
 
@@ -249,8 +248,8 @@ so the shipped default targets Google directly and `GEMINI_API_KEY` is required.
 credentials and can serve wire protocols OpenRouter does not — most notably
 Google's `generateContent`, via LiteLLM's Gemini passthrough at
 `{base}/gemini/v1beta/models/…`. The route is a `harness_presets_file` overlay
-that whole-replaces the harness entry with a LiteLLM-flavoured `provider_env`
-and `container_env`. A worked example ships at
+that whole-replaces the harness entry with a LiteLLM-flavoured `provider_env`.
+A worked example ships at
 [`examples/terminal_bench/gemini_litellm_overlay.yaml`](../../examples/terminal_bench/gemini_litellm_overlay.yaml)
 for gemini-cli.
 
@@ -260,10 +259,13 @@ gemini-cli through LiteLLM by naming a `harness_presets_file` that only overlays
 the gemini-cli entry — the other five stay as shipped. This is the current
 recommended shape for Toloka's own matrix runs.
 
-`LITELLM_API_KEY`, `LITELLM_BASE_URL`, and `GOOGLE_GEMINI_BASE_URL` are all in
-`PROVIDER_ENV_KEYS` (allow-listed by the adapter), so switching a harness to
-LiteLLM does not need an adapter release — it is a data-only change on the
-overlay side.
+Switching a harness to LiteLLM is a data-only change on the overlay side:
+`GOOGLE_GEMINI_BASE_URL` — the env var gemini-cli reads to enter GATEWAY mode —
+is already in `provider_env_keys`, and the gateway's own credential and URL
+reach the overlay as `${secret:LITELLM_API_KEY}` / `${secret:LITELLM_BASE_URL}`,
+which the `SecretManager` resolves on the value side. `LITELLM_API_KEY` and
+`LITELLM_BASE_URL` are on the allow-list as well, so a CLI that reads them as
+its own env vars is equally a YAML-only change.
 
 ### Harness parity policy
 
@@ -285,7 +287,7 @@ somewhere else, so a per-harness policy is one entry to read.
 | Reasoning-mode flags | Flags between the CLI name and `--permission-mode` — for claude-code, `--verbose --output-format=stream-json` (the mode the reference invocation drives). | `HarnessSpec.flags_pre_permission` |
 | Instruction path | `"argv"` (positional argument) or `"stdin"` (`printf "%s" '<instr>' \| cli …`). `"stdin"` sidesteps every shell-escape edge case a positional-arg prompt would have to survive. Claude Code uses stdin. | `HarnessSpec.instruction_channel` |
 | Model routing | Env variables the resolved model exports into. Non-empty for CLIs whose sub-agents route model independently of the top-level `--model` flag: without the export, Task/Explore sub-agents fall back to the CLI's own sonnet-default and may pick a different provider mid-trial. Claude Code declares the quartet `ANTHROPIC_MODEL` + `_DEFAULT_SONNET_MODEL` / `_OPUS_MODEL` / `_HAIKU_MODEL` + `CLAUDE_CODE_SUBAGENT_MODEL`. When set, the redundant `--model` CLI flag is dropped. | `HarnessSpec.env_model_vars` |
-| Static hardening env | Env pairs the compose `environment:` block writes for the agent service. Claude Code declares `IS_SANDBOX=1` (root-user bypass, without which the CLI refuses `--permission-mode=bypassPermissions` under UID 0) and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (opt-in telemetry off). | `HarnessSpec.container_env` |
+| Static hardening env | Static literals the compose `environment:` block writes for the agent service. Claude Code declares `IS_SANDBOX=1` (root-user bypass, without which the CLI refuses `--permission-mode=bypassPermissions` under UID 0) and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (opt-in telemetry off). Literals only: a key on the `provider_env_keys` allow-list, or a value containing a `$`, is refused at registry-load time naming `provider_env` — this map is written after the provider envelope and would overwrite its `${TBENCH_PROVIDER_*}` indirection, and docker interpolates the block it lands in. | `HarnessSpec.container_env` |
 | Provider envelope | The variables the CLI needs to reach its provider, as defaults a run config unions over. Claude Code and OpenCode declare `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL` (both route through OpenRouter's Anthropic-compat surface); codex the `OPENAI_*` pair; Kimi Code the `KIMI_MODEL_*` pair; Grok Build the `OPENROUTER_*` pair; gemini-cli `GEMINI_API_KEY` (public default routes at Google AI Studio; an operator overlay swaps in a GATEWAY-compatible endpoint like a LiteLLM proxy that speaks Google's native `generateContent` shape). | `HarnessSpec.provider_env` |
 | OpenRouter-prefix routing | Whether the `openrouter/` marker on the model name reaches the CLI. Stripped by default: a vendor CLI reads `*_BASE_URL` for OpenRouter routing and would otherwise select its own direct-vendor handler and 401. Preserved on opencode, whose config template defines a provider *literally* named `openrouter` and expects the caller to route `openrouter/<vendor>/<model>` to it. | `HarnessSpec.strip_openrouter_prefix` |
 | Request-body / header rewrite | An HTTP proxy that lands inside the trial image and rewrites the CLI's provider requests before they leave the container. Declares body-field deep-merges and per-request header injections keyed on a URL-path filter. Ships stdlib-only (`middleware_proxy.py`). Motivating case: kimi-code injects `provider.only=["moonshotai"]` on every `/chat/completions` body to force Moonshot AI first-party routing (OpenRouter's default fan-out to INT4/FP4 third-party providers returns empty completions on tool-call continuation). | `HarnessSpec.request_middleware` |

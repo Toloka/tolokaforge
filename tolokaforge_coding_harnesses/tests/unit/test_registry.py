@@ -171,6 +171,28 @@ class TestHarnessSpecRegistry:
                 "not a bare package name",
                 id="named-source-is-a-url",
             ),
+            pytest.param(
+                "harnesses:\n  gemini-cli:\n    install_source: '@google/gemini-cli'\n"
+                "    version: '1'\n    argv_prefix: [gemini]\n    argv_suffix: []\n"
+                "    container_env:\n"
+                "      GOOGLE_GEMINI_BASE_URL: 'https://gateway.invalid/gemini'\n",
+                "provider_env",
+                id="container-env-key-shadows-the-provider-envelope",
+            ),
+            pytest.param(
+                "harnesses:\n  gemini-cli:\n    install_source: '@google/gemini-cli'\n"
+                "    version: '1'\n    argv_prefix: [gemini]\n    argv_suffix: []\n"
+                "    container_env:\n      FOO: '${secret:LITELLM_BASE_URL}'\n",
+                "docker interpolates",
+                id="container-env-value-carries-a-secret-reference",
+            ),
+            pytest.param(
+                "harnesses:\n  gemini-cli:\n    install_source: '@google/gemini-cli'\n"
+                "    version: '1'\n    argv_prefix: [gemini]\n    argv_suffix: []\n"
+                "    container_env:\n      FOO: '$LITELLM_BASE_URL'\n",
+                "docker interpolates",
+                id="container-env-value-carries-a-bare-shell-variable",
+            ),
             pytest.param("harnesses: {}\n", "non-empty", id="no-harness-declared"),
             pytest.param("- claude-code\n", "must be a YAML mapping", id="not-a-mapping"),
             pytest.param("harnesses: [\n", "not valid YAML", id="malformed-yaml"),

@@ -1937,10 +1937,12 @@ class TestHarnessPresetsFileOverlay:
     def test_shipped_gemini_litellm_overlay_resolves(self, fixture_dir, tmp_path, monkeypatch):
         """The shipped overlay example at
         ``examples/terminal_bench/gemini_litellm_overlay.yaml`` is the
-        sanctioned path to route gemini-cli via a LiteLLM gateway. It must
-        resolve into a valid ``HarnessSpec`` — a stale field name or a
-        missed allow-list widen surfaces here rather than as a load-time
-        crash on the operator's machine."""
+        sanctioned path to route gemini-cli via a LiteLLM gateway. What a trial
+        needs from it is a compose file docker can parse: the gateway endpoint
+        reaches the container by name, its value arrives through the per-trial
+        ``.env``, and no ``${secret:…}`` reference survives into the document —
+        compose refuses the whole file with ``invalid interpolation format``
+        when one does, and every trial dies in provisioning."""
         monkeypatch.setenv("LITELLM_API_KEY", "sk-litellm-test")
         monkeypatch.setenv("LITELLM_BASE_URL", "https://litellm.example.test")
         examples_dir = Path(__file__).parent.parent.parent / "examples" / "terminal_bench"
@@ -1952,10 +1954,17 @@ class TestHarnessPresetsFileOverlay:
             agent_harness="gemini-cli",
             agent_model="gemini-3.1-pro-preview",
         )
-        spec = adapter.harnesses["gemini-cli"]
-        assert spec.container_env["GEMINI_CLI_TRUST_WORKSPACE"] == "true"
-        assert spec.container_env["GOOGLE_GEMINI_BASE_URL"] == ("${secret:LITELLM_BASE_URL}/gemini")
-        assert spec.provider_env == {"GEMINI_API_KEY": "${secret:LITELLM_API_KEY}"}
+        env = adapter._environment("echo-hello")
+        environment = _load_synthesised(env)["services"]["main"]["environment"]
+        assert "GOOGLE_GEMINI_BASE_URL=${TBENCH_PROVIDER_GOOGLE_GEMINI_BASE_URL}" in environment
+        assert "GEMINI_CLI_TRUST_WORKSPACE=true" in environment
+        assert "${secret:" not in env.compose_file.read_text()
+        manifest = adapter.to_task_description("echo-hello").environment_manifest
+        assert manifest is not None
+        assert (
+            manifest.stack_inputs["TBENCH_PROVIDER_GOOGLE_GEMINI_BASE_URL"]
+            == "https://litellm.example.test/gemini"
+        )
 
 
 class TestHarnessRegistryPluginDiscovery:
