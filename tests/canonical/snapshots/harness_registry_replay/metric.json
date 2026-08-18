@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 12,
+  "bucket_b_count": 13,
   "commits": [
     {
       "adapter_paths": [
@@ -1657,6 +1657,21 @@
         "docs/adr/0034-external-harness-plugin-discovery.md",
         "docs/adr/0035-tolokaforge-coding-harnesses-split.md",
         "docs/adr/README.md"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "tolokaforge_coding_harnesses/tests/unit/test_package_boundary.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-18",
+      "pr": null,
+      "reason": "1 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "dbd5c692a9ce3e9bf0eda8a4fc831d50815c26bb",
+      "subject": "docs(adr): align ADR-0035's package-sibling claim with what the test asserts",
+      "touched_files": [
+        "docs/adr/0035-tolokaforge-coding-harnesses-split.md",
+        "tolokaforge_coding_harnesses/tests/unit/test_package_boundary.py"
       ]
     },
     {
