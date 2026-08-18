@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
 pytestmark = [pytest.mark.canonical, pytest.mark.usefixtures("env_backed_secrets")]
@@ -123,8 +124,6 @@ class TestTerminalBenchHarnessModeCanon:
 
     def test_synthesised_compose(self, tbench_harness_adapter, canon_snapshot):
         """The layered compose file carries a build-only base service and a CLI layer."""
-        import yaml
-
         env = tbench_harness_adapter._environment("echo-hello")
         snap = canon_snapshot("tbench_echo_hello_harness")
 
@@ -144,7 +143,7 @@ class TestTerminalBenchHarnessModeCanon:
         """ADR 0011 Pattern B: the spec's serialised shape is pinned, so a
         field added to ``HarnessSpec`` (or dropped from the shipped YAML)
         fails here rather than silently changing what a harness trial runs."""
-        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+        from tolokaforge_coding_harnesses import HARNESSES
 
         snap = canon_snapshot("tbench_echo_hello_harness")
         snap.assert_match(HARNESSES["claude-code"].model_dump(mode="json"), "harness_spec.json")
@@ -156,8 +155,6 @@ class TestTerminalBenchHarnessModeCanon:
         provider envelope on the agent service — the CLI cannot reach its
         provider without it, and the operator should not have to re-derive
         an envelope the harness already declares."""
-        import yaml
-
         env = tbench_harness_adapter._environment("echo-hello")
         with env.compose_file.open() as f:
             compose = yaml.safe_load(f)
@@ -172,8 +169,7 @@ class TestTerminalBenchHarnessModeCanon:
         ``CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC``) has to survive the
         synthesis pass. This is a direct behavioural pin so a regression here
         is not merely a snapshot diff."""
-        import yaml
-        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+        from tolokaforge_coding_harnesses import HARNESSES
 
         env = tbench_harness_adapter._environment("echo-hello")
         with env.compose_file.open() as f:
@@ -184,6 +180,28 @@ class TestTerminalBenchHarnessModeCanon:
             assert (
                 f"{key}={value}" in agent_env
             ), f"container_env pair {key}={value!r} missing from synthesised compose"
+
+    def test_agent_env_carries_only_adapter_owned_interpolations(self, tbench_harness_adapter):
+        """Docker interpolates the compose ``environment:`` block, so every
+        ``$`` the adapter writes under the agent service has to be a placeholder
+        the adapter owns and the per-trial ``.env`` answers. Anything else is a
+        field leaking an un-owned construct into the block: ``${secret:NAME}``
+        makes compose refuse the whole file (``invalid interpolation format``),
+        and a bare ``$FOO`` silently resolves against the invoking shell. The
+        guard stops at the agent service — task-authored siblings carry their
+        own placeholders and are not the adapter's to constrain."""
+        env = tbench_harness_adapter._environment("echo-hello")
+        with env.compose_file.open() as f:
+            compose = yaml.safe_load(f)
+        agent_env = compose["services"]["main"]["environment"]
+        assert isinstance(agent_env, list), "dict-form environment: would pass vacuously"
+        owned = re.compile(r"^\$\{(TBENCH_PROVIDER_[A-Z0-9_]+|TOLOKAFORGE_TRIAL_SLUG)\}$")
+        unowned = [
+            entry
+            for entry in agent_env
+            if "$" in entry and not owned.match(entry.partition("=")[2])
+        ]
+        assert unowned == [], f"agent env carries un-owned interpolation construct(s): {unowned!r}"
 
 
 class TestTerminalBenchSkillsBundleCanon:
@@ -196,8 +214,6 @@ class TestTerminalBenchSkillsBundleCanon:
     """
 
     def test_synthesised_compose(self, tbench_skills_harness_adapter, canon_snapshot):
-        import yaml
-
         env = tbench_skills_harness_adapter._environment("echo-hello-skills")
         snap = canon_snapshot("tbench_echo_hello_skills_harness")
 
@@ -237,8 +253,6 @@ class TestTerminalBenchAdapterIntegrity:
         """Instruction in TaskConfig matches task.yaml content."""
         task = tbench_adapter.get_task("echo-hello")
         task_yaml_path = terminal_bench_tasks_dir / "echo-hello" / "task.yaml"
-
-        import yaml
 
         with open(task_yaml_path) as f:
             raw = yaml.safe_load(f)

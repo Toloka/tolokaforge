@@ -360,13 +360,13 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "tolokaforge_models/tests"]
+testpaths = ["tests", "tolokaforge_models/tests", "tolokaforge_coding_harnesses/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-norecursedirs = ["tests/data/projects/*/tests"]
+norecursedirs = ["tests/data/projects/*/tests", "tests/data/terminal_bench_tasks/*/tests"]
 addopts = [
     "-v",
     "--strict-markers",
@@ -399,7 +399,9 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["tolokaforge"]
+# Every package the workspace ships. `--cov` with no value reads this list, so a
+# `--cov=<pkg>` on a command line would replace it with a narrower one.
+source = ["tolokaforge", "tolokaforge_models", "tolokaforge_coding_harnesses"]
 omit = [
     "tolokaforge/*/tests/*",
     "*/test_*",
@@ -537,6 +539,7 @@ required-version = ">=0.9.5,<0.10"
 [tool.uv.workspace]
 members = [
     "tolokaforge_models",
+    "tolokaforge_coding_harnesses",
     "tools/automation",
     "tools/dev-mcp",
     "tools/pricing-updater",
@@ -550,6 +553,7 @@ dev-mcp = { workspace = true }
 rubric-calibrator = { workspace = true }
 tolokaforge = { workspace = true }
 tolokaforge-adapter-terminal-bench = { workspace = true }
+tolokaforge-coding-harnesses = { workspace = true }
 tolokaforge-models = { workspace = true }
 
 # PyPI as primary index for cross-platform compatibility

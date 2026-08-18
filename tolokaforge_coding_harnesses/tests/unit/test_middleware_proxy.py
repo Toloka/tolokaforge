@@ -14,7 +14,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from tolokaforge_adapter_terminal_bench.harness.middleware_proxy import (
+from tolokaforge_coding_harnesses.middleware_proxy import (
     _deep_merge,
     _make_handler,
 )

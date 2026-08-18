@@ -26,15 +26,18 @@
 # HarnessSpec field the shipped default carries — a partial overlay would
 # drop the fields it doesn't restate.
 #
-# Two operator env vars need to be set:
+# Two operator secrets need to be readable by the ``SecretManager``:
 #
 #   ``LITELLM_API_KEY``   the virtual key or master key the gateway issues.
 #   ``LITELLM_BASE_URL``  the gateway URL, e.g. ``https://litellm.example/`` —
 #                         the ``/gemini`` suffix in the URL below is the
 #                         passthrough's own path, NOT part of the base URL.
 #
-# Both keys are in ``PROVIDER_ENV_KEYS`` (allow-listed by the adapter), so
-# no adapter code change is needed to run this overlay.
+# Both are referenced from ``provider_env``: that is the seam which expands
+# ``${secret:NAME}`` and hands the resolved value to the container through the
+# per-trial ``.env``, so no secret ever reaches the compose file.
+# ``container_env`` is copied verbatim into the compose ``environment:`` block
+# and carries static literals only.
 
 harnesses:
   gemini-cli:
@@ -46,10 +49,9 @@ harnesses:
     strip_vendor_namespace: true
     # ``GEMINI_CLI_TRUST_WORKSPACE=true`` prevents ``--yolo`` from silently
     # falling back to "default" mode in a non-git workspace and blocking
-    # every tool call. ``GOOGLE_GEMINI_BASE_URL`` activates GATEWAY mode.
+    # every tool call.
     container_env:
       GEMINI_CLI_TRUST_WORKSPACE: "true"
-      GOOGLE_GEMINI_BASE_URL: "${secret:LITELLM_BASE_URL}/gemini"
     # Headless ``--prompt`` mode 400s with "Invalid auth method selected"
     # without a pre-pinned ``selectedType``. GATEWAY mode requires
     # ``"gateway"`` here + ``useExternal: true`` — the CLI's
@@ -62,6 +64,7 @@ harnesses:
     # ``GEMINI_API_KEY`` is what gemini-cli reads for the ``x-goog-api-key``
     # header it sends to the gateway. LITELLM_API_KEY is the credential
     # the gateway expects — the header value is a virtual key, not a
-    # Google credential.
+    # Google credential. ``GOOGLE_GEMINI_BASE_URL`` activates GATEWAY mode.
     provider_env:
       GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"
+      GOOGLE_GEMINI_BASE_URL: "${secret:LITELLM_BASE_URL}/gemini"

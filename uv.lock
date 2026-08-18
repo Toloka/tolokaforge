@@ -22,6 +22,7 @@ members = [
     "rubric-calibrator",
     "tolokaforge",
     "tolokaforge-adapter-terminal-bench",
+    "tolokaforge-coding-harnesses",
     "tolokaforge-models",
 ]
 
@@ -4768,6 +4769,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "pyyaml" },
     { name = "tolokaforge" },
+    { name = "tolokaforge-coding-harnesses" },
 ]
 
 [package.metadata]
@@ -4775,6 +4777,24 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "pyyaml", specifier = ">=6.0.1" },
     { name = "tolokaforge", editable = "." },
+    { name = "tolokaforge-coding-harnesses", editable = "tolokaforge_coding_harnesses" },
+]
+
+[[package]]
+name = "tolokaforge-coding-harnesses"
+version = "0.1.0"
+source = { editable = "tolokaforge_coding_harnesses" }
+dependencies = [
+    { name = "jinja2" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "jinja2", specifier = ">=3.1.0" },
+    { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "pyyaml", specifier = ">=6.0.1" },
 ]
 
 [[package]]

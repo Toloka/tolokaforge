@@ -1,14 +1,14 @@
-# Shipped coding-harness registry. Every entry is a `HarnessSpec`
-# (`harness/__init__.py`), which documents what each field is; the comments
-# here carry why each *value* is what it is.
+# Shipped coding-harness registry. Every entry is a
+# `tolokaforge_coding_harnesses.HarnessSpec`, which documents what each field
+# is; the comments here carry why each *value* is what it is.
 
 harnesses:
   claude-code:
     install_method: "npm"
     install_source: "@anthropic-ai/claude-code"
-    # Pinned to the version the out-of-tree host we compared against resolved
-    # when the matrix comparison was baselined. The pin closes the CLI-code
-    # delta with that host while keeping reproducibility.
+    # Pinned to the reference vendor-CLI invocation's resolved version so a
+    # bump only lands with an explicit re-baseline; keeps reproducibility of
+    # scored runs across contributor machines.
     version: "2.1.233"
     argv_prefix: ["claude"]
     # `--verbose --output-format=stream-json` matches the reference vendor-CLI
@@ -149,9 +149,10 @@ harnesses:
     # ``generateContent`` shape reaches gemini-cli via its ``GATEWAY`` auth
     # type. That path needs THREE additions the shipped default deliberately
     # omits so nothing internal-hostname-shaped ships to PyPI:
-    #   1. ``GOOGLE_GEMINI_BASE_URL`` — the gateway endpoint that answers
-    #      ``/v1beta/models/{model}:generateContent``. Its mere presence
-    #      flips the CLI to GATEWAY mode.
+    #   1. ``GOOGLE_GEMINI_BASE_URL`` under ``provider_env`` — the gateway
+    #      endpoint that answers ``/v1beta/models/{model}:generateContent``.
+    #      Its mere presence flips the CLI to GATEWAY mode. It is a provider
+    #      env key, so ``container_env`` refuses it at load.
     #   2. ``config_files["${HOME}/.gemini/settings.json"]`` with
     #      ``security.auth.selectedType: "gateway"`` + ``useExternal: true``
     #      — gemini-cli 0.55.1's ``validateAuthMethod()`` has not been

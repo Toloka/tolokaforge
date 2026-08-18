@@ -22,7 +22,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
-from . import HARNESSES, HarnessSpec, PluginBundle, ResolvedHarnessRegistry
+from ._registry import HARNESSES, HarnessSpec, PluginBundle, ResolvedHarnessRegistry
 
 __all__ = ["HarnessFingerprint", "compute_harness_fingerprint"]
 
@@ -64,9 +64,8 @@ class HarnessFingerprint(BaseModel):
 def _digest(registry: Mapping[str, HarnessSpec]) -> str:
     """Digest over *registry*'s parsed content.
 
-    The recipe is the one
-    :func:`tolokaforge.core.model_data_fingerprint.compute_models_fingerprint`
-    uses, so both fingerprints on a run bundle mean the same thing by the same
+    The recipe is the one the engine's ``compute_models_fingerprint`` uses, so
+    both fingerprints on a run bundle mean the same thing by the same
     construction. Hashing the parsed specs rather than the YAML bytes is what
     makes ``shipped == resolved`` a precise statement that no layer changed
     anything, and keeps a comment-only registry edit from moving the digest.

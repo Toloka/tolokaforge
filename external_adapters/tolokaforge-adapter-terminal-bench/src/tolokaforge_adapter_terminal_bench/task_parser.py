@@ -29,9 +29,9 @@ class TerminalBenchTask:
     """Task-relative directory of skills the pack ships for a coding-harness
     CLI, as ``task.yaml`` declared it, or ``None`` when it declares none.
 
-    A harness whose :attr:`~tolokaforge_adapter_terminal_bench.harness.HarnessSpec.skills_dir_target`
+    A harness whose :attr:`~tolokaforge_coding_harnesses.HarnessSpec.skills_dir_target`
     names a destination gets this directory delivered there by the run's
-    :class:`~tolokaforge_adapter_terminal_bench.harness.protocols.SkillDelivery`
+    :class:`~tolokaforge_coding_harnesses.protocols.SkillDelivery`
     — one more image layer under the shipped default. The bundle rides with the
     task rather than with the operator's home directory, so what the agent could
     read is versioned alongside the tests it is scored against."""

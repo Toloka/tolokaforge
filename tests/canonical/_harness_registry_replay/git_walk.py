@@ -41,15 +41,21 @@ _LOG_FORMAT = f"%H{_FIELD_SEP}%cs{_FIELD_SEP}%s"
 # set (including any files outside these paths that the same commit
 # touched — a mixed-surface commit correctly lands in Bucket B).
 #
-# Kept deliberately tight so pre-harness commits that touched other bits
-# of the tbench adapter (``adapter.py``, ``task_parser.py``, etc.) do
-# not dilute the metric. The surface is exactly the harness-touching
-# files: shipped data under ``data/``, the ``harness/`` Python module,
-# the compose-synthesis file that hosts the skill-delivery logic, the
-# adapter README that documents the harness surface, the two
-# harness-mode canonical snapshot trees, the harness-mode examples, and
-# the two harness ADRs.
+# Kept deliberately tight so commits that touched other bits of the
+# tbench adapter (``adapter.py``, ``task_parser.py``, etc.) do not
+# dilute the metric. The surface is exactly the harness-touching files:
+# the ``tolokaforge_coding_harnesses`` package and its shipped data, the
+# compose-synthesis file that hosts the skill-delivery logic, the adapter
+# README that documents the harness surface, the two harness-mode
+# canonical snapshot trees, the harness-mode examples, and the three
+# harness ADRs.
+#
+# The two ``tolokaforge_adapter_terminal_bench`` paths are anchors for
+# the commits that landed before ADR-0036 moved the surface out of the
+# adapter. Dropping them would make the replay skip that history while
+# still passing — a green lane that has stopped measuring.
 HARNESS_SURFACE_PATHS: tuple[str, ...] = (
+    "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/",
     "external_adapters/tolokaforge-adapter-terminal-bench/src/"
     "tolokaforge_adapter_terminal_bench/data/",
     "external_adapters/tolokaforge-adapter-terminal-bench/src/"
@@ -62,6 +68,7 @@ HARNESS_SURFACE_PATHS: tuple[str, ...] = (
     "examples/terminal_bench/",
     "docs/adr/0033-external-harness-registry.md",
     "docs/adr/0034-external-harness-plugin-discovery.md",
+    "docs/adr/0036-tolokaforge-coding-harnesses-split.md",
 )
 
 
