@@ -2,8 +2,8 @@
 
 A :class:`~tolokaforge_coding_harnesses.HarnessSpec` describes one CLI, not one
 runtime. The conventions of the runtime it lands in — where a home directory is,
-where a config file belongs — are the property of whoever drives the adapter, and
-reach it through the contracts in this module.
+where a config file belongs — are the property of the calling runtime, and reach
+the spec through the contracts in this module.
 
 Deliberately free of Docker: an implementation of one of these contracts may be
 image-shaped, but the contract itself is what a second runtime implements to

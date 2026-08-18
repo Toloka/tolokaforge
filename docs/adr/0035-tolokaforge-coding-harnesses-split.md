@@ -1,6 +1,6 @@
 # 0035. Coding-harness code as a top-level workspace package — `tolokaforge_coding_harnesses`
 
-- **Status:** Implemented ([#1233](https://github.com/Toloka/tolokaforge/issues/1233))
+- **Status:** Accepted ([#1233](https://github.com/Toloka/tolokaforge/issues/1233))
 - **Date:** 2026-08-18
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —

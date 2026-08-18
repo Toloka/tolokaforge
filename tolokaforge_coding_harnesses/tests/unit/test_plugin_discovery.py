@@ -3,7 +3,8 @@
 Discovery reads ``importlib.metadata.entry_points`` off the module on every
 call and caches the result per group. Both halves are load-bearing: the
 attribute read is the seam a fabricated installed set replaces, and the cache is
-why a suite that injects different sets has to clear it between cases.
+why ``install_plugins`` drops it — a warm cache answers before the patched
+attribute is ever read.
 """
 
 import pytest
@@ -116,12 +117,17 @@ def test_an_entry_point_without_a_distribution_is_named_in_the_refusal(
         _discover_entry_points(HARNESS_REGISTRY_ENTRY_POINT_GROUP)
 
 
-def test_clearing_the_cache_is_what_lets_a_second_installed_set_be_read(
+def test_installing_a_second_set_needs_no_cache_clearing_by_the_caller(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Two different installed sets in one process resolve to two different
-    registries only because the cache was dropped in between — which is why
-    every suite injecting a set clears it around each case."""
+    registries with no manual cache drop in between.
+
+    Discovery answers from the cache before it reads the patched attribute, so
+    ``install_plugins`` clears it — otherwise the second call here would be a
+    silent no-op and this case would read ``acme-cli`` twice while asserting
+    nothing about the injection.
+    """
     install_plugins(
         monkeypatch,
         build_plugin(
@@ -134,7 +140,6 @@ def test_clearing_the_cache_is_what_lets_a_second_installed_set_be_read(
     )
     first = discover_plugin_harness_registries()
 
-    _clear_discovery_cache()
     install_plugins(
         monkeypatch,
         build_plugin(

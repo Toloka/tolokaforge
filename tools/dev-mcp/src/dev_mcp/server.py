@@ -31,6 +31,11 @@ REPO_ROOT = _find_repo_root()
 # Default lint/format target directories (matches Makefile LINT_DIRS)
 DEFAULT_LINT_DIRS = "tolokaforge tests scripts tools"
 
+# Every test root in the workspace (mirrors pyproject `testpaths`). A path
+# argument overrides `testpaths`, so an incomplete list here runs a subset and
+# still reports green.
+TEST_ROOTS = ["tests/", "tolokaforge_models/tests/", "tolokaforge_coding_harnesses/tests/"]
+
 # ---------------------------------------------------------------------------
 # Environment helpers
 # ---------------------------------------------------------------------------
@@ -126,7 +131,7 @@ async def run_tests(
         marker: Test marker to select (unit, canonical, integration).
                 Leave empty to run all tests.
         path: Specific test file or directory (e.g. "tests/unit/test_diff.py").
-              Leave empty for default test paths.
+              Leave empty to run every test root the workspace ships.
         keyword: Pytest -k keyword expression to filter tests.
         extra_args: Additional pytest arguments (space-separated).
     """
@@ -145,7 +150,7 @@ async def run_tests(
     if path:
         cmd.append(path)
     else:
-        cmd.append("tests/")
+        cmd.extend(TEST_ROOTS)
 
     cmd.extend(["-v"])
 

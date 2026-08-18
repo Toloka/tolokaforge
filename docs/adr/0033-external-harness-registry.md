@@ -11,9 +11,7 @@
   registry lives in the `tolokaforge_coding_harnesses` package rather than inside
   the terminal-bench adapter. Everything this ADR decided — the `HarnessSpec`
   field list, load-time validation, the operator overlay, the `provider_env`
-  union — is unchanged; only the address is. The "Related code" paths below are
-  the record of what *this* decision delivered, so they name the layout of the
-  day; ADR-0035 names the current one.
+  union — is unchanged; only the address is.
 
 ## Context and Problem Statement
 
@@ -157,7 +155,7 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
 
 ### Registry loading
 
-- `external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml`
+- `tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml`
   is the shipped source of truth for the three current entries. The
   hardcoded `HARNESSES = {...}` block is replaced by a loader:
 
@@ -299,9 +297,9 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
     HarnessSpec is a data declaration crossing the adapter → artifact
     boundary.
 - Related code:
-  - `external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py`
+  - `tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py`
     — `HarnessSpec`, `load_harness_registry`, `SHIPPED_REGISTRY_FILE`.
-  - `external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml`
+  - `tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml`
     — the shipped registry.
   - `external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py`
     — `harness_presets_file` param, overlay wiring, `provider_env` union.

@@ -1958,7 +1958,13 @@ class TestHarnessPresetsFileOverlay:
 
 
 class TestHarnessRegistryPluginDiscovery:
-    """A pip-installed bundle contributes harnesses without an adapter release."""
+    """A pip-installed bundle reaches a trial the adapter runs.
+
+    Registry composition itself is locked in
+    ``tolokaforge_coding_harnesses/tests/unit/test_registry_composition.py``;
+    what is left here is the adapter seam — the ``disable_harness_plugins`` param
+    and a discovered harness assembling into a task description.
+    """
 
     _TASKS_DIR = Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
 
@@ -1967,8 +1973,7 @@ class TestHarnessRegistryPluginDiscovery:
         """Drop the per-group entry-point cache around every case.
 
         Harness-registry discovery caches its scan, so an injected plugin set
-        would otherwise leak into the next case — including into the
-        no-plugin-installed case, which asserts the opposite.
+        would otherwise leak into the next case.
         """
         from tolokaforge_coding_harnesses._registry import _clear_discovery_cache
 
@@ -1992,157 +1997,6 @@ class TestHarnessRegistryPluginDiscovery:
 
     _install = staticmethod(install_plugins)
     _bundle = staticmethod(bundle_yaml)
-
-    def test_nothing_installed_contributes_nothing(self):
-        """The common case: no plugin, no change to what the adapter ships."""
-        from tolokaforge_coding_harnesses import (
-            discover_plugin_harness_registries,
-        )
-
-        discovered = discover_plugin_harness_registries()
-        assert discovered.harnesses == {}
-        assert discovered.bundles == ()
-
-    def test_baseline_resolution_names_no_plugin_and_no_overlay(self):
-        """A run with nothing installed and no overlay says so, rather than
-        leaving a reader to infer it from a registry that happens to match."""
-        from tolokaforge_coding_harnesses import (
-            HARNESSES,
-            resolve_effective_registry,
-        )
-
-        resolved = resolve_effective_registry()
-        assert resolved.harnesses == HARNESSES
-        assert resolved.plugin_bundles == ()
-        assert resolved.overlay_file is None
-
-    def test_installed_bundle_is_loaded_from_its_packaged_yaml(self, monkeypatch, plugin):
-        from tolokaforge_coding_harnesses import (
-            PluginBundle,
-            discover_plugin_harness_registries,
-        )
-
-        self._install(
-            monkeypatch,
-            plugin(
-                "acme_harnesses",
-                "acme-tbench-harnesses",
-                self._bundle("acme-cli", "4.5.6"),
-                version="2.3.4",
-            ),
-        )
-        discovered = discover_plugin_harness_registries()
-        assert list(discovered.harnesses) == ["acme-cli"]
-        assert discovered.harnesses["acme-cli"].version == "4.5.6"
-        assert discovered.harnesses["acme-cli"].argv_prefix == ("acme-cli",)
-        assert discovered.bundles == (
-            PluginBundle(
-                distribution="acme-tbench-harnesses",
-                version="2.3.4",
-                harnesses=("acme-cli",),
-            ),
-        )
-
-    def test_bundles_are_ordered_by_distribution(self, monkeypatch, plugin):
-        """Distribution order, not entry-point order: the two disagree here,
-        and the recorded order must not depend on how a plugin names its
-        package."""
-        from tolokaforge_coding_harnesses import (
-            discover_plugin_harness_registries,
-        )
-
-        self._install(
-            monkeypatch,
-            plugin("acme_harnesses", "zeta-harnesses", self._bundle("acme-cli", "4.5.6")),
-            plugin("globex_harnesses", "alpha-harnesses", self._bundle("globex-cli", "7.8.9")),
-        )
-        discovered = discover_plugin_harness_registries()
-        assert [bundle.distribution for bundle in discovered.bundles] == [
-            "alpha-harnesses",
-            "zeta-harnesses",
-        ]
-        assert [bundle.harnesses for bundle in discovered.bundles] == [
-            ("globex-cli",),
-            ("acme-cli",),
-        ]
-
-    def test_entry_point_without_a_distribution_reports_no_version(self, monkeypatch, plugin):
-        """A programmatically registered entry point has no distribution to
-        read a version off, and a fabricated one would be a lie."""
-        from tolokaforge_coding_harnesses import (
-            discover_plugin_harness_registries,
-        )
-
-        self._install(
-            monkeypatch,
-            plugin("acme_harnesses", None, self._bundle("acme-cli", "4.5.6")),
-        )
-        (bundle,) = discover_plugin_harness_registries().bundles
-        assert bundle.distribution == "acme_harnesses"
-        assert bundle.version is None
-
-    def test_two_plugins_claiming_one_harness_name_are_refused(self, monkeypatch, plugin):
-        """No safe pick: the two bundles disagree about what the name installs
-        and how it is invoked, so install order must not decide it."""
-        from tolokaforge_coding_harnesses import (
-            discover_plugin_harness_registries,
-        )
-
-        self._install(
-            monkeypatch,
-            plugin("acme_harnesses", "acme-tbench-harnesses", self._bundle("shared-cli", "1.0.0")),
-            plugin("globex_harnesses", "globex-harnesses", self._bundle("shared-cli", "2.0.0")),
-        )
-        with pytest.raises(ValueError) as excinfo:
-            discover_plugin_harness_registries()
-        message = str(excinfo.value)
-        assert "shared-cli" in message
-        assert "acme-tbench-harnesses" in message
-        assert "globex-harnesses" in message
-
-    def test_plugin_replaces_a_shipped_entry_whole(self, monkeypatch, plugin):
-        """Whole-entry replacement, as at every other layer: the shipped
-        ``codex`` fields the bundle omits are gone, not merged underneath."""
-        from tolokaforge_coding_harnesses import (
-            HARNESSES,
-            resolve_effective_registry,
-        )
-
-        self._install(
-            monkeypatch,
-            plugin("acme_harnesses", "acme-tbench-harnesses", self._bundle("codex", "9.9.9")),
-        )
-        effective = resolve_effective_registry().harnesses
-        assert effective["codex"].version == "9.9.9"
-        assert effective["codex"].config_files == {}
-        assert HARNESSES["codex"].config_files != {}
-        assert effective["claude-code"] == HARNESSES["claude-code"]
-
-    def test_operator_overlay_wins_over_a_plugin(self, monkeypatch, plugin, tmp_path):
-        from tolokaforge_coding_harnesses import resolve_effective_registry
-
-        self._install(
-            monkeypatch,
-            plugin("acme_harnesses", "acme-tbench-harnesses", self._bundle("acme-cli", "4.5.6")),
-        )
-        overlay = tmp_path / "harness_presets.yaml"
-        overlay.write_text(self._bundle("acme-cli", "0.0.0-overlay"))
-        resolved = resolve_effective_registry(str(overlay))
-        assert resolved.harnesses["acme-cli"].version == "0.0.0-overlay"
-        assert resolved.overlay_file == overlay.resolve()
-
-    def test_relative_overlay_is_recorded_as_its_resolved_path(self, monkeypatch, tmp_path):
-        """The recorded overlay must name one file whatever directory the run
-        started in, so a relative argument is recorded resolved."""
-        from tolokaforge_coding_harnesses import resolve_effective_registry
-
-        overlay = tmp_path / "harness_presets.yaml"
-        overlay.write_text(self._bundle("acme-cli", "4.5.6"))
-        monkeypatch.chdir(tmp_path)
-        recorded = resolve_effective_registry("harness_presets.yaml").overlay_file
-        assert recorded is not None
-        assert recorded.is_absolute()
-        assert recorded == overlay.resolve()
 
     def test_disable_harness_plugins_bypasses_discovery(self, monkeypatch, tmp_path):
         """An audit run pins the registry to what the adapter ships, whatever

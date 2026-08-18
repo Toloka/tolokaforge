@@ -1,6 +1,6 @@
-# Shipped coding-harness registry. Every entry is a `HarnessSpec`
-# (`harness/__init__.py`), which documents what each field is; the comments
-# here carry why each *value* is what it is.
+# Shipped coding-harness registry. Every entry is a
+# `tolokaforge_coding_harnesses.HarnessSpec`, which documents what each field
+# is; the comments here carry why each *value* is what it is.
 
 harnesses:
   claude-code:

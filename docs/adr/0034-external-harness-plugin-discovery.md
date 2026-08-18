@@ -244,13 +244,12 @@ No plugin, no line: the common case stays silent.
     the scan and the shipped registry live now; the retained group name and the
     package-local duplicate-registration class are recorded there.
 - Related code:
-  - `external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/harness/__init__.py`
-    — `HARNESS_REGISTRY_ENTRY_POINT_GROUP`, `PLUGIN_REGISTRY_RESOURCE`,
-    `discover_plugin_harness_registries`, `resolve_effective_registry`.
   - `external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py`
     — `disable_harness_plugins` param, effective-registry wiring.
   - `tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py`
-    — the fail-loud scan behind the group, and `DuplicateRegistrationError`.
+    — `HARNESS_REGISTRY_ENTRY_POINT_GROUP`, `PLUGIN_REGISTRY_RESOURCE`,
+    `discover_plugin_harness_registries`, `resolve_effective_registry`, the
+    fail-loud scan behind the group, and `DuplicateRegistrationError`.
   - `tolokaforge/core/plugin_registry.py` — `discover_entry_points`, the same
     scan shape for the engine's own entry-point seams.
 - External references:

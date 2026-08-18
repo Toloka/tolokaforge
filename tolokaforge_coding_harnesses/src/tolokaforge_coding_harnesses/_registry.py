@@ -1,7 +1,6 @@
-"""The harness registry: what a CLI is, how it installs, how it is invoked.
+"""Spec, registry composition and command assembly for one harness CLI.
 
-One module because the three concerns are one contract: :class:`HarnessSpec`
-declares a CLI, :func:`load_harness_registry` and
+:class:`HarnessSpec` declares a CLI, :func:`load_harness_registry` and
 :func:`resolve_effective_registry` compose the shipped data with an operator
 overlay and installed plug-in bundles, and :func:`harness_command` turns the
 result into the shell command a trial runs. Callers import from the package
@@ -26,43 +25,8 @@ from jinja2 import Environment, StrictUndefined, TemplateSyntaxError
 from jinja2.meta import find_undeclared_variables
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from .path_resolvers import DEFAULT_PATH_RESOLVER, LinuxRootResolver
-from .protocols import PATH_CONSTRUCT_PATTERN, PathResolver, SkillDelivery, SkillsBundle
-
-__all__ = [
-    "CONFIG_TEMPLATE_VARIABLES",
-    "DEFAULT_PATH_RESOLVER",
-    "ENGINE_LOOP",
-    "HARNESSES",
-    "HARNESS_REGISTRY_ENTRY_POINT_GROUP",
-    "INSTALL_SCRIPT",
-    "OPENROUTER_PREFIX",
-    "PATH_CONSTRUCT_PATTERN",
-    "PLUGIN_REGISTRY_RESOURCE",
-    "PROVIDER_ENV_INPUT_PREFIX",
-    "PROVIDER_ENV_KEYS",
-    "SHIPPED_REGISTRY_FILE",
-    "DuplicateRegistrationError",
-    "HarnessSpec",
-    "LinuxRootResolver",
-    "MIDDLEWARE_PROXY_SCRIPT",
-    "RequestMiddleware",
-    "PathResolver",
-    "PluginBundle",
-    "PluginDiscovery",
-    "ResolvedHarnessRegistry",
-    "SkillDelivery",
-    "SkillsBundle",
-    "accepted_harnesses",
-    "discover_plugin_harness_registries",
-    "harness_command",
-    "harness_model",
-    "load_harness_registry",
-    "provider_env_input",
-    "resolve_effective_registry",
-    "validate_harness",
-    "validate_provider_env_keys",
-]
+from .path_resolvers import DEFAULT_PATH_RESOLVER
+from .protocols import PATH_CONSTRUCT_PATTERN, PathResolver
 
 logger = logging.getLogger(__name__)
 
@@ -458,28 +422,28 @@ def load_harness_registry(path: Path) -> dict[str, HarnessSpec]:
             declares an entry :class:`HarnessSpec` rejects.
     """
     if not path.is_file():
-        raise ValueError(f"terminal-bench adapter: harness registry file {path} does not exist.")
+        raise ValueError(f"coding harness: harness registry file {path} does not exist.")
     try:
         document = yaml.safe_load(path.read_text())
     except yaml.YAMLError as exc:
         raise ValueError(
-            f"terminal-bench adapter: harness registry file {path} is not valid YAML: {exc}"
+            f"coding harness: harness registry file {path} is not valid YAML: {exc}"
         ) from exc
     if not isinstance(document, dict):
         raise ValueError(
-            f"terminal-bench adapter: harness registry file {path} must be a YAML mapping "
+            f"coding harness: harness registry file {path} must be a YAML mapping "
             f"with a `harnesses:` key; got {type(document).__name__}."
         )
     unknown = sorted(set(document) - {"harnesses"})
     if unknown:
         raise ValueError(
-            f"terminal-bench adapter: harness registry file {path} declares unknown top-level "
+            f"coding harness: harness registry file {path} declares unknown top-level "
             f"key(s) {unknown!r}; the only accepted key is `harnesses`."
         )
     entries = document.get("harnesses")
     if not isinstance(entries, dict) or not entries:
         raise ValueError(
-            f"terminal-bench adapter: harness registry file {path} must declare a non-empty "
+            f"coding harness: harness registry file {path} must declare a non-empty "
             "`harnesses:` mapping."
         )
     registry: dict[str, HarnessSpec] = {}
@@ -491,7 +455,7 @@ def load_harness_registry(path: Path) -> dict[str, HarnessSpec]:
                 ".".join(str(part) for part in err["loc"]) or "<entry>" for err in exc.errors()
             )
             raise ValueError(
-                f"terminal-bench adapter: harness registry file {path}, harness {name!r}: "
+                f"coding harness: harness registry file {path}, harness {name!r}: "
                 f"invalid field(s) {fields!r} — {exc}"
             ) from exc
     return registry
@@ -511,8 +475,10 @@ registry as a :data:`PLUGIN_REGISTRY_RESOURCE` resource beside its
     [project.entry-points."tolokaforge_adapter_terminal_bench.harness_registries"]
     my_org = "my_org.tolokaforge_harnesses"
 
-Adapter-namespaced rather than ``tolokaforge.*``: the harness registry is the
-terminal-bench adapter's surface, and the engine core never learns these names.
+Not ``tolokaforge.*``: the engine core never learns these names, so that group
+would imply it consumes the registry. The adapter-shaped string is the published
+name every installed bundle registers under; renaming it needs its own
+migration (ADR-0035).
 """
 
 PLUGIN_REGISTRY_RESOURCE = "harnesses.yaml"
@@ -669,7 +635,7 @@ def discover_plugin_harness_registries() -> PluginDiscovery:
             owner = declared_by.get(harness_name)
             if owner is not None:
                 raise ValueError(
-                    f"terminal-bench adapter: harness {harness_name!r} is declared by two "
+                    f"coding harness: harness {harness_name!r} is declared by two "
                     f"installed registry plugins, {owner!r} and {distribution!r}. Uninstall "
                     "one, or rename the harness in one of the bundles."
                 )
@@ -681,7 +647,7 @@ def discover_plugin_harness_registries() -> PluginDiscovery:
             )
         )
         logger.info(
-            "terminal-bench adapter: harness registry plugin %s contributed %s",
+            "coding harness: harness registry plugin %s contributed %s",
             distribution,
             sorted(bundle),
         )
@@ -733,7 +699,7 @@ def resolve_effective_registry(
         shadowed = sorted(set(discovery.harnesses) & set(HARNESSES))
         if shadowed:
             logger.warning(
-                "terminal-bench adapter: installed registry plugin(s) replace shipped "
+                "coding harness: installed registry plugin(s) replace shipped "
                 "harness spec(s) %s; the shipped install source, pinned version and argv "
                 "for those names are not what runs.",
                 shadowed,
@@ -870,7 +836,7 @@ def validate_provider_env_keys(keys: Iterable[str]) -> None:
     rejected = sorted(k for k in keys if k not in PROVIDER_ENV_KEYS)
     if rejected:
         raise ValueError(
-            f"terminal-bench adapter: provider env key(s) {rejected!r} are not "
+            f"coding harness: provider env key(s) {rejected!r} are not "
             f"forwardable; accepted: {sorted(PROVIDER_ENV_KEYS)!r}."
         )
 
@@ -889,7 +855,7 @@ def validate_harness(agent_harness: str, registry: Mapping[str, HarnessSpec] = H
     accepted = accepted_harnesses(registry)
     if agent_harness not in accepted:
         raise ValueError(
-            f"terminal-bench adapter: agent_harness {agent_harness!r} is not supported; "
+            f"coding harness: agent_harness {agent_harness!r} is not supported; "
             f"accepted: {list(accepted)!r}."
         )
     return agent_harness
@@ -1009,7 +975,7 @@ def _config_template_variables(
     ambiguous = sorted(key for keys in (base_urls, api_keys) if len(keys) > 1 for key in keys)
     if ambiguous:
         raise ValueError(
-            "terminal-bench adapter: the provider envelope carries several entries a "
+            "coding harness: the provider envelope carries several entries a "
             f"config_files template would have to choose between ({ambiguous!r}); declare "
             "one endpoint and one key per harness."
         )
@@ -1067,7 +1033,7 @@ def harness_command(
     spec = registry.get(agent_harness)
     if spec is None:
         raise ValueError(
-            f"terminal-bench adapter: agent_harness {agent_harness!r} runs no CLI; "
+            f"coding harness: agent_harness {agent_harness!r} runs no CLI; "
             "the trial goes through the engine's LLM turn loop instead."
         )
     resolved_model = harness_model(model, agent_harness, registry)

@@ -62,6 +62,7 @@ def install_plugins(monkeypatch: Any, *entry_points: FakeEntryPoint) -> None:
     import importlib.metadata
 
     from tolokaforge_coding_harnesses import HARNESS_REGISTRY_ENTRY_POINT_GROUP
+    from tolokaforge_coding_harnesses._registry import _clear_discovery_cache
 
     real = importlib.metadata.entry_points
 
@@ -71,6 +72,9 @@ def install_plugins(monkeypatch: Any, *entry_points: FakeEntryPoint) -> None:
         return real(**kwargs)
 
     monkeypatch.setattr(importlib.metadata, "entry_points", _entry_points)
+    # Discovery serves a warm cache before it ever reads the patched attribute,
+    # so leaving the cache in place makes this call a silent no-op.
+    _clear_discovery_cache()
 
 
 def bundle_yaml(name: str, version: str) -> str:

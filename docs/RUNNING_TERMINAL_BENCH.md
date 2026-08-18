@@ -230,11 +230,11 @@ moved it to "Previous models (Shut down)" — 3.1 Pro Preview is the successor.
 A run that sweeps many models × tasks accumulates harness-image layers
 and per-trial containers — enough that `apt-get install` inside the
 next trial can fail with `You don't have enough free space in
-/var/cache/apt/archives/`. `scripts/prune-docker.sh` reclaims disk
+/var/cache/apt/archives/`. `scripts/docker/prune-docker.sh` reclaims disk
 without touching layers held by a running container:
 
 ```bash
-scripts/prune-docker.sh
+scripts/docker/prune-docker.sh
 ```
 
 ## Reading the results
