@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 10,
+  "bucket_b_count": 11,
   "commits": [
     {
       "adapter_paths": [
@@ -1455,6 +1455,53 @@
       "subject": "fix(tbench): opencode ANTHROPIC_BASE_URL /v1 + kimi-code multi-turn docs (#1159)",
       "touched_files": [
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "AGENTS.md",
+        "Makefile",
+        "docs/RUNNING_TERMINAL_BENCH.md",
+        "pyproject.toml",
+        "scripts/README.md",
+        "scripts/docker/prune-docker.sh",
+        "tests/README.md",
+        "tests/canonical/test_harness_registry_replay.py",
+        "tests/unit/test_terminal_bench.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/protocols.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/testing.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_plugin_discovery.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_registry_composition.py",
+        "tools/dev-mcp/src/dev_mcp/server.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-18",
+      "pr": null,
+      "reason": "15 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "1cc27dfbadb4e32eee72ebfc134842fbb941ea2c",
+      "subject": "fix(coding-harnesses): reviewer round 1 \u2014 test-root propagation, ADR path cleanup, install_plugins cache clear",
+      "touched_files": [
+        "AGENTS.md",
+        "Makefile",
+        "docs/RUNNING_TERMINAL_BENCH.md",
+        "docs/adr/0033-external-harness-registry.md",
+        "docs/adr/0034-external-harness-plugin-discovery.md",
+        "docs/adr/0035-tolokaforge-coding-harnesses-split.md",
+        "pyproject.toml",
+        "scripts/README.md",
+        "scripts/docker/prune-docker.sh",
+        "tests/README.md",
+        "tests/canonical/test_harness_registry_replay.py",
+        "tests/unit/test_terminal_bench.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/registry_meta.yaml",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/protocols.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/testing.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_plugin_discovery.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_registry_composition.py",
+        "tools/dev-mcp/src/dev_mcp/server.py"
       ]
     },
     {
