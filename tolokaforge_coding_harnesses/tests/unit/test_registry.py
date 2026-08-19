@@ -414,3 +414,74 @@ class TestGatewayRoute:
         assert route.provider_env["GOOGLE_GEMINI_BASE_URL"] == (
             "${gateway.base_url}${gateway.passthrough_path}"
         )
+
+
+class TestTheShippedGatewayRecipes:
+    """Which harnesses carry a route, and what each one claims."""
+
+    def test_gemini_cli_routes_through_the_litellm_gemini_passthrough(self):
+        from tolokaforge_coding_harnesses import HARNESSES
+
+        route = HARNESSES["gemini-cli"].gateway_route
+        assert route is not None
+        assert route.gateway == "toloka_litellm"
+        assert route.passthrough_path == "/gemini"
+        assert route.config_files == {
+            "${HOME}/.gemini/settings.json": (
+                '{"security":{"auth":{"selectedType":"gateway","useExternal":true}}}'
+            )
+        }
+        assert route.container_env == {"GEMINI_CLI_TRUST_WORKSPACE": "true"}
+        assert route.provider_env == {
+            "GOOGLE_GEMINI_BASE_URL": "${gateway.base_url}${gateway.passthrough_path}",
+            "GEMINI_API_KEY": "${secret:LITELLM_API_KEY}",
+        }
+
+    def test_kimi_code_carries_the_alias_pattern_and_no_model_name_key(self):
+        """The alias is a model name, and ``provider_env`` is a closed
+        allow-list of provider credential and endpoint names. The consuming
+        runtime renders ``{model}`` and delivers it through
+        ``env_model_vars``, which is where this CLI already reads its
+        model name from."""
+        from tolokaforge_coding_harnesses import HARNESSES
+
+        spec = HARNESSES["kimi-code"]
+        route = spec.gateway_route
+        assert route is not None
+        assert route.gateway == "toloka_litellm"
+        assert route.model_alias_pattern == "{model}-moonshotai-pinned"
+        assert route.provider_env == {
+            "KIMI_MODEL_BASE_URL": "${gateway.base_url}",
+            "KIMI_MODEL_API_KEY": "${secret:LITELLM_API_KEY}",
+        }
+        assert "KIMI_MODEL_NAME" not in route.provider_env
+        assert "KIMI_MODEL_NAME" in spec.env_model_vars
+
+    def test_a_route_may_coexist_with_a_request_middleware(self):
+        """They are alternatives, not layers: a run reaching the gateway gets
+        its provider pin from the gateway's own alias and boots no proxy. The
+        ``config_files``/``request_middleware`` exclusion governs the default
+        path only, so no cross-validator refuses this pairing."""
+        from tolokaforge_coding_harnesses import HARNESSES
+
+        spec = HARNESSES["kimi-code"]
+        assert spec.request_middleware is not None
+        assert spec.gateway_route is not None
+
+    def test_opencode_carries_no_route_because_its_existing_map_is_the_fix(self):
+        """The design's whole claim: a gateway consumer reads the fields a
+        harness already declares, and only a harness whose recipe genuinely
+        differs per gateway grows a second one."""
+        from tolokaforge_coding_harnesses import HARNESSES
+
+        assert HARNESSES["opencode"].gateway_route is None
+        assert HARNESSES["opencode"].config_files
+
+    def test_exactly_two_shipped_harnesses_declare_a_route(self):
+        """A route ships credentials and an endpoint into a container, so make
+        the shipped scope explicit — a copy-paste onto a third entry is caught
+        here rather than discovered in a trial."""
+        from tolokaforge_coding_harnesses import HARNESSES
+
+        with_route = {name for name, spec in HARNESSES.items() if spec.gateway_route is not None}
+        assert with_route == {"gemini-cli", "kimi-code"}

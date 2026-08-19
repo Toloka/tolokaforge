@@ -143,47 +143,56 @@ harnesses:
       GEMINI_CLI_TRUST_WORKSPACE: "true"
     provider_env:
       GEMINI_API_KEY: "${secret:GEMINI_API_KEY}"
-    # --- Operator overlays ---
+    # --- Routing through a gateway ---
     #
     # A team-hosted LiteLLM (or any) gateway that speaks Google's native
-    # ``generateContent`` shape reaches gemini-cli via its ``GATEWAY`` auth
-    # type. That path needs THREE additions the shipped default deliberately
-    # omits so nothing internal-hostname-shaped ships to PyPI:
-    #   1. ``GOOGLE_GEMINI_BASE_URL`` under ``provider_env`` — the gateway
-    #      endpoint that answers ``/v1beta/models/{model}:generateContent``.
-    #      Its mere presence flips the CLI to GATEWAY mode. It is a provider
-    #      env key, so ``container_env`` refuses it at load.
-    #   2. ``config_files["${HOME}/.gemini/settings.json"]`` with
-    #      ``security.auth.selectedType: "gateway"`` + ``useExternal: true``
-    #      — gemini-cli 0.55.1's ``validateAuthMethod()`` has not been
-    #      taught about GATEWAY, so pure env raises "Invalid auth method"
-    #      without the settings-file override.
-    #   3. ``GEMINI_API_KEY`` set to whatever key the gateway expects (a
-    #      LiteLLM virtual key, not a Google credential).
+    # ``generateContent`` shape reaches gemini-cli through its ``GATEWAY``
+    # auth type. The same three facts — the base-URL override that flips the
+    # CLI into that mode, the settings-file pin, and a gateway credential
+    # under ``GEMINI_API_KEY`` — ship in two forms:
     #
-    # A worked overlay ships at
-    # ``examples/terminal_bench/gemini_litellm_overlay.yaml`` — the
-    # sanctioned path. An operator names it in the run config's
-    # ``harness_presets_file`` param and it whole-replaces this entry.
+    #   1. ``examples/terminal_bench/gemini_litellm_overlay.yaml``, a
+    #      ``harness_presets_file`` overlay that whole-replaces this entry.
+    #      This is the path a TF-side run takes; the operator names the file
+    #      in the run config.
+    #   2. ``gateway_route`` below — the same recipe as spec data, read by a
+    #      runtime that provisions an already-running container. Nothing in
+    #      this repo reads it (ADR-0037).
     #
-    # For an ad-hoc single-key change (no whole-entry overlay), a caller
-    # can also union values into ``provider_env`` from the run config:
+    # The canonical test ``tests/canonical/test_gateway_route_recipes.py``
+    # is what keeps the two agreeing; neither is a copy to be edited alone.
     #
-    #     harness_adapter:
-    #       params:
-    #         agent_provider_env:
-    #           GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"
-    #           GOOGLE_GEMINI_BASE_URL: "https://<your-litellm-host>/gemini"
-    #
-    # …but the settings-file flip still has to come from somewhere — a
-    # partial overlay that only touches ``provider_env`` will 400 on the
-    # first call. Use the shipped presets-file overlay in that case.
+    # For an ad-hoc single-key change a caller can also union values into
+    # ``provider_env`` through the run config's ``agent_provider_env`` param
+    # — but the settings-file pin has to come from somewhere, so a partial
+    # overlay touching only ``provider_env`` still 400s on the first call.
     #
     # (Gemini 3 Pro ``gemini-3-pro-preview`` was retired by Google — it now
     # sits under "Previous models (Shut down)" in Google's public docs;
     # 3.1 Pro Preview is the current Pro-tier flagship successor.
     # OpenRouter's ``~google/gemini-pro-latest`` alias resolves to
     # ``google/gemini-3.1-pro-preview``, confirming.)
+    gateway_route:
+      gateway: "toloka_litellm"
+      # LiteLLM serves the Gemini wire protocol under a passthrough prefix:
+      # ``{base}/gemini/v1beta/models/…``. The consuming runtime appends this
+      # to the gateway's base URL.
+      passthrough_path: "/gemini"
+      # Literal content, not a template. Headless ``--prompt`` mode 400s with
+      # "Invalid auth method selected" without a pre-pinned ``selectedType``:
+      # gemini-cli 0.55.1's ``validateAuthMethod()`` has not been taught about
+      # GATEWAY, so the env vars alone are not enough.
+      config_files:
+        "${HOME}/.gemini/settings.json": |-
+          {"security":{"auth":{"selectedType":"gateway","useExternal":true}}}
+      container_env:
+        GEMINI_CLI_TRUST_WORKSPACE: "true"
+      # ``GOOGLE_GEMINI_BASE_URL``'s mere presence flips the CLI to GATEWAY
+      # mode. ``GEMINI_API_KEY`` carries the gateway's virtual key — what
+      # gemini-cli sends as ``x-goog-api-key`` — not a Google credential.
+      provider_env:
+        GOOGLE_GEMINI_BASE_URL: "${gateway.base_url}${gateway.passthrough_path}"
+        GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"
 
   kimi-code:
     install_method: "npm"
@@ -271,6 +280,28 @@ harnesses:
           only: ["moonshotai"]
           allow_fallbacks: false
       path_filter: "/chat/completions"
+    # --- Routing through a gateway ---
+    #
+    # The same first-party pin, bought from the gateway instead of from the
+    # proxy above. A gateway exposing a moonshotai-pinned alias answers the
+    # routing problem ``request_middleware`` exists to solve, so a run taking
+    # this route boots no proxy at all. That is why the two coexist here: they
+    # are alternatives, not layers, and the ``config_files`` /
+    # ``request_middleware`` exclusion governs only the default path
+    # (ADR-0037).
+    #
+    # ``model_alias_pattern`` is opaque data. The consuming runtime renders
+    # ``{model}`` and delivers the result through ``env_model_vars``
+    # (``KIMI_MODEL_NAME``, declared above) — the field that already answers
+    # how this CLI receives its model name. It is deliberately not a
+    # ``provider_env`` entry: that map is a closed allow-list of provider
+    # credential and endpoint names, and a model name is neither.
+    gateway_route:
+      gateway: "toloka_litellm"
+      model_alias_pattern: "{model}-moonshotai-pinned"
+      provider_env:
+        KIMI_MODEL_BASE_URL: "${gateway.base_url}"
+        KIMI_MODEL_API_KEY: "${secret:LITELLM_API_KEY}"
 
   opencode:
     install_method: "npm"
@@ -376,6 +407,13 @@ harnesses:
     # ``harness_command`` metadata records the shell reference, never the
     # resolved value — so the credential does not surface in the trial
     # artifact.
+    #
+    # This entry carries no ``gateway_route``, and needs none: the map below
+    # *is* the routing and auth fix, and a runtime provisioning an
+    # already-running container reads the same field. That is ADR-0037's
+    # point — a gateway consumer consumes what a harness already declares,
+    # and only a harness whose recipe genuinely differs per gateway grows a
+    # second one.
     config_files:
       "${CONFIG_HOME}/opencode/opencode.json": |-
         {"provider":{"anthropic":{"options":{"baseURL":"{{ base_url }}"}},"openrouter":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"https://openrouter.ai/api/v1","apiKey":"$ANTHROPIC_API_KEY"},"models":{}}}}

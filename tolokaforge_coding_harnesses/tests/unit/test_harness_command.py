@@ -473,6 +473,28 @@ class TestGatewayRouteIsInertToTheCommand:
             "cli", "go", "m", {"cli": routed}
         )
 
+    @pytest.mark.parametrize(
+        ("harness", "model"),
+        [
+            ("gemini-cli", "google/gemini-2.5-flash"),
+            ("kimi-code", "openrouter/moonshotai/kimi-k2.7-code"),
+        ],
+    )
+    def test_a_shipped_route_changes_nothing_about_that_harnesss_command(self, harness, model):
+        """The same lock on the real entries that carry a route. Dropping the
+        route from the shipped spec must produce the identical command, which
+        is what "inert to the TF-side path" means for a harness an operator
+        actually runs."""
+        from tolokaforge_coding_harnesses import HARNESSES, harness_command
+
+        spec = HARNESSES[harness]
+        assert spec.gateway_route is not None, f"{harness} no longer carries a route to test"
+        unrouted = spec.model_copy(update={"gateway_route": None})
+
+        assert harness_command(harness, "do it", model) == harness_command(
+            harness, "do it", model, {harness: unrouted}
+        )
+
     def test_the_shipped_commands_carry_nothing_from_the_gateway_vocabulary(self):
         """No shipped harness's command may name a gateway token or a catalog
         key — the whole vocabulary is opaque to this side."""

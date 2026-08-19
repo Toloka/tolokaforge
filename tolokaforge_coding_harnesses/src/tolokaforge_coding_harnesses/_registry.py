@@ -1059,6 +1059,17 @@ open surface would let a run config shadow the task's own environment with
 arbitrary values. Loaded from ``data/registry_meta.yaml`` at import; adding a
 key is a YAML edit."""
 
+
+def validate_provider_env_keys(keys: Iterable[str]) -> None:
+    """Raise unless every key is one a harness CLI is allowed to receive."""
+    rejected = sorted(k for k in keys if k not in PROVIDER_ENV_KEYS)
+    if rejected:
+        raise ValueError(
+            f"coding harness: provider env key(s) {rejected!r} are not "
+            f"forwardable; accepted: {sorted(PROVIDER_ENV_KEYS)!r}."
+        )
+
+
 ALTERNATIVE_GATEWAYS: Mapping[str, RuntimeGateway] = _REGISTRY_META.alternative_gateways
 """Gateways a :attr:`HarnessSpec.gateway_route` may name, keyed by the name it
 names them by.
@@ -1072,10 +1083,11 @@ instead. See :attr:`GatewayRoute.gateway` and ADR-0037 § Consequences."""
 HARNESSES: dict[str, HarnessSpec] = load_harness_registry(SHIPPED_REGISTRY_FILE)
 """The shipped registry, loaded from :data:`SHIPPED_REGISTRY_FILE` at import.
 
-Bound after :data:`PROVIDER_ENV_KEYS` and :data:`ALTERNATIVE_GATEWAYS`, which
-:meth:`HarnessSpec._container_env_does_not_shadow_the_provider_envelope` and
-:meth:`HarnessSpec._gateway_route_names_a_declared_gateway` read while
-validating each entry.
+Bound last of the module's registry state: every name a validator reaches while
+an entry is being validated — :data:`PROVIDER_ENV_KEYS`,
+:data:`ALTERNATIVE_GATEWAYS`, :func:`validate_provider_env_keys` — is defined
+above, and a shipped entry exercising one of those validators is what would
+otherwise fail this line at import.
 """
 
 PROVIDER_ENV_INPUT_PREFIX = "TBENCH_PROVIDER_"
@@ -1094,16 +1106,6 @@ Nothing sets the prefixed name by accident.
 def provider_env_input(key: str) -> str:
     """Compose-input name carrying *key*'s value into the agent service."""
     return f"{PROVIDER_ENV_INPUT_PREFIX}{key}"
-
-
-def validate_provider_env_keys(keys: Iterable[str]) -> None:
-    """Raise unless every key is one a harness CLI is allowed to receive."""
-    rejected = sorted(k for k in keys if k not in PROVIDER_ENV_KEYS)
-    if rejected:
-        raise ValueError(
-            f"coding harness: provider env key(s) {rejected!r} are not "
-            f"forwardable; accepted: {sorted(PROVIDER_ENV_KEYS)!r}."
-        )
 
 
 def accepted_harnesses(registry: Mapping[str, HarnessSpec] = HARNESSES) -> tuple[str, ...]:
