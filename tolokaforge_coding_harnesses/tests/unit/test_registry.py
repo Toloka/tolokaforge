@@ -235,6 +235,17 @@ class TestAlternativeGatewayCatalog:
         # needs no widening of the provider-env allow-list.
         assert {gateway.base_url_env, gateway.credential_env} <= PROVIDER_ENV_KEYS
 
+    def test_the_shipped_catalog_refuses_a_gateway_registered_at_runtime(self):
+        """The closed set is what a route's ``gateway:`` key is checked against,
+        so an insertion before ``load_harness_registry`` would let any harness
+        name a gateway the shipped data never declares."""
+        from tolokaforge_coding_harnesses import ALTERNATIVE_GATEWAYS, RuntimeGateway
+
+        with pytest.raises(TypeError):
+            ALTERNATIVE_GATEWAYS["injected"] = RuntimeGateway(  # type: ignore[index]
+                base_url_env="U", credential_env="K"
+            )
+
     def test_a_meta_file_declaring_no_gateway_loads(self, tmp_path):
         """The catalog is optional: an operator's own registry_meta shape stays
         valid without it, and a harness declaring no route needs none."""
@@ -244,34 +255,55 @@ class TestAlternativeGatewayCatalog:
         target.write_text("openrouter_vendor_namespaces: [foo/]\nprovider_env_keys: [A_KEY]\n")
         assert _load_registry_meta(target).alternative_gateways == {}
 
+    _WELL_FORMED = 'base_url_env: "U"\n      credential_env: "K"\n'
+
     @pytest.mark.parametrize(
-        ("gateway", "expected"),
+        ("name", "gateway", "expected"),
         [
             pytest.param(
+                "some_gateway",
                 'base_url_env: ""\n      credential_env: "K"\n',
                 "base_url_env",
                 id="blank-base-url-name",
             ),
             pytest.param(
+                "some_gateway",
                 'base_url_env: "U"\n      credential_env: " K "\n',
                 "credential_env",
                 id="padded-credential-name",
             ),
             pytest.param(
+                "some_gateway",
                 'base_url_env: "U"\n      credential_env: "K"\n'
                 '      supports: ["", "provider_pinning"]\n',
                 "supports",
                 id="blank-capability-tag",
             ),
             pytest.param(
+                "some_gateway",
                 'base_url_env: "U"\n      credential_env: "K"\n'
                 '      supports: ["provider_pinning", "provider_pinning"]\n',
                 "duplicates",
                 id="repeated-capability-tag",
             ),
+            pytest.param(
+                '""',
+                _WELL_FORMED,
+                "alternative_gateways key",
+                id="blank-gateway-name",
+            ),
+            pytest.param(
+                '" padded_gateway "',
+                _WELL_FORMED,
+                "alternative_gateways key",
+                id="padded-gateway-name",
+            ),
         ],
     )
-    def test_malformed_gateway_is_refused_naming_the_field(self, tmp_path, gateway, expected):
+    def test_malformed_gateway_is_refused_naming_the_field(self, tmp_path, name, gateway, expected):
+        """The name a gateway is filed under is checked too: a route naming the
+        trimmed value is refused by ``HarnessSpec`` with an accepted-set listing
+        the padded one, which reads as a bug in the check rather than the data."""
         from tolokaforge_coding_harnesses._registry import _load_registry_meta
 
         target = tmp_path / "registry_meta.yaml"
@@ -279,7 +311,7 @@ class TestAlternativeGatewayCatalog:
             "openrouter_vendor_namespaces: [foo/]\n"
             "provider_env_keys: [A_KEY]\n"
             "alternative_gateways:\n"
-            "  some_gateway:\n"
+            f"  {name}:\n"
             f"      {gateway}"
         )
         with pytest.raises(ValueError, match=expected):
@@ -379,6 +411,11 @@ class TestGatewayRoute:
                 {"passthrough_path": "gemini"},
                 ["'gemini'", "start with `/`"],
                 id="passthrough-path-is-not-rooted",
+            ),
+            pytest.param(
+                {"model_alias_pattern": "kimi-k2-moonshotai-pinned"},
+                ["'kimi-k2-moonshotai-pinned'", "{model}", "single gateway alias"],
+                id="model-alias-pattern-has-no-model-placeholder",
             ),
         ],
     )

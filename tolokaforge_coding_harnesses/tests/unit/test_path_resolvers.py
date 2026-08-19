@@ -7,11 +7,11 @@ the shipped resolver defers what it does not know, for the container's own shell
 """
 
 import pytest
-from tolokaforge_coding_harnesses.protocols import PATH_CONSTRUCT_PATTERN
 
 from tolokaforge_coding_harnesses import (
     DEFAULT_PATH_RESOLVER,
     HARNESSES,
+    PATH_CONSTRUCT_PATTERN,
     LinuxRootResolver,
 )
 

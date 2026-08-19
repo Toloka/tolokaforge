@@ -14,6 +14,7 @@ lives in ``tests/integration/coding_harnesses/test_container_injection_docker.py
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from tolokaforge_coding_harnesses import (
+    ContainerFileInjector,
     ContainerInjectionError,
     DockerExecInjector,
     FileSpec,
@@ -65,6 +67,24 @@ def _fake_docker(tmp_path: Path, *, exit_code: int = 0, stderr: str = "") -> Fak
     )
     binary.chmod(0o755)
     return FakeDocker(path=binary, record_dir=record_dir)
+
+
+def _hanging_docker(tmp_path: Path) -> Path:
+    """A stand-in that never returns — a wedged daemon, or a container in
+    restart backoff."""
+    binary = tmp_path / "docker-hangs"
+    binary.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(30)\n")
+    binary.chmod(0o755)
+    return binary
+
+
+def test_the_shipped_implementation_satisfies_the_contract():
+    """The Protocol is what a second transport (``kubectl exec``) is written
+    against, and its only consumer is in another repo: unlocked, a signature
+    drift here ships green and surfaces there as an ``AttributeError``."""
+    injector: ContainerFileInjector = DockerExecInjector()
+
+    assert isinstance(injector, ContainerFileInjector)
 
 
 class TestTheCredentialNeverLeavesStdin:
@@ -138,6 +158,21 @@ class TestOneExecPerFile:
             DockerExecInjector(docker_binary=str(fake.path)).inject("trial-container", specs)
 
         assert fake.invocations == 1
+
+    def test_an_exec_that_never_returns_raises_naming_the_container_and_the_path(self, tmp_path):
+        """A wedged daemon produces no output under ``capture_output``, so
+        without the bound the provisioning call blocks with nothing to read."""
+        with pytest.raises(ContainerInjectionError) as excinfo:
+            DockerExecInjector(docker_binary=str(_hanging_docker(tmp_path)), timeout_s=0.5).inject(
+                "trial-container", [FileSpec(container_path="/root/f", content=SECRET)]
+            )
+
+        error = excinfo.value
+        assert isinstance(error.__cause__, subprocess.TimeoutExpired)
+        assert error.container == "trial-container"
+        assert error.container_path == "/root/f"
+        assert "0.5s" in str(error)
+        assert SECRET not in str(error)
 
 
 class TestThePathIsDataNotProgram:

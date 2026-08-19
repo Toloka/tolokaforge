@@ -18,6 +18,7 @@ import shlex
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal
 
 import yaml
@@ -196,17 +197,8 @@ class GatewayRoute(BaseModel):
     gateway: str
     """Key into :data:`ALTERNATIVE_GATEWAYS`, refused at load if undeclared.
 
-    The catalog is shipped-only: ``registry_meta.yaml`` has no overlay and no
-    plug-in layer, so an operator cannot register a gateway name — declaring
-    one is a PR against that file. Their escape hatch is a layer down and
-    already exists: an operator running their own gateway overlays the whole
-    harness entry (``config_files`` / ``container_env`` / ``provider_env``
-    directly, as ``examples/terminal_bench/gemini_litellm_overlay.yaml`` does)
-    and names no gateway at all. The closed set buys a load-time typo check for
-    the cross-repo runtime, which is the one consumer that can check nothing
-    itself. The first operator needing a route against a self-hosted gateway is
-    the trigger to make the catalog layerable — its own decision, recorded in
-    ADR-0037 § Consequences."""
+    The catalog is shipped-only, and why that is the accepted trade rather than
+    an oversight is ADR-0037 § Consequences."""
 
     passthrough_path: str = ""
     """Path segment the consuming runtime appends to the gateway's base URL to
@@ -299,6 +291,22 @@ class GatewayRoute(BaseModel):
                     "unexpanded. HarnessSpec.config_files is the templated map; a token dialect "
                     "on this path belongs to the runtime that provisions it."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _model_alias_pattern_carries_the_model(self) -> GatewayRoute:
+        """Refuse a pattern that renders to the same alias for every model.
+
+        The sibling typo (``{model_name}``) raises ``KeyError`` in the consuming
+        runtime and is loud. A missing placeholder is not: every trial in a
+        matrix pins to one alias and the results look like a model comparison.
+        """
+        if self.model_alias_pattern is not None and "{model}" not in self.model_alias_pattern:
+            raise ValueError(
+                f"gateway_route.model_alias_pattern {self.model_alias_pattern!r} contains no "
+                "`{model}` placeholder; the consuming runtime renders it per run, so a pattern "
+                "without one pins every model to a single gateway alias."
+            )
         return self
 
     @model_validator(mode="after")
@@ -1014,6 +1022,12 @@ class _RegistryMeta(BaseModel):
                     f"registry_meta.yaml: provider_env_keys entry {value!r} "
                     "must be a non-blank string without leading/trailing whitespace."
                 )
+        for name in self.alternative_gateways:
+            if not name or name.strip() != name:
+                raise ValueError(
+                    f"registry_meta.yaml: alternative_gateways key {name!r} "
+                    "must be a non-blank string without leading/trailing whitespace."
+                )
         if len(self.openrouter_vendor_namespaces) != len(set(self.openrouter_vendor_namespaces)):
             raise ValueError(
                 "registry_meta.yaml: openrouter_vendor_namespaces contains duplicates."
@@ -1070,15 +1084,16 @@ def validate_provider_env_keys(keys: Iterable[str]) -> None:
         )
 
 
-ALTERNATIVE_GATEWAYS: Mapping[str, RuntimeGateway] = _REGISTRY_META.alternative_gateways
+ALTERNATIVE_GATEWAYS: Mapping[str, RuntimeGateway] = MappingProxyType(
+    _REGISTRY_META.alternative_gateways
+)
 """Gateways a :attr:`HarnessSpec.gateway_route` may name, keyed by the name it
 names them by.
 
-Shipped-only, and deliberately so: ``registry_meta.yaml`` sits outside both
-fingerprint digests because it carries no overlay and no plug-in layer, and
-making this catalog layerable would move the file inside that contract. An
-operator routing a harness through their own gateway overlays the harness entry
-instead. See :attr:`GatewayRoute.gateway` and ADR-0037 § Consequences."""
+A read-only view rather than the loaded ``dict``: the closed set is what
+:meth:`HarnessSpec._gateway_route_names_a_declared_gateway` checks against, so
+an import-time insertion would register a gateway the shipped data never
+declares. Shipped-only by decision — see ADR-0037 § Consequences."""
 
 HARNESSES: dict[str, HarnessSpec] = load_harness_registry(SHIPPED_REGISTRY_FILE)
 """The shipped registry, loaded from :data:`SHIPPED_REGISTRY_FILE` at import.

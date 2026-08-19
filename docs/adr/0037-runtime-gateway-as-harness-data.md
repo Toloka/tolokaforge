@@ -11,6 +11,11 @@
 - **Related:** [ADR-0036](0036-tolokaforge-coding-harnesses-split.md) — the
   package split that gave a second runtime an address to read this data from,
   and the `no tolokaforge.* import` invariant that decides who expands what.
+- **Related:** [`docs/LLM_LAYER.md` § "Speaking to the
+  gateway"](../LLM_LAYER.md#speaking-to-the-gateway) and
+  [`tolokaforge/core/llm/gateway_route.py`](../../tolokaforge/core/llm/gateway_route.py)
+  — the engine's *own* "gateway route", a different thing under the same words.
+  See § Two things called a gateway route.
 
 ## Context and Problem Statement
 
@@ -137,6 +142,27 @@ URL and would bypass the proxy. A run taking the gateway route gets provider
 pinning from the gateway's own alias and runs no proxy at all, so the two never
 apply at once and no cross-validator is needed.
 
+### Two things called a gateway route
+
+This repo already uses the words. `docs/LLM_LAYER.md` § "Speaking to the
+gateway" and `tolokaforge/core/llm/gateway_route.py` call a **gateway route**
+*the name a model answers to on the gateway* — resolved at client construction
+from `GET {base}/models`, with three documented outcomes for catalog-hit,
+catalog-miss and catalog-unreadable. That is the engine's LLM loop talking to a
+gateway on its own behalf.
+
+`HarnessSpec.gateway_route` is the CLI-side recipe for *reaching* a gateway:
+which catalog endpoint, which passthrough path, which files and environment a
+harness CLI needs to speak to it. Same word, different scope, and neither reads
+the other. The overlap is one field — `model_alias_pattern` answers the same
+question ("under what name does the gateway know this model?") with a
+hand-authored static pattern rather than a catalog lookup, because the resolver
+lives in the engine that ADR-0036 forbids this package from importing, and
+because the consuming runtime holds a harness spec and a model name at
+provisioning time, before any client exists to query a catalog with. A pattern
+that goes stale fails loud at the gateway; the two mechanisms answer to
+different owners and are not expected to converge.
+
 ### Every rule is checked at load, because there is no later
 
 No caller in this repo reads `gateway_route`. The default path can afford to
@@ -154,6 +180,7 @@ naming the offending key or path:
 | `config_files` paths are absolute or `$`-rooted | `GatewayRoute` |
 | `config_files` contents carry no `{{` or `{%` | `GatewayRoute` |
 | `passthrough_path` is `""` or starts with `/` | `GatewayRoute` |
+| `model_alias_pattern`, when set, contains `{model}` — without it every model in a matrix renders to one alias, silently | `GatewayRoute` |
 | `base_url_env` / `credential_env` non-blank; `supports` entries non-blank and unique | `RuntimeGateway` |
 
 **The asymmetry with the default path is deliberate.** `HarnessSpec.provider_env`
@@ -258,7 +285,7 @@ class ContainerFileInjector(Protocol):
     def inject(self, container: str, files: Iterable[FileSpec]) -> None: ...
 
 class DockerExecInjector:                       # the shipped implementation
-    def __init__(self, docker_binary: str = "docker") -> None: ...
+    def __init__(self, docker_binary: str = "docker", timeout_s: float = 30.0) -> None: ...
 
 class ContainerInjectionError(RuntimeError):    # container, container_path, returncode, stderr
     ...
@@ -281,7 +308,11 @@ generated `__repr__` cannot print it into the traceback a run bundle captures.
 failed, and the failing path is the whole content of a useful error. A non-zero
 exec raises `ContainerInjectionError` naming the container, the path and the
 container's own stderr — no partial-success return value, no
-logging-and-continuing (Core Rule 1).
+logging-and-continuing (Core Rule 1). Each exec is bounded (`timeout_s`,
+default 30s) and a breach raises the same error: an unresponsive daemon writes
+nothing to the captured streams, so an unbounded call is a provisioning step
+that hangs with nothing to read. A second transport owes the caller the same
+bound.
 
 **Why a container-side `sh -c` is sanctioned and a host-side `shell=True` is
 not.** These are different shells. Parent-directory creation, the mode, and the
@@ -367,14 +398,17 @@ caller's contract rather than a courtesy the injector might perform.
 
 ### Follow-ups
 
-- Code changes required: a consuming runtime implements steps 0–3 and calls
-  `DockerExecInjector` (or its own `ContainerFileInjector`) with resolved
-  `FileSpec`s.
-- Documentation to update: `docs/adr/0033-external-harness-registry.md` field
-  list; the terminal-bench adapter README's harness-surface table.
-- Tests to add: the `harness_command`-unchanged lock, one test per load-time
-  rule, a canonical snapshot regeneration for the new field, and the injector's
-  unit + Docker-gated integration tiers.
+- **A consuming shim in the second runtime** — it implements steps 0–3 of the
+  token table and calls `DockerExecInjector` (or its own
+  `ContainerFileInjector`) with resolved `FileSpec`s. Until one lands, this
+  schema and `container_injection` have no consumer, which the trade-off above
+  says is grounds for reverting rather than leaving them to rot.
+- **A `moonshotai`-pinned alias on the shipped gateway** — `kimi-code`'s
+  `model_alias_pattern` names a route the gateway has to actually serve, and
+  registering it is a deployment change, not a repo one. Tracked with the
+  operator who owns that gateway.
+- **Split `_registry.py`** into spec / registry / command modules — still open
+  from ADR-0036, and this decision added a third model to the file.
 
 ## Links
 
@@ -389,5 +423,3 @@ caller's contract rather than a courtesy the injector might perform.
   `tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/container_injection.py`
   (`FileSpec`, `ContainerFileInjector`, `DockerExecInjector`),
   `tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/registry_meta.yaml`.
-</content>
-</invoke>

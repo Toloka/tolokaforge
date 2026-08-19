@@ -101,10 +101,17 @@ silently.
 
 
 class DockerExecInjector:
-    """:class:`ContainerFileInjector` over ``docker exec``."""
+    """:class:`ContainerFileInjector` over ``docker exec``.
 
-    def __init__(self, docker_binary: str = "docker") -> None:
+    Each exec is bounded by *timeout_s*: an unresponsive daemon or a container
+    stuck in restart backoff produces no incremental output under
+    ``capture_output``, so without a bound the provisioning call blocks forever
+    instead of naming the file that never landed.
+    """
+
+    def __init__(self, docker_binary: str = "docker", timeout_s: float = 30.0) -> None:
         self._docker_binary = docker_binary
+        self._timeout_s = timeout_s
 
     def inject(self, container: str, files: Iterable[FileSpec]) -> None:
         """Write each file in its own ``docker exec``.
@@ -114,23 +121,36 @@ class DockerExecInjector:
         content of a useful error.
         """
         for spec in files:
-            result = subprocess.run(
-                [
-                    self._docker_binary,
-                    "exec",
-                    "-i",
-                    container,
-                    "sh",
-                    "-c",
-                    _WRITE_SCRIPT,
-                    "_",
-                    spec.container_path,
-                    f"{spec.mode:04o}",
-                ],
-                input=spec.content.encode("utf-8"),
-                capture_output=True,
-                check=False,
-            )
+            argv = [
+                self._docker_binary,
+                "exec",
+                "-i",
+                container,
+                "sh",
+                "-c",
+                _WRITE_SCRIPT,
+                "_",
+                spec.container_path,
+                f"{spec.mode:04o}",
+            ]
+            try:
+                result = subprocess.run(
+                    argv,
+                    input=spec.content.encode("utf-8"),
+                    capture_output=True,
+                    check=False,
+                    timeout=self._timeout_s,
+                )
+            except subprocess.TimeoutExpired as exc:
+                # The exception's own `stderr` is deliberately not interpolated:
+                # a wedged exec's captured output is the one place a resolved
+                # credential could re-enter this message.
+                raise ContainerInjectionError(
+                    container=container,
+                    container_path=spec.container_path,
+                    returncode=-1,
+                    stderr=f"docker exec did not return within {self._timeout_s}s",
+                ) from exc
             if result.returncode != 0:
                 raise ContainerInjectionError(
                     container=container,
