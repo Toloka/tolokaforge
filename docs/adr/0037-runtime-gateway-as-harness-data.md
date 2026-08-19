@@ -58,6 +58,9 @@ gateway: the exact failure class this decision exists to remove.
   requiring.
 - A token whose expander and expansion *order* are unstated is a silent
   wrong-value bug, not a loud one. The contract has to name both.
+- A resolved credential must reach a container without touching host disk, an
+  argument list, or an environment block — and the transport that carries it has
+  to be replaceable, since `docker exec` is not every runtime's answer.
 - `harness_command` must not change. A field a second runtime reads is dead
   weight at worst; a field this assembler starts reading is a routing change no
   run config asked for.
@@ -237,6 +240,72 @@ runtime with a different transport inherits the *concern* — a value that canno
 survive its transport intact must be refused where the offending key can be
 named — and applies its own check **after step 3**, not this one.
 
+### The injection seam: `ContainerFileInjector`
+
+Data alone does not close the gap. A `config_files` map is unreachable to a
+runtime that attaches to a container someone else started, because its only
+other channel is the environment block and an environment block cannot carry a
+file. `tolokaforge_coding_harnesses.container_injection` ships the missing one:
+
+```python
+@dataclass(frozen=True)
+class FileSpec:
+    container_path: str            # absolute AND already PathResolver-resolved
+    content: str = field(repr=False)
+    mode: int = 0o600
+
+class ContainerFileInjector(Protocol):
+    def inject(self, container: str, files: Iterable[FileSpec]) -> None: ...
+
+class DockerExecInjector:                       # the shipped implementation
+    def __init__(self, docker_binary: str = "docker") -> None: ...
+
+class ContainerInjectionError(RuntimeError):    # container, container_path, returncode, stderr
+    ...
+```
+
+**Why a Protocol and not just the docker class.** The transport is the part that
+varies: a cluster-hosted run reaches its container through `kubectl exec`, and
+that implementation is three lines against the same contract. Naming the seam
+now is cheaper than discovering it later from a second consumer's fork
+(AGENTS.md Core Rule 7).
+
+**Why stdin only.** `inject` is handed a resolved credential. Passing content as
+an argument puts it in `ps` output on the host *and* inside the container; an
+environment variable puts it in `/proc/<pid>/environ`; a temp file puts it on
+host disk with a lifetime nobody owns. Content therefore reaches the container
+on stdin and nowhere else, and `FileSpec.content` carries `repr=False` so a
+generated `__repr__` cannot print it into the traceback a run bundle captures.
+
+**Why one exec per file.** A batched write cannot tell the caller *which* path
+failed, and the failing path is the whole content of a useful error. A non-zero
+exec raises `ContainerInjectionError` naming the container, the path and the
+container's own stderr — no partial-success return value, no
+logging-and-continuing (Core Rule 1).
+
+**Why a container-side `sh -c` is sanctioned and a host-side `shell=True` is
+not.** These are different shells. Parent-directory creation, the mode, and the
+write have to share one exec, or a missing parent silently truncates instead of
+failing that file — and `mkdir -p` + redirect + `chmod` is not expressible as a
+single non-shell exec. So the container gets a shell, running a **fixed literal
+script** that receives the path and mode as `$1` / `$2`. What is forbidden is
+*building* that script from `FileSpec` data: `sh -c ("cat > " + path)` is a
+command-injection hole, and the unit tier asserts that the argv for an
+injection-shaped path differs from the argv for a benign one *only in the path
+element itself*. The host `subprocess` call passes a list and never sets
+`shell=True`.
+
+The write order inside that script — `touch`, then `chmod`, then `cat` — is a
+security property, not a style choice: content only ever exists on disk under
+the requested mode, where a trailing `chmod` would leave a credential
+world-readable for the length of the copy.
+
+**The injector expands nothing.** `FileSpec.container_path` arrives already
+resolved (step 0 of the token table). It reaches the container as a quoted
+positional, which writes a literal directory named `${HOME}` rather than
+failing — a silent wrong-path write, which is why the resolution is the
+caller's contract rather than a courtesy the injector might perform.
+
 ## Consequences
 
 ### Positive
@@ -249,6 +318,9 @@ named — and applies its own check **after step 3**, not this one.
   in `test_harness_command.py`. A future edit that starts consuming
   `gateway_route` on this side breaks that test rather than quietly re-routing
   every trial.
+- The credential path is narrow enough to test. `FileSpec.content` reaches a
+  container on one pipe, and the tests assert the negative — the value is in no
+  argv element and in no `repr` — rather than only that the happy path works.
 
 ### Negative / Trade-offs
 
@@ -276,24 +348,33 @@ named — and applies its own check **after step 3**, not this one.
   **Revisit trigger:** the first operator who needs a `gateway_route` against a
   self-hosted gateway. At that point making the catalog layerable is the right
   answer, and it is its own ADR.
-- **Nothing in this repo consumes `gateway_route`.** Adding a field to
-  `HarnessSpec` is not free — it moves `HarnessFingerprint.shipped_sha256` and
-  `resolved_sha256` for every run, and it is one more field an operator reading
-  the spec has to decide is not for them. If no consumer lands, this schema is
-  dead weight and should be reverted rather than left to rot.
+- **Nothing in this repo consumes `gateway_route` or `ContainerFileInjector`.**
+  Adding a field to `HarnessSpec` is not free — it moves
+  `HarnessFingerprint.shipped_sha256` and `resolved_sha256` for every run, and
+  it is one more field an operator reading the spec has to decide is not for
+  them. If no consumer lands, this schema and this module are dead weight and
+  should be reverted rather than left to rot.
 - **The token contract is enforced by prose on one side.** This repo can refuse
   a template in a literal map and a relative config path; it cannot enforce that
   a consumer expands `${gateway.*}` before `${secret:NAME}`, or that it resolves
   `${HOME}` at step 0. That lock belongs to the consumer's own test suite.
+- **The injector's real-container proof runs on fewer lanes than the PR check.**
+  The Docker-gated test lives under `tests/integration/coding_harnesses/`, and
+  the integration lane is push / nightly / release-gate scoped. Every PR runs
+  the stand-in-`docker` unit tier, which covers argv leakage and the
+  anti-injection structure; a green PR check is not evidence the container-side
+  quoting was exercised.
 
 ### Follow-ups
 
-- Code changes required: none in this repo beyond the schema. A consuming
-  runtime implements steps 0–3.
+- Code changes required: a consuming runtime implements steps 0–3 and calls
+  `DockerExecInjector` (or its own `ContainerFileInjector`) with resolved
+  `FileSpec`s.
 - Documentation to update: `docs/adr/0033-external-harness-registry.md` field
   list; the terminal-bench adapter README's harness-surface table.
 - Tests to add: the `harness_command`-unchanged lock, one test per load-time
-  rule, and a canonical snapshot regeneration for the new field.
+  rule, a canonical snapshot regeneration for the new field, and the injector's
+  unit + Docker-gated integration tiers.
 
 ## Links
 
@@ -305,6 +386,8 @@ named — and applies its own check **after step 3**, not this one.
 - Related code:
   `tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py`
   (`RuntimeGateway`, `GatewayRoute`, `HarnessSpec.gateway_route`),
+  `tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/container_injection.py`
+  (`FileSpec`, `ContainerFileInjector`, `DockerExecInjector`),
   `tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/registry_meta.yaml`.
 </content>
 </invoke>

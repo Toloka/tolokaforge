@@ -50,6 +50,12 @@ from ._registry import (
     validate_harness,
     validate_provider_env_keys,
 )
+from .container_injection import (
+    ContainerFileInjector,
+    ContainerInjectionError,
+    DockerExecInjector,
+    FileSpec,
+)
 from .fingerprint import HarnessFingerprint, compute_harness_fingerprint
 from .path_resolvers import DEFAULT_PATH_RESOLVER, LinuxRootResolver
 from .protocols import PATH_CONSTRUCT_PATTERN, PathResolver, SkillDelivery, SkillsBundle
@@ -71,7 +77,11 @@ __all__ = [
     "PROVIDER_ENV_KEYS",
     "SHIPPED_REGISTRY_FILE",
     "SHIPPED_REGISTRY_META_FILE",
+    "ContainerFileInjector",
+    "ContainerInjectionError",
+    "DockerExecInjector",
     "DuplicateRegistrationError",
+    "FileSpec",
     "GatewayRoute",
     "HarnessFingerprint",
     "HarnessSpec",
