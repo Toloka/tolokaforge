@@ -182,6 +182,7 @@ naming the offending key or path:
 | `passthrough_path` is `""` or starts with `/` | `GatewayRoute` |
 | `model_alias_pattern`, when set, contains `{model}` — without it every model in a matrix renders to one alias, silently | `GatewayRoute` |
 | `base_url_env` / `credential_env` non-blank; `supports` entries non-blank and unique | `RuntimeGateway` |
+| `alternative_gateways` keys non-blank and unpadded — a padded key files a gateway under a name no route can name, while the refusal lists that padded key as accepted | `_RegistryMeta` |
 
 **The asymmetry with the default path is deliberate.** `HarnessSpec.provider_env`
 has no load-time allow-list check — its keys are validated by the adapter that
@@ -309,10 +310,11 @@ failed, and the failing path is the whole content of a useful error. A non-zero
 exec raises `ContainerInjectionError` naming the container, the path and the
 container's own stderr — no partial-success return value, no
 logging-and-continuing (Core Rule 1). Each exec is bounded (`timeout_s`,
-default 30s) and a breach raises the same error: an unresponsive daemon writes
-nothing to the captured streams, so an unbounded call is a provisioning step
-that hangs with nothing to read. A second transport owes the caller the same
-bound.
+default 30s) and a breach raises the same error with `returncode=None`: an
+unresponsive daemon writes nothing to the captured streams, so an unbounded call
+is a provisioning step that hangs with nothing to read, and no int stands in for
+a status that never arrived — a killed process already reports itself as a
+negative code. A second transport owes the caller the same bound.
 
 **Why a container-side `sh -c` is sanctioned and a host-side `shell=True` is
 not.** These are different shells. Parent-directory creation, the mode, and the

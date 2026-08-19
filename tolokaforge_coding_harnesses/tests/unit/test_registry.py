@@ -246,6 +246,22 @@ class TestAlternativeGatewayCatalog:
                 base_url_env="U", credential_env="K"
             )
 
+    def test_a_write_to_the_loaded_dict_does_not_show_through(self):
+        """The proxy is over a copy: over the loaded dict it would forward every
+        write made through that dict, which is the same escape hatch one
+        attribute away."""
+        from tolokaforge_coding_harnesses._registry import _REGISTRY_META
+
+        from tolokaforge_coding_harnesses import ALTERNATIVE_GATEWAYS, RuntimeGateway
+
+        _REGISTRY_META.alternative_gateways["backdoor"] = RuntimeGateway(
+            base_url_env="U", credential_env="K"
+        )
+        try:
+            assert "backdoor" not in ALTERNATIVE_GATEWAYS
+        finally:
+            del _REGISTRY_META.alternative_gateways["backdoor"]
+
     def test_a_meta_file_declaring_no_gateway_loads(self, tmp_path):
         """The catalog is optional: an operator's own registry_meta shape stays
         valid without it, and a harness declaring no route needs none."""

@@ -13,9 +13,11 @@ lives in ``tests/integration/coding_harnesses/test_container_injection_docker.py
 
 from __future__ import annotations
 
+import inspect
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -78,13 +80,29 @@ def _hanging_docker(tmp_path: Path) -> Path:
     return binary
 
 
+def _parameters(method: Callable[..., None]) -> list[tuple[str, str]]:
+    return [(p.name, p.kind.name) for p in inspect.signature(method).parameters.values()]
+
+
 def test_the_shipped_implementation_satisfies_the_contract():
     """The Protocol is what a second transport (``kubectl exec``) is written
-    against, and its only consumer is in another repo: unlocked, a signature
-    drift here ships green and surfaces there as an ``AttributeError``."""
+    against, and its only consumer is in another repo: unlocked, a rename here
+    ships green and surfaces there as a ``TypeError`` on a keyword argument.
+
+    ``@runtime_checkable`` only proves the method exists, so the parameter names
+    and kinds are pinned separately. Annotations and defaults are not compared.
+    """
     injector: ContainerFileInjector = DockerExecInjector()
 
     assert isinstance(injector, ContainerFileInjector)
+
+    expected = [
+        ("self", "POSITIONAL_OR_KEYWORD"),
+        ("container", "POSITIONAL_OR_KEYWORD"),
+        ("files", "POSITIONAL_OR_KEYWORD"),
+    ]
+    assert _parameters(ContainerFileInjector.inject) == expected
+    assert _parameters(DockerExecInjector.inject) == expected
 
 
 class TestTheCredentialNeverLeavesStdin:
@@ -161,7 +179,11 @@ class TestOneExecPerFile:
 
     def test_an_exec_that_never_returns_raises_naming_the_container_and_the_path(self, tmp_path):
         """A wedged daemon produces no output under ``capture_output``, so
-        without the bound the provisioning call blocks with nothing to read."""
+        without the bound the provisioning call blocks with nothing to read.
+
+        The error carries no returncode at all: a caller reading a negative code
+        as a signal death would report a killed exec that never ran.
+        """
         with pytest.raises(ContainerInjectionError) as excinfo:
             DockerExecInjector(docker_binary=str(_hanging_docker(tmp_path)), timeout_s=0.5).inject(
                 "trial-container", [FileSpec(container_path="/root/f", content=SECRET)]
@@ -171,7 +193,9 @@ class TestOneExecPerFile:
         assert isinstance(error.__cause__, subprocess.TimeoutExpired)
         assert error.container == "trial-container"
         assert error.container_path == "/root/f"
-        assert "0.5s" in str(error)
+        assert error.returncode is None
+        assert "did not return within 0.5s" in str(error)
+        assert "exit status" not in str(error)
         assert SECRET not in str(error)
 
 

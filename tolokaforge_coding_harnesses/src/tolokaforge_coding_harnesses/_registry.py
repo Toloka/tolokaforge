@@ -1085,15 +1085,16 @@ def validate_provider_env_keys(keys: Iterable[str]) -> None:
 
 
 ALTERNATIVE_GATEWAYS: Mapping[str, RuntimeGateway] = MappingProxyType(
-    _REGISTRY_META.alternative_gateways
+    dict(_REGISTRY_META.alternative_gateways)
 )
 """Gateways a :attr:`HarnessSpec.gateway_route` may name, keyed by the name it
 names them by.
 
-A read-only view rather than the loaded ``dict``: the closed set is what
-:meth:`HarnessSpec._gateway_route_names_a_declared_gateway` checks against, so
-an import-time insertion would register a gateway the shipped data never
-declares. Shipped-only by decision — see ADR-0037 § Consequences."""
+A read-only view over a *copy* rather than over the loaded ``dict``: the closed
+set is what :meth:`HarnessSpec._gateway_route_names_a_declared_gateway` checks
+against, so an insertion would register a gateway the shipped data never
+declares — and a proxy wrapping the loaded dict still shows a write made
+through that dict. Shipped-only by decision — see ADR-0037 § Consequences."""
 
 HARNESSES: dict[str, HarnessSpec] = load_harness_registry(SHIPPED_REGISTRY_FILE)
 """The shipped registry, loaded from :data:`SHIPPED_REGISTRY_FILE` at import.

@@ -74,17 +74,27 @@ class ContainerFileInjector(Protocol):
 
 
 class ContainerInjectionError(RuntimeError):
-    """One file failed to land, and this says which."""
+    """One file failed to land, and this says which.
 
-    def __init__(self, container: str, container_path: str, returncode: int, stderr: str) -> None:
+    ``returncode`` is ``None`` when the exec never returned a status at all, and
+    *stderr* then carries the synthesized reason rather than captured output. No
+    int stands in for that: a process killed by a signal already reports itself
+    as a negative code, so a sentinel would read as a signal death.
+    """
+
+    def __init__(
+        self, container: str, container_path: str, returncode: int | None, stderr: str
+    ) -> None:
         self.container = container
         self.container_path = container_path
         self.returncode = returncode
         self.stderr = stderr
-        super().__init__(
-            f"container {container!r}: writing {container_path!r} failed with exit "
-            f"status {returncode}: {stderr.strip() or '<no stderr>'}"
+        outcome = (
+            stderr.strip()
+            if returncode is None
+            else f"failed with exit status {returncode}: {stderr.strip() or '<no stderr>'}"
         )
+        super().__init__(f"container {container!r}: writing {container_path!r} {outcome}")
 
 
 _WRITE_SCRIPT = 'mkdir -p "$(dirname "$1")" && touch "$1" && chmod "$2" "$1" && cat > "$1"'
@@ -148,8 +158,8 @@ class DockerExecInjector:
                 raise ContainerInjectionError(
                     container=container,
                     container_path=spec.container_path,
-                    returncode=-1,
-                    stderr=f"docker exec did not return within {self._timeout_s}s",
+                    returncode=None,
+                    stderr=f"did not return within {self._timeout_s}s",
                 ) from exc
             if result.returncode != 0:
                 raise ContainerInjectionError(
