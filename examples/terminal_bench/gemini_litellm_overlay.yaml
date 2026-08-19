@@ -26,6 +26,14 @@
 # HarnessSpec field the shipped default carries — a partial overlay would
 # drop the fields it doesn't restate.
 #
+# The same recipe also lives on the shipped ``gemini-cli`` entry's
+# ``gateway_route`` field, as spec data for a runtime that provisions an
+# already-running container rather than composing one (ADR-0037). This file is
+# what a tolokaforge run reads; that field is what such a runtime reads.
+# Neither is a copy to be edited alone —
+# ``tests/canonical/test_gateway_route_recipes.py`` renders both and compares
+# the endpoint, the credential reference and the settings file they land.
+#
 # Two operator secrets need to be readable by the ``SecretManager``:
 #
 #   ``LITELLM_API_KEY``   the virtual key or master key the gateway issues.

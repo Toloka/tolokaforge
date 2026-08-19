@@ -425,6 +425,88 @@ class TestHarnessConfigFiles:
             harness_command("cli", "go", "m", registry={"cli": spec}, provider_env=provider_env)
 
 
+class TestGatewayRouteIsInertToTheCommand:
+    """``HarnessSpec.gateway_route`` describes how a *second* runtime reaches an
+    alternative gateway. It is data this assembler must never read.
+
+    The lock below is why: a route carries a ``config_files`` map, a
+    ``container_env`` map and a ``provider_env`` map under the same names the
+    default path uses, so the tempting edit — "the route has config files too,
+    write them" — is one line away and would silently route every TF-side trial
+    through a gateway the run config never named.
+    """
+
+    def test_the_command_is_byte_identical_with_and_without_a_route(self):
+        from tolokaforge_coding_harnesses import GatewayRoute, HarnessSpec, harness_command
+
+        unrouted = HarnessSpec(
+            install_source="cli",
+            version="1",
+            argv_prefix=("cli",),
+            argv_suffix=("--print",),
+            config_files={"${HOME}/.cli/config.json": '{"model": "{{ model }}"}'},
+            container_env={"CLI_TRUST_WORKSPACE": "true"},
+            provider_env={
+                "OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
+                "OPENAI_API_KEY": "${secret:OPENROUTER_API_KEY}",
+            },
+        )
+        # ``model_copy`` rather than a second constructor call: it guarantees
+        # the two specs differ in exactly the one field under test.
+        routed = unrouted.model_copy(
+            update={
+                "gateway_route": GatewayRoute(
+                    gateway="toloka_litellm",
+                    passthrough_path="/gemini",
+                    model_alias_pattern="{model}-pinned",
+                    config_files={"${HOME}/.cli/gateway.json": '{"auth": "gateway"}'},
+                    container_env={"CLI_GATEWAY_MODE": "1"},
+                    provider_env={
+                        "OPENAI_BASE_URL": "${gateway.base_url}${gateway.passthrough_path}",
+                        "OPENAI_API_KEY": "${secret:LITELLM_API_KEY}",
+                    },
+                )
+            }
+        )
+
+        assert harness_command("cli", "go", "m", {"cli": unrouted}) == harness_command(
+            "cli", "go", "m", {"cli": routed}
+        )
+
+    @pytest.mark.parametrize(
+        ("harness", "model"),
+        [
+            ("gemini-cli", "google/gemini-2.5-flash"),
+            ("kimi-code", "openrouter/moonshotai/kimi-k2.7-code"),
+        ],
+    )
+    def test_a_shipped_route_changes_nothing_about_that_harnesss_command(self, harness, model):
+        """The same lock on the real entries that carry a route. Dropping the
+        route from the shipped spec must produce the identical command, which
+        is what "inert to the TF-side path" means for a harness an operator
+        actually runs."""
+        from tolokaforge_coding_harnesses import HARNESSES, harness_command
+
+        spec = HARNESSES[harness]
+        assert spec.gateway_route is not None, f"{harness} no longer carries a route to test"
+        unrouted = spec.model_copy(update={"gateway_route": None})
+
+        assert harness_command(harness, "do it", model) == harness_command(
+            harness, "do it", model, {harness: unrouted}
+        )
+
+    def test_the_shipped_commands_carry_nothing_from_the_gateway_vocabulary(self):
+        """No shipped harness's command may name a gateway token or a catalog
+        key — the whole vocabulary is opaque to this side."""
+        from tolokaforge_coding_harnesses import ALTERNATIVE_GATEWAYS, HARNESSES, harness_command
+
+        for name in HARNESSES:
+            command = harness_command(name, "go", "openrouter/vendor/model")
+            assert "${gateway." not in command
+            for gateway_name in ALTERNATIVE_GATEWAYS:
+                assert gateway_name not in command
+
+
 class TestModelFlagStyle:
     def test_space_style_is_two_argv_words(self):
         import shlex

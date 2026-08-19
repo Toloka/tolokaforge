@@ -150,6 +150,17 @@ Adopt **Option 2 — the shipped YAML + operator overlay pattern.**
     force Moonshot AI first-party routing on OpenRouter.
   - `provider_env: dict[str, str]` — the shipped default `agent_provider_env`
     envelope for this harness (URLs, `${secret:…}` refs).
+  - `gateway_route: GatewayRoute | None` — how this harness reaches a gateway
+    named in `registry_meta.yaml`'s `alternative_gateways` catalog, carrying
+    the same `config_files` / `container_env` / `provider_env` shapes plus a
+    `passthrough_path` and a `model_alias_pattern`. Inert to `harness_command`:
+    the assembled command is byte-identical with and without it, and no caller
+    in this package reads it — it is data for a runtime that provisions an
+    already-running container rather than building one. Its `config_files`
+    values are literals, not templates, and its `${gateway.*}` / `${secret:…}` /
+    `{model}` tokens are stored opaque here. See
+    [ADR-0037](0037-runtime-gateway-as-harness-data.md) for the token table
+    that names who expands each and in what order.
 - Canonical snapshot at `tests/canonical/snapshots/tbench_echo_hello_harness/harness_spec.json`
   pins the JSON wire shape (Pattern B invariant).
 

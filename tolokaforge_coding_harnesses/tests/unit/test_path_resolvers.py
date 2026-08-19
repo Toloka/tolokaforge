@@ -7,11 +7,11 @@ the shipped resolver defers what it does not know, for the container's own shell
 """
 
 import pytest
-from tolokaforge_coding_harnesses.protocols import PATH_CONSTRUCT_PATTERN
 
 from tolokaforge_coding_harnesses import (
     DEFAULT_PATH_RESOLVER,
     HARNESSES,
+    PATH_CONSTRUCT_PATTERN,
     LinuxRootResolver,
 )
 
@@ -87,6 +87,41 @@ class TestTheShippedRegistrysConstructsAreInTheVocabulary:
             f"config_files path(s) {unaccounted} name a variable the shipped resolver does "
             "not know; add it to the resolver's vocabulary, or declare it in "
             "_DEFERRED_BY_DESIGN with the reason only the container can answer it."
+        )
+
+    def test_every_gateway_route_config_files_key_resolves_fully(self):
+        """No deferral allow-list here, unlike the default-path test above —
+        and the asymmetry is the point.
+
+        The default path writes a config file through a container-side
+        ``printf``, so a deferred ``${CODEX_HOME:-$HOME/.codex}`` is expanded
+        by the container's own shell. The gateway path writes it through a
+        ``ContainerFileInjector``, which passes the path as *data*: nothing
+        downstream expands a leftover construct, so a deferred one lands as a
+        literal directory named ``${HOME}`` and the CLI never reads the file.
+        Same field name, stricter rule, because the transport is different.
+
+        The forward constraint this locks: a harness whose default-path config
+        key relies on shell deferral cannot reuse that key in a
+        ``gateway_route`` — it needs one that resolves fully.
+        """
+        paths = [
+            (name, path)
+            for name, spec in HARNESSES.items()
+            if spec.gateway_route is not None
+            for path in spec.gateway_route.config_files
+        ]
+        assert paths, "the shipped registry declares no gateway_route config_files path to check"
+        unresolved = {}
+        for name, path in paths:
+            undeclared = _unresolved_variables(path)
+            if undeclared:
+                unresolved[f"{name}: {path}"] = sorted(undeclared)
+        assert not unresolved, (
+            f"gateway_route config_files path(s) {unresolved} still carry a construct after "
+            "the shipped resolver ran. On this path nothing expands it afterwards — the "
+            "injector writes the path as data — so the file would land in a literal "
+            "directory of that name. Give the recipe a fully resolvable key."
         )
 
     def test_every_skills_dir_target_resolves_fully(self):

@@ -107,7 +107,12 @@ tests/
 │   ├── fixtures/            # tolokaforge-adapter-demo: demo conversion adapter installed into a scratch venv
 │   └── snapshots/           # Committed golden JSON files
 ├── integration/             # Docker/API integration tests
-│   └── docker/              # Docker foundation layer tests
+│   ├── coding_harnesses/    # tolokaforge_coding_harnesses against real containers
+│   ├── deploy/              # Deployment-path tests
+│   ├── docker/              # Docker foundation layer tests
+│   ├── llm/                 # Live provider probes outside the certification suite
+│   ├── network_policy/      # Egress enforcement against a live daemon
+│   └── reset_recipes/       # Reset-recipe stacks (own conftest for xdist project names)
 ├── data/                    # Test data
 │   ├── tasks/               # Task fixtures (calc_basic, browser_basic, calc_custom_checks)
 │   ├── grading_parity/      # Substrate-parity packs; own glob, outside tasks/**

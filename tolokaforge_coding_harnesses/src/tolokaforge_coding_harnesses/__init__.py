@@ -18,6 +18,7 @@ whatever command it finds there.
 from __future__ import annotations
 
 from ._registry import (
+    ALTERNATIVE_GATEWAYS,
     CONFIG_TEMPLATE_VARIABLES,
     ENGINE_LOOP,
     HARNESS_REGISTRY_ENTRY_POINT_GROUP,
@@ -32,11 +33,13 @@ from ._registry import (
     SHIPPED_REGISTRY_FILE,
     SHIPPED_REGISTRY_META_FILE,
     DuplicateRegistrationError,
+    GatewayRoute,
     HarnessSpec,
     PluginBundle,
     PluginDiscovery,
     RequestMiddleware,
     ResolvedHarnessRegistry,
+    RuntimeGateway,
     accepted_harnesses,
     discover_plugin_harness_registries,
     harness_command,
@@ -47,11 +50,18 @@ from ._registry import (
     validate_harness,
     validate_provider_env_keys,
 )
+from .container_injection import (
+    ContainerFileInjector,
+    ContainerInjectionError,
+    DockerExecInjector,
+    FileSpec,
+)
 from .fingerprint import HarnessFingerprint, compute_harness_fingerprint
 from .path_resolvers import DEFAULT_PATH_RESOLVER, LinuxRootResolver
 from .protocols import PATH_CONSTRUCT_PATTERN, PathResolver, SkillDelivery, SkillsBundle
 
 __all__ = [
+    "ALTERNATIVE_GATEWAYS",
     "CONFIG_TEMPLATE_VARIABLES",
     "DEFAULT_PATH_RESOLVER",
     "ENGINE_LOOP",
@@ -67,7 +77,12 @@ __all__ = [
     "PROVIDER_ENV_KEYS",
     "SHIPPED_REGISTRY_FILE",
     "SHIPPED_REGISTRY_META_FILE",
+    "ContainerFileInjector",
+    "ContainerInjectionError",
+    "DockerExecInjector",
     "DuplicateRegistrationError",
+    "FileSpec",
+    "GatewayRoute",
     "HarnessFingerprint",
     "HarnessSpec",
     "LinuxRootResolver",
@@ -76,6 +91,7 @@ __all__ = [
     "PluginDiscovery",
     "RequestMiddleware",
     "ResolvedHarnessRegistry",
+    "RuntimeGateway",
     "SkillDelivery",
     "SkillsBundle",
     "accepted_harnesses",

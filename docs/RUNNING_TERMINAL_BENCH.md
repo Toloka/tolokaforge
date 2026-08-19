@@ -221,6 +221,18 @@ routes at `${secret:LITELLM_BASE_URL}/gemini`. LiteLLM's Gemini passthrough
 serves `generateContent` requests at that path and forwards to Google using the
 gateway's own credential.
 
+The same recipe also ships as spec data, on the shipped gemini-cli entry's
+`gateway_route` field. The two are siblings with different audiences: the
+overlay is what a tolokaforge run reads, because a run composes its trial
+container from the registry and a `harness_presets_file`; `gateway_route` is
+what a runtime reads when it attaches to a container it did not build and has
+to provision the same files and endpoints itself. Nothing in this repo consumes
+it, and a route changes nothing about the command a trial here runs — see
+[ADR-0037](adr/0037-runtime-gateway-as-harness-data.md). Editing one and not
+the other fails `tests/canonical/test_gateway_route_recipes.py`, which renders
+both and compares the endpoint, the credential reference and the settings file
+they land.
+
 `google/gemini-3.6-flash` and `google/gemini-3.1-pro-preview` are the two
 Pro-tier slugs that resolve today. Google retired `gemini-3-pro-preview` and
 moved it to "Previous models (Shut down)" — 3.1 Pro Preview is the successor.

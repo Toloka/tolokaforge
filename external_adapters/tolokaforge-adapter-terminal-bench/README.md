@@ -253,6 +253,15 @@ A worked example ships at
 [`examples/terminal_bench/gemini_litellm_overlay.yaml`](../../examples/terminal_bench/gemini_litellm_overlay.yaml)
 for gemini-cli.
 
+**A gateway as spec data.** `HarnessSpec.gateway_route` records the same routing
+facts as registry data rather than as an overlay: which gateway from the
+`alternative_gateways` catalog, which passthrough path, and the `config_files` /
+`container_env` / `provider_env` a run takes when it goes that way. This adapter
+does not read it — a route changes nothing about the command a trial here runs.
+It is the form a runtime reads when it provisions an already-running container
+instead of building one; see
+[ADR-0037](../../docs/adr/0037-runtime-gateway-as-harness-data.md).
+
 **Per-harness split.** Because each harness's `provider_env` resolves
 independently, one run can leave five harnesses on OpenRouter and route
 gemini-cli through LiteLLM by naming a `harness_presets_file` that only overlays
@@ -294,6 +303,7 @@ somewhere else, so a per-harness policy is one entry to read.
 | Model-name form | Whether a leading `vendor/` namespace is dropped before the model reaches the CLI. Codex and gemini-cli catalogs use bare names; a namespaced string makes them drop OpenRouter routing for the vendor's default endpoint. | `HarnessSpec.strip_vendor_namespace` |
 | Model-flag form | Whether the model flag and its value are two argv words (`--model gpt-5`) or one (`--model=gpt-5`). A CLI parsing its flags strictly accepts only one of the two. | `HarnessSpec.model_flag_style` |
 | File-based configuration | Files the CLI reads its configuration from, rendered per trial. | `HarnessSpec.config_files` |
+| Gateway route | How this harness reaches a gateway named in `registry_meta.yaml`'s `alternative_gateways` catalog — a passthrough path, a model-alias pattern, and the same `config_files` / `container_env` / `provider_env` shapes the default path uses. Read by a runtime that provisions an already-running container, not by this adapter: `harness_command` is byte-identical with and without it. Its `config_files` values are literals rather than templates, and its `${gateway.*}` / `${secret:…}` / `{model}` tokens stay opaque here — [ADR-0037](../../docs/adr/0037-runtime-gateway-as-harness-data.md) names who expands each and in what order. | `HarnessSpec.gateway_route` |
 | Skills | Where a task pack's own `harness_skills_dir` bundle lands — absolute, or rooted at a `${HOME}` / `${CONFIG_HOME}` construct the adapter's `PathResolver` answers. *How* it gets there is the adapter's `SkillDelivery`; the shipped answer is an image-layer `COPY`. Unset means the harness installs no skills; the operator's `~/.claude/skills` is never a source. | `HarnessSpec.skills_dir_target` |
 
 **Operator skills are deliberately not aligned.** The out-of-tree host we

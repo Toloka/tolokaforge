@@ -76,9 +76,18 @@ class TestClassifyHarnessPaths:
                 "docs/adr/0033-external-harness-registry.md",
                 "docs/adr/0034-external-harness-plugin-discovery.md",
                 "docs/adr/0036-tolokaforge-coding-harnesses-split.md",
+                "docs/adr/0037-runtime-gateway-as-harness-data.md",
             ]
         )
         assert result.bucket is HarnessBucket.A
+
+    def test_a_harness_adr_alone_is_bucket_a(self) -> None:
+        """An ADR-only commit documents the surface rather than implementing
+        it. Classified B, it would count against the data-vs-code metric the
+        primitive exists to measure."""
+        result = classify_harness_paths(["docs/adr/0037-runtime-gateway-as-harness-data.md"])
+        assert result.bucket is HarnessBucket.A
+        assert result.adapter_paths == ()
 
     @pytest.mark.parametrize(
         "path",
@@ -146,7 +155,7 @@ class TestAllowListShapeInvariants:
     """The allow-lists themselves are stable data; if either changes, the
     replay snapshot needs a deliberate regen."""
 
-    def test_files_allow_list_contains_four_documented_files(self) -> None:
+    def test_files_allow_list_contains_the_documented_files(self) -> None:
         assert (
             frozenset(
                 {
@@ -154,6 +163,7 @@ class TestAllowListShapeInvariants:
                     "docs/adr/0033-external-harness-registry.md",
                     "docs/adr/0034-external-harness-plugin-discovery.md",
                     "docs/adr/0036-tolokaforge-coding-harnesses-split.md",
+                    "docs/adr/0037-runtime-gateway-as-harness-data.md",
                 }
             )
             == BUCKET_A_ALLOWED_FILES

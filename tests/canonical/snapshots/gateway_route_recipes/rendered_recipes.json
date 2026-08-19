@@ -1,0 +1,30 @@
+{
+  "gemini-cli": {
+    "config_files": {
+      "/root/.gemini/settings.json": "{\"security\":{\"auth\":{\"selectedType\":\"gateway\",\"useExternal\":true}}}"
+    },
+    "container_env": {
+      "GEMINI_CLI_TRUST_WORKSPACE": "true"
+    },
+    "gateway": "toloka_litellm",
+    "gateway_base_url_env": "LITELLM_BASE_URL",
+    "gateway_credential_env": "LITELLM_API_KEY",
+    "model_alias_pattern": null,
+    "provider_env": {
+      "GEMINI_API_KEY": "sk-litellm-not-a-real-key",
+      "GOOGLE_GEMINI_BASE_URL": "https://litellm.invalid/gemini"
+    }
+  },
+  "kimi-code": {
+    "config_files": {},
+    "container_env": {},
+    "gateway": "toloka_litellm",
+    "gateway_base_url_env": "LITELLM_BASE_URL",
+    "gateway_credential_env": "LITELLM_API_KEY",
+    "model_alias_pattern": "{model}-moonshotai-pinned",
+    "provider_env": {
+      "KIMI_MODEL_API_KEY": "sk-litellm-not-a-real-key",
+      "KIMI_MODEL_BASE_URL": "https://litellm.invalid"
+    }
+  }
+}
