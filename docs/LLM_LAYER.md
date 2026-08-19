@@ -796,11 +796,11 @@ duplicate it emitted. See [GRADING.md G3](GRADING.md#guarantees).
 ## OpenRouter generation ids
 
 OpenRouter is a router: it picks an upstream provider per request, and two calls
-on the same model slug can be served by different upstreams (a live probe of
-`openai/gpt-4o-mini` on 2026-08-19 was served by Azure). Upstreams differ in
-quantisation, context handling and tool-call formatting, so a measured delta
-between two runs of the same model can be a routing artefact rather than a
-property of the model.
+on the same model slug can be served by different upstreams — the same
+`openai/gpt-4o-mini` request has been observed served by Azure and OpenAI on
+consecutive probes. Upstreams differ in quantisation, context handling and
+tool-call formatting, so a measured delta between two runs of the same model
+can be a routing artefact rather than a property of the model.
 
 The response carries the id of the generation it produced, and
 `https://openrouter.ai/api/v1/generation?id=<id>` reports which upstream served
@@ -808,13 +808,15 @@ it. Persisting the id is therefore what makes that question answerable after the
 fact — without it, a suspect result can only be re-run, never checked, and a
 re-run samples routing afresh.
 
-**The header is `x-generation-id`, not `x-openrouter-generation-id`** — verified
-by live probe 2026-08-19, which returned exactly that name and no other
-generation-bearing header. litellm re-keys raw upstream headers as
-`llm_provider-<name>` into `response._hidden_params["additional_headers"]`, so
-the engine matches on the name with that prefix stripped and case-folded;
-`extract_openrouter_generation_id`
+**The header is `x-generation-id`, not `x-openrouter-generation-id`** — the
+plausible-looking longer name is not the one OpenRouter actually returns.
+litellm re-keys raw upstream headers as `llm_provider-<name>` into
+`response._hidden_params["additional_headers"]`, so the engine matches on the
+name with that prefix stripped and case-folded; `extract_openrouter_generation_id`
 ([`core/llm/usage.py`](../tolokaforge/core/llm/usage.py)) is the single reader.
+A regression test in `tests/unit/test_openrouter_generation_id.py` pins the
+wrong header name as non-matching so an editor who forgets the correction is
+caught before shipping.
 
 It is read off the **response**, never from configuration or an environment
 variable: the value describes what happened on the wire for one call, so nothing

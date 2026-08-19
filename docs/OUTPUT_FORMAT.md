@@ -568,7 +568,12 @@ is the same value attributed to its individual call. Each id resolves at
 actually served that call, so a result suspected of being a routing artefact can
 be checked after the fact instead of re-run. Both are `null` / empty for every
 non-OpenRouter route — no other provider sends the header they are read from —
-so the list is shorter than `api_calls` whenever a call went elsewhere. See
+so the list is shorter than `api_calls` whenever a call went elsewhere. The two
+surfaces are **not** positionally aligned: a response that returned the
+`x-generation-id` header but no usage block contributes an id to the flat list
+and no entry to `usage.calls`, so the flat list can be longer than `usage.calls`
+too. Consumers that need per-call attribution read `usage.calls`; consumers that
+need "did this trial reach OpenRouter at all" read the flat list. See
 [LLM_LAYER.md](LLM_LAYER.md:1) § OpenRouter generation ids.
 
 To help analytics consumers detect schema evolution, a trial-level metrics file

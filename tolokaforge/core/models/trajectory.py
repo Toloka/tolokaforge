@@ -363,9 +363,12 @@ class Metrics(BaseModel):
     trial's turns can be served by different upstreams. Shorter than
     ``api_calls`` whenever a call was served off an unrouted provider. The
     per-call view — which id belongs to which turn — is
-    ``usage.calls[*].openrouter_generation_id``; this flat list is the
-    trial-level index, the same relationship the ``probe_*`` scalars have to
-    ``rate_limit_by_role_model``."""
+    ``usage.calls[*].openrouter_generation_id``. The two are **not** positionally
+    aligned and this list is not derivable from ``usage.calls``: a response
+    that carried an ``x-generation-id`` header but no usage block contributes
+    an id here and no ``ProviderRawCall`` there. Consumers that need per-call
+    attribution read ``usage.calls``; consumers that need "did this trial
+    reach OpenRouter at all" read this list."""
 
     cost_usd: float | None = None
     tool_calls: int = 0
