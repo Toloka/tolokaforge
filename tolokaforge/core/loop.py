@@ -524,6 +524,7 @@ class ToolCallingLoop:
             content=result.text,
             tool_calls=result.tool_calls if result.tool_calls else None,
             reasoning=result.reasoning,
+            openrouter_generation_id=result.openrouter_generation_id,
             ts=_now(),
         )
 

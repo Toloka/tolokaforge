@@ -117,6 +117,11 @@ class Message(BaseModel):
     # Bare strings are rejected (Stage 0 migration); callers must pass
     # ``StructuredReasoning`` or a dict parsable by it.
     reasoning: StructuredReasoning | None = None
+    # OpenRouter's id for the generation that produced this message, so a
+    # request/response record in ``trajectory.yaml`` can be joined back to the
+    # routing decision behind it. Set on assistant messages produced by an
+    # OpenRouter-routed call; None on every other message and every other route.
+    openrouter_generation_id: str | None = None
     ts: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
 
     @field_validator("reasoning", mode="before")
@@ -346,6 +351,22 @@ class Metrics(BaseModel):
     turns: int = 0
     api_calls: int = 0
     usage: Usage = Field(default_factory=Usage)
+    openrouter_generation_ids: list[str] = Field(default_factory=list)
+    """Every OpenRouter generation id the trial's agent calls returned, in call order.
+
+    Each id resolves at ``https://openrouter.ai/api/v1/generation?id=<id>`` to
+    the upstream provider that actually served that call, so a trial whose
+    result is suspected of being a routing artefact can be checked after the
+    fact instead of re-run. Empty on a trial that never reached OpenRouter.
+
+    A list, not a scalar: OpenRouter routes each request independently, so one
+    trial's turns can be served by different upstreams. Shorter than
+    ``api_calls`` whenever a call was served off an unrouted provider. The
+    per-call view — which id belongs to which turn — is
+    ``usage.calls[*].openrouter_generation_id``; this flat list is the
+    trial-level index, the same relationship the ``probe_*`` scalars have to
+    ``rate_limit_by_role_model``."""
+
     cost_usd: float | None = None
     tool_calls: int = 0
     tool_success_rate: float = 0.0

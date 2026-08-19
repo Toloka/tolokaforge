@@ -53,7 +53,12 @@ from tolokaforge.core.llm.prompt_policy import detect_dict_maps
 from tolokaforge.core.llm.providers import compile_rate_limit_patterns, get_provider_binding
 from tolokaforge.core.llm.proxy import resolve_proxy_config
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
-from tolokaforge.core.llm.usage import CostSource, Usage, UsageExtractor
+from tolokaforge.core.llm.usage import (
+    CostSource,
+    Usage,
+    UsageExtractor,
+    extract_openrouter_generation_id,
+)
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     Message,
@@ -519,6 +524,7 @@ class GenerationResult:
         cost_usd: float | None = None,
         reasoning: StructuredReasoning | None = None,
         effective_system_prompt: str | None = None,
+        openrouter_generation_id: str | None = None,
     ):
         self.text = text
         self.tool_calls = tool_calls or []
@@ -533,6 +539,10 @@ class GenerationResult:
         self.reasoning = reasoning
         # Final system prompt after policy enrichment
         self.effective_system_prompt = effective_system_prompt
+        # OpenRouter's id for this generation; None on every other route. Also
+        # on ``usage.calls[-1]`` — carried here so the turn loop can stamp it
+        # onto the assistant message without reaching into the usage record.
+        self.openrouter_generation_id = openrouter_generation_id
         # Defects of the attempts discarded before this reply was accepted.
         # Stamped only by ``UserSimulator._llm_reply``; every other producer
         # of a result leaves it empty.
@@ -2099,6 +2109,8 @@ class LLMClient:
           containers for declared array / object params.
         * :class:`UsageExtractor` — pulls full prompt / completion / reasoning
           / cache counters (see docs/LLM_LAYER.md § ``usage``).
+        * :func:`extract_openrouter_generation_id` — lifts OpenRouter's
+          generation id off the response headers (``None`` elsewhere).
 
         ``cost_usd`` is computed iff usage is populated; unknown pricing
         surfaces as ``None``.
@@ -2177,6 +2189,10 @@ class LLMClient:
             cost_usd=cost_usd,
             reasoning=reasoning_result,
             effective_system_prompt=effective_system_prompt,
+            # Read off the response rather than off ``usage.calls``: a provider
+            # that returned no usage block contributes no call record, and the
+            # routing decision is still worth recording for that turn.
+            openrouter_generation_id=extract_openrouter_generation_id(response),
         )
 
     # ------------------------------------------------------------------
