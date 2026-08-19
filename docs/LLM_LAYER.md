@@ -325,6 +325,10 @@ accumulates via `self.metrics.usage = self.metrics.usage + result.usage`;
 (`avg_prompt_tokens`, `avg_reasoning_tokens`, `avg_cache_read_input_tokens`,
 etc.).
 
+Each `ProviderRawCall` in `usage.calls` also carries the
+`openrouter_generation_id` of the call it records — see
+§ [OpenRouter generation ids](#openrouter-generation-ids).
+
 ## `schema_sanitizer`
 
 ```python
@@ -788,6 +792,52 @@ already unique and rewrites the n-th further occurrence to `<id>#<n>` for one
 that reuses them. Both sides of the conversation the id is echoed into carry the
 assigned value, so the provider sees one consistent id per call rather than the
 duplicate it emitted. See [GRADING.md G3](GRADING.md#guarantees).
+
+## OpenRouter generation ids
+
+OpenRouter is a router: it picks an upstream provider per request, and two calls
+on the same model slug can be served by different upstreams — the same
+`openai/gpt-4o-mini` request has been observed served by Azure and OpenAI on
+consecutive probes. Upstreams differ in quantisation, context handling and
+tool-call formatting, so a measured delta between two runs of the same model
+can be a routing artefact rather than a property of the model.
+
+The response carries the id of the generation it produced, and
+`https://openrouter.ai/api/v1/generation?id=<id>` reports which upstream served
+it. Persisting the id is therefore what makes that question answerable after the
+fact — without it, a suspect result can only be re-run, never checked, and a
+re-run samples routing afresh.
+
+**The header is `x-generation-id`, not `x-openrouter-generation-id`** — the
+plausible-looking longer name is not the one OpenRouter actually returns.
+litellm re-keys raw upstream headers as `llm_provider-<name>` into
+`response._hidden_params["additional_headers"]`, so the engine matches on the
+name with that prefix stripped and case-folded; `extract_openrouter_generation_id`
+([`core/llm/usage.py`](../tolokaforge/core/llm/usage.py)) is the single reader.
+A regression test in `tests/unit/test_openrouter_generation_id.py` pins the
+wrong header name as non-matching so an editor who forgets the correction is
+caught before shipping.
+
+It is read off the **response**, never from configuration or an environment
+variable: the value describes what happened on the wire for one call, so nothing
+outside that response can be authoritative for it. OpenRouter is the only
+provider we route to that sends the header, which makes its presence a
+sufficient test — no provider-name branching is involved, and every direct route
+(Anthropic, Google, …) simply yields `None`.
+
+Persisted in three places, all populated from the same read:
+
+| Where | Field | Granularity |
+|---|---|---|
+| `metrics.yaml` | `openrouter_generation_ids` | trial-level list, call order |
+| `metrics.yaml` | `usage.calls[*].openrouter_generation_id` | per API call |
+| `trajectory.yaml` | `messages[*].openrouter_generation_id` | per assistant turn |
+
+The flat list is the index a consumer walks; the two per-record fields are what
+attribute an id to a specific call or turn, which is what a comparison against
+another harness needs. The list is shorter than `api_calls` whenever a call was
+served off a non-OpenRouter route, and empty on a run that never reached
+OpenRouter. See [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `metrics.yaml`.
 
 ## `proxy` — routing calls through an LLM gateway
 

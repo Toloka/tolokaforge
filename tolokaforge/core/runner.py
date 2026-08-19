@@ -1037,6 +1037,8 @@ class _AgentMetricsSink(MetricsSink):
     def record_generation(self, result: GenerationResult) -> None:
         self._metrics.api_calls += 1
         self._metrics.usage = self._metrics.usage + result.usage
+        if result.openrouter_generation_id is not None:
+            self._metrics.openrouter_generation_ids.append(result.openrouter_generation_id)
         if result.cost_usd is not None:
             if self._metrics.cost_usd is None:
                 self._metrics.cost_usd = result.cost_usd

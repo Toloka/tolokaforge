@@ -348,6 +348,7 @@ messages:
           encrypted_data: "EvwBCkgIARABGAIi..."
       summary: null   # null when blocks already cover the content (Plan B)
       budget_used: 512
+    openrouter_generation_id: "gen-1787132417-e6DthuPJjrFMFf46ae5F"
     ts: "2026-01-01T12:00:01Z"
 user_reply_guard_events:                              # [] on a trial no detector ever flagged
   - message_index: 2
@@ -392,6 +393,18 @@ The `reasoning` block is extracted by the provider-specific `ReasoningCodec`
 registered on the preset (see
 [`docs/LLM_LAYER.md`](LLM_LAYER.md) § `reasoning_codec`). Non-reasoning
 models emit `reasoning: null`.
+
+### `messages[*].openrouter_generation_id`
+
+OpenRouter's id for the generation that produced this message, so an assistant
+turn can be joined back to the routing decision behind it —
+`https://openrouter.ai/api/v1/generation?id=<id>` reports which upstream
+provider actually served that turn. Populated on assistant messages produced by
+an OpenRouter-routed call; `null` on every other role and every other route (no
+other provider sends the header it is read from). The same ids are indexed
+trial-level in [`metrics.yaml`](#trialstask_idtrial_indexmetricsyaml) as
+`openrouter_generation_ids`. See [LLM_LAYER.md](LLM_LAYER.md:1) § OpenRouter
+generation ids.
 
 ## `trials/{task_id}/{trial_index}/tool_log.yaml`
 
@@ -544,8 +557,24 @@ dataclass. Anthropic cache counters + reasoning-budget spend are
 first-class fields; a `provider_raw` dump of the litellm usage block is
 included for forensics. Each LLM API call is also recorded in
 `usage.calls[]` as a `ProviderRawCall` carrying its per-call tokens,
-`cost_usd`, `cost_source` (`"litellm"` / `"local"` / `"unknown"`), and
-`latency_s` — the trial-level `cost_usd` is the sum of those entries.
+`cost_usd`, `cost_source` (`"litellm"` / `"local"` / `"unknown"`),
+`latency_s`, and `openrouter_generation_id` — the trial-level `cost_usd` is the
+sum of those entries.
+
+`openrouter_generation_ids` lists every OpenRouter generation id the trial's
+agent calls returned, in call order; `usage.calls[*].openrouter_generation_id`
+is the same value attributed to its individual call. Each id resolves at
+`https://openrouter.ai/api/v1/generation?id=<id>` to the upstream provider that
+actually served that call, so a result suspected of being a routing artefact can
+be checked after the fact instead of re-run. Both are `null` / empty for every
+non-OpenRouter route — no other provider sends the header they are read from —
+so the list is shorter than `api_calls` whenever a call went elsewhere. The two
+surfaces are **not** positionally aligned: a response that returned the
+`x-generation-id` header but no usage block contributes an id to the flat list
+and no entry to `usage.calls`, so the flat list can be longer than `usage.calls`
+too. Consumers that need per-call attribution read `usage.calls`; consumers that
+need "did this trial reach OpenRouter at all" read the flat list. See
+[LLM_LAYER.md](LLM_LAYER.md:1) § OpenRouter generation ids.
 
 To help analytics consumers detect schema evolution, a trial-level metrics file
 written by `write_metrics` includes a root-level `schema_version: 4` marker. The
@@ -582,6 +611,9 @@ usage:
       cost_usd: 0.00912
       cost_source: litellm
       latency_s: 1.23
+      openrouter_generation_id: gen-1787132417-e6DthuPJjrFMFf46ae5F
+openrouter_generation_ids:   # one per OpenRouter-served call, in call order
+  - gen-1787132417-e6DthuPJjrFMFf46ae5F
 cost_usd: 0.127055
 tool_calls: 7
 tool_success_rate: 1.0

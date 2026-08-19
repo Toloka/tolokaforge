@@ -32,6 +32,13 @@ cache activity into the same ``Usage.cache_creation_input_tokens`` /
 aggregation, analytics tools) stays routing-agnostic.
 
 See plan § Canonical litellm surface for the full surface.
+
+**OpenRouter generation id.** Alongside the usage block, an OpenRouter-served
+response carries the id of the generation it produced. It is the only key that
+joins a call we made to the routing decision OpenRouter made for it, so
+:class:`UsageExtractor` lifts it onto the call record — see
+:func:`extract_openrouter_generation_id` and ``docs/LLM_LAYER.md``
+§ "OpenRouter generation ids".
 """
 
 from __future__ import annotations
@@ -39,7 +46,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-__all__ = ["CostSource", "ProviderRawCall", "Usage", "UsageExtractor"]
+__all__ = [
+    "OPENROUTER_GENERATION_ID_HEADER",
+    "CostSource",
+    "ProviderRawCall",
+    "Usage",
+    "UsageExtractor",
+    "extract_openrouter_generation_id",
+]
 
 
 CostSource = Literal["litellm", "local", "unknown"]
@@ -73,6 +87,12 @@ class ProviderRawCall:
     cost_usd: float | None = None
     cost_source: CostSource = "unknown"
     latency_s: float = 0.0
+    openrouter_generation_id: str | None = None
+    """OpenRouter's id for the generation this call produced, else ``None``.
+
+    ``None`` for every route that is not OpenRouter — no other provider sends
+    the header this is read from. See
+    :func:`extract_openrouter_generation_id`."""
 
 
 @dataclass(frozen=True)
@@ -127,6 +147,56 @@ class Usage:
             provider_raw=dict(other.provider_raw) if other.provider_raw else {},
             calls=self.calls + other.calls,
         )
+
+
+OPENROUTER_GENERATION_ID_HEADER = "x-generation-id"
+"""Response header carrying OpenRouter's generation id.
+
+The name is ``x-generation-id``, **not** ``x-openrouter-generation-id`` —
+verified by live probe of ``openrouter.ai/api/v1/chat/completions``
+2026-08-19, which returned ``x-generation-id: gen-…`` and no other
+generation-bearing header. OpenRouter is the only provider we route to that
+sends it, which is what makes its presence a sufficient test.
+"""
+
+_LITELLM_PROVIDER_HEADER_PREFIX = "llm_provider-"
+"""Prefix litellm stamps on every raw upstream header it forwards.
+
+``process_response_headers`` re-keys provider headers as
+``llm_provider-<name>`` before they land in
+``_hidden_params['additional_headers']``, so the bare name never appears.
+Stripped rather than hardcoded into the lookup so a direct-httpx caller
+handing us unprefixed headers resolves identically.
+"""
+
+
+def extract_openrouter_generation_id(response: Any) -> str | None:
+    """Lift OpenRouter's generation id off a litellm response, else ``None``.
+
+    The id is a *response header* value, surfaced by litellm on
+    ``response._hidden_params['additional_headers']``. Querying
+    ``https://openrouter.ai/api/v1/generation?id=<id>`` afterwards reports
+    which upstream provider actually served the call — the retroactive
+    disambiguation this exists for (``docs/LLM_LAYER.md``
+    § "OpenRouter generation ids").
+
+    Returns ``None`` whenever the header is absent, which is the normal state
+    for every non-OpenRouter route (Anthropic direct, Google direct, …). Never
+    raises: like the rest of this module, this is telemetry, not control flow.
+    """
+    hidden = getattr(response, "_hidden_params", None)
+    if not isinstance(hidden, dict):
+        return None
+    headers = hidden.get("additional_headers")
+    if not isinstance(headers, dict):
+        return None
+    for key, value in headers.items():
+        if not isinstance(key, str):
+            continue
+        name = key.lower().removeprefix(_LITELLM_PROVIDER_HEADER_PREFIX)
+        if name == OPENROUTER_GENERATION_ID_HEADER and value:
+            return str(value)
+    return None
 
 
 def _int_attr(obj: Any, name: str) -> int:
@@ -209,7 +279,8 @@ class UsageExtractor:
     degrades gracefully when a provider returns a partial usage block.
     Each call also yields a :class:`ProviderRawCall` in ``Usage.calls``
     when usage is present, carrying the per-call ``cost_usd``,
-    ``cost_source``, and ``latency_s`` supplied by the caller.
+    ``cost_source``, and ``latency_s`` supplied by the caller, plus the
+    ``openrouter_generation_id`` read off the response's own headers.
     """
 
     def extract(
@@ -263,6 +334,7 @@ class UsageExtractor:
             cost_usd=cost_usd,
             cost_source=cost_source,
             latency_s=latency_s,
+            openrouter_generation_id=extract_openrouter_generation_id(response),
         )
 
         return Usage(
