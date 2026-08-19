@@ -33,12 +33,16 @@ class HarnessBucket(str, Enum):
     B = "B"
 
 
+# Each ADR here documents the harness surface rather than implementing it, so
+# an ADR-only commit is a data/doc move; omitting one classifies that commit as
+# Bucket B and understates the migration the metric measures.
 BUCKET_A_ALLOWED_FILES: frozenset[str] = frozenset(
     {
         "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
         "docs/adr/0033-external-harness-registry.md",
         "docs/adr/0034-external-harness-plugin-discovery.md",
         "docs/adr/0036-tolokaforge-coding-harnesses-split.md",
+        "docs/adr/0037-runtime-gateway-as-harness-data.md",
     }
 )
 

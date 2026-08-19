@@ -47,7 +47,7 @@ _LOG_FORMAT = f"%H{_FIELD_SEP}%cs{_FIELD_SEP}%s"
 # the ``tolokaforge_coding_harnesses`` package and its shipped data, the
 # compose-synthesis file that hosts the skill-delivery logic, the adapter
 # README that documents the harness surface, the two harness-mode
-# canonical snapshot trees, the harness-mode examples, and the three
+# canonical snapshot trees, the harness-mode examples, and the four
 # harness ADRs.
 #
 # The two ``tolokaforge_adapter_terminal_bench`` paths are anchors for
@@ -69,6 +69,7 @@ HARNESS_SURFACE_PATHS: tuple[str, ...] = (
     "docs/adr/0033-external-harness-registry.md",
     "docs/adr/0034-external-harness-plugin-discovery.md",
     "docs/adr/0036-tolokaforge-coding-harnesses-split.md",
+    "docs/adr/0037-runtime-gateway-as-harness-data.md",
 )
 
 
