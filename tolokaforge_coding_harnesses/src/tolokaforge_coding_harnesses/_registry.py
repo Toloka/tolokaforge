@@ -128,6 +128,191 @@ class RequestMiddleware(BaseModel):
     non-chat endpoints and only chat needs a body override."""
 
 
+class RuntimeGateway(BaseModel):
+    """A gateway a harness can be routed through instead of its own provider.
+
+    Data only — nothing in this package reads a gateway's fields. The catalog
+    exists so a :class:`GatewayRoute` names one endpoint by key instead of
+    repeating a URL, and so the runtime that *does* resolve the pair reads the
+    same names the harness data shipped with. ADR-0037 is the contract.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    base_url_env: str
+    """Name of the variable holding the gateway's base URL — a name, never the
+    URL. Where an operator's gateway lives is a deployment fact, so it reaches
+    a run through the same secret / env seam a credential does and never enters
+    shipped registry data."""
+
+    credential_env: str
+    """Name of the variable holding the gateway's credential."""
+
+    supports: tuple[str, ...] = ()
+    """Capability tags a consuming runtime can match a harness's needs against
+    (``protocol_translation``, ``provider_pinning``). Free-form: this package
+    defines no vocabulary and reads no tag."""
+
+    @model_validator(mode="after")
+    def _every_name_is_non_blank_and_no_tag_repeats(self) -> RuntimeGateway:
+        for field, value in (
+            ("base_url_env", self.base_url_env),
+            ("credential_env", self.credential_env),
+        ):
+            if not value or value.strip() != value:
+                raise ValueError(
+                    f"RuntimeGateway.{field} {value!r} must be a non-blank variable name "
+                    "without leading/trailing whitespace."
+                )
+        for tag in self.supports:
+            if not tag or tag.strip() != tag:
+                raise ValueError(
+                    f"RuntimeGateway.supports entry {tag!r} must be a non-blank string "
+                    "without leading/trailing whitespace."
+                )
+        if len(self.supports) != len(set(self.supports)):
+            raise ValueError(
+                f"RuntimeGateway.supports {list(self.supports)!r} contains duplicates."
+            )
+        return self
+
+
+class GatewayRoute(BaseModel):
+    """How ONE harness reaches ONE named gateway.
+
+    Carries the same three shapes the default path uses — ``config_files``,
+    ``container_env``, ``provider_env`` — so a runtime already provisioning a
+    harness reuses its plumbing rather than growing a second one. It must not
+    reuse the default path's *expansion order*: these values carry
+    ``${gateway.*}`` and ``${secret:NAME}`` tokens this package never expands,
+    and the adapter's provider-env resolution refuses any resolved value
+    containing a ``$`` — which a value still carrying ``${gateway.base_url}``
+    necessarily does. ADR-0037's token table is the ordering contract, and the
+    consuming runtime is what honours it.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    gateway: str
+    """Key into :data:`ALTERNATIVE_GATEWAYS`, refused at load if undeclared.
+
+    The catalog is shipped-only: ``registry_meta.yaml`` has no overlay and no
+    plug-in layer, so an operator cannot register a gateway name — declaring
+    one is a PR against that file. Their escape hatch is a layer down and
+    already exists: an operator running their own gateway overlays the whole
+    harness entry (``config_files`` / ``container_env`` / ``provider_env``
+    directly, as ``examples/terminal_bench/gemini_litellm_overlay.yaml`` does)
+    and names no gateway at all. The closed set buys a load-time typo check for
+    the cross-repo runtime, which is the one consumer that can check nothing
+    itself. The first operator needing a route against a self-hosted gateway is
+    the trigger to make the catalog layerable — its own decision, recorded in
+    ADR-0037 § Consequences."""
+
+    passthrough_path: str = ""
+    """Path segment the consuming runtime appends to the gateway's base URL to
+    reach this CLI's wire protocol (``/gemini`` for LiteLLM's Gemini
+    passthrough). Empty when the gateway serves the CLI's protocol at its
+    root."""
+
+    model_alias_pattern: str | None = None
+    """Pattern the gateway knows this run's model under, with ``{model}``
+    standing for the resolved model name. Opaque here — the consuming runtime
+    renders it and delivers the result through the harness's own
+    :attr:`HarnessSpec.env_model_vars`, the field that already answers how a
+    CLI receives its model name."""
+
+    config_files: dict[str, str] = Field(default_factory=dict)
+    """``{container path: literal content}`` the gateway route needs on disk.
+
+    Inverted from :attr:`HarnessSpec.config_files`, which holds Jinja
+    templates: these values are literals, shipped into a container verbatim by
+    a runtime that renders nothing, so a ``{{ … }}`` here is refused at load
+    rather than delivered unexpanded. Keys follow the same rule as the default
+    path's — absolute, or rooted at a construct the run's
+    :class:`~.protocols.PathResolver` answers — and the consuming runtime
+    resolves them before writing, since nothing downstream of it expands a
+    leftover ``${HOME}``."""
+
+    container_env: dict[str, str] = Field(default_factory=dict)
+    """Static literals the gateway route needs in the CLI's environment. Same
+    two narrowings :attr:`HarnessSpec.container_env` carries: no key on the
+    :data:`PROVIDER_ENV_KEYS` allow-list, and no value containing a ``$``."""
+
+    provider_env: dict[str, str] = Field(default_factory=dict)
+    """Provider envelope for the gateway route, replacing the harness's default
+    :attr:`HarnessSpec.provider_env` when a run takes this path. Values carry
+    the ``${gateway.*}`` and ``${secret:NAME}`` tokens ADR-0037's table orders;
+    keys are a subset of :data:`PROVIDER_ENV_KEYS`, checked here because no
+    in-repo consumer will ever check them."""
+
+    @model_validator(mode="after")
+    def _provider_env_keys_are_forwardable(self) -> GatewayRoute:
+        """Refuse a key no harness CLI may be given — at load or never.
+
+        The default path is checked by the adapter as it resolves the effective
+        envelope. Nothing in this package resolves a gateway route, so this is
+        the only moment the check can happen.
+        """
+        try:
+            validate_provider_env_keys(self.provider_env)
+        except ValueError as exc:
+            raise ValueError(f"gateway_route.provider_env: {exc}") from exc
+        return self
+
+    @model_validator(mode="after")
+    def _container_env_carries_literals_that_shadow_nothing(self) -> GatewayRoute:
+        """Refuse the two shapes :attr:`HarnessSpec.container_env` refuses."""
+        overlapping = sorted(set(self.container_env) & PROVIDER_ENV_KEYS)
+        if overlapping:
+            raise ValueError(
+                f"gateway_route.container_env key(s) {overlapping!r} are provider env keys; "
+                "declare them under gateway_route.provider_env, the seam whose `${gateway.…}` "
+                "and `${secret:NAME}` values the consuming runtime resolves. container_env "
+                "carries literals written verbatim, so the same key here would reach the CLI as "
+                "an unresolved endpoint or credential."
+            )
+        interpolated = sorted(key for key, value in self.container_env.items() if "$" in value)
+        if interpolated:
+            raise ValueError(
+                f"gateway_route.container_env value(s) for {interpolated!r} contain a `$`; this "
+                "map carries literals only, and no `${gateway.…}` or `${secret:NAME}` token is "
+                "expanded on it. A value that must carry a credential or the gateway's own "
+                "endpoint belongs in gateway_route.provider_env."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _config_files_are_literal_content_at_fixed_paths(self) -> GatewayRoute:
+        """Refuse a relative path, and a template nothing on this path renders."""
+        for path, content in self.config_files.items():
+            if not path.startswith(("/", "$")):
+                raise ValueError(
+                    f"gateway_route.config_files path {path!r} is relative; the CLI reads it "
+                    "from a fixed location, so give an absolute path or one rooted at a `$VAR`."
+                )
+            marker = next((m for m in ("{{", "{%") if m in content), None)
+            if marker is not None:
+                raise ValueError(
+                    f"gateway_route.config_files[{path!r}] contains {marker!r}, but this map "
+                    "holds literal file content shipped into a container verbatim — no renderer "
+                    "in this package ever sees it, so the CLI would read the template "
+                    "unexpanded. HarnessSpec.config_files is the templated map; a token dialect "
+                    "on this path belongs to the runtime that provisions it."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _passthrough_path_is_rooted(self) -> GatewayRoute:
+        """Refuse a segment that would concatenate onto the base URL wrong."""
+        if self.passthrough_path and not self.passthrough_path.startswith("/"):
+            raise ValueError(
+                f"gateway_route.passthrough_path {self.passthrough_path!r} must be empty or "
+                "start with `/`; the consuming runtime concatenates it onto the gateway's base "
+                "URL, where a missing separator silently produces a different path."
+            )
+        return self
+
+
 class HarnessSpec(BaseModel):
     """One coding-harness CLI: how to install it, how to drive it.
 
@@ -318,6 +503,35 @@ class HarnessSpec(BaseModel):
     declaring a different endpoint gets that, and one caller can add a
     key the harness didn't ship (e.g. ``ANTHROPIC_AUTH_TOKEN``) without
     losing the URL. Keys must be a subset of :data:`PROVIDER_ENV_KEYS`."""
+
+    gateway_route: GatewayRoute | None = None
+    """How this harness reaches a gateway named in :data:`ALTERNATIVE_GATEWAYS`,
+    or ``None`` for a harness carrying no such recipe.
+
+    Inert to :func:`harness_command`: the assembled command is byte-identical
+    with and without it, and no caller in this package reads it. It is data for
+    a second runtime, which provisions an already-running trial container from
+    the same spec that drives compose synthesis here. See :class:`GatewayRoute`
+    and ADR-0037."""
+
+    @model_validator(mode="after")
+    def _gateway_route_names_a_declared_gateway(self) -> HarnessSpec:
+        """Refuse an undeclared gateway — at load, or nowhere.
+
+        No in-repo caller reads :attr:`gateway_route`, so a typo would
+        otherwise first surface as a cross-repo runtime's 404 against a URL
+        nothing ever resolved.
+        """
+        if self.gateway_route is None or self.gateway_route.gateway in ALTERNATIVE_GATEWAYS:
+            return self
+        raise ValueError(
+            f"gateway_route.gateway {self.gateway_route.gateway!r} is not a declared gateway; "
+            f"accepted: {sorted(ALTERNATIVE_GATEWAYS)!r}. The catalog is shipped-only — "
+            "registry_meta.yaml carries no overlay and no plug-in layer — so declaring a gateway "
+            "is a PR against that file. An operator routing one harness through their own gateway "
+            "overlays the harness entry's config_files / container_env / provider_env directly "
+            "instead, and names no gateway at all."
+        )
 
     @model_validator(mode="after")
     def _config_templates_read_only_declared_variables(self) -> HarnessSpec:
@@ -767,22 +981,24 @@ the prefix stripped, while the engine loop keeps it (litellm needs it).
 """
 
 SHIPPED_REGISTRY_META_FILE: Path = Path(__file__).resolve().parent / "data" / "registry_meta.yaml"
-"""Registry-wide catalog file: OpenRouter vendor namespaces + the closed
-allow-list of provider env-var names. Ships as data so a new namespace or
-env-var name is a YAML edit rather than a Python constant edit."""
+"""Registry-wide catalog file: OpenRouter vendor namespaces, the closed
+allow-list of provider env-var names, and the alternative-gateway catalog.
+Ships as data so a new namespace, env-var name or gateway is a YAML edit
+rather than a Python constant edit."""
 
 
 class _RegistryMeta(BaseModel):
     """Loader-shape for ``data/registry_meta.yaml``.
 
-    Kept private: no caller outside this module needs the model itself,
-    only :data:`_VENDOR_NAMESPACE_PREFIXES` and :data:`PROVIDER_ENV_KEYS`
-    populated from it."""
+    Kept private: no caller outside this module needs the model itself, only
+    :data:`_VENDOR_NAMESPACE_PREFIXES`, :data:`PROVIDER_ENV_KEYS` and
+    :data:`ALTERNATIVE_GATEWAYS` populated from it."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     openrouter_vendor_namespaces: tuple[str, ...]
     provider_env_keys: frozenset[str]
+    alternative_gateways: dict[str, RuntimeGateway] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _every_entry_is_a_non_blank_string(self) -> _RegistryMeta:
@@ -843,12 +1059,23 @@ open surface would let a run config shadow the task's own environment with
 arbitrary values. Loaded from ``data/registry_meta.yaml`` at import; adding a
 key is a YAML edit."""
 
+ALTERNATIVE_GATEWAYS: Mapping[str, RuntimeGateway] = _REGISTRY_META.alternative_gateways
+"""Gateways a :attr:`HarnessSpec.gateway_route` may name, keyed by the name it
+names them by.
+
+Shipped-only, and deliberately so: ``registry_meta.yaml`` sits outside both
+fingerprint digests because it carries no overlay and no plug-in layer, and
+making this catalog layerable would move the file inside that contract. An
+operator routing a harness through their own gateway overlays the harness entry
+instead. See :attr:`GatewayRoute.gateway` and ADR-0037 § Consequences."""
+
 HARNESSES: dict[str, HarnessSpec] = load_harness_registry(SHIPPED_REGISTRY_FILE)
 """The shipped registry, loaded from :data:`SHIPPED_REGISTRY_FILE` at import.
 
-Bound after :data:`PROVIDER_ENV_KEYS`, which
-:meth:`HarnessSpec._container_env_does_not_shadow_the_provider_envelope` reads
-while validating each entry.
+Bound after :data:`PROVIDER_ENV_KEYS` and :data:`ALTERNATIVE_GATEWAYS`, which
+:meth:`HarnessSpec._container_env_does_not_shadow_the_provider_envelope` and
+:meth:`HarnessSpec._gateway_route_names_a_declared_gateway` read while
+validating each entry.
 """
 
 PROVIDER_ENV_INPUT_PREFIX = "TBENCH_PROVIDER_"

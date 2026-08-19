@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Added
+
+- **coding-harnesses**: `registry_meta.yaml` gains an `alternative_gateways` catalog and `HarnessSpec` gains `gateway_route: GatewayRoute | None` (default `None`) — how one harness reaches one named gateway, as registry data. A `RuntimeGateway` entry records *names*, never values: `base_url_env` and `credential_env` name the variables holding the gateway's URL and credential, plus free-form `supports` capability tags. A `GatewayRoute` names a catalog `gateway`, an optional `passthrough_path` (`""` or leading-slash), an opaque `model_alias_pattern`, and `config_files` / `container_env` / `provider_env` maps in the same shapes the default path uses. Nothing in this repo reads a route: `harness_command` is byte-identical with and without one, locked by a test in `test_harness_command.py`, and no shipped harness declares a route in this change. It is data for a runtime that provisions an already-running trial container rather than building one — the transport that cannot deliver a `config_files` entry through an environment block. Seven rules are checked at registry-load time naming the offending key or path, because the gateway path has no in-repo consumer to check them later: an undeclared `gateway` (the message names the value, the accepted set, and that the catalog is shipped-only, so adding one is a PR against `registry_meta.yaml`); `provider_env` keys outside `PROVIDER_ENV_KEYS`; a `container_env` key on that allow-list or a value containing `$`; a relative `config_files` path; `{{` or `{%` in `config_files` content (that map holds literals, inverted from `HarnessSpec.config_files`, which holds Jinja templates); an unrooted `passthrough_path`; and blank or repeated `RuntimeGateway` names and tags. `${gateway.*}`, `${secret:NAME}` and `{model}` are stored opaque — this package expands none of them, and [ADR-0037](docs/adr/0037-runtime-gateway-as-harness-data.md) is the token table naming who expands each and in what order, including that a route's `config_files` keys must be `PathResolver`-resolved before anything writes them. `ALTERNATIVE_GATEWAYS`, `GatewayRoute` and `RuntimeGateway` are re-exported from the package root. Additive: every existing overlay, plug-in bundle and run config loads unchanged. (#1239)
+
+### Changed
+
+- **coding-harnesses**: `HarnessFingerprint.shipped_sha256` and `resolved_sha256` change value for every run. The digests hash `HarnessSpec.model_dump(mode="json")`, so the new `gateway_route` key moves them even though no registry content changed and no trial behaves differently. They are content digests with no cross-version stability promise — but anyone diffing a bundle written before this change against one written after sees a fingerprint shift with no registry-content cause, and this is that cause. (#1239)
+
 ## v0.19.0 (2026-08-18)
 
 ### BREAKING CHANGE

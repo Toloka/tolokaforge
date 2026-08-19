@@ -41,3 +41,22 @@ provider_env_keys:
   - "KIMI_MODEL_BASE_URL"
   - "LITELLM_API_KEY"
   - "LITELLM_BASE_URL"
+
+# Gateways a harness entry's ``gateway_route`` may name. Data, and read by
+# nobody here: no code in this package resolves ``base_url_env`` or
+# ``credential_env`` into a URL or a credential. The catalog exists so a route
+# names one endpoint by key instead of repeating it, and so the runtime that
+# does resolve the pair reads the same names the harness data shipped with.
+#
+# Shipped-only on purpose — this file carries no operator-overlay and no
+# plug-in layer, which is what keeps it outside both fingerprint digests. An
+# operator running their own gateway overlays the whole harness entry instead
+# (``examples/terminal_bench/gemini_litellm_overlay.yaml`` is the worked
+# example) and names no gateway at all. See ADR-0037.
+alternative_gateways:
+  toloka_litellm:
+    base_url_env: "LITELLM_BASE_URL"
+    credential_env: "LITELLM_API_KEY"
+    supports:
+      - "protocol_translation"
+      - "provider_pinning"

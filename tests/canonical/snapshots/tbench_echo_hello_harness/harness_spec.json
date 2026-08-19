@@ -23,6 +23,7 @@
     "--verbose",
     "--output-format=stream-json"
   ],
+  "gateway_route": null,
   "install_method": "npm",
   "install_source": "@anthropic-ai/claude-code",
   "instruction_channel": "stdin",
