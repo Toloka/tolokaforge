@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 11,
+  "bucket_b_count": 12,
   "commits": [
     {
       "adapter_paths": [
@@ -1715,6 +1715,31 @@
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/__init__.py",
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/container_injection.py",
         "tolokaforge_coding_harnesses/tests/unit/test_container_injection.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "CHANGELOG.md",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/container_injection.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_container_injection.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_path_resolvers.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_registry.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-19",
+      "pr": null,
+      "reason": "6 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "7815ab4be4871b2c942a7e2a0b1a1d4ec175df3a",
+      "subject": "fix(coding-harnesses): reviewer corrections \u2014 alias-pattern rule, injector timeout, closed catalog, ADR hygiene",
+      "touched_files": [
+        "CHANGELOG.md",
+        "docs/adr/0037-runtime-gateway-as-harness-data.md",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/container_injection.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_container_injection.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_path_resolvers.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_registry.py"
       ]
     },
     {
