@@ -23,6 +23,14 @@ class TerminalBenchTask:
     tags: list[str] = field(default_factory=list)
     agent_timeout_sec: float = 1800.0
     verifier_timeout_sec: float = 120.0
+    pass_threshold: float = 1.0
+    """Fraction of the reference test suite that must pass for the trial to
+    grade PASS. Read from ``task.toml`` ``[verifier].pass_threshold``; defaults
+    to ``1.0`` because ``grading_method="test_execution"`` is binary by
+    nature — a "test suite" that grades PASS on half its own failures loses
+    its meaning as a suite. Task authors can lower it when they explicitly
+    want partial credit (a bug remediation task whose suite exercises many
+    facets and the interesting subset is well below the whole)."""
     cpus: float = 2
     memory_mb: int = 4096
     harness_skills_dir: str | None = None
@@ -136,6 +144,7 @@ def discover_tasks(base_dir: Path) -> dict[str, TerminalBenchTask]:
             tags=metadata.get("tags", []),
             agent_timeout_sec=agent.get("timeout_sec", 1800.0),
             verifier_timeout_sec=verifier.get("timeout_sec", 120.0),
+            pass_threshold=float(verifier.get("pass_threshold", 1.0)),
             cpus=environment.get("cpus", 2),
             memory_mb=environment.get("memory_mb", 4096),
             harness_skills_dir=_parse_harness_skills_dir(task_id, task_dir, yaml_data),

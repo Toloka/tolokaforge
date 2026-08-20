@@ -366,11 +366,24 @@ class TerminalBenchAdapter(BaseAdapter):
     # -- grading config -------------------------------------------------------
 
     def get_grading_config(self, task_id: str) -> GradingConfig:
+        # Terminal-bench grades by running the reference test suite in the env
+        # container (``grading_method="test_execution"`` in the runner-side
+        # config below), so ``pass_threshold`` is the fraction of the suite
+        # that must pass for the trial to grade PASS. Task-authored via
+        # ``[verifier].pass_threshold`` in task.toml, defaulting to 1.0 —
+        # the natural semantics of a test suite is binary "all tests pass".
+        # A silent low default inflates pass rates on partial credit (surfaced
+        # by Arena's task_design_oracle verdict on GH Actions run 32337928139
+        # in toloka-partners/tolokaforge-tasks: 6/10 Opus-4.7 trials passed
+        # only via the previous hardcoded 0.5 threshold; micro pass@1 reported
+        # 1.00 vs 0.40 under all-tests-pass).
+        self._ensure_discovered()
+        meta = self._tasks[task_id]
         return GradingConfig(
             combine=GradingCombineConfig(
                 method="weighted",
                 weights={"custom_checks": 1.0},
-                pass_threshold=0.5,
+                pass_threshold=meta.pass_threshold,
             ),
         )
 
@@ -432,7 +445,9 @@ class TerminalBenchAdapter(BaseAdapter):
             grading=RunnerGradingConfig(
                 combine_method="weighted",
                 weights={"custom_checks": 1.0},
-                pass_threshold=0.5,
+                # Task-authored via [verifier].pass_threshold in task.toml,
+                # defaulting to 1.0 — see the rationale on get_grading_config.
+                pass_threshold=meta.pass_threshold,
                 # Score by running the reference test suite in the env container.
                 # The runner dispatches on this method, not on the adapter name.
                 grading_method="test_execution",

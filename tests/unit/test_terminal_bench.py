@@ -473,6 +473,79 @@ class TestTerminalBenchAdapterEnvironmentManifest:
         assert extra == {"service": env.agent_service, "compose_project_prefix": "tbench_"}
 
 
+class TestTerminalBenchAdapterPassThreshold:
+    """Task-authored ``[verifier].pass_threshold`` flows into both grading
+    configs the adapter emits (the tolokaforge-side ``GradingConfig`` and the
+    runner-side ``RunnerGradingConfig``). Prior to the fix the adapter
+    hardcoded ``0.5`` in both places, silently inflating pass rates when a
+    trial passed only some of its own reference tests."""
+
+    def _make_task(self, tmp_path: Path, task_id: str, task_toml: str) -> Path:
+        tbench_dir = tmp_path / "tasks"
+        tbench_dir.mkdir()
+        task_dir = tbench_dir / task_id
+        task_dir.mkdir()
+        (task_dir / "docker-compose.yaml").write_text("services: {main: {image: alpine}}\n")
+        (task_dir / "task.toml").write_text(task_toml)
+        (task_dir / "instruction.md").write_text("do the thing")
+        return tbench_dir
+
+    def test_grading_config_default_is_one(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        tbench_dir = self._make_task(
+            tmp_path,
+            "default-thresh",
+            '[metadata]\nauthor_name = "t"\n[verifier]\ntimeout_sec = 60.0\n',
+        )
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(tbench_dir), "staging_root": str(tmp_path / "staging")}
+        )
+        cfg = adapter.get_grading_config("default-thresh")
+        assert cfg.combine.pass_threshold == 1.0
+
+    def test_grading_config_reads_task_authored_override(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        tbench_dir = self._make_task(
+            tmp_path,
+            "half-thresh",
+            '[metadata]\nauthor_name = "t"\n[verifier]\npass_threshold = 0.5\n',
+        )
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(tbench_dir), "staging_root": str(tmp_path / "staging")}
+        )
+        cfg = adapter.get_grading_config("half-thresh")
+        assert cfg.combine.pass_threshold == 0.5
+
+    def test_task_description_default_is_one(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        tbench_dir = self._make_task(
+            tmp_path, "default-thresh-td", '[metadata]\nauthor_name = "t"\n'
+        )
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(tbench_dir), "staging_root": str(tmp_path / "staging")}
+        )
+        td = adapter.to_task_description("default-thresh-td")
+        assert td.grading.pass_threshold == 1.0
+        assert td.grading.grading_method == "test_execution"
+
+    def test_task_description_reads_task_authored_override(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        tbench_dir = self._make_task(
+            tmp_path,
+            "quarter-thresh-td",
+            '[metadata]\nauthor_name = "t"\n[verifier]\npass_threshold = 0.25\n',
+        )
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(tbench_dir), "staging_root": str(tmp_path / "staging")}
+        )
+        td = adapter.to_task_description("quarter-thresh-td")
+        assert td.grading.pass_threshold == 0.25
+
+
 class TestTerminalBenchAdapterInstructionlessTask:
     """A pack whose instruction carries no text pins no opener, so the simulator
     writes turn 1.
@@ -633,6 +706,56 @@ class TestTaskParser:
 
         tasks = discover_tasks(tmp_path)
         assert tasks == {}
+
+    def test_pass_threshold_defaults_to_one_when_task_toml_is_silent(self, fixture_dir):
+        # echo-hello's task.toml declares [verifier].timeout_sec but no
+        # pass_threshold. The parser must default to 1.0 so a silent task
+        # authors ``all reference tests must pass`` — the natural semantics
+        # of test_execution grading. Older revisions of the adapter
+        # hardcoded 0.5, inflating pass rates on partial credit; this test
+        # locks the default that replaces that hardcode.
+        from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+
+        tasks = discover_tasks(fixture_dir)
+        assert tasks["echo-hello"].pass_threshold == 1.0
+
+    def test_pass_threshold_reads_from_verifier_section(self, tmp_path):
+        # A task author who WANTS partial credit declares it via
+        # [verifier].pass_threshold in task.toml; the parser must surface it.
+        from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+
+        task_dir = tmp_path / "partial-credit"
+        task_dir.mkdir()
+        (task_dir / "docker-compose.yaml").write_text("services: {main: {image: alpine}}\n")
+        (task_dir / "task.toml").write_text(
+            "[metadata]\n"
+            'author_name = "test"\n'
+            'difficulty = "easy"\n'
+            "\n"
+            "[verifier]\n"
+            "timeout_sec = 60.0\n"
+            "pass_threshold = 0.75\n"
+        )
+        (task_dir / "instruction.md").write_text("do the thing")
+        tasks = discover_tasks(tmp_path)
+        assert tasks["partial-credit"].pass_threshold == 0.75
+
+    def test_pass_threshold_coerces_int_to_float(self, tmp_path):
+        # tomllib returns int for ``pass_threshold = 1`` (a plausible author
+        # typo); the parser must coerce to float so downstream Pydantic
+        # models that require ``float`` do not raise.
+        from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+
+        task_dir = tmp_path / "int-threshold"
+        task_dir.mkdir()
+        (task_dir / "docker-compose.yaml").write_text("services: {main: {image: alpine}}\n")
+        (task_dir / "task.toml").write_text(
+            "[metadata]\n" 'author_name = "test"\n' "\n" "[verifier]\n" "pass_threshold = 1\n"
+        )
+        (task_dir / "instruction.md").write_text("do the thing")
+        tasks = discover_tasks(tmp_path)
+        assert tasks["int-threshold"].pass_threshold == 1.0
+        assert isinstance(tasks["int-threshold"].pass_threshold, float)
 
 
 # =============================================================================

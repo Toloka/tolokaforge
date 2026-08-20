@@ -74,7 +74,7 @@
     "custom_checks": null,
     "grading_method": "test_execution",
     "llm_judge": null,
-    "pass_threshold": 0.5,
+    "pass_threshold": 1.0,
     "state_checks": null,
     "trace_checks": null,
     "transcript_rules": null,
