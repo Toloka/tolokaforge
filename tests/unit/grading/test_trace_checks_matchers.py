@@ -285,9 +285,7 @@ _OPERATOR_ANSWERS: dict[str, _OperatorAnswer] = {
         {"not_contains": "W1"}, {"probe": ["W0"]}, {"probe": ["W0", "W1"]}
     ),
     "regex": _OperatorAnswer({"regex": "^PAY-[0-9]+$"}, {"probe": "PAY-1"}, {"probe": "REF-1"}),
-    "not_regex": _OperatorAnswer(
-        {"not_regex": "^PAY-"}, {"probe": "REF-1"}, {"probe": "PAY-1"}
-    ),
+    "not_regex": _OperatorAnswer({"not_regex": "^PAY-"}, {"probe": "REF-1"}, {"probe": "PAY-1"}),
     "gt": _OperatorAnswer({"gt": 10.0}, {"probe": 11}, {"probe": 10}),
     "gte": _OperatorAnswer({"gte": 10.0}, {"probe": 10}, {"probe": 9.5}),
     "lt": _OperatorAnswer({"lt": 10.0}, {"probe": 9.5}, {"probe": 10}),
@@ -421,7 +419,8 @@ def test_a_naive_datetime_reads_as_utc_on_both_sides() -> None:
     """
     assert _argument_probe({"date_gte": "2026-03-01T12:00"}, {"probe": "2026-03-01T12:00:00Z"}) == 1
     assert (
-        _argument_probe({"date_gte": "2026-03-01T12:00"}, {"probe": "2026-03-01T13:00:00+02:00"}) == 0
+        _argument_probe({"date_gte": "2026-03-01T12:00"}, {"probe": "2026-03-01T13:00:00+02:00"})
+        == 0
     )
 
 
@@ -543,7 +542,7 @@ def test_a_negative_text_predicate_composes_with_its_positive_form() -> None:
 
 
 def test_an_absent_or_null_argument_satisfies_no_negative_text_predicate() -> None:
-    """"Does not contain X" is a claim about a value the event carries.
+    """ "Does not contain X" is a claim about a value the event carries.
 
     A call that never carried the argument must not satisfy ``not_contains`` — the
     vacuous reading would pass a failed lookup as "no duplicate found".
