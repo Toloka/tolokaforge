@@ -1,0 +1,39 @@
+# Both trials close the same ticket and both notes say the charge was resolved,
+# so the positive `contains` holds on each. The violating note also carries the
+# escalation marker and the internal-only stamp — one hit per negative operator,
+# so each negation is read against a value the event really carries.
+satisfying:
+  messages:
+    - role: user
+      content: "Close ticket TK-88 for the duplicate charge, and tell the customer."
+    - role: assistant
+      content: "Closing it with a customer-facing note."
+      tool_calls:
+        - tool_name: crm_update_ticket
+          executor: agent
+          status: success
+          arguments:
+            ticket_id: "TK-88"
+            note: "Duplicate charge resolved: the second payment was refunded."
+          output: '{"ticket_id": "TK-88", "status": "closed"}'
+    - role: assistant
+      content: "Closed, and the customer is informed."
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Close ticket TK-88 for the duplicate charge, and tell the customer."
+    - role: assistant
+      content: "Closing it and leaving the handling notes in place."
+      tool_calls:
+        - tool_name: crm_update_ticket
+          executor: agent
+          status: success
+          arguments:
+            ticket_id: "TK-88"
+            note: "Duplicate charge resolved — ESCALATE on repeat, keep this Internal-Only."
+          output: '{"ticket_id": "TK-88", "status": "closed"}'
+    - role: assistant
+      content: "Closed."
+  state: {}

@@ -1,0 +1,30 @@
+task_id: trace_checks_operator_dates
+name: "Substrate differential: the date comparison operators"
+category: test
+description: |
+  Substrate-parity fixture for the four `date_*` operators. Both trials book a
+  flight and differ only in the departure date the booking carries, so the
+  chronological comparison is the one fact a verdict can turn on. Not runnable
+  end to end — the trials are authored in `trial.yaml` and replayed.
+
+initial_state:
+  json_db: null
+
+tools:
+  agent:
+    mcp_server: mcp_server.py
+    enabled:
+      - travel_api_book_flight
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml

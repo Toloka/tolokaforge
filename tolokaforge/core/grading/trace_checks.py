@@ -37,6 +37,7 @@ import operator
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence, Sized
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Any
 
@@ -48,7 +49,12 @@ from tolokaforge.core.grading.key_manifest import (
     TRACE_CONSTRAINTS_KEY,
     UNBOUND_BINDING_SKIP,
 )
-from tolokaforge.core.grading.predicates import contains, ever_satisfiable, json_type_of
+from tolokaforge.core.grading.predicates import (
+    contains,
+    date_comparison_key,
+    ever_satisfiable,
+    json_type_of,
+)
 from tolokaforge.core.grading.trace_timeline import (
     TraceEvent,
     TraceEventKind,
@@ -426,13 +432,24 @@ def _results_by_call_id(timeline: TrialTimeline) -> dict[str, TraceEvent]:
     }
 
 
+_MISSING: Any = object()
+"""What an argument path resolves to where the key was never sent — distinct from
+JSON ``null``, which resolves to ``None``. Only ``omitted`` reads the difference;
+every other operator receives ``None`` for both, exactly the pre-v2 reading, so the
+sentinel cannot change a shipped verdict. It never leaves this module."""
+
+
 def _argument_at(arguments: Mapping[str, Any] | None, path: str) -> Any:
-    """The value a dotted argument path addresses, or ``None`` where it does not resolve."""
+    """The value a dotted argument path addresses.
+
+    ``None`` only where the path ends on an explicit JSON ``null``; a key absent at
+    any depth — a missing intermediate included — is :data:`_MISSING`.
+    """
     value: Any = arguments
     for segment in path.split("."):
-        if not isinstance(value, Mapping):
-            return None
-        value = value.get(segment)
+        if not isinstance(value, Mapping) or segment not in value:
+            return _MISSING
+        value = value[segment]
     return value
 
 
@@ -462,6 +479,12 @@ def _operator_holds(name: str, value: Any, expected: Any, bindings: Mapping[str,
     written out. The name is in the environment by construction — a reference to a
     name the constraint does not bind is a load error.
     """
+    if name == "is_null":
+        return (value is None) is expected
+    if name == "omitted":
+        return (value is _MISSING) is expected
+    if value is _MISSING:
+        value = None
     if value is None and name != "exists":
         return False
     if name in _BINDING_OPERATORS:
@@ -480,6 +503,23 @@ def _numeric(compare: Callable[[float, float], bool]) -> Callable[[Any, Any], bo
     def holds(value: Any, bound: float) -> bool:
         number = _as_number(value)
         return number is not None and compare(number, bound)
+
+    return holds
+
+
+def _dateish(compare: Callable[[datetime, datetime], bool]) -> Callable[[Any, Any], bool]:
+    """Chronological comparison under the one shared normalization policy.
+
+    The bound parses by construction — an unparseable one is a load error — so a
+    ``None`` key can only be the trial's value, and the predicate is false there:
+    a value that is not a date did not meet the deadline, and saying so is the
+    evaluator's job, not an error's.
+    """
+
+    def holds(value: Any, bound: str) -> bool:
+        key = date_comparison_key(value)
+        bound_key = date_comparison_key(bound)
+        return key is not None and bound_key is not None and compare(key, bound_key)
 
     return holds
 
@@ -505,16 +545,24 @@ _OPERATORS: Mapping[str, Callable[[Any, Any], bool]] = {
     "contains": contains,
     "contains_ci": lambda value, needle: contains(value, needle, ci=True),
     "not_equals": operator.ne,
+    "not_contains": lambda value, needle: not contains(value, needle),
     "regex": _matches_regex,
+    "not_regex": lambda value, pattern: not _matches_regex(value, pattern),
     "gt": _numeric(operator.gt),
     "gte": _numeric(operator.ge),
     "lt": _numeric(operator.lt),
     "lte": _numeric(operator.le),
+    "date_gt": _dateish(operator.gt),
+    "date_gte": _dateish(operator.ge),
+    "date_lt": _dateish(operator.lt),
+    "date_lte": _dateish(operator.le),
     "in_": lambda value, allowed: value in allowed,
     "not_in": lambda value, rejected: value not in rejected,
     "len_gt": _by_length(operator.gt),
     "len_gte": _by_length(operator.ge),
     "exists": lambda value, expected: (value is not None) is expected,
+    "is_null": lambda value, expected: (value is None) is expected,
+    "omitted": lambda value, expected: (value is _MISSING) is expected,
 }
 
 # A reference substitutes its bound value into the comparison the literal operator
@@ -1120,7 +1168,12 @@ def _binder_reading(bound: BoundValue, event: TraceEvent, outcome: TraceEvent | 
     if head != "args":
         return _BINDER_FIELDS[head](event, outcome)
     _, _, path = bound.field.partition(".")
-    return _argument_at(event.arguments, path) if path else event.arguments
+    if not path:
+        return event.arguments
+    value = _argument_at(event.arguments, path)
+    # For extraction, an absent key and an explicit null are one condition — both
+    # yield no candidate — so the sentinel never reaches a bound value.
+    return None if value is _MISSING else value
 
 
 # ``status`` and ``executor`` are on no row: a binding over a closed vocabulary of a

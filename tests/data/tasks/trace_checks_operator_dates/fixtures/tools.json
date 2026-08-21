@@ -1,0 +1,27 @@
+[
+  {
+    "name": "travel_api_book_flight",
+    "description": "Book a flight departing on the given date.",
+    "parameters": {
+      "properties": {
+        "booking_reference": {
+          "description": "Booking reference, e.g. 'BK-2201'",
+          "title": "Booking Reference",
+          "type": "string"
+        },
+        "departure_date": {
+          "description": "Departure date, ISO-8601, e.g. '2026-03-15' or with a time",
+          "title": "Departure Date",
+          "type": "string"
+        }
+      },
+      "required": [
+        "booking_reference",
+        "departure_date"
+      ],
+      "title": "travel_api_book_flightArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]

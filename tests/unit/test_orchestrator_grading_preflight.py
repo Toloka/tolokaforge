@@ -727,7 +727,7 @@ def test_what_the_gate_could_not_check_is_logged_beside_the_task(
         for record in warned
         if "could not check" in record.getMessage()
     ] == [("TASK-UNCHECKABLE", "trace_checks.the_agent_called_the_tool.present.match.args.json.q")]
-    assert "first segment only" in warned[0].reason
+    assert "stops declaring properties" in warned[0].reason
     assert len(conductor.call_log.runs) == 1
 
 

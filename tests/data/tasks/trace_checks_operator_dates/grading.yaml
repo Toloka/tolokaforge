@@ -1,0 +1,21 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+# A March 2026 departure, written as a half-open range rather than a regex over
+# the day numbers. The bounds are date-only strings while the satisfying trial
+# authors a datetime, so the comparison crosses the two ISO shapes one
+# normalization policy has to hold together on both substrates.
+trace_checks:
+  constraints:
+    - id: the_booked_departure_is_in_march_2026
+      description: "the flight booked departs in March 2026, the month the customer asked for"
+      require:
+        present:
+          match:
+            kind: tool_call
+            tool: { equals: travel_api_book_flight }
+            args:
+              departure_date: { date_gte: "2026-03-01", date_lt: "2026-04-01" }

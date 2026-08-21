@@ -12,10 +12,12 @@ satisfy the comparison at all. An authoring gate holding two schemas can then sa
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
-__all__ = ["JSON_TYPES", "contains", "ever_satisfiable", "json_type_of"]
+__all__ = ["JSON_TYPES", "contains", "date_comparison_key", "ever_satisfiable", "json_type_of"]
 
 JSON_TYPES: frozenset[str] = frozenset(
     {"string", "integer", "number", "boolean", "array", "object"}
@@ -107,6 +109,47 @@ def ever_satisfiable(operator: str, held: str | None, bound: str | None) -> bool
     if held not in satisfiable_bounds or bound not in JSON_TYPES:
         return True
     return bound in satisfiable_bounds[held]
+
+
+# The two ISO-8601 shapes a date comparison reads, written out rather than left to
+# ``fromisoformat``, whose accepted grammar widened across Python versions — the
+# shape gate is what keeps one config parsing identically on every interpreter.
+_ISO_DATE_SHAPE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}"
+    r"(?:T\d{2}:\d{2}(?::\d{2}(?:\.(?P<fraction>\d{1,6}))?)?(?:Z|[+-]\d{2}:\d{2})?)?$"
+)
+
+
+def date_comparison_key(value: Any) -> datetime | None:
+    """``value`` as a timezone-aware UTC datetime, or ``None`` where it is not one.
+
+    The one normalization policy every date comparison shares, so the two grading
+    substrates cannot drift: a date-only string is **midnight UTC** of that day; a
+    datetime carrying an offset (a trailing ``Z`` included) converts to UTC; a
+    datetime carrying none is read **as UTC** — wall-clock-local readings would make
+    one trajectory grade differently per grader host. Only strings are dates: JSON
+    carries no date type, so a non-string — a number, a bool, ``None`` — is not a
+    date rather than an error.
+    """
+    if not isinstance(value, str):
+        return None
+    shape = _ISO_DATE_SHAPE.match(value)
+    if shape is None:
+        return None
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    fraction = shape.group("fraction")
+    if fraction is not None and len(fraction) not in (3, 6):
+        # Python 3.10's ``fromisoformat`` reads exactly 3 or 6 fractional digits;
+        # later versions read any count. Padding to 6 keeps one parse per config
+        # on every interpreter this package supports.
+        text = text.replace(f".{fraction}", f".{fraction.ljust(6, '0')}", 1)
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def contains(haystack: Any, needle: Any, ci: bool = False) -> bool:

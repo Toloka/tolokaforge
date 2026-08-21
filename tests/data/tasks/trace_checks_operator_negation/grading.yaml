@@ -1,0 +1,24 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+# One predicate carrying a positive form and both negative forms: the note must
+# mention the resolution and must not leak the escalation marker or the
+# internal-only stamp. Both trials satisfy the positive half, so only the
+# negations discriminate — a predicate is the conjunction of its operators.
+trace_checks:
+  constraints:
+    - id: the_closing_note_leaks_no_internal_marker
+      description: "the note sent to the customer states the resolution and no internal-only text"
+      require:
+        present:
+          match:
+            kind: tool_call
+            tool: { equals: crm_update_ticket }
+            args:
+              note:
+                contains: "resolved"
+                not_contains: "ESCALATE"
+                not_regex: '(?i)internal[ -]only'

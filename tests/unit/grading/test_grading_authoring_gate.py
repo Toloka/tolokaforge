@@ -963,19 +963,19 @@ _UNCHECKED_ARGUMENTS = (
     pytest.param(
         _HELPDESK,
         _tool_call("http_request", **{"json.q": {"len_gt": 0}}),
-        "first segment only",
+        "stops declaring properties",
         id="nested_path_the_pack_ships",
     ),
     pytest.param(
         _HELPDESK,
         _tool_call("http_request", **{"json.qq": {"len_gt": 0}}),
-        "first segment only",
+        "stops declaring properties",
         id="nested_path_below_a_declared_head",
     ),
     pytest.param(
         _HELPDESK,
         _tool_call("http_request", **{"data.anything": {"exists": True}}),
-        "first segment only",
+        "stops declaring properties",
         id="nested_path_under_another_head",
     ),
     pytest.param(
@@ -991,11 +991,13 @@ _UNCHECKED_ARGUMENTS = (
 def test_an_argument_the_schema_cannot_answer_for_is_unchecked(
     task: Path, match: dict[str, Any], reason: str
 ) -> None:
-    """Descending past the first segment would reject the flagship pack.
+    """The walk stops where the schema stops declaring, and rejects nothing there.
 
     ``http_request``'s ``json`` property is ``{"type": "object"}`` with no
     ``properties``, so ``json.q`` — which helpdesk_01 ships and grades on — is
-    answerable at ``json`` and nowhere below it (#765).
+    answerable at ``json`` and nowhere below it. The #765 walk descends only
+    through levels that declare ``properties``; this is the shape it must never
+    reject.
     """
     report = inspect_grading_authoring(_trace_block(match), _inventory(task))
 
@@ -1003,6 +1005,76 @@ def test_an_argument_the_schema_cannot_answer_for_is_unchecked(
     assert report.advisories == ()
     assert [skip.reason for skip in report.unchecked] != []
     assert any(reason in skip.reason for skip in report.unchecked), report.unchecked
+
+
+def test_a_typo_below_the_first_segment_is_caught_where_the_schema_declares_it() -> None:
+    """#765: the walk answers as deep as the schema keeps declaring properties.
+
+    A Zendesk-style single-dict ``item`` argument declares its fields and admits
+    no other, so ``item.statsu`` — the always-false footgun that used to load
+    clean and silently never match — is said at load. A missing name under an
+    *open* nested object stays a probable-typo advisory, exactly the first
+    segment's own rule one level down, and a declared deep path stays clean.
+    """
+    inventory = ToolInventory(
+        declared=frozenset({"update_ticket"}),
+        agent_declared=frozenset({"update_ticket"}),
+        user_declared=frozenset(),
+        actor_split_known=True,
+        parameters={
+            "update_ticket": {
+                "additionalProperties": False,
+                "properties": {
+                    "item": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "status": {"type": "string"},
+                            "meta": {
+                                "type": "object",
+                                "properties": {"note": {"type": "string"}},
+                            },
+                        },
+                    },
+                },
+            }
+        },
+        known=True,
+    )
+
+    clean = inspect_grading_authoring(
+        _trace_block(_tool_call("update_ticket", **{"item.status": {"equals": "open"}})),
+        inventory,
+    )
+    assert clean.errors + clean.advisories == ()
+    assert clean.unchecked == ()
+
+    deep_clean = inspect_grading_authoring(
+        _trace_block(_tool_call("update_ticket", **{"item.meta.note": {"contains": "x"}})),
+        inventory,
+    )
+    assert deep_clean.errors + deep_clean.advisories == ()
+    assert deep_clean.unchecked == ()
+
+    typo = inspect_grading_authoring(
+        _trace_block(_tool_call("update_ticket", **{"item.statsu": {"equals": "open"}})),
+        inventory,
+    )
+    assert [finding.where for finding in typo.errors] == [
+        "trace_checks.probe.present.match.args.item.statsu"
+    ]
+    assert "'statsu'" in typo.errors[0].message
+    assert "admits no other" in typo.errors[0].message
+
+    advisory = inspect_grading_authoring(
+        _trace_block(_tool_call("update_ticket", **{"item.meta.notee": {"exists": True}})),
+        inventory,
+    )
+    assert advisory.errors == ()
+    assert [finding.where for finding in advisory.advisories] == [
+        "trace_checks.probe.present.match.args.item.meta.notee"
+    ]
+    assert "probable typo" in advisory.advisories[0].message
 
 
 def test_a_matcher_over_a_tool_with_no_resolved_schema_is_unchecked() -> None:
@@ -2980,7 +3052,7 @@ _UNCHECKED_EXTRACTIONS = (
         _HELPDESK,
         _tool_call("http_request"),
         {"query": {"field": "args.json.q"}},
-        "first segment only",
+        "stops declaring properties",
         id="extraction_below_a_declared_head",
     ),
     pytest.param(

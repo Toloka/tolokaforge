@@ -1,0 +1,31 @@
+task_id: trace_checks_operator_negation
+name: "Substrate differential: the negative text operators"
+category: test
+description: |
+  Substrate-parity fixture for `not_contains` and `not_regex`. Both trials close
+  the ticket with a note that mentions the resolution, and differ only in the
+  internal-only text the violating note leaks — so the negative predicates beside
+  their positive form are the one fact a verdict can turn on. Not runnable end to
+  end — the trials are authored in `trial.yaml` and replayed.
+
+initial_state:
+  json_db: null
+
+tools:
+  agent:
+    mcp_server: mcp_server.py
+    enabled:
+      - crm_update_ticket
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml
