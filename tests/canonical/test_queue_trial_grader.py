@@ -208,13 +208,53 @@ class TestThroughputProperty:
 
 
 class TestFactoryAndRegistration:
-    def test_factory_raises_until_broker_wiring_lands(self) -> None:
-        """The registered ``queue`` factory raises loudly instead of building
-        an unusable grader (broker no one is listening to). Once the context
-        carries broker-selection configuration and a worker pool is
-        provisioned, this test flips to construct a working grader."""
-        ctx = TrialGraderContext(runner_address="stub:0", logger=MagicMock())
-        with pytest.raises(NotImplementedError, match="not yet wired"):
+    def test_factory_builds_broker_and_worker_pool(self) -> None:
+        """The registered ``queue`` factory returns a working grader:
+        an in-memory broker, N daemon worker threads holding grader-service
+        clients, and a :class:`QueueTrialGrader` that owns both. ``close``
+        tears everything down.
+        """
+        from tolokaforge.core.models.run_config import GraderConfig, QueueGraderConfig
+
+        ctx = TrialGraderContext(
+            runner_address="stub:0",
+            logger=MagicMock(),
+            grader_config=GraderConfig(queue=QueueGraderConfig(workers=2)),
+        )
+        grader = queue_trial_grader_factory(ctx)
+        # Snapshot the worker handles BEFORE close(); the impl clears the
+        # list as part of shutdown, so a post-close ``for w in grader._workers``
+        # would iterate zero times and assert nothing.
+        workers = list(grader._workers)
+        try:
+            assert isinstance(grader, QueueTrialGrader)
+            assert len(workers) == 2
+            assert grader._owns_broker is True
+        finally:
+            grader.close()
+
+        for worker in workers:
+            assert not worker.is_alive(), "close() must drain the worker pool"
+        assert grader._workers == [], "close() clears the worker list"
+
+    def test_factory_rejects_missing_address(self) -> None:
+        """The queue transport needs a downstream ``grader_rpc`` target;
+        neither ``grader_address`` nor ``runner_address`` set means the
+        factory refuses at startup instead of publishing jobs no worker
+        can grade."""
+        ctx = TrialGraderContext(runner_address=None, logger=MagicMock())
+        with pytest.raises(ValueError, match="grader_address"):
+            queue_trial_grader_factory(ctx)
+
+    def test_factory_rejects_unsupported_worker_grader(self) -> None:
+        """Only ``worker_grader: grader_rpc`` is wired today; other names
+        raise at factory time so the operator sees the gap before jobs
+        pile up."""
+        from tolokaforge.core.models.run_config import GraderConfig, QueueGraderConfig
+
+        cfg = GraderConfig(queue=QueueGraderConfig(worker_grader="judge_only"))
+        ctx = TrialGraderContext(runner_address="stub:0", logger=MagicMock(), grader_config=cfg)
+        with pytest.raises(ValueError, match="worker_grader"):
             queue_trial_grader_factory(ctx)
 
     def test_registered_under_queue_entry_point(self) -> None:

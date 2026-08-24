@@ -501,6 +501,13 @@ class Orchestrator:
         self.results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
         self.adapter: BaseAdapter | None = None
+        # Trial graders whose ``close()`` must fire at run teardown. Populated
+        # by :meth:`_build_conductor`; drained in reverse order at the end of
+        # :meth:`run` / :meth:`run_worker` so a broker + worker-pool grader
+        # (``queue``) shuts down cleanly regardless of the caller's flow.
+        self._trial_graders_to_close: list = (
+            []
+        )  # list[TrialGrader]; annotated bare to avoid a runtime import cycle
         # Shared per-trial writer — every per-trial write goes through it
         # so the orchestrator stays decoupled from filesystem details and
         # alternative writers (in-memory tests, remote stores) can plug in.
@@ -784,9 +791,29 @@ class Orchestrator:
         # a network address (a stub, a callable-injected grader) receive the
         # ``None`` verbatim and ignore it.
         runner_address = getattr(runtime_backend, "runner_address", None)
-        trial_grader = load_trial_grader(self.adapter.trial_grader_name)(
-            TrialGraderContext(runner_address=runner_address, logger=self.logger)
+        # ``config.grader.name`` overrides the adapter's default for this
+        # run; the queue subblock rides the same context so
+        # ``queue_trial_grader_factory`` can build its broker + worker pool
+        # without a second config lookup. Absent block keeps every existing
+        # run's behaviour.
+        grader_config = self.config.grader
+        grader_name = (
+            grader_config.name if grader_config and grader_config.name else None
+        ) or self.adapter.trial_grader_name
+        trial_grader = load_trial_grader(grader_name)(
+            TrialGraderContext(
+                runner_address=runner_address,
+                logger=self.logger,
+                grader_config=grader_config,
+            )
         )
+        # Drain any leftover from a prior aborted run on this orchestrator
+        # instance before recording the fresh grader — a re-entered ``run()``
+        # on the same instance must never close a stale grader from the
+        # previous attempt.
+        if self._trial_graders_to_close:
+            self._close_trial_graders()
+        self._trial_graders_to_close.append(trial_grader)
 
         ctx = ConductorContext(
             adapter=self.adapter,
@@ -2152,319 +2179,361 @@ class Orchestrator:
             output_dir=output_dir,
             request_limiter=request_limiter,
         )
-        trial_executor = self._build_trial_executor(
-            runtime_backend, conductor, output_dir=output_dir
-        )
+        # ``try/finally`` from here to the run's return guarantees the
+        # grader teardown (broker close + worker join, gRPC channel close)
+        # fires even when the trial loop or a mid-run cleanup raises. The
+        # rest of the existing sequential teardown lives inside the try
+        # body — a mid-run exception still surfaces to the caller after
+        # the grader is closed.
+        try:
+            trial_executor = self._build_trial_executor(
+                runtime_backend, conductor, output_dir=output_dir
+            )
 
-        executor_healthy = runtime_backend.health_check()
-        self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
+            executor_healthy = runtime_backend.health_check()
+            self.logger.info("Docker runtime health check", executor_healthy=executor_healthy)
 
-        # Build pending task/trial pairs and initialize durable queue.
-        task_by_id = {task.task_id: task for task in self.tasks}
-        pending_trials = self._build_pending_trials(
-            self.tasks,
-            self.config.orchestrator.repeats,
-            skip_completed=lambda task_id, trial_idx: self.resume
-            and self.state_manager.is_completed(task_id, trial_idx),
-        )
+            # Build pending task/trial pairs and initialize durable queue.
+            task_by_id = {task.task_id: task for task in self.tasks}
+            pending_trials = self._build_pending_trials(
+                self.tasks,
+                self.config.orchestrator.repeats,
+                skip_completed=lambda task_id, trial_idx: self.resume
+                and self.state_manager.is_completed(task_id, trial_idx),
+            )
 
-        run_queue = create_run_queue(
-            self.config.effective_queue_backend,
-            sqlite_path=output_dir / "run_queue.sqlite",
-            max_retries=self.config.effective_max_attempt_retries,
-            postgres_dsn=self.config.effective_queue_postgres_dsn,
-        )
-        run_queue.enqueue_many(pending_trials)
-        recovered = run_queue.recover_inflight(
-            max_lease_age_s=max(300, self.config.orchestrator.timeouts.episode_s * 2)
-        )
-        if recovered > 0:
-            self.logger.warning("Recovered stale in-flight attempts", recovered=recovered)
+            run_queue = create_run_queue(
+                self.config.effective_queue_backend,
+                sqlite_path=output_dir / "run_queue.sqlite",
+                max_retries=self.config.effective_max_attempt_retries,
+                postgres_dsn=self.config.effective_queue_postgres_dsn,
+            )
+            run_queue.enqueue_many(pending_trials)
+            recovered = run_queue.recover_inflight(
+                max_lease_age_s=max(300, self.config.orchestrator.timeouts.episode_s * 2)
+            )
+            if recovered > 0:
+                self.logger.warning("Recovered stale in-flight attempts", recovered=recovered)
 
-        total_cost_usd = self._collect_existing_cost(output_dir)
-        total_trials_scheduled = len(pending_trials)
-        if total_cost_usd > 0:
-            self.logger.info("Loaded existing run spend", total_cost_usd=round(total_cost_usd, 6))
-        budget = self._resolve_budget(initial_cost_usd=total_cost_usd)
-        budget_exhausted = False
-        last_hit: BudgetHit | None = None
-        if budget is not None:
-            hit = budget.poll()
-            if hit is not None:
-                budget_exhausted = True
-                last_hit = hit
-                self._stopped_reason = f"{hit.which} limit"
-                write_limit_hit_marker(output_dir, hit)
-                self.logger.warning(
-                    "Budget already exhausted at run start; no trials will be scheduled",
-                    limit_kind=hit.which,
-                    threshold=hit.threshold,
-                    value_at_hit=round(hit.value_at_hit, 6),
+            total_cost_usd = self._collect_existing_cost(output_dir)
+            total_trials_scheduled = len(pending_trials)
+            if total_cost_usd > 0:
+                self.logger.info(
+                    "Loaded existing run spend", total_cost_usd=round(total_cost_usd, 6)
                 )
-
-        lease_seconds = max(300, self.config.orchestrator.timeouts.episode_s * 2)
-        lease_owner = f"orchestrator:{os.getpid()}"
-
-        self._events.run_started(
-            total_trials=run_state.total_trials,
-            initial_completed=run_state.completed_trials,
-        )
-
-        # Run tasks with parallel workers using the durable queue.
-        with ThreadPoolExecutor(max_workers=self.config.effective_workers) as executor:
-            active_futures: dict[Any, AttemptLease] = {}
-
-            def submit_one() -> bool:
-                if budget_exhausted:
-                    return False
-                lease = run_queue.lease_next(worker_id=lease_owner, lease_seconds=lease_seconds)
-                if lease is None:
-                    return False
-                task = task_by_id.get(lease.task_id)
-                if task is None:
-                    # Should never happen; fail-fast and continue scheduling.
-                    run_queue.mark_failed(
-                        lease.id, f"Task not found in loaded set: {lease.task_id}", retryable=False
+            budget = self._resolve_budget(initial_cost_usd=total_cost_usd)
+            budget_exhausted = False
+            last_hit: BudgetHit | None = None
+            if budget is not None:
+                hit = budget.poll()
+                if hit is not None:
+                    budget_exhausted = True
+                    last_hit = hit
+                    self._stopped_reason = f"{hit.which} limit"
+                    write_limit_hit_marker(output_dir, hit)
+                    self.logger.warning(
+                        "Budget already exhausted at run start; no trials will be scheduled",
+                        limit_kind=hit.which,
+                        threshold=hit.threshold,
+                        value_at_hit=round(hit.value_at_hit, 6),
                     )
-                    run_state.mark_failed(
-                        lease.task_id, lease.trial_index, f"Task not found: {lease.task_id}"
-                    )
+
+            lease_seconds = max(300, self.config.orchestrator.timeouts.episode_s * 2)
+            lease_owner = f"orchestrator:{os.getpid()}"
+
+            self._events.run_started(
+                total_trials=run_state.total_trials,
+                initial_completed=run_state.completed_trials,
+            )
+
+            # Run tasks with parallel workers using the durable queue.
+            with ThreadPoolExecutor(max_workers=self.config.effective_workers) as executor:
+                active_futures: dict[Any, AttemptLease] = {}
+
+                def submit_one() -> bool:
+                    if budget_exhausted:
+                        return False
+                    lease = run_queue.lease_next(worker_id=lease_owner, lease_seconds=lease_seconds)
+                    if lease is None:
+                        return False
+                    task = task_by_id.get(lease.task_id)
+                    if task is None:
+                        # Should never happen; fail-fast and continue scheduling.
+                        run_queue.mark_failed(
+                            lease.id,
+                            f"Task not found in loaded set: {lease.task_id}",
+                            retryable=False,
+                        )
+                        run_state.mark_failed(
+                            lease.task_id, lease.trial_index, f"Task not found: {lease.task_id}"
+                        )
+                        self.state_manager.save_state(run_state)
+                        return True
+
+                    # Mark as running
+                    run_queue.mark_running(lease.id, lease_owner)
+                    run_state.mark_running(lease.task_id, lease.trial_index)
                     self.state_manager.save_state(run_state)
-                    return True
 
-                # Mark as running
-                run_queue.mark_running(lease.id, lease_owner)
-                run_state.mark_running(lease.task_id, lease.trial_index)
-                self.state_manager.save_state(run_state)
-
-                self._events.trial_started(
-                    trial_id=f"{lease.task_id}:{lease.trial_index}",
-                    task_id=lease.task_id,
-                    trial_index=lease.trial_index,
-                    total_index=self._total_index_by_key.get((lease.task_id, lease.trial_index), 0),
-                    agent_model=f"{agent_config.provider}/{agent_config.name}",
-                    user_model=f"{user_config.provider}/{user_config.name}",
-                )
-
-                try:
-                    spec = self._build_trial_spec(
-                        task=task,
-                        trial_idx=lease.trial_index,
-                        attempt_id=lease.retry_count,
-                        worker_id=lease_owner,
-                        run_id=run_id,
-                        agent_client=agent_client,
-                        user_config=user_config,
-                        judge_config=judge_config,
-                        env_endpoints=env_endpoints,
-                    )
-                except Exception as e:
-                    self.logger.error(
-                        "Trial spec build failed",
+                    self._events.trial_started(
+                        trial_id=f"{lease.task_id}:{lease.trial_index}",
                         task_id=lease.task_id,
                         trial_index=lease.trial_index,
-                        error=str(e),
+                        total_index=self._total_index_by_key.get(
+                            (lease.task_id, lease.trial_index), 0
+                        ),
+                        agent_model=f"{agent_config.provider}/{agent_config.name}",
+                        user_model=f"{user_config.provider}/{user_config.name}",
                     )
-                    run_queue.mark_failed(lease.id, f"Spec build failed: {e}", retryable=False)
-                    run_state.mark_failed(lease.task_id, lease.trial_index, str(e))
-                    self.state_manager.save_state(run_state)
-                    self._events.trial_failed(
-                        trial_id=f"{lease.task_id}:{lease.trial_index}",
-                        error=str(e),
-                        retryable=False,
-                    )
-                    return True
-                future = executor.submit(trial_executor.execute, spec, task)
-                active_futures[future] = lease
-                return True
 
-            while len(active_futures) < self.config.effective_workers and submit_one():
-                pass
-
-            while active_futures:
-                done, _ = wait(active_futures.keys(), return_when=FIRST_COMPLETED)
-                for future in done:
-                    lease = active_futures.pop(future)
-                    task_id = lease.task_id
-                    trial_idx = lease.trial_index
                     try:
-                        trial_result = future.result()
-                        trajectory = trial_result.trajectory
-                        self.results.append(trajectory)
-                        trial_cost = trajectory.metrics.cost_usd or 0.0
-                        total_cost_usd += trial_cost
-                        if budget is not None:
-                            budget.record_generation_cost(trial_cost)
+                        spec = self._build_trial_spec(
+                            task=task,
+                            trial_idx=lease.trial_index,
+                            attempt_id=lease.retry_count,
+                            worker_id=lease_owner,
+                            run_id=run_id,
+                            agent_client=agent_client,
+                            user_config=user_config,
+                            judge_config=judge_config,
+                            env_endpoints=env_endpoints,
+                        )
+                    except Exception as e:
+                        self.logger.error(
+                            "Trial spec build failed",
+                            task_id=lease.task_id,
+                            trial_index=lease.trial_index,
+                            error=str(e),
+                        )
+                        run_queue.mark_failed(lease.id, f"Spec build failed: {e}", retryable=False)
+                        run_state.mark_failed(lease.task_id, lease.trial_index, str(e))
+                        self.state_manager.save_state(run_state)
+                        self._events.trial_failed(
+                            trial_id=f"{lease.task_id}:{lease.trial_index}",
+                            error=str(e),
+                            retryable=False,
+                        )
+                        return True
+                    future = executor.submit(trial_executor.execute, spec, task)
+                    active_futures[future] = lease
+                    return True
 
-                        # Retry transient infra failures based on queue retry policy.
-                        if self._is_retryable_trajectory(trajectory):
-                            reason = (
-                                trajectory.termination_reason.value
-                                if trajectory.termination_reason
-                                else trajectory.status.value
-                            )
-                            should_retry = run_queue.mark_failed(
-                                lease.id,
-                                f"Retryable failure: {reason}",
-                                retryable=True,
+                while len(active_futures) < self.config.effective_workers and submit_one():
+                    pass
+
+                while active_futures:
+                    done, _ = wait(active_futures.keys(), return_when=FIRST_COMPLETED)
+                    for future in done:
+                        lease = active_futures.pop(future)
+                        task_id = lease.task_id
+                        trial_idx = lease.trial_index
+                        try:
+                            trial_result = future.result()
+                            trajectory = trial_result.trajectory
+                            self.results.append(trajectory)
+                            trial_cost = trajectory.metrics.cost_usd or 0.0
+                            total_cost_usd += trial_cost
+                            if budget is not None:
+                                budget.record_generation_cost(trial_cost)
+
+                            # Retry transient infra failures based on queue retry policy.
+                            if self._is_retryable_trajectory(trajectory):
+                                reason = (
+                                    trajectory.termination_reason.value
+                                    if trajectory.termination_reason
+                                    else trajectory.status.value
+                                )
+                                should_retry = run_queue.mark_failed(
+                                    lease.id,
+                                    f"Retryable failure: {reason}",
+                                    retryable=True,
+                                )
+                                if should_retry:
+                                    self._cleanup_runner_state_for_retry(
+                                        runtime_backend, task_id, trial_idx
+                                    )
+                                    self.logger.warning(
+                                        "Retrying trial after transient failure",
+                                        task_id=task_id,
+                                        trial_index=trial_idx,
+                                        retry_count_next=lease.retry_count + 1,
+                                        status=trajectory.status.value,
+                                        termination_reason=reason,
+                                    )
+                                else:
+                                    run_state.mark_failed(
+                                        task_id,
+                                        trial_idx,
+                                        f"Retry limit reached after transient failure: {reason}",
+                                    )
+                                    self.state_manager.save_state(run_state)
+                                    self._events.trial_failed(
+                                        trial_id=f"{task_id}:{trial_idx}",
+                                        error=f"Retry limit reached after transient failure: {reason}",
+                                        retryable=True,
+                                    )
+                                    if budget is not None:
+                                        budget.record_trial_terminated()
+                                self.logger.info(
+                                    "Trial failed (transient)",
+                                    task_id=task_id,
+                                    trial_index=trial_idx,
+                                    trial_cost_usd=trial_cost,
+                                    total_cost_usd=round(total_cost_usd, 6),
+                                )
+                            else:
+                                run_queue.mark_completed(lease.id, cost_usd=trial_cost)
+                                # An ungraded trial records no verdict: a 0.0 here
+                                # is indistinguishable from a task the agent failed.
+                                run_state.mark_completed(
+                                    task_id,
+                                    trial_idx,
+                                    trajectory.grade.binary_pass if trajectory.grade else None,
+                                    trajectory.grade.score if trajectory.grade else None,
+                                )
+                                self.state_manager.save_state(run_state)
+
+                                self._events.trial_completed(
+                                    trial_id=f"{task_id}:{trial_idx}",
+                                    binary_pass=(
+                                        trajectory.grade.binary_pass if trajectory.grade else None
+                                    ),
+                                    score=trajectory.grade.score if trajectory.grade else None,
+                                )
+                                if budget is not None:
+                                    budget.record_trial_terminated()
+
+                                self.logger.info(
+                                    "Trial completed",
+                                    task_id=trajectory.task_id,
+                                    trial_index=trajectory.trial_index,
+                                    status=trajectory.status.value,
+                                    score=trajectory.grade.score if trajectory.grade else None,
+                                    trial_cost_usd=trial_cost,
+                                    total_cost_usd=round(total_cost_usd, 6),
+                                )
+                        except Exception as e:
+                            should_retry = run_queue.mark_failed(lease.id, str(e), retryable=True)
+                            self.logger.error(
+                                "Trial execution exception",
+                                task_id=task_id,
+                                trial_index=trial_idx,
+                                error=str(e),
+                                will_retry=should_retry,
                             )
                             if should_retry:
                                 self._cleanup_runner_state_for_retry(
                                     runtime_backend, task_id, trial_idx
                                 )
-                                self.logger.warning(
-                                    "Retrying trial after transient failure",
-                                    task_id=task_id,
-                                    trial_index=trial_idx,
-                                    retry_count_next=lease.retry_count + 1,
-                                    status=trajectory.status.value,
-                                    termination_reason=reason,
-                                )
                             else:
-                                run_state.mark_failed(
-                                    task_id,
-                                    trial_idx,
-                                    f"Retry limit reached after transient failure: {reason}",
-                                )
+                                # Mark as failed only when retries are exhausted.
+                                run_state.mark_failed(task_id, trial_idx, str(e))
                                 self.state_manager.save_state(run_state)
                                 self._events.trial_failed(
                                     trial_id=f"{task_id}:{trial_idx}",
-                                    error=f"Retry limit reached after transient failure: {reason}",
+                                    error=str(e),
                                     retryable=True,
                                 )
                                 if budget is not None:
                                     budget.record_trial_terminated()
-                            self.logger.info(
-                                "Trial failed (transient)",
-                                task_id=task_id,
-                                trial_index=trial_idx,
-                                trial_cost_usd=trial_cost,
-                                total_cost_usd=round(total_cost_usd, 6),
-                            )
-                        else:
-                            run_queue.mark_completed(lease.id, cost_usd=trial_cost)
-                            # An ungraded trial records no verdict: a 0.0 here
-                            # is indistinguishable from a task the agent failed.
-                            run_state.mark_completed(
-                                task_id,
-                                trial_idx,
-                                trajectory.grade.binary_pass if trajectory.grade else None,
-                                trajectory.grade.score if trajectory.grade else None,
-                            )
-                            self.state_manager.save_state(run_state)
 
-                            self._events.trial_completed(
-                                trial_id=f"{task_id}:{trial_idx}",
-                                binary_pass=(
-                                    trajectory.grade.binary_pass if trajectory.grade else None
-                                ),
-                                score=trajectory.grade.score if trajectory.grade else None,
-                            )
-                            if budget is not None:
-                                budget.record_trial_terminated()
+                        # Stop scheduling new work once any active budget cap is reached.
+                        if budget is not None and not budget_exhausted:
+                            hit = budget.poll()
+                            if hit is not None:
+                                budget_exhausted = True
+                                last_hit = hit
+                                self._stopped_reason = f"{hit.which} limit"
+                                write_limit_hit_marker(output_dir, hit)
+                                self.logger.warning(
+                                    "Budget limit reached; no new trials will be scheduled",
+                                    limit_kind=hit.which,
+                                    threshold=hit.threshold,
+                                    value_at_hit=round(hit.value_at_hit, 6),
+                                    total_cost_usd=round(total_cost_usd, 6),
+                                    remaining_trials=run_queue.get_counts().get("pending", 0),
+                                )
+                        if budget_exhausted:
+                            continue
 
-                            self.logger.info(
-                                "Trial completed",
-                                task_id=trajectory.task_id,
-                                trial_index=trajectory.trial_index,
-                                status=trajectory.status.value,
-                                score=trajectory.grade.score if trajectory.grade else None,
-                                trial_cost_usd=trial_cost,
-                                total_cost_usd=round(total_cost_usd, 6),
-                            )
-                    except Exception as e:
-                        should_retry = run_queue.mark_failed(lease.id, str(e), retryable=True)
-                        self.logger.error(
-                            "Trial execution exception",
-                            task_id=task_id,
-                            trial_index=trial_idx,
-                            error=str(e),
-                            will_retry=should_retry,
-                        )
-                        if should_retry:
-                            self._cleanup_runner_state_for_retry(
-                                runtime_backend, task_id, trial_idx
-                            )
-                        else:
-                            # Mark as failed only when retries are exhausted.
-                            run_state.mark_failed(task_id, trial_idx, str(e))
-                            self.state_manager.save_state(run_state)
-                            self._events.trial_failed(
-                                trial_id=f"{task_id}:{trial_idx}",
-                                error=str(e),
-                                retryable=True,
-                            )
-                            if budget is not None:
-                                budget.record_trial_terminated()
+                        while len(active_futures) < self.config.effective_workers and submit_one():
+                            pass
 
-                    # Stop scheduling new work once any active budget cap is reached.
-                    if budget is not None and not budget_exhausted:
-                        hit = budget.poll()
-                        if hit is not None:
-                            budget_exhausted = True
-                            last_hit = hit
-                            self._stopped_reason = f"{hit.which} limit"
-                            write_limit_hit_marker(output_dir, hit)
-                            self.logger.warning(
-                                "Budget limit reached; no new trials will be scheduled",
-                                limit_kind=hit.which,
-                                threshold=hit.threshold,
-                                value_at_hit=round(hit.value_at_hit, 6),
-                                total_cost_usd=round(total_cost_usd, 6),
-                                remaining_trials=run_queue.get_counts().get("pending", 0),
-                            )
-                    if budget_exhausted:
-                        continue
-
-                    while len(active_futures) < self.config.effective_workers and submit_one():
-                        pass
-
-        counts = run_queue.get_counts()
-        remaining = counts.get("pending", 0) + counts.get("leased", 0) + counts.get("running", 0)
-        if budget_exhausted and remaining > 0:
-            self.state_manager.mark_run_paused()
-            self.logger.warning(
-                "Run paused due to budget cap",
-                pending_trials=remaining,
-                total_scheduled_trials=total_trials_scheduled - remaining,
-                limit_kind=last_hit.which if last_hit is not None else None,
-                threshold=last_hit.threshold if last_hit is not None else None,
-                total_cost_usd=round(total_cost_usd, 6),
+            counts = run_queue.get_counts()
+            remaining = (
+                counts.get("pending", 0) + counts.get("leased", 0) + counts.get("running", 0)
             )
-        else:
-            # Mark run as completed
-            self.state_manager.mark_run_completed()
+            if budget_exhausted and remaining > 0:
+                self.state_manager.mark_run_paused()
+                self.logger.warning(
+                    "Run paused due to budget cap",
+                    pending_trials=remaining,
+                    total_scheduled_trials=total_trials_scheduled - remaining,
+                    limit_kind=last_hit.which if last_hit is not None else None,
+                    threshold=last_hit.threshold if last_hit is not None else None,
+                    total_cost_usd=round(total_cost_usd, 6),
+                )
+            else:
+                # Mark run as completed
+                self.state_manager.mark_run_completed()
 
-        # Cleanup Docker runtime if used
-        if runtime_backend:
-            runtime_backend.close()
-            self.logger.info("Docker runtime closed")
+            # Cleanup Docker runtime if used
+            if runtime_backend:
+                runtime_backend.close()
+                self.logger.info("Docker runtime closed")
 
-        # Stop TypeSense BEFORE destroying the EngineStack.
-        # TypeSense is connected to runner-net (via _connect_typesense_to_runner_network),
-        # so it must be removed from that network before the stack can tear it down.
-        if self._typesense_server is not None:
+            # Stop TypeSense BEFORE destroying the EngineStack.
+            # TypeSense is connected to runner-net (via _connect_typesense_to_runner_network),
+            # so it must be removed from that network before the stack can tear it down.
+            if self._typesense_server is not None:
+                try:
+                    self._typesense_server.stop()
+                    self.logger.info("TypeSense server stopped")
+                except Exception as e:
+                    self.logger.warning(f"Failed to stop TypeSense server: {e}")
+
+            # Cleanup EngineStack if auto-started
+            if service_stack is not None:
+                try:
+                    service_stack.destroy()
+                    self.logger.info("EngineStack destroyed")
+                except Exception as e:
+                    self.logger.warning("Failed to destroy EngineStack", error=str(e))
+
+            # Generate reports
+            self._generate_reports(output_dir)
+            self._publish_grading_completeness()
+
+            resolved_output_dir = output_dir.resolve()
+            self._events.run_finished(output_dir=resolved_output_dir)
+            return resolved_output_dir
+        finally:
+            self._close_trial_graders()
+
+    def _close_trial_graders(self) -> None:
+        """Release every ``TrialGrader`` built during this orchestrator's
+        lifetime, in reverse construction order.
+
+        The queue transport owns a broker + a worker pool that must shut
+        down before the process exits, and the ``grader_rpc`` transport
+        owns a gRPC channel. Every built-in Protocol implementation ships
+        a ``close()`` (a noop for the transport-less ones); a downstream
+        registered grader that lacks one is tolerated so an old
+        registration does not fail a new run at teardown.
+        """
+        while self._trial_graders_to_close:
+            grader = self._trial_graders_to_close.pop()
+            close = getattr(grader, "close", None)
+            if not callable(close):
+                continue
             try:
-                self._typesense_server.stop()
-                self.logger.info("TypeSense server stopped")
-            except Exception as e:
-                self.logger.warning(f"Failed to stop TypeSense server: {e}")
-
-        # Cleanup EngineStack if auto-started
-        if service_stack is not None:
-            try:
-                service_stack.destroy()
-                self.logger.info("EngineStack destroyed")
-            except Exception as e:
-                self.logger.warning("Failed to destroy EngineStack", error=str(e))
-
-        # Generate reports
-        self._generate_reports(output_dir)
-        self._publish_grading_completeness()
-
-        resolved_output_dir = output_dir.resolve()
-        self._events.run_finished(output_dir=resolved_output_dir)
-        return resolved_output_dir
+                close()
+            except Exception as exc:  # noqa: BLE001 — teardown must survive
+                self.logger.warning(
+                    "Trial grader close() raised",
+                    grader=type(grader).__name__,
+                    error=str(exc),
+                )
 
     def run_worker(self, output_dir: Path, max_attempts: int | None = None) -> dict[str, Any]:
         """Run as a worker consuming attempts from the durable queue.
@@ -2695,6 +2764,11 @@ class Orchestrator:
                     self._typesense_server.stop()
                 except Exception:
                     pass
+            # Broker close + worker join happen even on an exception in
+            # the leased-work loop above. Sequential with the runtime
+            # teardown; each failure is logged rather than raised so the
+            # outer flow still surfaces the original exception.
+            self._close_trial_graders()
 
         self._publish_grading_completeness()
         summary = {

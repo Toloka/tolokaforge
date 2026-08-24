@@ -811,6 +811,51 @@ class StorageConfig(BaseModel):
     queue: QueueStorageConfig | None = None
 
 
+class QueueGraderConfig(BaseModel):
+    """Queue-backed ``TrialGrader`` transport settings.
+
+    Read by ``queue_trial_grader_factory`` when the operator selects
+    ``grader.name: queue``. ``workers`` sets the consumer-pool size (the
+    throughput knob the transport exists to unlock); ``backend`` names the
+    :class:`GradeBroker` implementation (``in_memory`` today; Redis Streams
+    ships behind the same Protocol as a follow-up); ``worker_grader`` names
+    the downstream ``TrialGrader`` each worker dispatches to — a
+    ``TrialGraderFactory`` name from the ``tolokaforge.trial_graders``
+    entry-point group. Layering ``queue`` on top of another registered
+    grader lets one selection add throughput scale without duplicating
+    grading logic.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    workers: int = Field(default=4, ge=1)
+    backend: Literal["in_memory"] = "in_memory"
+    worker_grader: str = "grader_rpc"
+
+
+class GraderConfig(BaseModel):
+    """Run-level ``TrialGrader`` selection and per-transport settings.
+
+    Optional block: absent means "use whatever the adapter's
+    ``trial_grader_name`` names", which is the pre-block behaviour every
+    existing run keeps.
+
+    ``name``, when set, overrides ``adapter.trial_grader_name`` for this
+    run. Value is the entry-point name of a registered
+    ``TrialGraderFactory`` (``runner_rpc``, ``grader_rpc``, ``queue``,
+    ``judge_only``, or any downstream-registered name).
+
+    Transport-specific settings live in subblocks named after the
+    transport. Only the subblock matching the selected ``name`` is
+    consulted — an unrelated subblock is harmless data the factory ignores.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    name: str | None = None
+    queue: QueueGraderConfig | None = None
+
+
 class TracingConfig(BaseModel):
     """Tracing exporter selection.
 
@@ -917,6 +962,7 @@ class RunConfig(BaseModel):
     storage: StorageConfig | None = None
     observability: ObservabilityConfig | None = None
     docker: DockerConfig | None = None
+    grader: GraderConfig | None = None
 
     @property
     def effective_workers(self) -> int:

@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, cast
 
 from tolokaforge.core.actors.turn_policy import TurnPolicy
 from tolokaforge.core.conductor import ConductorFactory
+from tolokaforge.core.models.run_config import GraderConfig
 from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
 from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.service_readiness import ServiceReadinessProbe
@@ -173,11 +174,11 @@ class RuntimeBackendBuildContext:
 class TrialGraderContext:
     """Serialisable configuration a trial-grader factory receives from the orchestrator.
 
-    Carries only data, not live objects: two endpoint strings plus the
-    run-scoped logger. A live gRPC channel would couple the grader to the
-    orchestrator's chosen runner instance and block a grader that runs on a
-    different machine — precisely the coupling the plug-in seam exists to
-    break (see ADR-0038).
+    Carries only data, not live objects: two endpoint strings, the run-scoped
+    logger, and the optional ``grader`` config block. A live gRPC channel
+    would couple the grader to the orchestrator's chosen runner instance
+    and block a grader that runs on a different machine — precisely the
+    coupling the plug-in seam exists to break (see ADR-0038).
 
     :attr:`runner_address` is the runner service's gRPC address; the
     ``runner_rpc`` grader dials it.
@@ -187,11 +188,17 @@ class TrialGraderContext:
     operator hasn't split the two — factories that need a grader-specific
     endpoint fall back to :attr:`runner_address` in that case, keeping
     single-address deployments trivially compatible.
+
+    :attr:`grader_config` is the run's ``RunConfig.grader`` block (or
+    ``None`` when the operator declared none). Transport-specific factories
+    read their own subblock — ``queue`` reads ``grader_config.queue`` for
+    worker-pool sizing and the downstream ``worker_grader`` name.
     """
 
     runner_address: str | None
     logger: StructuredLogger
     grader_address: str | None = None
+    grader_config: GraderConfig | None = None
 
 
 @dataclass(frozen=True)

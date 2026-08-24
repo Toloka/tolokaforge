@@ -35,6 +35,7 @@ remote grader service, or route to an entirely different Judge component
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -139,6 +140,16 @@ class TrialGrader(Protocol):
                 verdict to compute and computing it failed.
         """
         ...
+
+    # A ``close()`` method is a convention on this Protocol rather than a
+    # requirement: adding it to a ``@runtime_checkable`` Protocol would
+    # break ``isinstance`` for every duck-typed impl that has none, and
+    # would silently reject downstream registered graders that don't own
+    # transport resources. The built-in impls each define a ``close()``
+    # (a noop for the transport-less ones; a real teardown for the queue
+    # transport + grader_rpc); orchestrator teardown calls it via
+    # ``getattr(grader, "close", None)`` so a grader without one is
+    # tolerated.
 
 
 class RunnerRPCTrialGrader:
@@ -262,6 +273,11 @@ class RunnerRPCTrialGrader:
             binary_pass=grade.binary_pass,
         )
         return grade
+
+    def close(self) -> None:
+        """The runner RPC client owns nothing worth explicit teardown at
+        grader-scope; the orchestrator closes the runtime backend that owns
+        the channel."""
 
 
 def _split_trial_id(trial_id: str) -> tuple[str, int]:
@@ -537,6 +553,9 @@ class JudgeBackedTrialGrader:
             )
         return grade
 
+    def close(self) -> None:
+        """No-op: the injected judge callable owns its own lifecycle."""
+
 
 class GraderRPCTrialGrader:
     """:class:`TrialGrader` that dispatches to the standalone
@@ -657,6 +676,12 @@ class GraderRPCTrialGrader:
         )
         return grade
 
+    def close(self) -> None:
+        """Release the gRPC channel the injected / auto-built client owns."""
+        close = getattr(self.grader_client, "close", None)
+        if callable(close):
+            close()
+
 
 def grader_rpc_trial_grader_factory(ctx: TrialGraderContext) -> GraderRPCTrialGrader:
     """Build a :class:`GraderRPCTrialGrader` from a grader context.
@@ -714,10 +739,19 @@ class QueueTrialGrader:
         logger: StructuredLogger,
         *,
         timeout_s: float | None = None,
+        workers: list[threading.Thread] | None = None,
+        owns_broker: bool = False,
     ) -> None:
         self.broker = broker
         self.logger = logger
         self.timeout_s = timeout_s if timeout_s is not None else self.DEFAULT_TIMEOUT_S
+        # ``workers`` and ``owns_broker`` name the two lifecycle handles
+        # :meth:`close` releases. The factory (``queue_trial_grader_factory``)
+        # constructs both the broker and the worker pool and hands them in
+        # here; tests that inject only a broker leave both defaults so
+        # :meth:`close` is a no-op that does not touch the injected broker.
+        self._workers: list[threading.Thread] = list(workers) if workers else []
+        self._owns_broker = owns_broker
 
     def grade(
         self,
@@ -811,27 +845,172 @@ class QueueTrialGrader:
             )
         return grade
 
+    def close(self) -> None:
+        """Shut down the broker and drain the worker pool this grader owns.
 
-def queue_trial_grader_factory(ctx: TrialGraderContext) -> QueueTrialGrader:  # noqa: ARG001
-    """Registered ``queue`` factory. Fails loud until a broker + workers are wired.
+        Idempotent when broker close succeeds. If ``broker.close()`` raises
+        (a transient failure a future backend might surface), the flag
+        stays set so a second call retries the broker; the worker join
+        still runs on both paths so threads always drain.
+        """
+        broker_closed = not self._owns_broker
+        if self._owns_broker:
+            close = getattr(self.broker, "close", None)
+            if callable(close):
+                try:
+                    close()
+                    broker_closed = True
+                except Exception as exc:  # noqa: BLE001 — teardown must survive
+                    self.logger.warning("Broker close() raised", error=str(exc))
+            else:
+                broker_closed = True
+        for worker in self._workers:
+            worker.join(timeout=5.0)
+        self._workers.clear()
+        if broker_closed:
+            self._owns_broker = False
 
-    The context has no broker-selection field yet and no consumer pool is
-    provisioned by the engine, so a real ``grade: queue`` selection would
-    publish to a broker no one is listening to and hang for
-    ``QueueTrialGrader.DEFAULT_TIMEOUT_S`` before failing. Raising here
-    surfaces the misconfiguration at orchestrator startup, before any trial
-    dispatches, and points the operator at the follow-up that will thread
-    broker configuration through the context.
 
-    Tests construct :class:`QueueTrialGrader` directly with a broker + a
-    controlled worker pool — see ``tests/canonical/test_queue_trial_grader.py``.
+def queue_trial_grader_factory(ctx: TrialGraderContext) -> QueueTrialGrader:
+    """Registered ``queue`` factory — builds broker + worker pool over ``grader_rpc``.
+
+    Reads ``ctx.grader_config.queue`` for the worker count. Constructs
+    the broker (:class:`InMemoryGradeBroker` today), spawns N daemon
+    workers each holding a :class:`GrpcGraderClient` dialing
+    ``ctx.grader_address or ctx.runner_address``, and returns a
+    :class:`QueueTrialGrader` wrapping the broker. The returned grader
+    owns both — :meth:`QueueTrialGrader.close` shuts them down at run
+    end.
+
+    Each worker forwards the ``GradeJob`` wire fields verbatim to the
+    grader service (no re-decode: the queue's wire is the same
+    projection ``grader_rpc`` already carries), parses the response into
+    a :class:`Grade`, and publishes it back through the broker.
+
+    Only ``worker_grader: grader_rpc`` is wired today. ``judge_only``
+    workers need the judge-config surface (#1255) before they can be
+    layered under the queue.
     """
-    raise NotImplementedError(
-        "``queue`` trial grader is registered but not yet wired to a broker + "
-        "worker pool at the engine layer. Instantiate ``QueueTrialGrader`` "
-        "directly with your own ``GradeBroker`` for now; the factory will land "
-        "once ``TrialGraderContext`` carries broker-selection configuration."
+    from tolokaforge.core.models.run_config import QueueGraderConfig
+    from tolokaforge.grader.client import GrpcGraderClient
+    from tolokaforge.grader.queue import InMemoryGradeBroker
+
+    # Materialise the sub-block once so every default lives on
+    # ``QueueGraderConfig`` and the factory never spells a competing one.
+    cfg = (
+        ctx.grader_config.queue
+        if ctx.grader_config and ctx.grader_config.queue
+        else QueueGraderConfig()
     )
+    if cfg.worker_grader != "grader_rpc":
+        raise ValueError(
+            f"queue.worker_grader={cfg.worker_grader!r} is not yet wired. Supported "
+            "today: 'grader_rpc'. Judge-backed wiring is tracked as a follow-up (#1255)."
+        )
+    address = ctx.grader_address or ctx.runner_address
+    if not address:
+        raise ValueError(
+            "queue trial grader requires ``grader_address`` or ``runner_address`` on "
+            f"the grader context (received grader_address={ctx.grader_address!r}, "
+            f"runner_address={ctx.runner_address!r}; empty string counts as unset). "
+            "Its workers need a live grader service to dial."
+        )
+
+    broker = InMemoryGradeBroker()
+    workers: list[threading.Thread] = []
+    for i in range(cfg.workers):
+        client = GrpcGraderClient(grader_address=address)
+        worker = threading.Thread(
+            target=_queue_worker_loop,
+            args=(broker, client, ctx.logger),
+            name=f"queue-grader-worker-{i}",
+            daemon=True,
+        )
+        worker.start()
+        workers.append(worker)
+    ctx.logger.info(
+        "Queue-backed grader wired",
+        worker_count=cfg.workers,
+        worker_grader=cfg.worker_grader,
+        address=address,
+    )
+    # Each worker closes its own client on ``BrokerClosed`` — the
+    # ownership travels with the thread so we do not need a second
+    # store-and-close on the grader.
+    return QueueTrialGrader(
+        broker=broker,
+        logger=ctx.logger,
+        workers=workers,
+        owns_broker=True,
+    )
+
+
+def _queue_worker_loop(
+    broker: GradeBroker,
+    client: GrpcGraderClient,
+    logger: StructuredLogger,
+) -> None:
+    """Consume ``GradeJob``s from ``broker``, forward wire fields to
+    ``client``, publish the parsed :class:`Grade` back.
+
+    Terminates cleanly when the broker closes: :class:`BrokerClosed`
+    unwinds the loop; :meth:`QueueTrialGrader.close` shuts the broker
+    before joining the workers.
+
+    Blocks indefinitely on ``next_job`` — the close sentinel is the only
+    shutdown signal, and a polling timeout would burn a wakeup per
+    worker per second for the entire idle life of the run.
+    """
+    from tolokaforge.grader.queue import BrokerClosed, GradeJob, GradeResult
+
+    while True:
+        try:
+            job = broker.next_job(timeout=None)
+        except BrokerClosed:
+            client.close()
+            return
+        if job is None:
+            # Shouldn't happen with timeout=None (queue.get without a
+            # timeout blocks forever), but the type still permits it.
+            continue
+        if not isinstance(job, GradeJob):
+            # Publish an error so the producer's future.result() fails
+            # loud instead of blocking DEFAULT_TIMEOUT_S. Losing a job to
+            # a wire-shape regression is a bug — this makes it surface.
+            job_id = getattr(job, "job_id", None)
+            logger.error(
+                "Queue worker received unexpected payload",
+                payload_type=type(job).__name__,
+                job_id=job_id,
+            )
+            if job_id is not None:
+                broker.publish_result(
+                    GradeResult(
+                        job_id=job_id,
+                        grade=None,
+                        error=f"queue worker received unexpected payload of type {type(job).__name__}",
+                    )
+                )
+            continue
+        error = ""
+        grade: Grade | None = None
+        try:
+            response = client.grade(
+                trial_id=job.trial_id,
+                llm_messages_json=job.llm_messages_json,
+                termination_reason=job.termination_reason,
+                task_config_json=job.task_config_json,
+            )
+            if not response["success"]:
+                error = response.get("error") or "Unknown grading error"
+            elif response.get("no_verdict"):
+                grade = None
+            else:
+                grade = _parse_grade_result(response["grade"])
+        except Exception as exc:  # noqa: BLE001 — worker must survive to consume next job
+            error = f"{type(exc).__name__}: {exc}"
+            logger.error("Queue worker dispatch failed", error=error)
+        broker.publish_result(GradeResult(job_id=job.job_id, grade=grade, error=error))
 
 
 def judge_backed_trial_grader_factory(
