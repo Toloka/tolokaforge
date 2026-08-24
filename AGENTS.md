@@ -511,6 +511,18 @@ and [`docs/CODING_HARNESSES.md`](docs/CODING_HARNESSES.md).
    canonical test at `tests/canonical/test_gateway_route_recipes.py` renders
    both and compares. Editing one and not the other fails CI. See
    [ADR-0037](docs/adr/0037-runtime-gateway-as-harness-data.md).
+7. **PyPI-ready shape stays green.** The package is not published to PyPI
+   today, but its shape is kept publish-ready so a future decision to
+   publish is a one-command action, not a scramble. The canonical
+   [`tolokaforge_coding_harnesses/tests/canonical/test_pypi_ready.py`](tolokaforge_coding_harnesses/tests/canonical/test_pypi_ready.py)
+   asserts: no git-URL / path-only deps in `[project.dependencies]`; every
+   dep declares at least a lower bound; the hatchling wheel target names
+   the `src/` package; every path a runtime reads at import
+   (`data/harnesses.yaml`, `data/registry_meta.yaml`, `install-harness.sh`,
+   `middleware_proxy.py`, `container_injection.py`, and every `.py` under
+   the package) ships in both the sdist and the wheel. Any PR touching
+   `tolokaforge_coding_harnesses/pyproject.toml`, its `data/`, or the
+   package's non-Python siblings must keep this test green.
 
 **Adding a new harness:**
 
