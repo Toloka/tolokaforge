@@ -1,0 +1,37 @@
+[
+  {
+    "name": "billing_api_apply_credit",
+    "description": "Apply a credit to a billing account.",
+    "parameters": {
+      "properties": {
+        "account_id": {
+          "description": "Account identifier, e.g. 'AC-77'",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "amount": {
+          "description": "Credit amount in the account currency",
+          "title": "Amount",
+          "type": "number"
+        },
+        "coupon": {
+          "description": "Coupon code, or null for an uncouponed credit",
+          "title": "Coupon",
+          "type": "string"
+        },
+        "legacy_flag": {
+          "description": "Deprecated: route through the legacy credit path",
+          "title": "Legacy Flag",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "account_id",
+        "amount"
+      ],
+      "title": "billing_api_apply_creditArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]

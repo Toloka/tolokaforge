@@ -281,16 +281,38 @@ _OPERATOR_ANSWERS: dict[str, _OperatorAnswer] = {
         {"contains_ci": "w1"}, {"probe": "item W1"}, {"probe": "item W2"}
     ),
     "not_equals": _OperatorAnswer({"not_equals": "PAY-1"}, {"probe": "PAY-2"}, {"probe": "PAY-1"}),
+    "not_contains": _OperatorAnswer(
+        {"not_contains": "W1"}, {"probe": ["W0"]}, {"probe": ["W0", "W1"]}
+    ),
     "regex": _OperatorAnswer({"regex": "^PAY-[0-9]+$"}, {"probe": "PAY-1"}, {"probe": "REF-1"}),
+    "not_regex": _OperatorAnswer({"not_regex": "^PAY-"}, {"probe": "REF-1"}, {"probe": "PAY-1"}),
     "gt": _OperatorAnswer({"gt": 10.0}, {"probe": 11}, {"probe": 10}),
     "gte": _OperatorAnswer({"gte": 10.0}, {"probe": 10}, {"probe": 9.5}),
     "lt": _OperatorAnswer({"lt": 10.0}, {"probe": 9.5}, {"probe": 10}),
     "lte": _OperatorAnswer({"lte": 10.0}, {"probe": 10}, {"probe": 10.5}),
+    "date_gt": _OperatorAnswer(
+        {"date_gt": "2026-03-01"}, {"probe": "2026-03-02"}, {"probe": "2026-03-01"}
+    ),
+    "date_gte": _OperatorAnswer(
+        {"date_gte": "2026-03-01T12:00:00Z"},
+        {"probe": "2026-03-01T12:00:00+00:00"},
+        {"probe": "2026-03-01T11:59:59Z"},
+    ),
+    "date_lt": _OperatorAnswer(
+        {"date_lt": "2026-03-01"}, {"probe": "2026-02-28T23:59:59Z"}, {"probe": "next week"}
+    ),
+    "date_lte": _OperatorAnswer(
+        {"date_lte": "2026-03-01"},
+        {"probe": "2026-03-01T00:00:00+02:00"},
+        {"probe": "2026-03-01T00:00:01Z"},
+    ),
     "in_": _OperatorAnswer({"in_": ["USD", "EUR"]}, {"probe": "EUR"}, {"probe": "JPY"}),
     "not_in": _OperatorAnswer({"not_in": ["USD", "EUR"]}, {"probe": "JPY"}, {"probe": "EUR"}),
     "len_gt": _OperatorAnswer({"len_gt": 2}, {"probe": "abc"}, {"probe": "ab"}),
     "len_gte": _OperatorAnswer({"len_gte": 2}, {"probe": "ab"}, {"probe": "a"}),
     "exists": _OperatorAnswer({"exists": True}, {"probe": ""}, {}),
+    "is_null": _OperatorAnswer({"is_null": True}, {"probe": None}, {"probe": "PAY-1"}),
+    "omitted": _OperatorAnswer({"omitted": True}, {}, {"probe": None}),
     "equals_binding": _OperatorAnswer(
         {"equals_binding": "bound"}, {"probe": "PAY-1"}, {"probe": "PAY-2"}, {"bound": "PAY-1"}
     ),
@@ -373,3 +395,170 @@ def test_a_status_literal_that_is_a_real_enum_member_is_admitted() -> None:
             kind=TraceEventKind.TOOL_RESULT,
             status=ValuePredicate(equals=admitted),
         )
+
+
+def _argument_probe(predicate: dict[str, Any], arguments: dict[str, Any]) -> int:
+    """How many events a one-call timeline yields under one args predicate."""
+    matcher = TraceMatcher(
+        kind=TraceEventKind.TOOL_CALL,
+        args={"probe": ValuePredicate(**predicate)},
+    )
+    outcome = select_events(
+        _timeline(recorded=[recorded_call("probe", arguments=arguments)]), matcher, {}
+    )
+    assert outcome.undecidable == ()
+    return len(outcome.matched)
+
+
+def test_a_naive_datetime_reads_as_utc_on_both_sides() -> None:
+    """One normalization policy: no offset means UTC, never the grader's clock.
+
+    A wall-clock-local reading would grade one trajectory differently per host.
+    The probe pairs a naive bound with an offset value and the reverse, so a
+    drift on either side of the comparison fails here.
+    """
+    assert _argument_probe({"date_gte": "2026-03-01T12:00"}, {"probe": "2026-03-01T12:00:00Z"}) == 1
+    assert (
+        _argument_probe({"date_gte": "2026-03-01T12:00"}, {"probe": "2026-03-01T13:00:00+02:00"})
+        == 0
+    )
+
+
+def test_a_date_only_value_reads_as_midnight_utc() -> None:
+    """The mixed date/datetime comparison coerces the date to midnight UTC."""
+    assert _argument_probe({"date_lte": "2026-03-01T00:00:00Z"}, {"probe": "2026-03-01"}) == 1
+    assert _argument_probe({"date_lt": "2026-03-01T00:00:01Z"}, {"probe": "2026-03-01"}) == 1
+    assert _argument_probe({"date_gt": "2026-03-01T00:00:00Z"}, {"probe": "2026-03-01"}) == 0
+
+
+def test_an_absent_or_null_argument_satisfies_no_date_comparison() -> None:
+    """The ``None`` guard reaches the date operators like every other operator.
+
+    A call that never carried the argument — and one that carried JSON ``null`` —
+    met no deadline, so both are unmatched rather than vacuously compared.
+    """
+    assert _argument_probe({"date_lte": "2026-03-01"}, {}) == 0
+    assert _argument_probe({"date_lte": "2026-03-01"}, {"probe": None}) == 0
+
+
+# The normative three-state matrix from the v2 spec: one operator against a call
+# whose probed argument was never sent, one that sent explicit JSON null, and one
+# that sent a value. ``exists`` keeps its pre-v2 conflated reading — the two new
+# operators subdivide it, they do not move it.
+_THREE_STATES: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("omitted", {}),
+    ("null", {"probe": None}),
+    ("valued", {"probe": "v"}),
+)
+
+_NULLNESS_MATRIX: dict[str, dict[str, bool]] = {
+    "exists:true": dict(zip(("omitted", "null", "valued"), (False, False, True))),
+    "exists:false": dict(zip(("omitted", "null", "valued"), (True, True, False))),
+    "omitted:true": dict(zip(("omitted", "null", "valued"), (True, False, False))),
+    "omitted:false": dict(zip(("omitted", "null", "valued"), (False, True, True))),
+    "is_null:true": dict(zip(("omitted", "null", "valued"), (False, True, False))),
+    "is_null:false": dict(zip(("omitted", "null", "valued"), (True, False, True))),
+    "equals:v": dict(zip(("omitted", "null", "valued"), (False, False, True))),
+    "not_equals:x": dict(zip(("omitted", "null", "valued"), (False, False, True))),
+    "not_contains:x": dict(zip(("omitted", "null", "valued"), (False, False, True))),
+    "date_lte:2026-03-01": dict(zip(("omitted", "null", "valued"), (False, False, False))),
+}
+
+_MATRIX_PREDICATES: dict[str, dict[str, Any]] = {
+    "exists:true": {"exists": True},
+    "exists:false": {"exists": False},
+    "omitted:true": {"omitted": True},
+    "omitted:false": {"omitted": False},
+    "is_null:true": {"is_null": True},
+    "is_null:false": {"is_null": False},
+    "equals:v": {"equals": "v"},
+    "not_equals:x": {"not_equals": "x"},
+    "not_contains:x": {"not_contains": "x"},
+    "date_lte:2026-03-01": {"date_lte": "2026-03-01"},
+}
+
+
+@pytest.mark.parametrize("row", sorted(_NULLNESS_MATRIX))
+def test_the_three_state_matrix_holds_per_operator(row: str) -> None:
+    """Omitted, explicit null, and valued are three states, not two.
+
+    The row for every non-nullness operator is identical to its pre-v2 row —
+    ``None`` and a missing key are both unmatched — which is the compatibility
+    claim: the sentinel that separates the first two states is readable only
+    through ``is_null`` / ``omitted``.
+    """
+    for state, arguments in _THREE_STATES:
+        expected = _NULLNESS_MATRIX[row][state]
+        got = _argument_probe(_MATRIX_PREDICATES[row], arguments) == 1
+        assert got is expected, f"{row} over {state}: expected {expected}, got {got}"
+
+
+def test_a_missing_intermediate_key_reads_as_omitted() -> None:
+    """A dotted path that dies mid-walk is an omitted tail, not an error."""
+    assert _argument_probe({"omitted": True}, {"other": 1}) == 1
+    nested = TraceMatcher(
+        kind=TraceEventKind.TOOL_CALL,
+        args={"body.penalty": ValuePredicate(omitted=True)},
+    )
+    outcome = select_events(
+        _timeline(recorded=[recorded_call("probe", arguments={"body": {"kept": 1}})]), nested, {}
+    )
+    assert len(outcome.matched) == 1
+    hit = TraceMatcher(
+        kind=TraceEventKind.TOOL_CALL,
+        args={"body.penalty": ValuePredicate(is_null=True)},
+    )
+    null_at_tail = select_events(
+        _timeline(recorded=[recorded_call("probe", arguments={"body": {"penalty": None}})]),
+        hit,
+        {},
+    )
+    assert len(null_at_tail.matched) == 1
+
+
+def test_a_nullness_probe_on_recorded_evidence_is_rejected_at_load() -> None:
+    """On ``status``/``executor``/``result`` a ``None`` is missing evidence.
+
+    The evaluator holds those readings undecidable rather than reads them, so a
+    nullness probe there would answer a question the record cannot ask.
+    """
+    with pytest.raises(ValueError, match="missing evidence"):
+        TraceMatcher(kind=TraceEventKind.TOOL_RESULT, status=ValuePredicate(is_null=True))
+    with pytest.raises(ValueError, match="missing evidence"):
+        TraceMatcher(kind=TraceEventKind.TOOL_RESULT, result=ValuePredicate(omitted=True))
+
+
+def test_a_negative_text_predicate_composes_with_its_positive_form() -> None:
+    """One predicate, both polarities: "mentions the item, not the wrong one".
+
+    The conjunction is the point of the feature — a selection like "a successful
+    search whose result shows the range and no shift on the target date" is one
+    matcher, not a ``negate`` over the whole constraint.
+    """
+    both = {"contains": "item", "not_contains": "W2"}
+    assert _argument_probe(both, {"probe": "item W1"}) == 1
+    assert _argument_probe(both, {"probe": "item W2"}) == 0
+    assert _argument_probe(both, {"probe": "unrelated"}) == 0
+
+
+def test_an_absent_or_null_argument_satisfies_no_negative_text_predicate() -> None:
+    """ "Does not contain X" is a claim about a value the event carries.
+
+    A call that never carried the argument must not satisfy ``not_contains`` — the
+    vacuous reading would pass a failed lookup as "no duplicate found".
+    """
+    assert _argument_probe({"not_contains": "W1"}, {}) == 0
+    assert _argument_probe({"not_contains": "W1"}, {"probe": None}) == 0
+    assert _argument_probe({"not_regex": "duplicate"}, {}) == 0
+
+
+def test_a_negative_text_predicate_reads_an_empty_string_as_a_value() -> None:
+    """An empty string is present evidence, and it contains nothing."""
+    assert _argument_probe({"not_contains": "W1"}, {"probe": ""}) == 1
+    assert _argument_probe({"not_regex": "duplicate"}, {"probe": ""}) == 1
+
+
+def test_a_numeric_comparison_still_refuses_a_date_string() -> None:
+    """``gt`` reads a real number and nothing else — the date operators are the
+    spelling for chronology, not a widening of the numeric ones."""
+    assert _argument_probe({"gt": 0}, {"probe": "2026-03-02"}) == 0

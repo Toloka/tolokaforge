@@ -512,6 +512,9 @@ class _ResolvedTool:
     name: str
     strictness: ArgumentSchema
     properties: frozenset[str]
+    schema: Mapping[str, Any]
+    """The tool's full JSON-schema parameters object, for the walk below the first
+    segment. Empty only in tests that never descend."""
 
 
 _UNRESOLVABLE_REASON = (
@@ -1254,11 +1257,15 @@ def _blocks_declaring(name: str, inventory: ToolInventory) -> Iterator[str]:
 def _check_argument_paths(
     sites: tuple[_MatcherSite, ...], inventory: ToolInventory
 ) -> AuthoringReport:
-    """An ``args`` path's first segment must be an argument the tool declares.
+    """Every segment of an ``args`` path the schema declares must resolve (#765).
 
-    Only the first segment, and only against ``properties``: a nested path bottoms
-    out where the schema stops declaring properties, and descending further would
-    reject argument paths that grade correctly today (#765).
+    The walk descends exactly as far as the schema keeps declaring ``properties``
+    and no further: a level that stops declaring them — an untyped ``json`` blob,
+    an array, a permissive object — makes everything below it unchecked rather
+    than wrong, because a runtime value may lawfully carry keys the schema never
+    named (the flagship ``json.q`` pack grades on one). What the walk *can* answer
+    it answers like the first segment always was: a name missing from a closed
+    object is an error, from an open one an advisory.
     """
     return _merged(
         _one_matchers_argument_paths(site, inventory)
@@ -1288,6 +1295,12 @@ def _check_regex_compiles(
         for site in sites
         for predicate_site in _predicate_sites(site)
         if predicate_site.predicate.regex is not None
+    ]
+    authored += [
+        (f"{predicate_site.where}.not_regex", predicate_site.predicate.not_regex)
+        for site in sites
+        for predicate_site in _predicate_sites(site)
+        if predicate_site.predicate.not_regex is not None
     ]
     authored += [
         (f"{site.where}.values.{name}.pattern", value.pattern)
@@ -2237,7 +2250,9 @@ def _resolved_tool(
     strictness = inventory.strictness(name)
     if strictness is ArgumentSchema.UNKNOWN:
         return Skip(where, f"no schema resolved for {name!r}, so its arguments are not checkable")
-    return _ResolvedTool(name, strictness, inventory.properties(name))
+    return _ResolvedTool(
+        name, strictness, inventory.properties(name), inventory.parameters.get(name) or {}
+    )
 
 
 def _one_matchers_argument_paths(site: _MatcherSite, inventory: ToolInventory) -> AuthoringReport:
@@ -2258,16 +2273,47 @@ def _one_argument_path(
     head, _, below = path.partition(".")
     if head not in resolved.properties:
         return _unknown_argument_report(where, head, resolved, hazard)
-    if below:
-        return AuthoringReport(
-            unchecked=(
-                Skip(
-                    where,
-                    f"an argument path is checked at its first segment only, so {below!r} "
-                    f"under {head!r} is not (#765)",
-                ),
+    if not below:
+        return AuthoringReport()
+    walked = [head]
+    schema: Any = resolved.schema.get("properties", {}).get(head)
+    for segment in below.split("."):
+        properties = schema.get("properties") if isinstance(schema, Mapping) else None
+        if not isinstance(properties, Mapping):
+            return AuthoringReport(
+                unchecked=(
+                    Skip(
+                        where,
+                        f"{resolved.name!r} stops declaring properties at "
+                        f"{'.'.join(walked)!r}, so {segment!r} and below are not checkable "
+                        "— a runtime value may still carry them",
+                    ),
+                )
             )
-        )
+        if segment not in properties:
+            declared = f"{resolved.name!r} declares {sorted(properties)} under {'.'.join(walked)!r}"
+            if schema.get("additionalProperties") is False:
+                return AuthoringReport(
+                    errors=(
+                        Finding(
+                            where,
+                            f"path segment {segment!r} is not one {declared} and that "
+                            f"object admits no other, so {hazard}",
+                        ),
+                    )
+                )
+            return AuthoringReport(
+                advisories=(
+                    Finding(
+                        where,
+                        f"path segment {segment!r} is not one {declared}. The object "
+                        "permits properties it does not declare, so this is a probable "
+                        "typo rather than a certainty",
+                    ),
+                )
+            )
+        walked.append(segment)
+        schema = properties[segment]
     return AuthoringReport()
 
 

@@ -1224,7 +1224,7 @@ database** — and **exactly one** comparison from a closed set of four:
 | `contains` / `contains_ci` | the value contains it — recursively, per [`contains`](#operators) |
 
 The same four are the vocabulary of `db_probes[*].expect`. They are deliberately
-narrower than the seventeen [`trace_checks` operators](#operators): a second comparison
+narrower than the twenty-five [`trace_checks` operators](#operators): a second comparison
 at one path has no conjunctive reading and is almost always a typo, so **two
 operators on one assertion is a failed check**, not a conjunction. So is **no**
 operator: a bare `path:`, or a misspelled `op:` / `expected:` key, fails rather than
@@ -1792,18 +1792,22 @@ grading must not depend on it.
 ### Operators
 
 A predicate is the **conjunction of its operators**: every one it declares must
-hold, so `{ gt: 0, lt: 100 }` is a range. Seventeen operators:
+hold, so `{ gt: 0, lt: 100 }` is a range. Twenty-five operators:
 
 | operator | holds when |
 |---|---|
 | `equals` / `not_equals` | the value is (is not) equal |
 | `equals_ci` | a string equal to it, case-insensitively |
 | `contains` / `contains_ci` | the value contains it, case-sensitively or not |
+| `not_contains` | the value does not contain it — over a value the event carries |
 | `regex` | the pattern **searches** the value — unanchored, and only a string matches |
+| `not_regex` | the pattern finds nothing in the value — the complement of `regex` within declared events |
 | `gt` / `gte` / `lt` / `lte` | the value is a real number and the comparison holds |
+| `date_gt` / `date_gte` / `date_lt` / `date_lte` | the value is an ISO-8601 date or datetime and the comparison holds chronologically |
 | `in_` / `not_in` | the value is (is not) a member of the list |
 | `len_gt` / `len_gte` | the value has a length, above (at or above) the bound |
-| `exists` | the field is present (`exists: false` is the absence primitive) |
+| `exists` | the field is present — a missing key and an explicit `null` both read as absent |
+| `is_null` / `omitted` | the value is explicit JSON `null` / the key was never sent — the two conditions `exists: false` reads as one |
 | `equals_binding` / `contains_binding` | the same, against a value the constraint's `bind` extracted under that name |
 
 **The two binding operators name a value rather than writing one.** Their argument
@@ -1827,18 +1831,37 @@ string, not a range. `len_gt` / `len_gte` are the same shape one level up: they 
 only where the value has a length (a string, list, dict), so `{ len_gt: 0 }` reads
 "non-empty" and is false against a number.
 
+**The date comparisons read ISO-8601 and one normalization policy.** A bound and a
+value each accept a date (`2026-03-01`) or a datetime
+(`2026-03-01T12:00:00Z` / `…+02:00`); both sides normalize to UTC, a date-only
+string is **midnight UTC** of that day, and a datetime carrying no offset is read
+**as UTC** — never the grader host's clock. The authored bound must parse: a bound
+no calendar holds is a **load error**, since the predicate would be false on every
+trajectory. A *trial* value that does not parse is simply **false**, never an error
+— a value that is not a date did not meet the deadline. So
+`args: { departure_date: { date_gte: "2026-03-01", date_lt: "2026-04-01" } }` reads
+"a March 2026 departure" without enumerating the days by regex.
+
 Two limits worth meeting here rather than in a silently ignored predicate:
 
-- **`equals: null` is not expressible.** An operator counts as declared when its
-  value is not `null`, which is what keeps a predicate meaning the same thing after
-  the gRPC round trip that writes every unset field as `null`. So "this argument is
-  JSON `null`" cannot be written; `exists: false` covers the far commoner "the
-  argument is absent".
-- **There is no `not_contains` / `not_regex`.** A predicate cannot negate a
-  substring or pattern match — `negate` operates on a whole constraint, not on one
-  predicate — so "select the calls whose url does *not* contain `/admin`" is not a
-  *selection*. "Never another customer's record" is `not_equals` on the argument,
-  which does ship.
+- **`equals: null` is not expressible — `is_null` is its spelling.** An operator
+  counts as declared when its value is not `null`, which is what keeps a predicate
+  meaning the same thing after the gRPC round trip that writes every unset field as
+  `null`. So "this argument is JSON `null`" is written `is_null: true`, and "this
+  key was never sent" is `omitted: true` — a missing intermediate key on a dotted
+  path counts as omitted. The two are bool-valued (`is_null: false` holds wherever
+  `is_null: true` does not, `omitted` likewise), they compose with the other
+  operators as any conjunction does, and they are **argument material**: on
+  `status`, `executor` and `result` a missing value is missing *evidence*, which
+  the evaluator holds undecidable rather than reads, so a nullness probe there is a
+  load error. `exists` keeps its exact pre-v2 meaning.
+- **`not_contains` / `not_regex` negate the match, never the evidence.** They are
+  selections — "the calls whose url does not contain `/admin`" is one matcher — and
+  they hold only over a value the event carries: an absent or `null` field
+  satisfies neither, so a call whose outcome was never recorded cannot pass "the
+  result does not mention X". Both may sit beside their positive forms in one
+  predicate ("mentions the range, not the target date"), since a predicate is the
+  conjunction of its operators.
 
 There is no `absent` operator — it is `exists: false`, and an operator named
 `absent` beside a *constraint* named `absent` is an ambiguity the vocabulary does
@@ -2765,7 +2788,7 @@ around in the evaluator.
 
 | limit | owner |
 |---|---|
-| An `args` path is checked only at its first segment, so a typo below it is reported as unchecked rather than caught | #765 |
+| An `args` path is checked as deep as the schema declares `properties`; below a level that stops declaring them (an untyped blob, an array, a permissive object) a typo is reported as unchecked rather than caught | #765 (partially closed) |
 
 Wall-clock time is not on the list: `latency_seconds` is deliberately unmatchable
 and stays so, because it is not compared across substrates.

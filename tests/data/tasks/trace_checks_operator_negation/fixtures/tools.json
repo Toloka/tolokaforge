@@ -1,0 +1,27 @@
+[
+  {
+    "name": "crm_update_ticket",
+    "description": "Update a support ticket with a note.",
+    "parameters": {
+      "properties": {
+        "ticket_id": {
+          "description": "Ticket identifier, e.g. 'TK-88'",
+          "title": "Ticket Id",
+          "type": "string"
+        },
+        "note": {
+          "description": "The note appended to the ticket",
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ticket_id",
+        "note"
+      ],
+      "title": "crm_update_ticketArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]

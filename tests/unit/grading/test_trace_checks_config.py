@@ -146,16 +146,24 @@ _OPERATOR_SAMPLES: dict[str, Any] = {
     "contains": "writ",
     "contains_ci": "WRIT",
     "not_equals": "deleted",
+    "not_contains": "deleted",
     "regex": "^writ",
+    "not_regex": "^del",
     "gt": 0.0,
     "gte": 1.5,
     "lt": 10.0,
     "lte": 9.5,
+    "date_gt": "2026-01-01",
+    "date_gte": "2026-01-01T00:00:00Z",
+    "date_lt": "2027-01-01",
+    "date_lte": "2026-12-31T23:59:59+01:00",
     "in_": ["written", "queued"],
     "not_in": ["deleted"],
     "len_gt": 0,
     "len_gte": 2,
     "exists": False,
+    "is_null": True,
+    "omitted": False,
     "equals_binding": "quoted_case",
     "contains_binding": "quoted_case",
 }
@@ -664,6 +672,57 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         ),
         message="on_unbound: pass opens a severity: gate constraint",
         validator="_reject_a_binding_policy_that_opens_a_gate_vacuously",
+    ),
+    _Rejection(
+        label="date_bound_no_calendar_holds",
+        block=_block(
+            _constraint(
+                {
+                    "present": {
+                        "match": {
+                            "kind": "tool_call",
+                            "args": {"departure_date": {"date_gte": "next week"}},
+                        }
+                    }
+                }
+            )
+        ),
+        message="ISO-8601",
+        validator="_require_a_date_literal_some_calendar_holds",
+    ),
+    _Rejection(
+        label="nullness_probe_on_recorded_evidence",
+        block=_block(
+            _constraint(
+                {
+                    "present": {
+                        "match": {
+                            "kind": "tool_result",
+                            "status": {"is_null": True},
+                        }
+                    }
+                }
+            )
+        ),
+        message="missing evidence",
+        validator="_reject_a_nullness_probe_on_recorded_evidence",
+    ),
+    _Rejection(
+        label="status_literal_no_execution_produces",
+        block=_block(
+            _constraint(
+                {
+                    "present": {
+                        "match": {
+                            "kind": "tool_result",
+                            "status": {"equals": "expired"},
+                        }
+                    }
+                }
+            )
+        ),
+        message="expired",
+        validator="_reject_a_status_literal_no_execution_produces",
     ),
 )
 

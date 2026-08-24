@@ -1,0 +1,35 @@
+# Both trials book one flight for the same customer. The satisfying one departs
+# mid-March as a UTC datetime, the violating one in late February as a date-only
+# string — so the score turns on the chronological comparison alone, read across
+# both ISO shapes the policy normalizes.
+satisfying:
+  messages:
+    - role: user
+      content: "Book my Lisbon flight for March 2026, any date that month works."
+    - role: assistant
+      content: "Booking a mid-March departure."
+      tool_calls:
+        - tool_name: travel_api_book_flight
+          executor: agent
+          status: success
+          arguments: { booking_reference: "BK-2201", departure_date: "2026-03-15T09:30:00Z" }
+          output: '{"booking_reference": "BK-2201", "status": "confirmed"}'
+    - role: assistant
+      content: "Booked for the 15th of March."
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Book my Lisbon flight for March 2026, any date that month works."
+    - role: assistant
+      content: "Booking the next available departure."
+      tool_calls:
+        - tool_name: travel_api_book_flight
+          executor: agent
+          status: success
+          arguments: { booking_reference: "BK-2201", departure_date: "2026-02-27" }
+          output: '{"booking_reference": "BK-2201", "status": "confirmed"}'
+    - role: assistant
+      content: "Booked for the 27th of February."
+  state: {}

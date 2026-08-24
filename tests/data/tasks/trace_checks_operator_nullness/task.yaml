@@ -1,0 +1,32 @@
+task_id: trace_checks_operator_nullness
+name: "Substrate differential: the nullness operators"
+category: test
+description: |
+  Substrate-parity fixture for `is_null` and `omitted`. Both trials apply the
+  same credit to the same account, and differ only in what the optional arguments
+  carry: an explicit JSON null and a never-sent key on the satisfying trial, a
+  value on each for the violating one. The two conditions `exists: false` reads
+  as one are the only fact a verdict can turn on. Not runnable end to end — the
+  trials are authored in `trial.yaml` and replayed.
+
+initial_state:
+  json_db: null
+
+tools:
+  agent:
+    mcp_server: mcp_server.py
+    enabled:
+      - billing_api_apply_credit
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml

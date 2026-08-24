@@ -1,0 +1,39 @@
+# Both trials apply the same 25.00 credit to the same account. The satisfying
+# call sends `coupon: null` and never sends `legacy_flag`; the violating call
+# sends a value in each slot — so `is_null` and `omitted` are each read against
+# the exact condition they subdivide out of `exists: false`.
+satisfying:
+  messages:
+    - role: user
+      content: "Apply the goodwill credit of 25 to account AC-77, no coupon."
+    - role: assistant
+      content: "Applying it uncouponed."
+      tool_calls:
+        - tool_name: billing_api_apply_credit
+          executor: agent
+          status: success
+          arguments: { account_id: "AC-77", amount: 25.0, coupon: null }
+          output: '{"account_id": "AC-77", "credited": 25.0}'
+    - role: assistant
+      content: "Credited."
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Apply the goodwill credit of 25 to account AC-77, no coupon."
+    - role: assistant
+      content: "Applying it through the legacy path with a spring coupon."
+      tool_calls:
+        - tool_name: billing_api_apply_credit
+          executor: agent
+          status: success
+          arguments:
+            account_id: "AC-77"
+            amount: 25.0
+            coupon: "SPRING24"
+            legacy_flag: false
+          output: '{"account_id": "AC-77", "credited": 25.0}'
+    - role: assistant
+      content: "Credited."
+  state: {}

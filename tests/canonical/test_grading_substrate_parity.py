@@ -87,7 +87,7 @@ that took a verdict, and whose mistake a comparison no trajectory could make is:
     holds fails one row alone.
 20. a binding reference whose two runtime types the operator can never satisfy fails
     the call it was read on rather than the constraint, on both substrates: a pack
-    addressing an argument the gate types at its first segment only scores ``1.0``
+    addressing an argument below where the gate can type it scores ``1.0``
     where one candidate made the comparison beside one that could not, and ``0.0``
     where none could — with the sentence naming the reference on the verdict that
     crosses the wire, since a diagnostic the author never reads leaves an authoring
@@ -4377,8 +4377,8 @@ def test_both_substrates_fold_a_listed_numeric_string_field_alike(
 _NESTED_BINDING_PACK = "nested_binding_grading"
 """The one in-repo pack whose binding reference sits where the gate cannot type it.
 
-The reference addresses ``args.json.q``, below the tool schema's first segment, which
-the authoring gate checks at its first segment only (#765) — so the evaluator's own
+The reference addresses ``args.json.q``, below the level where ``json``'s schema
+stops declaring properties — unchecked by the #765 walk — so the evaluator's own
 reading of the two runtime types is the last thing between the author and a
 comparison no trajectory can make. It sits under ``tests/data/tasks/`` rather than in
 the parity corpus because that corpus is one pack per author key with every addressed
@@ -4452,6 +4452,69 @@ def test_an_unmakeable_comparison_fails_its_own_call_on_both_substrates(
         "the trial whose sibling call made the comparison is reported as an authoring "
         f"mistake anyway: {silent.message!r}"
     )
+
+
+_OPERATOR_TRIO_PACKS = (
+    "trace_checks_operator_dates",
+    "trace_checks_operator_negation",
+    "trace_checks_operator_nullness",
+)
+"""One pack per v2 operator family: the four ``date_*`` comparisons, the two
+negative text forms, and the two nullness probes.
+
+They sit under ``tests/data/tasks/`` rather than in the parity corpus because that
+corpus is one pack per author key, and an operator is vocabulary inside a predicate
+rather than a key of its own — the constraint kinds these packs author already have
+their packs. Each fixture's two trials differ in exactly the fact its operators
+read, so a substrate that evaluates a new operator differently moves one of the
+four scores below.
+"""
+
+
+@pytest.mark.parametrize("pack_name", _OPERATOR_TRIO_PACKS)
+def test_a_v2_operator_family_discriminates_alike_on_both_substrates(
+    pack_name, test_data_dir, tmp_path, runner_service, mock_grpc_context
+):
+    """The unit matrices say what each operator holds; this says both engines agree.
+
+    The core engine's ``grade_trajectory`` and the runner's real gRPC ``GradeTrial``
+    each read the same authored pack through the adapter and the same two trials
+    through one fixture loader, so a 1.0/0.0 split that holds on one substrate and
+    not the other can only come from the operator evaluation itself — the config
+    crossed the wire byte-identically per the canon lock, and everything below the
+    predicate is shared.
+    """
+    pack = test_data_dir / "tasks" / pack_name
+    adapter = _adapter_for(test_data_dir, _TASKS_GLOB)
+    core_config = adapter.get_grading_config(pack_name)
+    task_description = adapter.to_task_description(pack_name)
+    initial_state = adapter.get_task(pack_name).initial_state
+    satisfying = load_case(pack, "satisfying")
+    violating = load_case(pack, "violating")
+
+    core_ok, _ = _core_verdict(
+        "trace_checks", core_config, satisfying, tmp_path, task_initial_state=initial_state
+    )
+    core_bad, _ = _core_verdict(
+        "trace_checks", core_config, violating, tmp_path, task_initial_state=initial_state
+    )
+    runner_ok = _runner_trace_checks_grade(
+        runner_service, task_description, satisfying, f"{pack_name}_ok:0", mock_grpc_context
+    )
+    runner_bad = _runner_trace_checks_grade(
+        runner_service, task_description, violating, f"{pack_name}_bad:0", mock_grpc_context
+    )
+
+    assert (core_ok, core_bad) == (1.0, 0.0), (
+        f"the core engine does not discriminate {pack_name}'s two trials: satisfying "
+        f"{core_ok} vs violating {core_bad}"
+    )
+    assert runner_ok.components.HasField("trace_checks"), (
+        "the runner produced no trace_checks component, so the parity comparison below "
+        "would hold on a component neither substrate scored"
+    )
+    assert runner_ok.components.trace_checks == pytest.approx(core_ok)
+    assert runner_bad.components.trace_checks == pytest.approx(core_bad)
 
 
 # --------------------------------------------------------------------------

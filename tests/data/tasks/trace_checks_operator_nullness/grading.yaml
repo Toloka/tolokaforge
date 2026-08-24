@@ -1,0 +1,23 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+# One predicate reading both nullness conditions: the coupon slot must carry an
+# explicit JSON null — a goodwill credit, deliberately uncouponed — and the
+# deprecated legacy flag must never be sent at all. `is_null` and `omitted`
+# subdivide what `exists: false` reads as one condition, so this pack is the one
+# place a build that collapses the two back together fails on a real fixture.
+trace_checks:
+  constraints:
+    - id: the_credit_is_uncouponed_and_off_the_legacy_path
+      description: "the credit carries an explicit no-coupon marker and never the deprecated legacy flag"
+      require:
+        present:
+          match:
+            kind: tool_call
+            tool: { equals: billing_api_apply_credit }
+            args:
+              coupon: { is_null: true }
+              legacy_flag: { omitted: true }

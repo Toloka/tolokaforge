@@ -51,6 +51,7 @@ from tolokaforge.core.deprecations import (
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
+from tolokaforge.core.grading.predicates import date_comparison_key
 from tolokaforge.core.grading.state_composition import (
     StateHashConfig,
     refuse_probes_beside_another_state_source,
@@ -616,16 +617,24 @@ TRACE_PREDICATE_OPERATORS: frozenset[str] = frozenset(
         "contains",
         "contains_ci",
         "not_equals",
+        "not_contains",
         "regex",
+        "not_regex",
         "gt",
         "gte",
         "lt",
         "lte",
+        "date_gt",
+        "date_gte",
+        "date_lt",
+        "date_lte",
         "in_",
         "not_in",
         "len_gt",
         "len_gte",
         "exists",
+        "is_null",
+        "omitted",
         "equals_binding",
         "contains_binding",
     }
@@ -633,6 +642,13 @@ TRACE_PREDICATE_OPERATORS: frozenset[str] = frozenset(
 """Every operator a :class:`ValuePredicate` may carry, written out rather than
 comprehended from the model, so the per-operator answer table has a second source
 to be checked against."""
+
+TRACE_PREDICATE_DATE_OPERATORS: frozenset[str] = frozenset(
+    {"date_gt", "date_gte", "date_lt", "date_lte"}
+)
+"""The operators whose literal is an ISO-8601 date or datetime. The literal is
+parsed at load — a bound no calendar holds is the author's typo, not a trial's
+fault — while an unparseable *trial* value is simply false, per the evaluator."""
 
 TRACE_PREDICATE_BINDING_OPERATORS: frozenset[str] = frozenset(
     {"equals_binding", "contains_binding"}
@@ -651,13 +667,26 @@ class ValuePredicate(BaseModel):
 
     An operator counts as declared when its value is not ``None``, so a predicate
     means the same thing after the gRPC round trip that dumps every unset field as
-    ``null``. The one thing that reading makes inexpressible is ``equals: null`` —
-    and a ``None`` field is unmatched rather than vacuously true anyway, so that
-    predicate never had a reading.
+    ``null``. That reading makes ``equals: null`` inexpressible by construction —
+    the spelling for "this argument is explicit JSON null" is ``is_null: true``,
+    and for "this key was never sent" it is ``omitted: true``. The two subdivide
+    what ``exists: false`` reads as one condition; ``exists`` itself is unchanged.
 
     ``equals_binding`` and ``contains_binding`` name a value the constraint's
     ``bind`` extracted rather than writing it out, and compare with the same
     ``equals`` / ``contains`` the literal forms use.
+
+    The four ``date_*`` operators compare ISO-8601 dates chronologically where the
+    numeric comparisons would refuse the strings. Both sides normalize under one
+    policy (:func:`~tolokaforge.core.grading.predicates.date_comparison_key`); the
+    authored bound must parse — that is a load error — while a trial value that
+    does not parse is false, never an error.
+
+    ``not_contains`` and ``not_regex`` are the complements of ``contains`` and
+    ``regex`` *within declared events*: they hold where the positive form does not,
+    and — like every operator but ``exists`` — never over an absent or ``null``
+    field, so "the result does not mention X" cannot be satisfied by a call that
+    produced no result.
     """
 
     equals: Any = None
@@ -665,16 +694,24 @@ class ValuePredicate(BaseModel):
     contains: Any = None
     contains_ci: str | None = None
     not_equals: Any = None
+    not_contains: Any = None
     regex: str | None = None
+    not_regex: str | None = None
     gt: float | None = None
     gte: float | None = None
     lt: float | None = None
     lte: float | None = None
+    date_gt: str | None = None
+    date_gte: str | None = None
+    date_lt: str | None = None
+    date_lte: str | None = None
     in_: list[Any] | None = None
     not_in: list[Any] | None = None
     len_gt: int | None = Field(default=None, ge=0)
     len_gte: int | None = Field(default=None, ge=0)
     exists: bool | None = None
+    is_null: bool | None = None
+    omitted: bool | None = None
     equals_binding: str | None = None
     contains_binding: str | None = None
 
@@ -701,6 +738,28 @@ class ValuePredicate(BaseModel):
                 "a value predicate declares no operator, so it asserts nothing and "
                 f"matches every value. Write one of {sorted(TRACE_PREDICATE_OPERATORS)}, "
                 "or drop the field"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_a_date_literal_some_calendar_holds(self) -> ValuePredicate:
+        """A ``date_*`` bound that is not an ISO date can hold for no trial.
+
+        The evaluator answers ``False`` for an unparseable *trial* value — the trial
+        simply did not carry a date — but an unparseable *authored* bound makes the
+        predicate false everywhere, which is the author's typo and must be said at
+        load rather than graded as the agent's fault.
+        """
+        malformed = {
+            name: getattr(self, name)
+            for name in sorted(TRACE_PREDICATE_DATE_OPERATORS)
+            if getattr(self, name) is not None and date_comparison_key(getattr(self, name)) is None
+        }
+        if malformed:
+            raise ValueError(
+                f"a date comparison's bound must be an ISO-8601 date (2026-03-01) or "
+                f"datetime (2026-03-01T12:00:00Z), but {malformed} parses as neither, "
+                "so the predicate would hold for no trial. Fix the bound"
             )
         return self
 
@@ -749,6 +808,29 @@ class TraceMatcher(BaseModel):
     text: ValuePredicate | None = None
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _reject_a_nullness_probe_on_recorded_evidence(self) -> TraceMatcher:
+        """``is_null`` / ``omitted`` subdivide a JSON value's absence — argument
+        material. On ``status``, ``executor`` and ``result`` a ``None`` is missing
+        *evidence*, which the evaluator holds undecidable rather than reads, so a
+        nullness probe there would answer a question the record cannot ask.
+        """
+        offending: dict[str, list[str]] = {}
+        for field_name in ("status", "executor", "result"):
+            predicate = getattr(self, field_name)
+            if predicate is None:
+                continue
+            declared = sorted(predicate.declared_operators() & {"is_null", "omitted"})
+            if declared:
+                offending[field_name] = declared
+        if offending:
+            raise ValueError(
+                f"is_null/omitted probe recorded evidence in {offending}: on status, "
+                "executor and result a missing value is missing evidence, not JSON "
+                "null. Write the probe on args (or text), or use exists"
+            )
+        return self
 
     @model_validator(mode="after")
     def _reject_fields_the_kind_never_carries(self) -> TraceMatcher:
