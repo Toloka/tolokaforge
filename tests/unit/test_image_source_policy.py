@@ -215,37 +215,28 @@ class TestRunnerDockerCliAvailabilityGate:
                 engine_version="0.19.1",
             )
 
-    def test_explicit_build_passes(self) -> None:
+    @pytest.mark.parametrize(
+        "request_, is_wheel_install, engine_version",
+        [
+            # Explicit build always yields build.
+            ("build", True, "0.19.1"),
+            # Source-checkout contributor: auto resolves to build.
+            ("auto", False, "0.19.1"),
+            # No valid pull tag → auto falls through to build.
+            ("auto", True, UNKNOWN_VERSION_SENTINEL),
+            # PEP 440 local segment (`+dirty`) → auto falls through to build.
+            ("auto", True, "0.19.1+dirty"),
+        ],
+    )
+    def test_gate_passes_when_resolved_source_is_build(
+        self,
+        request_: str,
+        is_wheel_install: bool,
+        engine_version: str,
+    ) -> None:
         check_runner_docker_cli_available(
             needs_docker_cli=True,
-            request="build",
-            is_wheel_install=True,
-            engine_version="0.19.1",
-        )
-
-    def test_auto_source_checkout_passes(self) -> None:
-        # Source-checkout contributor: auto resolves to build.
-        check_runner_docker_cli_available(
-            needs_docker_cli=True,
-            request="auto",
-            is_wheel_install=False,
-            engine_version="0.19.1",
-        )
-
-    def test_auto_unknown_version_passes(self) -> None:
-        # No valid pull tag → auto falls through to build.
-        check_runner_docker_cli_available(
-            needs_docker_cli=True,
-            request="auto",
-            is_wheel_install=True,
-            engine_version=UNKNOWN_VERSION_SENTINEL,
-        )
-
-    def test_auto_local_version_passes(self) -> None:
-        # PEP 440 local segment (`+dirty`) → auto falls through to build.
-        check_runner_docker_cli_available(
-            needs_docker_cli=True,
-            request="auto",
-            is_wheel_install=True,
-            engine_version="0.19.1+dirty",
+            request=request_,
+            is_wheel_install=is_wheel_install,
+            engine_version=engine_version,
         )
