@@ -240,6 +240,33 @@ llm_judge = "tolokaforge.core.grading.default_rubric_evaluator:_llm_judge_rubric
 [project.entry-points."tolokaforge.transcript_rule_matchers"]
 default = "tolokaforge.core.grading.default_transcript_rule_matcher:_default_transcript_rule_matcher_factory"
 
+# Trace-check operator seam
+# (``tolokaforge/core/grading/trace_check_operator.py``). Per-operator
+# granularity: every operator a ``ValuePredicate`` may declare is one
+# entry-point. A downstream package registering ``equals_semver`` alongside
+# these 17 defaults extends the trace-check vocabulary without a framework
+# PR. The two binding operators are identified by the ``_binding`` suffix
+# on the registered name (Approved Decision #2 on ADR-0039); no marker
+# attribute, no parallel registry.
+[project.entry-points."tolokaforge.trace_check_operators"]
+equals = "tolokaforge.core.grading.trace_check_operator:equals"
+equals_ci = "tolokaforge.core.grading.trace_check_operator:equals_ci"
+contains = "tolokaforge.core.grading.trace_check_operator:contains_op"
+contains_ci = "tolokaforge.core.grading.trace_check_operator:contains_ci"
+not_equals = "tolokaforge.core.grading.trace_check_operator:not_equals"
+regex = "tolokaforge.core.grading.trace_check_operator:regex_matches"
+gt = "tolokaforge.core.grading.trace_check_operator:gt"
+gte = "tolokaforge.core.grading.trace_check_operator:gte"
+lt = "tolokaforge.core.grading.trace_check_operator:lt"
+lte = "tolokaforge.core.grading.trace_check_operator:lte"
+in_ = "tolokaforge.core.grading.trace_check_operator:in_op"
+not_in = "tolokaforge.core.grading.trace_check_operator:not_in_op"
+len_gt = "tolokaforge.core.grading.trace_check_operator:len_gt"
+len_gte = "tolokaforge.core.grading.trace_check_operator:len_gte"
+exists = "tolokaforge.core.grading.trace_check_operator:exists"
+equals_binding = "tolokaforge.core.grading.trace_check_operator:equals_binding"
+contains_binding = "tolokaforge.core.grading.trace_check_operator:contains_binding"
+
 [tool.hatch.build]
 exclude = [
     "tasks/**",

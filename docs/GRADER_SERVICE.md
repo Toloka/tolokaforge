@@ -283,6 +283,7 @@ pins for every seam in the engine.
 | Judge model provider | `tolokaforge.judge_model_providers` | `litellm` (fronts [`LLMClient`](../tolokaforge/core/llm/client.py)) | [`JudgeModelProvider`](../tolokaforge/core/grading/judge_model_provider.py) — builds a `JudgeModel` (the `.generate` + `.classify_loop_error` surface `LLMJudge` drives) from a `ModelConfig`. |
 | Rubric evaluator | `tolokaforge.rubric_evaluators` | `llm_judge` (wraps [`LLMJudge`](../tolokaforge/core/grading/judge.py)) | [`RubricEvaluator`](../tolokaforge/core/grading/rubric_evaluator.py) — grades one trial's rubric evidence into a `JudgeResult`. Constructed from a `RubricEvaluatorContext` carrying the resolved `JudgeModelProvider` + customization flags; receives the per-trial evidence at `.evaluate()`. |
 | Transcript rule matcher | `tolokaforge.transcript_rule_matchers` | `default` (wraps [`evaluate_transcript_rules`](../tolokaforge/core/grading/transcript.py)) | [`TranscriptRuleMatcher`](../tolokaforge/core/grading/transcript_rule_matcher.py) — scores the whole `TranscriptRulesConfig` against a `TrialTimeline` and returns one `TranscriptEvaluationResult`. Holistic seam (one matcher per config); the events-less-trial gate and per-key accounting stay in the composite. |
+| Trace check operator | `tolokaforge.trace_check_operators` | 15 non-binding names (`equals`, `equals_ci`, `contains`, `contains_ci`, `not_equals`, `regex`, `gt`, `gte`, `lt`, `lte`, `in_`, `not_in`, `len_gt`, `len_gte`, `exists`) + 2 binding names (`equals_binding`, `contains_binding`) | [`TraceCheckOperator`](../tolokaforge/core/grading/trace_check_operator.py) — one callable per operator name a `ValuePredicate` may declare, resolved per-call via the registry cache. **Per-operator granularity** (the only seam that is not holistic): a downstream `equals_semver` registration extends the operator vocabulary without a framework PR. Binding operators are identified by the `_binding` suffix on the registered name. |
 
 Register a downstream impl the same way as a `TrialGrader`:
 
@@ -307,7 +308,11 @@ grade time — `load_rubric_evaluator("llm_judge")(ctx)` — and the composite
 appears in composite. The transcript-rule matcher is threaded through the
 composite `grade_transcript_rules` dispatch; the events-less-trial gate
 (`scored_transcript_rules`) and the per-key accounting stay in the
-composite so every deployment topology applies them identically. A
+composite so every deployment topology applies them identically.
+Trace-check operators resolve per-call inside
+`tolokaforge.core.grading.trace_checks._operator_holds`, which reads
+`load_trace_check_operator(name)` — the entry-point discovery cache means
+a name only pays the loader cost on its first mention. A
 downstream `pip install` of a package that registers under any of these
 groups is picked up on the runner's next start with no framework change.
 

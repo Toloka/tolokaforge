@@ -1710,6 +1710,14 @@ tool-call record alone, so on a bundle re-graded without one a matcher reading
 either is [undecided](#when-a-constraint-cannot-be-decided) rather than unmatched
 — a named failing sub-check, never a pass in the agent's favour.
 
+**Every operator name resolves through the `tolokaforge.trace_check_operators`
+entry-point group.** `_operator_holds` looks up the registered callable per
+mention (cached in the entry-point discovery table); binding operators are
+identified by the `_binding` suffix on the registered name, no marker
+attribute. Registering `equals_semver` in a downstream package's
+`pyproject.toml` under this group extends the operator vocabulary without a
+framework PR — see `docs/GRADER_SERVICE.md` § "Sub-component plug-in seams".
+
 ### The config surface
 
 ```yaml
