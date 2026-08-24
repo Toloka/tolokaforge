@@ -222,15 +222,20 @@ class TestFactoryAndRegistration:
             grader_config=GraderConfig(queue=QueueGraderConfig(workers=2)),
         )
         grader = queue_trial_grader_factory(ctx)
+        # Snapshot the worker handles BEFORE close(); the impl clears the
+        # list as part of shutdown, so a post-close ``for w in grader._workers``
+        # would iterate zero times and assert nothing.
+        workers = list(grader._workers)
         try:
             assert isinstance(grader, QueueTrialGrader)
-            assert len(grader._workers) == 2
+            assert len(workers) == 2
             assert grader._owns_broker is True
         finally:
             grader.close()
 
-        for worker in grader._workers:
+        for worker in workers:
             assert not worker.is_alive(), "close() must drain the worker pool"
+        assert grader._workers == [], "close() clears the worker list"
 
     def test_factory_rejects_missing_address(self) -> None:
         """The queue transport needs a downstream ``grader_rpc`` target;

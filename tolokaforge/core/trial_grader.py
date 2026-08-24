@@ -141,17 +141,15 @@ class TrialGrader(Protocol):
         """
         ...
 
-    def close(self) -> None:
-        """Release any transport / worker-pool resources this grader owns.
-
-        Called by the orchestrator at run end (last-close-wins semantics —
-        double-close is safe). Implementations that hold nothing beyond
-        Python-managed state (``RunnerRPCTrialGrader``, ``GraderRPCTrialGrader``,
-        ``JudgeBackedTrialGrader``) inherit a Protocol default noop and
-        do nothing here; the queue transport, which owns a broker + a pool
-        of worker threads, uses this hook to shut them down cleanly.
-        """
-        ...
+    # A ``close()`` method is a convention on this Protocol rather than a
+    # requirement: adding it to a ``@runtime_checkable`` Protocol would
+    # break ``isinstance`` for every duck-typed impl that has none, and
+    # would silently reject downstream registered graders that don't own
+    # transport resources. The built-in impls each define a ``close()``
+    # (a noop for the transport-less ones; a real teardown for the queue
+    # transport + grader_rpc); orchestrator teardown calls it via
+    # ``getattr(grader, "close", None)`` so a grader without one is
+    # tolerated.
 
 
 class RunnerRPCTrialGrader:
@@ -850,20 +848,27 @@ class QueueTrialGrader:
     def close(self) -> None:
         """Shut down the broker and drain the worker pool this grader owns.
 
-        Idempotent — repeat calls are safe. When the caller injected only
-        the broker (the test-time shape) both branches are no-ops.
+        Idempotent when broker close succeeds. If ``broker.close()`` raises
+        (a transient failure a future backend might surface), the flag
+        stays set so a second call retries the broker; the worker join
+        still runs on both paths so threads always drain.
         """
+        broker_closed = not self._owns_broker
         if self._owns_broker:
             close = getattr(self.broker, "close", None)
             if callable(close):
                 try:
                     close()
+                    broker_closed = True
                 except Exception as exc:  # noqa: BLE001 — teardown must survive
                     self.logger.warning("Broker close() raised", error=str(exc))
+            else:
+                broker_closed = True
         for worker in self._workers:
             worker.join(timeout=5.0)
         self._workers.clear()
-        self._owns_broker = False
+        if broker_closed:
+            self._owns_broker = False
 
 
 def queue_trial_grader_factory(ctx: TrialGraderContext) -> QueueTrialGrader:
@@ -886,30 +891,35 @@ def queue_trial_grader_factory(ctx: TrialGraderContext) -> QueueTrialGrader:
     workers need the judge-config surface (#1255) before they can be
     layered under the queue.
     """
+    from tolokaforge.core.models.run_config import QueueGraderConfig
     from tolokaforge.grader.client import GrpcGraderClient
     from tolokaforge.grader.queue import InMemoryGradeBroker
 
-    cfg = ctx.grader_config.queue if ctx.grader_config and ctx.grader_config.queue else None
-    worker_count = cfg.workers if cfg else 4
-    worker_grader_name = cfg.worker_grader if cfg else "grader_rpc"
-    if worker_grader_name != "grader_rpc":
+    # Materialise the sub-block once so every default lives on
+    # ``QueueGraderConfig`` and the factory never spells a competing one.
+    cfg = (
+        ctx.grader_config.queue
+        if ctx.grader_config and ctx.grader_config.queue
+        else QueueGraderConfig()
+    )
+    if cfg.worker_grader != "grader_rpc":
         raise ValueError(
-            f"queue.worker_grader={worker_grader_name!r} is not yet wired. Supported "
+            f"queue.worker_grader={cfg.worker_grader!r} is not yet wired. Supported "
             "today: 'grader_rpc'. Judge-backed wiring is tracked as a follow-up (#1255)."
         )
     address = ctx.grader_address or ctx.runner_address
     if not address:
         raise ValueError(
-            "queue trial grader requires either ``grader_address`` or ``runner_address`` "
-            "on the grader context so its workers can dial the downstream grader service."
+            "queue trial grader requires ``grader_address`` or ``runner_address`` on "
+            f"the grader context (received grader_address={ctx.grader_address!r}, "
+            f"runner_address={ctx.runner_address!r}; empty string counts as unset). "
+            "Its workers need a live grader service to dial."
         )
 
     broker = InMemoryGradeBroker()
     workers: list[threading.Thread] = []
-    clients: list[GrpcGraderClient] = []
-    for i in range(worker_count):
+    for i in range(cfg.workers):
         client = GrpcGraderClient(grader_address=address)
-        clients.append(client)
         worker = threading.Thread(
             target=_queue_worker_loop,
             args=(broker, client, ctx.logger),
@@ -920,18 +930,19 @@ def queue_trial_grader_factory(ctx: TrialGraderContext) -> QueueTrialGrader:
         workers.append(worker)
     ctx.logger.info(
         "Queue-backed grader wired",
-        worker_count=worker_count,
-        worker_grader=worker_grader_name,
+        worker_count=cfg.workers,
+        worker_grader=cfg.worker_grader,
         address=address,
     )
-    grader = QueueTrialGrader(
+    # Each worker closes its own client on ``BrokerClosed`` — the
+    # ownership travels with the thread so we do not need a second
+    # store-and-close on the grader.
+    return QueueTrialGrader(
         broker=broker,
         logger=ctx.logger,
         workers=workers,
         owns_broker=True,
     )
-    grader._worker_clients = clients  # closed alongside the workers
-    return grader
 
 
 def _queue_worker_loop(
@@ -945,22 +956,41 @@ def _queue_worker_loop(
     Terminates cleanly when the broker closes: :class:`BrokerClosed`
     unwinds the loop; :meth:`QueueTrialGrader.close` shuts the broker
     before joining the workers.
+
+    Blocks indefinitely on ``next_job`` — the close sentinel is the only
+    shutdown signal, and a polling timeout would burn a wakeup per
+    worker per second for the entire idle life of the run.
     """
     from tolokaforge.grader.queue import BrokerClosed, GradeJob, GradeResult
 
     while True:
         try:
-            job = broker.next_job(timeout=1.0)
+            job = broker.next_job(timeout=None)
         except BrokerClosed:
             client.close()
             return
         if job is None:
+            # Shouldn't happen with timeout=None (queue.get without a
+            # timeout blocks forever), but the type still permits it.
             continue
         if not isinstance(job, GradeJob):
-            logger.warning(
-                "Queue worker skipping unexpected payload",
+            # Publish an error so the producer's future.result() fails
+            # loud instead of blocking DEFAULT_TIMEOUT_S. Losing a job to
+            # a wire-shape regression is a bug — this makes it surface.
+            job_id = getattr(job, "job_id", None)
+            logger.error(
+                "Queue worker received unexpected payload",
                 payload_type=type(job).__name__,
+                job_id=job_id,
             )
+            if job_id is not None:
+                broker.publish_result(
+                    GradeResult(
+                        job_id=job_id,
+                        grade=None,
+                        error=f"queue worker received unexpected payload of type {type(job).__name__}",
+                    )
+                )
             continue
         error = ""
         grade: Grade | None = None

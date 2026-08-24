@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, cast
 
 from tolokaforge.core.actors.turn_policy import TurnPolicy
 from tolokaforge.core.conductor import ConductorFactory
+from tolokaforge.core.models.run_config import GraderConfig
 from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
 from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.service_readiness import ServiceReadinessProbe
@@ -58,7 +59,6 @@ if TYPE_CHECKING:
     from tolokaforge.core.compose_materialisation import LogCaptureConfig
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import SeedRef
-    from tolokaforge.core.models.run_config import GraderConfig
     from tolokaforge.core.trial import EnvironmentManifest
 
 __all__ = [
