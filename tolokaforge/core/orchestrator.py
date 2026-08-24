@@ -1992,6 +1992,25 @@ class Orchestrator:
                         "(terminal-bench adapter or compose-variant tools detected)"
                     )
                     core_stack_kwargs["enable_docker_cli"] = True
+                    # Fail loud before any container work: INSTALL_DOCKER_CLI
+                    # is a Dockerfile build arg the orchestrator sets, so it
+                    # only takes effect on a locally-built runner. A pulled
+                    # runner would die on the first tool call with
+                    # `[Errno 2] No such file or directory: 'docker'`.
+                    import tolokaforge as _engine_pkg
+                    from tolokaforge.core.models.docker_config import DockerConfig
+                    from tolokaforge.docker.builder import repo_root
+                    from tolokaforge.docker.image_source_policy import (
+                        check_runner_docker_cli_available,
+                    )
+
+                    _docker_cfg = self.config.docker or DockerConfig()
+                    check_runner_docker_cli_available(
+                        needs_docker_cli=True,
+                        request=_docker_cfg.image_source,
+                        is_wheel_install=not (repo_root() / "pyproject.toml").is_file(),
+                        engine_version=_engine_pkg.__version__,
+                    )
                 # Pick full_stack (db-service + runner + rag-service +
                 # mock-web) when any task talks to mock-web or rag (see
                 # ``_FULL_STACK_TOOL_NAMES`` for the routing matrix) OR when

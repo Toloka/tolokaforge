@@ -30,6 +30,16 @@ shape regardless of which produced it.
 - The task pack you want to run. The examples in this guide use the shipped
   `examples/terminal_bench/fix-billing-holds` task; substitute any other
   terminal-bench task directory.
+- A **locally-built runner image**. The terminal-bench adapter shells out
+  to `docker exec` from inside the runner to reach the task container, so
+  the runner needs the docker CLI + compose plugin baked in. The
+  orchestrator sets the runner Dockerfile's `INSTALL_DOCKER_CLI=true`
+  build arg for this run, but that only takes effect on a build — the
+  published (pulled) runner images ship without either binary. Pass
+  `--image-source build` (or set `docker.image_source: build` in the run
+  config, or `TOLOKAFORGE_IMAGE_SOURCE=build` in the environment). The
+  orchestrator refuses to start with an actionable message if the
+  resolved source is `pull`.
 
 Bootstrap:
 

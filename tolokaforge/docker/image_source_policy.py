@@ -36,6 +36,20 @@ from typing import Literal
 ImageSource = Literal["auto", "pull", "build"]
 ResolvedImageSource = Literal["pull", "build"]
 
+
+class RunnerDockerCliUnavailableError(RuntimeError):
+    """A run needs docker CLI inside the runner container but the resolved
+    image source would ship a runner without it.
+
+    Raised at orchestrator startup so the operator sees an actionable message
+    instead of a trial dying opaquely on the first tool call with
+    ``[Errno 2] No such file or directory: 'docker'``. The runner Dockerfile
+    installs the docker CLI + compose plugin behind ``INSTALL_DOCKER_CLI=true``
+    only when the image is built locally; pulled images ship without it (the
+    published runners keep the smallest footprint that fits the common case).
+    """
+
+
 UNKNOWN_VERSION_SENTINEL = "0.0.0+unknown"
 """The value ``tolokaforge.__version__`` reports when the engine is
 running from a source checkout that has not been ``pip install``-ed
@@ -93,3 +107,53 @@ def resolve_image_source(
     if "+" in engine_version:
         return "build"
     return "pull"
+
+
+def check_runner_docker_cli_available(
+    *,
+    needs_docker_cli: bool,
+    request: ImageSource,
+    is_wheel_install: bool,
+    engine_version: str,
+) -> None:
+    """Fail loud when the run needs docker CLI in the runner but the resolved
+    image source would pull a runner image without it.
+
+    Args:
+        needs_docker_cli: The orchestrator's decision from
+            ``_run_needs_docker_cli(adapter_type, tasks)``. When ``False`` the
+            check is a no-op.
+        request: The three-valued config request, same input
+            :func:`resolve_image_source` takes.
+        is_wheel_install: Same input :func:`resolve_image_source` takes.
+        engine_version: Same input :func:`resolve_image_source` takes.
+
+    Raises:
+        RunnerDockerCliUnavailableError: when ``needs_docker_cli`` is ``True``
+            and :func:`resolve_image_source` returns ``"pull"``. The message
+            names the resolved request and points at the three ways to switch
+            to a locally-built runner.
+    """
+    if not needs_docker_cli:
+        return
+    resolved = resolve_image_source(
+        request=request,
+        is_wheel_install=is_wheel_install,
+        engine_version=engine_version,
+    )
+    if resolved == "build":
+        return
+    raise RunnerDockerCliUnavailableError(
+        "This run needs the docker CLI + docker-compose plugin inside the "
+        "runner container (the terminal-bench adapter or a compose-variant "
+        "tool shells out to `docker exec` to reach the task container), but "
+        f"the resolved image source is 'pull' (docker.image_source={request!r}"
+        f", wheel_install={is_wheel_install}). Published runner images ship "
+        "without docker CLI, so the first tool call would die with `[Errno 2] "
+        "No such file or directory: 'docker'`. "
+        "Fix: rerun with `--image-source build`, set "
+        "`docker.image_source: build` in the run config, or set "
+        "`TOLOKAFORGE_IMAGE_SOURCE=build` in the environment. A locally "
+        "built runner honours the Dockerfile's INSTALL_DOCKER_CLI=true "
+        "build arg that the orchestrator sets for this run."
+    )
