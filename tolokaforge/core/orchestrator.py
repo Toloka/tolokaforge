@@ -784,8 +784,21 @@ class Orchestrator:
         # a network address (a stub, a callable-injected grader) receive the
         # ``None`` verbatim and ignore it.
         runner_address = getattr(runtime_backend, "runner_address", None)
-        trial_grader = load_trial_grader(self.adapter.trial_grader_name)(
-            TrialGraderContext(runner_address=runner_address, logger=self.logger)
+        # ``config.grader.name`` overrides the adapter's default for this
+        # run; the queue subblock rides the same context so
+        # ``queue_trial_grader_factory`` can build its broker + worker pool
+        # without a second config lookup. Absent block keeps every existing
+        # run's behaviour.
+        grader_config = self.config.grader
+        grader_name = (
+            grader_config.name if grader_config and grader_config.name else None
+        ) or self.adapter.trial_grader_name
+        trial_grader = load_trial_grader(grader_name)(
+            TrialGraderContext(
+                runner_address=runner_address,
+                logger=self.logger,
+                grader_config=grader_config,
+            )
         )
 
         ctx = ConductorContext(

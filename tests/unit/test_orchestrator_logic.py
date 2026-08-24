@@ -1929,3 +1929,78 @@ class TestAdapterDeclaredTrialGraderName:
         message = str(excinfo.value)
         assert "does_not_exist_grader" in message
         assert "runner_rpc" in message
+
+    def test_run_config_grader_name_overrides_adapter_default(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``RunConfig.grader.name`` wins over the adapter's ``trial_grader_name``.
+
+        An operator selecting a different grader through the run config sees
+        the override applied without touching the adapter class.
+        """
+        from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
+        from tolokaforge.core.models.run_config import GraderConfig
+        from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
+
+        produced = _RecordingGrader()
+        self._install_grader_entry_points(
+            monkeypatch, [_FakeEntryPoint("recording_grader", lambda _ctx: produced)]
+        )
+        captured: dict[str, ConductorContext] = {}
+
+        def factory(ctx: ConductorContext) -> InMemoryConductor:
+            captured["ctx"] = ctx
+            return InMemoryConductor()
+
+        config = _make_run_config(grader=GraderConfig(name="recording_grader"))
+        orch = Orchestrator(config, deps=OrchestratorDeps(conductor_factory=factory))
+        orch.adapter = _DefaultGraderAdapter({"tasks_glob": "tasks/**/task.yaml"})
+        orch._build_conductor(
+            agent_client=MagicMock(),
+            runtime_backend=MagicMock(),
+            output_dir=tmp_path,
+            request_limiter=None,
+        )
+
+        assert captured["ctx"].trial_grader is produced
+
+    def test_run_config_grader_config_reaches_the_factory(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The full ``GraderConfig`` block rides ``TrialGraderContext.grader_config``.
+
+        A transport-specific factory (``queue`` reading its own subblock)
+        can read the settings the operator declared without a second config
+        lookup.
+        """
+        from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
+        from tolokaforge.core.models.run_config import GraderConfig, QueueGraderConfig
+        from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
+        from tolokaforge.core.plugin_registry import TrialGraderContext
+
+        received: dict[str, TrialGraderContext] = {}
+
+        def factory(ctx: TrialGraderContext) -> Any:
+            received["ctx"] = ctx
+            return _RecordingGrader()
+
+        self._install_grader_entry_points(
+            monkeypatch, [_FakeEntryPoint("recording_grader", factory)]
+        )
+
+        def conductor_factory(cctx: ConductorContext) -> InMemoryConductor:
+            return InMemoryConductor()
+
+        block = GraderConfig(name="recording_grader", queue=QueueGraderConfig(workers=8))
+        config = _make_run_config(grader=block)
+        orch = Orchestrator(config, deps=OrchestratorDeps(conductor_factory=conductor_factory))
+        orch.adapter = _DefaultGraderAdapter({"tasks_glob": "tasks/**/task.yaml"})
+        orch._build_conductor(
+            agent_client=MagicMock(),
+            runtime_backend=MagicMock(),
+            output_dir=tmp_path,
+            request_limiter=None,
+        )
+
+        assert received["ctx"].grader_config is block
+        assert received["ctx"].grader_config.queue.workers == 8
