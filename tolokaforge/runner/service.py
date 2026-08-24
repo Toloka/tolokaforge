@@ -74,15 +74,10 @@ from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 from tolokaforge.core.grading.state_diff import render_state_diff
-from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
     TrialTimeline,
     build_trial_timeline,
-)
-from tolokaforge.core.grading.transcript import (
-    evaluate_transcript_rules,
-    scored_transcript_rules,
 )
 from tolokaforge.core.grading.transcript_wire import (
     decode_transcript_wire,
@@ -122,11 +117,9 @@ from tolokaforge.runner.grading_ledger import (
     JSONPATHS_KEY,
     LLM_JUDGE_KEY,
     NO_JUDGE_MESSAGES_SKIP,
-    NO_TIMELINE_EVENTS_SKIP,
     audit_accounted_keys,
     hash_family_accounting,
     hash_family_skip_accounting,
-    transcript_rules_author_keys,
 )
 from tolokaforge.runner.id_resolution import (
     check_id_fields_against_seeded_tables,
@@ -2158,56 +2151,39 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         transcript_rules_config: TranscriptRulesConfig,
         timeline: TrialTimeline,
     ) -> tuple[TranscriptEvaluationResult | None, dict[str, KeyAccountingRecord]]:
-        """Score the pack's transcript rules, returning ``(result, accounted keys)``.
+        """Delegate to the shared composite helper.
 
-        Which rules an events-less timeline leaves evaluable is
-        :func:`scored_transcript_rules`, shared with the core engine so the fold
-        does not depend on which substrate graded the trial. A ``None`` result is
-        that decision coming back empty. When it comes back as the activity floor
-        alone, the floor's siblings are recorded as skipped — the blanket skip goes
-        down first so the floor's own record survives it.
+        The body moved to :func:`tolokaforge.core.grading.composite.grade_transcript_rules`
+        so every deployment topology (aggregate image, independent grader
+        container, future trajectory-storage) runs the same code. This
+        method stays as a thin wrapper preserving the runner's internal
+        callsite shape.
         """
-        scored_rules = scored_transcript_rules(timeline, transcript_rules_config)
-        if scored_rules is None:
-            logger.info(
-                f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool calls)"
-            )
-            return None, dict.fromkeys(transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP)
+        from tolokaforge.core.grading.composite import grade_transcript_rules
 
-        skipped_siblings: dict[str, KeyAccountingRecord] = {}
-        if timeline.events:
-            logger.info(f"GradeTrial: {trial_id} - Evaluating transcript rules")
-        else:
-            logger.info(
-                f"GradeTrial: {trial_id} - Evaluating the activity floor alone "
-                "(no messages or tool calls)"
-            )
-            skipped_siblings = dict.fromkeys(
-                transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP
-            )
-
-        result = evaluate_transcript_rules(timeline, scored_rules)
-        return result, {**skipped_siblings, **result.accounted_keys}
+        return grade_transcript_rules(
+            trial_id=trial_id,
+            config=transcript_rules_config,
+            timeline=timeline,
+            logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
+        )
 
     def _grade_trace_checks(
         self, trial_id: str, config: TraceChecksConfig, timeline: TrialTimeline
     ) -> TraceChecksResult:
-        """Score the pack's trace checks over the timeline both substrates build.
+        """Delegate to the shared composite helper.
 
-        A result carrying no constraint verdicts is the trial that left no trace
-        of itself — a timeline with neither a conversational turn nor a tool call
-        — where every constraint would score against evidence the trial does not
-        have. The component is then left out of the combine, and the evaluator's
-        own accounting records the skip against each kind the block declared.
+        Body moved to :func:`tolokaforge.core.grading.composite.grade_trace_checks`
+        for cross-topology reuse (ADR-0039). Behaviour-preserving wrapper.
         """
-        result = evaluate_trace_checks(timeline, config)
-        if not result.constraints:
-            logger.info(
-                f"GradeTrial: {trial_id} - Skipping trace checks (no messages or tool calls)"
-            )
-            return result
-        logger.info(f"GradeTrial: {trial_id} - Trace checks: score={result.score:.2f}")
-        return result
+        from tolokaforge.core.grading.composite import grade_trace_checks
+
+        return grade_trace_checks(
+            trial_id=trial_id,
+            config=config,
+            timeline=timeline,
+            logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
+        )
 
     async def _grade_llm_judge(
         self,
