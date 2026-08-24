@@ -113,12 +113,29 @@ class TestFactoryAndRegistration:
         factory = load_trial_grader("judge_only")
         assert factory is judge_backed_trial_grader_factory
 
-    def test_factory_raises_until_wired(self) -> None:
-        """The factory fails loud at orchestrator startup — matching the
-        altitude ``queue_trial_grader_factory`` fails at — so an operator
-        selecting ``judge_only`` sees the misconfiguration before a trial
-        is dispatched, not deep inside :meth:`grade` after a paid trial.
+    def test_factory_builds_a_working_grader(self) -> None:
+        """The factory constructs a real ``JudgeBackedTrialGrader`` with
+        an inner dispatch that reads the task's rubric + the run's judge
+        model. No misconfiguration surface today — the two ways the
+        callable can refuse (task without ``llm_judge``, run without
+        ``models.judge``) surface at grade time as ``GradingFailedError``,
+        not at construction, because the same factory serves both
+        rubric-carrying and rubric-less tasks in one run.
         """
         ctx = TrialGraderContext(runner_address="ignored:0", logger=MagicMock())
-        with pytest.raises(NotImplementedError, match="not yet wired"):
-            judge_backed_trial_grader_factory(ctx)
+        grader = judge_backed_trial_grader_factory(ctx)
+        assert isinstance(grader, JudgeBackedTrialGrader)
+        assert callable(grader.judge_fn)
+
+    def test_grade_raises_when_task_has_no_llm_judge_block(self) -> None:
+        """A task with no ``grading.llm_judge`` block cannot be judged;
+        ``JudgeBackedTrialGrader.grade`` surfaces a ``GradingFailedError``
+        naming the trial so the operator sees which task in a mixed pack
+        is misconfigured."""
+        from tolokaforge.core.trial_grader import GradingFailedError
+
+        ctx = TrialGraderContext(runner_address="ignored:0", logger=MagicMock())
+        grader = judge_backed_trial_grader_factory(ctx)
+        spec = make_trial_spec()  # default fixture has no llm_judge block
+        with pytest.raises(GradingFailedError, match="no grading.llm_judge"):
+            grader.grade(spec, make_trajectory(status=TrialStatus.COMPLETED), "sys")
