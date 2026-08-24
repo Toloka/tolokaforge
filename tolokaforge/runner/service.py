@@ -67,6 +67,7 @@ from tolokaforge.core.grading.trace_timeline import (
     TrialTimeline,
     build_trial_timeline,
 )
+from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcher
 from tolokaforge.core.grading.transcript_wire import (
     decode_transcript_wire,
     split_leading_system_message,
@@ -81,6 +82,7 @@ from tolokaforge.core.plugin_registry import (
     load_custom_check_executor,
     load_judge_model_provider,
     load_rubric_evaluator,
+    load_transcript_rule_matcher,
 )
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
@@ -650,6 +652,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             else load_custom_check_executor("check_runner")()
         )
         self._judge_model_provider: JudgeModelProvider = load_judge_model_provider("litellm")()
+        self._transcript_rule_matcher: TranscriptRuleMatcher = load_transcript_rule_matcher(
+            "default"
+        )()
         self.trials: dict[str, TrialContextRuntime] = {}
         self._available_adapters = list(BUILTIN_ADAPTERS)
         self._artifact_dirs: dict[str, Path] = {}  # trial_id -> temp dir for cleanup
@@ -2145,6 +2150,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_id=trial_id,
             config=transcript_rules_config,
             timeline=timeline,
+            matcher=self._transcript_rule_matcher,
             logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
         )
 

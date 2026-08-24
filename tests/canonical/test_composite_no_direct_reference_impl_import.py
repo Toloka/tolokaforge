@@ -7,10 +7,15 @@ one implementation into the dispatch surface.
 
 Reads the composite module's source and asserts, via ``ast``, that none of
 the shipping reference-impl names appear on any ``import`` statement's
-imported symbol list. Later stages extend this list as each seam lands
-(``evaluate_transcript_rules``, per-operator trace impls,
-``JsonpathStateCheckBackend``, …). Stage 2 lands the first assertion —
-``LLMJudge`` is not imported from :mod:`tolokaforge.core.grading.judge`.
+imported symbol list. Every seam that lands adds one assertion: the
+rubric-evaluator seam forbids importing
+:class:`~tolokaforge.core.grading.judge.LLMJudge`, and the
+transcript-rule-matcher seam forbids importing
+:func:`~tolokaforge.core.grading.transcript.evaluate_transcript_rules`.
+Later stages extend this list as each seam lands (per-operator trace
+impls, ``JsonpathStateCheckBackend``, …). Utility symbols the composite
+legitimately reuses — ``scored_transcript_rules`` (events-less-trial
+gate), ``transcript_rules_author_keys`` (accounting) — are NOT forbidden.
 
 Complements the ``.importlinter`` contract Stage 5 adds — the linter
 enforces module-level forbid rules across the codebase; this test locks
@@ -61,4 +66,27 @@ def test_composite_does_not_import_llm_judge() -> None:
     assert ("tolokaforge.core.grading.judge", "LLMJudge") not in imports, (
         "composite.py must not import LLMJudge — the RubricEvaluator seam owns "
         "the reach through the reference impl."
+    )
+
+
+def test_composite_does_not_import_evaluate_transcript_rules() -> None:
+    """The transcript-rule-matcher seam owns the ``evaluate_transcript_rules``
+    reach — the composite must not import it directly. The gate + accounting
+    utilities from the same module (``scored_transcript_rules`` and
+    ``transcript_rules_author_keys``) remain permitted.
+    """
+    imports = _imported_names(_COMPOSITE_PATH.read_text())
+    assert (
+        "tolokaforge.core.grading.transcript",
+        "evaluate_transcript_rules",
+    ) not in imports, (
+        "composite.py must not import evaluate_transcript_rules — the "
+        "TranscriptRuleMatcher seam owns the reach through the reference impl."
+    )
+    assert (
+        "tolokaforge.core.grading.transcript",
+        "scored_transcript_rules",
+    ) in imports, (
+        "composite.py must keep scored_transcript_rules — it is the "
+        "events-less-trial gate that runs above the matcher."
     )

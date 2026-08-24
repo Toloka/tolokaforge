@@ -52,10 +52,7 @@ from tolokaforge.core.grading.judge_result import JudgeResult
 from tolokaforge.core.grading.key_manifest import EVALUATED, NO_TIMELINE_EVENTS_SKIP
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
-from tolokaforge.core.grading.transcript import (
-    evaluate_transcript_rules,
-    scored_transcript_rules,
-)
+from tolokaforge.core.grading.transcript import scored_transcript_rules
 from tolokaforge.core.grading.transcript_wire import split_leading_system_message
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.db_client import TrialNotFoundError as DBTrialNotFoundError
@@ -78,6 +75,7 @@ if TYPE_CHECKING:
         TranscriptEvaluationResult,
         TranscriptRulesConfig,
     )
+    from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcher
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import KeyAccountingRecord, ModelConfig
     from tolokaforge.runner.models import (
@@ -93,6 +91,7 @@ def grade_transcript_rules(
     trial_id: str,
     config: TranscriptRulesConfig,
     timeline: TrialTimeline,
+    matcher: TranscriptRuleMatcher,
     logger: StructuredLogger,
 ) -> tuple[TranscriptEvaluationResult | None, dict[str, KeyAccountingRecord]]:
     """Score the pack's transcript rules against a trial timeline.
@@ -102,6 +101,14 @@ def grade_transcript_rules(
     ``NO_TIMELINE_EVENTS_SKIP`` record. When only the activity floor is scored,
     its siblings are recorded skipped first so the floor's own record survives
     the blanket skip.
+
+    :func:`scored_transcript_rules` stays inside this composite — it is the
+    events-less-trial gate every deployment topology needs applied at the same
+    layer, not per-matcher policy. The resolved
+    :class:`~tolokaforge.core.grading.transcript_rule_matcher.TranscriptRuleMatcher`
+    is invoked with the gate-narrowed config: a plug-in impl (``default`` in
+    the shipping config; a downstream ruleset alongside) that owns the
+    actual per-rule scoring.
 
     Substrate-independent: reads only the timeline (the runner already built
     it from the transcript). Called identically by every deployment topology.
@@ -123,7 +130,7 @@ def grade_transcript_rules(
         )
         skipped_siblings = dict.fromkeys(transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP)
 
-    result = evaluate_transcript_rules(timeline, scored_rules)
+    result = matcher.evaluate(rules=scored_rules, timeline=timeline)
     return result, {**skipped_siblings, **result.accounted_keys}
 
 

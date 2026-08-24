@@ -69,6 +69,7 @@ from tolokaforge.core.plugin_registry import (
     _clear_discovery_cache,
     load_grading_substrate,
     load_rubric_evaluator,
+    load_transcript_rule_matcher,
 )
 from tolokaforge.runner import (
     add_RunnerServiceServicer_to_server,
@@ -418,6 +419,7 @@ def _reassemble_grade_from_composite(
             trial_id=_TRIAL_ID,
             config=grading_config.transcript_rules,
             timeline=timeline,
+            matcher=load_transcript_rule_matcher("default")(),
             logger=logger,  # type: ignore[arg-type]
         )
         accounted_keys.update(transcript_accounting)

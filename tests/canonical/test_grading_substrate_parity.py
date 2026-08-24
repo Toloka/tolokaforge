@@ -144,6 +144,9 @@ from tests.utils.runner_requests import execute_request, register_request, trial
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
 from tolokaforge.core.grading import composite as composite_module
+from tolokaforge.core.grading import (
+    default_transcript_rule_matcher as default_transcript_rule_matcher_module,
+)
 from tolokaforge.core.grading.checks_helpers import CUSTOM_CHECKS_REASON_PREFIX
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import COMBINE_METHODS
@@ -3807,22 +3810,32 @@ def test_the_site_lock_rejects_a_site_that_filed_a_skip_where_it_evaluated(
 
 
 @pytest.mark.parametrize(
-    ("evaluator_name", "author_key"),
+    ("evaluator_module", "evaluator_name", "author_key"),
     [
-        ("evaluate_trace_checks", _INJECTION_TRACE),
-        ("evaluate_transcript_rules", _INJECTION_TRANSCRIPT),
+        (composite_module, "evaluate_trace_checks", _INJECTION_TRACE),
+        (
+            default_transcript_rule_matcher_module,
+            "evaluate_transcript_rules",
+            _INJECTION_TRANSCRIPT,
+        ),
     ],
 )
 def test_the_site_lock_rejects_an_evaluator_that_stopped_accounting(
-    evaluator_name, author_key, test_data_dir, runner_service, mock_grpc_context, monkeypatch
+    evaluator_module,
+    evaluator_name,
+    author_key,
+    test_data_dir,
+    runner_service,
+    mock_grpc_context,
+    monkeypatch,
 ):
     """Claim 2: the evaluator still scores, but records no key — the audit fails the RPC."""
-    real = getattr(composite_module, evaluator_name)
+    real = getattr(evaluator_module, evaluator_name)
 
     def drifted(*args: Any, **kwargs: Any) -> Any:
         return real(*args, **kwargs).model_copy(update={"accounted_keys": {}})
 
-    monkeypatch.setattr(composite_module, evaluator_name, drifted)
+    monkeypatch.setattr(evaluator_module, evaluator_name, drifted)
 
     grading_config, response = _drive_parity_pack(
         author_key,
@@ -3841,12 +3854,12 @@ def test_the_site_lock_rejects_an_evaluated_record_over_an_evaluation_that_did_n
     test_data_dir, runner_service, mock_grpc_context, monkeypatch
 ):
     """Claim 4: real accounting filed EVALUATED while the component stayed unscored."""
-    real = composite_module.evaluate_transcript_rules
+    real = default_transcript_rule_matcher_module.evaluate_transcript_rules
 
     def hollow(*args: Any, **kwargs: Any) -> Any:
         return real(*args, **kwargs).model_copy(update={"score": _UNSCORED_COMPONENT})
 
-    monkeypatch.setattr(composite_module, "evaluate_transcript_rules", hollow)
+    monkeypatch.setattr(default_transcript_rule_matcher_module, "evaluate_transcript_rules", hollow)
 
     grading_config, response = _drive_parity_pack(
         _INJECTION_TRANSCRIPT,

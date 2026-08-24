@@ -232,6 +232,14 @@ litellm = "tolokaforge.core.grading.default_judge_model_provider:_litellm_judge_
 [project.entry-points."tolokaforge.rubric_evaluators"]
 llm_judge = "tolokaforge.core.grading.default_rubric_evaluator:_llm_judge_rubric_evaluator_factory"
 
+# Transcript-rule matcher Protocol
+# (``tolokaforge/core/grading/transcript_rule_matcher.py``). ``default`` is
+# the reference impl wrapping :func:`evaluate_transcript_rules`; a downstream
+# package registers an alternative matcher (e.g. a stricter policy over the
+# same rule vocabulary) alongside without a framework PR.
+[project.entry-points."tolokaforge.transcript_rule_matchers"]
+default = "tolokaforge.core.grading.default_transcript_rule_matcher:_default_transcript_rule_matcher_factory"
+
 [tool.hatch.build]
 exclude = [
     "tasks/**",

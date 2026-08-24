@@ -9,15 +9,17 @@ External code discovers and loads alternative implementations of the
 :class:`~tolokaforge.core.grading.substrate.GradingSubstrate`,
 :class:`~tolokaforge.core.grading.check_runner.CheckExecutor`,
 :class:`~tolokaforge.core.grading.judge_model_provider.JudgeModelProvider`,
+:class:`~tolokaforge.core.grading.rubric_evaluator.RubricEvaluator`,
 and
-:class:`~tolokaforge.core.grading.rubric_evaluator.RubricEvaluator`
+:class:`~tolokaforge.core.grading.transcript_rule_matcher.TranscriptRuleMatcher`
 Protocols through ``importlib.metadata`` entry-point groups — no in-tree
 edit, no monkey-patch. Each entry point resolves to a *factory callable*,
 mirroring the existing :data:`~tolokaforge.core.conductor.ConductorFactory`
 idiom. Five of the seams adapt divergent impl constructors to a per-group
 frozen-dataclass context (``Callable[[<Context>], <Impl>]``); the readiness
-probes, custom-check executors, and judge model providers need no build
-dependencies, so their factories are arg-less (``Callable[[], <Impl>]``).
+probes, custom-check executors, judge model providers, and transcript-rule
+matchers need no build dependencies, so their factories are arg-less
+(``Callable[[], <Impl>]``).
 The grading-substrate loader resolves directly to the ``GradingSubstrate``
 implementation *class* — the substrate seam is constructed per-trial with
 topology-specific arguments the plug-in group cannot generically supply,
@@ -34,6 +36,7 @@ The groups:
 * ``tolokaforge.custom_check_executors`` → :data:`CustomCheckExecutorFactory`
 * ``tolokaforge.judge_model_providers`` → :data:`JudgeModelProviderFactory`
 * ``tolokaforge.rubric_evaluators`` → :data:`RubricEvaluatorFactory`
+* ``tolokaforge.transcript_rule_matchers`` → :data:`TranscriptRuleMatcherFactory`
 
 Discovery is lazy and cached per group; it enumerates ``ep.name`` /
 ``ep.dist`` **without** calling ``ep.load()``. This splits the fail-loud
@@ -63,6 +66,7 @@ from tolokaforge.core.grading.check_runner import CheckExecutor
 from tolokaforge.core.grading.judge_model_provider import JudgeModelProviderFactory
 from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorFactory
 from tolokaforge.core.grading.substrate import GradingSubstrate
+from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcherFactory
 from tolokaforge.core.models.run_config import GraderConfig
 from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
 from tolokaforge.core.runtime import RuntimeBackend
@@ -88,6 +92,7 @@ __all__ = [
     "RubricEvaluatorFactory",
     "RuntimeBackendBuildContext",
     "RuntimeBackendFactory",
+    "TranscriptRuleMatcherFactory",
     "TrialGraderContext",
     "TrialGraderFactory",
     "TurnPolicyContext",
@@ -100,6 +105,7 @@ __all__ = [
     "available_readiness_probes",
     "available_rubric_evaluators",
     "available_runtime_backends",
+    "available_transcript_rule_matchers",
     "available_trial_graders",
     "available_turn_policies",
     "discover_entry_points",
@@ -110,6 +116,7 @@ __all__ = [
     "load_readiness_probe",
     "load_rubric_evaluator",
     "load_runtime_backend",
+    "load_transcript_rule_matcher",
     "load_trial_grader",
     "load_turn_policy",
 ]
@@ -123,6 +130,7 @@ GRADING_SUBSTRATES_GROUP = "tolokaforge.grading_substrates"
 CUSTOM_CHECK_EXECUTORS_GROUP = "tolokaforge.custom_check_executors"
 JUDGE_MODEL_PROVIDERS_GROUP = "tolokaforge.judge_model_providers"
 RUBRIC_EVALUATORS_GROUP = "tolokaforge.rubric_evaluators"
+TRANSCRIPT_RULE_MATCHERS_GROUP = "tolokaforge.transcript_rule_matchers"
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +377,11 @@ def load_rubric_evaluator(name: str) -> RubricEvaluatorFactory:
     return cast(RubricEvaluatorFactory, _load(RUBRIC_EVALUATORS_GROUP, name))
 
 
+def load_transcript_rule_matcher(name: str) -> TranscriptRuleMatcherFactory:
+    """Resolve a registered transcript-rule-matcher name to its factory callable."""
+    return cast(TranscriptRuleMatcherFactory, _load(TRANSCRIPT_RULE_MATCHERS_GROUP, name))
+
+
 def load_grading_substrate(name: str) -> type[GradingSubstrate]:
     """Resolve a registered grading-substrate name to its implementation class.
 
@@ -429,3 +442,8 @@ def available_judge_model_providers() -> list[str]:
 def available_rubric_evaluators() -> list[str]:
     """Sorted names registered in the ``tolokaforge.rubric_evaluators`` group."""
     return sorted(discover_entry_points(RUBRIC_EVALUATORS_GROUP))
+
+
+def available_transcript_rule_matchers() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.transcript_rule_matchers`` group."""
+    return sorted(discover_entry_points(TRANSCRIPT_RULE_MATCHERS_GROUP))

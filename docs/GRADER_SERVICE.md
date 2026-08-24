@@ -282,6 +282,7 @@ pins for every seam in the engine.
 | Custom check executor | `tolokaforge.custom_check_executors` | `check_runner` (production), `in_memory` (test fixture) | [`CheckExecutor`](../tolokaforge/core/grading/check_runner.py) — runs the pack's `checks.py` against the trial's evidence and returns a `CheckResultSet`. |
 | Judge model provider | `tolokaforge.judge_model_providers` | `litellm` (fronts [`LLMClient`](../tolokaforge/core/llm/client.py)) | [`JudgeModelProvider`](../tolokaforge/core/grading/judge_model_provider.py) — builds a `JudgeModel` (the `.generate` + `.classify_loop_error` surface `LLMJudge` drives) from a `ModelConfig`. |
 | Rubric evaluator | `tolokaforge.rubric_evaluators` | `llm_judge` (wraps [`LLMJudge`](../tolokaforge/core/grading/judge.py)) | [`RubricEvaluator`](../tolokaforge/core/grading/rubric_evaluator.py) — grades one trial's rubric evidence into a `JudgeResult`. Constructed from a `RubricEvaluatorContext` carrying the resolved `JudgeModelProvider` + customization flags; receives the per-trial evidence at `.evaluate()`. |
+| Transcript rule matcher | `tolokaforge.transcript_rule_matchers` | `default` (wraps [`evaluate_transcript_rules`](../tolokaforge/core/grading/transcript.py)) | [`TranscriptRuleMatcher`](../tolokaforge/core/grading/transcript_rule_matcher.py) — scores the whole `TranscriptRulesConfig` against a `TrialTimeline` and returns one `TranscriptEvaluationResult`. Holistic seam (one matcher per config); the events-less-trial gate and per-key accounting stay in the composite. |
 
 Register a downstream impl the same way as a `TrialGrader`:
 
@@ -295,16 +296,20 @@ deterministic_rules = "acme_grader:_rules_evaluator_factory"
 ```
 
 The runner resolves the shipping defaults at startup via
-`load_custom_check_executor("check_runner")` and
-`load_judge_model_provider("litellm")` and caches the resulting instances
+`load_custom_check_executor("check_runner")`,
+`load_judge_model_provider("litellm")`, and
+`load_transcript_rule_matcher("default")`, and caches the resulting instances
 on `RunnerServiceImpl`. The check executor is threaded through the
 composite `grade_custom_checks` dispatch. The judge model provider is
 threaded into the `RubricEvaluatorContext` that the runner constructs at
 grade time — `load_rubric_evaluator("llm_judge")(ctx)` — and the composite
 `grade_llm_judge` receives the resolved evaluator; no LLM transport ever
-appears in composite. A downstream `pip install` of a package that
-registers under any of these groups is picked up on the runner's next
-start with no framework change.
+appears in composite. The transcript-rule matcher is threaded through the
+composite `grade_transcript_rules` dispatch; the events-less-trial gate
+(`scored_transcript_rules`) and the per-key accounting stay in the
+composite so every deployment topology applies them identically. A
+downstream `pip install` of a package that registers under any of these
+groups is picked up on the runner's next start with no framework change.
 
 ## See also
 
