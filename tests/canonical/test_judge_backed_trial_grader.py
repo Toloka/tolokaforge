@@ -107,27 +107,18 @@ class TestAutoFailBranches:
 
 
 class TestFactoryAndRegistration:
-    def test_factory_builds_grader_from_context(self) -> None:
-        ctx = TrialGraderContext(runner_address="ignored:0", logger=MagicMock())
-        grader = judge_backed_trial_grader_factory(ctx)
-        assert isinstance(grader, JudgeBackedTrialGrader)
-
     def test_registered_under_judge_only_entry_point(self) -> None:
         """The plug-in registry resolves ``judge_only`` to the factory —
         proving the second impl ships as a first-class seam consumer."""
         factory = load_trial_grader("judge_only")
         assert factory is judge_backed_trial_grader_factory
 
-    def test_default_judge_dispatch_raises_until_wired(self) -> None:
-        """The factory's default dispatch is unwired; invoking it raises
-        NotImplementedError with a clear pointer to the follow-up. This is
-        the guard against silent zero-scores while the production wiring
-        (offline replay, LLMJudge integration) is deferred."""
+    def test_factory_raises_until_wired(self) -> None:
+        """The factory fails loud at orchestrator startup — matching the
+        altitude ``queue_trial_grader_factory`` fails at — so an operator
+        selecting ``judge_only`` sees the misconfiguration before a trial
+        is dispatched, not deep inside :meth:`grade` after a paid trial.
+        """
         ctx = TrialGraderContext(runner_address="ignored:0", logger=MagicMock())
-        grader = judge_backed_trial_grader_factory(ctx)
         with pytest.raises(NotImplementedError, match="not yet wired"):
-            grader.grade(
-                make_trial_spec(),
-                make_trajectory(status=TrialStatus.COMPLETED),
-                "sys",
-            )
+            judge_backed_trial_grader_factory(ctx)

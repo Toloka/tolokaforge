@@ -68,11 +68,22 @@ need to reconstruct engine-side models with orchestrator-only fields.
 
 
 def _grade_to_wire(grade: Grade) -> grader_pb2.Grade:
-    """Translate a Python :class:`Grade` to its wire equivalent."""
+    """Translate a Python :class:`Grade` to its wire equivalent.
+
+    ``grade.reasons`` is typed ``str | dict[str, list[str]]`` — the dict
+    shape carries per-component reasons a structured judge dispatch
+    emits. JSON-encoded on the wire so downstream consumers can
+    lazy-decode; the caller distinguishes the two by attempting a
+    ``json.loads`` (a bare string is never valid JSON for a mapping).
+    """
+    if isinstance(grade.reasons, str):
+        reasons_wire = grade.reasons
+    else:
+        reasons_wire = json.dumps(grade.reasons)
     wire = grader_pb2.Grade(
         binary_pass=grade.binary_pass,
         score=grade.score,
-        reasons=grade.reasons or "" if isinstance(grade.reasons, str) else "",
+        reasons=reasons_wire,
         judge_status=_judge_status_to_wire(grade.judge_status),
     )
     if grade.state_diff is not None:

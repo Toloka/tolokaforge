@@ -1,10 +1,10 @@
 // Grader Service Protocol
 // Host ↔ Grader communication for tolokaforge grader-detachment
-// See docs/GRADER_SERVICE.md and ADR-0035 for the design record.
+// See docs/GRADER_SERVICE.md and ADR-0038 for the design record.
 //
 // Message shapes below intentionally MIRROR runner.proto's Grade payload —
 // same field numbers, same enum values, same wire-level semantics. The two
-// services rev on independent cadences (ADR-0035), so the messages live in
+// services rev on independent cadences (ADR-0038), so the messages live in
 // this file rather than in an imported runner.proto; a canonical test locks
 // the mirror by recursing into every sub-message so a runner.proto change
 // that this file does not mirror fails the drift guard.

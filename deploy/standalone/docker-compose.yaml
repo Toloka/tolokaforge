@@ -28,7 +28,7 @@
 # Each image self-reports Docker health via its own HEALTHCHECK (the runner
 # probe is a gRPC channel-ready check per ADR-0024); this file never re-declares
 # a healthcheck and orders startup with `depends_on: condition: service_healthy`.
-# `docker compose up --wait` blocks on all four healthchecks. How long that
+# `docker compose up --wait` blocks on all five healthchecks. How long that
 # takes depends on where the rag-service image comes from: one built from the
 # tolokaforge tree carries the `all-MiniLM-L6-v2` weights and stands up in
 # seconds without contacting HuggingFace, while a published tag predating that

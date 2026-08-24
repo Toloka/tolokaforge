@@ -43,6 +43,15 @@ parked in :meth:`~InMemoryGradeBroker.next_job` (default ``timeout=None``)
 unblock and terminate cleanly on shutdown."""
 
 
+class BrokerClosed(Exception):
+    """Raised by :meth:`GradeBroker.next_job` when the broker has been closed.
+
+    Distinguishes "broker shut down, stop consuming" from "queue is empty
+    right now, try again" — a returned ``None`` reads only as the latter, so
+    consumers can retry safely without checking a private ``_closed`` flag.
+    """
+
+
 @dataclass(frozen=True)
 class GradeJob:
     """A grade-request the producer puts on the queue.
@@ -86,14 +95,9 @@ class GradeBroker(Protocol):
 
     def publish_result(self, result: GradeResult) -> None: ...
 
+    def cancel_job(self, job_id: str) -> None: ...
+
     def close(self) -> None: ...
-
-
-@dataclass
-class _JobEntry:
-    """Bookkeeping the in-memory broker keeps per-outstanding-job."""
-
-    future: Future[Grade | None]
 
 
 @dataclass
@@ -108,23 +112,36 @@ class InMemoryGradeBroker:
     consumer.
 
     The broker owns the per-job :class:`Future` — the producer receives
-    it, the consumer's :meth:`publish_result` resolves it. Duplicate
-    ``job_id`` on the wire is a broker-side bug (never generated
-    externally in this impl), so :meth:`publish_result` on an unknown
-    id is a loud ``KeyError`` rather than a silent drop.
+    it, the consumer's :meth:`publish_result` resolves it.
+
+    Return-value contract for :meth:`next_job`:
+
+    - a :class:`GradeJob` when one is available before the timeout,
+    - ``None`` when the timeout elapses on an empty queue (retry),
+    - :class:`BrokerClosed` when :meth:`close` has been called (stop).
+
+    ``publish_result`` after :meth:`close` is a no-op — the future the
+    caller was waiting on has already been failed with ``broker closed``,
+    so a worker publishing a result it computed in flight has nothing
+    to hand back but should not crash.
     """
 
     _q: queue.Queue[GradeJob] = field(default_factory=queue.Queue)
-    _futures: dict[str, _JobEntry] = field(default_factory=dict)
+    _futures: dict[str, Future[Grade | None]] = field(default_factory=dict)
     _futures_lock: threading.Lock = field(default_factory=threading.Lock)
     _closed: bool = False
 
     def publish_job(self, job: GradeJob) -> Future[Grade | None]:
-        if self._closed:
-            raise RuntimeError("InMemoryGradeBroker is closed")
         future: Future[Grade | None] = Future()
+        # ``_closed`` and ``_futures`` share one critical section so a
+        # concurrent :meth:`close` cannot slip in between the check and
+        # the insert and orphan the returned future. Every future the
+        # caller ever receives is either resolved by :meth:`publish_result`
+        # or failed by :meth:`close`.
         with self._futures_lock:
-            self._futures[job.job_id] = _JobEntry(future=future)
+            if self._closed:
+                raise RuntimeError("InMemoryGradeBroker is closed")
+            self._futures[job.job_id] = future
         self._q.put(job)
         return future
 
@@ -136,36 +153,55 @@ class InMemoryGradeBroker:
         # ``close()`` puts a sentinel on the queue so a consumer parked in
         # ``next_job(timeout=None)`` (the default) unblocks and terminates
         # cleanly instead of hanging on shutdown. Re-post the sentinel so
-        # multiple consumers each see it.
+        # multiple consumers each see it, and raise :class:`BrokerClosed`
+        # so the caller can distinguish "closed" from the timeout branch's
+        # ``None``.
         if job is _CLOSE_SENTINEL:
             self._q.put(_CLOSE_SENTINEL)
-            return None
+            raise BrokerClosed("broker is closed")
         return job
 
     def publish_result(self, result: GradeResult) -> None:
         with self._futures_lock:
-            entry = self._futures.pop(result.job_id, None)
-        if entry is None:
+            future = self._futures.pop(result.job_id, None)
+        # Two legitimate misses: the broker was closed and cleared this
+        # future before the worker returned (the caller already sees
+        # ``broker closed``, no re-notification needed), or the job id
+        # never came from this broker's :meth:`publish_job`. The first is
+        # not a bug; the second is a wire-level defect that a caller
+        # would want to see. The KeyError message keeps the second
+        # visible without turning the first into a crash.
+        if future is None:
+            if self._closed:
+                return
             raise KeyError(
                 f"publish_result: no outstanding job {result.job_id!r} — "
                 "duplicate id or job never published"
             )
         if result.error:
-            entry.future.set_exception(RuntimeError(result.error))
+            future.set_exception(RuntimeError(result.error))
         else:
-            entry.future.set_result(result.grade)
+            future.set_result(result.grade)
+
+    def cancel_job(self, job_id: str) -> None:
+        """Remove ``job_id``'s future entry — used by callers that gave up
+        on a slow worker (timeout, cancellation). Idempotent; safe to call
+        after :meth:`publish_result` has already resolved the entry."""
+        with self._futures_lock:
+            self._futures.pop(job_id, None)
 
     def close(self) -> None:
-        self._closed = True
         # Unblock any consumer parked in ``next_job(timeout=None)``. The
         # sentinel re-posts itself so a pool of N consumers each terminates
         # rather than one racing ahead and starving the rest.
-        self._q.put(_CLOSE_SENTINEL)
         with self._futures_lock:
-            for entry in self._futures.values():
-                if not entry.future.done():
-                    entry.future.set_exception(RuntimeError("broker closed"))
+            self._closed = True
+            futures = list(self._futures.values())
             self._futures.clear()
+        self._q.put(_CLOSE_SENTINEL)
+        for future in futures:
+            if not future.done():
+                future.set_exception(RuntimeError("broker closed"))
 
 
 def new_job_id() -> str:

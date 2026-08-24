@@ -431,9 +431,11 @@ def runner_rpc_trial_grader_factory(ctx: TrialGraderContext) -> RunnerRPCTrialGr
 
     Accepts ``ctx.runner_address is None`` at construction so orchestrator
     fixtures paired with an in-memory backend can still build the grader
-    without touching the network — the misconfiguration surfaces when
-    :meth:`RunnerRPCTrialGrader.grade` is first called against the empty
-    address (see the loud-failure branch inside ``RunnerRPCTrialGrader``).
+    without touching the network. The misconfiguration surfaces at the
+    first :meth:`grade` call as a :class:`ConnectionError` from
+    :class:`GrpcRunnerClient.connect`'s health-check retry loop (~30 s
+    timeout) rather than a synchronous ``ValueError`` — the address is
+    only dialled when it is needed.
     """
     return RunnerRPCTrialGrader(runner_address=ctx.runner_address or "", logger=ctx.logger)
 
@@ -534,28 +536,6 @@ class JudgeBackedTrialGrader:
                 binary_pass=grade.binary_pass,
             )
         return grade
-
-
-def _unwired_judge_fn(
-    spec: TrialSpec,  # noqa: ARG001 — Protocol arg accepted at the seam
-    trajectory: Trajectory,  # noqa: ARG001
-    agent_system_prompt: str,  # noqa: ARG001
-) -> Grade | None:
-    """Default judge dispatch for the ``judge_only`` entry point.
-
-    The factory has no way to receive a real judge instance through the current
-    ``TrialGraderContext`` — production wiring (offline-replay integration,
-    live :class:`~tolokaforge.core.grading.judge.LLMJudge` construction from
-    per-task rubric config) is deferred as a follow-up on the umbrella. Until
-    that ships, invoking the grader raises loud rather than degrading to a
-    silent zero score.
-    """
-    raise NotImplementedError(
-        "judge_only trial grader is registered but not yet wired to a production "
-        "judge. Inject a JudgeGradeFn callable via JudgeBackedTrialGrader(...) "
-        "directly, or wait for the follow-up that folds offline rejudge onto this "
-        "seam. See ADR-0038 and the grader-detachment umbrella."
-    )
 
 
 class GraderRPCTrialGrader:
@@ -688,13 +668,19 @@ def grader_rpc_trial_grader_factory(ctx: TrialGraderContext) -> GraderRPCTrialGr
     Fails loud when neither field is set (in-memory backend + grader_rpc is
     a misconfiguration that would otherwise surface as a 30 s connect hang).
     """
-    address = ctx.grader_address if ctx.grader_address is not None else ctx.runner_address
-    if address is None:
+    # ``ctx.grader_address`` / ``ctx.runner_address`` are ``str | None`` on
+    # the wire but the in-memory backend threads an empty string through
+    # ``getattr(runtime_backend, "runner_address", None)`` when the field
+    # is missing. Treat empty and ``None`` the same — either shape would
+    # otherwise pass the None guard and surface as a 30 s gRPC connect
+    # hang the docstring promises we catch here.
+    address = ctx.grader_address or ctx.runner_address
+    if not address:
         raise ValueError(
             "grader_rpc trial grader requires either ``grader_address`` or "
-            "``runner_address`` on the grader context (got None on both). "
-            "Pair a network-reachable backend with the grader_rpc grader, or "
-            "select a grader that does not need an address."
+            "``runner_address`` on the grader context (got no usable value on "
+            "either). Pair a network-reachable backend with the grader_rpc "
+            "grader, or select a grader that does not need an address."
         )
     return GraderRPCTrialGrader(grader_address=address, logger=ctx.logger)
 
@@ -795,6 +781,12 @@ class QueueTrialGrader:
         try:
             grade = future.result(timeout=self.timeout_s)
         except Exception as exc:  # noqa: BLE001 — surface loudly with our own type
+            # Timed-out and errored futures leave their broker entry live;
+            # without this, one stuck worker leaks one dict entry per trial.
+            # ``cancel_job`` is idempotent — a late ``publish_result`` from
+            # the worker then finds no entry and returns cleanly (the
+            # broker's post-close path treats the same shape as a no-op).
+            self.broker.cancel_job(job.job_id)
             self.logger.error(
                 "Queue-backed grader failed",
                 task_id=task_id,
@@ -842,13 +834,22 @@ def queue_trial_grader_factory(ctx: TrialGraderContext) -> QueueTrialGrader:  # 
     )
 
 
-def judge_backed_trial_grader_factory(ctx: TrialGraderContext) -> JudgeBackedTrialGrader:
-    """Build a :class:`JudgeBackedTrialGrader` from a grader context.
+def judge_backed_trial_grader_factory(
+    ctx: TrialGraderContext,
+) -> JudgeBackedTrialGrader:  # noqa: ARG001
+    """Registered ``judge_only`` factory. Fails loud until a production
+    judge is wired through the context.
 
-    The default judge dispatch raises :class:`NotImplementedError` until a
-    production judge is wired through the context (see the follow-up on the
-    grader-detachment umbrella). The class is directly constructible with a
-    real :data:`JudgeGradeFn` for tests and for the future offline-replay
-    integration.
+    Same altitude as :func:`queue_trial_grader_factory`: raise at factory
+    time so the operator sees the misconfiguration at orchestrator startup,
+    not deep inside :meth:`grade` after a trial has already been paid for.
+    Tests construct :class:`JudgeBackedTrialGrader` directly with a real
+    :data:`JudgeGradeFn`.
     """
-    return JudgeBackedTrialGrader(judge_fn=_unwired_judge_fn, logger=ctx.logger)
+    raise NotImplementedError(
+        "``judge_only`` trial grader is registered but not yet wired to a "
+        "production judge at the engine layer. Instantiate "
+        "``JudgeBackedTrialGrader`` directly with your own ``JudgeGradeFn`` "
+        "for now; the factory will land once ``TrialGraderContext`` carries "
+        "judge-selection configuration."
+    )

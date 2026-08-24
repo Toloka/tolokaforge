@@ -195,6 +195,11 @@ def extract_openrouter_generation_id(response: Any) -> str | None:
             continue
         name = key.lower().removeprefix(_LITELLM_PROVIDER_HEADER_PREFIX)
         if name == OPENROUTER_GENERATION_ID_HEADER and value:
+            # Some litellm transport paths hand headers back as ``bytes``;
+            # ``str(b'gen-…')`` produces the literal ``"b'gen-…'"`` string,
+            # which would then 404 on OpenRouter's /generation endpoint.
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
             return str(value)
     return None
 

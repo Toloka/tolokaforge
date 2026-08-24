@@ -175,13 +175,13 @@ in_memory = "tolokaforge.core.runtime:in_memory_runtime_backend_factory"
 runner_rpc = "tolokaforge.core.trial_grader:runner_rpc_trial_grader_factory"
 # Second impl proves the plug-in seam accepts fundamentally different grader
 # shapes (not just runner-RPC-with-different-transport). Ships with an unwired
-# default judge dispatch — see JudgeBackedTrialGrader docstring and ADR-0035.
+# default judge dispatch — see JudgeBackedTrialGrader docstring and ADR-0038.
 judge_only = "tolokaforge.core.trial_grader:judge_backed_trial_grader_factory"
-# Third impl — dials the standalone tolokaforge.grader service (ADR-0035 P2).
+# Third impl — dials the standalone tolokaforge.grader service (ADR-0038 P2).
 # Same call shape as runner_rpc, but bound to the grader service's address
 # instead of the runner's; enables independent deploy and independent scale.
 grader_rpc = "tolokaforge.core.trial_grader:grader_rpc_trial_grader_factory"
-# Fourth impl — queue-backed transport (ADR-0035 P3). Orchestrator worker
+# Fourth impl — queue-backed transport (ADR-0038 P3). Orchestrator worker
 # publishes a grade job and blocks on a Future; a pool of grader workers
 # consumes from the queue in parallel. Ships with an in-memory reference
 # broker; Redis Streams / RabbitMQ / SQS backends plug behind the same
@@ -508,7 +508,7 @@ dev = [
     # runtime backends, service-readiness probes, turn policies, external
     # harnesses). Contracts live in ``.importlinter``; a forbidden import
     # fails the lint stage in ~1–3 s rather than after a full pytest run.
-    # See ADR-0035 § Design Drivers (import-linter, not just Protocol
+    # See ADR-0038 § Design Drivers (import-linter, not just Protocol
     # discipline).
     "import-linter>=2.0",
     "mypy>=1.7.0",

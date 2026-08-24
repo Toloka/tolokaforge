@@ -73,8 +73,14 @@ class _CannedWorker(threading.Thread):
         self.completed: list[str] = []
 
     def run(self) -> None:
+        from tolokaforge.grader.queue import BrokerClosed
+
         while not self._stop_evt.is_set():
-            job = self.broker.next_job(timeout=0.05)
+            try:
+                job = self.broker.next_job(timeout=0.05)
+            except BrokerClosed:
+                # Broker shut down cleanly — stop consuming.
+                return
             if job is None:
                 continue
             if self.per_job_delay:

@@ -1,4 +1,4 @@
-# Grader Container — standalone grader service (ADR-0035, P4).
+# Grader Container — standalone grader service (ADR-0038, P4).
 #
 # Ships the tolokaforge grader service (see docs/GRADER_SERVICE.md) as an
 # independently-deployable image alongside the runner / db-service /
@@ -80,6 +80,15 @@ ENV PATH=/opt/venv/bin:$PATH \
 RUN /opt/venv/bin/pip uninstall -y pip setuptools wheel
 
 EXPOSE 50052
+
+# Self-report readiness so ``docker compose up --wait`` and future
+# ``depends_on: {grader: {condition: service_healthy}}`` gate correctly.
+# gRPC has no HTTP endpoint; ``grpc_health_probe``-style checks aren't
+# in the image either, so probe via a Python one-liner that opens a
+# channel and dials the port. The other peer images (runner, db-service,
+# rag, mock-web) all self-report health — this closes the fifth service.
+HEALTHCHECK --interval=10s --timeout=5s --retries=3 --start-period=5s \
+    CMD python -c "import socket, sys; s=socket.socket(); s.settimeout(3); s.connect(('127.0.0.1', 50052)); s.close(); sys.exit(0)" || exit 1
 
 # The grader service reads --port / $GRADER_SERVICE_PORT; the default is
 # preserved via the entry point's argparse fall-through.

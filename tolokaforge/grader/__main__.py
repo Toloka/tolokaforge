@@ -35,7 +35,7 @@ def _unwired_judge_fn(dispatch: GradeDispatch) -> Grade | None:  # noqa: ARG001
 def _resolve_port(cli_port: int | None) -> int:
     if cli_port is not None:
         return cli_port
-    env = os.environ.get("GRADER_SERVICE_PORT")
+    env = (os.environ.get("GRADER_SERVICE_PORT") or "").strip()
     if env:
         try:
             return int(env)

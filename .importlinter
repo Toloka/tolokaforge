@@ -8,7 +8,7 @@
 # reach. A forbidden import surfaces as a lint failure in seconds
 # rather than after a full test run.
 #
-# See ADR-0035 § Design Drivers ("Import-linter, not just Protocol
+# See ADR-0038 § Design Drivers ("Import-linter, not just Protocol
 # discipline") for the rationale, and the individual contract-name
 # comments below for the seam each contract guards.
 #
@@ -21,14 +21,14 @@ root_packages =
     tolokaforge
 
 
-# Grader-detach seam (ADR-0035, milestone: grader detachment).
+# Grader-detach seam (ADR-0038, milestone: grader detachment).
 #
 # The orchestration surface (orchestrator / conductor / trial-executor)
 # reaches the grader plug-in only through the ``TrialGrader`` Protocol
 # in ``tolokaforge.core.trial_grader``. Importing ``core.grading.*``
 # (the pure evaluator) or ``runner.service`` (the runner-side grade
 # RPC) directly from the orchestration surface would silently
-# re-collapse the seam ADR-0014, ADR-0022, and ADR-0035 built.
+# re-collapse the seam ADR-0014, ADR-0022, and ADR-0038 built.
 [importlinter:contract:grader-detach]
 name = Orchestration surface holds the grader plug-in seam
 type = forbidden

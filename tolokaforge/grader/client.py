@@ -19,6 +19,11 @@ class GrpcGraderClient:
     Owns its own channel and stub. Callers construct one per grader (mirroring
     the runner client's lifecycle) so the plug-in seam does not share transport
     state across graders that may be pointed at different addresses.
+
+    Usable as a context manager — ``with GrpcGraderClient(addr) as c:``
+    closes the channel on exit. Long-lived callers that need to keep the
+    client for a whole orchestrator run still hold the instance directly
+    and call :meth:`close` in their teardown.
     """
 
     def __init__(self, grader_address: str = "grader:50052") -> None:
@@ -36,6 +41,13 @@ class GrpcGraderClient:
             self.channel.close()
             self.channel = None
             self.stub = None
+
+    def __enter__(self) -> GrpcGraderClient:
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close()
 
     def health_check(self) -> bool:
         if not self.stub:
