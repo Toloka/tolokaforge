@@ -365,9 +365,8 @@ def _running_runner(
 
 class TestLiveCallbackSubstrateReads:
     """Every LiveCallback read returns the same value :class:`InProcessGrading
-    Substrate` would over the same runner — the parity claim Stage 6's gate
-    will drive against a full grading pipeline. Locked here per-accessor over
-    an in-process gRPC channel so a wire drift in the servicer or the client
+    Substrate` would over the same runner. Locked here per-accessor over an
+    in-process gRPC channel so a wire drift in the servicer or the client
     surfaces at the substrate seam."""
 
     def test_initial_state_matches_in_process(self, monkeypatch: pytest.MonkeyPatch) -> None:

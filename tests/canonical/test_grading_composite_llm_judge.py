@@ -6,9 +6,9 @@ delegates to it via ``run_in_executor``. This suite constructs an
 :class:`InProcessGradingSubstrate` over a hand-built ``{initial_tables,
 final_tables, filesystem_root, kb_search, db_reader}`` fixture, drives
 :func:`composite.grade_llm_judge` with a scripted ``LLMClient`` (so the loop
-is deterministic), and asserts that the ``JudgeResult`` matches what the
-runner path used to produce — the same status, score, and per-criterion
-verdicts the judge would report against the same evidence, byte-for-byte.
+is deterministic), and asserts that the ``JudgeResult`` carries the same
+status, score, and per-criterion verdicts the judge would report against
+the same evidence.
 
 The scripted client is injected by monkeypatching ``LLMClient`` where
 ``LLMJudge`` imports it — ``LLMJudge`` builds its own client per :meth:`run`
@@ -145,11 +145,10 @@ def _logger() -> StructuredLogger:
     return StructuredLogger(name="test-composite-grade-llm-judge")
 
 
-class TestGradeLlmJudgeMatchesRunnerPath:
-    """Every ``JudgeResult`` the composite produces matches what the runner
-    path used to produce for the same evidence — the extraction is
-    behaviour-preserving; the composite is the same construction + call the
-    runner used to inline."""
+class TestGradeLlmJudgeVerdicts:
+    """Every ``JudgeResult`` the composite produces is the same status,
+    score, and per-criterion verdicts the judge would report against the
+    same evidence."""
 
     def test_completed_run_returns_scored_criterion_results(
         self, monkeypatch: pytest.MonkeyPatch

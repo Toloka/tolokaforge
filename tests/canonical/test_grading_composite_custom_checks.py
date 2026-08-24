@@ -7,10 +7,10 @@ wire-result wrapping). This suite constructs an
 final_tables}`` pair, drives :func:`composite.grade_custom_checks` against
 a fixture pack whose ``checks.py`` decides ``passed`` / ``failed`` /
 ``skipped`` on the trial's evidence, and asserts the returned
-``(score, wire_results, reason)`` tuple matches what the runner path used
-to produce for the same evidence — byte-for-byte.
+``(score, wire_results, reason)`` tuple is the byte-for-byte expected
+value for the same evidence.
 
-The four shapes the runner's ``_grade_custom_checks`` returned pre-extraction:
+The four shapes :func:`composite.grade_custom_checks` returns:
 
 - **disabled** — the pack declared ``enabled: false`` (or no block). The
   tuple is ``(-1.0, [], None)`` — no suite to describe.

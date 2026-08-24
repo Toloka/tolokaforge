@@ -2,8 +2,8 @@
 
 The runner registers this servicer on the same gRPC server + same listen port
 as :class:`RunnerService` iff ``RunConfig.grader.expose_substrate`` is true.
-An independent grader (:class:`LiveRunnerCallbackGradingSubstrate` — Stage 2)
-dials this surface to answer every read the composite grading dispatch makes.
+An independent grader (:class:`LiveRunnerCallbackGradingSubstrate`) dials
+this surface to answer every read the composite grading dispatch makes.
 
 Read-only by construction. The class holds :data:`_READ_ONLY` = ``True`` and
 implements no write handler; :func:`test_substrate_service_is_read_only_by_construction`

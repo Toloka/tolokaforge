@@ -3,14 +3,8 @@
 Every deployment shape (aggregate image, independent grader container,
 future trajectory-storage callback, future snapshot, future shared-mount)
 runs one composite grade against a :class:`GradingSubstrate`. This module
-carries the per-component helpers extracted from the runner's grading
-path so they can be reused verbatim by every topology.
-
-Extract-refactor discipline: the module functions are behaviour-preserving
-lifts of runner-side methods on ``RunnerServiceImpl``. The runner keeps
-its methods as thin wrappers that delegate here, so behaviour parity
-holds by construction — every existing canonical test still exercises
-the same code path.
+carries the per-component helpers so they can be reused verbatim by every
+topology.
 
 Layering exception. The composite lives at ``tolokaforge/core/grading/``
 and imports a handful of symbols from the runner package: the wire-shape
@@ -584,6 +578,8 @@ def grade_custom_checks(
     # for and via component metadata, not by crashing the grade path.
     try:
         final_env_state: dict[str, Any] = substrate.final_state()
+    except SubstrateUnreachableError:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             f"GradeTrial: {trial_id} - final DB state fetch failed ({exc}); "

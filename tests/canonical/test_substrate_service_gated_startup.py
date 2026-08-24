@@ -1,6 +1,6 @@
 """``SubstrateService`` — proto surface + config-gated startup + read-only invariant.
 
-Locks the four behaviours Stage 1 of issue #1261 commits to:
+Locks the four behaviours the runner-side SubstrateService commits to:
 
 1. ``RunConfig(grader=GraderConfig(expose_substrate=True))`` round-trips
    through pydantic; the default remains ``False`` so a brownfield
@@ -109,8 +109,8 @@ def _running_runner(*, expose_substrate: bool):
     fake_db = _FakeDBServiceClient(_RAW_STATE)
     # RunnerServiceImpl expects a real DBServiceClient shape; the fake
     # exposes the only two async methods this test exercises. rag_client
-    # stays None because the KB test in stage 2 exercises the KBSearch
-    # path; here we only need the DB read.
+    # stays None because the KB path is exercised elsewhere; here we only
+    # need the DB read.
     runner = RunnerServiceImpl(db_client=fake_db)  # type: ignore[arg-type]
     trial_context = TrialContextRuntime(
         trial_id=_TRIAL_ID, task_description=_minimal_task_description()
@@ -134,9 +134,9 @@ def _running_runner(*, expose_substrate: bool):
 
 
 class TestConfigRoundTrip:
-    """The compatibility surface Stage 1 introduces: one new optional field
-    on ``GraderConfig`` with a False default so an existing ``run_config.
-    yaml`` parses unchanged."""
+    """The compatibility surface on ``GraderConfig``: one optional field
+    with a False default so an existing ``run_config.yaml`` parses
+    unchanged."""
 
     def test_default_is_false(self) -> None:
         assert GraderConfig().expose_substrate is False
@@ -252,9 +252,8 @@ class TestGatedStartup:
         assert json.loads(response.state_json) == _RAW_STATE
 
     def test_flag_on_initial_state_reads_from_task_description(self) -> None:
-        # ReadInitialState is a substrate read all four locks depend on
-        # (Stage 2's callback substrate will dial it once and cache); lock
-        # the shape here to catch a signature drift.
+        # ReadInitialState is a substrate read all four locks depend on;
+        # lock the shape here to catch a signature drift.
         with _running_runner(expose_substrate=True) as (channel, _runner):
             stub = pb2_grpc.SubstrateServiceStub(channel)
             response = stub.ReadInitialState(pb2.ReadInitialStateRequest(trial_id=_TRIAL_ID))

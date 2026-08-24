@@ -2063,13 +2063,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         transcript_rules_config: TranscriptRulesConfig,
         timeline: TrialTimeline,
     ) -> tuple[TranscriptEvaluationResult | None, dict[str, KeyAccountingRecord]]:
-        """Delegate to the shared composite helper.
+        """Runner-side wrapper for :func:`tolokaforge.core.grading.composite.grade_transcript_rules`.
 
-        The body moved to :func:`tolokaforge.core.grading.composite.grade_transcript_rules`
-        so every deployment topology (aggregate image, independent grader
-        container, future trajectory-storage) runs the same code. This
-        method stays as a thin wrapper preserving the runner's internal
-        callsite shape.
+        The composite owns the dispatch every deployment topology runs;
+        this wrapper preserves the runner's internal callsite shape.
         """
         from tolokaforge.core.grading.composite import grade_transcript_rules
 
@@ -2083,11 +2080,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     def _grade_trace_checks(
         self, trial_id: str, config: TraceChecksConfig, timeline: TrialTimeline
     ) -> TraceChecksResult:
-        """Delegate to the shared composite helper.
-
-        Body moved to :func:`tolokaforge.core.grading.composite.grade_trace_checks`
-        for cross-topology reuse (ADR-0039). Behaviour-preserving wrapper.
-        """
+        """Runner-side wrapper for :func:`tolokaforge.core.grading.composite.grade_trace_checks` (ADR-0039)."""
         from tolokaforge.core.grading.composite import grade_trace_checks
 
         return grade_trace_checks(

@@ -162,8 +162,8 @@ class TestJsonpathCompositeMatchesRunnerPath:
         target = tmp_path / "output.txt"
         target.write_text("hello disk", encoding="utf-8")
         # A pack whose only assertion is a path_glob does not touch the
-        # substrate at all — this only asserts the composite behaves the way
-        # the runner used to for an all-glob pack.
+        # substrate at all — this only asserts the composite behaves as
+        # expected for an all-glob pack.
         checks = [
             {
                 "path_glob": str(target),

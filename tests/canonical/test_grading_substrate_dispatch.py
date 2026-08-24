@@ -1,6 +1,6 @@
 """``load_grading_substrate`` discovery + composite-level parity gate.
 
-Locks the two seams Stage 6 of issue #1261 commits to (per ADR-0039):
+Locks the two seams the substrate design commits to (per ADR-0039):
 
 1. ``plugin_registry.load_grading_substrate`` resolves substrates registered
    via ``importlib.metadata`` entry-points. The dispatch case injects a
@@ -16,7 +16,7 @@ Locks the two seams Stage 6 of issue #1261 commits to (per ADR-0039):
 
    - **InProcess leg** — drive the runner's ``GradeTrial`` RPC. Its
      ``_grade_trial_async`` builds :class:`InProcessGradingSubstrate`
-     internally (Stage 3) and reassembles the ``Grade`` proto via
+     internally and reassembles the ``Grade`` proto via
      ``compose_runner_trial_verdict`` + ``build_grade_reasons``.
    - **LiveRunnerCallback leg** — construct
      :class:`LiveRunnerCallbackGradingSubstrate` against the runner's
