@@ -13,6 +13,8 @@ import pytest
 import tolokaforge
 from tolokaforge.docker.image_source_policy import (
     UNKNOWN_VERSION_SENTINEL,
+    RunnerDockerCliUnavailableError,
+    check_runner_docker_cli_available,
     resolve_image_source,
 )
 
@@ -172,3 +174,78 @@ class TestSentinelStaysInSyncWithPackage:
                 )
                 == "pull"
             )
+
+
+class TestRunnerDockerCliAvailabilityGate:
+    """`check_runner_docker_cli_available` fails a run before any container
+    work when the resolved image source would ship a runner without the
+    docker CLI to a run that needs it."""
+
+    def test_noop_when_docker_cli_not_needed(self) -> None:
+        check_runner_docker_cli_available(
+            needs_docker_cli=False,
+            request="pull",
+            is_wheel_install=True,
+            engine_version="0.19.1",
+        )
+
+    def test_pull_wheel_install_raises(self) -> None:
+        with pytest.raises(RunnerDockerCliUnavailableError) as exc:
+            check_runner_docker_cli_available(
+                needs_docker_cli=True,
+                request="pull",
+                is_wheel_install=True,
+                engine_version="0.19.1",
+            )
+        msg = str(exc.value)
+        assert "docker CLI" in msg
+        assert "--image-source build" in msg
+        assert "docker.image_source: build" in msg
+        assert "TOLOKAFORGE_IMAGE_SOURCE=build" in msg
+
+    def test_auto_wheel_install_pinned_version_raises(self) -> None:
+        # This is the exact operator-install shape that misfires by default:
+        # pip-installed engine + auto policy + real version → resolves to
+        # 'pull' → runner ships without docker CLI.
+        with pytest.raises(RunnerDockerCliUnavailableError):
+            check_runner_docker_cli_available(
+                needs_docker_cli=True,
+                request="auto",
+                is_wheel_install=True,
+                engine_version="0.19.1",
+            )
+
+    def test_explicit_build_passes(self) -> None:
+        check_runner_docker_cli_available(
+            needs_docker_cli=True,
+            request="build",
+            is_wheel_install=True,
+            engine_version="0.19.1",
+        )
+
+    def test_auto_source_checkout_passes(self) -> None:
+        # Source-checkout contributor: auto resolves to build.
+        check_runner_docker_cli_available(
+            needs_docker_cli=True,
+            request="auto",
+            is_wheel_install=False,
+            engine_version="0.19.1",
+        )
+
+    def test_auto_unknown_version_passes(self) -> None:
+        # No valid pull tag → auto falls through to build.
+        check_runner_docker_cli_available(
+            needs_docker_cli=True,
+            request="auto",
+            is_wheel_install=True,
+            engine_version=UNKNOWN_VERSION_SENTINEL,
+        )
+
+    def test_auto_local_version_passes(self) -> None:
+        # PEP 440 local segment (`+dirty`) → auto falls through to build.
+        check_runner_docker_cli_available(
+            needs_docker_cli=True,
+            request="auto",
+            is_wheel_install=True,
+            engine_version="0.19.1+dirty",
+        )
