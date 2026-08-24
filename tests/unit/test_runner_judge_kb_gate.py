@@ -359,10 +359,14 @@ def test_search_policy_passthrough_skips_namespaced_non_tool_wrapper(caplog):
 
 
 class _FakeTaskDesc:
-    """Minimal task description: no workspace, no initial state (so the judge
-    state-diff and workspace-file paths degrade to None without a DB)."""
+    """Minimal task description: no workspace, empty initial state (so the
+    judge state-diff resolves to ``None`` for a first-turn transcript)."""
 
-    initial_state = None
+    def __init__(self) -> None:
+        from tolokaforge.runner.models import RunnerInitialStateConfig
+
+        self.initial_state = RunnerInitialStateConfig()
+        self.grading = None
 
 
 class _JudgeCtx:
@@ -375,6 +379,21 @@ class _JudgeCtx:
 
     def resolve_kb_search(self):
         return None
+
+
+def _empty_substrate():
+    """An in-process substrate whose ``initial_state`` is empty — the judge's
+    diff-first default declines and grade_llm_judge falls through to the
+    SpyJudge with no DB reads."""
+    from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
+
+    return InProcessGradingSubstrate(
+        db_reader=MagicMock(),
+        knowledge_search=None,
+        filesystem_root=None,
+        initial_state={},
+        final_state={},
+    )
 
 
 @pytest.mark.parametrize(
@@ -405,7 +424,7 @@ def test_grade_llm_judge_constructs_with_effective_disable_flag(
                 status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
             )
 
-    monkeypatch.setattr("tolokaforge.runner.service.LLMJudge", _SpyJudge)
+    monkeypatch.setattr("tolokaforge.core.grading.composite.LLMJudge", _SpyJudge)
 
     service = _service(None)
     try:
@@ -417,8 +436,10 @@ def test_grade_llm_judge_constructs_with_effective_disable_flag(
             ),
         )
         ctx = _JudgeCtx(ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0))
+        service.trials["t:0"] = ctx
         fut = asyncio.run_coroutine_threadsafe(
-            service._grade_llm_judge("t:0", cfg, [], ctx), service._loop
+            service._grade_llm_judge("t:0", cfg, [], ctx, substrate=_empty_substrate()),
+            service._loop,
         )
         fut.result(timeout=5.0)
         assert captured["disable"] is expected
@@ -455,7 +476,7 @@ def test_grade_llm_judge_constructs_with_effective_custom_prompt(
                 status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
             )
 
-    monkeypatch.setattr("tolokaforge.runner.service.LLMJudge", _SpyJudge)
+    monkeypatch.setattr("tolokaforge.core.grading.composite.LLMJudge", _SpyJudge)
 
     service = _service(None)
     try:
@@ -467,8 +488,10 @@ def test_grade_llm_judge_constructs_with_effective_custom_prompt(
             ),
         )
         ctx = _JudgeCtx(ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0))
+        service.trials["t:0"] = ctx
         fut = asyncio.run_coroutine_threadsafe(
-            service._grade_llm_judge("t:0", cfg, [], ctx), service._loop
+            service._grade_llm_judge("t:0", cfg, [], ctx, substrate=_empty_substrate()),
+            service._loop,
         )
         fut.result(timeout=5.0)
         assert captured["prompt"] == expected
@@ -508,7 +531,7 @@ def test_grade_llm_judge_constructs_with_effective_include_agent_system_prompt(
                 status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
             )
 
-    monkeypatch.setattr("tolokaforge.runner.service.LLMJudge", _SpyJudge)
+    monkeypatch.setattr("tolokaforge.core.grading.composite.LLMJudge", _SpyJudge)
 
     service = _service(None)
     try:
@@ -520,8 +543,10 @@ def test_grade_llm_judge_constructs_with_effective_include_agent_system_prompt(
             ),
         )
         ctx = _JudgeCtx(ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0))
+        service.trials["t:0"] = ctx
         fut = asyncio.run_coroutine_threadsafe(
-            service._grade_llm_judge("t:0", cfg, [], ctx), service._loop
+            service._grade_llm_judge("t:0", cfg, [], ctx, substrate=_empty_substrate()),
+            service._loop,
         )
         fut.result(timeout=5.0)
         assert captured["include"] is expected
@@ -565,7 +590,7 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
                 include_agent_system_prompt=False,
             )
 
-    monkeypatch.setattr("tolokaforge.runner.service.LLMJudge", _SpyJudge)
+    monkeypatch.setattr("tolokaforge.core.grading.composite.LLMJudge", _SpyJudge)
 
     rubric = Rubric(criteria=[{"id": "a", "description": "d", "kind": "binary", "weight": 1.0}])
     task_desc = TaskDescription(

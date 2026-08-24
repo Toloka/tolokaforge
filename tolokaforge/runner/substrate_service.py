@@ -1,0 +1,242 @@
+"""Runner-side ``SubstrateService`` — read-only view of a trial's substrate.
+
+The runner registers this servicer on the same gRPC server + same listen port
+as :class:`RunnerService` iff ``RunConfig.grader.expose_substrate`` is true.
+An independent grader (:class:`LiveRunnerCallbackGradingSubstrate`) dials
+this surface to answer every read the composite grading dispatch makes.
+
+Read-only by construction. The class holds :data:`_READ_ONLY` = ``True`` and
+implements no write handler; :func:`test_substrate_service_is_read_only_by_construction`
+enumerates the public method set against the generated
+:class:`SubstrateServiceServicer` base and refuses any name matching a write
+verb (``set_`` / ``insert`` / ``update`` / ``write`` / ``delete`` / ``mutate``).
+
+Every RPC delegates to the ``RunnerServiceImpl`` that owns the trial. No
+substrate-side state accumulation; the servicer is a thin adapter.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import logging
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import grpc
+
+from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner import runner_pb2_grpc as pb2_grpc
+from tolokaforge.runner.db_client import (
+    DBServiceError,
+)
+from tolokaforge.runner.db_client import (
+    TrialNotFoundError as DBTrialNotFoundError,
+)
+
+if TYPE_CHECKING:
+    from tolokaforge.runner.service import RunnerServiceImpl
+
+
+logger = logging.getLogger(__name__)
+
+
+class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
+    """Read-only substrate surface backed by a live :class:`RunnerServiceImpl`.
+
+    Constructed once per runner process. The instance holds a reference to
+    the runner service and delegates each RPC to it — the runner owns the
+    DB client, RAG client, per-trial KB resolution, and the agent-visible
+    workspace filter this servicer exposes.
+    """
+
+    _READ_ONLY: bool = True
+    """Structural read-only invariant. The class implements no write handler;
+    the read-only test asserts this constant is set AND that no public method
+    name matches a write verb."""
+
+    def __init__(self, runner_service: RunnerServiceImpl) -> None:
+        self._runner = runner_service
+
+    # ------------------------------------------------------------------
+    # State reads
+    # ------------------------------------------------------------------
+
+    def ReadInitialState(  # noqa: N802 — gRPC servicer method casing
+        self,
+        request: pb2.ReadInitialStateRequest,
+        context: grpc.ServicerContext,
+    ) -> pb2.ReadStateResponse:
+        trial_context = self._runner.trials.get(request.trial_id)
+        if trial_context is None:
+            context.set_code(grpc.StatusCode.NOT_FOUND)
+            context.set_details(f"Trial '{request.trial_id}' not registered")
+            return pb2.ReadStateResponse()
+        initial = trial_context.task_description.initial_state
+        tables = initial.tables if initial is not None else {}
+        return pb2.ReadStateResponse(state_json=json.dumps(tables or {}))
+
+    def ReadFinalDBState(  # noqa: N802
+        self,
+        request: pb2.ReadFinalDBStateRequest,
+        context: grpc.ServicerContext,
+    ) -> pb2.ReadStateResponse:
+        tables = list(request.tables) if request.tables else None
+        try:
+            state = self._runner._run_async(
+                self._runner.db_client.get_state(request.trial_id, tables)
+            )
+        except DBTrialNotFoundError:
+            return pb2.ReadStateResponse(state_json="{}", trial_not_found=True)
+        except DBServiceError as exc:
+            context.set_code(grpc.StatusCode.UNAVAILABLE)
+            context.set_details(f"DB Service error: {exc.message}")
+            return pb2.ReadStateResponse()
+        return pb2.ReadStateResponse(state_json=json.dumps(state.data))
+
+    def ReadFinalDBStateStable(  # noqa: N802
+        self,
+        request: pb2.ReadFinalDBStateStableRequest,
+        context: grpc.ServicerContext,
+    ) -> pb2.ReadStateResponse:
+        try:
+            state = self._runner._run_async(
+                self._runner.db_client.get_stable_state(request.trial_id)
+            )
+        except DBTrialNotFoundError:
+            return pb2.ReadStateResponse(state_json="{}", trial_not_found=True)
+        except DBServiceError as exc:
+            context.set_code(grpc.StatusCode.UNAVAILABLE)
+            context.set_details(f"DB Service error: {exc.message}")
+            return pb2.ReadStateResponse()
+        return pb2.ReadStateResponse(state_json=json.dumps(state.data))
+
+    # ------------------------------------------------------------------
+    # Filesystem reads
+    # ------------------------------------------------------------------
+
+    def ReadFilesystemPath(  # noqa: N802
+        self,
+        request: pb2.ReadFilesystemPathRequest,
+        context: grpc.ServicerContext,
+    ) -> pb2.ReadFilesystemPathResponse:
+        root = self._workspace_root()
+        target = (root / request.path).resolve() if request.path else root
+        # Refuse a path that escapes the workspace root — a defensive check
+        # against a resolved symlink or a ``..`` component pointing outside
+        # AGENT_WORK_DIR. The agent-visible surface is bounded by design.
+        try:
+            target.relative_to(root)
+        except ValueError:
+            return pb2.ReadFilesystemPathResponse(exists=False)
+        if target.is_symlink() or not target.exists():
+            return pb2.ReadFilesystemPathResponse(exists=False)
+        if target.is_dir():
+            return pb2.ReadFilesystemPathResponse(exists=True, is_dir=True)
+        if not target.is_file():
+            return pb2.ReadFilesystemPathResponse(exists=False)
+        try:
+            content = target.read_text(encoding="utf-8")
+            return pb2.ReadFilesystemPathResponse(exists=True, is_file=True, content_utf8=content)
+        except UnicodeDecodeError:
+            data = target.read_bytes()
+            return pb2.ReadFilesystemPathResponse(
+                exists=True,
+                is_file=True,
+                content_bytes_b64=base64.b64encode(data).decode("ascii"),
+            )
+        except OSError as exc:
+            logger.warning(
+                "SubstrateService.ReadFilesystemPath: could not read %s: %s", target, exc
+            )
+            return pb2.ReadFilesystemPathResponse(exists=False)
+
+    def ListFilesystemDir(  # noqa: N802
+        self,
+        request: pb2.ListFilesystemDirRequest,
+        context: grpc.ServicerContext,
+    ) -> pb2.ListFilesystemDirResponse:
+        # Same filter _read_agent_visible_filesystem ships today: skip
+        # symlinks, non-files, and files that refuse UTF-8 decode. No
+        # path-component excluder for node_modules / .venv / .git — a
+        # coding-harness workspace carries those trees on the wire, matching
+        # the shipped runner behaviour byte-for-byte.
+        rel_paths: list[str] = []
+        root = self._workspace_root()
+        if not root.is_dir():
+            return pb2.ListFilesystemDirResponse()
+        for path in root.rglob("*"):
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            except OSError as exc:
+                logger.warning(
+                    "SubstrateService.ListFilesystemDir: could not read %s: %s", path, exc
+                )
+                continue
+            rel_paths.append(path.relative_to(root).as_posix())
+        return pb2.ListFilesystemDirResponse(rel_paths=rel_paths)
+
+    # ------------------------------------------------------------------
+    # KB reads
+    # ------------------------------------------------------------------
+
+    def KBSearch(  # noqa: N802
+        self,
+        request: pb2.KBSearchRequest,
+        context: grpc.ServicerContext,
+    ) -> pb2.KBSearchResponse:
+        trial_context = self._runner.trials.get(request.trial_id)
+        if trial_context is None:
+            context.set_code(grpc.StatusCode.NOT_FOUND)
+            context.set_details(f"Trial '{request.trial_id}' not registered")
+            return pb2.KBSearchResponse()
+        kb = trial_context.resolve_kb_search()
+        if kb is None:
+            return pb2.KBSearchResponse(kb_available=False)
+        # The judge's KnowledgeSearch is synchronous by contract (see
+        # docs/RUBRIC_GRADING_DESIGN.md § "the judge runs on the runner"), so
+        # no loop bridge is required here.
+        hits = kb.search(request.query, top_k=request.top_k, alpha=request.alpha)
+        return pb2.KBSearchResponse(
+            kb_available=True,
+            hits=[
+                pb2.SubstrateSearchHit(
+                    doc_id=hit.doc_id,
+                    source=hit.source,
+                    score=hit.score,
+                    text=hit.text,
+                )
+                for hit in hits
+            ],
+        )
+
+    # ------------------------------------------------------------------
+    # Health
+    # ------------------------------------------------------------------
+
+    def SubstrateHealthCheck(  # noqa: N802
+        self,
+        request: pb2.SubstrateHealthCheckRequest,  # noqa: ARG002
+        context: grpc.ServicerContext,  # noqa: ARG002
+    ) -> pb2.SubstrateHealthCheckResponse:
+        return pb2.SubstrateHealthCheckResponse(
+            status="ready",
+            active_trials=len(self._runner.trials),
+        )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _workspace_root(self) -> Path:
+        # Import at call time to avoid a top-level cycle through service.py.
+        from tolokaforge.runner.service import AGENT_WORK_DIR
+
+        return Path(AGENT_WORK_DIR)
+
+
+__all__ = ["SubstrateServicer"]

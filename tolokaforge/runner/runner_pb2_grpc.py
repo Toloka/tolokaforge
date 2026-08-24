@@ -3,9 +3,9 @@
 
 import grpc
 
-from tolokaforge.runner import runner_pb2 as runner__pb2
+from tolokaforge.runner import runner_pb2 as tolokaforge_dot_runner_dot_runner__pb2
 
-GRPC_GENERATED_VERSION = "1.80.0"
+GRPC_GENERATED_VERSION = "1.83.0"
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -19,7 +19,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f"The grpc package installed is at version {GRPC_VERSION},"
-        + " but the generated code in runner_pb2_grpc.py depends on"
+        + " but the generated code in tolokaforge/runner/runner_pb2_grpc.py depends on"
         + f" grpcio>={GRPC_GENERATED_VERSION}."
         + f" Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}"
         + f" or downgrade your generated code using grpcio-tools<={GRPC_VERSION}."
@@ -41,44 +41,44 @@ class RunnerServiceStub:
         """
         self.RegisterTrial = channel.unary_unary(
             "/tolokaforge.runner.RunnerService/RegisterTrial",
-            request_serializer=runner__pb2.RegisterTrialRequest.SerializeToString,
-            response_deserializer=runner__pb2.RegisterTrialResponse.FromString,
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.RegisterTrialRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.RegisterTrialResponse.FromString,
             _registered_method=True,
         )
         self.ExecuteTool = channel.unary_unary(
             "/tolokaforge.runner.RunnerService/ExecuteTool",
-            request_serializer=runner__pb2.ExecuteToolRequest.SerializeToString,
-            response_deserializer=runner__pb2.ExecuteToolResponse.FromString,
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.ExecuteToolRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ExecuteToolResponse.FromString,
             _registered_method=True,
         )
         self.GradeTrial = channel.unary_unary(
             "/tolokaforge.runner.RunnerService/GradeTrial",
-            request_serializer=runner__pb2.GradeTrialRequest.SerializeToString,
-            response_deserializer=runner__pb2.GradeTrialResponse.FromString,
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.GradeTrialRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.GradeTrialResponse.FromString,
             _registered_method=True,
         )
         self.GetState = channel.unary_unary(
             "/tolokaforge.runner.RunnerService/GetState",
-            request_serializer=runner__pb2.GetStateRequest.SerializeToString,
-            response_deserializer=runner__pb2.GetStateResponse.FromString,
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.GetStateRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.GetStateResponse.FromString,
             _registered_method=True,
         )
         self.ResetTrial = channel.unary_unary(
             "/tolokaforge.runner.RunnerService/ResetTrial",
-            request_serializer=runner__pb2.ResetTrialRequest.SerializeToString,
-            response_deserializer=runner__pb2.ResetTrialResponse.FromString,
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.ResetTrialRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ResetTrialResponse.FromString,
             _registered_method=True,
         )
         self.CleanupTrial = channel.unary_unary(
             "/tolokaforge.runner.RunnerService/CleanupTrial",
-            request_serializer=runner__pb2.CleanupTrialRequest.SerializeToString,
-            response_deserializer=runner__pb2.CleanupTrialResponse.FromString,
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.CleanupTrialRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.CleanupTrialResponse.FromString,
             _registered_method=True,
         )
         self.HealthCheck = channel.unary_unary(
             "/tolokaforge.runner.RunnerService/HealthCheck",
-            request_serializer=runner__pb2.HealthCheckRequest.SerializeToString,
-            response_deserializer=runner__pb2.HealthCheckResponse.FromString,
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.HealthCheckRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.HealthCheckResponse.FromString,
             _registered_method=True,
         )
 
@@ -148,38 +148,38 @@ def add_RunnerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
         "RegisterTrial": grpc.unary_unary_rpc_method_handler(
             servicer.RegisterTrial,
-            request_deserializer=runner__pb2.RegisterTrialRequest.FromString,
-            response_serializer=runner__pb2.RegisterTrialResponse.SerializeToString,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.RegisterTrialRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.RegisterTrialResponse.SerializeToString,
         ),
         "ExecuteTool": grpc.unary_unary_rpc_method_handler(
             servicer.ExecuteTool,
-            request_deserializer=runner__pb2.ExecuteToolRequest.FromString,
-            response_serializer=runner__pb2.ExecuteToolResponse.SerializeToString,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ExecuteToolRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.ExecuteToolResponse.SerializeToString,
         ),
         "GradeTrial": grpc.unary_unary_rpc_method_handler(
             servicer.GradeTrial,
-            request_deserializer=runner__pb2.GradeTrialRequest.FromString,
-            response_serializer=runner__pb2.GradeTrialResponse.SerializeToString,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.GradeTrialRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.GradeTrialResponse.SerializeToString,
         ),
         "GetState": grpc.unary_unary_rpc_method_handler(
             servicer.GetState,
-            request_deserializer=runner__pb2.GetStateRequest.FromString,
-            response_serializer=runner__pb2.GetStateResponse.SerializeToString,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.GetStateRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.GetStateResponse.SerializeToString,
         ),
         "ResetTrial": grpc.unary_unary_rpc_method_handler(
             servicer.ResetTrial,
-            request_deserializer=runner__pb2.ResetTrialRequest.FromString,
-            response_serializer=runner__pb2.ResetTrialResponse.SerializeToString,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ResetTrialRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.ResetTrialResponse.SerializeToString,
         ),
         "CleanupTrial": grpc.unary_unary_rpc_method_handler(
             servicer.CleanupTrial,
-            request_deserializer=runner__pb2.CleanupTrialRequest.FromString,
-            response_serializer=runner__pb2.CleanupTrialResponse.SerializeToString,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.CleanupTrialRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.CleanupTrialResponse.SerializeToString,
         ),
         "HealthCheck": grpc.unary_unary_rpc_method_handler(
             servicer.HealthCheck,
-            request_deserializer=runner__pb2.HealthCheckRequest.FromString,
-            response_serializer=runner__pb2.HealthCheckResponse.SerializeToString,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.HealthCheckRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.HealthCheckResponse.SerializeToString,
         ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -214,8 +214,8 @@ class RunnerService:
             request,
             target,
             "/tolokaforge.runner.RunnerService/RegisterTrial",
-            runner__pb2.RegisterTrialRequest.SerializeToString,
-            runner__pb2.RegisterTrialResponse.FromString,
+            tolokaforge_dot_runner_dot_runner__pb2.RegisterTrialRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.RegisterTrialResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -244,8 +244,8 @@ class RunnerService:
             request,
             target,
             "/tolokaforge.runner.RunnerService/ExecuteTool",
-            runner__pb2.ExecuteToolRequest.SerializeToString,
-            runner__pb2.ExecuteToolResponse.FromString,
+            tolokaforge_dot_runner_dot_runner__pb2.ExecuteToolRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.ExecuteToolResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -274,8 +274,8 @@ class RunnerService:
             request,
             target,
             "/tolokaforge.runner.RunnerService/GradeTrial",
-            runner__pb2.GradeTrialRequest.SerializeToString,
-            runner__pb2.GradeTrialResponse.FromString,
+            tolokaforge_dot_runner_dot_runner__pb2.GradeTrialRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.GradeTrialResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -304,8 +304,8 @@ class RunnerService:
             request,
             target,
             "/tolokaforge.runner.RunnerService/GetState",
-            runner__pb2.GetStateRequest.SerializeToString,
-            runner__pb2.GetStateResponse.FromString,
+            tolokaforge_dot_runner_dot_runner__pb2.GetStateRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.GetStateResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -334,8 +334,8 @@ class RunnerService:
             request,
             target,
             "/tolokaforge.runner.RunnerService/ResetTrial",
-            runner__pb2.ResetTrialRequest.SerializeToString,
-            runner__pb2.ResetTrialResponse.FromString,
+            tolokaforge_dot_runner_dot_runner__pb2.ResetTrialRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.ResetTrialResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -364,8 +364,8 @@ class RunnerService:
             request,
             target,
             "/tolokaforge.runner.RunnerService/CleanupTrial",
-            runner__pb2.CleanupTrialRequest.SerializeToString,
-            runner__pb2.CleanupTrialResponse.FromString,
+            tolokaforge_dot_runner_dot_runner__pb2.CleanupTrialRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.CleanupTrialResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -394,8 +394,429 @@ class RunnerService:
             request,
             target,
             "/tolokaforge.runner.RunnerService/HealthCheck",
-            runner__pb2.HealthCheckRequest.SerializeToString,
-            runner__pb2.HealthCheckResponse.FromString,
+            tolokaforge_dot_runner_dot_runner__pb2.HealthCheckRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.HealthCheckResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+
+class SubstrateServiceStub:
+    """=============================================================================
+    SubstrateService - read-only view of a trial's grading substrate.
+
+    Exposed by the runner iff RunConfig.grader.expose_substrate is true. Serves
+    the same trials the runner already holds; both servicers are registered on
+    the same gRPC server + same listen port. Read-only by construction: the
+    servicer implements no write handler and its class holds a _READ_ONLY
+    invariant used by the read-only structural test. Distinct from
+    RunnerService.GetState because a standalone grader needs the trial's WHOLE
+    substrate (initial state, filesystem, KB) — not just the current DB dump.
+    =============================================================================
+
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.ReadInitialState = channel.unary_unary(
+            "/tolokaforge.runner.SubstrateService/ReadInitialState",
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.ReadInitialStateRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ReadStateResponse.FromString,
+            _registered_method=True,
+        )
+        self.ReadFinalDBState = channel.unary_unary(
+            "/tolokaforge.runner.SubstrateService/ReadFinalDBState",
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.ReadFinalDBStateRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ReadStateResponse.FromString,
+            _registered_method=True,
+        )
+        self.ReadFinalDBStateStable = channel.unary_unary(
+            "/tolokaforge.runner.SubstrateService/ReadFinalDBStateStable",
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.ReadFinalDBStateStableRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ReadStateResponse.FromString,
+            _registered_method=True,
+        )
+        self.ReadFilesystemPath = channel.unary_unary(
+            "/tolokaforge.runner.SubstrateService/ReadFilesystemPath",
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.ReadFilesystemPathRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ReadFilesystemPathResponse.FromString,
+            _registered_method=True,
+        )
+        self.ListFilesystemDir = channel.unary_unary(
+            "/tolokaforge.runner.SubstrateService/ListFilesystemDir",
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.ListFilesystemDirRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ListFilesystemDirResponse.FromString,
+            _registered_method=True,
+        )
+        self.KBSearch = channel.unary_unary(
+            "/tolokaforge.runner.SubstrateService/KBSearch",
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.KBSearchRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.KBSearchResponse.FromString,
+            _registered_method=True,
+        )
+        self.SubstrateHealthCheck = channel.unary_unary(
+            "/tolokaforge.runner.SubstrateService/SubstrateHealthCheck",
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.SubstrateHealthCheckRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.SubstrateHealthCheckResponse.FromString,
+            _registered_method=True,
+        )
+
+
+class SubstrateServiceServicer:
+    """=============================================================================
+    SubstrateService - read-only view of a trial's grading substrate.
+
+    Exposed by the runner iff RunConfig.grader.expose_substrate is true. Serves
+    the same trials the runner already holds; both servicers are registered on
+    the same gRPC server + same listen port. Read-only by construction: the
+    servicer implements no write handler and its class holds a _READ_ONLY
+    invariant used by the read-only structural test. Distinct from
+    RunnerService.GetState because a standalone grader needs the trial's WHOLE
+    substrate (initial state, filesystem, KB) — not just the current DB dump.
+    =============================================================================
+
+    """
+
+    def ReadInitialState(self, request, context):
+        """Read the trial's pre-execution state ({table: [rows]})."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def ReadFinalDBState(self, request, context):
+        """Read the trial's post-execution DB state, RAW — mirrors
+        db_client.get_state (unfiltered rows). Used by judge state-diff +
+        custom_checks; parity depends on this NOT being papered over with the
+        stable variant.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def ReadFinalDBStateStable(self, request, context):
+        """Read the trial's post-execution DB state, STABLE — mirrors
+        db_client.get_stable_state (unstable fields filtered server-side by the
+        DB service). Used by jsonpath state-checks grading.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def ReadFilesystemPath(self, request, context):
+        """Read one file under the trial's AGENT_WORK_DIR (path relative). Returns
+        exists=false for a missing / non-file / symlink path; is_file=true with
+        content_utf8 for text; is_file=true with content_bytes_b64 (base64) for
+        any file that fails UTF-8 decode. Mirrors the same filter
+        _read_agent_visible_filesystem applies today.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def ListFilesystemDir(self, request, context):
+        """List the trial's agent-visible workspace: relative POSIX paths of every
+        non-symlink UTF-8-decodable file under AGENT_WORK_DIR. Same filter
+        _read_agent_visible_filesystem ships today — no path-component excluder
+        for node_modules / .venv / .git; a coding-harness workspace carries
+        those trees on the wire.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def KBSearch(self, request, context):
+        """Query the trial's per-trial KB (rag-service). kb_available=false is a
+        first-class signal ("this trial has no KB provisioned"); the callback
+        substrate returns None from knowledge_search() when kb_available is
+        false rather than dialing an unreachable endpoint.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def SubstrateHealthCheck(self, request, context):
+        """Substrate liveness + capacity signal. Distinct from RunnerService.
+        HealthCheck (that endpoint reports RunnerService plumbing; this one
+        reports the substrate seam and its active-trial count).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+
+def add_SubstrateServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+        "ReadInitialState": grpc.unary_unary_rpc_method_handler(
+            servicer.ReadInitialState,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ReadInitialStateRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.ReadStateResponse.SerializeToString,
+        ),
+        "ReadFinalDBState": grpc.unary_unary_rpc_method_handler(
+            servicer.ReadFinalDBState,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ReadFinalDBStateRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.ReadStateResponse.SerializeToString,
+        ),
+        "ReadFinalDBStateStable": grpc.unary_unary_rpc_method_handler(
+            servicer.ReadFinalDBStateStable,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ReadFinalDBStateStableRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.ReadStateResponse.SerializeToString,
+        ),
+        "ReadFilesystemPath": grpc.unary_unary_rpc_method_handler(
+            servicer.ReadFilesystemPath,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ReadFilesystemPathRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.ReadFilesystemPathResponse.SerializeToString,
+        ),
+        "ListFilesystemDir": grpc.unary_unary_rpc_method_handler(
+            servicer.ListFilesystemDir,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ListFilesystemDirRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.ListFilesystemDirResponse.SerializeToString,
+        ),
+        "KBSearch": grpc.unary_unary_rpc_method_handler(
+            servicer.KBSearch,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.KBSearchRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.KBSearchResponse.SerializeToString,
+        ),
+        "SubstrateHealthCheck": grpc.unary_unary_rpc_method_handler(
+            servicer.SubstrateHealthCheck,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.SubstrateHealthCheckRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.SubstrateHealthCheckResponse.SerializeToString,
+        ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+        "tolokaforge.runner.SubstrateService", rpc_method_handlers
+    )
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers(
+        "tolokaforge.runner.SubstrateService", rpc_method_handlers
+    )
+
+
+# This class is part of an EXPERIMENTAL API.
+class SubstrateService:
+    """=============================================================================
+    SubstrateService - read-only view of a trial's grading substrate.
+
+    Exposed by the runner iff RunConfig.grader.expose_substrate is true. Serves
+    the same trials the runner already holds; both servicers are registered on
+    the same gRPC server + same listen port. Read-only by construction: the
+    servicer implements no write handler and its class holds a _READ_ONLY
+    invariant used by the read-only structural test. Distinct from
+    RunnerService.GetState because a standalone grader needs the trial's WHOLE
+    substrate (initial state, filesystem, KB) — not just the current DB dump.
+    =============================================================================
+
+    """
+
+    @staticmethod
+    def ReadInitialState(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/tolokaforge.runner.SubstrateService/ReadInitialState",
+            tolokaforge_dot_runner_dot_runner__pb2.ReadInitialStateRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.ReadStateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def ReadFinalDBState(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/tolokaforge.runner.SubstrateService/ReadFinalDBState",
+            tolokaforge_dot_runner_dot_runner__pb2.ReadFinalDBStateRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.ReadStateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def ReadFinalDBStateStable(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/tolokaforge.runner.SubstrateService/ReadFinalDBStateStable",
+            tolokaforge_dot_runner_dot_runner__pb2.ReadFinalDBStateStableRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.ReadStateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def ReadFilesystemPath(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/tolokaforge.runner.SubstrateService/ReadFilesystemPath",
+            tolokaforge_dot_runner_dot_runner__pb2.ReadFilesystemPathRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.ReadFilesystemPathResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def ListFilesystemDir(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/tolokaforge.runner.SubstrateService/ListFilesystemDir",
+            tolokaforge_dot_runner_dot_runner__pb2.ListFilesystemDirRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.ListFilesystemDirResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def KBSearch(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/tolokaforge.runner.SubstrateService/KBSearch",
+            tolokaforge_dot_runner_dot_runner__pb2.KBSearchRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.KBSearchResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def SubstrateHealthCheck(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/tolokaforge.runner.SubstrateService/SubstrateHealthCheck",
+            tolokaforge_dot_runner_dot_runner__pb2.SubstrateHealthCheckRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.SubstrateHealthCheckResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -1,26 +1,32 @@
-"""Fail-loud entry-point registries for the five swappable seams.
+"""Fail-loud entry-point registries for the six swappable seams.
 
 External code discovers and loads alternative implementations of the
 :class:`~tolokaforge.core.runtime.RuntimeBackend`,
 :class:`~tolokaforge.core.trial_grader.TrialGrader`,
 :class:`~tolokaforge.core.conductor.Conductor`,
-:class:`~tolokaforge.core.service_readiness.ServiceReadinessProbe`, and
-:class:`~tolokaforge.core.actors.turn_policy.TurnPolicy` Protocols
+:class:`~tolokaforge.core.service_readiness.ServiceReadinessProbe`,
+:class:`~tolokaforge.core.actors.turn_policy.TurnPolicy`, and
+:class:`~tolokaforge.core.grading.substrate.GradingSubstrate` Protocols
 through ``importlib.metadata`` entry-point groups — no in-tree edit, no
 monkey-patch. Each entry point resolves to a *factory callable*, mirroring the
 existing :data:`~tolokaforge.core.conductor.ConductorFactory` idiom. Four of
 the seams adapt divergent impl constructors to a per-group frozen-dataclass
 context (``Callable[[<Context>], <Impl>]``); the readiness probes need no
 build dependencies, so their factory is arg-less
-(``Callable[[], ServiceReadinessProbe]``).
+(``Callable[[], ServiceReadinessProbe]``). The grading-substrate loader
+resolves directly to the ``GradingSubstrate`` implementation *class* — the
+substrate seam is constructed per-trial with topology-specific arguments the
+plug-in group cannot generically supply, so callers instantiate the returned
+class themselves (see ADR-0039).
 
-The five groups:
+The six groups:
 
 * ``tolokaforge.runtime_backends`` → :data:`RuntimeBackendFactory`
 * ``tolokaforge.trial_graders`` → :data:`TrialGraderFactory`
 * ``tolokaforge.conductors`` → :data:`~tolokaforge.core.conductor.ConductorFactory`
 * ``tolokaforge.service_readiness_probes`` → :data:`ReadinessProbeFactory`
 * ``tolokaforge.turn_policies`` → :data:`TurnPolicyFactory`
+* ``tolokaforge.grading_substrates`` → ``type[GradingSubstrate]``
 
 Discovery is lazy and cached per group; it enumerates ``ep.name`` /
 ``ep.dist`` **without** calling ``ep.load()``. This splits the fail-loud
@@ -46,6 +52,7 @@ from typing import TYPE_CHECKING, cast
 
 from tolokaforge.core.actors.turn_policy import TurnPolicy
 from tolokaforge.core.conductor import ConductorFactory
+from tolokaforge.core.grading.substrate import GradingSubstrate
 from tolokaforge.core.models.run_config import GraderConfig
 from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
 from tolokaforge.core.runtime import RuntimeBackend
@@ -74,12 +81,14 @@ __all__ = [
     "TurnPolicyFactory",
     "UnknownImplementationError",
     "available_conductors",
+    "available_grading_substrates",
     "available_readiness_probes",
     "available_runtime_backends",
     "available_trial_graders",
     "available_turn_policies",
     "discover_entry_points",
     "load_conductor",
+    "load_grading_substrate",
     "load_readiness_probe",
     "load_runtime_backend",
     "load_trial_grader",
@@ -91,6 +100,7 @@ TRIAL_GRADERS_GROUP = "tolokaforge.trial_graders"
 CONDUCTORS_GROUP = "tolokaforge.conductors"
 SERVICE_READINESS_PROBES_GROUP = "tolokaforge.service_readiness_probes"
 TURN_POLICIES_GROUP = "tolokaforge.turn_policies"
+GRADING_SUBSTRATES_GROUP = "tolokaforge.grading_substrates"
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +326,23 @@ def load_turn_policy(name: str) -> TurnPolicyFactory:
     return cast(TurnPolicyFactory, _load(TURN_POLICIES_GROUP, name))
 
 
+def load_grading_substrate(name: str) -> type[GradingSubstrate]:
+    """Resolve a registered grading-substrate name to its implementation class.
+
+    Unlike the other loaders — which return a factory callable adapting a
+    per-group context to an impl — this one returns the substrate *class*
+    itself. Substrates are constructed per-trial with topology-specific
+    arguments (runner address + trial id for ``live_callback``; live
+    ``db_reader`` / factories for ``in_process``; a snapshot bundle for
+    future ``snapshot``) that no shared context can generically supply, so
+    the caller instantiates the class it received.
+
+    Fail-loud on unknown names via :class:`UnknownImplementationError`,
+    matching every other loader in this module.
+    """
+    return cast(type[GradingSubstrate], _load(GRADING_SUBSTRATES_GROUP, name))
+
+
 def available_runtime_backends() -> list[str]:
     """Sorted names registered in the ``tolokaforge.runtime_backends`` group."""
     return sorted(discover_entry_points(RUNTIME_BACKENDS_GROUP))
@@ -339,3 +366,8 @@ def available_readiness_probes() -> list[str]:
 def available_turn_policies() -> list[str]:
     """Sorted names registered in the ``tolokaforge.turn_policies`` group."""
     return sorted(discover_entry_points(TURN_POLICIES_GROUP))
+
+
+def available_grading_substrates() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.grading_substrates`` group."""
+    return sorted(discover_entry_points(GRADING_SUBSTRATES_GROUP))

@@ -10,11 +10,11 @@ Task authors write jsonpath state_checks like::
 For that to match, the runner exposes the on-disk contents of /work/
 back out under the logical /env/fs/agent-visible/ layout the task YAML
 wrote against — the same layout the RegisterTrial provisioner accepts.
-
-The runner catches ``TrialNotFoundError`` from the DB client so a
-filesystem-only trial (one whose task never provisions ``initial_state.tables``
-and therefore never calls ``db_client.init_trial()``) still assembles a
-jsonpath state rooted at ``$.filesystem[…]``.
+The composite grader (``composite.grade_state_checks_reads``) merges the
+walk into ``$.filesystem`` and merges the DB service's STABLE state
+under ``$.db`` / ``$.tables`` — see ``tests/canonical/test_grading_
+composite_state_checks.py`` and ``tests/unit/grading/test_composite_
+state_checks_gating.py`` for the composite's own behaviour locks.
 """
 
 from __future__ import annotations
@@ -25,25 +25,23 @@ from unittest.mock import AsyncMock
 import pytest
 
 from tolokaforge.runner import service as service_module
-from tolokaforge.runner.db_client import TrialNotFoundError
 
 pytestmark = pytest.mark.unit
 
 
 class _StubRunnerServiceImpl:
-    """Bind just the methods under test onto a minimal instance.
+    """Bind just the method under test onto a minimal instance.
 
     The full RunnerServiceImpl constructor spins up a gRPC server, a DB client,
     an LLM stack and an OTEL exporter — none of which the filesystem-read
-    helper touches. Binding the two methods directly to a plain object keeps
-    the test hermetic.
+    helper touches. Binding the method directly to a plain object keeps the
+    test hermetic.
     """
 
     def __init__(self, db_client) -> None:  # noqa: ANN001 — test stub
         self.db_client = db_client
 
     _read_agent_visible_filesystem = service_module.RunnerServiceImpl._read_agent_visible_filesystem
-    _assemble_jsonpath_state = service_module.RunnerServiceImpl._assemble_jsonpath_state
 
 
 @pytest.fixture
@@ -108,49 +106,3 @@ def test_read_agent_visible_filesystem_skips_symlinks(
     fs = svc._read_agent_visible_filesystem()
 
     assert fs == {"/env/fs/agent-visible/readme.txt": "ok"}
-
-
-@pytest.mark.asyncio
-async def test_assemble_jsonpath_state_handles_missing_db_trial(
-    redirect_work_dir: Path,
-) -> None:
-    """Filesystem-only tasks never call db_client.init_trial(), so
-    ``get_stable_state`` raises ``TrialNotFoundError``. The assembler must
-    treat that as an empty DB state instead of propagating the error —
-    otherwise the outer catch-all in GradeTrial rewrites it as
-    ``Grading error: TrialNotFoundError`` and the trial fails to grade at
-    all, even for assertions that only need $.filesystem.
-    """
-    (redirect_work_dir / "buggy_math.py").write_text("amount * (1 + tax_rate)\n")
-
-    db_client = AsyncMock()
-    db_client.get_stable_state = AsyncMock(side_effect=TrialNotFoundError("t-1"))
-    svc = _StubRunnerServiceImpl(db_client=db_client)
-
-    state = await svc._assemble_jsonpath_state("t-1")
-
-    assert state["db"] == {}
-    assert state["tables"] == {}
-    assert state["filesystem"] == {
-        "/env/fs/agent-visible/buggy_math.py": "amount * (1 + tax_rate)\n",
-    }
-
-
-@pytest.mark.asyncio
-async def test_assemble_jsonpath_state_merges_db_and_filesystem(
-    redirect_work_dir: Path,
-) -> None:
-    (redirect_work_dir / "buggy_math.py").write_text("amount * (1 + tax_rate)\n")
-
-    stable_response = type("R", (), {"data": {"users": [{"id": 1, "name": "alice"}]}})()
-    db_client = AsyncMock()
-    db_client.get_stable_state = AsyncMock(return_value=stable_response)
-    svc = _StubRunnerServiceImpl(db_client=db_client)
-
-    state = await svc._assemble_jsonpath_state("t-1")
-
-    assert state["db"] == {"users": [{"id": 1, "name": "alice"}]}
-    assert state["tables"] == state["db"]
-    assert state["filesystem"] == {
-        "/env/fs/agent-visible/buggy_math.py": "amount * (1 + tax_rate)\n",
-    }

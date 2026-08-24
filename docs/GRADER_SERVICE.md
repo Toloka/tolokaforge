@@ -203,10 +203,76 @@ Downstream grader factories that read `ctx.runtime_backend` should read
 `ctx.runner_address` (or `ctx.grader_address`) and build their own gRPC
 client from it.
 
+## SubstrateService (runner-side, read-only)
+
+`SubstrateService` is a read-only gRPC surface the runner exposes when
+`RunConfig.grader.expose_substrate: true` is set. An independent grader
+container dials it to answer every read the substrate seam
+([ADR-0039](adr/0039-standalone-grader.md)) makes — initial state, RAW
+and STABLE final DB state, agent-visible filesystem, and the trial's
+per-trial knowledge-base search — without ever asking the runner to
+mutate state on the grader's behalf.
+
+Config surface — one optional field on `GraderConfig`:
+
+```yaml
+# run_config.yaml (excerpt)
+grader:
+  expose_substrate: true      # default: false
+```
+
+`expose_substrate: false` (the default, and the shape every existing
+`run_config.yaml` carries by omission) keeps the surface off. The
+orchestrator forwards the flag to the runner container as
+`RUNNER_EXPOSE_SUBSTRATE=true`; the runner reads this env var and, when
+truthy, registers `add_SubstrateServiceServicer_to_server` on the same
+`grpc.Server` and the same listen port that carries `RunnerService`
+(default `50051`). No new open port; no new Docker port expose. A runner
+started with the flag off returns `UNIMPLEMENTED` for any
+`SubstrateService/*` call.
+
+The seven RPCs:
+
+| RPC | What it returns |
+| --- | --- |
+| `ReadInitialState` | The trial's pre-execution state (`{table: [rows]}` JSON) — same shape `TaskDescription.initial_state.tables` carries. |
+| `ReadFinalDBState` | RAW final DB state, mirroring `db_client.get_state`. The shape judge state-diff and custom_checks read; unfiltered rows. |
+| `ReadFinalDBStateStable` | STABLE final DB state, mirroring `db_client.get_stable_state`. The shape jsonpath state-checks grading reads; unstable fields filtered server-side by the DB service. |
+| `ReadFilesystemPath` | One file under `AGENT_WORK_DIR`; `is_file` + `content_utf8` for text, `is_file` + `content_bytes_b64` for binary. Symlinks / non-files / missing paths return `exists=false`. |
+| `ListFilesystemDir` | Relative POSIX paths of every non-symlink UTF-8-decodable file under `AGENT_WORK_DIR`. Same filter `_read_agent_visible_filesystem` ships today — no `node_modules` / `.venv` / `.git` excluder. |
+| `KBSearch` | Trial's per-trial KB hits. `kb_available: false` is a first-class "this trial has no KB" signal; the callback substrate returns `None` from `knowledge_search()` when it is false. |
+| `SubstrateHealthCheck` | `status: "ready" \| "degraded" \| "unavailable"` and `active_trials` — distinct from `RunnerService.HealthCheck`, which reports RunnerService plumbing. |
+
+The read-only guarantee is structural, not a docstring promise. The
+servicer class holds `_READ_ONLY = True` and the canonical test
+`test_substrate_service_gated_startup.py` enumerates the public method
+set on `SubstrateServicer` (compared against the generated base
+`SubstrateServiceServicer`) and refuses any name whose prefix matches a
+write verb (`set_` / `insert` / `update` / `write` / `delete` /
+`mutate`) — adding a write RPC to `runner.proto` surfaces the offender
+in the generated base and fails the test before an implementation
+lands.
+
+The sanctioned client is
+[`LiveRunnerCallbackGradingSubstrate`](../tolokaforge/core/grading/substrate_live.py).
+An independent grader constructs one per trial, pointed at the runner's
+substrate address; every substrate read (`initial_state`, `final_state`,
+`final_state_stable`, `db_reader`, `knowledge_search`, `filesystem_root`,
+`filesystem_state`) issues at most one RPC per grade and caches the result.
+`filesystem_root` materialises the agent-visible tree eagerly to a private
+temp directory on first use — matching the runner's shipping filter
+(non-symlink, UTF-8-decodable) with no path-component excluder. Any
+`grpc.RpcError` is wrapped as `SubstrateUnreachableError`, which the grader
+translates into `GradingFailedError` so a runner that disappears mid-grade
+is booked as ungradeable rather than as an agent failure.
+`tolokaforge/core/grading/substrate_client.py::GrpcSubstrateClient` is the
+underlying wire adapter — one instance per `(channel, trial_id)` pair.
+
 ## See also
 
 - [ADR-0014 — TrialGrader Protocol](adr/0014-trial-grader-protocol.md)
 - [ADR-0022 — Runtime Independence](adr/0022-runtime-independence.md)
 - [ADR-0038 — Grader Detachment](adr/0038-grader-detachment.md)
+- [ADR-0039 — Standalone Grader Substrate](adr/0039-standalone-grader.md)
 - [STANDALONE_RUNNER.md](STANDALONE_RUNNER.md) — the sibling doc for the
   runner-as-component surface

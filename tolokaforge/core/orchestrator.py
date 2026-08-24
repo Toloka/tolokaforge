@@ -2025,6 +2025,12 @@ class Orchestrator:
                 from tolokaforge.core.models.docker_config import DockerConfig
 
                 docker_config = self.config.docker or DockerConfig()
+                # Route ``grader.expose_substrate`` from the run config into
+                # the runner container so it registers the SubstrateService
+                # gRPC servicer alongside RunnerService (same listen port).
+                # Absent block == absent field == off.
+                if self.config.grader is not None and self.config.grader.expose_substrate:
+                    core_stack_kwargs["expose_substrate"] = True
                 service_stack = stack_factory(config=docker_config, **core_stack_kwargs)
                 # Route through the effective-choice helper so both the
                 # operator override and the task-driven per-trial signal
