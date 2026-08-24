@@ -51,7 +51,7 @@ from tolokaforge.core.grading import composite
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.judge import JudgeStatus
 from tolokaforge.core.grading.key_manifest import EVALUATED
-from tolokaforge.core.grading.substrate import LiveRunnerCallbackGradingSubstrate
+from tolokaforge.core.grading.substrate_live import LiveRunnerCallbackGradingSubstrate
 from tolokaforge.core.grading.trace_checks import TraceChecksResult
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
 from tolokaforge.core.grading.transcript_wire import (

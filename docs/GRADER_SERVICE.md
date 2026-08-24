@@ -254,7 +254,7 @@ in the generated base and fails the test before an implementation
 lands.
 
 The sanctioned client is
-[`LiveRunnerCallbackGradingSubstrate`](../tolokaforge/core/grading/substrate.py).
+[`LiveRunnerCallbackGradingSubstrate`](../tolokaforge/core/grading/substrate_live.py).
 An independent grader constructs one per trial, pointed at the runner's
 substrate address; every substrate read (`initial_state`, `final_state`,
 `final_state_stable`, `db_reader`, `knowledge_search`, `filesystem_root`,

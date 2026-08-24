@@ -16,10 +16,8 @@ from __future__ import annotations
 
 import pytest
 
-from tolokaforge.core.grading.substrate import (
-    InProcessGradingSubstrate,
-    LiveRunnerCallbackGradingSubstrate,
-)
+from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
+from tolokaforge.core.grading.substrate_live import LiveRunnerCallbackGradingSubstrate
 from tolokaforge.core.plugin_registry import (
     GRADING_SUBSTRATES_GROUP,
     UnknownImplementationError,

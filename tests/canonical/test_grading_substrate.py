@@ -30,12 +30,12 @@ from tolokaforge.core.grading.kb_search import SearchHit
 from tolokaforge.core.grading.substrate import (
     GradingSubstrate,
     InProcessGradingSubstrate,
-    LiveRunnerCallbackGradingSubstrate,
     SharedMountGradingSubstrate,
     SnapshotGradingSubstrate,
     SubstrateUnreachableError,
     TrajectoryStorageGradingSubstrate,
 )
+from tolokaforge.core.grading.substrate_live import LiveRunnerCallbackGradingSubstrate
 from tolokaforge.runner import (
     add_RunnerServiceServicer_to_server,
     add_SubstrateServiceServicer_to_server,
