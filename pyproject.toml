@@ -201,6 +201,15 @@ tcp = "tolokaforge.core.service_readiness:tcp_readiness_probe_factory"
 agent_only = "tolokaforge.core.actors.turn_policy:_agent_only_policy_factory"
 conversational = "tolokaforge.core.actors.turn_policy:_conversational_policy_factory"
 
+# ADR-0039 § "The single design abstraction" — GradingSubstrate implementations
+# resolvable by name. `in_process` and `live_callback` ship this milestone;
+# `trajectory_storage` / `snapshot` / `shared_mount` are reserved future
+# substrates and register themselves when they ship (no framework change
+# needed at that time).
+[project.entry-points."tolokaforge.grading_substrates"]
+in_process = "tolokaforge.core.grading.substrate:InProcessGradingSubstrate"
+live_callback = "tolokaforge.core.grading.substrate:LiveRunnerCallbackGradingSubstrate"
+
 [tool.hatch.build]
 exclude = [
     "tasks/**",
