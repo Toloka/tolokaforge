@@ -297,9 +297,8 @@ def grade_llm_judge(
 
     ``extra_read_tools`` is a runner-resolved passthrough: the caller reconstructs
     the agent's ``search_policy`` connector as :class:`DelegatingReadTool` s so
-    the judge can reuse the SAME TypeSense connector the agent used. The wire
-    crossing for this seam is a Phase 2 concern; today the composite just
-    forwards the list to :meth:`LLMJudge.run`.
+    the judge can reuse the SAME TypeSense connector the agent used. The composite
+    forwards ``extra_read_tools`` verbatim to :meth:`LLMJudge.run`.
 
     Fail-loud contract: any judge malfunction — malformed ``submit_report`` past
     retries, budget/turn exhaustion, or a loop-terminal exception — surfaces as
@@ -535,11 +534,11 @@ def grade_custom_checks(
     registered (empty ``initial_state`` skips ``RegisterTrial``'s DB init),
     connection reset mid-grade — is caught here and grading proceeds against
     ``final_env_state = {}``. The audit signal is the ``final DB state fetch
-    failed`` log line, byte-identical to what the runner logged before this
-    extraction; downstream tooling greps for it. This is the ONE broad-except
-    in the composite — any future substrate raising the same class of failure
-    gets the same fallback, so a non-InProcess topology does not have to
-    rebuild this branch in its own factory.
+    failed`` log line: the wording is a stability contract; downstream tooling
+    greps for it verbatim. This is the ONE broad-except in the composite —
+    any substrate raising the same class of failure gets the same fallback,
+    so a non-InProcess topology does not have to rebuild this branch in its
+    own factory.
 
     Sync-in-async note: the composite is a **sync** function. The InProcess
     substrate's ``final_state`` factory blocks on ``run_coroutine_threadsafe``

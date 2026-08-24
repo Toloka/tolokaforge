@@ -129,9 +129,9 @@ def _write_checks(tmp_path: Path, body: str) -> Path:
     return tmp_path
 
 
-class TestGradeCustomChecksMatchesRunnerPath:
-    """Every tuple the composite produces matches what the runner path used
-    to produce for the same evidence — the extraction is behaviour-preserving.
+class TestGradeCustomChecksTupleParity:
+    """Every ``(score, wire_results, reason)`` tuple the composite emits
+    matches the runner's shipped output for the same evidence.
     """
 
     def test_verdicts_return_scored_tuple_with_per_check_wire(self, tmp_path: Path) -> None:

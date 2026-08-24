@@ -354,8 +354,7 @@ class LiveRunnerCallbackGradingSubstrate:
     Reads are lazy and cached: each accessor fires at most one RPC per grade
     call; a second call returns the cached value. ``filesystem_root`` eagerly
     materialises the agent-visible tree to a :class:`tempfile.TemporaryDirectory`
-    on first use (Phase 3 revisits the eager materialisation cost for
-    coding-harness workspaces — see ADR-0039).
+    on first use.
 
     A grader losing the runner mid-grade raises
     :class:`SubstrateUnreachableError`; the seam translates that into

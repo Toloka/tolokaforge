@@ -6,9 +6,8 @@ Locks the two seams the substrate design commits to (per ADR-0039):
    via ``importlib.metadata`` entry-points. The dispatch case injects a
    synthetic entry-point pointing at :class:`DummyGradingSubstrate` under
    the group ``tolokaforge.grading_substrates`` and asserts the loader
-   returns the dummy class — the trajectory-storage substrate will register
-   itself the same way once it ships. No wheel pollution: the dummy stays
-   discoverable only under the monkeypatched mapping.
+   returns the dummy class. No wheel pollution: the dummy stays discoverable
+   only under the monkeypatched mapping.
 
 2. **Composite-level parity gate.** Given one representative multi-component
    pack and one running runner, the two shipped substrates score the trial
@@ -30,11 +29,9 @@ Locks the two seams the substrate design commits to (per ADR-0039):
    ``judge_status``, ``trace_checks``, ``trace_checks_summary``,
    ``judge_report``.
 
-   Composite dispatch on ``GraderServiceImpl.Grade`` — swapping the
-   substrate over the SAME runner RPC — is a Phase 3 (#1263) non-goal. The
-   parity gate here exercises the composite functions directly against
-   both substrates instead, which is the strongest claim this milestone's
-   surface supports.
+   The parity gate exercises the composite functions directly against both
+   shipped substrates; a ``GraderServiceImpl.Grade``-level dispatch swap is
+   out of scope for this suite.
 """
 
 from __future__ import annotations

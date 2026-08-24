@@ -79,10 +79,9 @@ def _runner_shipped_shape(
     return {"db": db, "tables": db, "filesystem": filesystem or {}}
 
 
-class TestJsonpathCompositeMatchesRunnerPath:
-    """Every jsonpath scoring the composite produces matches the runner's
-    ``evaluate_jsonpath_checks`` over the same reshaped state. Extraction is
-    byte-preserving; the composite is only a reshape + call."""
+class TestJsonpathCompositeParity:
+    """The composite is a reshape + call over ``evaluate_jsonpath_checks``;
+    every jsonpath scoring is byte-equal to the runner's direct call."""
 
     def test_db_addressing_pack_matches_the_runner_path(self) -> None:
         checks = [
