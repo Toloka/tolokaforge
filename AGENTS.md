@@ -55,6 +55,7 @@ Tolokaforge is an LLM tool-use benchmarking harness.
 **Allowed:**
 - `from tolokaforge.secrets import get_default`, then `get_default().get_secret("OPENAI_API_KEY")` (and the `get_secret_or_raise` / `validate_required` variants)
 - Adding a new `SecretProvider` subclass when integrating a new secret backend (Vault, AWS Secrets Manager, etc.) — never a one-off call site
+- `from tolokaforge.secrets import register_runtime_secret`, then `register_runtime_secret("TYPESENSE_API_KEY", value)` — the **only** sanctioned way to admit a credential this process generated or resolved for itself rather than read from a provider. It reinstalls the default manager with the value ahead of the configured chain, so `get_secret`, the `TOLOKAFORGE_SECRETS_JSON` payload and the log-redaction set all carry it. Register it the moment it is resolved; never pass such a value to a call site, a container `environment` entry or `os.environ` instead. Registering one name with two different values raises
 - `expand_secret_refs` when a **non-secret** config string must carry a secret value: it resolves `${secret:NAME}` inside that string. This is the only sanctioned expansion mechanism: do not hand-roll a second reference dialect at a new call site, and do not move expansion into `get_secret` (that path also feeds the log-redaction set and the container serializer, which resolve every enumerable key, so it would apply this syntax to credentials that legitimately contain `$`). See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § "Values may reference secrets".
 - `SecretManager.export_to_environ(keys)` *only* when a subprocess (e.g. litellm SDK) demands `os.environ`; called inside the smallest possible scope, never sprinkled
 
@@ -110,24 +111,25 @@ uv run ruff format .
 
 # Format check (CI)
 uv run ruff format --check tolokaforge tests scripts tools
-
-# All-in-one lint script
-scripts/lint/run_ruff.sh
 ```
 
 ### Testing
 
-Three test categories with distinct markers:
+Three test categories with distinct markers. Tests live in three roots — `tests/` plus a
+root inside each workspace package that owns a contract (`tolokaforge_models/tests/`,
+`tolokaforge_coding_harnesses/tests/`). `[tool.pytest.ini_options] testpaths` names all
+three, so omit the path; a command naming only `tests/` overrides `testpaths`, runs a
+subset, and still reports green.
 
 ```bash
 # Unit tests — no external services needed
-uv run pytest tests/ -v -m unit
+uv run pytest -v -m unit
 
 # Canonical tests — snapshot/contract tests, no external services
-uv run pytest tests/ -v -m canonical
+uv run pytest -v -m canonical
 
 # Integration tests — require API keys and/or services; run in parallel
-scripts/with_env.sh uv run pytest tests/ -v -m integration -n auto
+scripts/with_env.sh uv run pytest -v -m integration -n auto
 
 # Validate task definitions — exits 1 on an invalid task or on a glob matching nothing
 tolokaforge validate --tasks "tasks/**/task.yaml"
@@ -339,6 +341,8 @@ When extending an existing contract, follow the existing choice unless you have 
 - `tools/pricing-updater` — LLM pricing data updates
 - `tools/rubric-calibrator` — Rubric-judge calibration: agreement metrics + trust gate
 - `external_adapters/tolokaforge-adapter-terminal-bench` — Terminal-Bench adapter
+- `tolokaforge_models` — model data + per-model policy subclasses
+- `tolokaforge_coding_harnesses` — coding-harness registry, installer, middleware proxy
 
 ### Virtual Environment
 
@@ -413,7 +417,7 @@ No scripts, data files, temporary documents, or logs in root.
 
 ### Script Organization
 
-- Bash scripts in `scripts/` organized by subdirectory: `benchmark/`, `setup/`, `lint/`, `tests/`, `release/`, `analysis/`
+- Bash scripts in `scripts/` organized by subdirectory: `analysis/`, `docker/`, `hatch/`, `setup/`, `tests/`
 - Shared utilities (`common.sh`, `with_env.sh`) at `scripts/` root
 - Exceptions: `tests/` for test helpers, `tasks/` for benchmark data, `.devcontainer/` for container setup, Docker entrypoints alongside Dockerfiles
 - Complex Python logic → `tools/` as uv workspace member
@@ -481,6 +485,8 @@ The Bucket-A allow-list backing the [`tests/canonical/test_models_wheel_replay.p
 23. **Empty-content filler injection is a `MessageAssemblyPolicy` capability** — `_convert_messages` substitutes `MessageAssemblyPolicy.empty_assistant_filler` for empty assistant content alongside `tool_calls` ONLY when the active `MessageAssemblyPolicy.inject_empty_assistant_filler == True`. The `aws_nova` and `aws_nova_openrouter` presets carry `NovaMessageAssembly` (filler defaults to `"I'll help you with that."`; Bedrock rejects empty assistant content on tool turns, commit `73e01e9e6`); every other preset — `default`, `anthropic*`, `openai_gpt5`, `xai_grok`, `qwen`, `gemini` — carries `NullMessageAssembly` and leaves the content empty. The filler string is per-instance data on `NovaMessageAssembly` rather than an engine constant because Gemini pattern-matches the substituted string in past assistant turns and echoes `"I'll help you with that."` back as its own response content (2026-04-30 OTS regression analysis: ~26-38% of trials on ots_19_airlines; live probes confirmed 2/5 Gemini calls echoed the filler when it was in context, 0/5 with empty content) — a universal filler is not safe, so every preset outside `aws_nova*` stays on `NullMessageAssembly`. A future provider that needs a different filler overrides it via `message_assembly_policy: {name: nova, params: {empty_assistant_filler: "..."}}` in a preset overlay. Routing pinned by `tests/canonical/test_message_assembly_filler_routing.py`.
 24. **Task-pack `dict[str, Any]` parameters defeat schema enforcement** — when a tool parameter is declared `dict[str, Any]` in its task-pack Pydantic model (e.g. `tasks/ots_19_airlines/_domain/tools/mcp_tools_library/ots_19_airlines/zendesk/tools/create_item.py:31` `item: dict[str, Any]`), Pydantic generates `{type: object, additionalProperties: true}` with no inner `properties` / `required` list. `StrictSchema` does NOT rewrite `additionalProperties: true` (only `additionalProperties: <schema>`), so every model — including GPT-5.5 — receives the same permissive schema and must rely on system-prompt policy alone to know which inner fields are required. Field-omission failures (e.g. Gemini Pro forgetting `booking_channel` in 188/550 OTS trials) correlate with this shape. **Fix lives in the task pack** (declare a strict inner Pydantic model with explicit fields), not in the harness. See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § `schema_sanitizer`.
 25. **MiniMax-M3 corrupts the `tags` array via XML→JSON tool-call conversion** — every M3 `tags` emission inside the schemaless `additionalProperties: true` `updates` / `item` object is malformed (2505/2505 airlines occurrences). The provider renders a repeated XML element as a single-key dict `{"item": X}` (76 %) or JSON-encodes / empties the array (`'["a"]'` / `''`, 23 %). The `minimax` preset wires `response_policy: minimax_m3_tags` — the `MinimaxM3TagRecoveryResponse` composite (`JsonRecursiveCoerceResponse` then `ItemRecursiveUnwrapResponse`) — which recurses into the parent and recovers the native list. **Scoping is load-bearing**: recovery is restricted to the declared-array tags sites `updates.tags` / `item.tags` via the `ARRAY_SITES` allowlist in [`minimax.py`](tolokaforge_models/src/tolokaforge_models/policies/minimax.py). A schema-agnostic empty-string→`[]` was proven net-harmful — on MiniMax-M2.7 it corrupts scalar fields (`resolution_category__c`, `employee_id`, `keyword`). M2.7 emits native `tags` lists (0 corrupt) so it is NOT in this preset and is unaffected; the policy never touches `None`, never promotes scalar strings, and leaves multi-key dicts unchanged (no guessing). This is distinct from M3's genuine dict-map / discriminated-union model gap (gotcha #22 family), which stays `known_unsupported`. See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § `response_policy`.
+
+26. **`moonshotai/kimi-k3` reuses tool-call ids across turns** — it names each call `<tool_name>:<index within the turn>` (`get_employee:1`), so calling the same tool at the same position in two turns emits one id twice. Collisions are across turns, never within one. The id is the only key joining a call to its result, so before the fix such a trial was **ungradeable end to end**: `build_trial_timeline` refused it on all three of its paths (message view + record, message view alone, records alone), the trial classified `UNGRADEABLE`, and its grade was silently missing from the run. The rule lives in one leaf module, [`tolokaforge/core/tool_call_ids.py`](tolokaforge/core/tool_call_ids.py): the k-th occurrence (0-based) of a raw id `x` is keyed `x` for k = 0 and `x#<k+1>` thereafter, re-checked for uniqueness so a provider emitting `x#2` itself is still handled. Two application points, one rule — `ToolCallingLoop._run_turn` assigns it at ingestion so all four consumers (assistant message, tool executor and hence the runner's own record, trial recorder, `role: tool` message) agree, and `build_trial_timeline` derives it per view so bundles recorded *before* this rule still join. **It is the identity on a provider that already mints unique ids**, so Anthropic (`toolu_*`) / OpenAI (`call_*`) trials, every fixture and every bundle on disk are byte-unchanged. Nothing parses a `call_id` anywhere — it is compared for equality — so `#` is inert on gRPC, YAML and JSON. See [`docs/GRADING.md`](docs/GRADING.md) G3 and [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § Tool-call ids are not unique per provider.
 
 ## Detailed Documentation
 

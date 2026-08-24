@@ -20,7 +20,7 @@ Host (Loader)                    Runner Container (Runtime)         DB Service C
 3. **Adapter-Agnostic** — single schema supports Native, Tau, and TlkMcpCore
 4. **Unstable Fields as Data** — field stability metadata is explicit, not Python annotations
 5. **Reconstructable** — `ToolSource` provides enough info to reconstruct tools at runtime
-6. **Canonical Hash Algorithm** — all components use identical JSON-based SHA-256 hashing
+6. **Single-Substrate Hash Comparisons** — a state-hash comparison computes both sides within one substrate's algorithm; a digest never crosses substrates ([Stable State Hash](#stable-state-hash))
 
 ---
 
@@ -90,12 +90,25 @@ class ToolSchema(BaseModel):
     
     # Metadata
     category: Literal["read", "write", "compute"] = "compute"
-    timeout_s: float = 30.0
+    timeout_s: float = 30.0                       # see below
 
     # How to reconstruct this tool at runtime
     source: ToolSource
+```
 
+`ToolSchema.timeout_s` is the backstop the runner bands a call with **only for a
+tool that names no budget of its own**. A tool that bounds its own I/O — every
+shipped one that performs I/O does — is banded at its own budget plus a fixed
+grace instead, and this field plays no part. So a `bash_session` is bounded by
+its `tool_config.timeout_s` (ADR-0017), not by this.
 
+It is not pack-declarable either way: `NativeAdapter` builds every tool's schema
+with the model default, so a pack cannot influence the value — tracked in
+[#1147](https://github.com/Toloka/tolokaforge/issues/1147). The one budget a pack
+can set today is `bash_session`'s `tool_config.timeout_s` (see
+[`docs/TOOLS.md`](TOOLS.md)).
+
+```python
 # =============================================================================
 # State and Data
 # =============================================================================
@@ -149,7 +162,13 @@ class InitializationAction(BaseModel):
     """
     Action to execute before trial starts.
     
-    Used by Native adapter for user device setup (toggle_airplane_mode, etc.)
+    Used by the Native adapter to put the world in its starting shape — a user-side
+    tool run before the agent's first turn.
+
+    The tool is spelled `tool_name` here and `name` on RequiredAction below:
+    this is a harness setup instruction, not a grading assertion about the
+    agent, and its author-side spelling in `task.yaml` is `func_name` — a third
+    surface, unrelated to either wire field.
     """
     env_type: Literal["assistant", "user"]
     tool_name: str
@@ -174,11 +193,26 @@ class UserSimulatorConfig(BaseModel):
 # Search / TypeSense
 # =============================================================================
 
+class SearchPlane(str, Enum):
+    """Which plane serves a task's ``documents_path``."""
+    TYPESENSE = "typesense"                       # The runner registers a search client
+    RAG_SERVICE = "rag_service"                   # rag-service indexes the bundled corpus
+
+
 class SearchConfig(BaseModel):
     """Configuration for knowledge base search (TypeSense)."""
-    enabled: bool = False
+    enabled: bool = False                         # This task needs rag-service
+    plane: Optional[SearchPlane] = None           # Which plane serves documents_path
     domain_name: Optional[str] = None             # "external_retail_v3"
     documents_path: Optional[str] = None          # Path to docindex/ directory
+
+    # TypeSense connection details, for a runner no stack told where TypeSense is.
+    # The stack's TYPESENSE_HOST / TYPESENSE_PORT outrank them where both exist;
+    # an adapter that emits them and no `plane` has its plane derived as
+    # `typesense`. See docs/TYPESENSE_INTEGRATION.md.
+    host: Optional[str] = None                    # "typesense" (Docker DNS alias)
+    port: Optional[int] = None                    # 8108 (container port)
+    api_key: Optional[str] = None                 # TypeSense API key
 
 
 # =============================================================================
@@ -199,9 +233,15 @@ class RequiredAction(BaseModel):
     """Tool call that must appear in the trajectory."""
     action_id: str
     requestor: Literal["assistant", "user"]
-    tool_name: str
+    name: str                                     # the tool the call names
     arguments: Dict[str, Any] = Field(default_factory=dict)
     compare_args: Optional[List[str]] = None      # Which args to compare, None = all
+
+
+class CommunicateInfo(BaseModel):
+    """Information the agent must communicate to the user."""
+    info: str
+    required: bool = True
 
 
 class DbProbe(BaseModel):
@@ -217,7 +257,7 @@ class StateChecksConfig(BaseModel):
     """State-based grading configuration."""
     # Hash comparison
     hash_enabled: bool = False
-    expected_hash: Optional[str] = None           # Pre-computed (if available)
+    expect_initial_state: bool = False            # the expected final state is the initial one
     golden_actions: List[GoldenAction] = Field(default_factory=list)
     hash_weight: Optional[float] = None           # fold weight; None = author declared none
     numeric_string_fields: List[str] = Field(default_factory=list)  # per-field string folding
@@ -245,7 +285,7 @@ class TranscriptRulesConfig(BaseModel):
     min_assistant_turns: Optional[int] = Field(default=None, ge=1)  # gate: unmet → component 0.0
     tool_expectations: Optional[ToolExpectations] = None
     required_actions: List[RequiredAction] = Field(default_factory=list)
-    communicate_info: List[Dict[str, Any]] = Field(default_factory=list)
+    communicate_info: List[CommunicateInfo] = Field(default_factory=list)
 
 
 class Criterion(BaseModel):
@@ -319,7 +359,7 @@ class TaskDescription(BaseModel):
     
     # --- Tools ---
     agent_tools: List[ToolSchema] = Field(default_factory=list)
-    user_tools: List[ToolSchema] = Field(default_factory=list)  # User-side device tools
+    user_tools: List[ToolSchema] = Field(default_factory=list)  # Offered to the user simulator
     
     # --- State ---
     initial_state: InitialStateConfig = Field(default_factory=InitialStateConfig)
@@ -442,6 +482,7 @@ class TaskDescription(BaseModel):
 
   "search": {
     "enabled": true,
+    "plane": "typesense",
     "domain_name": "external_retail_v3",
     "documents_path": "tasks/tlk_mcp_core/external_retail_server_v3/src/domains/external_retail_v3/docindex"
   },
@@ -582,10 +623,27 @@ class TaskDescription(BaseModel):
       "description": "Toggle airplane mode on/off",
       "parameters": {"type": "object", "properties": {}},
       "source": {
-        "toolset": "example_user",
-        "module_path": "user_device",
+        "toolset": "example_support",
+        "module_path": "mcp_server",
         "class_name": "toggle_airplane_mode",
-        "invocation_style": "tau_sync"
+        "invocation_style": "mcp_server",
+        "mcp_server_script": "mcp_server.py"
+      }
+    },
+    {
+      "name": "toggle_data",
+      "description": "Turn mobile data on or off",
+      "parameters": {
+        "type": "object",
+        "properties": {"enabled": {"type": "boolean"}},
+        "required": ["enabled"]
+      },
+      "source": {
+        "toolset": "example_support",
+        "module_path": "mcp_server",
+        "class_name": "toggle_data",
+        "invocation_style": "mcp_server",
+        "mcp_server_script": "mcp_server.py"
       }
     }
   ],
@@ -628,8 +686,8 @@ class TaskDescription(BaseModel):
     "transcript_rules": {
       "max_turns": 20,
       "required_actions": [
-        {"action_id": "toggle_airplane_mode_0", "requestor": "user", "tool_name": "toggle_airplane_mode"},
-        {"action_id": "toggle_data_1", "requestor": "user", "tool_name": "toggle_data"}
+        {"action_id": "toggle_airplane_mode_0", "requestor": "user", "name": "toggle_airplane_mode"},
+        {"action_id": "toggle_data_1", "requestor": "user", "name": "toggle_data"}
       ]
     }
   },
@@ -683,43 +741,27 @@ POST   /restore/{name}        ← restore from snapshot (for golden path executi
 
 ---
 
-## Canonical Hash Algorithm
+## Stable State Hash
 
-**CRITICAL:** All components MUST use the identical hash algorithm for grading to work correctly.
+This section defines the **runner substrate's** persisted-digest algorithm — what
+db-service's `/state/hash` endpoint, ETags, snapshot hashes and the
+`ResetTrialResponse.state_hash` / `GetStateResponse.stable_hash` wire fields all
+compute. The implementation of record is
+[`tolokaforge/core/hash.py::compute_stable_hash`](../tolokaforge/core/hash.py):
+unstable-field filtering, datetime conversion, number canonicalization (numeric
+types always, numeric-looking strings per the task's `numeric_string_fields`
+opt-in), then compact sorted JSON and SHA-256. Every consumer of that substrate's
+digests computes and compares them with that function — and only consumers of that
+substrate's digests are bound by it.
 
-```python
-import hashlib
-import json
-from typing import Any, Dict
-
-def compute_stable_hash(state: Dict[str, Any]) -> str:
-    """
-    Compute canonical hash of stable state.
-    
-    This algorithm MUST be used by:
-    - DB Service /state/hash endpoint
-    - TlkMcpCore adapter grading
-    - Tau adapter grading
-    - Any other component computing state hashes
-    
-    Algorithm:
-    1. JSON serialize with sort_keys=True, separators=(",", ":")
-    2. UTF-8 encode
-    3. SHA-256 hexdigest
-    
-    IMPORTANT: Do NOT use str(tuple) or other serialization methods!
-    """
-    json_str = json.dumps(state, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
-```
-
-**Key Requirements:**
-- `sort_keys=True` — deterministic key ordering
-- `separators=(",", ":")` — compact JSON, no spaces (NOT default `(", ", ": ")`)
-- `encode("utf-8")` — explicit UTF-8 encoding
-- `default=str` — handle datetime and other non-JSON types
-
-**Reference Implementation:** [`mcp_core.utils.validation.calculate_database_hash()`](../contrib/mcp_core/src/mcp_core/utils/validation.py)
+Core grading's digest is a different algebra by design — `state_digest`
+(`consistent_hash(to_hashable(...))`) in
+[`tolokaforge/core/grading/state_checks.py`](../tolokaforge/core/grading/state_checks.py).
+The two agree on which states are equal (the `numeric_string_fields` folding
+promise holds identically on both) and label every state differently, so a
+state-hash comparison computes both sides within one substrate and a digest never
+crosses substrates — see
+[`GRADING.md` § Substrate Parity](GRADING.md#substrate-parity).
 
 ---
 

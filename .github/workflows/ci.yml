@@ -7,6 +7,7 @@ on:
     paths:
       - 'tolokaforge/**'
       - 'tolokaforge_models/**'
+      - 'tolokaforge_coding_harnesses/**'
       - 'tests/**'
       - 'scripts/**'
       - 'tools/**'
@@ -19,6 +20,7 @@ on:
     paths:
       - 'tolokaforge/**'
       - 'tolokaforge_models/**'
+      - 'tolokaforge_coding_harnesses/**'
       - 'tests/**'
       - 'scripts/**'
       - 'tools/**'
@@ -183,8 +185,8 @@ jobs:
 
     - name: Run unit + canonical tests with coverage
       run: |
-        uv run pytest tests/unit/ tests/canonical/ -v --tb=short \
-          --cov=tolokaforge --cov-report=term-missing --cov-fail-under=60
+        uv run pytest -m "unit or canonical" -v --tb=short \
+          --cov --cov-report=term-missing
 
     - name: Run tool tests
       run: |
@@ -289,8 +291,8 @@ jobs:
 
     - name: Run unit + canonical tests with coverage
       run: |
-        uv run pytest tests/unit/ tests/canonical/ -v --tb=short \
-          --cov=tolokaforge --cov-report=term-missing --cov-fail-under=60
+        uv run pytest -m "unit or canonical" -v --tb=short \
+          --cov --cov-report=term-missing
 
     - name: Run tool tests
       run: |
@@ -385,9 +387,8 @@ jobs:
 
     - name: Run unit + canonical tests with coverage
       run: |
-        uv run pytest tests/unit/ tests/canonical/ -v --tb=short \
-          --cov=tolokaforge --cov-report=xml --cov-report=term-missing \
-          --cov-fail-under=60
+        uv run pytest -m "unit or canonical" -v --tb=short \
+          --cov --cov-report=xml --cov-report=term-missing
 
     - name: Build Docker images for integration tests
       id: docker-build

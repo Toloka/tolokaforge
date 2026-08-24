@@ -17,6 +17,7 @@ from tolokaforge.core.grading.checks_helpers import (
     check_dict_params,
     count_by_key,
     count_tool_calls,
+    custom_checks_reason,
     dict_diff,
     filter_by_key,
     find_by_key,
@@ -712,34 +713,176 @@ def test_import():
         assert result.passed == 1
 
 
-class TestResultToScore:
-    """Tests for result_to_score conversion"""
+class TestCustomChecksReason:
+    """What ``Grade.reasons`` says about a custom-checks suite, per shape of its result.
 
-    def test_result_to_score(self):
-        runner = CheckRunner()
-        config = CustomChecksConfig(enabled=True, fail_on_error=True)
+    One renderer serves both grading substrates, so these cells describe what a
+    custom-checks verdict reads like in every ``grade.yaml`` the harness writes.
+    """
 
-        result = CheckResultSet(
+    def test_a_suite_that_passed_reports_its_score_and_names_no_check(self) -> None:
+        """A passing suite has no evidence to offer, so it offers none.
+
+        The count is what a reader checks the component score against; the absence of
+        names is what stops a passing suite from contributing failure evidence
+        downstream, which the ``fail`` rule below turns into an assertion.
+        """
+        reason = custom_checks_reason(
+            CheckResultSet(
+                results=[
+                    CheckResult(
+                        check_name="c1", status=CheckStatus.PASSED, score=1.0, message="ok"
+                    ),
+                    CheckResult(
+                        check_name="c2", status=CheckStatus.PASSED, score=1.0, message="ok"
+                    ),
+                ]
+            )
+        )
+
+        assert reason == "Custom checks: score=1.00, all 2 checks passed"
+
+    def test_a_suite_with_a_failure_names_the_check_and_its_message(self) -> None:
+        """The author is owed which check decided the trial and what it said.
+
+        A count alone — "1 of 2 failed" — leaves them re-running the suite to find
+        out which one, which is the gap ``Transcript:`` closed for its own rules.
+        """
+        reason = custom_checks_reason(
+            CheckResultSet(
+                results=[
+                    CheckResult(
+                        check_name="c1", status=CheckStatus.PASSED, score=1.0, message="ok"
+                    ),
+                    CheckResult(
+                        check_name="order_was_shipped",
+                        status=CheckStatus.FAILED,
+                        score=0.0,
+                        message="order O1 is not shipped",
+                    ),
+                ]
+            )
+        )
+
+        assert reason == (
+            "Custom checks: score=0.50, 1 of 2 checks failed — "
+            "order_was_shipped: order O1 is not shipped"
+        )
+
+    def test_a_suite_that_could_not_run_names_its_error(self) -> None:
+        """The error is the whole account: a suite that never ran has no verdicts."""
+        reason = custom_checks_reason(CheckResultSet(error="module load failed: syntax error"))
+
+        assert reason == "Custom checks: the suite failed to run — module load failed: syntax error"
+
+    @pytest.mark.parametrize(
+        ("results", "expected"),
+        (
+            pytest.param(
+                [
+                    CheckResult(check_name="c1", status=CheckStatus.SKIPPED, score=0.0),
+                    CheckResult(check_name="c2", status=CheckStatus.SKIPPED, score=1.0),
+                ],
+                "Custom checks: no check reached a verdict — all 2 skipped",
+                id="every_check_skipped",
+            ),
+            pytest.param(
+                [],
+                "Custom checks: no check reached a verdict — the file declared no check",
+                id="the_file_declared_no_check",
+            ),
+        ),
+    )
+    def test_a_suite_that_decided_nothing_says_so_rather_than_reporting_a_score(
+        self, results: list[CheckResult], expected: str
+    ) -> None:
+        """``aggregate_score`` is ``0.0`` over zero verdicts, which reads as a failure.
+
+        The component is left unscored for exactly that reason, so the sentence has to
+        say what happened instead of quoting the arithmetic — and the two shapes that
+        reach it are different facts an author would fix differently.
+        """
+        assert custom_checks_reason(CheckResultSet(results=results)) == expected
+
+    def test_a_skipped_check_is_counted_beside_the_verdicts_and_not_named(self) -> None:
+        """A skip reached no verdict, so it moves neither the score nor the evidence."""
+        reason = custom_checks_reason(
+            CheckResultSet(
+                results=[
+                    CheckResult(
+                        check_name="ran", status=CheckStatus.PASSED, score=1.0, message="ok"
+                    ),
+                    CheckResult(check_name="not_applicable", status=CheckStatus.SKIPPED, score=0.0),
+                ]
+            )
+        )
+
+        assert reason == "Custom checks: score=1.00, all 1 checks passed, 1 skipped"
+
+    def test_an_errored_check_moves_the_score_and_the_sentence_together(self) -> None:
+        """One predicate decides both, so neither can move without the other.
+
+        ``decided`` is what the component score averages over and what the sentence
+        counts and names. Narrowing it to exclude an errored check — a plausible
+        reading, since a check that crashed arguably reached no verdict — would leave
+        the fold reporting the component unscored while the grade said it failed,
+        which is this component's own defect one level down. Asserted as a pair for
+        that reason: either half alone passes under the narrowing.
+        """
+        errored = CheckResultSet(
             results=[
                 CheckResult(check_name="c1", status=CheckStatus.PASSED, score=1.0, message="ok"),
-                CheckResult(check_name="c2", status=CheckStatus.FAILED, score=0.0, message="fail"),
+                CheckResult(
+                    check_name="balanced",
+                    status=CheckStatus.ERROR,
+                    score=0.0,
+                    message="KeyError: 'ledger'",
+                ),
             ]
         )
-        score, reason = runner.result_to_score(result, config)
-        assert score == 0.5
-        assert "✓ c1" in reason
-        assert "✗ c2" in reason
 
-    def test_result_to_score_with_error(self):
-        runner = CheckRunner()
+        assert [r.check_name for r in errored.decided] == ["c1", "balanced"]
+        assert errored.decided_something is True
+        assert errored.aggregate_score == 0.5
+        assert custom_checks_reason(errored) == (
+            "Custom checks: score=0.50, 1 of 2 checks failed — balanced: KeyError: 'ledger'"
+        )
 
-        config = CustomChecksConfig(enabled=True, fail_on_error=True)
-        result = CheckResultSet(error="Module failed to load")
-        score, reason = runner.result_to_score(result, config)
-        assert score == 0.0
-        assert "error" in reason.lower()
+    def test_a_losing_suites_sentence_carries_fail_and_a_passing_ones_does_not(self) -> None:
+        """Two literal rules, because a downstream heuristic reads this text.
 
-        config = CustomChecksConfig(enabled=True, fail_on_error=False)
-        score, reason = runner.result_to_score(result, config)
-        assert score == 0.5
-        assert "non-fatal" in reason.lower()
+        ``attribute_failure`` splits ``reasons`` on ``|`` and keeps every segment
+        matching ``"FAIL"`` case-insensitively, so whether this sentence carries the
+        substring decides whether a custom-checks trial contributes failure evidence.
+        The passing case is written with a check named ``no_failures_logged``: naming
+        every check rather than only the losing ones would manufacture the evidence
+        out of the author's vocabulary.
+        """
+        losing = custom_checks_reason(
+            CheckResultSet(
+                results=[
+                    CheckResult(
+                        check_name="ledger_balanced",
+                        status=CheckStatus.ERROR,
+                        score=0.0,
+                        message="KeyError: 'ledger'",
+                    )
+                ]
+            )
+        )
+        passing = custom_checks_reason(
+            CheckResultSet(
+                results=[
+                    CheckResult(
+                        check_name="no_failures_logged",
+                        status=CheckStatus.PASSED,
+                        score=1.0,
+                        message="no failure rows in the ledger",
+                    )
+                ]
+            )
+        )
+
+        assert "fail" in losing.lower()
+        assert "fail" not in passing.lower()
+        assert "no_failures_logged" not in passing

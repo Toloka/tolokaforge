@@ -39,30 +39,24 @@ every registration and the runner refuses anything below its own, so no trial st
 and no tokens are spent.
 
 **The engine is newer than the image.** The error is a Pydantic validation failure —
-`extra_forbidden` — naming a field the older image's config models do not declare.
-Three fields carry it: `state_checks.hash_weight`, which appears for **every** pack
-carrying a non-empty `state_checks:` block, `transcript_rules.min_assistant_turns`,
-which appears for **every** pack carrying a `transcript_rules:` block, and
-`trace_checks`, which appears for **every** pack. The engine emits all three whether
-or not the pack declares them, so any pack at all reproduces this against an image
-older than the engine.
-A field's declared value shape locks the same way: a pack declaring a composite
-(list-valued) `state_checks.id_fields` key against an image that predates the list
-form is rejected with a `string_type` error naming `id_fields`, and a
-`combine_method` value the image's closed set does not hold is rejected at the
-value.
+`extra_forbidden` — naming a field the older image's config models do not declare. The
+engine emits several grading keys whether or not the pack declares them, so any pack at
+all reproduces this against an image older than the engine. A field's declared *value*
+shape locks the same way: the error is then a `string_type` or a value error naming the
+key rather than an `extra_forbidden`.
 The trial spec crosses the wire as a JSON string parsed by `extra="forbid"`
 models, so an unknown key there is an error rather than a dropped field — unlike a
 proto message field, which an older runner ignores.
 
-See [RUNNER.md](RUNNER.md#engine--image-version-lock) § Engine / image version lock
-and [GRADING.md](GRADING.md#hash-based-grading-tau-bench-compatible) §
-"Runner-engine version lock (both directions)".
+Which keys bite, from which release, and in which direction is one table:
+[GRADING.md](GRADING.md#runner-engine-version-lock) § Runner-engine version lock. For
+the protocol-version half of the pairing see
+[RUNNER.md](RUNNER.md#engine--image-version-lock) § Engine / image version lock.
 
 ## Every Tool Call Fails: MCP server closed connection
 
 **Symptom.** Every tool call of every task declaring an `mcp_server.py` comes back
-`Tool error: RuntimeError: MCP server closed connection`. The agent burns its whole turn
+`MCP server closed connection`. The agent burns its whole turn
 budget on failing tools and the trial grades `0.0` — a full-price run that measured nothing.
 Reproduced on `examples/native/native_shared_domain`: three trials, `tool_calls=5`, every
 call failed, `avg_score_micro=0.0`.
@@ -95,12 +89,17 @@ tree they build from says today — the version is baked into the image. See #79
 ## RAG Search Returns Empty
 
 - Confirm the corpus directory exists in the task.
-- Trigger indexing:
-  ```bash
-  curl -X POST http://localhost:8001/index \
-    -H "Content-Type: application/json" \
-    -d '{"corpus_path": "/app/tasks/<category>/<task>/rag/corpus"}'
-  ```
+- Indexing is per trial and the runner drives it: when a task declares a rag
+  corpus, the runner reads the corpus at trial registration and posts it to
+  `/trials/{trial_id}/index`. There is no operator step to trigger — an empty
+  result means the corpus never reached the service, so read the runner's log
+  for that trial.
+- Check the service itself with `GET /health` on the mapped port. `503
+  degraded` means its embedding model failed to load, and the `reason` field
+  names the model and the failure. Such a service still answers searches, but
+  with BM25 keyword matching only — a query that needs semantic similarity
+  comes back empty or off-target until the model loads. See
+  [`REFERENCE.md`](REFERENCE.md) § RAG Service API for the routes.
 
 ## API Keys Not Found
 

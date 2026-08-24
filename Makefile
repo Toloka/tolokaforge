@@ -19,17 +19,20 @@ sync: install
 # Testing
 # =============================================================================
 
+# No path argument: pytest reads `testpaths`, which names every test root the
+# workspace ships. A path here would override it and run a silent subset.
+
 test:
-	uv run pytest tests/ -v
+	uv run pytest -v
 
 test-unit:
-	uv run pytest tests/ -v -m unit
+	uv run pytest -v -m unit
 
 test-canonical:
-	uv run pytest tests/ -v -m canonical
+	uv run pytest -v -m canonical
 
 test-coverage:
-	uv run pytest tests/ --cov=tolokaforge --cov-report=html --cov-report=term
+	uv run pytest --cov --cov-report=html --cov-report=term
 
 # =============================================================================
 # Code Quality

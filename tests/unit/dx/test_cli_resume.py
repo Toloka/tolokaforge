@@ -23,6 +23,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
+from tests.utils.orchestrator_stubs import complete_run
 from tolokaforge.core.engine_run_state import write_engine_run_state
 from tolokaforge.core.model_data_fingerprint import compute_models_fingerprint
 from tolokaforge.core.resume import RunStateManager
@@ -72,6 +73,7 @@ def _seed_run_dir(
         run_id=run_id,
         presets_file=None,
         models_fingerprint=compute_models_fingerprint(),
+        adapter_fingerprints={},
     )
     manager = RunStateManager(run_dir)
     state = manager.initialize_run(
@@ -92,6 +94,7 @@ class _RecordingOrchestrator:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         type(self).captured["init_kwargs"] = kwargs
         self.tasks: list[object] = [object()]
+        self.grading_completeness = complete_run()
 
     def load_tasks(self) -> None:
         return None

@@ -3,6 +3,13 @@
   "aggregate_original_llm_judge": 1.0,
   "aggregate_replay_llm_judge": 0.5,
   "agreement_rate": 0.5,
+  "batch": {
+    "discovered": 7,
+    "failed": 1,
+    "replayed": 5,
+    "skipped_no_grade": 1,
+    "skipped_not_applicable": 0
+  },
   "carried_components": "Non-judge grade components (state checks, transcript rules, db-probes) are carried from the recorded grade, not recomputed by replay.",
   "criteria_agreed": 1,
   "criteria_compared": 2,

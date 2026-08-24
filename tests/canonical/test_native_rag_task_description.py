@@ -6,7 +6,9 @@ serialization boundary — the shape the runner resolves against:
 
 - ``search.enabled`` is ``True`` with ``documents_path`` equal to the pack's
   declared ``corpus_dir`` **verbatim** (the pinned convention the runner resolves
-  as ``artifacts_dir / documents_path``);
+  as ``artifacts_dir / documents_path``), and ``search.plane`` names the
+  rag-service plane, which is what keeps the corpus off the TypeSense one in a
+  run that configures both;
 - the corpus ``.md``/``.txt`` files ride in ``tool_artifacts`` under that same
   ``corpus_dir`` prefix, and nothing else does (never ``grading.yaml`` — it can
   carry the planted retrieval fact);
@@ -74,6 +76,7 @@ def test_native_rag_pack_serializes_search_and_corpus(tmp_path: Path) -> None:
     payload = adapter.to_task_description("rag_shape").model_dump(mode="json")
 
     assert payload["search"]["enabled"] is True
+    assert payload["search"]["plane"] == "rag_service"
     assert payload["search"]["documents_path"] == "rag/corpus"
     assert payload["search"]["domain_name"] == "rag_search"
 

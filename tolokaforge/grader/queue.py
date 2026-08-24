@@ -1,4 +1,4 @@
-"""Queue-backed grader transport — the throughput seam (ADR-0035, P3).
+"""Queue-backed grader transport — the throughput seam (ADR-0038, P3).
 
 Where :class:`GraderRPCTrialGrader` gives the orchestrator *independent
 deploy* (a grader on a different machine), the queue-backed transport gives

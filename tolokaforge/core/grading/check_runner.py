@@ -551,59 +551,6 @@ class CheckRunner:
                 execution_time_ms=(time.time() - start_time) * 1000,
             )
 
-    def result_to_score(
-        self,
-        result: CheckResultSet,
-        config: CustomChecksConfig,
-    ) -> tuple[float, str]:
-        """
-        Convert CheckResultSet to score and reason string.
-
-        This function produces the final score and human-readable summary
-        from check results. Useful for integrating into the grading pipeline.
-
-        Args:
-            result: CheckResultSet from run()
-            config: Configuration (for fail_on_error handling)
-
-        Returns:
-            Tuple of (score 0.0-1.0, reason string)
-
-        Example:
-            result = runner.run(...)
-            score, reason = runner.result_to_score(result, config)
-            print(f"Score: {score}")
-            print(reason)
-        """
-        if result.error:
-            if config.fail_on_error:
-                return 0.0, f"Check error: {result.error}"
-            else:
-                return 0.5, f"Check error (non-fatal): {result.error}"
-
-        if not result.results:
-            return 1.0, "No custom checks defined"
-
-        # Build human-readable reason string
-        reasons = []
-        for r in result.results:
-            if r.status == CheckStatus.PASSED:
-                reasons.append(f"✓ {r.check_name}: {r.message}")
-            elif r.status == CheckStatus.FAILED:
-                reasons.append(f"✗ {r.check_name}: {r.message}")
-            elif r.status == CheckStatus.ERROR:
-                reasons.append(f"⚠ {r.check_name}: ERROR - {r.message}")
-            elif r.status == CheckStatus.SKIPPED:
-                reasons.append(f"- {r.check_name}: (skipped) {r.message}")
-
-        summary = (
-            f"Custom checks: {result.passed}/{result.total} passed, "
-            f"score: {result.aggregate_score:.2f}"
-        )
-        reasons.insert(0, summary)
-
-        return result.aggregate_score, "\n".join(reasons)
-
 
 # =============================================================================
 # Startup-time validation helper — RegisterTrial calls this to fail-loud on

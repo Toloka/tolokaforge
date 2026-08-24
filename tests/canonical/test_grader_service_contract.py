@@ -264,7 +264,7 @@ def test_wire_message_types_carry_the_full_grade_shape() -> None:
     ``TraceConstraintResult``, ``TraceChecksSummary``, ``TracePathResult``)
     so a nested-field addition on runner.proto fails the guard until the
     grader mirror is updated — keeping the two RPCs interchangeable at
-    the plug-in-seam layer, per ADR-0035.
+    the plug-in-seam layer, per ADR-0038.
     """
     from tolokaforge.runner import runner_pb2
 
@@ -300,7 +300,7 @@ def test_wire_message_types_carry_the_full_grade_shape() -> None:
         assert missing_nested == set(), (
             f"grader.proto's {field_name!r} sub-message drops fields present in "
             f"runner.proto: {sorted(missing_nested)}. Mirror the runner shape so "
-            "the wire stays coherent — see ADR-0035 § wire alignment."
+            "the wire stays coherent — see ADR-0038 § wire alignment."
         )
 
     # ``trace_checks_summary.paths`` is a nested repeated sub-message — check

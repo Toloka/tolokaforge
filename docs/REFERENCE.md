@@ -41,12 +41,11 @@ orchestrator:
                                     # task-authored max_turns above 50 stand
 
   timeouts:
-    turn_s: 60                      # Per-turn timeout
+    turn_s: 60                      # Declared, not yet enforced — #1147
     episode_s: 1200                 # Total episode timeout
 
   stuck_heuristics:
     max_repeated_tool_calls: 5      # Identical tool call threshold
-    max_idle_turns: 8               # Turns without tool calls
 
 evaluation:
   task_packs:
@@ -126,17 +125,26 @@ combine:
   pass_threshold: 0.8
 
 state_checks:
-  jsonpaths:
-    - path: "$.users[?(@.id=='123')].verified"
+  jsonpaths:                          # a path: is rooted at db (or tables) — the state
+                                      # both substrates read from the trial's database.
+                                      # A file is asserted with path_glob: + contains_ci:
+    - path: "$.db.users[?(@.id=='123')].verified"
       equals: true
-    - path: "$.orders[-1].status"
+    - path: "$.db.orders[-1].status"
       equals: "completed"
-  hash:
+  hash:                               # CLOSED: enabled, expect_initial_state,
+                                      # golden_actions, weight, description — any
+                                      # other key is a load error
     enabled: true
-    expected_state_hash: "abc123..."  # SHA256 of normalized final state
+    golden_actions: []                # replay these to derive the expected state
+    expect_initial_state: false       # or this: the expected final state is the
+                                      # state the task starts in, which is what a
+                                      # refusal task asserts. Refused beside the
+                                      # source above
     weight: 0.5                       # REQUIRED in exactly this shape: hash source
                                       # + non-empty jsonpaths. No default; rejected
                                       # at load without it. See docs/GRADING.md.
+    description: "matches golden run"  # read into the hash verdict's reason
 
 transcript_rules:
   must_contain: ["confirmation number"]
@@ -144,8 +152,8 @@ transcript_rules:
   max_turns: 40
   min_assistant_turns: 1                   # opt-in floor: 0 turns fails the component
   tool_expectations:                       # graded on both substrates
-    required_tools: ["db_update"]          # must have been called SUCCESSFULLY
-    disallowed_tools: ["bash"]             # must not be called at ANY status
+    required_tools: ["db_update"]          # the AGENT must have called it SUCCESSFULLY
+    disallowed_tools: ["bash"]             # the AGENT must not call it, at ANY status
 
 trace_checks:                              # ordering / scoped absence / counting over the timeline
   constraints:                             # closed ten-kind vocabulary; hold whichever route was taken
@@ -160,7 +168,7 @@ trace_checks:                              # ordering / scoped absence / countin
         values:                            # name -> extraction; at least one, each referenced below
           case:                            # the name equals_binding / contains_binding reads
             field: args.case_url           # tool | text | result | args.<dotted path>
-            pattern: '(https://[^/]+/cases/[0-9]+)'  # optional; exactly one group, always a string
+            pattern: '(https://[^/]+/cases/[0-9]+)'  # optional; exactly one group, off a field that holds text
         on_unbound: fail                   # fail (default) | pass — a binder that selected nothing
       require:                             # exactly one constraint kind
         before:
@@ -237,6 +245,7 @@ migrations:                                  # at least one entry
     mode: narrowed                           # candidate | narrowed | retired
     by:                                      # trace_checks ids in this pack; a CONJUNCTION
       - the_notes_were_listed_before_the_note_was_added
+    corpus: tests/data/migration_corpora/notes_duplicate_check   # REQUIRED in every mode
     was:                                     # the criterion's PRE-migration shape
       kind: binary                           # binary | graded; default binary
       required: true                         # default false
@@ -249,13 +258,19 @@ migrations:                                  # at least one entry
       llm_judge: 0.7                         # required for a narrowed/retired SCORED criterion
       trace_checks: 0.3
     evidence:                                # required for narrowed/retired, forbidden on candidate
-      corpus: tests/data/migration_corpora/notes_duplicate_check
       observations: 17                       # checked against what reconcile measures
       kappa: 1.0                             # nullable and required; null means undefined
     acknowledged:                            # optional waivers, default []
-      - trial: <bundle path under evidence.corpus>
+      - trial: <bundle path under corpus>
         reason: "<why the judge's verdict on that trial is the one to discount>"
 ```
+
+`corpus` names the committed corpus the claim is measured over, and it has to resolve: the
+value is read against a base the caller supplies — `tolokaforge validate` and `tolokaforge
+reconcile` pass the working directory, so the shipped values are written from the repository
+root — and it must name a directory carrying the `corpus.yaml` [`tolokaforge
+curate`](RUBRIC_MIGRATION.md#building-a-corpus) writes, or one whose immediate subdirectories
+all do.
 
 The file is `extra="forbid"` at every level, so a misspelled key is an error rather than a
 claim nothing reads. `residual`'s presence and kind are a **total function of `mode`** —
@@ -383,7 +398,6 @@ class MyTool(Tool):
             timeout_s=30.0,
             rate_limit=100,           # Max calls per trial
             category=ToolCategory.COMPUTE,
-            visibility=["agent"],     # "agent", "user", or both
         )
         super().__init__(name="my_tool", description="...", policy=policy)
 
@@ -443,9 +457,11 @@ the `task.yaml` key that supplies them, `task_dir` as the caller's own omission 
 component is scored. `task_initial_state.json_db` has to be a path to a JSON file
 under `task_dir`; an inline mapping is no world to replay in. A `golden_actions` that is
 truthy without being a list is refused ahead of all three, with `UnreplayableGoldenSource`
-out of the same module: there is nothing to replay whatever world is supplied. A truthy
-`expected_state_hash` is compared in process and returns before `golden_actions` is read,
-so a pack declaring both needs none of the three. `BaseAdapter.grade` resolves all three
+out of the same module: there is nothing to replay whatever world is supplied. The other
+source, `expect_initial_state`, needs the initial state and nothing else — it admits the
+inline mapping a replay cannot use, and raises
+`UnresolvableInitialState` naming `initial_state.json_db` where a task declares none.
+`BaseAdapter.grade` resolves all three
 from the task it grades — see
 [GRADING.md § Hash-Based Grading](GRADING.md#hash-based-grading-tau-bench-compatible).
 
@@ -515,9 +531,18 @@ Base URL: `http://rag-service:8001`
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/search` | POST | Search documents (body: `{query, top_k}`) |
-| `/index` | POST | Build index (body: `{corpus_dir}`) |
-| `/health` | GET | Health check |
+| `/trials/{trial_id}/index` | POST | Index a trial's documents (body: `{trial_id, domain_name, documents}`) |
+| `/trials/{trial_id}/search` | POST | Search a trial's index (body: `{query, top_k, alpha}`) |
+| `/trials/{trial_id}/index` | DELETE | Drop a trial's index |
+| `/search` | POST | Search the `global` trial's index (body: `{query, top_k, alpha}`) |
+| `/health` | GET | Health check — `503 "degraded"` when the embedding model failed to load |
+
+The image bakes `sentence-transformers/all-MiniLM-L6-v2` and runs with
+`HF_HUB_OFFLINE=1`, so startup loads it from disk and contacts nothing.
+`EMBEDDING_MODEL` selects the model at runtime; a value other than the baked one
+cannot be fetched under the offline pin, so the load fails and `/health` answers
+`503` naming that model. To run a different model, set `HF_HUB_OFFLINE=0` and
+accept a download at startup.
 
 ### Mock Web API
 

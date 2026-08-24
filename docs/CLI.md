@@ -322,7 +322,7 @@ Stdout stays strictly empty — dry-run produces no artifact, so `emit_artifact_
 
 ### Typesense / Docker side effects
 
-`load_tasks_for_dry_run` builds the adapter directly and enumerates tasks without the TypeSense preflight `Orchestrator.load_tasks()` runs. A run config that declares `orchestrator.typesense.enabled=true` renders panels showing the search config as authored — `port="auto"` / `api_key=null` fields stay unresolved because no container starts. Operators wanting resolved TypeSense values run a real trial or `tolokaforge prepare`.
+`load_tasks_for_dry_run` builds the adapter directly and enumerates tasks without the TypeSense preflight `Orchestrator.load_tasks()` runs. The adapter is handed the connection details a real run would hand it, under the same condition: `orchestrator.typesense` reaches it when the block is `enabled` and its `mode` is not `disabled`, and never otherwise — so a dry run cannot preview a search plane the run would not have. The values are the authored ones, so panels render `port="auto"` / `api_key=null` unresolved because no container starts. Operators wanting resolved TypeSense values run a real trial or `tolokaforge prepare`.
 
 ## Resume
 
@@ -376,7 +376,7 @@ Current mapping:
 
 | Section    | Commands                                     |
 |------------|----------------------------------------------|
-| Runs       | `analyze`, `browse`, `prepare`, `reconcile`, `rejudge`, `retrace`, `run`, `status`, `worker` |
+| Runs       | `analyze`, `browse`, `curate`, `prepare`, `reconcile`, `rejudge`, `retrace`, `run`, `status`, `worker` |
 | Tasks      | `validate`                                   |
 | Docker     | `docker`                                     |
 | Config     | `config`                                     |
@@ -389,6 +389,7 @@ Abbreviated transcript of the `Commands:` region:
 Runs:
   analyze    Analyze a single trial trajectory.
   browse     Open a run's output directory in the OS default handler.
+  curate     Write a judge-labelled corpus from recorded runs, spending...
   prepare    Prepare a queue-backed run directory for distributed workers.
   reconcile  Check a pack's declared rubric migration against recorded...
   rejudge    Re-judge the rubric stage of recorded trials offline...
@@ -433,17 +434,49 @@ The root group is wired as `@click.group(cls=_GroupedCommandsGroup)`, and `_Grou
 
 An empty match is an invocation error, not a vacuous success — a pattern that selects nothing validates nothing, and a CI step whose glob has drifted off its packs would otherwise report a clean run.
 
-A key that `combine`, `state_checks` or `transcript_rules` does not declare is a `✗` line naming the file, the key, its closest declared field and the block's whole accepted set. `trace_checks` and `llm_judge` refuse such a key too, but as their model's bare `Extra inputs are not permitted` naming neither the file nor the accepted set — and `llm_judge` only on the `rubric` / `model_ref` shapes its own migration names, which are the shapes this command constructs it for. The block *names* are lenient: `state_cheks:` for `state_checks:` drops a whole grading component and is a `✗` only when the correct name carries a weight in `combine.weights`. See [docs/GRADING.md § Which keys a grading block refuses](GRADING.md#which-keys-a-grading-block-refuses).
+A key that `combine`, `state_checks` or `transcript_rules` does not declare is a `✗` line naming the file, the key, its closest declared field and the block's whole accepted set. A position those blocks nest draws the same line under its own name: an element by index (`transcript_rules.required_actions[0]`), a nested block by its dotted path (`state_checks.hash`, `transcript_rules.tool_expectations`). `trace_checks` and `llm_judge` refuse such a key too, but as their model's bare `Extra inputs are not permitted` naming neither the file nor the accepted set — and `llm_judge` only on the `rubric` / `model_ref` shapes its own migration names, which are the shapes this command constructs it for. The block *names* are lenient: `state_cheks:` for `state_checks:` drops a whole grading component and is a `✗` only when the correct name carries a weight in `combine.weights`. See [docs/GRADING.md § Which keys a grading block refuses](GRADING.md#which-keys-a-grading-block-refuses).
 
-A task's grading block is also checked against the tools that task gives its actors: a matcher or a `tool_expectations` entry naming a tool the task does not declare, an argument name a tool's schema forbids, an uncompilable `regex`, a golden action naming a tool the task gives no actor, and a state hash the `enabled` flag stops anything from reading are all `✗` lines. Matchers inside a `trace_checks` alternative route are checked alongside the shared ones, and a finding there is addressed `trace_checks.<path id>.<constraint id>`. What the schema cannot answer for is printed under the task's `✓` as a `?` line naming what was not checked and why — it never fails the command. `validate` reads every task through the native loader, so for a task an external adapter owns there is no tool set to check against and the whole block is reported unchecked. The rules and their severities are in [docs/GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run).
+A task's grading block is also checked against the tools that task gives its actors: a matcher or a `tool_expectations` entry naming a tool the task does not declare, an argument name a tool's schema forbids, an uncompilable `regex`, a golden action naming a tool the task gives no actor, and a state hash the `enabled` flag stops anything from reading are all `✗` lines. Matchers inside a `trace_checks` alternative route are checked alongside the shared ones, and a finding there is addressed `trace_checks.<path id>.<constraint id>`. What the schema cannot answer for is printed under the task's `✓` as a `?` line naming what was not checked and why — it never fails the command. `validate` reads every task through the native loader, so for a task an external adapter owns there is no tool set to check against and the whole block is reported unchecked — with two carve-outs. The hash-source question is put to the declared adapter's own class, which this command resolves through the adapter registry without constructing anything: an adapter that names the source it supplies beneath the authored `state_checks.hash` block turns that block into a checked `✓` when the source is usable, and a `✗` naming the source when it is missing or empty, rather than the `?` an unanswered question draws. An `adapter_type` this environment has no installed adapter for still answers nothing, so those packs keep their `?` line. The seeded-table question is answered only for a native task, whose `initial_state.json_db` this command reads: its `state_checks.id_fields` declaration is checked against the records that file seeds — the same three findings the run path refuses, each a `✗` naming the table and the component — and a `json_db` file that is not on disk is a `✗` naming the path. No adapter answers this one for itself, so a task any other adapter owns keeps a `?` line for `state_checks.id_fields`, and `RegisterTrial` remains its enforcing gate. The same read answers a second rule, which needs no `id_fields` declaration to bite: a `state_checks` block that reads the trial's database — a `path:` addressing it, or `hash` enabled with or without a source — on a native task whose `initial_state` seeds no tables is a `✗` at `state_checks.jsonpaths` or `state_checks.hash.enabled`, so a pack declaring both shapes draws two `✗` lines where it is native and two `?` lines — `state_checks.id_fields` and `state_checks` — where another adapter owns it. The rules and their severities are in [docs/GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run).
 
-A task that names no grading source at all — no `grading:` field and no sibling `grading.yaml` — is answered by the `adapter_type` its `task.yaml` declares. Declaring `native` it is a `✗` naming the task and both ways to supply a source, because the native adapter grades from that file and the run refuses the task in its own pre-flight for the same reason. Declaring any other adapter it is a `✓` plus a `?` line: that adapter resolves its own grading config, so whether the absence is a defect is not answerable here. A task that *names* a grading file is gated on that file's contents whatever it declares.
+A task with no grading block on disk is answered by the `adapter_type` its `task.yaml` declares — whether it names no source at all (no `grading:` field and no sibling `grading.yaml`) or names a path with no file at it. Declaring `native` it is a `✗` naming the task and both ways out of that state, because the native adapter grades from that file and the run refuses the task in its own pre-flight for the same reason: supply a source where none is named, correct the path or create the file where one is. Declaring any other adapter it is a `✓` plus a `?` line naming what could not be checked: that adapter resolves its own grading config, so whether the absence is a defect is not answerable here. A task naming a grading file that *is* on disk is gated on that file's contents whatever it declares.
 
 Each task loads under its enclosing project. `validate` walks up from the `task.yaml` for a `project.yaml` and layers that project's `task_defaults` beneath the task's own fields — the layering the orchestrator applies before a run — so the object validated is the one a run loads. A task with no `project.yaml` above it loads on its own. A `project.yaml` that fails to load fails the tasks beneath it, naming the project file; the rest of the glob is still validated.
 
 `project.default_environment` is not layered: it binds into a `TaskDescription`'s `EnvironmentManifest`, and `validate` builds no `TaskDescription`.
 
 `make validate` wraps the command over `TASKS_GLOB` (`$(TASKS_DIR)/**/task.yaml`, with `TASKS_DIR` defaulting to `tasks`). Task packs are cloned separately, so the target prints a skip reason and exits `0` when `TASKS_DIR` is absent and `TASKS_GLOB` is still the default derived from it, instead of failing on an empty glob. A `TASKS_GLOB` you name runs whatever `TASKS_DIR` holds — pointing the target at a pack elsewhere is never skipped. The dev MCP's `validate_tasks` guards its own default identically.
+
+## Migration reconciliation
+
+`tolokaforge reconcile` checks a pack's declared rubric migration against recorded judge verdicts, spending nothing. With no `--source` it reconciles every migration declared under `--packs` (default `examples/`) over the corpus each declaration itself names — the invocation CI runs — and either way it is usable as a gate:
+
+| Outcome | Exit code |
+|---|---|
+| every converting entry reaches `no_counter_evidence`, and every bundle read | `0` |
+| any converting entry is `refused` or `insufficient_evidence`, or any bundle could not be read — or declares it was redacted | `1`, after every row is printed |
+| the invocation cannot be honoured — no declaration under `--packs`, a corpus that resolves to nothing, or `--replay-id` / a missing `--dry-run` with no `--source` | `1`, naming what to change; nothing is reconciled |
+
+A `candidate` entry converts nothing, so its verdict is reported and gates nothing: a candidacy the corpus refuses still exits `0`. The sweep writes nothing at all — a report lands under the corpus it read, and those corpora are committed — which is why `--replay-id` and an invocation without `--dry-run` are refused there rather than ignored. What each verdict means, and what an entry is refused for, is in [docs/RUBRIC_MIGRATION.md](RUBRIC_MIGRATION.md#the-bar).
+
+## Run and worker exit codes
+
+`tolokaforge run` and `tolokaforge worker` are usable as gates on whether the run measured everything it attempted:
+
+| Outcome | Exit code |
+|---|---|
+| every attempt reached a verdict | `0` |
+| the run completed and any trial is **`ungradeable`** | `1`, after every artifact is written, the end banner is printed and the run directory is on stdout |
+| the run never happened — bad config, orchestrator raise, zero tasks | non-zero with **empty** stdout; see [§ stdout / stderr contract](#stdout--stderr-contract) |
+
+An **ungradeable** trial is one the run attempted and measured and then could not grade: `trajectory.yaml` carries a `grading_error` and no `grade`. A run that reports success while an arbitrary, model-correlated subset of its grades is missing is the failure mode this gate exists to remove.
+
+A trial the provider or the substrate killed — an `api_timeout`, `rate_limit` or `provision_error`, counted under `infrastructure_aborts` — produces no verdict either and **does not** trigger the gate. Those trials were never measured, they sit outside the measured denominator by design, and failing a several-hour run for one rate limit is how an exit code becomes something operators route around instead of reading.
+
+There is no tolerance threshold. A threshold is a way to re-silence the signal, and the number an operator would tune is already `ungradeable` in `aggregate.json`.
+
+On exit `1` the console carries one error line naming the count, the first few trial ids and the total. The run directory is complete, so the response is to read it: `ungradeable` in `aggregate.json` says how many, `per_task_metrics.json` says where, and each named trial's `trajectory.yaml` `grading_error` says why. Then rerun those trials, or accept the loss deliberately.
+
+`tolokaforge worker` applies the same rule to the attempts that worker completed, which is the surface a sharded CI actually gates on. Its `--run-dir` summary line is printed either way — the gate is a verdict on top of a completed shard, not a replacement for what the shard did.
 
 ## Run banner
 
@@ -602,7 +635,9 @@ observability:
 | `tolokaforge analyze`                        | (empty)                               | Trajectory summary, tool-failure / log-error breakdown.      |
 | `tolokaforge docker build` / `up` / `down` / `status` | (empty)                      | Build progress, stack status, error text.                    |
 
-On any failure — bad config, orchestrator raise, zero tasks — stdout stays **empty** and the process exits non-zero. The `tolokaforge run` "no tasks" branch and every `tolokaforge validate` failure exit with code `1`; other failures propagate whatever exit code the underlying error raises (click `UsageError` → 2, `SystemExit(N)` → N).
+A failure that produces **no run** — bad config, orchestrator raise, zero tasks — leaves stdout **empty** and exits non-zero. The `tolokaforge run` "no tasks" branch and every `tolokaforge validate` failure exit with code `1`; other failures propagate whatever exit code the underlying error raises (click `UsageError` → 2, `SystemExit(N)` → N).
+
+The grading-completeness gate is the one non-zero exit that **does** print the run directory: the run happened, wrote every artifact and emitted its path, and the exit code reports separately that it could not grade everything it measured — see [§ Run and worker exit codes](#run-and-worker-exit-codes). Suppressing the path there would make the incomplete run harder to inspect than the complete one.
 
 The emitted path is `Path.resolve()`'d: symlinks are canonicalised and the line is always absolute, regardless of the caller's cwd or how the config expressed `evaluation.output_dir`.
 
@@ -613,6 +648,8 @@ RUN_DIR=$(tolokaforge run --config path/to/run.yaml)
 # stderr still shows progress; RUN_DIR is the absolute run-dir path.
 tolokaforge status --run-dir "$RUN_DIR"
 ```
+
+The capture still works when the run could not grade every trial — the path is emitted before the exit code is decided — but **under `set -e`, which is most CI, the shell aborts at that assignment**, because the command exits `1`. That is the intended behaviour: a lossy run should stop the pipeline. A caller that wants the directory anyway, to inspect what was lost, has to say so — `RUN_DIR=$(tolokaforge run --config …) || true` — and then decide what to do about the incomplete run rather than proceeding as if it were complete.
 
 Adding `2>/dev/null` (or `2>run.log`) drops progress without breaking the capture — the artifact-path emission is independent of `--verbose` / `--quiet` / `--log-format`, which shape stderr only.
 

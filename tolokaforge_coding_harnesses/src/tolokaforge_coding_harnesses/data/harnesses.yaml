@@ -1,0 +1,504 @@
+# Shipped coding-harness registry. Every entry is a
+# `tolokaforge_coding_harnesses.HarnessSpec`, which documents what each field
+# is; the comments here carry why each *value* is what it is.
+
+harnesses:
+  claude-code:
+    install_method: "npm"
+    install_source: "@anthropic-ai/claude-code"
+    # Pinned to the reference vendor-CLI invocation's resolved version so a
+    # bump only lands with an explicit re-baseline; keeps reproducibility of
+    # scored runs across contributor machines.
+    version: "2.1.233"
+    argv_prefix: ["claude"]
+    # `--verbose --output-format=stream-json` matches the reference vendor-CLI
+    # invocation. Aligning the flag block aligns the CLI's internal reasoning
+    # mode; without them the CLI ran a different scaffold and made different
+    # fixes on the same task.
+    flags_pre_permission: ["--verbose", "--output-format=stream-json"]
+    # `--permission-mode=bypassPermissions` is mandatory: without it the CLI
+    # blocks at the first tool-permission prompt in `--print` mode and burns
+    # the whole episode budget without ever calling the LLM.
+    argv_suffix: ["--permission-mode=bypassPermissions", "--print"]
+    # Instruction on stdin sidesteps every shell-escape edge case a
+    # positional-arg prompt would have to survive (a natural user request can
+    # contain quotes, `$`, backticks, newlines). The reference vendor-CLI
+    # invocation pipes the instruction the same way.
+    instruction_channel: "stdin"
+    # The env quartet forces every sub-agent (`Task`, `Explore`, `Plan`,
+    # `general-purpose`) to use the declared model. With `--model` on the CLI
+    # alone, sub-agents fall back to the CLI's sonnet-default and may pick a
+    # different provider mid-trial — a silent divergence from the declared
+    # benchmark model.
+    env_model_vars:
+      - "ANTHROPIC_MODEL"
+      - "ANTHROPIC_DEFAULT_SONNET_MODEL"
+      - "ANTHROPIC_DEFAULT_OPUS_MODEL"
+      - "ANTHROPIC_DEFAULT_HAIKU_MODEL"
+      - "CLAUDE_CODE_SUBAGENT_MODEL"
+    # `IS_SANDBOX=1` is claude-code's documented root-user override: without
+    # it, `--permission-mode=bypassPermissions` (which the CLI rewrites
+    # internally to `--dangerously-skip-permissions`) refuses to run under
+    # UID 0 and exits before the model is called. The task container is root
+    # by default. The reference vendor-CLI invocation sets the same env for
+    # the same reason.
+    # `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` disables the CLI's opt-in
+    # telemetry / analytics fetches — the reference invocation sets it too.
+    # `CLAUDE_CONFIG_DIR` names the directory the CLI discovers skills under.
+    # It matches the default for the container's root user, stated rather than
+    # inherited so `skills_dir_target` below and the CLI's search path cannot
+    # drift apart when a task image sets `HOME` elsewhere. It is a literal
+    # rather than a `${HOME}` construct because compose interpolates `${...}`
+    # in the `environment:` block against the *invoking* shell, which would
+    # substitute the operator's host home. That asymmetry is why the pair is
+    # kept consistent by hand: `skills_dir_target` goes through the run's
+    # PathResolver and this value does not, so a runtime whose HOME is not
+    # `/root` desyncs them silently unless both are changed together.
+    container_env:
+      IS_SANDBOX: "1"
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      CLAUDE_CONFIG_DIR: "/root/.claude"
+    # Where a task pack's own `harness_skills_dir` bundle is delivered to. Only
+    # a task that ships skills installs any; the operator's `~/.claude/skills`
+    # is never a source (README, parity policy).
+    skills_dir_target: "${HOME}/.claude/skills/"
+    # Anthropic-shaped OpenRouter endpoint. `ANTHROPIC_BASE_URL` is a literal
+    # URL (not a secret); the key value comes from the operator via the
+    # `OPENROUTER_API_KEY` secret.
+    provider_env:
+      ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
+      ANTHROPIC_BASE_URL: "https://openrouter.ai/api"
+
+  codex:
+    install_method: "npm"
+    install_source: "@openai/codex"
+    version: "0.147.0"
+    argv_prefix: ["codex", "exec"]
+    # Three mandatory flags. `--dangerously-bypass-approvals-and-sandbox`
+    # skips the approval prompt that `codex exec` otherwise blocks on when it
+    # wants to write or run a command — the harness has no interactive stdin
+    # to answer it. `--skip-git-repo-check` disables the "trusted directory"
+    # gate that refuses to operate anywhere without a `.git` — tbench task
+    # containers work under `/app` and are not git repos.
+    # `-c model_reasoning_effort=high` is the OpenRouter-compat mandatory
+    # config: gpt-5-mini via the Responses API rejects requests that omit
+    # reasoning ("Reasoning is mandatory for this endpoint and cannot be
+    # disabled"). The reference vendor-CLI invocation carries the same
+    # override in its default codex command.
+    argv_suffix:
+      - "--dangerously-bypass-approvals-and-sandbox"
+      - "--skip-git-repo-check"
+      - "-c"
+      - "model_reasoning_effort=high"
+    # Two on-disk files — codex reads both and honours neither the env var
+    # they mirror:
+    #
+    # 1. `$CODEX_HOME/config.toml` carries `openai_base_url`. The env var
+    #    `OPENAI_BASE_URL` alone is ignored for the Responses API endpoint
+    #    (codex hits `api.openai.com` regardless).
+    # 2. `$CODEX_HOME/auth.json` carries the API key as JSON. The env var
+    #    `OPENAI_API_KEY` alone earns "401 No cookie auth credentials found"
+    #    from OpenRouter — the CLI sends no `Authorization` header without
+    #    the file.
+    #
+    # The reference vendor-CLI invocation writes both files too.
+    # `CODEX_HOME` defaults to `$HOME/.codex`. The key is written as
+    # a `$`-reference so it reaches the file from the container's environment
+    # rather than through the recorded command — it stays outside the
+    # `PathResolver` vocabulary on purpose, since only the container knows
+    # whether an operator set it, so the resolver defers the construct.
+    config_files:
+      "${CODEX_HOME:-$HOME/.codex}/config.toml": |
+        openai_base_url = "{{ base_url }}"
+      "${CODEX_HOME:-$HOME/.codex}/auth.json": |
+        {"{{ api_key_env }}": "${{ api_key_env }}"}
+    # codex 0.147's model catalog refuses the OpenRouter namespaced form.
+    strip_vendor_namespace: true
+    # OpenRouter's OpenAI-compat endpoint. The literal URL means an operator
+    # doesn't need to plumb OPENAI_BASE_URL through .env.
+    provider_env:
+      OPENAI_API_KEY: "${secret:OPENROUTER_API_KEY}"
+      OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
+
+  gemini-cli:
+    install_method: "npm"
+    install_source: "@google/gemini-cli"
+    version: "0.55.1"
+    argv_prefix: ["gemini"]
+    # `--yolo` accepts every tool call without asking. `--prompt` sits at the
+    # end so it stays adjacent to the trailing instruction argument.
+    argv_suffix: ["--yolo", "--prompt"]
+    # gemini-cli's model catalog uses bare names.
+    strip_vendor_namespace: true
+    # The shipped default is a direct Google AI Studio route: a real
+    # ``GEMINI_API_KEY`` (Google AI Studio or Vertex SA), no base-URL
+    # override, and gemini-cli's default ``gemini-api-key`` auth type.
+    # Pure env is sufficient — no ``config_files`` write is needed for this
+    # path.
+    #
+    # ``GEMINI_CLI_TRUST_WORKSPACE=true`` skips the interactive
+    # trusted-folder prompt that would otherwise block ``--yolo`` in a
+    # headless container.
+    container_env:
+      GEMINI_CLI_TRUST_WORKSPACE: "true"
+    provider_env:
+      GEMINI_API_KEY: "${secret:GEMINI_API_KEY}"
+    # --- Routing through a gateway ---
+    #
+    # A team-hosted LiteLLM (or any) gateway that speaks Google's native
+    # ``generateContent`` shape reaches gemini-cli through its ``GATEWAY``
+    # auth type. The same three facts — the base-URL override that flips the
+    # CLI into that mode, the settings-file pin, and a gateway credential
+    # under ``GEMINI_API_KEY`` — ship in two forms:
+    #
+    #   1. ``examples/terminal_bench/gemini_litellm_overlay.yaml``, a
+    #      ``harness_presets_file`` overlay that whole-replaces this entry.
+    #      This is the path a TF-side run takes; the operator names the file
+    #      in the run config.
+    #   2. ``gateway_route`` below — the same recipe as spec data, read by a
+    #      runtime that provisions an already-running container. Nothing in
+    #      this repo reads it (ADR-0037).
+    #
+    # The canonical test ``tests/canonical/test_gateway_route_recipes.py``
+    # is what keeps the two agreeing; neither is a copy to be edited alone.
+    #
+    # For an ad-hoc single-key change a caller can also union values into
+    # ``provider_env`` through the run config's ``agent_provider_env`` param
+    # — but the settings-file pin has to come from somewhere, so a partial
+    # overlay touching only ``provider_env`` still 400s on the first call.
+    #
+    # (Gemini 3 Pro ``gemini-3-pro-preview`` was retired by Google — it now
+    # sits under "Previous models (Shut down)" in Google's public docs;
+    # 3.1 Pro Preview is the current Pro-tier flagship successor.
+    # OpenRouter's ``~google/gemini-pro-latest`` alias resolves to
+    # ``google/gemini-3.1-pro-preview``, confirming.)
+    gateway_route:
+      gateway: "toloka_litellm"
+      # LiteLLM serves the Gemini wire protocol under a passthrough prefix:
+      # ``{base}/gemini/v1beta/models/…``. The consuming runtime appends this
+      # to the gateway's base URL.
+      passthrough_path: "/gemini"
+      # Literal content, not a template. Headless ``--prompt`` mode 400s with
+      # "Invalid auth method selected" without a pre-pinned ``selectedType``:
+      # gemini-cli 0.55.1's ``validateAuthMethod()`` has not been taught about
+      # GATEWAY, so the env vars alone are not enough.
+      config_files:
+        "${HOME}/.gemini/settings.json": |-
+          {"security":{"auth":{"selectedType":"gateway","useExternal":true}}}
+      container_env:
+        GEMINI_CLI_TRUST_WORKSPACE: "true"
+      # ``GOOGLE_GEMINI_BASE_URL``'s mere presence flips the CLI to GATEWAY
+      # mode. ``GEMINI_API_KEY`` carries the gateway's virtual key — what
+      # gemini-cli sends as ``x-goog-api-key`` — not a Google credential.
+      provider_env:
+        GOOGLE_GEMINI_BASE_URL: "${gateway.base_url}${gateway.passthrough_path}"
+        GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"
+
+  kimi-code:
+    install_method: "npm"
+    install_source: "@moonshot-ai/kimi-code"
+    # Pinned to the version the out-of-tree host we compared against cites;
+    # Moonshot has no separate bootstrap installer, so this pin fully governs
+    # which agent code runs.
+    version: "0.28.1"
+    argv_prefix: ["kimi"]
+    # No permission-mode analogue. `--output-format stream-json` matches the
+    # reference vendor-CLI invocation shape so trajectory JSON is emitted for
+    # the runner to record — same reason claude-code carries the flag.
+    # `--prompt` MUST sit last: kimi wants the instruction as its value, which
+    # is how the reference invocation renders it too.
+    # Passing the instruction as a bare positional argv token (the initial
+    # attempt) drops kimi to its usage banner with "See 'kimi --help'".
+    argv_suffix: ["--output-format", "stream-json", "--prompt"]
+    instruction_channel: "argv"
+    # kimi-code reads the model name from an env var, not `--model`.
+    env_model_vars: ["KIMI_MODEL_NAME"]
+    # Static hardening: no telemetry, no auto-update, no color codes in
+    # the stream. Every knob comes from the reference vendor-CLI invocation.
+    # `KIMI_MODEL_MAX_COMPLETION_TOKENS` caps the CLI's output-token
+    # reservation. Kimi's shipped default is the full model context
+    # (~131K on any release we've inspected), which is a marketing-
+    # inspired choice: it reserves the whole window as OUTPUT budget
+    # every request, so the input has to fit in whatever is left after.
+    # A model with a 131K context runs out of headroom before its first
+    # tool call; k2.7-code (262K) still fails on a working task after a
+    # few compaction attempts; only k3 (1M) fits without a cap, at a 5x
+    # per-token price. Setting the cap to 16384 restores a sensible
+    # reservation, lets the cheaper mid-context models complete, and
+    # doesn't lose real capacity — a coding task rarely needs more than
+    # a few thousand output tokens per turn.
+    container_env:
+      KIMI_DISABLE_TELEMETRY: "true"
+      KIMI_CODE_NO_AUTO_UPDATE: "true"
+      NO_COLOR: "true"
+      KIMI_MODEL_MAX_COMPLETION_TOKENS: "16384"
+    # NOTE on multi-turn iteration in `--prompt` mode: the CLI iterates
+    # while the model returns tool calls, and terminates normally the
+    # first time the model emits `end_turn` (no tool calls). There is
+    # NO env var, config key, or CLI flag that overrides this. The
+    # `applyPrintModeConfigDefaults` seed of `maxStepsPerTurn: 0` (see
+    # 0.28.1's `dist/main.mjs`) means "unlimited" — a positive TOML
+    # override only tightens the cap. The single escape hatch is a
+    # `Stop` hook (fires once per turn, exit 2 re-enters the loop),
+    # which is a nag pattern we deliberately do NOT ship.
+    #
+    # Practical consequence: models that iterate briefly on multi-file
+    # diagnostic tasks (empirically some smaller kimi variants — plans
+    # + a batch of parallel Reads + a single-space second turn) end the
+    # session at score ~= baseline-container. This is model behavior,
+    # not a CLI or tolokaforge misconfiguration. The shipped example
+    # uses `kimi-k3`, which does not exhibit the pattern.
+    # OpenRouter emits `moonshotai/kimi-k2.5`; the CLI wants bare
+    # `kimi-k2.5`. Same shape as codex and gemini-cli.
+    strip_vendor_namespace: true
+    # OpenRouter's OpenAI-compat surface accepts Moonshot models via the
+    # `moonshotai/*` slug — the URL points at OpenRouter's v1 endpoint,
+    # not `api.moonshot.ai/v1`. Empirically confirmed the first time we
+    # matrix-test this CLI; if it 401s, the fallback is to declare
+    # `MOONSHOT_API_KEY` and route direct.
+    provider_env:
+      KIMI_MODEL_API_KEY: "${secret:OPENROUTER_API_KEY}"
+      KIMI_MODEL_BASE_URL: "https://openrouter.ai/api/v1"
+    # Force OpenRouter first-party Moonshot AI routing for every request.
+    # OpenRouter fans `moonshotai/kimi-k2.7-code` out across 14 providers,
+    # mostly INT4/FP4 quantized third-parties whose tool-call continuation
+    # returns truly empty completions (`APIEmptyResponseError` after n
+    # retries → kimi-code falls back to the baseline score). Injecting
+    # `provider.only=["moonshotai"]` into every /chat/completions body
+    # via the shipped middleware proxy is the only path — kimi-code 0.28.1
+    # (and 0.36.1) has no user-facing body-passthrough, so the CLI itself
+    # cannot be asked to add the parameter. The proxy is stdlib only
+    # (~200 LOC in ../middleware_proxy.py) and boots inside the
+    # harness_command preamble; the CLI reaches it at localhost:8899 and
+    # is unaware of the redirect. `k3` and `k2.5` are unaffected by this
+    # setting (fewer/no INT4 endpoints), so the pin is safe as a default.
+    request_middleware:
+      upstream_env_key: "KIMI_MODEL_BASE_URL"
+      port: 8899
+      body_injections:
+        provider:
+          only: ["moonshotai"]
+          allow_fallbacks: false
+      path_filter: "/chat/completions"
+    # --- Routing through a gateway ---
+    #
+    # The same first-party pin, bought from the gateway instead of from the
+    # proxy above. A gateway exposing a moonshotai-pinned alias answers the
+    # routing problem ``request_middleware`` exists to solve, so a run taking
+    # this route boots no proxy at all. That is why the two coexist here: they
+    # are alternatives, not layers, and the ``config_files`` /
+    # ``request_middleware`` exclusion governs only the default path
+    # (ADR-0037).
+    #
+    # ``model_alias_pattern`` is opaque data. The consuming runtime renders
+    # ``{model}`` and delivers the result through ``env_model_vars``
+    # (``KIMI_MODEL_NAME``, declared above) — the field that already answers
+    # how this CLI receives its model name. It is deliberately not a
+    # ``provider_env`` entry: that map is a closed allow-list of provider
+    # credential and endpoint names, and a model name is neither.
+    gateway_route:
+      gateway: "toloka_litellm"
+      model_alias_pattern: "{model}-moonshotai-pinned"
+      provider_env:
+        KIMI_MODEL_BASE_URL: "${gateway.base_url}"
+        KIMI_MODEL_API_KEY: "${secret:LITELLM_API_KEY}"
+
+  opencode:
+    install_method: "npm"
+    install_source: "opencode-ai"
+    # Pinned to a specific 1.18.x release. opencode jumped from a 0.15
+    # series (the original research pin) to the 1.x line during this
+    # branch's development; the argv shape changed enough that the old
+    # entry was landing on the usage banner. Bump the pin with an ADR
+    # entry when a newer stable is available; the artifact records
+    # whatever install-harness.sh landed on.
+    version: "1.18.18"
+    # `run` is opencode's sub-command that reads the instruction. Every
+    # option (including `--model`) is parsed after `run`. `--model`
+    # accepted before `run` too on 1.18.x, but keeping the sub-command
+    # adjacent to the executable in argv_prefix so model_flag inserts
+    # after it matches how the assembler is documented.
+    argv_prefix: ["opencode", "run"]
+    # opencode expects `--model=<name>` (equals form).
+    model_flag: "--model"
+    model_flag_style: "equals"
+    # `--format=json` emits the JSON stream we record.
+    # `--auto` auto-approves every permission that isn't explicitly
+    # denied — the 1.18.x replacement for the `--dangerously-skip-permissions`
+    # flag the initial research cited (which was removed sometime during
+    # the 0.x → 1.x transition and no longer parses).
+    # `--thinking` keeps thinking blocks in the JSON stream — parity
+    # match with the reference vendor-CLI invocation.
+    # `--` separates the instruction from CLI flags so any leading dash
+    # in the prompt is treated as text, not a flag.
+    argv_suffix:
+      - "--format=json"
+      - "--auto"
+      - "--thinking"
+      - "--"
+    instruction_channel: "argv"
+    # opencode requires `provider/model` — a bare name raises — so we keep
+    # the OpenRouter namespace on the model name.
+    strip_vendor_namespace: false
+    # opencode's config template defines a provider *literally* named
+    # `openrouter` (see the config_files entry below). Callers using
+    # `openrouter/<vendor>/<model>` slugs (e.g. `openrouter/meta/muse-glimmer-30b`,
+    # `openrouter/qwen/qwen3.7-max`) rely on the ``openrouter/`` prefix
+    # reaching that provider block. Stripping it here (the default for the
+    # other CLIs) re-routes the trial to a vendor provider opencode's config
+    # never declared (``meta``, ``qwen``, ``moonshotai``), and opencode
+    # crashes with ``UnknownError: Unexpected server error`` in ~2s. Every
+    # `openrouter/<vendor>/*` route besides `openrouter/anthropic/*` hits
+    # this trap — the anthropic path escaped notice by accidentally
+    # matching opencode's separate ``anthropic`` provider block after the
+    # strip.
+    strip_openrouter_prefix: false
+    # opencode's config-dir env vars point at a scratch path under the
+    # log volume so anything opencode writes ends up captured.
+    # OPENCODE_FAKE_VCS keeps opencode happy under `/app` (which isn't a
+    # git repo, and opencode otherwise refuses).
+    container_env:
+      OPENCODE_FAKE_VCS: "git"
+      XDG_DATA_HOME: "/logs/agent/opencode/xdg-data"
+      XDG_STATE_HOME: "/logs/agent/opencode/xdg-state"
+    # opencode's provider baseURL is read from ~/.config/opencode/opencode.json,
+    # not from an env var. Config-file emission via
+    # HarnessSpec.config_files. Two provider blocks:
+    #
+    # 1. `anthropic` — points at OpenRouter's Anthropic-compat surface so
+    #    Claude-family models (`anthropic/claude-*`, `openrouter/anthropic/*`)
+    #    reach OpenRouter through the SDK opencode bundles.
+    # 2. `openrouter` — an explicit OpenAI-compat provider named `openrouter`
+    #    so a caller using an `openrouter/<vendor>/<model>` slug (e.g.
+    #    `openrouter/meta/muse-spark-1.1`, `openrouter/qwen/qwen3.7-max`)
+    #    reaches OpenRouter's OpenAI-compat endpoint rather than opencode's
+    #    bundled vendor-native provider for that prefix. Without this block,
+    #    opencode parses `moonshotai/`, `meta/`, `qwen/` as vendor selectors
+    #    and routes to `api.moonshot.ai` / etc., which 401s on the
+    #    OpenRouter key.
+    #
+    # `ANTHROPIC_BASE_URL` MUST end in `/v1`. opencode 1.x routes
+    # anthropic-provider traffic through `@ai-sdk/anthropic` (bundled;
+    # `packages/opencode/src/provider/provider.ts:110`), which composes
+    # the request URL as `${config.baseURL}/messages` — no `/v1` prepend.
+    # Anthropic's own OFFICIAL SDK (which claude-code uses) prepends
+    # `/v1` itself, so the same `openrouter.ai/api` string reaches
+    # `.../api/v1/messages` there. For opencode we must ship the `/v1`
+    # in the URL, or the SDK hits `.../api/messages` (404), no response
+    # comes back, and `deriveStepStopReason` falls to the default
+    # `"unknown"`. Diagnostic signature of this misconfiguration:
+    # `step_finish reason:"unknown"`, 0 tokens, ~3 s wall-clock.
+    #
+    # The `openrouter` provider uses `@ai-sdk/openai-compatible`, which
+    # opencode bundles for arbitrary OpenAI-compat endpoints. The models
+    # dict must be present but can be empty — opencode uses the model
+    # name from the CLI arg verbatim as the slug the endpoint receives.
+    #
+    # NOTE on ``apiKey``: opencode 1.18.x reads its own ``${env:VAR}``
+    # substitutions on the ``anthropic`` provider block (which opencode
+    # bundles via ``@ai-sdk/anthropic``) but not on the ``openrouter``
+    # block (via ``@ai-sdk/openai-compatible``). The block ships an
+    # unresolved ``${env:ANTHROPIC_API_KEY}`` string, opencode reads the
+    # apiKey as empty, and OpenRouter answers 401 "Missing Authentication
+    # header" on every request. Fix: use bash ``$ANTHROPIC_API_KEY``
+    # expansion at printf time (``_shell_string`` writes config files with
+    # double-quoted ``printf``, leaving ``$`` expandable), so the config
+    # file lands with the resolved key value inside the container.
+    # ``harness_command`` metadata records the shell reference, never the
+    # resolved value — so the credential does not surface in the trial
+    # artifact.
+    #
+    # This entry carries no ``gateway_route``, and needs none: the map below
+    # *is* the routing and auth fix, and a runtime provisioning an
+    # already-running container reads the same field. That is ADR-0037's
+    # point — a gateway consumer consumes what a harness already declares,
+    # and only a harness whose recipe genuinely differs per gateway grows a
+    # second one.
+    config_files:
+      "${CONFIG_HOME}/opencode/opencode.json": |-
+        {"provider":{"anthropic":{"options":{"baseURL":"{{ base_url }}"}},"openrouter":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"https://openrouter.ai/api/v1","apiKey":"$ANTHROPIC_API_KEY"},"models":{}}}}
+    provider_env:
+      ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
+      ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1"
+
+  grok-build:
+    # Grok Build's installer is a curl-piped shell script from x.ai — the
+    # first non-npm entry in this registry. install-harness.sh's
+    # `curl-bash` branch handles the download; the installer places the
+    # binary at ~/.grok/bin/grok and the branch symlinks it into
+    # /usr/local/bin/ so `grok` resolves on PATH.
+    install_method: "curl-bash"
+    install_source: "https://x.ai/cli/install.sh"
+    # TODO(low-conf): the out-of-tree host we compared against doesn't pin a
+    # Grok version; the installer accepts one on stdin. Bump after the first
+    # matrix run confirms the actually-installed release.
+    version: "0.2.91"
+    argv_prefix: ["grok", "--no-auto-update"]
+    argv_suffix:
+      # `--always-approve` is the permission-bypass equivalent (Grok has
+      # no --permission-mode). `--output-format streaming-json` is the
+      # JSON-stream mode matching the reference invocation shape. `--single`
+      # is Grok's non-interactive mode and its VALUE is the prompt, so
+      # it MUST sit last — the assembler appends the instruction as the
+      # trailing argv token, which becomes `--single`'s argument. Any
+      # flag ordered after `--single` steals the position: exit 2 with
+      # "a value is required for '--single <PROMPT>' but none was supplied".
+      - "--always-approve"
+      - "--output-format"
+      - "streaming-json"
+      - "--single"
+    instruction_channel: "argv"
+    # Grok reads --model on the CLI, but also reads model routing from
+    # config.toml. The env_model_vars quartet claude-code needs doesn't
+    # apply — Grok has no sub-agent notion.
+    env_model_vars: []
+    # OpenRouter routes x-ai models by the vendor-namespaced slug (e.g.
+    # `x-ai/grok-4-fast`); the bare form `grok-4-fast` 404s at
+    # `openrouter.ai/api/v1/chat/completions` because there's no
+    # non-namespaced grok entry in its catalog. Keep the openrouter/ strip
+    # (harness_model always drops that) but preserve the vendor namespace
+    # so the CLI's config.toml and its `--model` flag both carry the slug
+    # OpenRouter actually indexes. Grok's own model catalog accepts the
+    # namespaced form too — it's a proxy configuration, not a slug alias.
+    strip_vendor_namespace: false
+    container_env:
+      GROK_DISABLE_TELEMETRY: "true"
+    # OpenRouter-shaped provider envelope. `OPENROUTER_API_KEY` and
+    # `OPENROUTER_BASE_URL` join the allow-list this release (see
+    # PROVIDER_ENV_KEYS) so Grok's own env_key convention lands cleanly
+    # without pretending its OpenAI-compat.
+    provider_env:
+      OPENROUTER_API_KEY: "${secret:OPENROUTER_API_KEY}"
+      OPENROUTER_BASE_URL: "https://openrouter.ai/api/v1"
+    # Grok's config.toml is a 5-table structured document keyed on the
+    # resolved model slug — the reason HarnessSpec.config_files grew to
+    # accept Jinja-templated content. This drops in verbatim from the
+    # reference vendor-CLI invocation's OpenRouter provider path.
+    # `chat_completions` is Grok's own name for
+    # OpenAI-shaped routing and is not a whitelist variable — hardcoded
+    # because we always route this entry through OpenRouter; an operator
+    # targeting a different provider does a whole-entry replacement per
+    # ADR 0033.
+    config_files:
+      "${HOME}/.grok/config.toml": |
+        [cli]
+        auto_update = false
+
+        [features]
+        telemetry = false
+
+        [harness]
+        disable_codebase_upload = true
+
+        [models]
+        default = "{{ model }}"
+        session_summary = "{{ model }}"
+        image_description = "{{ model }}"
+        web_search = "{{ model }}"
+
+        [model."{{ model }}"]
+        name = "{{ model }}"
+        model = "{{ model }}"
+        base_url = "{{ base_url }}"
+        env_key = "{{ api_key_env }}"
+        api_backend = "chat_completions"

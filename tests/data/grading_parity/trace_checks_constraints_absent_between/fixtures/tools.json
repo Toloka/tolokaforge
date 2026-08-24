@@ -1,0 +1,65 @@
+[
+  {
+    "name": "open_case",
+    "description": "Open a case for a piece of work.",
+    "parameters": {
+      "properties": {
+        "subject": {
+          "description": "One-line summary the case is opened under",
+          "title": "Subject",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject"
+      ],
+      "title": "open_caseArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "close_case",
+    "description": "Close a case, ending work on it.",
+    "parameters": {
+      "properties": {
+        "case_id": {
+          "description": "Case identifier, e.g. 'CS-1042'",
+          "title": "Case Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id"
+      ],
+      "title": "close_caseArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "notify_customer",
+    "description": "Send the customer a message.",
+    "parameters": {
+      "properties": {
+        "case_id": {
+          "description": "Case identifier, e.g. 'CS-1042'",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "template": {
+          "description": "Identifier of the message template to send",
+          "title": "Template",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "template"
+      ],
+      "title": "notify_customerArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]

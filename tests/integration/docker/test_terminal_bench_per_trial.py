@@ -207,7 +207,6 @@ class TestTerminalBenchPerTrialBracket:
                         "echo READY"
                     ),
                 },
-                timeout_seconds=30.0,
                 call_id="probe-1",
             )
             assert probe.success is True, probe.error
@@ -312,7 +311,7 @@ chmod +x /usr/local/bin/claude
 
 def _layered_image_ref() -> str:
     """The harness-layered image tag, version included."""
-    from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+    from tolokaforge_coding_harnesses import HARNESSES
 
     return f"tbench-{_HARNESS_TASK_ID}:local-{_HARNESS}-{HARNESSES[_HARNESS].version}"
 

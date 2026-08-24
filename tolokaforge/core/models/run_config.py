@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from tolokaforge.core.deprecations import coerce_task_packs_alias
+from tolokaforge.core.deprecations import coerce_task_packs_alias, drop_retired_max_idle_turns
 from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.core.models.model_config import ModelConfig
 
@@ -28,7 +28,6 @@ from tolokaforge.core.run_display_events import (
 __all__ = [
     "ComputeConfig",
     "DOCKER_RUNTIME_ALIAS_TARGET",
-    "DockerConfig",
     "EngineConfig",
     "EvaluationConfig",
     "HarnessAdapterConfig",
@@ -360,7 +359,11 @@ class StuckHeuristics(BaseModel):
 
     enabled: bool = True
     max_repeated_tool_calls: int = 10
-    max_idle_turns: int = 12
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_keys(cls, data: Any) -> Any:
+        return drop_retired_max_idle_turns(data)
 
 
 class TypeSenseConfig(BaseModel):
@@ -369,7 +372,13 @@ class TypeSenseConfig(BaseModel):
     Supports three modes:
     - local: Orchestrator manages a local Docker container (auto start/stop)
     - remote: Connect to an external TypeSense server
-    - disabled: TypeSense is disabled, search_policy returns empty results
+    - disabled: no server is started
+
+    ``enabled: false`` and ``mode: disabled`` are equally final: the orchestrator
+    hands the adapter connection details only when the block is enabled AND the
+    mode is not ``disabled``, so under either spelling no task's ``search.host``
+    is set and no trial reaches the TypeSense plane. ``remote`` still emits —
+    nothing is started for it, but the address is a real one.
     """
 
     model_config = {"extra": "ignore"}
@@ -462,12 +471,13 @@ class OrchestratorConfig(BaseModel):
     a non-default value."""
 
     stuck_heuristics: StuckHeuristics = Field(default_factory=StuckHeuristics)
-    """Deprecated. The conductor now reads stuck-heuristics from the
-    task-scoped ``TaskConfig.stuck_heuristics`` (populated via the M2
-    loader's per-task merge chain from
-    ``project.task_defaults.stuck_heuristics``). Kept on this model
-    for backward compatibility; a ``DeprecationWarning`` fires when
-    the field is explicitly set."""
+    """Deprecated, and still read: the conductor falls back to this block
+    for any task declaring no task-scoped ``TaskConfig.stuck_heuristics``
+    (populated via the M2 loader's per-task merge chain from
+    ``project.task_defaults.stuck_heuristics``) — which is every shipped
+    pack but one, so these are the values most trials run at. The canonical
+    home is ``task_defaults``; a ``DeprecationWarning`` fires when this
+    field is explicitly set."""
 
     runtime: str | None = None
     """Deprecated operator override for backend selection.
@@ -555,6 +565,23 @@ class OrchestratorConfig(BaseModel):
         return self
 
     typesense: TypeSenseConfig | None = None  # TypeSense server configuration
+
+    def effective_typesense(self) -> TypeSenseConfig | None:
+        """Return the run's TypeSense plane, or ``None`` when it has none.
+
+        ``mode: disabled`` is as final as ``enabled: false``: no server is
+        started for either, so a plane exists only when the block is enabled
+        AND the mode is not ``disabled``. Every consumer that has to answer
+        "does this run have a TypeSense plane" — the connection details handed
+        to the adapter, the address injected into the runner container, the
+        dry-run preview of both — reads this one answer, so they cannot drift
+        apart.
+        """
+        if self.typesense is None or not self.typesense.enabled:
+            return None
+        if self.typesense.mode == "disabled":
+            return None
+        return self.typesense
 
 
 class HarnessAdapterConfig(BaseModel):

@@ -32,7 +32,7 @@ The seam question is: **which of the two established seams should own these five
 The five RPC methods land on `RuntimeBackend`:
 
 - `register_trial(trial_id, trial_spec_json, default_tool_timeout_s) -> dict`
-- `execute_tool(trial_id, tool_name, arguments, timeout_seconds, executor, *, call_id) -> ToolResult`
+- `execute_tool(trial_id, tool_name, arguments, executor, *, call_id) -> ToolResult`
 - `grade_trial(trial_id, llm_messages_json, grading_components, termination_reason) -> dict`
 - `get_state(trial_id, include_unstable, tables) -> dict`
 - `reset_trial(trial_id, execute_init_actions) -> dict`
@@ -65,7 +65,7 @@ Doesn't delete the class. Doesn't reduce the surface. Just moves the constructor
 
 Moving both into `RuntimeBackend` would make the Protocol grow per-trial state (which `RuntimeBackend` doesn't have — it's a run-level object). Keeping a slim per-trial `ToolExecutor` that owns `tool_logs` and delegates `execute_tool` to `RuntimeBackend` is the honest split.
 
-The `ToolExecutor` surface is already established (`tolokaforge.tools.registry`, `tolokaforge.tools.user_tools`) — this is just one more implementation of that established shape, not a new pattern.
+The tool-executor surface is already established (`tolokaforge.tools.registry.ToolExecuting`, the Protocol `ToolExecutor` satisfies) — this is just one more implementation of that established shape, not a new pattern.
 
 ## Consequences
 
@@ -80,17 +80,17 @@ The `ToolExecutor` surface is already established (`tolokaforge.tools.registry`,
 
 The decision above stands: the five per-trial RPC methods live on
 `RuntimeBackend`, and `DockerRunnerAdapter` survives as a per-trial
-`ToolExecutor`. What changed is the carve-out's *content*.
+`ToolExecuting`. What changed is the carve-out's *content*.
 
 The carve-out was justified by two things `execute()` does beyond delegating:
 binding the `executor` identity, and appending to a per-trial `tool_logs` list.
 Only the first survives.
 
-Three executors — `ToolExecutor`, `UserToolExecutor`, `DockerRunnerAdapter` —
-each owned a list, in three different shapes, with no shared clock. `TrialRunner`
-read them back through `get_logs()` and concatenated the agent's list with the
-user's, so a trial's recorded order was agent-calls-then-user-calls rather than
-execution order. Three lists cannot be merged back into one order after the fact.
+Each executor owned its own list, in its own shape, with no shared clock.
+`TrialRunner` read them back through `get_logs()` and concatenated the agent's
+list with the user's, so a trial's recorded order was agent-calls-then-user-calls
+rather than execution order. Per-executor lists cannot be merged back into one
+order after the fact.
 
 So the current design is:
 
@@ -111,6 +111,23 @@ record: `ToolExecutor.execute` returns early at its not-found, invalid-argument
 and rate-limit checks, all of which sat before the old log append, so a rejected
 call recorded nothing while the loop still appended a `role: tool` error. A caller
 that records whatever `ToolResult` comes back cannot be bypassed that way.
+
+## Amendment — 2026-08-13: no layer above the runner names a per-call budget (#691)
+
+The decision above stands; one parameter leaves the signature it introduced.
+
+`execute_tool` carried a `timeout_seconds` the caller chose. Only the runner
+knows which tool a call is about to reach, so only the runner can resolve the
+budget that tool declares — a caller-supplied number can only override it, and
+the engine's hardcoded default did exactly that on every production call. The
+parameter is therefore gone from `RuntimeBackend`, from `RunnerClient`, from
+every implementation, and from `DockerRunnerAdapter.execute`, which now matches
+`ToolExecuting.execute` exactly.
+
+`ExecuteToolRequest.timeout_seconds` stays on the wire. The engine sends
+`RUNNER_RESOLVES_TOOL_TIMEOUT` (0.0), which the runner reads as "resolve the
+tool's own"; a positive value still overrides, which is what keeps an older
+engine and a newer image compatible in both directions.
 
 ## Follow-ups
 

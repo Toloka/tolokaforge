@@ -207,6 +207,31 @@ orchestrator = Orchestrator(config, output_dir="results")
 run_dir = orchestrator.run()  # returns the resolved Path of the timestamped run dir
 ```
 
+### `grading_completeness`
+
+`run()` and `run_worker()` each stamp `orchestrator.grading_completeness`, a frozen
+`GradingCompleteness` carrying `total_attempts`, `ungradeable_trial_ids`, and the
+derived `ungradeable` / `is_complete`. It answers whether the run produced a verdict
+for everything it measured — the same question the CLI turns into an exit code
+([CLI.md § Run and worker exit codes](CLI.md#run-and-worker-exit-codes)), and the one
+an embedder has no exit code to read:
+
+```python
+from tolokaforge.core.orchestrator import GradingCompleteness  # for typing
+
+run_dir = orchestrator.run()
+if not orchestrator.grading_completeness.is_complete:
+    raise RuntimeError(
+        f"{orchestrator.grading_completeness.ungradeable} trials could not be graded: "
+        f"{orchestrator.grading_completeness.ungradeable_trial_ids}"
+    )
+```
+
+The attribute is unbound until a run finishes, deliberately: reading it off an
+orchestrator that never ran raises `AttributeError` rather than reporting a complete
+run. A trial the provider or the substrate killed is an infrastructure abort and is
+not counted here — it produced no verdict, but it was never measured.
+
 ## TrialRunner
 
 ```python
@@ -220,7 +245,7 @@ runner = TrialRunner(
     tool_executor=tool_executor,
     tool_schemas=tool_schemas,
     max_turns=50,
-    turn_timeout_s=60,
+    turn_timeout_s=60,      # declared, not yet enforced — #1147
     episode_timeout_s=1200,
 )
 trajectory = runner.run(system_prompt, initial_message)
@@ -244,7 +269,9 @@ caps = ModelCapabilities.for_model(name="openai/gpt-5.4", provider="openai")
 # Returns resolved capabilities with schema/prompt policies
 ```
 
-`tolokaforge.core.llm.capabilities` — Model capability policies (Strategy Pattern) and YAML preset loader. Presets are defined in `tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml`. Key public symbols:
+`tolokaforge.core.llm.capabilities` — Model capability policies (Strategy Pattern) and YAML preset loader. Presets are defined in `tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml`; the
+coding-harness specs a terminal-bench harness run resolves against are defined in
+`tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml`. Key public symbols:
 
 - `ModelCapabilities` — resolved capability set for a model (schema/prompt policies, feature flags)
 - `DictMapParam` — dataclass describing a detected dict-map parameter (tool name, param name, value schema)

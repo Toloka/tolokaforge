@@ -74,9 +74,8 @@ class BuildCheckTool(Tool):
         self._timeout_s = float(timeout_s)
 
         policy = ToolPolicy(
-            timeout_s=self._timeout_s + 30.0,
+            timeout_s=self._timeout_s,
             category=ToolCategory.COMPUTE,
-            visibility=["agent"],
         )
         super().__init__(
             name="build_check",

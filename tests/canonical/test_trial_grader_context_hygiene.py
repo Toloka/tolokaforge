@@ -7,7 +7,7 @@ runner — would defeat that: the grader receives an object it cannot use from a
 different address space. This test pins the shape at the type level so a future
 PR cannot regress the seam.
 
-See ADR-0035 (grader detachment) for the wider design record.
+See ADR-0038 (grader detachment) for the wider design record.
 """
 
 from __future__ import annotations

@@ -9,7 +9,7 @@ produced, installs it into a scratch venv the way pip / the runner Docker
 image would, and asserts the runner's committed surfaces still function
 inside the resulting environment.
 
-The six surfaces the smoke covers, in order:
+The seven surfaces the smoke covers, in order:
 
 1. **Positive imports** — every module the runner container's runtime reaches
    at boot (walk of ``RUNNER_SUBSET_PACKAGES``) must import cleanly from the
@@ -55,11 +55,10 @@ The six surfaces the smoke covers, in order:
    outcome means the module leaked into the wheel or a partition edit
    forgot to keep it out.
 
-The wheel is built once per pytest session (reuses ``dist/`` if present,
-otherwise invokes ``python -m hatchling build -t custom``, matching the
-partition test's session pattern). The scratch venv is created once and
-shared across all six tests via a session-scoped fixture so the full smoke
-runs in a single ``python -m venv`` + ``pip install`` cost."""
+Both wheels are built from the current tree once per pytest session, into a
+session temporary directory. The scratch venv is created once and shared
+across all eight tests via a session-scoped fixture so the full smoke runs in
+a single ``python -m venv`` + ``pip install`` cost."""
 
 from __future__ import annotations
 
@@ -67,17 +66,13 @@ import json
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
 
+from tests.utils.wheel_builds import build_models_wheel, build_subset_wheel
+
 pytestmark = pytest.mark.canonical
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
-_SUBSET_WHEEL_GLOB = "tolokaforge_runner_subset-*.whl"
-_MODELS_WHEEL_GLOB = "tolokaforge_models-*.whl"
 
 # Subprocess wall-clock caps. Enough headroom for a cold pip download of ~30
 # runtime deps on a busy CI runner; a wedged venv install would otherwise
@@ -118,99 +113,26 @@ _EXPECTED_NEGATIVE_IMPORTS: tuple[str, ...] = (
 )
 
 
-def _find_subset_wheel() -> Path | None:
-    dist_dir = REPO_ROOT / "dist"
-    if not dist_dir.is_dir():
-        return None
-    wheels = sorted(dist_dir.glob(_SUBSET_WHEEL_GLOB))
-    return wheels[-1] if wheels else None
-
-
-def _find_models_wheel() -> Path | None:
-    dist_dir = REPO_ROOT / "dist"
-    if not dist_dir.is_dir():
-        return None
-    wheels = sorted(dist_dir.glob(_MODELS_WHEEL_GLOB))
-    return wheels[-1] if wheels else None
-
-
-def _build_subset_wheel() -> Path:
-    """Build the subset wheel via ``python -m hatchling build -t custom``.
-
-    Matches the invocation the partition test's session fixture uses — no
-    ``hatch`` CLI dependency, no ``uv`` dependency, just the PEP 517 build
-    backend driven from the active interpreter."""
-    build_result = subprocess.run(
-        [sys.executable, "-m", "hatchling", "build", "-t", "custom"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=_INSTALL_TIMEOUT_S,
-    )
-    if build_result.returncode != 0:
-        pytest.fail(
-            f"subset wheel build failed (exit {build_result.returncode}):\n"
-            f"stdout:\n{build_result.stdout}\nstderr:\n{build_result.stderr}"
-        )
-    wheel = _find_subset_wheel()
-    if wheel is None:
-        pytest.fail("subset wheel build reported success but produced no artifact under dist/")
-    return wheel
-
-
-def _build_models_wheel() -> Path:
-    """Build the ``tolokaforge-models`` wheel via ``python -m hatchling build``.
-
-    The subset wheel's ``Requires-Dist: tolokaforge-models`` cannot resolve
-    from PyPI in this repo's dev / CI environment (the wheel isn't published
-    yet), so the install smoke builds a local copy and passes it alongside
-    the subset wheel to ``uv pip install``."""
-    build_result = subprocess.run(
-        [sys.executable, "-m", "hatchling", "build", "-t", "wheel"],
-        cwd=REPO_ROOT / "tolokaforge_models",
-        capture_output=True,
-        text=True,
-        timeout=_INSTALL_TIMEOUT_S,
-    )
-    if build_result.returncode != 0:
-        pytest.fail(
-            f"tolokaforge-models wheel build failed (exit {build_result.returncode}):\n"
-            f"stdout:\n{build_result.stdout}\nstderr:\n{build_result.stderr}"
-        )
-    # Hatchling drops the models wheel next to its own pyproject; the CI
-    # workflow later moves it into repo-root ``dist/``. Locate it under
-    # either root.
-    for candidate_dir in (REPO_ROOT / "dist", REPO_ROOT / "tolokaforge_models" / "dist"):
-        if not candidate_dir.is_dir():
-            continue
-        matches = sorted(candidate_dir.glob(_MODELS_WHEEL_GLOB))
-        if matches:
-            return matches[-1]
-    pytest.fail(
-        "tolokaforge-models wheel build reported success but produced no artifact "
-        "under dist/ or tolokaforge_models/dist/"
-    )
-
-
 @pytest.fixture(scope="session")
-def scratch_venv_python() -> Path:
+def scratch_venv_python(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Path to the Python interpreter of a scratch venv with the subset wheel
     installed.
 
+    Both wheels are built from the tree under test, so the smoke reports on
+    the code in this checkout and nothing else.
+
     One venv per session — every test in this module shares it, so the full
     install cost (venv creation + wheel install + resolving ~30 deps) is
-    paid once. Uses :func:`tempfile.mkdtemp` under ``dist/`` instead of
-    pytest's ``tmp_path_factory`` because the venv must survive across the
-    session but nothing else cares about the location.
+    paid once.
 
     The venv is created via ``python -m venv`` (:mod:`venv` module) from the
     same interpreter running pytest, so the venv's Python matches the
     project's ``requires-python`` floor without needing an external
     interpreter matrix."""
-    wheel = _find_subset_wheel() or _build_subset_wheel()
-    models_wheel = _find_models_wheel() or _build_models_wheel()
+    wheel = build_subset_wheel(tmp_path_factory.mktemp("subset_wheel"))
+    models_wheel = build_models_wheel(tmp_path_factory.mktemp("models_wheel"))
 
-    venv_dir = Path(tempfile.mkdtemp(prefix="subset_smoke_", dir=REPO_ROOT / "dist"))
+    venv_dir = tmp_path_factory.mktemp("subset_smoke_venv")
     venv_result = subprocess.run(
         [sys.executable, "-m", "venv", str(venv_dir)],
         capture_output=True,

@@ -2,13 +2,13 @@
 
 Substrate-neutral and pure — no adapter, no filesystem: an adapter resolves the
 task's tool set into a :class:`ToolInventory`, the world its golden actions replay in
-into a :class:`ReplayWorld` and the task's effective ``combine``, and
-:func:`inspect_grading_authoring` reads only those. A tool set the adapter cannot
-report is :meth:`ToolInventory.unresolvable` — distinct from a task that declares no
-tools, because the two decide opposite things: nothing is checkable against the first,
-while every tool name is wrong against the second. A replay world reads the same way
-through :meth:`ReplayWorld.unresolvable`, and an effective combine no caller could
-resolve is ``None``.
+into a :class:`ReplayWorld`, the tables it seeds into a :class:`SeededTablesLayer` and
+the task's effective ``combine``, and :func:`inspect_grading_authoring` reads only
+those. A tool set the adapter cannot report is :meth:`ToolInventory.unresolvable` —
+distinct from a task that declares no tools, because the two decide opposite things:
+nothing is checkable against the first, while every tool name is wrong against the
+second. A replay world and a seeded-tables layer read the same way through their own
+``unresolvable()``, and an effective combine no caller could resolve is ``None``.
 
 The defects here are the author's, and every one of them is otherwise charged to
 the agent or to nobody: a misspelled tool name in a ``present`` matcher scores the
@@ -23,8 +23,10 @@ not the list of actions to replay is iterated by one substrate and handed to the
 replay loop and crashes both once the trial is paid for, a section declaring
 nothing scores nothing while reading as configured, a probe declared beside a state
 source the fold also scores leaves one component holding two verdicts and each
-substrate discarding a different one, and a component and its weight naming each other
-only one way leaves the two substrates folding different maps for the same trial.
+substrate discarding a different one, a primary key declared over records the task
+never seeds addresses no row for a write or a diff, and a component and its weight
+naming each other only one way leaves the two substrates folding different maps for
+the same trial.
 
 What the schema cannot answer is reported as :class:`Skip` and never raises, so
 the gate has no false-reject mode. The severity of each rule is documented in
@@ -33,13 +35,15 @@ the gate has no false-reject mode. The severity of each rule is documented in
 
 from __future__ import annotations
 
+import logging
 import re
-from collections.abc import Callable, Iterable, Iterator, Mapping
+import types
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from tolokaforge.core.grading.golden_replay import (
     InitialStateSource,
@@ -50,15 +54,27 @@ from tolokaforge.core.grading.grade_components import (
     GRADE_COMPONENTS,
     component_requested,
 )
+from tolokaforge.core.grading.jsonpath_addressing import (
+    addresses_the_database,
+    block_addresses_the_database,
+    unreachable_target,
+)
+from tolokaforge.core.grading.predicates import JSON_TYPES, ever_satisfiable
 from tolokaforge.core.grading.state_composition import (
     CONFLICTING_STATE_SOURCES_MESSAGE,
     HASH_SOURCE_KEYS,
+    StateHashConfig,
+    hash_block_is_a_state_source,
     probes_conflict_with_another_state_source,
 )
+from tolokaforge.core.grading.trace_timeline import TraceEvent
 from tolokaforge.core.models import (
+    REQUESTOR_TO_EXECUTOR,
     BoundValue,
     GradingCombineConfig,
     GradingFindingSeverity,
+    RequiredAction,
+    ToolExecutorIdentity,
     ToolExpectations,
     TraceBinding,
     TraceChecksConfig,
@@ -68,6 +84,10 @@ from tolokaforge.core.models import (
     TranscriptRulesConfig,
     ValuePredicate,
 )
+from tolokaforge.runner.id_resolution import IdFieldResolutionError, id_fields_findings
+from tolokaforge.runner.models import TRACE_PREDICATE_BINDING_OPERATORS
+
+logger = logging.getLogger(__name__)
 
 
 class ArgumentSchema(str, Enum):
@@ -88,7 +108,24 @@ class ToolInventory:
     """The tool set a task gives its actors, and what each tool's schema says."""
 
     declared: frozenset[str]
-    """Union of ``tools.agent.enabled`` and ``tools.user.enabled``."""
+    """Every tool the task gives an actor: :attr:`agent_declared` ∪ :attr:`user_declared`."""
+
+    agent_declared: frozenset[str]
+    """``tools.agent.enabled`` — what the agent may call."""
+
+    user_declared: frozenset[str]
+    """``tools.user.enabled`` — what the user simulator may call."""
+
+    actor_split_known: bool
+    """Whether :attr:`agent_declared` / :attr:`user_declared` are the task's own split.
+
+    ``False`` for a producer that can report the tool set but not whose it was — a
+    recorded trial's wire tool list carries no actor. Such a producer files the whole
+    set under the agent because a set has to go somewhere, and that placement is not
+    a claim: :meth:`declared_by` refuses to answer, and a rule about *which* actor
+    declared a tool reports unchecked instead of refusing the author over a fact the
+    inventory does not hold.
+    """
 
     parameters: Mapping[str, Mapping[str, Any]]
     """Tool name to its JSON-schema parameters object, for the tools that resolved."""
@@ -97,18 +134,61 @@ class ToolInventory:
     """``False`` only for :meth:`unresolvable`."""
 
     def __post_init__(self) -> None:
-        if not self.known and (self.declared or self.parameters):
+        carried = sorted(self.declared | self.agent_declared | self.user_declared)
+        if not self.known and (carried or self.parameters):
             raise ValueError(
                 "an unresolvable inventory carries tools: every rule that reads them is "
-                f"skipped, so {sorted(self.declared) or sorted(self.parameters)} would be "
+                f"skipped, so {carried or sorted(self.parameters)} would be "
                 "resolved and then ignored. Report the tools with known=True, or report "
                 "nothing"
+            )
+        if not self.known and self.actor_split_known:
+            raise ValueError(
+                "an inventory that reports no tools claims to know whose they are. "
+                "Nothing is known of an unresolvable tool set, its split least of all"
+            )
+        if self.declared != self.agent_declared | self.user_declared:
+            raise ValueError(
+                "the declared tool set is not the union of the actors' sets: "
+                f"{sorted(self.declared)} against agent {sorted(self.agent_declared)} and "
+                f"user {sorted(self.user_declared)}. A rule reading one and a rule reading "
+                "the other would decide the same name differently"
             )
 
     @classmethod
     def unresolvable(cls) -> ToolInventory:
         """The inventory of an adapter that cannot report a tool set at all."""
-        return cls(declared=frozenset(), parameters={}, known=False)
+        return cls(
+            declared=frozenset(),
+            agent_declared=frozenset(),
+            user_declared=frozenset(),
+            actor_split_known=False,
+            parameters={},
+            known=False,
+        )
+
+    def declared_by(self, executor: ToolExecutorIdentity) -> frozenset[str]:
+        """The tools ``tools.<executor>.enabled`` gives that one actor.
+
+        Keyed off the recorded executor identity rather than taking a field name,
+        so a rule reading what an actor may call and a record saying who called it
+        speak one vocabulary.
+
+        Raises:
+            ValueError: If :attr:`actor_split_known` is ``False``. The sets exist
+                either way, so answering would hand a caller the agent's whole set
+                as the agent's own — the false certainty this method must not sell.
+        """
+        if not self.actor_split_known:
+            raise ValueError(
+                "this inventory does not know which actor declared what, so it cannot "
+                f"answer what {executor.value!r} may call. Read `declared`, or route the "
+                "question to the report's unchecked channel"
+            )
+        return {
+            ToolExecutorIdentity.AGENT: self.agent_declared,
+            ToolExecutorIdentity.USER: self.user_declared,
+        }[executor]
 
     def strictness(self, tool: str) -> ArgumentSchema:
         """Classify what *tool*'s schema can say about argument names.
@@ -174,23 +254,58 @@ class CombineLayer:
         return cls(project_combine=None, known=False)
 
 
+class SuppliedSourceState(str, Enum):
+    """Whether a source an adapter supplies beneath the authored block grades anything."""
+
+    USABLE = "usable"
+    """Present and non-empty: the hash has something to compare the trial against."""
+
+    MISSING = "missing"
+    """Nothing is at the place the adapter reads its source from."""
+
+    EMPTY = "empty"
+    """The source is there and holds nothing, which compares against as little as none."""
+
+
+@dataclass(frozen=True)
+class AdapterHashSource:
+    """The source an adapter supplies beneath the authored block, in the adapter's words.
+
+    *where* is what a refusal names — a path in the adapter's own vocabulary, relative
+    to the task directory, because that is what an author has to go and fix.
+    """
+
+    where: str
+    state: SuppliedSourceState
+
+
 @dataclass(frozen=True)
 class HashSourceLayer:
     """What supplies a hash source beneath a task's authored ``state_checks.hash`` block.
 
-    The native reading has nothing beneath the block: the authored keys are the only
-    place a source can come from, so an enabled block declaring none grades nothing —
-    which is what the default construction reports. A caller that cannot say what the
-    grading adapter supplies reports :meth:`unresolvable` — distinct from resolving
-    "nothing beneath", because the two decide opposite things: the second makes the
-    sourceless shape the authoring defect :func:`_check_hash_source_declared` refuses,
-    while the first makes it uncheckable. An external adapter may compute the source it
+    Three answers, because they decide three different things. A caller that cannot say
+    what the grading adapter supplies reports :meth:`unresolvable`, which makes the
+    sourceless shape uncheckable. A caller resolving *nothing* beneath the block — the
+    native reading, where the authored keys are the only place a source can come from —
+    reports the default construction, which makes that same shape the authoring defect
+    :func:`_check_hash_source_declared` refuses. An adapter that computes the source it
     compares against from its own fixtures — the frozen-core family replays a
-    golden-actions fixture the authored block never names — so reading the block as
-    the whole layer there refuses packs that grade fine.
+    golden-actions fixture the authored block never names — reports it as *supplied*,
+    and then the block grades exactly as well as that source does: usable passes,
+    missing or empty is refused before the trial is paid for.
     """
 
     known: bool = True
+    supplied: AdapterHashSource | None = None
+
+    def __post_init__(self) -> None:
+        if not self.known and self.supplied is not None:
+            raise ValueError(
+                "an unresolvable hash-source layer carries facts: the rule that reads "
+                f"them is skipped, so {self.supplied.where} / {self.supplied.state.value} "
+                "would be resolved and then ignored. Report the facts with known=True, "
+                "or report nothing"
+            )
 
     @classmethod
     def unresolvable(cls) -> HashSourceLayer:
@@ -230,6 +345,39 @@ class ReplayWorld:
     def unresolvable(cls) -> ReplayWorld:
         """The world of a caller that cannot say what a task gives a golden replay."""
         return cls(initial_state=InitialStateSource.ABSENT, mcp_server=False, known=False)
+
+
+@dataclass(frozen=True)
+class SeededTablesLayer:
+    """The tables a task seeds, which its ``state_checks.id_fields`` declaration keys.
+
+    A caller that cannot read what a task seeds reports :meth:`unresolvable`, which
+    leaves the declaration unchecked — distinct from a caller reporting a task that
+    seeds nothing, which is ``tables={}`` and a real answer with real consequences: a
+    declared table is then the unknown-table finding, exactly as on the run path.
+    """
+
+    tables: Mapping[str, list[dict[str, Any]]] | None
+    known: bool = True
+
+    def __post_init__(self) -> None:
+        if self.known and self.tables is None:
+            raise ValueError(
+                "a resolved seeded-tables layer carries no view, so every declaration "
+                "would be held against nothing. Report the tables the task seeds — {} "
+                "where it seeds none — or report unresolvable()"
+            )
+        if not self.known and self.tables is not None:
+            raise ValueError(
+                "an unresolvable seeded-tables layer carries facts: the rule that reads "
+                f"them is skipped, so tables {sorted(self.tables)} would be resolved and "
+                "then ignored. Report the tables with known=True, or report nothing"
+            )
+
+    @classmethod
+    def unresolvable(cls) -> SeededTablesLayer:
+        """The layer of a caller that cannot read what a task seeds."""
+        return cls(tables=None, known=False)
 
 
 @dataclass(frozen=True)
@@ -300,6 +448,48 @@ class _PredicateSite:
     where: str
     field: str
     predicate: ValuePredicate
+
+    matcher: TraceMatcher
+    """The matcher this predicate was read from, whose ``tool`` names the schema
+    that types the value it reads."""
+
+    argument_path: str | None
+    """The key this predicate was filed under in an ``args`` mapping, ``None`` for
+    a predicate on a field of the event. Carried rather than recovered from
+    :attr:`where`, which cannot be split back: ``args: {"a.args.b": …}`` addresses
+    one path whose last ``.args.`` separator is inside it."""
+
+
+class _BoundTypeSource(str, Enum):
+    """What settles the type a binding holds, which decides how it is repaired."""
+
+    SCHEMA = "schema"
+    """A tool's schema types the argument the extraction addresses."""
+
+    EVENT = "event"
+    """``TraceEvent`` types the field, including ``args`` as the argument mapping."""
+
+    CAPTURE = "capture"
+    """A ``pattern`` narrows the extraction, so what binds is the capture."""
+
+
+@dataclass(frozen=True)
+class _BoundValueType:
+    """The JSON type a binding holds, and what settles it."""
+
+    declared: str | None
+    """``None`` where nothing types it, which is no evidence rather than a mismatch."""
+
+    source: _BoundTypeSource
+    """Which of the three settles it, which the finding must not collapse: the repair
+    an author is owed differs, and telling one who already wrote a capture to write a
+    capture names no repair at all."""
+
+    tool: str | None
+    """The tool whose schema types it, for :attr:`_BoundTypeSource.SCHEMA` alone."""
+
+    strictness: ArgumentSchema | None
+    """The schema claim the type rests on, or ``None`` where no schema was read."""
 
 
 @dataclass(frozen=True)
@@ -402,16 +592,63 @@ _WHICH_SUBSTRATE_DISCARDS_WHICH = (
     "two without it — one trial, two state_checks components."
 )
 
-# The JSON types whose values are never strings. A schema declaring one of them for
-# an argument settles that a reference comparing the bound value against text cannot
-# hold; ``string``, and a property writing no type at all, settle nothing.
+# The JSON types whose values are never strings, read off the shared table: a type
+# no binding operator can ever satisfy against a held string. A schema declaring one
+# of them for an argument settles that a reference comparing the bound value against
+# text cannot hold; ``string``, and a property writing no type at all, settle nothing.
 _UNCORRELATABLE_JSON_TYPES: frozenset[str] = frozenset(
-    {"integer", "number", "boolean", "array", "object"}
+    declared
+    for declared in JSON_TYPES
+    if not ever_satisfiable("equals_binding", "string", declared)
+    and not ever_satisfiable("contains_binding", "string", declared)
 )
 
-# The event fields ``TraceEvent`` declares as ``str | None``, so a predicate on one of
-# them compares text whatever the value it is handed was typed as.
-_TEXTUAL_MATCHER_FIELDS: frozenset[str] = frozenset({"tool", "text", "result"})
+# Both spellings of a union: ``X | None`` resolves to one and ``Optional[X]`` to the
+# other, and only these two make an annotation's arguments its alternatives.
+_UNION_ORIGINS: frozenset[Any] = frozenset({Union, types.UnionType})
+
+# Which ``TraceEvent`` attribute each matchable field reads. A matcher names the
+# field; the type of the value a predicate on it is handed is the attribute's.
+_MATCHER_FIELD_ATTRIBUTES: Mapping[str, str] = {
+    "tool": "tool_name",
+    "text": "text",
+    "result": "result",
+    "executor": "executor",
+    "status": "status",
+    "args": "arguments",
+}
+
+
+def _is_a_string_at_runtime(annotation: Any) -> bool:
+    """Whether a ``TraceEvent`` annotation types its value as text.
+
+    The declared type is the annotation's single non-``None`` member, and the value
+    is text when that member is a ``str`` subclass — which is what makes the closed
+    vocabularies behind ``status`` and ``executor`` text and ``args``' mapping not.
+
+    Only a union is split. ``get_args`` would otherwise read a parameterised generic
+    as its own union of members, so ``list[str]`` would answer for ``str``.
+    """
+    members = get_args(annotation) if get_origin(annotation) in _UNION_ORIGINS else (annotation,)
+    declared = [member for member in members if member is not type(None)]
+    if len(declared) != 1:
+        return False
+    return isinstance(declared[0], type) and issubclass(declared[0], str)
+
+
+def _matcher_fields_whose_value_is_a_string() -> frozenset[str]:
+    """The matchable fields a predicate reads text off, whatever it is handed."""
+    annotations = get_type_hints(TraceEvent)
+    return frozenset(
+        field
+        for field, attribute in _MATCHER_FIELD_ATTRIBUTES.items()
+        if _is_a_string_at_runtime(annotations[attribute])
+    )
+
+
+# Computed off the event rather than listed, so the set and the claim behind it
+# cannot disagree.
+_TEXTUAL_MATCHER_FIELDS: frozenset[str] = _matcher_fields_whose_value_is_a_string()
 
 # What an argument name outside a closed schema costs, per site. One rule, two
 # policies: an unreadable predicate leaves the matcher unmatched and an unreadable
@@ -437,10 +674,38 @@ _TOOL_EXPECTATION_HAZARDS: Mapping[str, str] = {
     ),
 }
 
+# What a required action no trial can satisfy costs, and the two shapes that reach it.
+# The hazard is one sentence because both cost the same thing — the component is short
+# an action however the agent behaves — while the fix differs, so each message names its
+# own.
+_A_REQUIRED_ACTION_NOTHING_SATISFIES = (
+    "the transcript component is short a required action on every trial however the agent behaves"
+)
+
+_A_REQUIRED_ACTION_NO_ACTOR_CAN_MAKE = (
+    "tool {name!r} is not declared by this task, which gives its actors {declared}: no actor "
+    "can call it, so {hazard}"
+)
+
+_A_REQUIRED_ACTION_ITS_REQUESTOR_CANNOT_MAKE = (
+    "required action {action_id!r} names tool {name!r} under requestor {requestor!r}, which is "
+    "matched against the calls the {actor} executed alone, and tools.{actor}.enabled declares "
+    "{here}: {declaring} declares the tool instead, so the executor filter never matches and "
+    "{hazard}. Declare {name!r} under tools.{actor}.enabled, or write the requestor whose actor "
+    "already has it"
+)
+
 _A_HASH_SOURCE_NOTHING_READS = (
     "{key} is declared while hash.enabled is {enabled!r}: both substrates read the flag "
     "before any source, so the comparison never runs and the state is graded without it. "
     "Write enabled: true, or drop the source"
+)
+
+_A_SUPPLIED_HASH_SOURCE_THAT_GRADES_NOTHING = (
+    "hash grading is enabled and the adapter grading this task supplies its source from "
+    "{where}, which is {state}: there is nothing to compare the trial against, so the hash "
+    "verdict is lost at grade time, once the trial is already paid for. Restore or populate "
+    "{where}, or drop the hash block"
 )
 
 _GOLDEN_ACTION_NAME_ADDRESS = "state_checks.hash.golden_actions[{index}].name"
@@ -503,9 +768,63 @@ _UNRESOLVED_HASH_SOURCE_REASON = (
     "own fixtures — so whether this block grades as written is not checkable here"
 )
 
+_UNRESOLVED_SEEDED_TABLES_REASON = (
+    "no caller resolved the tables this task seeds — reading initial_state.json_db is the "
+    "native reading, and a task an adapter maintained outside this repository owns may seed "
+    "its state some other way — so whether the declared keys address the seeded records is "
+    "not checkable here"
+)
+
+_ID_FIELDS_ADDRESS = "state_checks.id_fields"
+
+_JSONPATHS_ADDRESS = "state_checks.jsonpaths"
+_HASH_ENABLED_ADDRESS = "state_checks.hash.enabled"
+
+_UNRESOLVED_SEEDED_TABLES_FOR_A_STATE_READ = (
+    "no caller resolved the tables this task seeds — reading initial_state.json_db is the "
+    "native reading, and a task an adapter maintained outside this repository owns may seed "
+    "its state some other way — so whether this block reads a database the trial will have "
+    "is not checkable here"
+)
+
+_READS_A_DATABASE_THE_TASK_SEEDS_NONE_OF = (
+    "{declares}, which reads the trial's database, but this task's initial_state seeds no "
+    "tables — so no DB service is registered for the trial and GradeTrial refuses it rather "
+    "than scoring it. Seed the state the block reads under initial_state.json_db, or drop "
+    "{where} from the pack."
+)
+
+_A_PATH_BEYOND_THE_RUNNERS_STATE = (
+    "path {path!r} addresses state the runner's JSONPath grading does not carry: it "
+    "composes db and tables from the trial's database and nothing else, while the core "
+    "engine also composes agent, user and filesystem — so this assertion scores on one "
+    "substrate and can never match on the other. {remedy}"
+)
+
+_ADDRESS_A_FILE_BY_GLOB = (
+    "Address a file with path_glob: and contains_ci:, the pairing both substrates read."
+)
+
+_ADDRESS_THE_DATABASE = "Address the trial's database, which is rooted at db or tables."
+
+_A_PATH_GLOB_OPERATOR_THE_RUNNER_CANNOT_READ = (
+    "path_glob {glob!r} is compared with {operator}, which the runner's file-content "
+    "evaluator does not read — it reads contains_ci alone, and an absent contains_ci is the "
+    "empty string, which every file contains. The assertion therefore passes on the runner "
+    "whatever the file says, while core scores it for real. Compare with contains_ci."
+)
+
+_NO_OPERATOR_AT_ALL = "no comparison operator"
+
+# The comparison vocabulary a ``jsonpaths`` assertion may write. Only ``contains_ci``
+# survives the runner's file-content evaluator, which is what the ``path_glob`` rule
+# below is about; the other three are legitimate beneath a ``path:``.
+_JSONPATH_COMPARISONS: tuple[str, ...] = ("equals", "equals_ci", "contains", "contains_ci")
+
 # Bound once so the signature's default is the value, not a call in the annotation.
 _UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable()
 _UNRESOLVED_HASH_SOURCE_LAYER = HashSourceLayer.unresolvable()
+_UNRESOLVED_SEEDED_TABLES = SeededTablesLayer.unresolvable()
 
 
 def inspect_grading_authoring(
@@ -515,6 +834,7 @@ def inspect_grading_authoring(
     effective_combine: GradingCombineConfig | None = None,
     replay_world: ReplayWorld = _UNRESOLVED_REPLAY_WORLD,
     hash_sources: HashSourceLayer = _UNRESOLVED_HASH_SOURCE_LAYER,
+    seeded_tables: SeededTablesLayer = _UNRESOLVED_SEEDED_TABLES,
 ) -> AuthoringReport:
     """Report what a task's tools, its replay world and its fold say about its grading block.
 
@@ -551,6 +871,10 @@ def inspect_grading_authoring(
             that cannot say which adapter grades the task — it moves the hash-source
             rule's finding to ``unchecked`` where that rule would have refused, and
             fails nothing.
+        seeded_tables: The tables the task seeds, which its ``state_checks.id_fields``
+            declaration keys. The default, :meth:`SeededTablesLayer.unresolvable`, is
+            the answer for a caller holding no ``task.yaml`` — it skips the rule reading
+            them wherever a declaration would have been checked, and fails nothing.
     """
     constraints = tuple(_trace_constraints(grading))
     sites = tuple(_trace_matcher_sites(constraints))
@@ -563,14 +887,20 @@ def inspect_grading_authoring(
         _check_golden_actions_are_a_list(grading),
         _check_probes_are_the_only_state_source(grading),
         _check_golden_replay_world(grading, replay_world),
+        _check_id_fields_against_seeded_tables(grading, seeded_tables),
+        _check_state_reads_a_database_the_task_seeds(grading, seeded_tables),
+        _check_jsonpaths_address_a_reachable_state(grading),
+        _check_path_glob_is_compared_the_way_the_runner_reads_it(grading),
     ]
     if inventory.known:
         reports += [
             _check_tool_names(sites, inventory),
             _check_tool_expectation_names(rules.tool_expectations if rules else None, inventory),
+            _check_required_action_names(rules.required_actions if rules else (), inventory),
             _check_golden_action_names(grading, inventory),
             _check_argument_paths(sites, inventory),
             _check_bound_extractions(binders, inventory),
+            _check_bound_comparisons(binders, inventory),
         ]
     else:
         reports.append(AuthoringReport(unchecked=(Skip("grading", _UNRESOLVABLE_REASON),)))
@@ -657,7 +987,7 @@ def _state_checks_has_a_source(state_checks: Mapping[str, Any]) -> bool:
     return bool(
         state_checks.get("jsonpaths")
         or state_checks.get("db_probes")
-        or hash_block.get("enabled")
+        or _hash_is_enabled(hash_block)
         or any(hash_block.get(key) for key in HASH_SOURCE_KEYS)
     )
 
@@ -798,20 +1128,127 @@ def _check_tool_names(sites: tuple[_MatcherSite, ...], inventory: ToolInventory)
 def _check_tool_expectation_names(
     expectations: ToolExpectations | None, inventory: ToolInventory
 ) -> AuthoringReport:
-    """``tool_expectations`` may only name a tool some actor of the task can call."""
+    """``tool_expectations`` may only name a tool the agent of the task can call.
+
+    ``transcript.py`` filters ``call.executor is ToolExecutorIdentity.AGENT`` in
+    the evaluator (renamed ``_executed`` -> ``_executed_by_agent``), so a name
+    in the user's declared set is invisible to the check at runtime: a
+    ``required_tools`` name reaching only ``user_declared`` passes the gate and
+    fails on every trial, indistinguishable from the misspelling this gate
+    exists to catch; a ``disallowed_tools`` name reaching only ``user_declared``
+    passes on every trial even when the simulator calls it. Narrow the
+    membership check to the agent's set.
+    """
     if expectations is None:
         return AuthoringReport()
+    # ``declared_by`` refuses to answer on a recorded-trial inventory whose
+    # actor split is unknown; fall back to the union set there.
+    if inventory.actor_split_known:
+        declared_set = inventory.declared_by(ToolExecutorIdentity.AGENT)
+        actor_label = "for the agent, which the transcript-rules evaluator reads"
+    else:
+        declared_set = inventory.declared
+        actor_label = "for any actor of this task"
     errors = tuple(
         Finding(
             f"transcript_rules.tool_expectations.{expectation}",
-            f"tool {name!r} is not declared by this task, which gives its actors "
-            f"{sorted(inventory.declared)}: {hazard}",
+            f"tool {name!r} is not declared by this task {actor_label}. The declared "
+            f"set is {sorted(declared_set)}: {hazard}",
         )
         for expectation, hazard in _TOOL_EXPECTATION_HAZARDS.items()
         for name in getattr(expectations, expectation)
-        if name not in inventory.declared
+        if name not in declared_set
     )
     return AuthoringReport(errors=errors)
+
+
+def _check_required_action_names(
+    actions: Sequence[RequiredAction], inventory: ToolInventory
+) -> AuthoringReport:
+    """A required action may only name a tool the actor its ``requestor`` names can call.
+
+    The rule its two siblings :func:`_check_tool_names` and
+    :func:`_check_tool_expectation_names` already carry, plus the half only this key
+    has: ``requestor`` is matched against the recorded executor, so an action naming
+    the other actor's tool selects nothing exactly as a misspelling does, and costs
+    the same.
+
+    It is written here and not over ``trace_checks`` because a required action is a
+    *positive* existence claim. A matcher may carry ``executor: user`` inside an
+    ``absent`` constraint on a pack declaring no user tools — an assertion that no
+    user-side call happened, which such a pack satisfies — so refusing that shape
+    would reject packs that grade correctly.
+    """
+    return _merged(
+        _one_required_action(index, action, inventory) for index, action in enumerate(actions)
+    )
+
+
+_A_REQUESTOR_AN_ACTOR_BLIND_INVENTORY_CANNOT_JUDGE = (
+    "the tool set was read off a recorded trial, whose wire tool list says which tools "
+    "an actor was offered and not which actor. Whether {requestor!r} is the actor that "
+    "declared {name!r} is not a fact this inventory holds, and refusing the action on it "
+    "would fail an authoring that may well be right. The name itself is still checked."
+)
+
+
+def _one_required_action(
+    index: int, action: RequiredAction, inventory: ToolInventory
+) -> AuthoringReport:
+    """The one finding *action* draws, or none: a name is wrong once, not twice."""
+    where = f"transcript_rules.required_actions[{index}]"
+    if action.name not in inventory.declared:
+        return AuthoringReport(
+            errors=(
+                Finding(
+                    f"{where}.name",
+                    _A_REQUIRED_ACTION_NO_ACTOR_CAN_MAKE.format(
+                        name=action.name,
+                        declared=sorted(inventory.declared),
+                        hazard=_A_REQUIRED_ACTION_NOTHING_SATISFIES,
+                    ),
+                ),
+            )
+        )
+    if not inventory.actor_split_known:
+        return AuthoringReport(
+            unchecked=(
+                Skip(
+                    f"{where}.requestor",
+                    _A_REQUESTOR_AN_ACTOR_BLIND_INVENTORY_CANNOT_JUDGE.format(
+                        requestor=action.requestor, name=action.name
+                    ),
+                ),
+            )
+        )
+    executor = REQUESTOR_TO_EXECUTOR[action.requestor]
+    if action.name in inventory.declared_by(executor):
+        return AuthoringReport()
+    return AuthoringReport(
+        errors=(
+            Finding(
+                f"{where}.requestor",
+                _A_REQUIRED_ACTION_ITS_REQUESTOR_CANNOT_MAKE.format(
+                    action_id=action.action_id,
+                    name=action.name,
+                    requestor=action.requestor,
+                    actor=executor.value,
+                    here=sorted(inventory.declared_by(executor)),
+                    declaring=sorted(_blocks_declaring(action.name, inventory)),
+                    hazard=_A_REQUIRED_ACTION_NOTHING_SATISFIES,
+                ),
+            ),
+        )
+    )
+
+
+def _blocks_declaring(name: str, inventory: ToolInventory) -> Iterator[str]:
+    """The ``tools.<actor>.enabled`` keys that give some actor *name*."""
+    return (
+        f"tools.{executor.value}.enabled"
+        for executor in ToolExecutorIdentity
+        if name in inventory.declared_by(executor)
+    )
 
 
 def _check_argument_paths(
@@ -876,21 +1313,17 @@ def _check_hash_source_declared(
     compares the trial against the initial state, so the same trial takes two different
     ``state_checks`` components.
 
-    A block declaring two inert sources is one defect taking one edit, so it draws one
-    finding, addressed at the first source the tuple names. That order is **core's** read
-    order and no more: ``_check_state_hash`` compares a truthy ``expected_state_hash`` in
-    process and returns before ``golden_actions``, where no runner path reads the
-    translated ``expected_hash`` at all —
-    :data:`~tolokaforge.core.grading.key_manifest._HASH_SOURCE_SHAPE_REASON` records that
-    asymmetry under #693. What the message claims of both substrates is only what holds
-    of both: the flag is read before any source.
+    A block declaring an inert source draws one finding, addressed at the source the
+    tuple names first. What the message claims of both substrates is only what holds of
+    both: the flag is read before any source.
 
-    Both halves read the flag for truth rather than for ``True``, because that is
-    what decides the grade: core branches on its truthiness and the runner coerces
-    it, so a pack written ``enabled: 1`` does read the hash and rejecting it here
-    would be stricter than either substrate. A source is read the same way — an
-    empty ``golden_actions`` list replays nothing, which is why both substrates
-    treat it as no source at all and why such a block is
+    Both halves read the flag through :func:`_hash_is_enabled`, which is the
+    value that decides the grade: both substrates build the block into a
+    ``StateHashConfig`` before either evaluator branches, so ``enabled: 1`` does read
+    the hash and ``enabled: "false"`` does not, and reading either off the key would
+    speak for a substrate neither of them is. A source is read for truth the same way —
+    an empty ``golden_actions`` list replays nothing, which is why both substrates treat
+    it as no source at all and why such a block is
     :func:`_check_sections_declare_something`'s rather than this rule's.
 
     Both halves also hold only where the authored block is the whole layer, which is
@@ -899,19 +1332,55 @@ def _check_hash_source_declared(
     finding either half would have drawn moves to ``unchecked``, addressed where the
     finding would have been — for the reason the tool rules skip an unresolvable
     inventory, that refusing a reading the adapter does not use rejects packs that
-    grade fine. A block this rule finds nothing wrong with reports nothing on either
-    layer, so the skip names only the shape a native pack would have been refused for.
+    grade fine. Where the layer names the source an adapter supplies, the enabled half
+    is decided against that source instead, by
+    :func:`_an_enabled_block_declaring_no_source`. The disabled half ignores it: a source
+    the block declares and nothing reads is the author's defect whatever an adapter
+    supplies beside it. A block this rule finds
+    nothing wrong with reports nothing on any layer, so the skip names only the shape a
+    native pack would have been refused for.
     """
-    hash_block = _hash_block(grading)
+    hash_block = authored_hash_block(grading)
     if hash_block is None:
         return AuthoringReport()
-    enabled = hash_block.get("enabled")
+    enabled = _hash_is_enabled(hash_block)
     declared = next((key for key in HASH_SOURCE_KEYS if hash_block.get(key)), None)
     if enabled and declared is None:
-        if not hash_sources.known:
-            return AuthoringReport(
-                unchecked=(Skip("state_checks.hash.enabled", _UNRESOLVED_HASH_SOURCE_REASON),)
-            )
+        return _an_enabled_block_declaring_no_source(hash_sources)
+    if enabled or declared is None:
+        return AuthoringReport()
+    if not hash_sources.known:
+        return AuthoringReport(
+            unchecked=(Skip(f"state_checks.hash.{declared}", _UNRESOLVED_HASH_SOURCE_REASON),)
+        )
+    return AuthoringReport(
+        errors=(
+            Finding(
+                f"state_checks.hash.{declared}",
+                _A_HASH_SOURCE_NOTHING_READS.format(
+                    key=declared, enabled=hash_block.get("enabled")
+                ),
+            ),
+        )
+    )
+
+
+def _an_enabled_block_declaring_no_source(hash_sources: HashSourceLayer) -> AuthoringReport:
+    """What an enabled hash block naming no source is, under each answer about the layer.
+
+    The shape means something different beneath each answer, and only the layer knows
+    which: a native pack has written a check that compares against nothing, an adapter
+    supplying a usable source has written that family's own convention, and an adapter
+    whose source has gone missing or empty has written a pack that costs a trial and
+    grades nothing — the one reading that is worth refusing here rather than at grade
+    time. A caller that cannot say leaves all three unchecked.
+    """
+    if not hash_sources.known:
+        return AuthoringReport(
+            unchecked=(Skip("state_checks.hash.enabled", _UNRESOLVED_HASH_SOURCE_REASON),)
+        )
+    supplied = hash_sources.supplied
+    if supplied is None:
         sources = " or ".join(HASH_SOURCE_KEYS)
         return AuthoringReport(
             errors=(
@@ -925,33 +1394,94 @@ def _check_hash_source_declared(
                 ),
             )
         )
-    if enabled or declared is None:
+    if supplied.state is SuppliedSourceState.USABLE:
         return AuthoringReport()
-    if not hash_sources.known:
-        return AuthoringReport(
-            unchecked=(Skip(f"state_checks.hash.{declared}", _UNRESOLVED_HASH_SOURCE_REASON),)
-        )
     return AuthoringReport(
         errors=(
             Finding(
-                f"state_checks.hash.{declared}",
-                _A_HASH_SOURCE_NOTHING_READS.format(key=declared, enabled=enabled),
+                "state_checks.hash.enabled",
+                _A_SUPPLIED_HASH_SOURCE_THAT_GRADES_NOTHING.format(
+                    where=supplied.where, state=supplied.state.value
+                ),
             ),
         )
     )
 
 
-def _hash_block(grading: Mapping[str, Any]) -> Mapping[str, Any] | None:
+def authored_hash_block(grading: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """The authored ``state_checks.hash`` block, or ``None`` where the pack wrote none.
 
-    Every hash rule reads it through here, so a scalar written at either level is left
-    to the block's own shape validation rather than read as an authoring defect.
+    Every hash rule reads it through here, as does every pack read reaching for
+    :func:`~tolokaforge.core.grading.state_composition.refuse_retired_hash_keys`, so a
+    scalar written at either level is left to the block's own shape validation rather
+    than read as an authoring defect.
     """
     state_checks = grading.get("state_checks")
     if not isinstance(state_checks, Mapping):
         return None
     hash_block = state_checks.get("hash")
     return hash_block if isinstance(hash_block, Mapping) else None
+
+
+def _hash_is_enabled(hash_block: object) -> bool:
+    """Whether an authored ``state_checks.hash`` block switches hash grading on.
+
+    Every gate rule reading the flag reads it here, and the answer is
+    :class:`StateHashConfig`'s rather than the key's, because the coercion is part of
+    what the flag means: ``enabled: "false"`` is the ``False`` both substrates grade on,
+    and a rule reading the truthy string speaks for neither. Anything that is no mapping
+    declares no flag — the block's own shape validation owns that.
+
+    A block the model refuses is read off the key instead. That pack does not load, and
+    the one answer these rules may not give is the lenient one — a rule that blessed it
+    would pass an authoring defect through on the strength of a second one.
+    """
+    if not isinstance(hash_block, Mapping):
+        return False
+    try:
+        return StateHashConfig.model_validate(hash_block).enabled
+    except ValidationError:
+        return bool(hash_block.get("enabled"))
+
+
+def state_sources_as_a_run_reads_them(state_checks: Mapping[str, Any]) -> dict[str, Any]:
+    """This block's state sources, with ``hash.enabled`` read the way a run reads it.
+
+    The authored counterpart of
+    :meth:`~tolokaforge.runner.models.RunnerStateChecksConfig.authored_state_sources`,
+    for a caller holding YAML rather than a config it has already built. Both hand
+    :func:`~tolokaforge.core.grading.jsonpath_addressing.block_addresses_the_database`
+    the same flag, so the gate cannot refuse a block the runtime grades cleanly.
+
+    Only the flag is rewritten: every other key is the author's, which is the vocabulary
+    that predicate reads.
+    """
+    return {**state_checks, "hash": {"enabled": _hash_is_enabled(state_checks.get("hash"))}}
+
+
+def _authored_hash_is_a_state_source(grading: Mapping[str, Any]) -> bool:
+    """Whether the authored block is enabled with something to compare against.
+
+    Answered by building the block here and asking
+    :func:`~tolokaforge.core.grading.state_composition.hash_block_is_a_state_source`,
+    rather than by reading the raw keys a second time: the rule below reaches only a
+    caller holding a fragment it never built a ``StateHashConfig`` from, and a second
+    reading is a second rule. Pydantic's coercion is part of what the question means —
+    ``enabled: "false"`` is the ``False`` a run grades on, not the truthy string — so
+    re-reading the key would refuse a pack that loads and grades cleanly.
+
+    A block the model refuses is a load error every surface constructing it already
+    reports, so it declares no source here rather than drawing a second finding over a
+    pack that cannot load at all.
+    """
+    hash_block = authored_hash_block(grading)
+    if hash_block is None:
+        return False
+    try:
+        hash_config = StateHashConfig.model_validate(hash_block)
+    except ValidationError:
+        return False
+    return hash_block_is_a_state_source(hash_config)
 
 
 def _check_golden_actions_are_a_list(grading: Mapping[str, Any]) -> AuthoringReport:
@@ -962,12 +1492,12 @@ def _check_golden_actions_are_a_list(grading: Mapping[str, Any]) -> AuthoringRep
     so a shape defect is refused for a pack whose adapter can report neither rather than
     skipped with the rules that do need them.
 
-    Read under a truthy ``hash.enabled`` and then **whatever else the block declares**,
-    unlike :func:`_check_golden_replay_world` beside it. A truthy ``expected_state_hash``
-    is the source core reads, so core never reaches the actions — but
-    ``NativeAdapter.to_task_description`` iterates the authored value with no such
-    short-circuit, so a pack declaring both cannot be registered at all. Skipping the
-    literal here would accept it.
+    Read under a ``hash.enabled`` a run switches on and then **whatever else the block
+    declares**,
+    unlike :func:`_check_golden_replay_world` beside it, which reads the source the
+    replay needs a world for: ``NativeAdapter.to_task_description`` iterates the authored
+    value whatever else the block says, so a shape no replay can iterate leaves the pack
+    unregisterable however it would have graded.
 
     Independent of the replay-world rule for the reason that rule reports every withheld
     fact at once: a truthy non-list under an incomplete world draws two findings at this
@@ -981,8 +1511,8 @@ def _check_golden_actions_are_a_list(grading: Mapping[str, Any]) -> AuthoringRep
     reading — so such a block is :func:`_check_sections_declare_something`'s where it
     declares no other source, and nothing at all where it declares one.
     """
-    hash_block = _hash_block(grading)
-    if hash_block is None or not hash_block.get("enabled"):
+    hash_block = authored_hash_block(grading)
+    if hash_block is None or not _hash_is_enabled(hash_block):
         return AuthoringReport()
     reason = unreplayable_golden_source(hash_block.get("golden_actions"))
     if reason is None:
@@ -1018,7 +1548,7 @@ def _check_probes_are_the_only_state_source(grading: Mapping[str, Any]) -> Autho
     if not probes_conflict_with_another_state_source(
         db_probes=state_checks.get("db_probes") or (),
         jsonpaths=state_checks.get("jsonpaths") or (),
-        hash_config=_hash_block(grading),
+        hash_is_a_state_source=_authored_hash_is_a_state_source(grading),
     ):
         return AuthoringReport()
     return AuthoringReport(
@@ -1031,18 +1561,200 @@ def _check_probes_are_the_only_state_source(grading: Mapping[str, Any]) -> Autho
     )
 
 
+def _check_id_fields_against_seeded_tables(
+    grading: Mapping[str, Any], seeded_tables: SeededTablesLayer
+) -> AuthoringReport:
+    """A declared primary key addresses the records its table is seeded with.
+
+    The same three findings the run path's gates report, from the same computation
+    (:func:`~tolokaforge.runner.id_resolution.id_fields_findings`) so a pack cannot be
+    refused at one gate and passed at another: a declared table absent from the seeded
+    state, a declared key component absent from every seeded record of its table, and a
+    declared key that does not uniquely identify them. Each finding is addressed at
+    ``state_checks.id_fields`` and carries its own remediation; the caller's raiser
+    already names the grading file, so no context prefix is re-added.
+
+    ``relaxed_validation`` downgrades exactly as it does on the run path: a logged
+    warning is the whole observable, on no report channel at all. An advisory would
+    read as the gentler answer and be the harsher one — the default ``fail_on`` is
+    :attr:`~tolokaforge.core.models.GradingFindingSeverity.ADVISORY`, so it would fail
+    precisely the packs the escape hatch exists to pass.
+    """
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping):
+        return AuthoringReport()
+    id_fields = state_checks.get("id_fields")
+    if not isinstance(id_fields, Mapping) or not id_fields:
+        return AuthoringReport()
+    if not seeded_tables.known:
+        return AuthoringReport(
+            unchecked=(Skip(_ID_FIELDS_ADDRESS, _UNRESOLVED_SEEDED_TABLES_REASON),)
+        )
+    # __post_init__ makes a known layer with no view unconstructable; the assert
+    # narrows ``tables`` for static analysis.
+    assert seeded_tables.tables is not None
+    # ``id_fields_findings`` calls ``table_key`` which raises
+    # ``IdFieldResolutionError`` for an invalid key component. That exception
+    # would propagate past ``report.fatal(fail_on)`` and become an
+    # unconditional per-task refusal at ``orchestrator.py`` — bypassing the
+    # ``fail_on`` severity, bypassing the ``relaxed_validation`` branch below,
+    # and turning the false-reject mode this gate's docstring says it does
+    # not have into the default. Catch the resolution error and route it
+    # through the same channels a regular finding takes.
+    try:
+        findings = id_fields_findings(id_fields, seeded_tables.tables)
+    except IdFieldResolutionError as exc:
+        findings = (str(exc),)
+    if not findings:
+        return AuthoringReport()
+    if state_checks.get("relaxed_validation"):
+        logger.warning(
+            "state_checks.relaxed_validation downgrades this task's id_fields findings: %s",
+            " ".join(findings),
+        )
+        return AuthoringReport()
+    return AuthoringReport(errors=tuple(Finding(_ID_FIELDS_ADDRESS, f) for f in findings))
+
+
+def _jsonpath_assertions(grading: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    """The ``state_checks.jsonpaths`` entries written as mappings, in authored order."""
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping):
+        return ()
+    return tuple(
+        entry for entry in state_checks.get("jsonpaths") or () if isinstance(entry, Mapping)
+    )
+
+
+def _check_state_reads_a_database_the_task_seeds(
+    grading: Mapping[str, Any], seeded_tables: SeededTablesLayer
+) -> AuthoringReport:
+    """A block reading the trial's database is authored on a task that provisions one.
+
+    ``RegisterTrial`` provisions the DB service from ``initial_state``, so a block
+    reading it on a task that seeds nothing reaches a service that was never started:
+    ``GradeTrial`` refuses the trial, and the whole trial is paid for first. That
+    refusal is the runtime half of this rule, and this is the half that costs nothing.
+
+    An enabled ``hash`` block counts with or without a declared source, because the
+    stable hash is fetched before any source is consulted — see
+    :func:`~tolokaforge.core.grading.jsonpath_addressing.block_addresses_the_database`,
+    the one predicate this rule and its runtime half both read. The flag reaching it is
+    :func:`_hash_is_enabled`'s, not the authored key's, so that the two halves
+    read one value as well as one predicate.
+
+    ``relaxed_validation`` does not downgrade this, unlike
+    :func:`_check_id_fields_against_seeded_tables`. That escape hatch exists for a
+    declaration whose keys no longer resolve against seeded records, which still grades;
+    a pack refused here does not grade at all on either substrate, so passing it would
+    hand the author a green gate and a failed run.
+    """
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping):
+        return AuthoringReport()
+    state_sources = state_sources_as_a_run_reads_them(state_checks)
+    if not block_addresses_the_database(state_sources):
+        return AuthoringReport()
+    if not seeded_tables.known:
+        return AuthoringReport(
+            unchecked=(Skip("state_checks", _UNRESOLVED_SEEDED_TABLES_FOR_A_STATE_READ),)
+        )
+    if seeded_tables.tables:
+        return AuthoringReport()
+
+    if state_sources["hash"]["enabled"]:
+        where = _HASH_ENABLED_ADDRESS
+        declares = "state_checks.hash is enabled"
+    else:
+        assertion = next(a for a in _jsonpath_assertions(grading) if addresses_the_database(a))
+        where = _JSONPATHS_ADDRESS
+        described = assertion.get("description")
+        declares = f"state_checks.jsonpaths declares path {assertion.get('path')!r}" + (
+            f" ({described})" if described else ""
+        )
+    return AuthoringReport(
+        errors=(
+            Finding(
+                where,
+                _READS_A_DATABASE_THE_TASK_SEEDS_NONE_OF.format(declares=declares, where=where),
+            ),
+        )
+    )
+
+
+def _check_jsonpaths_address_a_reachable_state(grading: Mapping[str, Any]) -> AuthoringReport:
+    """A ``path:`` addresses the trial's database, which is the state both substrates read.
+
+    Reads nothing but the block, so it answers for every pack — including one whose
+    seeded tables no caller could resolve, where the sibling rule above can only skip.
+
+    A pack refused here is not merely graded differently on the two substrates: with a
+    database provisioned the core engine resolves such a path against its own composed
+    filesystem and the runner cannot, and without one ``GradeTrial`` refuses the trial
+    outright. Neither outcome is a score its author would recognise.
+    """
+    findings: list[Finding] = []
+    for assertion in _jsonpath_assertions(grading):
+        target = unreachable_target(assertion)
+        if target is None:
+            continue
+        # Only ``BEYOND_THE_RUNNERS_STATE`` reaches here now — ``FILESYSTEM``
+        # grades on the runner via ``_read_agent_visible_filesystem``, so the
+        # authoring gate no longer refuses ``$.filesystem[…]``-rooted paths.
+        findings.append(
+            Finding(
+                _JSONPATHS_ADDRESS,
+                _A_PATH_BEYOND_THE_RUNNERS_STATE.format(
+                    path=assertion.get("path"),
+                    remedy=_ADDRESS_THE_DATABASE,
+                ),
+            )
+        )
+    return AuthoringReport(errors=tuple(findings))
+
+
+def _check_path_glob_is_compared_the_way_the_runner_reads_it(
+    grading: Mapping[str, Any],
+) -> AuthoringReport:
+    """A ``path_glob:`` assertion is compared with ``contains_ci``, the only one both read.
+
+    The runner's file evaluator reads ``check.get("contains_ci", "")`` and tests
+    membership in the file's text, so an assertion writing any other operator — or none
+    — compares the empty string against every matched file and passes whatever they
+    contain, while core applies the operator the author wrote. A vacuous pass and a
+    substrate divergence in one assertion (#466).
+
+    This rule guards the road the ``filesystem``-rooted refusal above sends authors
+    down, which is why it lands with them rather than later.
+    """
+    findings: list[Finding] = []
+    for assertion in _jsonpath_assertions(grading):
+        glob = assertion.get("path_glob")
+        if glob is None:
+            continue
+        written = [name for name in _JSONPATH_COMPARISONS if assertion.get(name) is not None]
+        if written == ["contains_ci"]:
+            continue
+        findings.append(
+            Finding(
+                _JSONPATHS_ADDRESS,
+                _A_PATH_GLOB_OPERATOR_THE_RUNNER_CANNOT_READ.format(
+                    glob=glob,
+                    operator=" and ".join(written) if written else _NO_OPERATOR_AT_ALL,
+                ),
+            )
+        )
+    return AuthoringReport(errors=tuple(findings))
+
+
 def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -> AuthoringReport:
     """A pack replaying golden actions is authored against a task that gives them a world.
 
-    The block is read in the order core reads it — the flag, then ``expected_state_hash``,
-    then ``golden_actions`` — the runner having no literal-first order to share, since no
-    path there reads the translated ``expected_hash`` (#693). A falsy ``hash.enabled`` is
-    a source nobody resolves, for the reason :func:`_check_hash_source_declared` gives at
-    length. A truthy ``expected_state_hash`` is the *effective* source whatever else the
-    block declares — core compares the trial against the author's literal and returns
-    before ``golden_actions`` is read — so such a pack needs no world, and refusing it
-    would send its author to declare facts nothing consults. Only then are the golden
-    actions read, for truthiness and never for shape: a truthy non-list value is refused
+    The block is read the way core reads it — the flag, then ``golden_actions``, the one
+    source needing a world at all. A ``hash.enabled`` a run reads as off is a source
+    nobody resolves,
+    for the reason :func:`_check_hash_source_declared` gives at length. The actions are
+    then read for truthiness and never for shape: a truthy non-list value is refused
     here for the world it lacks and by :func:`_check_golden_actions_are_a_list` for being
     no list of actions, so under an incomplete world it draws both findings at this one
     address, while :func:`_check_golden_action_names` reports nothing about it at all,
@@ -1058,10 +1770,10 @@ def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -
     unresolvable tool set — and only there, so a pack that replays nothing reports no
     skip for a rule that had nothing to check.
     """
-    hash_block = _hash_block(grading)
-    if hash_block is None or not hash_block.get("enabled"):
+    hash_block = authored_hash_block(grading)
+    if hash_block is None or not _hash_is_enabled(hash_block):
         return AuthoringReport()
-    if hash_block.get("expected_state_hash") or not hash_block.get("golden_actions"):
+    if not hash_block.get("golden_actions"):
         return AuthoringReport()
     if not world.known:
         return AuthoringReport(
@@ -1097,7 +1809,8 @@ def _check_golden_action_names(
     core raises out of the grading engine, the runner answers ``GradeTrial`` with
     ``success=false``. The gate is where that costs nothing.
 
-    Read only under a truthy ``hash.enabled``, the flag both substrates test before
+    Read only under a ``hash.enabled`` a run switches on, the flag both substrates test
+    before
     they read any source, for the reason :func:`_check_hash_source_declared` gives at
     length: a name under a disabled flag is never resolved, so refusing it would be
     stricter than the grade. That block is refused there instead, at the source key the
@@ -1108,17 +1821,30 @@ def _check_golden_action_names(
     against the tools it registered for the trial, and neither is readable here without
     importing the pack's server module. #815 owns unifying the three.
 
-    A name that is not a string at all — the block being untyped — is refused as one
-    resolving to nothing rather than tested for membership, which an unhashable value
-    answers with a ``TypeError``.
+    A name that is not a string at all — ``golden_actions`` claims nothing about its
+    elements — is refused as one resolving to nothing rather than tested for membership,
+    which an unhashable value answers with a ``TypeError``.
     """
+    # The runner resolves ``golden_actions`` against the *agent* registry alone
+    # (``service.py`` ``_execute_hash_grading`` step 0 iterates
+    # ``trial_context.agent_tools.keys()``); a name reaching only ``user_declared``
+    # passes the gate here and blows up on the runner with
+    # ``UnresolvableGoldenAction``. Narrow the check to the agent's set when
+    # the inventory knows the split; a recorded-trial inventory that does not
+    # answers only the union ``inventory.declared``, so keep the old behaviour
+    # there (the report's ``unchecked`` channel handles the residual case).
+    declared_set = (
+        inventory.declared_by(ToolExecutorIdentity.AGENT)
+        if inventory.actor_split_known
+        else inventory.declared
+    )
     errors = tuple(
         Finding(
             _GOLDEN_ACTION_NAME_ADDRESS.format(index=index),
             _unreplayable_golden_action_message(name, inventory),
         )
         for index, name in enumerate(_authored_golden_action_names(grading))
-        if not name or not isinstance(name, str) or name not in inventory.declared
+        if not name or not isinstance(name, str) or name not in declared_set
     )
     return AuthoringReport(errors=errors)
 
@@ -1126,13 +1852,14 @@ def _check_golden_action_names(
 def _authored_golden_action_names(grading: Mapping[str, Any]) -> Iterator[Any]:
     """Each golden action's name as written, in the order the replay would run them.
 
-    Nothing at all where the flag is falsy, so the caller reads only the source a
+    Nothing at all where a run reads the flag as off, so the caller reads only the source a
     substrate would read. An action that is not a mapping, and one carrying no ``name``,
-    both yield ``None``: the ``hash`` block is untyped (#730), so there is no load error
-    to defer to, and the index of the offending action is what an author acts on.
+    both yield ``None``: ``golden_actions`` leaves its elements unclaimed (#907), so there
+    is no load error to defer to, and the index of the offending action is what an author
+    acts on.
     """
-    hash_block = _hash_block(grading)
-    if hash_block is None or not hash_block.get("enabled"):
+    hash_block = authored_hash_block(grading)
+    if hash_block is None or not _hash_is_enabled(hash_block):
         return
     actions = hash_block.get("golden_actions")
     if not isinstance(actions, list):
@@ -1158,12 +1885,12 @@ def _check_bound_extractions(
 ) -> AuthoringReport:
     """What a tool's schema says about the values a binder draws out of its calls.
 
-    Two answers off the one resolved schema: the extraction addresses an argument
-    the tool declares, and the type declared there can be compared against the
-    fields the constraint references the name from.
+    Three answers off the one resolved schema: the extraction addresses an argument
+    the tool declares, a capture can be taken off the value declared there, and that
+    value can be compared against the fields the constraint references the name from.
     """
     return _merged(
-        _one_extraction(f"{site.where}.values.{name}.field", name, value, site, inventory)
+        _one_extraction(f"{site.where}.values.{name}", name, value, site, inventory)
         for site in binders
         for name, value in site.binding.values.items()
     )
@@ -1174,23 +1901,260 @@ def _one_extraction(
 ) -> AuthoringReport:
     """One extraction against the schema of the tool its binder selects.
 
-    Only an ``args`` extraction has a declared type at all: ``tool``, ``text`` and
-    ``result`` are the event's own string fields, which no tool schema describes
-    and which every reference compares correctly.
+    *where* addresses the extraction, and each answer is reported at the key that
+    carries it — the value's own type under ``.field``, a capture that cannot be
+    taken off it under ``.pattern``, which is the key the author deletes.
+
+    Only an ``args`` extraction has a declared type at all: the other extractable
+    fields are the event's own, which no tool schema describes and which every
+    reference compares correctly.
     """
     if value.head_segment() != "args":
         return AuthoringReport()
-    resolved = _resolved_tool(site.binding.match, inventory, where)
+    field = f"{where}.field"
+    resolved = _resolved_tool(site.binding.match, inventory, field)
     if isinstance(resolved, Skip):
         return AuthoringReport(unchecked=(resolved,))
     _, _, path = value.field.partition(".")
     if not path:
-        return _uncorrelatable_extraction(where, name, value, "object", resolved, site.references)
-    addressed = _one_argument_path(where, path, resolved, _UNBINDABLE_EXTRACTION_HAZARD)
+        return _by_declared_type(where, name, value, "object", resolved, site.references)
+    addressed = _one_argument_path(field, path, resolved, _UNBINDABLE_EXTRACTION_HAZARD)
     if addressed != AuthoringReport():
         return addressed
     declared = inventory.declared_type(resolved.name, path)
-    return _uncorrelatable_extraction(where, name, value, declared, resolved, site.references)
+    return _by_declared_type(where, name, value, declared, resolved, site.references)
+
+
+def _by_declared_type(
+    where: str,
+    name: str,
+    value: BoundValue,
+    declared: str | None,
+    resolved: _ResolvedTool,
+    references: tuple[_PredicateSite, ...],
+) -> AuthoringReport:
+    """Both answers the declared type gives about one extraction, at their own keys."""
+    return _merged(
+        (
+            _uncapturable_extraction(where, name, value, declared, resolved),
+            _uncorrelatable_extraction(
+                f"{where}.field", name, value, declared, resolved, references
+            ),
+        )
+    )
+
+
+def _uncapturable_extraction(
+    where: str,
+    name: str,
+    value: BoundValue,
+    declared: str | None,
+    resolved: _ResolvedTool,
+) -> AuthoringReport:
+    """A capture pattern over a value the schema types as something other than text.
+
+    A pattern narrows a value only where the value is a string and yields nothing
+    otherwise, so the name binds on no event whatever the agent did and the default
+    ``on_unbound`` reports that as the agent's failure. Which predicate reads the
+    name — or whether any does — does not enter into it, and neither does whether
+    the pattern compiles: fixing the pattern does not make an integer capturable.
+    """
+    if value.pattern is None or declared not in JSON_TYPES or declared == "string":
+        return AuthoringReport()
+    finding = Finding(
+        f"{where}.pattern",
+        f"binding {name!r} narrows {value.field!r} by a capture pattern, and {resolved.name!r} "
+        f"declares that as type {declared!r}. A capture is taken off text alone, so the "
+        "binding yields no assignment on any trajectory and the default on_unbound reports "
+        "that as the agent's failure. Drop the pattern to bind the value as the tool typed "
+        "it, or take the capture off a field that holds text",
+    )
+    if resolved.strictness is ArgumentSchema.CLOSED:
+        return AuthoringReport(errors=(finding,))
+    return AuthoringReport(advisories=(finding,))
+
+
+# What settled the bound type, and the repair that leaves. Written per source
+# because the repair an author already took is no repair at all: one who wrote a
+# capture cannot be told to write a capture, and one whose binding is typed by the
+# event has no schema to align.
+_WHAT_TYPED_THE_BINDING: Mapping[_BoundTypeSource, str] = {
+    _BoundTypeSource.SCHEMA: "{tool!r} declares it",
+    _BoundTypeSource.EVENT: "the event types it",
+    _BoundTypeSource.CAPTURE: "the capture pattern makes it text",
+}
+
+# Only the last clause of each is always an edit to this file: aligning two declared
+# types means editing a tool's schema, which the author may not own.
+_HOW_TO_CORRELATE: Mapping[_BoundTypeSource, str] = {
+    _BoundTypeSource.SCHEMA: (
+        "Correlate two arguments the tools type the same way, extract a regex capture off "
+        "a field that holds text — tool, text or result — or assert the two calls separately "
+        "instead of correlating them"
+    ),
+    _BoundTypeSource.EVENT: (
+        "Correlate an argument the tool types the same way, extract a regex capture off a "
+        "field that holds text, or assert the two calls separately instead of correlating "
+        "them"
+    ),
+    _BoundTypeSource.CAPTURE: (
+        "A capture is text, so compare it against a field holding text — drop the pattern "
+        "and correlate the value as the tool typed it, or assert the two calls separately "
+        "instead of correlating them"
+    ),
+}
+
+
+def _check_bound_comparisons(
+    binders: tuple[_BindingSite, ...], inventory: ToolInventory
+) -> AuthoringReport:
+    """Whether a reference on an ``args`` predicate can ever hold against what it reads.
+
+    Two arguments correlate natively where the tools type them the same way, which
+    is what the feature exists for — and are false on every trajectory where they
+    do not. Both types come off schemas, so this is the one rule resting on two
+    tools' claims, and the weaker of the two decides its severity.
+    """
+    return _merged(
+        _one_bound_comparison(reference, operator, name, site, inventory)
+        for site in binders
+        for reference in _references_this_rule_answers_for(site)
+        for operator, name in _binding_operands(reference.predicate)
+        if name in site.binding.values
+    )
+
+
+def _references_this_rule_answers_for(site: _BindingSite) -> tuple[_PredicateSite, ...]:
+    """The references read off an ``args`` mapping and reported by nothing else.
+
+    A ``regex`` beside the reference is deferred by :func:`_one_bound_comparison`
+    where the extraction rule can reach it, which is not everywhere.
+    """
+    return tuple(reference for reference in site.references if reference.argument_path is not None)
+
+
+def _the_extraction_rule_answers_for(value: BoundValue) -> bool:
+    """Whether :func:`_uncorrelatable_extraction` reports on this extraction at all.
+
+    A ``regex`` beside a reference makes it textual to :func:`_textual_references`,
+    which reports the mistake at the extraction's ``.field`` address — but only for
+    the extractions :func:`_one_extraction` reaches, and it exits on a non-``args``
+    field and on a ``pattern`` before it resolves anything. Deferring wherever a
+    ``regex`` appears would silence those two shapes at both tiers instead.
+    """
+    return value.pattern is None and value.head_segment() == "args"
+
+
+def _binding_operands(predicate: ValuePredicate) -> tuple[tuple[str, str], ...]:
+    """Each binding operator this predicate declares, with the name it reads.
+
+    A predicate is a conjunction, so two operators are two comparisons and an
+    author who wrote two mistakes is owed two findings.
+    """
+    return tuple(
+        (operator, getattr(predicate, operator))
+        for operator in sorted(TRACE_PREDICATE_BINDING_OPERATORS)
+        if getattr(predicate, operator) is not None
+    )
+
+
+def _one_bound_comparison(
+    reference: _PredicateSite,
+    operator: str,
+    name: str,
+    site: _BindingSite,
+    inventory: ToolInventory,
+) -> AuthoringReport:
+    """One reference, against the declared types of the two values it compares.
+
+    Every gap another rule already reports is left to it: a matcher naming no one
+    tool and a path below its first segment are both answered by
+    :func:`_one_matchers_argument_paths`, at the same addresses this would use.
+    """
+    resolved = _resolved_tool(reference.matcher, inventory, reference.where)
+    if isinstance(resolved, Skip):
+        return AuthoringReport()
+    head, _, below = reference.argument_path.partition(".")
+    if below or head not in resolved.properties:
+        return AuthoringReport()
+    held = inventory.declared_type(resolved.name, head)
+    if held not in JSON_TYPES:
+        return AuthoringReport(
+            unchecked=(
+                Skip(
+                    reference.where,
+                    f"{resolved.name!r} declares no single type for {head!r} — no type at "
+                    f"all, or a union of several — so whether {operator} can ever hold "
+                    f"against binding {name!r} is not checkable",
+                ),
+            )
+        )
+    value = site.binding.values[name]
+    if reference.predicate.regex is not None and _the_extraction_rule_answers_for(value):
+        return AuthoringReport()
+    bound = _what_the_binding_holds(site, value, inventory)
+    if bound.declared not in JSON_TYPES or ever_satisfiable(operator, held, bound.declared):
+        return AuthoringReport()
+    return _never_true_correlation(reference, operator, name, held, bound, resolved)
+
+
+def _what_the_binding_holds(
+    site: _BindingSite, value: BoundValue, inventory: ToolInventory
+) -> _BoundValueType:
+    """The JSON type a binding holds, and which of the three sources settles it.
+
+    A capture that binds is a string, and so is a ``tool`` / ``text`` / ``result``
+    extraction, which ``TraceEvent`` types as text and no tool schema describes; a
+    bare ``field: args`` binds the argument mapping. Only an ``args`` path is
+    answered by a schema, so only that reading carries a claim severity can rest on.
+
+    The extraction is typed here and again in :func:`_one_extraction`, which reads
+    the same schema to answer a different question about the same key. The two are
+    deliberately separate: this one must answer for a capture and for a non-``args``
+    field, which that one exits on before it resolves anything.
+    """
+    if value.pattern is not None:
+        return _BoundValueType("string", _BoundTypeSource.CAPTURE, None, None)
+    if value.head_segment() != "args":
+        return _BoundValueType("string", _BoundTypeSource.EVENT, None, None)
+    _, _, path = value.field.partition(".")
+    if not path:
+        return _BoundValueType("object", _BoundTypeSource.EVENT, None, None)
+    resolved = _resolved_tool(site.binding.match, inventory, site.where)
+    if isinstance(resolved, Skip):
+        return _BoundValueType(None, _BoundTypeSource.SCHEMA, None, None)
+    head, _, below = path.partition(".")
+    if below or head not in resolved.properties:
+        return _BoundValueType(None, _BoundTypeSource.SCHEMA, None, None)
+    return _BoundValueType(
+        inventory.declared_type(resolved.name, head),
+        _BoundTypeSource.SCHEMA,
+        resolved.name,
+        resolved.strictness,
+    )
+
+
+def _never_true_correlation(
+    reference: _PredicateSite,
+    operator: str,
+    name: str,
+    held: str,
+    bound: _BoundValueType,
+    resolved: _ResolvedTool,
+) -> AuthoringReport:
+    """The finding, at the severity the weaker of the two schemas permits."""
+    finding = Finding(
+        reference.where,
+        f"{operator} reads {reference.argument_path!r}, which {resolved.name!r} declares as "
+        f"type {held!r}, against binding {name!r}, which holds type {bound.declared!r} — "
+        f"{_WHAT_TYPED_THE_BINDING[bound.source].format(tool=bound.tool)}. No pair of values "
+        f"of those two types satisfies {operator}, so the comparison is false on every "
+        f"trajectory and reads as the agent's failure. {_HOW_TO_CORRELATE[bound.source]}",
+    )
+    claims = tuple(claim for claim in (resolved.strictness, bound.strictness) if claim is not None)
+    if all(claim is ArgumentSchema.CLOSED for claim in claims):
+        return AuthoringReport(errors=(finding,))
+    return AuthoringReport(advisories=(finding,))
 
 
 def _uncorrelatable_extraction(
@@ -1206,7 +2170,9 @@ def _uncorrelatable_extraction(
     ``contains`` reads two strings as a substring pair and falls back to equality
     for every other pairing, and ``equals_binding`` is that same equality, so both
     are false on every trajectory — a check indistinguishable from the agent
-    failing. A ``pattern`` on the extraction binds a capture, which is a string.
+    failing. An extraction carrying a ``pattern`` is exempt because what the
+    reference compares is the capture rather than the value the schema typed;
+    whether that capture can be taken at all is answered at ``.pattern``.
     """
     if value.pattern is not None:
         return AuthoringReport()
@@ -1232,9 +2198,8 @@ def _uncorrelatable_extraction(
         f"binding {name!r} extracts {value.field!r}, which {resolved.name!r} declares as "
         f"type {declared!r}, and {read_from} compares it against a field holding text. A "
         "non-string value is never a substring and equals nothing a text field holds, so "
-        "the check is false on every trajectory and reads as the agent's failure. Reference "
-        "the binding from an args predicate, which compares two arguments as they were "
-        "written, or bind a regex capture, which is always text",
+        "the check is false on every trajectory and reads as the agent's failure. "
+        + _HOW_TO_CORRELATE[_BoundTypeSource.SCHEMA],
     )
     if resolved.strictness is ArgumentSchema.CLOSED:
         return AuthoringReport(errors=(finding,))
@@ -1450,10 +2415,12 @@ def _predicate_sites(site: _MatcherSite) -> Iterator[_PredicateSite]:
     for name in type(site.matcher).model_fields:
         value = getattr(site.matcher, name)
         if isinstance(value, ValuePredicate):
-            yield _PredicateSite(f"{site.where}.{name}", name, value)
+            yield _PredicateSite(f"{site.where}.{name}", name, value, site.matcher, None)
         elif isinstance(value, Mapping):
             for path, predicate in value.items():
-                yield _PredicateSite(f"{site.where}.{name}.{path}", name, predicate)
+                yield _PredicateSite(
+                    f"{site.where}.{name}.{path}", name, predicate, site.matcher, path
+                )
 
 
 def _merged(reports: Iterable[AuthoringReport]) -> AuthoringReport:

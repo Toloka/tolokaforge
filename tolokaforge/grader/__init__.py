@@ -1,4 +1,4 @@
-"""Standalone tolokaforge grader service — per ADR-0035.
+"""Standalone tolokaforge grader service — per ADR-0038.
 
 This package holds the grader-plane surface that the runtime-independence work
 (ADR-0022) prepared for: a dedicated gRPC contract (``grader.proto``), a

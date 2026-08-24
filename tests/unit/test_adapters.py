@@ -3,11 +3,12 @@
 import importlib.metadata
 import logging
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from tolokaforge.adapters import available_adapters, get_adapter
-from tolokaforge.adapters.base import AdapterEnvironment
+from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import plugin_registry
 from tolokaforge.core.models import RunConfig
@@ -55,13 +56,14 @@ def _isolate_adapter_discovery(monkeypatch: pytest.MonkeyPatch):
 
     Tests that inject entry-points under ``tolokaforge.adapters`` must clear
     the per-group cache so the next scan re-reads their injection instead of
-    a stale prior map, and must reset ``_ADAPTERS`` / ``_FAILED_ADAPTERS`` so
-    lazy rediscovery fires.
+    a stale prior map, and must reset ``_ADAPTERS`` / ``_DISCOVERED`` /
+    ``_FAILED_ADAPTERS`` so lazy rediscovery fires.
     """
     import tolokaforge.adapters as adapters_module
 
     plugin_registry._clear_discovery_cache()
     monkeypatch.setattr(adapters_module, "_ADAPTERS", {})
+    monkeypatch.setattr(adapters_module, "_DISCOVERED", False)
     monkeypatch.setattr(adapters_module, "_FAILED_ADAPTERS", {})
     yield
     plugin_registry._clear_discovery_cache()
@@ -99,7 +101,6 @@ class TestGetAdapter:
             "entry_points",
             lambda *, group: [broken] if group == "tolokaforge.adapters" else [],
         )
-
         caplog.set_level(logging.WARNING, logger="tolokaforge.adapters")
 
         # Drive the production path: get_adapter() triggers lazy discovery,
@@ -291,3 +292,116 @@ class TestAdapterConfigParsing:
         orchestrator = Orchestrator(run_config)
         adapter = orchestrator._create_adapter()
         assert [str(path) for path in adapter.task_packs] == [str(pack.resolve())]
+
+
+class _ReportingStubAdapter(BaseAdapter):
+    """Adapter whose ``fingerprint()`` returns a sentinel payload.
+
+    Only the seam is exercised; the abstracts stay defined so the class is
+    instantiable, and the orchestrator's fingerprint path touches none of them.
+    """
+
+    _PAYLOAD = {"probe": "sentinel"}
+
+    def fingerprint(self) -> dict[str, Any]:
+        return dict(self._PAYLOAD)
+
+    def get_task_ids(self) -> list[str]:  # pragma: no cover - unused by the seam
+        raise NotImplementedError
+
+    def get_task(self, task_id: str) -> Any:  # pragma: no cover - unused by the seam
+        raise NotImplementedError
+
+    def get_task_dir(self, task_id: str) -> Path:  # pragma: no cover - unused by the seam
+        raise NotImplementedError
+
+    def create_environment(
+        self, task_id: str
+    ) -> AdapterEnvironment:  # pragma: no cover - unused by the seam
+        raise NotImplementedError
+
+    def get_tools(self, task_id: str) -> list[Any]:  # pragma: no cover - unused by the seam
+        raise NotImplementedError
+
+    def get_registry_tools(
+        self, task_id: str, env: AdapterEnvironment
+    ) -> list[Any]:  # pragma: no cover - unused by the seam
+        raise NotImplementedError
+
+    def get_system_prompt(self, task_id: str) -> str:  # pragma: no cover - unused by the seam
+        raise NotImplementedError
+
+    def get_grading_config(self, task_id: str) -> Any:  # pragma: no cover - unused by the seam
+        raise NotImplementedError
+
+    def reset_environment(
+        self, env: AdapterEnvironment
+    ) -> None:  # pragma: no cover - unused by the seam
+        raise NotImplementedError
+
+    def compute_golden_hash(
+        self, task_id: str, env: AdapterEnvironment
+    ) -> str | None:  # pragma: no cover - unused by the seam
+        raise NotImplementedError
+
+    def to_task_description(self, task_id: str) -> Any:  # pragma: no cover - unused by the seam
+        raise NotImplementedError
+
+
+class TestAdapterFingerprintSeam:
+    """What the engine records under ``adapter_fingerprints``."""
+
+    @staticmethod
+    def _config(harness_adapter: dict[str, Any] | None) -> RunConfig:
+        evaluation: dict[str, Any] = {
+            "tasks_glob": "tasks/**/*.yaml",
+            "output_dir": "output/test",
+        }
+        if harness_adapter is not None:
+            evaluation["harness_adapter"] = harness_adapter
+        return RunConfig(
+            evaluation=evaluation,
+            models={"agent": {"provider": "openai", "name": "gpt-4o-mini"}},
+            compute={"workers": 1},
+            orchestrator={"repeats": 1},
+        )
+
+    def test_the_shipped_default_reports_nothing(self, tmp_path: Path):
+        """A real adapter that overrides nothing contributes no namespace."""
+        adapter = NativeAdapter({"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"})
+        assert adapter.fingerprint() is None
+
+    def test_the_namespace_key_is_the_configured_adapter_type(self):
+        """The key is the configured type verbatim, as a plain string.
+
+        ``HarnessAdapterConfig.type`` is already a ``str``, so reading
+        ``.value`` off it would raise on every configured-adapter run.
+        """
+        orchestrator = Orchestrator(self._config({"type": "terminal_bench", "params": {}}))
+        orchestrator.adapter = _ReportingStubAdapter({})
+
+        fingerprints = orchestrator._adapter_fingerprints()
+
+        assert fingerprints == {"terminal_bench": {"probe": "sentinel"}}
+        assert [type(key) for key in fingerprints] == [str]
+
+    def test_an_unconfigured_adapter_is_keyed_by_the_native_type(self):
+        """The unconfigured branch resolves an ``AdapterType`` constant, which
+        is normalised to its value so nothing downstream renders the enum."""
+        orchestrator = Orchestrator(self._config(None))
+        orchestrator.adapter = _ReportingStubAdapter({})
+
+        fingerprints = orchestrator._adapter_fingerprints()
+
+        assert fingerprints == {"native": {"probe": "sentinel"}}
+        assert [type(key) for key in fingerprints] == [str]
+
+    def test_no_adapter_and_no_report_contribute_nothing(self):
+        """Both empty branches: no adapter loaded, and one reporting ``None``."""
+        orchestrator = Orchestrator(self._config(None))
+
+        assert orchestrator.adapter is None
+        assert orchestrator._adapter_fingerprints() == {}
+
+        orchestrator.adapter = NativeAdapter({"tasks_glob": "tasks/**/task.yaml"})
+        assert orchestrator._adapter_fingerprints() == {}

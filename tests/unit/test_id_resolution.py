@@ -14,6 +14,7 @@ from tolokaforge.runner.id_resolution import (
     TableKey,
     check_id_fields_against_seeded_tables,
     compute_diff_ops,
+    id_fields_findings,
     resolve_record_id,
     table_key,
 )
@@ -144,12 +145,96 @@ def test_resolve_record_id_unhashable_component_raises_contract_error():
 
 
 # ---------------------------------------------------------------------------
-# check_id_fields_against_seeded_tables — shared by NativeAdapter and the
-# runner's RegisterTrial belt-and-suspenders block.
+# id_fields_findings — the finding set itself, computed once for every gate
+# that holds a declaration against seeded tables.
 # ---------------------------------------------------------------------------
 
 
 _SEEDED_WIDGETS = {"widgets": [{"widget_id": "W1", "status": "new"}]}
+
+
+@pytest.mark.parametrize(
+    ("id_fields", "tables", "fragments"),
+    [
+        pytest.param(
+            {"widgetz": "widget_id"},
+            _SEEDED_WIDGETS,
+            ("references table(s) not present", "widgetz", "widgets"),
+            id="unknown_table",
+        ),
+        pytest.param(
+            {"positions": ["account_id", "ticker"]},
+            {"positions": [{"account_id": "A1", "symbol": "AAPL"}]},
+            ("absent from every seeded record", "'ticker'", "'symbol'"),
+            id="component_absent_from_every_record",
+        ),
+        pytest.param(
+            {"widgets": "status"},
+            {
+                "widgets": [
+                    {"widget_id": "W1", "status": "new"},
+                    {"widget_id": "W2", "status": "new"},
+                ]
+            },
+            ("does not uniquely identify", "'status': 'new'"),
+            id="non_unique_single_key",
+        ),
+        pytest.param(
+            {"positions": ["account_id", "symbol"]},
+            {
+                "positions": [
+                    {"account_id": "A1"},
+                    {"account_id": "A1"},
+                    {"account_id": "A2", "symbol": "MSFT"},
+                ]
+            },
+            ("therefore share key value", "'symbol'"),
+            id="collision_between_records_lacking_a_component",
+        ),
+    ],
+)
+def test_id_fields_findings_reports_one_sentence_per_defect(id_fields, tables, fragments):
+    findings = id_fields_findings(id_fields, tables)
+    assert len(findings) == 1
+    for fragment in fragments:
+        assert fragment in findings[0]
+    assert "relaxed_validation" in findings[0]  # every finding carries its remediation
+
+
+@pytest.mark.parametrize(
+    ("id_fields", "tables"),
+    [
+        pytest.param(
+            {"positions": ["account_id", "symbol"]},
+            {
+                "positions": [
+                    {"account_id": "A1", "symbol": "AAPL"},
+                    {"account_id": "A1", "symbol": "MSFT"},
+                ]
+            },
+            id="clean_composite_declaration",
+        ),
+        pytest.param({}, _SEEDED_WIDGETS, id="empty_id_fields"),
+    ],
+)
+def test_id_fields_findings_empty_when_nothing_to_report(id_fields, tables):
+    assert id_fields_findings(id_fields, tables) == []
+
+
+def test_id_fields_findings_reports_every_defective_table():
+    findings = id_fields_findings(
+        {"widgetz": "widget_id", "positions": ["account_id", "ticker"]},
+        {**_SEEDED_WIDGETS, "positions": [{"account_id": "A1", "symbol": "AAPL"}]},
+    )
+    assert len(findings) == 2
+    assert any("widgetz" in f for f in findings)
+    assert any("'ticker'" in f for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# check_id_fields_against_seeded_tables — the gate message every run-path
+# caller (NativeAdapter, the runner's RegisterTrial block) reports.
+# ---------------------------------------------------------------------------
 
 
 def test_check_returns_none_when_id_fields_empty():

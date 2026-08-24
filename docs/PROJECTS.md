@@ -514,12 +514,20 @@ copies as **caps or removes them**:
   (`trial_seconds`, `tool_call_seconds`); the orchestrator
   `TimeoutConfig`'s current `turn_s`/`episode_s` names are
   legacy and retire with the other aliases in M5.
+  Only `trial_seconds` is enforced today. `tool_call_seconds` —
+  and the `turn_s` it resolves against — reach `TrialRunner` and
+  are read by nothing; a per-call budget is the tool's own, and
+  making one pack-declarable is tracked in
+  [#1147](https://github.com/Toloka/tolokaforge/issues/1147).
+  The `tool_call_seconds: 60` lines in the layouts in this
+  document are therefore declared, not yet enforced.
 - `orchestrator.stuck_heuristics` is deprecated by this design;
-  `task_defaults` is its only home (legacy alias retired in M5,
-  #214). The M2 loader must repoint the conductor — today it
-  reads the orchestrator copy. Operator-side runaway protection
-  is already covered by `max_budget_usd`, the `max_turns` cap,
-  and the timeout caps.
+  `task_defaults` is its canonical home (legacy alias retired in
+  M5, #214). The conductor reads the task-scope block when the
+  task declares one and falls back to the orchestrator copy when
+  it does not, so the run-side block is still what most trials
+  run at. Operator-side runaway protection is already covered by
+  `max_budget_usd`, the `max_turns` cap, and the timeout caps.
 - `continue_prompt` is currently consumed by **nothing** in
   either home. M2 either wires the conductor to the
   task-resolved value or drops the field entirely; it must not
@@ -721,7 +729,6 @@ task_defaults:
   stuck_heuristics:
     enabled: true
     max_repeated_tool_calls: 5
-    max_idle_turns: 3
   continue_prompt: "Continue."
 
 # ── Run defaults — base for every run config ────────────────────
@@ -1138,8 +1145,7 @@ The harness owns grading **mechanics**; adapters own grading
   `golden_actions` through the real agent tools, hash-compare
   against the trial's final state. No stored expected hash is
   consumed — the seed and the golden actions are the ground
-  truth. (Dead `expected_hash`/`precomputed_expected_hash`
-  schema fields still exist today; #217 removes them.)
+  truth.
 - **The rubric judge** — behind backend-neutral protocols
   (`DBReader`, `KnowledgeSearch`); backend-specific KB wiring
   (rag-service, TypeSense) stays in the runner, injected as
@@ -1213,7 +1219,8 @@ Highest priority to lowest:
 
 1. **CLI flag** (e.g. `--runtime`, `--user-model`, `--judge-model`).
 2. **Environment variable** — infrastructure fields only
-   (`DB_SERVICE_URL`, `RAG_SERVICE_URL`, `EXECUTOR_ADDRESS`,
+   (`DB_SERVICE_URL`, `RAG_SERVICE_URL`, `TYPESENSE_HOST`,
+   `TYPESENSE_PORT`, `EXECUTOR_ADDRESS`,
    `TASK_PACKS_DIRS`, provider API keys). Today the CLI also
    honours `USER_MODEL`/`JUDGE_MODEL` in this slot; this design
    retires them — model choices belong in version-controlled run

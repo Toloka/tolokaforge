@@ -53,7 +53,12 @@ from tolokaforge.core.llm.prompt_policy import detect_dict_maps
 from tolokaforge.core.llm.providers import compile_rate_limit_patterns, get_provider_binding
 from tolokaforge.core.llm.proxy import resolve_proxy_config
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
-from tolokaforge.core.llm.usage import CostSource, Usage, UsageExtractor
+from tolokaforge.core.llm.usage import (
+    CostSource,
+    Usage,
+    UsageExtractor,
+    extract_openrouter_generation_id,
+)
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     Message,
@@ -519,6 +524,7 @@ class GenerationResult:
         cost_usd: float | None = None,
         reasoning: StructuredReasoning | None = None,
         effective_system_prompt: str | None = None,
+        openrouter_generation_id: str | None = None,
     ):
         self.text = text
         self.tool_calls = tool_calls or []
@@ -533,10 +539,20 @@ class GenerationResult:
         self.reasoning = reasoning
         # Final system prompt after policy enrichment
         self.effective_system_prompt = effective_system_prompt
+        # OpenRouter's id for this generation; None on every other route. Also
+        # on ``usage.calls[-1]`` — carried here so the turn loop can stamp it
+        # onto the assistant message without reaching into the usage record.
+        self.openrouter_generation_id = openrouter_generation_id
         # Defects of the attempts discarded before this reply was accepted.
         # Stamped only by ``UserSimulator._llm_reply``; every other producer
         # of a result leaves it empty.
         self.guard_rejections: tuple[ReplyDefect, ...] = ()
+        # True iff ``UserSimulator._llm_reply`` substituted the fixed filler
+        # for a tool-call-only reply with no text. Callers whose downstream
+        # semantics depend on the model having written the text (the
+        # bootstrap seed the agent is graded against) refuse on this flag
+        # instead of accepting the engine's own words as the turn.
+        self.filler_substituted: bool = False
 
 
 class LLMClient:
@@ -1220,8 +1236,9 @@ class LLMClient:
         expects. See [`docs/LLM_LAYER.md`](../../../docs/LLM_LAYER.md)
         § ``cache_policy`` for the contract.
 
-        User tool calls are kept in Message objects for ActionEvaluator,
-        but stripped here since most LLM APIs don't support tool_use from USER role.
+        User tool calls are kept in Message objects so ``required_actions`` can
+        match them, but stripped here since most LLM APIs don't support tool_use
+        from USER role.
         """
         litellm_messages: list[dict[str, Any]] = []
 
@@ -2092,6 +2109,8 @@ class LLMClient:
           containers for declared array / object params.
         * :class:`UsageExtractor` — pulls full prompt / completion / reasoning
           / cache counters (see docs/LLM_LAYER.md § ``usage``).
+        * :func:`extract_openrouter_generation_id` — lifts OpenRouter's
+          generation id off the response headers (``None`` elsewhere).
 
         ``cost_usd`` is computed iff usage is populated; unknown pricing
         surfaces as ``None``.
@@ -2170,6 +2189,10 @@ class LLMClient:
             cost_usd=cost_usd,
             reasoning=reasoning_result,
             effective_system_prompt=effective_system_prompt,
+            # Read off the response rather than off ``usage.calls``: a provider
+            # that returned no usage block contributes no call record, and the
+            # routing decision is still worth recording for that turn.
+            openrouter_generation_id=extract_openrouter_generation_id(response),
         )
 
     # ------------------------------------------------------------------
@@ -2349,8 +2372,8 @@ class UserSimulator(Actor):
         tool_guidance = ""
         if self.tool_schemas:
             tool_guidance = """
-- You have access to tools to check device status and perform actions. Use them when the agent asks you about your device state.
-- ALWAYS use tools to ground your responses. For example, if the agent asks "what does your status bar show?", you must call check_status_bar tool first, then report the result.
+- You have access to tools. Use them whenever the agent asks you for something one of them can establish.
+- ALWAYS use a tool to ground your answer rather than answering from memory or assumption.
 - Never make up or hallucinate tool results. Always call the actual tool and report what it returns.
 - If unsure whether you need to use a tool, prefer using it over making assumptions."""
 
@@ -2459,13 +2482,16 @@ Rules:
                 observation=observation,
             )
             # The one substitution the reply guard wraps rather than forbids, and
-            # the only text the engine contributes to a user turn. Unreachable
-            # while the conductor wires no ``user_tool_executor``: the simulator
-            # is then handed no tool schemas, so no generation carries tool calls.
+            # the only text the engine contributes to a user turn. The conductor
+            # now wires a user_tool_executor when the spec declares user tools,
+            # so this branch is reachable in-tree — callers whose downstream
+            # semantics need the model's own text (the bootstrap seed the agent
+            # is graded against) read ``result.filler_substituted`` and refuse.
             # TODO(#1089): remove it — a universal filler is hazardous (AGENTS.md
             # gotcha 23), so the removal carries its own analysis.
             if result.tool_calls and not result.text.strip():
                 result.text = "Let me check that."
+                result.filler_substituted = True
             return result
 
         # The guard logs under its own logger name, so the trial identity has to

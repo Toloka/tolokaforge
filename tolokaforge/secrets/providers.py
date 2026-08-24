@@ -9,6 +9,8 @@ Providers:
     - DotEnvProvider: parses a ``.env`` file lazily — never mutates ``os.environ``
     - DictProvider: in-memory dict, used inside the runner container to
       reconstruct a SecretManager from the serialized host payload
+    - RuntimeSecretProvider: in-memory dict for credentials this process
+      resolved itself, registered via ``register_runtime_secret``
 
 Example:
     >>> from tolokaforge.secrets.providers import EnvProvider, DotEnvProvider
@@ -362,3 +364,21 @@ class DictProvider(SecretProvider):
 
     def list_keys(self) -> list[str]:
         return sorted(self._secrets.keys())
+
+
+class RuntimeSecretProvider(DictProvider):
+    """Credentials this process resolved or generated itself, not read from a backend.
+
+    Installed by :func:`tolokaforge.secrets.register_runtime_secret` ahead of the
+    configured chain, so a value resolved during the run wins over a stale entry
+    of the same name. Its distinct type is what lets registration tell its own
+    earlier registrations apart from the rest of the chain.
+    """
+
+    @property
+    def name(self) -> str:
+        return "RuntimeSecretProvider"
+
+    def as_dict(self) -> dict[str, str]:
+        """Return the registered key → value mapping (copy)."""
+        return dict(self._secrets)

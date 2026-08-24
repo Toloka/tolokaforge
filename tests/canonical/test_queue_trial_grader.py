@@ -1,6 +1,6 @@
 """``QueueTrialGrader`` — the plug-in seam's fourth registered impl.
 
-Locks the throughput property that ADR-0035 built the seam to buy:
+Locks the throughput property that ADR-0038 built the seam to buy:
 - Producer (the orchestrator's worker) publishes a grade job and blocks on
   a future — but the *broker* holds the job, not the worker.
 - Consumers (grader workers) pull from the queue in parallel; total wall-
@@ -151,7 +151,7 @@ class TestFailureIsLoud:
 
 
 class TestThroughputProperty:
-    """Locks ADR-0035's Decision 3: independent throughput scale.
+    """Locks ADR-0038's Decision 3: independent throughput scale.
 
     With N jobs each taking ``d`` seconds and ``k`` consumers, wall-clock
     is roughly ``N / k * d`` — not ``N * d``. The test uses a coarse

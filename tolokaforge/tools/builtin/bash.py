@@ -24,7 +24,6 @@ class BashTool(Tool):
         policy = ToolPolicy(
             timeout_s=30.0,
             category=ToolCategory.COMPUTE,
-            visibility=["agent"],
         )
         super().__init__(
             name="bash",

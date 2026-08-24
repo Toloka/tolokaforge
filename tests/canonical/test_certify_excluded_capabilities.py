@@ -39,6 +39,7 @@ _RATCHET_TARGETS_BASELINE: dict[str, list[str]] = {
         "openrouter__google_gemini-3.1-pro-preview",
         "openrouter__google_gemini-3.5-flash",
         "openrouter__google_gemini-3.6-flash",
+        "openrouter__google_gemini-3.7-flash",
         "openrouter__google_gemma-4-31b-it",
         "openrouter__mistralai_mistral-medium-3-5",
         "openrouter__moonshotai_kimi-k2.6",
@@ -53,6 +54,7 @@ _RATCHET_TARGETS_BASELINE: dict[str, list[str]] = {
         "openrouter__x-ai_grok-4",
         "openrouter__x-ai_grok-4.3",
         "openrouter__x-ai_grok-4.5",
+        "openrouter__x-ai_grok-4.6",
     ],
     "tolokaforge.testing.certify.suite.test_re2_pattern_tolerance_unsupported_ratchet": [
         "openrouter__openai_gpt-5.6-sol",

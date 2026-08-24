@@ -18,7 +18,9 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
 - `get_db_schema`: SQL schema inspection for JSON DB tables.
 - `search_kb`: RAG search over a per-trial corpus index. Functional for native
   tasks — declare `initial_state.rag.corpus_dir` and the runner indexes that
-  corpus into the rag-service per trial (see `docs/TASKS.md`).
+  corpus into the rag-service per trial (see `docs/TASKS.md`). Each search is
+  bounded at the tool's own 15 s, on both substrates, rather than inheriting
+  whatever the shared RAG client was constructed with.
 - `http_request`: Restricted HTTP client for mock web services.
 - `build_check`: Zero-argument peer-service HTTP probe (compile / interface
   check). See [`build_check`](#build_check) below.
@@ -70,6 +72,20 @@ the trial. `restart` discards that state and yields a clean shell.
 `tool_config.timeout_s`. On timeout the command is terminated and a
 `[timed out after <n>s; command terminated]` note is appended to the output.
 
+That budget is the control. The runner keeps a second band around every call —
+`ToolWrapper.effective_timeout_s`, which this tool reports as its own budget
+plus a fixed 5 s grace — but it is a backstop, not a competing limit: it only
+abandons the worker thread, while the tool's own timeout terminates the command
+and leaves the session usable. The grace clears the ~0.7 s the tool spends
+signalling and draining, so under normal operation the backstop never fires.
+When it does, the runner rebuilds the session before the next call (see
+**Provider variants** below).
+
+An engine older than the runner image it talks to still sends a per-call budget
+of its own, which overrides this resolution. The version gate is a lower bound,
+so such a pairing is possible; it degrades to a fixed 30 s band plus the
+session rebuild, never to a corrupted session.
+
 **Output.** Middle-truncated at 16384 characters (an elision marker names the
 elided character count and hints to re-run a narrower command or `grep` for the
 pattern). Non-zero
@@ -90,6 +106,15 @@ exit codes are surfaced as an `[exit code: <n>]` suffix.
   in-container session is restarted. Session state accumulated before a
   timed-out command is lost (unlike the local variant, which preserves it), and
   the runaway command may briefly survive as an in-container orphan.
+
+Both variants lose their session state if the runner's backstop fires instead of
+the tool's own timeout. The backstop cannot terminate the command — it abandons
+the worker thread, which keeps reading the same pipe — so the runner closes that
+session and opens a fresh one before the call returns, and the timed-out call's
+message says the session was reset. The agent's next command therefore runs in a
+clean shell rather than reading output the abandoned reader is still draining.
+If the session cannot be reopened, the tool is refused by name for the rest of
+the trial, with the reason it could not be reopened.
 
 The compose variant resolves its target container as
 `<compose_project_prefix><sanitised-trial-id>_<service>`, where the trial id is

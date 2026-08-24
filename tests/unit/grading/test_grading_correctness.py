@@ -10,22 +10,26 @@ PROJECT RULES: Tests use real behavior, no mocks.
 """
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
 pytestmark = pytest.mark.unit
 
 from tests.utils.recorded_calls import recorded_call
-from tests.utils.timelines import build_timeline
+from tests.utils.timelines import Turn, build_timeline, build_turn_timeline
+from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.state_checks import StateChecker, consistent_hash, to_hashable
-from tolokaforge.core.grading.trace_timeline import TrialTimeline
+from tolokaforge.core.grading.trace_timeline import TrialTimeline, build_trial_timeline
+from tolokaforge.core.grading.transcript import evaluate_transcript_rules
 from tolokaforge.core.hash import compute_stable_hash
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
+    GradingConfig,
     Message,
+    MessageRole,
     Metrics,
     RecordedToolCall,
     TerminationReason,
@@ -39,12 +43,11 @@ from tolokaforge.runner.grading import (
     build_grade_reasons,
     combine_grade_components,
     compute_state_diff,
-    evaluate_transcript_rules,
 )
 from tolokaforge.runner.models import (
-    RunnerRequiredAction,
-    RunnerTranscriptRulesConfig,
+    RequiredAction,
     ToolExpectations,
+    TranscriptRulesConfig,
 )
 
 # One written-out ``grading.yaml`` section per component, keyed by the section
@@ -496,19 +499,19 @@ class TestLLMJudgePlaceholderStatus:
 
 
 class TestTranscriptRulesEvaluation:
-    """Real-behaviour tests for the author-facing RunnerTranscriptRulesConfig grader.
+    """Real-behaviour tests for the author-facing TranscriptRulesConfig grader.
 
-    ``evaluate_transcript_rules`` takes the trial's :class:`TrialTimeline` plus a
-    single ``RunnerTranscriptRulesConfig.model_dump()`` dict (the schema authors write
-    in grading.yaml) and decomposes the config's fields into per-field sub-checks.
-    These tests exercise each field honestly with realistic fixtures and prove the
-    historical always-pass no-op bug is gone.
+    ``evaluate_transcript_rules`` takes the trial's :class:`TrialTimeline` plus the
+    validated ``TranscriptRulesConfig`` (the schema authors write in grading.yaml)
+    and decomposes the config's fields into per-field sub-checks. These tests
+    exercise each field honestly with realistic fixtures and prove the historical
+    always-pass no-op bug is gone.
     """
 
     @staticmethod
     def _config(**fields):
-        """Build a RunnerTranscriptRulesConfig dump with only the given fields set."""
-        return RunnerTranscriptRulesConfig(**fields).model_dump()
+        """Build a TranscriptRulesConfig with only the given fields set."""
+        return TranscriptRulesConfig(**fields)
 
     @staticmethod
     def _timeline(
@@ -533,6 +536,19 @@ class TestTranscriptRulesEvaluation:
             arguments=arguments,
             executor=ToolExecutorIdentity(executor),
         )
+
+    # --- the typed seam ----------------------------------------------------
+
+    def test_a_dumped_config_is_refused(self):
+        """The seam both substrates meet at is the model, and only the model.
+
+        A dump reads field-for-field like the model and validates nothing, which is
+        how two spellings of the tool field and seven semantic divergences lived
+        side by side unnoticed. A caller handing one over is refused rather than
+        scored.
+        """
+        with pytest.raises(TypeError, match="validated TranscriptRulesConfig, not dict"):
+            evaluate_transcript_rules(self._timeline(), self._config().model_dump())
 
     # --- empty config (no-op pass) -----------------------------------------
 
@@ -571,6 +587,29 @@ class TestTranscriptRulesEvaluation:
         what the agent communicated."""
         timeline = self._timeline([("user", "please say confirmed"), ("assistant", "Okay.")])
         result = evaluate_transcript_rules(timeline, self._config(must_contain=["confirmed"]))
+        assert result.passed is False
+        assert result.score == 0.0
+
+    def test_a_harness_annotation_cannot_satisfy_a_required_phrase(self):
+        """``role: system`` turns are harness text, not trial text.
+
+        A termination notice the harness wrote is not a timeline event at all, so
+        an author cannot have a phrase rule satisfied by the harness announcing
+        the trial ran out of turns.
+        """
+        timeline = build_trial_timeline(
+            [
+                Message(role=MessageRole.ASSISTANT, content="Done."),
+                Message(role=MessageRole.SYSTEM, content="Trial terminated: max turns reached"),
+            ],
+            [],
+            None,
+        )
+
+        result = evaluate_transcript_rules(
+            timeline, self._config(must_contain=["max turns reached"])
+        )
+
         assert result.passed is False
         assert result.score == 0.0
 
@@ -756,6 +795,85 @@ class TestTranscriptRulesEvaluation:
         assert result.score == 1.0
         assert result.details[0].message == "Disallowed tool 'delete_customer' was never called"
 
+    def test_a_user_simulator_call_does_not_satisfy_a_required_tool(self):
+        """`tool_expectations` grade the agent's tool use, so the user simulator
+        running the tool is not the agent having used it — the same posture the
+        phrase rules take towards the user's text."""
+        config = self._config(tool_expectations=ToolExpectations(required_tools=["transfer"]))
+        timeline = build_turn_timeline(
+            [
+                Turn(
+                    role="user",
+                    content="I transferred the balance myself.",
+                    recorded=[self._call("transfer", executor="user")],
+                ),
+                Turn(role="assistant", content="Understood."),
+            ]
+        )
+
+        result = evaluate_transcript_rules(timeline, config)
+
+        assert result.passed is False
+        assert result.score == 0.0
+        assert result.details[0].message == "Required tool 'transfer' was never called successfully"
+
+    @pytest.mark.parametrize("status", ["success", "error"])
+    def test_a_user_simulator_call_does_not_violate_a_disallowed_tool(self, status):
+        """The prohibition is on the agent, whatever the user's own call did."""
+        config = self._config(tool_expectations=ToolExpectations(disallowed_tools=["transfer"]))
+        timeline = build_turn_timeline(
+            [
+                Turn(
+                    role="user",
+                    content="I transferred the balance myself.",
+                    recorded=[self._call("transfer", executor="user", status=status)],
+                ),
+                Turn(role="assistant", content="Understood."),
+            ]
+        )
+
+        result = evaluate_transcript_rules(timeline, config)
+
+        assert result.passed is True
+        assert result.score == 1.0
+        assert result.details[0].message == "Disallowed tool 'transfer' was never called"
+
+    def test_both_actors_calling_one_tool_is_graded_on_the_agents_call_alone(self):
+        """The trial both checks are ambiguous on: agent and user simulator call
+        the same tool. The agent's successful call satisfies the requirement and
+        supplies the violation; the user's errored call does neither, and the
+        disallowed sub-check counts one call rather than two."""
+        timeline = build_turn_timeline(
+            [
+                Turn(
+                    role="user",
+                    content="I already tried transferring it.",
+                    recorded=[self._call("transfer", executor="user", status="error", sequence=0)],
+                ),
+                Turn(
+                    role="assistant",
+                    content="Transferring it now.",
+                    recorded=[self._call("transfer", sequence=1)],
+                ),
+            ]
+        )
+
+        required = evaluate_transcript_rules(
+            timeline, self._config(tool_expectations=ToolExpectations(required_tools=["transfer"]))
+        )
+        disallowed = evaluate_transcript_rules(
+            timeline,
+            self._config(tool_expectations=ToolExpectations(disallowed_tools=["transfer"])),
+        )
+
+        assert required.passed is True
+        assert required.details[0].message == "Required tool 'transfer' was called successfully"
+        assert disallowed.passed is False
+        assert (
+            disallowed.details[0].message
+            == "Disallowed tool 'transfer' was called 1 time(s) (statuses: success)"
+        )
+
     def test_a_records_less_timeline_fails_every_tool_expectation_by_name(self):
         """Re-grading a recorded bundle is this shape: `tool_log` is not written to
         `trajectory.yaml`, so the message view declares calls and nothing says
@@ -803,10 +921,10 @@ class TestTranscriptRulesEvaluation:
     def test_a_records_less_timeline_names_the_gap_on_a_required_action(self):
         config = self._config(
             required_actions=[
-                RunnerRequiredAction(
+                RequiredAction(
                     action_id="a1",
                     requestor="assistant",
-                    tool_name="delete_customer",
+                    name="delete_customer",
                     arguments={"customer_id": "c1"},
                 )
             ]
@@ -842,16 +960,38 @@ class TestTranscriptRulesEvaluation:
         assert result.score == 0.5
         assert result.passed is False
 
+    def test_sub_check_rows_follow_the_declared_order_on_every_run(self):
+        """Output is reproducible across runs, and the order is the author's own.
+
+        The rows a caller reads and a snapshot pins carry no set iteration
+        anywhere: one row per declared entry, in declaration order. A set-derived
+        ordering drifts between processes, which is how these reasons used to
+        differ machine to machine for the same trial.
+        """
+        config = self._config(
+            tool_expectations=ToolExpectations(required_tools=["zebra_tool", "alpha_tool"])
+        )
+        timeline = self._timeline(calls=[self._call("mango_tool")])
+
+        first = evaluate_transcript_rules(timeline, config)
+        second = evaluate_transcript_rules(timeline, config)
+
+        assert [d.message for d in first.details] == [
+            "Required tool 'zebra_tool' was never called successfully",
+            "Required tool 'alpha_tool' was never called successfully",
+        ]
+        assert [d.model_dump() for d in first.details] == [d.model_dump() for d in second.details]
+
     # --- required_actions --------------------------------------------------
 
     def test_required_action_present(self):
         timeline = self._timeline(calls=[self._call("get_order", arguments={"order_id": "123"})])
         config = self._config(
             required_actions=[
-                RunnerRequiredAction(
+                RequiredAction(
                     action_id="get",
                     requestor="assistant",
-                    tool_name="get_order",
+                    name="get_order",
                     arguments={},
                     compare_args=[],
                 )
@@ -865,10 +1005,10 @@ class TestTranscriptRulesEvaluation:
         timeline = self._timeline(calls=[self._call("list_orders")])
         config = self._config(
             required_actions=[
-                RunnerRequiredAction(
+                RequiredAction(
                     action_id="get",
                     requestor="assistant",
-                    tool_name="get_order",
+                    name="get_order",
                     compare_args=[],
                 )
             ]
@@ -886,10 +1026,10 @@ class TestTranscriptRulesEvaluation:
         )
         config = self._config(
             required_actions=[
-                RunnerRequiredAction(
+                RequiredAction(
                     action_id="book",
                     requestor="assistant",
-                    tool_name="book_reservation",
+                    name="book_reservation",
                     arguments={"user_id": "mia_li_3668"},
                     compare_args=["user_id"],
                 )
@@ -908,10 +1048,10 @@ class TestTranscriptRulesEvaluation:
         )
         config = self._config(
             required_actions=[
-                RunnerRequiredAction(
+                RequiredAction(
                     action_id="book",
                     requestor="assistant",
-                    tool_name="book_reservation",
+                    name="book_reservation",
                     arguments={"user_id": "mia_li_3668"},
                     compare_args=["user_id"],
                 )
@@ -926,10 +1066,10 @@ class TestTranscriptRulesEvaluation:
         timeline = self._timeline(calls=[self._call("get_order", executor="user")])
         config = self._config(
             required_actions=[
-                RunnerRequiredAction(
+                RequiredAction(
                     action_id="get",
                     requestor="assistant",
-                    tool_name="get_order",
+                    name="get_order",
                     compare_args=[],
                 )
             ]
@@ -942,10 +1082,10 @@ class TestTranscriptRulesEvaluation:
         timeline = self._timeline(calls=[self._call("get_order", status="error")])
         config = self._config(
             required_actions=[
-                RunnerRequiredAction(
+                RequiredAction(
                     action_id="get",
                     requestor="assistant",
-                    tool_name="get_order",
+                    name="get_order",
                     compare_args=[],
                 )
             ]
@@ -962,10 +1102,10 @@ class TestTranscriptRulesEvaluation:
         )
         config = self._config(
             required_actions=[
-                RunnerRequiredAction(
+                RequiredAction(
                     action_id="get",
                     requestor="assistant",
-                    tool_name="get_order",
+                    name="get_order",
                     compare_args=[],
                 )
             ]
@@ -1002,20 +1142,16 @@ class TestTranscriptRulesEvaluation:
     # --- regression: the old always-pass no-op bug -------------------------
 
     def test_violating_config_no_longer_silently_passes(self):
-        """REGRESSION: previously the full RunnerTranscriptRulesConfig dict was passed
-        as a single rule with no ``type`` key, hitting the unknown-type branch
-        and ALWAYS returning passed=True / score=1.0. A config the transcript
-        clearly violates must now fail.
-        """
+        """A config the transcript clearly violates fails, one sub-check per entry."""
         # The required action never happened, so the timeline carries no records.
         timeline = self._timeline([("assistant", "I did nothing useful.")])
         config = self._config(
             must_contain=["confirmation number"],
             required_actions=[
-                RunnerRequiredAction(
+                RequiredAction(
                     action_id="book",
                     requestor="assistant",
-                    tool_name="book_reservation",
+                    name="book_reservation",
                     compare_args=[],
                 )
             ],
@@ -1041,10 +1177,10 @@ class TestTranscriptRulesEvaluation:
             must_contain=["cancelled"],  # pass
             max_turns=5,  # pass (1 assistant turn)
             required_actions=[
-                RunnerRequiredAction(
+                RequiredAction(
                     action_id="cancel",
                     requestor="assistant",
-                    tool_name="cancel_booking",
+                    name="cancel_booking",
                     compare_args=[],
                 )
             ],  # pass
@@ -1053,6 +1189,52 @@ class TestTranscriptRulesEvaluation:
         result = evaluate_transcript_rules(timeline, config)
         assert result.passed is False
         assert result.score == 0.75  # 3 of 4 sub-checks pass
+
+
+class TestCoreEngineTranscriptComponent:
+    """What the core engine reports for ``transcript_rules``, through the real grade.
+
+    The evaluator's own arithmetic is locked above; what these lock is the engine's
+    caller — the component the author reads in ``grade.yaml`` is the fraction the
+    shared evaluator scored, with nothing folded on top of it.
+    """
+
+    @staticmethod
+    def _component(transcript_rules: dict, messages: list[Message]) -> float | None:
+        config = GradingConfig(
+            combine={"method": "weighted", "weights": {"transcript_rules": 1.0}},
+            transcript_rules=transcript_rules,
+        )
+        grade = GradingEngine(config).grade_trajectory(
+            Trajectory(
+                task_id="transcript_component",
+                trial_index=0,
+                start_ts=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                end_ts=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                messages=messages,
+            ),
+            {},
+        )
+        return grade.components.transcript_rules
+
+    def test_a_declared_but_empty_rule_set_scores_one(self):
+        """A block declaring no rule can be violated by nothing, so it scores ``1.0``.
+
+        The block is still declared, so the component is scored rather than left
+        unset — presence follows the ``transcript_rules:`` key, not its contents.
+        """
+        assert self._component({}, [Message(role=MessageRole.USER, content="go")]) == 1.0
+
+    def test_a_single_violated_rule_scores_zero(self):
+        """One declared rule, violated, is the whole denominator — no free buckets."""
+        component = self._component(
+            {"tool_expectations": {"required_tools": ["write_file"]}},
+            [
+                Message(role=MessageRole.USER, content="write the report"),
+                Message(role=MessageRole.ASSISTANT, content="I wrote nothing."),
+            ],
+        )
+        assert component == 0.0
 
 
 class TestStableHashComputation:

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge-models"
-version = "1.0.0"
+version = "1.2.0"
 description = "Model data and per-model policy subclasses for tolokaforge."
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
@@ -42,6 +42,7 @@ dependencies = []
 # key = "<slot>.<policy-name>" ; value = "<module>:<class>"
 "schema_sanitizer.gemini" = "tolokaforge_models.policies.gemini:GeminiSchema"
 "schema_sanitizer.gemini_recursive" = "tolokaforge_models.policies.gemini:GeminiRecursiveSchema"
+"schema_sanitizer.xai_grok_recursive" = "tolokaforge_models.policies.xai:XaiGrokRecursiveSchema"
 "prompt_policy.dict_map_hints_ref" = "tolokaforge_models.policies.inkling:RefResolvingDictMapHints"
 "response_policy.scalar_array_dict_map" = "tolokaforge_models.policies.gemini:ScalarArrayDictMapResponse"
 "response_policy.minimax_m3_tags" = "tolokaforge_models.policies.minimax:MinimaxM3TagRecoveryResponse"

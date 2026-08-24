@@ -27,7 +27,7 @@ def _unwired_judge_fn(dispatch: GradeDispatch) -> Grade | None:  # noqa: ARG001
     raise NotImplementedError(
         "grader-service is running with the unwired default judge dispatch. "
         "Production wiring (LLMJudge from per-task rubric config, offline "
-        "rejudge integration) is deferred — see ADR-0035 and the "
+        "rejudge integration) is deferred — see ADR-0038 and the "
         "grader-detachment umbrella."
     )
 
@@ -47,7 +47,7 @@ def _resolve_port(cli_port: int | None) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="tolokaforge grader-service",
-        description="Standalone tolokaforge grader service (ADR-0035).",
+        description="Standalone tolokaforge grader service (ADR-0038).",
     )
     parser.add_argument(
         "--port",

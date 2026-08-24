@@ -127,9 +127,11 @@ class TrialGrader(Protocol):
         post-policy system prompt the judge receives as the agent's
         policy for rubric evaluation.
 
-        ``None`` is the answer for a trial the agent never got to run —
-        the absence is not representable as a score, so a caller that
-        forgets to branch fails instead of reading a fabricated zero.
+        ``None`` is the answer where no verdict can be computed: the agent
+        never got to run, or the party that would compute the verdict is
+        the one that lost the trial. The absence is not representable as a
+        score, so a caller that forgets to branch fails instead of reading
+        a fabricated zero.
 
         Raises:
             GradingFailedError: the trial was measured but grading could
@@ -143,9 +145,10 @@ class RunnerRPCTrialGrader:
     """Production :class:`TrialGrader`. Dispatches to the runner's
     ``grade_trial`` gRPC for real grading, short-circuits with an
     auto-fail :class:`Grade` when the trajectory shape rules out a
-    meaningful judge result, returns ``None`` for a trial that never
-    ran, and raises :class:`GradingFailedError` when the RPC could not
-    produce a verdict.
+    meaningful judge result, returns ``None`` where no verdict exists to
+    compute — a trial that never ran, and one whose runner lost it — and
+    raises :class:`GradingFailedError` when the RPC could not produce a
+    verdict.
 
     Built per-run from a :class:`TrialGraderContext` — a *serialisable*
     configuration (``runner_address`` + logger). The grader owns its own
@@ -191,6 +194,15 @@ class RunnerRPCTrialGrader:
                 termination_reason=(
                     trajectory.termination_reason.value if trajectory.termination_reason else None
                 ),
+            )
+            return None
+
+        if trajectory.termination_reason == TerminationReason.TRIAL_LOST:
+            self.logger.info(
+                "Trial lost by the runner - not graded",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
             )
             return None
 
@@ -442,7 +454,7 @@ class JudgeBackedTrialGrader:
     """:class:`TrialGrader` that invokes an injected judge callable directly,
     without the runner's state / transcript / custom-check machinery.
 
-    The seam's second registered implementation (see ADR-0035, Decision 5):
+    The seam's second registered implementation (see ADR-0038, Decision 5):
     a grader that dispatches to a judge rather than a runner-side RPC. Ships
     as the plug-in shape for judge-only tasks (rubric-only fixtures, offline
     replay); production integration with :class:`LLMJudge` is deferred as a
@@ -542,7 +554,7 @@ def _unwired_judge_fn(
         "judge_only trial grader is registered but not yet wired to a production "
         "judge. Inject a JudgeGradeFn callable via JudgeBackedTrialGrader(...) "
         "directly, or wait for the follow-up that folds offline rejudge onto this "
-        "seam. See ADR-0035 and the grader-detachment umbrella."
+        "seam. See ADR-0038 and the grader-detachment umbrella."
     )
 
 
@@ -556,7 +568,7 @@ class GraderRPCTrialGrader:
     ``grader_rpc`` entry point; selected by task config with
     ``grader: grader_rpc``.
 
-    Per ADR-0035, the grader service is expected to run on a different
+    Per ADR-0038, the grader service is expected to run on a different
     machine from the runner, on its own release cadence and scale unit. This
     grader owns its own :class:`GrpcGraderClient`; tests may inject a stub
     ``grader_client`` to skip real gRPC.
@@ -699,7 +711,7 @@ class QueueTrialGrader:
     :class:`GradeBroker` Protocol.
 
     Ships with an :class:`~tolokaforge.grader.queue.InMemoryGradeBroker`
-    reference backend (ADR-0035's Decision 3: Redis Streams as the
+    reference backend (ADR-0038's Decision 3: Redis Streams as the
     reference wire; other backends behind the same Protocol are follow-ups).
     Tests inject any :class:`GradeBroker` to exercise the seam.
     """

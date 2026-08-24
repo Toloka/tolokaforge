@@ -21,8 +21,11 @@ table of what the code is believed to do.
    that makes exclusion honest: text matching cannot tell a provider's rate limit
    from a task conversation about rate limits, and a trial wrongly excluded
    inflates every published number with nothing in the output to show it.
-4. An excluded trial produces no grade at all, so no fabricated score describes
-   work that never happened.
+4. A trial no verdict can be computed for produces no grade at all, so no
+   fabricated score describes work nobody did. That is every excluded trial —
+   the agent never ran — plus the counted trial whose runner lost it, where the
+   agent did run but the party that would compute the verdict is the one that
+   lost the trial.
 
 Locks 2 and 4 are asserted as invariants, not as descriptions of the mechanism
 behind them, so a change to *how* those trials are answered leaves them intact
@@ -39,6 +42,7 @@ import pytest
 from litellm.exceptions import RateLimitError
 
 from tests.canonical._factories import make_task_config, make_trajectory, make_trial_spec
+from tests.canonical.test_lost_trial_attribution import drive_lost_trial
 from tolokaforge.core.conductor import InMemoryConductor
 from tolokaforge.core.failure_attribution import (
     EXCLUDED_TYPED_REASONS,
@@ -52,7 +56,14 @@ from tolokaforge.core.llm.client import (
 )
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
-from tolokaforge.core.models import Message, TerminationReason, Trajectory, TrialStatus
+from tolokaforge.core.models import (
+    Message,
+    TerminationReason,
+    ToolCall,
+    Trajectory,
+    TrialStatus,
+)
+from tolokaforge.core.models.task_config import InteractionMode
 from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 from tolokaforge.core.run_display_events import LLMCallObservation
 from tolokaforge.core.runner import TrialRunner
@@ -65,9 +76,10 @@ from tolokaforge.tools.registry import ToolExecutor, ToolRegistry
 pytestmark = pytest.mark.canonical
 
 # The reasons a trial can end with and still be graded by the runner. Each names
-# a trial the agent drove to an end the harness planned for: it signalled
-# completion, the simulated user closed the dialogue, or the turn budget ran
-# out. Task grading is meaningful for exactly these.
+# a trial the agent drove to an end the harness planned for: it had no further
+# action to take and no counterparty could ask for one, the simulated user closed
+# the dialogue, or the turn budget ran out. Task grading is meaningful for
+# exactly these.
 GRADED_REASONS = frozenset(
     {
         TerminationReason.AGENT_DONE,
@@ -76,14 +88,18 @@ GRADED_REASONS = frozenset(
     }
 )
 
-# The reasons that answer a trial with no grade at all. Each one means the agent
-# never got its turn: the provider refused, the call never came back, or the
-# environment never came up.
+# The reasons that answer a trial with no grade at all. Each one means no verdict
+# can be computed: the agent never got its turn — the provider refused, the call
+# never came back, the environment never came up — or the runner that would
+# compute the verdict is the one that lost the trial. The first three excuse the
+# trial from the denominator as well; ``trial_lost`` does not, which is why "no
+# grade" and "excluded" are two questions here rather than one.
 UNGRADED_REASONS = frozenset(
     {
         TerminationReason.RATE_LIMIT,
         TerminationReason.API_TIMEOUT,
         TerminationReason.PROVISION_ERROR,
+        TerminationReason.TRIAL_LOST,
     }
 )
 
@@ -147,12 +163,23 @@ def _text(body: str) -> GenerationResult:
     )
 
 
+def _repeated_call() -> GenerationResult:
+    """The same call every turn — the agent behaviour the stuck detector reads
+    as a loop. The queue repeats its last item, so one is enough."""
+    return GenerationResult(
+        text="",
+        tool_calls=[ToolCall(id="repeat", name="search", arguments={"q": "same"})],
+        usage=Usage(prompt_tokens=10, completion_tokens=5),
+    )
+
+
 def _run_trial(
     *agent_items: GenerationResult | Exception,
     user_reply: str = "Please carry on.",
     max_turns: int = 2,
     episode_timeout_s: int = 1200,
     stuck_detector: StuckDetector | None = None,
+    interaction_mode: InteractionMode = "conversational",
 ) -> Trajectory:
     """Drive one whole trial through :class:`TrialRunner` and return its trajectory."""
     return TrialRunner(
@@ -165,6 +192,7 @@ def _run_trial(
         max_turns=max_turns,
         episode_timeout_s=episode_timeout_s,
         stuck_detector=stuck_detector,
+        interaction_mode=interaction_mode,
     ).run("You are an agent.", "Do the task.")
 
 
@@ -184,9 +212,13 @@ def _provision_failure_trajectory() -> Trajectory:
 def observed_outcomes() -> frozenset[tuple[TrialStatus, TerminationReason]]:
     """The ``(status, reason)`` pairs the real termination paths produce."""
     trajectories = [
-        _run_trial(_text("All set. ###STOP###")),
+        _run_trial(_text("All set."), interaction_mode="agent_only"),
         _run_trial(_text("Anything else?"), user_reply="###STOP###"),
-        _run_trial(_text("Thinking."), stuck_detector=StuckDetector(max_idle_turns=1)),
+        _run_trial(
+            _repeated_call(),
+            max_turns=20,
+            stuck_detector=StuckDetector(max_repeated_tool_calls=5),
+        ),
         _run_trial(_text("Still working."), max_turns=1),
         _run_trial(_text("unreached"), episode_timeout_s=0),
         _run_trial(LLMApiTimeoutError("upstream never answered")),
@@ -194,6 +226,7 @@ def observed_outcomes() -> frozenset[tuple[TrialStatus, TerminationReason]]:
         _run_trial(RuntimeError("OpenAI returned 500")),
         _run_trial(RuntimeError("something the classifier cannot name")),
         _provision_failure_trajectory(),
+        drive_lost_trial()[0],
     ]
     for trajectory in trajectories:
         assert trajectory.termination_reason is not None, (
@@ -312,7 +345,7 @@ def test_a_real_typed_rate_limit_is_still_excluded() -> None:
     assert classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT
 
 
-def test_no_grade_is_produced_for_an_aborted_trial(
+def test_no_grade_is_produced_where_none_can_be_computed(
     observed_outcomes: frozenset[tuple[TrialStatus, TerminationReason]],
 ) -> None:
     """Which observed reasons answer with no grade at all, asserted against the
@@ -334,7 +367,7 @@ def test_no_grade_is_produced_for_an_aborted_trial(
 
     assert ungraded == UNGRADED_REASONS, (
         "the set of termination reasons that produce no grade changed. Every one "
-        "of them means the agent never ran, so a score for it would describe work "
-        f"that never happened: expected {sorted(r.value for r in UNGRADED_REASONS)}, "
+        "of them means no verdict can be computed, so a score for it would be a "
+        f"number nobody's work produced: expected {sorted(r.value for r in UNGRADED_REASONS)}, "
         f"got {sorted(r.value for r in ungraded)}"
     )

@@ -23,12 +23,6 @@
 # invariant is untouched: the deterministic components still sum to 0.5, below the
 # 0.6 threshold, and no trial passes on process alone.
 #
-# CANDIDACY: the two `..._the_note_quotes_...` constraints below are declared
-# candidates to replace the `explains_mechanism` criterion, in the `migration.yaml`
-# beside this file — which is where what a retirement would still have to answer for
-# is written, and where `tolokaforge validate` checks the claim against this rubric.
-# Neither retires anything.
-#
 # RECORDS-DEPENDENCE: these two binders read `field: result`, which makes this pack
 # records-dependent for the first time — on a bundle re-graded without records the
 # binder's own matcher is undecidable and the winning route's grounded-claim

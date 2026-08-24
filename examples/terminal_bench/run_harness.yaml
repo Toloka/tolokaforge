@@ -54,7 +54,7 @@ evaluation:
       agent_model: "openrouter/anthropic/claude-sonnet-4-6"
       # `agent_provider_env` is deliberately absent. The shipped
       # `HarnessSpec.provider_env` for `claude-code` (see
-      # ../../external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml)
+      # ../../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml)
       # supplies the envelope: `ANTHROPIC_API_KEY: ${secret:OPENROUTER_API_KEY}`
       # + `ANTHROPIC_BASE_URL: https://openrouter.ai/api`. Declaring the block
       # here would REPLACE the shipped default rather than adding to it — a

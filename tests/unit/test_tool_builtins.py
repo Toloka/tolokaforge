@@ -606,28 +606,6 @@ class TestSearchKBTool:
 
 
 # ===================================================================
-# Cross-tool: visibility configuration
-# ===================================================================
-
-
-@pytest.mark.unit
-class TestToolVisibility:
-    """Tests for tool visibility configuration."""
-
-    def test_all_tools_have_agent_visibility(self) -> None:
-        tools = [
-            DBQueryTool(),
-            DBUpdateTool(),
-            SQLQueryTool(),
-            SQLSchemaToolDB(),
-            HTTPRequestTool(),
-            SearchKBTool(),
-        ]
-        for tool in tools:
-            assert "agent" in tool.policy.visibility, f"{tool.name} missing agent visibility"
-
-
-# ===================================================================
 # Cross-tool: schema format
 # ===================================================================
 

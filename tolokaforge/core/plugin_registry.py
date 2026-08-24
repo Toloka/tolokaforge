@@ -177,7 +177,7 @@ class TrialGraderContext:
     run-scoped logger. A live gRPC channel would couple the grader to the
     orchestrator's chosen runner instance and block a grader that runs on a
     different machine — precisely the coupling the plug-in seam exists to
-    break (see ADR-0035).
+    break (see ADR-0038).
 
     :attr:`runner_address` is the runner service's gRPC address; the
     ``runner_rpc`` grader dials it.

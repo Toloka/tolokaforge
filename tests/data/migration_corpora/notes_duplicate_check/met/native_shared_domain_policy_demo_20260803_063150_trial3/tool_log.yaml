@@ -1,0 +1,35 @@
+- call_id: call_iYDfayDoT50KsnyZLGfOa01h
+  sequence: 0
+  tool_name: list_notes
+  arguments: {}
+  executor: agent
+  status: success
+  output: |-
+    {
+      "id": "N-002",
+      "title": "Plant watering",
+      "body": "Water the office plants every Tuesday and Friday."
+    }
+    {
+      "id": "N-001",
+      "title": "Team stand-up",
+      "body": "Daily stand-up at 9:30 in the Maple room."
+    }
+  latency_seconds: 1.0055360794067383
+  timestamp: '2026-08-03T06:32:38.659917Z'
+- call_id: call_nJux4TRAvLuWJ9Mq7TT7rkMG
+  sequence: 1
+  tool_name: add_note
+  arguments:
+    title: Team standup
+    body: Daily standup at 9:30 in the Maple room.
+  executor: agent
+  status: success
+  output: |-
+    {
+      "id": "N-003",
+      "title": "Team standup",
+      "body": "Daily standup at 9:30 in the Maple room."
+    }
+  latency_seconds: 0.004908561706542969
+  timestamp: '2026-08-03T06:32:40.260285Z'

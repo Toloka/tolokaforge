@@ -7,13 +7,13 @@ The types in this module fall into three tiers:
   ``LLMJudgeConfig`` / ``EnvironmentManifest`` (and its supporting
   ``EnvironmentPatch`` / ``StackPatch`` / ``ResetSpec`` / ``ServiceSpec`` /
   ``ServiceIsolation`` / ``ServiceNetworkAccess``) / ``ToolExpectations`` /
+  ``TranscriptRulesConfig`` / ``RequiredAction`` / ``CommunicateInfo`` /
   ``RecordedToolCall`` / ``ToolCallRecorder`` / ``ToolExecutorIdentity``.
   Their canonical home stays here; the ``core.models`` shim re-exports them
   so callers reach one module for the whole recorded-tool-call + wire-schema
   vocabulary.
 - **Runner-only wire types with a ``Runner`` prefix** —
   ``RunnerGradingConfig`` / ``RunnerStateChecksConfig`` /
-  ``RunnerTranscriptRulesConfig`` / ``RunnerRequiredAction`` /
   ``RunnerInitialStateConfig`` / ``RunnerInitializationAction`` /
   ``RunnerUserSimulatorConfig`` / ``RunnerGradeComponents``. Each is the
   strict, wire-shaped Pydantic model the runner produces or consumes;
@@ -34,7 +34,7 @@ import ipaddress
 import math
 import re
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -52,6 +52,7 @@ from tolokaforge.core.grading.combine_method import CombineMethod, validate_comb
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
 from tolokaforge.core.grading.state_composition import (
+    StateHashConfig,
     refuse_probes_beside_another_state_source,
     resolve_hash_weight,
     validate_hash_weight,
@@ -209,6 +210,16 @@ class RunnerInitialStateConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+def provisions_database(initial_state: RunnerInitialStateConfig) -> bool:
+    """Whether registering a trial with this initial state gives it a DB service.
+
+    Every field the DB service is initialised from counts, not just the rows: a task
+    declaring only ``schemas`` or only ``unstable_fields`` still provisions a database,
+    and every grading branch that reads one still reaches it.
+    """
+    return bool(initial_state.tables or initial_state.schemas or initial_state.unstable_fields)
+
+
 # =============================================================================
 # Pre-Trial Actions (from TASK_DESCRIPTION_SCHEMA.md)
 # =============================================================================
@@ -218,7 +229,8 @@ class RunnerInitializationAction(BaseModel):
     """
     Action to execute before trial starts.
 
-    Used by Native adapter for user device setup (toggle_airplane_mode, etc.)
+    Used by the Native adapter to put the world in its starting shape — a user-side
+    tool run before the agent's first turn.
     """
 
     env_type: Literal["assistant", "user"]
@@ -281,10 +293,27 @@ class RunnerUserSimulatorConfig(BaseModel):
 # =============================================================================
 
 
+class SearchPlane(str, Enum):
+    """Which plane serves a task's ``documents_path``."""
+
+    TYPESENSE = "typesense"
+    """The TypeSense collection the runner registers a search client against."""
+
+    RAG_SERVICE = "rag_service"
+    """The rag-service index built per trial from the bundled corpus."""
+
+
 class SearchConfig(BaseModel):
-    """Configuration for knowledge base search (TypeSense)."""
+    """Configuration for knowledge base search (TypeSense).
+
+    ``plane`` is a fact about the task — which plane serves its corpus — and is
+    the only thing that decides it. A task that declares none leaves the runner
+    to derive one from the connection details it carries, which is what an
+    adapter emits until it declares the plane instead.
+    """
 
     enabled: bool = False
+    plane: SearchPlane | None = None
     domain_name: str | None = None  # "external_retail_v3"
     documents_path: str | None = None  # Path to docindex/ directory
 
@@ -316,12 +345,19 @@ class GoldenAction(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class RunnerRequiredAction(BaseModel):
-    """Tool call that must appear in the trajectory."""
+class RequiredAction(BaseModel):
+    """Tool call that must appear in the trajectory.
+
+    ``name`` is the tool the call names, on the wire as in ``grading.yaml``.
+    ``RunnerInitializationAction`` spells the same concept ``tool_name`` and
+    ``InitializationAction`` spells it ``func_name``: that is a harness setup
+    instruction rather than a grading assertion about the agent, and its wire
+    surface is unrelated to this one.
+    """
 
     action_id: str
     requestor: Literal["assistant", "user"]
-    tool_name: str
+    name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
     compare_args: list[str] | None = None  # Which args to compare, None = all
 
@@ -349,12 +385,32 @@ class DbProbe(BaseModel):
 _HASH_WEIGHT_CONTEXT = "task_description grading.state_checks.hash_weight"
 
 
+class HashComparisonBasis(str, Enum):
+    """The state a hash comparison was run against, and what selected it.
+
+    The two initial-state members grade identically by construction — the evaluator
+    resets the trial's database and hashes it either way — and are separate members
+    because the ledger accounts for a *declared* source and has nothing to file for a
+    block that declared none. Collapsing them would leave ``expect_initial_state``
+    accounted for without being read.
+    """
+
+    DECLARED_INITIAL_STATE = "declared_initial_state"
+    """``expect_initial_state``: the author asked for the state the task starts in."""
+
+    GOLDEN_REPLAY = "golden_replay"
+    """``golden_actions``: the state replaying them from the initial state produces."""
+
+    UNDECLARED_INITIAL_STATE = "undeclared_initial_state"
+    """No source at all: the same initial state, reached by falling through."""
+
+
 class RunnerStateChecksConfig(BaseModel):
     """State-based grading configuration."""
 
     # Hash comparison
     hash_enabled: bool = False
-    expected_hash: str | None = None  # Pre-computed (if available)
+    expect_initial_state: bool = False
     golden_actions: list[GoldenAction] = Field(default_factory=list)
     # None means the author declared no weight — never "fall back to a default".
     hash_weight: float | None = None
@@ -401,18 +457,50 @@ class RunnerStateChecksConfig(BaseModel):
             return None
         return validate_hash_weight(value, context=_HASH_WEIGHT_CONTEXT)
 
-    def _authored_hash_block(self) -> dict[str, Any]:
-        """The author-facing ``state_checks.hash`` block these flattened fields carry.
+    def _authored_hash_block(self) -> StateHashConfig:
+        """The ``state_checks.hash`` block these flattened fields carry.
 
         Every rule shared with core reads the author's key names, so this model
-        translates into them once rather than once per rule.
+        translates into them once rather than once per rule. ``golden_actions``
+        crosses untranslated: the block admits either element shape and every shared
+        rule reads the list for truthiness, so the author's ``{name, kwargs}`` and
+        these ``GoldenAction`` instances answer the same rules.
+        """
+        return StateHashConfig(
+            enabled=self.hash_enabled,
+            expect_initial_state=self.expect_initial_state,
+            golden_actions=self.golden_actions,
+            weight=self.hash_weight,
+        )
+
+    def authored_state_sources(self) -> dict[str, Any]:
+        """This block's state sources under the author's key names.
+
+        The same translation :meth:`_authored_hash_block` performs, one level up, for a
+        rule that reads the whole block rather than the hash alone. Only the three keys
+        declaring a source are carried: the rest of the block configures how a source is
+        scored, not whether one is read.
         """
         return {
-            "enabled": self.hash_enabled,
-            "expected_state_hash": self.expected_hash,
-            "golden_actions": self.golden_actions,
-            "weight": self.hash_weight,
+            "hash": self._authored_hash_block().model_dump(),
+            "jsonpaths": self.jsonpath_checks,
+            "db_probes": [probe.model_dump() for probe in self.db_probes],
         }
+
+    def hash_comparison_basis(self) -> HashComparisonBasis:
+        """Which state a hash comparison over this config compares the trial against.
+
+        The read that makes ``expect_initial_state`` a key the runner consumes: the
+        evaluator selects its basis here, returns it, and the ledger accounts for the
+        source that selected it. A block declaring nothing reaches the same state by
+        :attr:`HashComparisonBasis.UNDECLARED_INITIAL_STATE`, which is the shape that
+        grades byte-identically and accounts for no source.
+        """
+        if self.expect_initial_state:
+            return HashComparisonBasis.DECLARED_INITIAL_STATE
+        if self.golden_actions:
+            return HashComparisonBasis.GOLDEN_REPLAY
+        return HashComparisonBasis.UNDECLARED_INITIAL_STATE
 
     @model_validator(mode="after")
     def _refuse_probes_beside_another_state_source(self) -> RunnerStateChecksConfig:
@@ -467,8 +555,29 @@ class ToolExpectations(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class RunnerTranscriptRulesConfig(BaseModel):
-    """Transcript-based grading configuration."""
+class CommunicateInfo(BaseModel):
+    """Information the agent must communicate to the user.
+
+    ``extra="forbid"`` for the reason its ``required_actions`` sibling carries: a
+    key the element does not declare would otherwise be carried as data, and
+    ``required`` defaults to ``True``, so a misspelled opt-out scored a rule the
+    author had written off.
+    """
+
+    info: str
+    required: bool = True
+
+    model_config = {"extra": "forbid"}
+
+
+class TranscriptRulesConfig(BaseModel):
+    """Transcript-based grading configuration, on both substrates.
+
+    ``extra="forbid"`` for the reason the nested ``tool_expectations`` already carries:
+    every rule here defaults to asserting nothing, so a dropped key graded the trial by
+    the rules that survived. A ``must_contian`` typo scored ``1.0`` and passing on a
+    transcript the authored ``must_contain`` scored ``0.75`` and failing.
+    """
 
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
@@ -479,24 +588,23 @@ class RunnerTranscriptRulesConfig(BaseModel):
     max_turns: int | None = Field(default=None, ge=1)
     min_assistant_turns: int | None = Field(default=None, ge=1)
     tool_expectations: ToolExpectations | None = None
-    required_actions: list[RunnerRequiredAction] = Field(default_factory=list)
-    communicate_info: list[dict[str, Any]] = Field(default_factory=list)
+    required_actions: list[RequiredAction] = Field(default_factory=list)
+    communicate_info: list[CommunicateInfo] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
     @model_validator(mode="after")
-    def _validate_turn_window(self) -> RunnerTranscriptRulesConfig:
+    def _validate_turn_window(self) -> TranscriptRulesConfig:
         """Reject the window no assistant-turn count satisfies.
 
-        Calls the same predicate the core config calls, so an engine and a runner
-        built from different releases cannot disagree about which packs are
-        gradeable: a window core rejected at ``tolokaforge validate`` is rejected at
-        ``RegisterTrial`` too.
+        The context names ``grading.yaml`` on both surfaces: the wire value is
+        translated from the pack's own block, so that file is where an author
+        rejected at ``RegisterTrial`` makes the fix.
         """
         validate_turn_window(
             min_assistant_turns=self.min_assistant_turns,
             max_turns=self.max_turns,
-            context="task_description grading.transcript_rules",
+            context="grading.yaml transcript_rules",
         )
         return self
 
@@ -656,36 +764,37 @@ class TraceMatcher(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _require_a_success_status_beside_a_result_predicate(self) -> TraceMatcher:
-        """#717: a failed call's result text differs between the two substrates.
+    def _reject_a_status_literal_no_execution_produces(self) -> TraceMatcher:
+        """Every ``status`` literal must be a real ``ToolExecutionStatus`` member.
 
-        Successful result text is byte-identical across substrates and canonically
-        locked; nothing proves that for a failure, so a ``result`` predicate is
-        admitted only where portability holds. The rule is syntactic — one operator,
-        ``equals``, valued ``success`` — rather than "does this status admit a
-        failure", which would be a satisfiability question over every operator.
+        Loading ``status: {equals: timeout}`` clean and only failing at grading
+        time reports a typo as an agent failure. The gate keeps the check
+        syntactic: closed-vocabulary operators (``equals``, ``not_equals``,
+        ``in_``, ``not_in``) validate every literal against the enum; open-form
+        operators (``regex``, ``contains``) reach status only as strings and
+        the enum's canonical members are already substring-safe.
         """
-        if self.result is None or _asserts_a_successful_call(self.status):
+        if self.status is None:
             return self
-        raise ValueError(
-            "a result predicate needs a status predicate reading exactly "
-            f"{{equals: {ToolExecutionStatus.SUCCESS.value}}} beside it. A failed call's "
-            "result text is not identical on the two substrates (#717), so only a "
-            "successful call's result is matchable. To assert a call failed, match on "
-            "status instead"
+        producible = {member.value for member in ToolExecutionStatus}
+        checked: list[tuple[str, Any]] = []
+        for operator in ("equals", "not_equals"):
+            value = getattr(self.status, operator)
+            if value is not None:
+                checked.append((operator, value))
+        for operator in ("in_", "not_in"):
+            values = getattr(self.status, operator)
+            if values is not None:
+                checked.extend((operator, v) for v in values)
+        unproducible = sorted(
+            {str(value) for operator, value in checked if value not in producible}
         )
-
-
-def _asserts_a_successful_call(status: ValuePredicate | None) -> bool:
-    """Whether ``status`` is the exact predicate #717 admits a ``result`` read beside.
-
-    Syntactic — one operator, ``equals``, valued ``success`` — rather than "does this
-    status admit a failure", which would be a satisfiability question over every
-    operator.
-    """
-    if status is None or status.declared_operators() != {"equals"}:
-        return False
-    return status.equals == ToolExecutionStatus.SUCCESS.value
+        if unproducible:
+            raise ValueError(
+                f"status predicate names values {unproducible} that no tool executor "
+                f"produces. Executable statuses are {sorted(producible)}"
+            )
+        return self
 
 
 class BoundValue(BaseModel):
@@ -805,27 +914,6 @@ class TraceBinding(BaseModel):
             "is a handful of members — every event carrying the bound value is already "
             "selected by a predicate on that field reading an equals literal, so the "
             "correlation says nothing the literal does not"
-        )
-
-    @model_validator(mode="after")
-    def _require_a_success_status_beside_a_result_extraction(self) -> TraceBinding:
-        """#717 over a value bound out of ``result`` rather than compared against it.
-
-        The landed rule fires on a ``result`` *predicate*, which a binder carries
-        none of. A failed call's result text differs between the substrates, and a
-        value bound out of it propagates that difference into every reference.
-        """
-        bound_from_result = sorted(
-            name for name, value in self.values.items() if value.head_segment() == "result"
-        )
-        if not bound_from_result or _asserts_a_successful_call(self.match.status):
-            return self
-        raise ValueError(
-            f"bindings {bound_from_result} read result without a status predicate reading "
-            f"exactly {{equals: {ToolExecutionStatus.SUCCESS.value}}} on the binder's "
-            "match. A failed call's result text is not identical on the two substrates "
-            "(#717), so a value bound out of it grades differently on each. Add the "
-            "status predicate, or bind an argument of the call instead"
         )
 
 
@@ -1835,7 +1923,7 @@ class RunnerGradingConfig(BaseModel):
     grading_method: Literal["hash", "test_execution", "transcript", "llm"] | None = None
 
     state_checks: RunnerStateChecksConfig | None = None
-    transcript_rules: RunnerTranscriptRulesConfig | None = None
+    transcript_rules: TranscriptRulesConfig | None = None
     trace_checks: TraceChecksConfig | None = None
     llm_judge: LLMJudgeConfig | None = None
 
@@ -2151,7 +2239,7 @@ def _check_safe_bind_mounts(services: dict[str, dict[str, Any]]) -> None:
                 f"compose service {name!r}: `volumes:` must be a list; got {type(volumes).__name__}"
             )
         for idx, entry in enumerate(volumes):
-            source = _bind_mount_source(entry)
+            source = bind_mount_source(entry)
             if source is None:
                 continue
             _check_safe_relative_path(source, f"compose service {name!r} volumes[{idx}].source")
@@ -2254,9 +2342,13 @@ def _check_depends_on_resolves(services: dict[str, dict[str, Any]]) -> None:
                 )
 
 
-def _bind_mount_source(entry: Any) -> str | None:
+def bind_mount_source(entry: Any) -> str | None:
     """Return the bind-mount source path from a compose volume entry, or
     ``None`` if the entry is a named volume / not a bind mount.
+
+    Public because materialisation reads it too: ``inject_runner_credentials``
+    refuses a service whose bind mount would reach the credentialled compose
+    file, and both call sites must agree on what counts as a bind mount.
     """
     if isinstance(entry, str):
         # Short form: "SOURCE:TARGET[:MODE]". Bind if SOURCE contains a path separator
@@ -2755,7 +2847,7 @@ class TaskDescription(BaseModel):
 
     # --- Tools ---
     agent_tools: list[ToolSchema] = Field(default_factory=list)
-    user_tools: list[ToolSchema] = Field(default_factory=list)  # User-side device tools
+    user_tools: list[ToolSchema] = Field(default_factory=list)  # Offered to the user simulator
 
     # --- State ---
     initial_state: RunnerInitialStateConfig = Field(default_factory=RunnerInitialStateConfig)
@@ -2802,12 +2894,23 @@ class TaskDescription(BaseModel):
 class ToolExecutorIdentity(str, Enum):
     """Which side of the dialogue made a tool call.
 
-    ``USER`` is unreachable in every run today because no code path constructs
-    a user-side tool executor (#688) — equally on both substrates.
+    ``USER`` is reached by a trial whose task declares ``tools.user.enabled``:
+    the conductor builds the user actor its own executor and the simulator is
+    offered those schemas — equally on both substrates.
     """
 
     AGENT = "agent"
     USER = "user"
+
+
+REQUESTOR_TO_EXECUTOR: Mapping[Literal["assistant", "user"], ToolExecutorIdentity] = {
+    "assistant": ToolExecutorIdentity.AGENT,
+    "user": ToolExecutorIdentity.USER,
+}
+"""The author-facing :attr:`RequiredAction.requestor` role names, onto the recorded
+executor identity. They name the same actor, and one map serves the grader that
+matches a declared action against a record and the gate that holds the same
+declaration against the tools each actor was given."""
 
 
 class RecordedToolCall(BaseModel):
@@ -2818,8 +2921,10 @@ class RecordedToolCall(BaseModel):
     trial's :class:`ToolCallRecorder`.
     """
 
-    # The provider's tool-call id, carried on ExecuteToolRequest. Two calls to
-    # the same tool with identical arguments differ only here and in ``sequence``.
+    # The trial's episode-unique tool-call id, assigned from one trial-scoped
+    # sequence whichever actor made the call, and carried on ExecuteToolRequest.
+    # Two calls to the same tool with identical arguments differ only here and in
+    # ``sequence``.
     call_id: str = Field(min_length=1)
     # Trial-wide, 0-based, stamped by the recorder at append time.
     sequence: int
@@ -2827,8 +2932,8 @@ class RecordedToolCall(BaseModel):
     arguments: dict[str, Any]
     executor: ToolExecutorIdentity
     status: ToolExecutionStatus
-    # Untruncated. On a failed call this is the failure text the executing layer
-    # produced, which is not the text the ``role: tool`` message carries.
+    # Untruncated. On a failed call this is the tool's own failure text, which
+    # the ``role: tool`` message carries behind an ``Error: `` prefix.
     output: str
     # Wall time measured by the recording caller around the call.
     latency_seconds: float
@@ -3218,7 +3323,14 @@ class HashGradingResult(BaseModel):
     """Result of hash-based grading."""
 
     hash_match: bool
-    hash_score: float
+    basis: HashComparisonBasis
+    """Which state the verdict was reached against, and which declaration selected it.
+
+    Carried out of the evaluator rather than re-derived from the config by whoever
+    needs it: the runtime ledger accounts for the source key this names, so a config
+    read a second time at the accounting site would report a key as evaluated whether
+    or not the evaluator ever looked at it.
+    """
     state_diff: StateDiff | None = None
     golden_replay: GoldenReplayRecord
     """How much of the golden path ran, in the shape both substrates report from.
@@ -3228,3 +3340,8 @@ class HashGradingResult(BaseModel):
     """
 
     model_config = {"extra": "forbid"}
+
+    @property
+    def hash_score(self) -> float:
+        """Derived from ``hash_match``, so a non-binary or contradictory verdict cannot exist."""
+        return 1.0 if self.hash_match else 0.0

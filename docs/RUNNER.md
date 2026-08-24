@@ -197,15 +197,11 @@ buys.
 **That reasoning covers the proto message only, and registration also carries a
 JSON payload where it does not hold.** The trial spec crosses as `trial_spec_json`,
 parsed by `extra="forbid"` Pydantic models, so a field the older image does not
-declare is a validation error rather than a dropped byte — and the engine emits
-`state_checks.hash_weight` on every pack with a non-empty `state_checks:` block,
-`transcript_rules.min_assistant_turns` on every pack with a `transcript_rules:`
-block, and the whole `trace_checks` section on **every** pack. A newer engine
-against an older image is therefore rejected at `RegisterTrial` for any pack at all,
-with a Pydantic `extra_forbidden` error naming the field. See
-[`GRADING.md`](GRADING.md#hash-based-grading-tau-bench-compatible) § "Runner-engine
-version lock (both directions)" for the full list of keys that bite and in which
-direction.
+declare is a validation error rather than a dropped byte. Several grading keys are
+emitted on **every** pack, so a newer engine against an older image is rejected at
+`RegisterTrial` for any pack at all, with a Pydantic `extra_forbidden` error naming
+the field. Which keys bite, from which release, and in which direction is one table:
+[`GRADING.md`](GRADING.md#runner-engine-version-lock) § Runner-engine version lock.
 
 **So the order matters: rebuild the image before rolling the engine.** Upgrading
 the engine first leaves you inside the one window this gate cannot close, and — for
@@ -269,10 +265,11 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
 |---|---|
 | `tolokaforge/runner/` | The runner service, gRPC glue, DB / RAG clients, tool factory, runner-side grading. |
 | `tolokaforge/secrets/` | Single-abstraction secret manager reconstructed from `TOLOKAFORGE_SECRETS_JSON`. |
-| `tolokaforge/tools/` | Tool registry + built-in tool drivers the tool factory dispatches by name at `RegisterTrial`. (One file excluded — see below.) |
-| `tolokaforge/core/models/` | Wire types the gRPC surface serialises. |
+| `tolokaforge/tools/` | Tool registry + built-in tool drivers the tool factory dispatches by name at `RegisterTrial`. |
+| `tolokaforge/core/actors/` | Actor seams the turn loop dispatches on. (One file excluded — see below.) |
+| `tolokaforge/core/models/` | Wire types the gRPC surface serialises, plus the run-config blocks `RunConfig` is typed by — `docker_config.py` rides along because `RunConfig` carries it; the runner does not read it. |
 | `tolokaforge/core/llm/` | LLM client + policies; the runner runs LLM-as-judge in-container. (One file excluded — see below.) |
-| `tolokaforge/core/grading/` | Grading substrate — check runner, checks helpers, judge, key manifest, state composition, state diff, trace timeline, transcript wire. (Four files excluded — see below.) |
+| `tolokaforge/core/grading/` | Grading substrate — check runner, checks helpers, judge, key manifest, state composition, state diff, trace timeline, transcript wire. (Eleven files excluded — see below.) |
 
 **Loose files in the subset:**
 
@@ -314,21 +311,31 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
 
 **Excluded — orchestrator-only files under a subpackage otherwise in the subset:**
 
+The enumeration below is the one in `RUNNER_SUBSET_EXCLUDED_FILES`; the
+canonical test rejects drift between them and the pyproject mirror.
+
 | Path | Excluded because |
 |---|---|
-| `tolokaforge/core/grading/combine.py` | Imports `core.evaluators.*` (orchestrator-only). |
+| `tolokaforge/core/actors/turn_policy.py` | Reaches `core.plugin_registry` (orchestrator-only) for `TurnPolicyContext`. |
+| `tolokaforge/core/grading/agreement.py` | Shared-spine imports only; consumed by the offline rubric-migration commands. |
+| `tolokaforge/core/grading/combine.py` | Imports `core.grading.state_checks`, itself orchestrator-only. |
+| `tolokaforge/core/grading/config_validation.py` | Shared-spine imports only; consumed by the pre-run authoring gate. |
+| `tolokaforge/core/grading/corpus_curation.py` | Imports `core.output.artifacts` and `core.output_writer` (orchestrator-only). |
+| `tolokaforge/core/grading/migration_declaration.py` | Reaches the same two through its `corpus_curation` import. |
 | `tolokaforge/core/grading/replay.py` | Imports `core.output.artifacts` (orchestrator-only). |
+| `tolokaforge/core/grading/replay_layout.py` | Standard library only; consumed by the offline replay commands. |
+| `tolokaforge/core/grading/rubric_migration.py` | Imports the adapters' private task loader (orchestrator-only). |
 | `tolokaforge/core/grading/state_checks.py` | Imports `core.utils.diff` (orchestrator-only). |
-| `tolokaforge/core/grading/transcript.py` | Consumed only by orchestrator-side code paths. |
+| `tolokaforge/core/grading/trace_replay.py` | Imports `core.output.artifacts` (orchestrator-only). |
+| `tolokaforge/core/grading/unknown_keys.py` | Shared-spine imports only; consumed by the pre-run authoring gate. |
 | `tolokaforge/core/llm/fallback_client.py` | Consumed only by `dx/cli/main.py`. |
-| `tolokaforge/tools/user_tools.py` | Imports `core.env_state` (orchestrator-only). |
 
 **Not in the subset:** everything at the `tolokaforge/core/` root not listed above
 (the `Orchestrator` class, dry-run, output writer, config validator, compose
 materialisation, engine run state, backend capabilities, the `RuntimeBackend` /
 `Conductor` / `TrialGrader` Protocol definitions and their factories, the
 `run_trial` library entry, run queue, resume, project loader, plugin registry,
-metrics, budgets, and the remaining utility modules); `tolokaforge/core/evaluators/`;
+metrics, budgets, and the remaining utility modules);
 `tolokaforge/core/output/`; `tolokaforge/core/search/`; `tolokaforge/core/utils/`;
 `tolokaforge/core/schema/`; `tolokaforge/adapters/`; `tolokaforge/dx/`;
 `tolokaforge/docker/`; `tolokaforge/env/`; `tolokaforge/runtime/`;
@@ -453,19 +460,29 @@ One classification of a finished trial answers both, and the answers are
 independent by design:
 
 - **Is another attempt worth making?** `Orchestrator._is_retryable_trajectory`.
-  Anything transient — a rate limit, an API error, a timeout, a bare error — is
-  requeued until `max_attempt_retries` is spent. A deterministic fault
-  (`provision_error`, an auth-shaped `api_error`) is not: the next attempt fails
-  the same way.
+  Anything transient — a rate limit, an API error, a timeout, a bare error, a
+  `trial_lost` registration — is requeued until `max_attempt_retries` is spent. A
+  deterministic fault (`provision_error`, an auth-shaped `api_error`) is not: the
+  next attempt fails the same way.
 - **Did the attempt measure the agent?** `classify_trial_outcome`. Only a trial
   killed by a *typed* infrastructure condition — `rate_limit`, `api_timeout`,
   `provision_error` — leaves the rate denominators.
 
 They disagree, and the disagreements are the point. A wall-clock `timeout`, an
-`api_error` and a bare `error` are all retried *and* counted: repeating them may
-help, and the agent whose behaviour produced them was measured doing so. Deriving
-either answer from the other would silently either stop retrying transient
-failures or start excusing agent failures from the benchmark.
+`api_error`, a bare `error` and a `trial_lost` are all retried *and* counted:
+repeating them may help, and the trial they describe is either one the agent was
+measured on or one whose fault is ours to carry. Deriving either answer from the
+other would silently either stop retrying transient failures or start excusing
+agent failures from the benchmark.
+
+`trial_lost` is the one of those the agent had no part in: the runner no longer
+holds the trial the engine is running — a restarted shared-stack runner, a
+shutdown sweep, or the deregistration before a retry — so the tool call that hit
+it reached no tool. The trial ends there rather than spending its turn budget on
+refusals, classifies as `harness_error`, and is **not graded**: the runner that
+would compute the verdict is the one that lost the trial, so no fabricated score
+enters `avg_score`. Re-registering is exactly the repair, which is why it is
+retried.
 
 Retries are exhausted before any of this is recorded, so a trial that eventually
 succeeded contributes one measured result, not one per attempt. See

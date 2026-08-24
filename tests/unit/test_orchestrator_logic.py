@@ -10,6 +10,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.models import (
@@ -87,8 +88,28 @@ def _make_trajectory(
     )
 
 
+def _write_grading_yaml(task_dir: Path) -> None:
+    """The block :func:`_make_task_config` declares, so an enqueue pre-flight can read it.
+
+    The smallest gradeable one — a single state check carrying the whole weight — because
+    nothing here is about what the pack grades by.
+    """
+    (task_dir / "grading.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "combine": {"method": "weighted", "weights": {"state_checks": 1.0}},
+                "state_checks": {"jsonpaths": [{"path": "$.items", "operator": "exists"}]},
+            }
+        )
+    )
+
+
 def _make_task_config(task_id: str = "TASK-001", **overrides: Any) -> TaskConfig:
-    """Build a minimal TaskConfig for testing."""
+    """Build the smallest gradeable TaskConfig these tests need.
+
+    It seeds a table because the grading block beside it asserts a ``path:`` over
+    the trial's database, which is authorable only on a task that provisions one.
+    """
     from tolokaforge.core.models import (
         ActorSpec,
         InitialStateConfig,
@@ -100,7 +121,7 @@ def _make_task_config(task_id: str = "TASK-001", **overrides: Any) -> TaskConfig
         "name": f"Test Task {task_id}",
         "category": "tool_use",
         "description": "A test task",
-        "initial_state": InitialStateConfig(),
+        "initial_state": InitialStateConfig(json_db={"items": [{"id": "I1"}]}),
         "tools": ToolsConfig(),
         "actors": {"user": ActorSpec(mode="scripted")},
         "grading": "grading.yaml",
@@ -818,6 +839,50 @@ class TestCreateAdapter:
         call_args = mock_get_adapter.call_args
         assert call_args[0][1]["tasks_glob"] == "custom/**/task.yaml"
 
+    @pytest.mark.parametrize(
+        ("row", "enabled", "mode", "emits"),
+        [
+            ("enabled-local", True, "local", True),
+            ("enabled-remote", True, "remote", True),
+            ("enabled-disabled-mode", True, "disabled", False),
+            ("off-local", False, "local", False),
+            ("off-remote", False, "remote", False),
+            ("off-disabled-mode", False, "disabled", False),
+        ],
+    )
+    @patch("tolokaforge.core.orchestrator.get_adapter")
+    def test_only_an_effectively_enabled_plane_reaches_the_adapter(
+        self, mock_get_adapter: MagicMock, row: str, enabled: bool, mode: str, emits: bool
+    ) -> None:
+        """``mode: disabled`` stops the connection details, exactly as ``enabled: false`` does.
+
+        The address the adapter is handed here is what it stamps into each task's
+        ``search.host``, which is the run-level half of the runner's registration
+        gate. Emitting it for a mode that starts no server hands a knowledge-base
+        task an address nothing answers on, and the trial is refused — see
+        ``tests/unit/test_runner_search_plane_refusal.py``. ``remote`` must keep
+        emitting: an external server needs no start to be reachable.
+        """
+        from tolokaforge.core.models import TypeSenseConfig
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        mock_get_adapter.return_value = MagicMock()
+        config = _make_run_config(
+            orchestrator=OrchestratorConfig(
+                workers=1,
+                repeats=1,
+                auto_start_services=False,
+                typesense=TypeSenseConfig(enabled=enabled, mode=mode, host="ts.example", port=8108),
+            )
+        )
+
+        Orchestrator(config)._create_adapter()
+
+        params = mock_get_adapter.call_args[0][1]
+        assert ("typesense" in params) is emits
+        if emits:
+            assert params["typesense"]["host"] == "ts.example"
+
     def test_default_adapter_requires_no_extra_stack_kwargs(self) -> None:
         from tolokaforge.adapters.base import DockerStackRequirements
         from tolokaforge.adapters.native import NativeAdapter
@@ -1430,9 +1495,9 @@ class TestPrepareRunIdempotency:
         adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
             tid, has_judge=False
         )
-        # A real directory carrying no grading.yaml: the enqueue pre-flight
-        # resolves each task's grading file under it and has nothing to check.
+        _write_grading_yaml(tmp_path)
         adapter.get_task_dir.return_value = tmp_path
+        adapter.fingerprint.return_value = None
         orch.adapter = adapter
         return orch
 

@@ -126,7 +126,7 @@ async def run_tests(
         marker: Test marker to select (unit, canonical, integration).
                 Leave empty to run all tests.
         path: Specific test file or directory (e.g. "tests/unit/test_diff.py").
-              Leave empty for default test paths.
+              Leave empty to run every test root the workspace ships.
         keyword: Pytest -k keyword expression to filter tests.
         extra_args: Additional pytest arguments (space-separated).
     """
@@ -142,10 +142,10 @@ async def run_tests(
 
     cmd: list[str] = ["uv", "run", "pytest"]
 
+    # No path: pytest reads `testpaths`, which names every test root the
+    # workspace ships. A path here overrides it and runs a silent subset.
     if path:
         cmd.append(path)
-    else:
-        cmd.append("tests/")
 
     cmd.extend(["-v"])
 

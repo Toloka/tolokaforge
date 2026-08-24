@@ -46,10 +46,10 @@ _DRIVER_ARGV = {
 # must come up under that same name for a driver's ``cp`` / ``exec`` to find it.
 _DRIVER_PROJECT = "standalone"
 
-# rag-service's cold-start model download can exceed two minutes; floor the
-# compose wait above the repo's 180s rag health timeout so ``up --wait`` does not
-# trip on a cold cache.
-_COMPOSE_WAIT_TIMEOUT_S = 300
+# This lane is local-only: the images are built from this tree, so rag-service
+# carries its embedding model and contacts nothing at startup. The wait covers a
+# four-service bring-up, not a download.
+_COMPOSE_WAIT_TIMEOUT_S = 120
 
 
 def _pick_provider() -> tuple[str, str] | None:

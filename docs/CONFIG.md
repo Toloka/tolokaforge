@@ -49,13 +49,12 @@ orchestrator:
                               # task-authored max_turns above 50 stand
   continue_prompt: "Please proceed to the next step."
   timeouts:
-    turn_s: 60
+    turn_s: 60                 # declared, not yet enforced — #1147
     episode_s: 1200
   rate_limit_probe:            # off by default — see below
     enabled: false
   stuck_heuristics:
     max_repeated_tool_calls: 5
-    max_idle_turns: 8
   runtime: "shared"       # deprecated override; any registered backend name
   strict_task_load: false   # true = refuse to start on an adapter task-load failure
 
@@ -549,10 +548,11 @@ entry-point group. See [ADR-0028](adr/0028-multi-actor-turn-policy.md).
   τ-bench and every existing pack expects this shape; leaving the field
   unset keeps that behavior byte-for-byte.
 - **`agent_only`** — no user turn dispatched after the initial message.
-  The agent runs to `###STOP###` (routed to `TerminationReason.AGENT_DONE`),
-  `max_turns`, or `episode_timeout_s`. The user simulator is never
-  constructed. Matches agent-driven eval shapes (code migration,
-  autonomous tool-use) where the task lives entirely in the system prompt.
+  The agent runs until it takes a turn without calling a tool (routed to
+  `TerminationReason.AGENT_DONE`), or to `max_turns` or `episode_timeout_s`.
+  The user simulator is never constructed. Matches agent-driven eval shapes
+  (code migration, autonomous tool-use) where the task lives entirely in the
+  system prompt.
 
 Both shapes read the same field for turn 0. `initial_user_message` is the
 task's pinned opener: its text is delivered verbatim as the first user
@@ -562,6 +562,16 @@ bootstrap message, so a task declaring it without an opener fails loud at
 run-start. `conversational` treats it as optional: unset, the user simulator
 writes turn 1. Under either mode, declaring the key with an empty or
 whitespace-only value is refused at load.
+
+**A non-empty `tools.user.enabled` needs a user turn that can call it.** The
+declaration reaches the runner like the agent's — the tools are registered for
+the trial — so a pack whose user turn can never make a call fails nothing at run
+time and grades a `requestor: user` action, or an `executor: user` matcher,
+against a call that could not have happened. Two shapes reach that state and each
+is refused at load naming which one it is and the fix: `interaction_mode:
+agent_only`, which dispatches no user turn at all, and a user simulator resolving
+to `mode: scripted`, whose reply is text and never a tool call. `tools.user.enabled: []`
+loads under both — the declaration is what is refused, not the key.
 
 ## Grading Specification (`grading.yaml`)
 
@@ -633,13 +643,14 @@ llm_judge:                                 # the judge MODEL is set once per run
 ```
 
 A whole-state hash is read only where the flag turns it on: `state_checks.hash`
-carrying an `expected_state_hash` or `golden_actions` under an `enabled` that is not
-truthy is rejected at load where the task declares `adapter_type: native`, because
-both substrates test the flag before reading any source and the pack would otherwise
-grade its state without the comparison the author wrote. The refusal is addressed at
-the source the pack declared; under any other `adapter_type` the same shape is
-reported unchecked at the same address, because an external adapter may supply the
-source the authored block never names. Every other authoring rule this file's
+carrying a `golden_actions` or `expect_initial_state` under an `enabled` that is not
+truthy is rejected at load wherever the adapter grading the task answers the
+hash-source question at all — both substrates test the flag before reading any
+source, so a source the block declares and nothing reads is the author's defect
+whatever the adapter supplies. The refusal is addressed at the source the pack
+declared; where no adapter answers — the declared `adapter_type` names an adapter
+this environment has not installed, or one that has not implemented the hook — the
+same shape is reported unchecked at the same address. Every other authoring rule this file's
 grading block is checked against — tool names, argument names, `regex` compilation —
 is in [GRADING.md](GRADING.md#what-is-validated-before-a-run).
 

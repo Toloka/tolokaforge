@@ -117,9 +117,9 @@ def _build_dry_run_adapter_params(
     Mirrors :meth:`Orchestrator._create_adapter` — same param assembly,
     same env-override for ``TASK_PACKS_DIRS``, same project-defaults
     forwarding — minus every Docker / TypeSense side effect. The
-    typesense config *is* forwarded when declared so adapters that
-    embed it in :class:`TaskDescription` render the config verbatim
-    (unresolved port / api_key) for the operator to inspect.
+    typesense config *is* forwarded for a run that has a plane, so
+    adapters that embed it in :class:`TaskDescription` render the config
+    verbatim (unresolved port / api_key) for the operator to inspect.
     """
     adapter_config = run_config.evaluation.harness_adapter
     if adapter_config:
@@ -136,8 +136,8 @@ def _build_dry_run_adapter_params(
         task_packs = [part.strip() for part in env_task_packs.split(",") if part.strip()]
     params["task_packs"] = task_packs
 
-    typesense_config = run_config.orchestrator.typesense
-    if typesense_config and typesense_config.enabled:
+    typesense_config = run_config.orchestrator.effective_typesense()
+    if typesense_config is not None:
         params["typesense"] = typesense_config.model_dump()
 
     if project is not None:

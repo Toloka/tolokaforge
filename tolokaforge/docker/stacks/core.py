@@ -12,6 +12,7 @@ Example:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -22,6 +23,20 @@ from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.policy import Capability, ResourcePolicy
 from tolokaforge.docker.ports import PortConfig
 from tolokaforge.docker.stack import EngineStack, ServiceDefinition
+from tolokaforge.secrets import container_secrets_env
+
+
+@dataclass(frozen=True)
+class TypeSenseAddress:
+    """Where the runner container reaches the run's TypeSense server.
+
+    Host and port stay separate because the consumer takes them separately
+    (``initialize_typesense_for_domain(host=…, port=…)``). Both halves travel
+    together so a stack can never be given one without the other.
+    """
+
+    host: str
+    port: int
 
 
 def core_stack(
@@ -35,6 +50,7 @@ def core_stack(
     extra_runner_binds: list[tuple[Path, str]] | None = None,
     mount_docker_socket: bool = False,
     rag_service_url: str | None = None,
+    typesense_address: TypeSenseAddress | None = None,
 ) -> EngineStack:
     """Create a core service stack with DB service and Runner.
 
@@ -69,6 +85,14 @@ def core_stack(
             RAG client and the judge is offered no unreachable ``search_kb``.
             Only ``full_stack`` (which actually starts a rag-service) passes a
             value, keeping "env present" == "rag-service running".
+        typesense_address: In-network address of the run's TypeSense server,
+            injected into the runner container as ``TYPESENSE_HOST`` /
+            ``TYPESENSE_PORT``. ``None`` (the default) leaves both unset —
+            the run configured no TypeSense plane, and the runner falls back
+            to whatever connection details its task descriptions carry. The
+            API key is not a parameter: it reaches the runner only inside
+            ``TOLOKAFORGE_SECRETS_JSON``, by being registered with the
+            SecretManager before the stack is built.
 
     Returns:
         EngineStack configured with db-service and runner.
@@ -117,6 +141,11 @@ def core_stack(
     # client and the judge is not offered an unreachable search_kb tool.
     if rag_service_url is not None:
         runner_env["RAG_SERVICE_URL"] = rag_service_url
+    # Same honest-absence rule: present iff the run configured a TypeSense
+    # plane, so "variable present" == "a plane was configured".
+    if typesense_address is not None:
+        runner_env["TYPESENSE_HOST"] = typesense_address.host
+        runner_env["TYPESENSE_PORT"] = str(typesense_address.port)
     runner_depends = ["db-service"]
     runner_resources = ResourcePolicy(
         cap_drop=[Capability.ALL],
@@ -169,16 +198,10 @@ def core_stack(
 
     # Serialize host-side secrets into a single env var for the runner
     # container. The runner reads this on startup via __main__.py and
-    # bootstraps its own SecretManager singleton from it. This is the
-    # *only* place credentials cross the host→container boundary —
-    # never via build args, mounts, or image bake-in.
-    import json
-
-    from tolokaforge.secrets import get_default
-
-    secrets_payload = get_default().serialize()
-    if secrets_payload:
-        runner_env["TOLOKAFORGE_SECRETS_JSON"] = json.dumps(secrets_payload)
+    # bootstraps its own SecretManager singleton from it. Credentials cross
+    # the host→container boundary only inside this payload — never via build
+    # args, mounts, or image bake-in.
+    runner_env.update(container_secrets_env())
 
     # The runner Dockerfile is a multi-stage build: its wheel-builder stage
     # runs ``hatch build --target custom`` against the source tree to produce

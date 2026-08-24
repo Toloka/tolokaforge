@@ -67,7 +67,7 @@ class TrialStatus(str, Enum):
 class TerminationReason(str, Enum):
     """Reason why the dialogue was terminated"""
 
-    AGENT_DONE = "agent_done"  # Agent signaled task completion
+    AGENT_DONE = "agent_done"  # Agent had no further action and no party could ask for one
     USER_STOP = "user_stop"  # User signaled ###STOP###
     STUCK_DETECTED = "stuck_detected"  # Stuck condition detected
     TIMEOUT = "timeout"  # Episode timeout reached
@@ -77,6 +77,7 @@ class TerminationReason(str, Enum):
     API_TIMEOUT = "api_timeout"  # API call timed out after retries
     API_ERROR = "api_error"  # Other API errors
     PROVISION_ERROR = "provision_error"  # Substrate provisioning failed before the trial body ran
+    TRIAL_LOST = "trial_lost"  # The substrate no longer holds the trial the engine was running
 
 
 class FirstUserMessageSource(str, Enum):
@@ -116,6 +117,11 @@ class Message(BaseModel):
     # Bare strings are rejected (Stage 0 migration); callers must pass
     # ``StructuredReasoning`` or a dict parsable by it.
     reasoning: StructuredReasoning | None = None
+    # OpenRouter's id for the generation that produced this message, so a
+    # request/response record in ``trajectory.yaml`` can be joined back to the
+    # routing decision behind it. Set on assistant messages produced by an
+    # OpenRouter-routed call; None on every other message and every other route.
+    openrouter_generation_id: str | None = None
     ts: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
 
     @field_validator("reasoning", mode="before")
@@ -345,6 +351,25 @@ class Metrics(BaseModel):
     turns: int = 0
     api_calls: int = 0
     usage: Usage = Field(default_factory=Usage)
+    openrouter_generation_ids: list[str] = Field(default_factory=list)
+    """Every OpenRouter generation id the trial's agent calls returned, in call order.
+
+    Each id resolves at ``https://openrouter.ai/api/v1/generation?id=<id>`` to
+    the upstream provider that actually served that call, so a trial whose
+    result is suspected of being a routing artefact can be checked after the
+    fact instead of re-run. Empty on a trial that never reached OpenRouter.
+
+    A list, not a scalar: OpenRouter routes each request independently, so one
+    trial's turns can be served by different upstreams. Shorter than
+    ``api_calls`` whenever a call was served off an unrouted provider. The
+    per-call view — which id belongs to which turn — is
+    ``usage.calls[*].openrouter_generation_id``. The two are **not** positionally
+    aligned and this list is not derivable from ``usage.calls``: a response
+    that carried an ``x-generation-id`` header but no usage block contributes
+    an id here and no ``ProviderRawCall`` there. Consumers that need per-call
+    attribution read ``usage.calls``; consumers that need "did this trial
+    reach OpenRouter at all" read this list."""
+
     cost_usd: float | None = None
     tool_calls: int = 0
     tool_success_rate: float = 0.0
@@ -565,7 +590,7 @@ class Trajectory(BaseModel):
     # is revised so that downstream analytics can gate comparisons across
     # runs. Stays on Trajectory because it's metadata about the
     # message-trace shape, not the prompt itself.
-    simulator_schema_version: int = 3
+    simulator_schema_version: int = 4
 
     @model_validator(mode="after")
     def _reject_graded_and_ungradeable(self) -> Self:

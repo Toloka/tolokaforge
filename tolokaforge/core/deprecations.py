@@ -1,8 +1,8 @@
 """Schema-shape deprecation aliases for Project-layer config models.
 
-Every alias that renames or relocates a *YAML key* lives here as a named
-coercer invoked from the owning model's ``mode="before"`` validator (or,
-for path-shaped inputs, from the loader). Keeping them in one module means
+Every alias that renames, relocates, or retires a *YAML key* lives here as
+a named coercer invoked from the owning model's ``mode="before"`` validator
+(or, for path-shaped inputs, from the loader). Keeping them in one module means
 the accept-and-warn surface is auditable in a single place and the models
 carry only a one-line call.
 
@@ -18,7 +18,10 @@ Scope boundary: the ``RunConfig`` dual-home lifts (``workers``,
 ``queue_backend``, ``stuck_heuristics``, …) are *not* here. Those are
 field-level orchestrator→compute/storage migrations that resolve values
 across two live homes, not schema-shape renames; they stay on
-``RunConfig`` where the effective-value accessors read them.
+``RunConfig`` where the effective-value accessors read them. (The
+boundary is the *value* resolution, not the block: retiring a key
+*inside* a dual-homed block is a schema-shape change and lives here —
+see :func:`drop_retired_max_idle_turns`.)
 """
 
 from __future__ import annotations
@@ -180,6 +183,34 @@ def coerce_task_packs_alias(values: Any) -> Any:
     values["projects"] = list(legacy)
     values["task_packs"] = []
     return values
+
+
+def drop_retired_max_idle_turns(data: Any) -> Any:
+    """Drop ``stuck_heuristics.max_idle_turns`` from a block that declares it,
+    and warn.
+
+    Both stuck-heuristics models ignore unknown keys, so the field's removal
+    would otherwise drop an author's declaration without a word. Accept-and-warn
+    is the end state here — the key names a deleted heuristic, so there is
+    nothing for a later strict flip to start rejecting into.
+    """
+    if not isinstance(data, dict) or "max_idle_turns" not in data:
+        return data
+    data.pop("max_idle_turns")
+    warn_deprecated(
+        legacy="stuck_heuristics.max_idle_turns",
+        canonical="transcript_rules in the task's grading.yaml",
+        detail=(
+            "The idle-turn heuristic this key configured is deleted: its window "
+            "counted messages while its threshold counted assistant turns, so it "
+            "could not fire at any threshold above 1 (ADR-0035). Whether an agent "
+            "must act is a per-task question — declare "
+            "`transcript_rules.tool_expectations.required_tools` or "
+            "`transcript_rules.min_assistant_turns` in the task's grading.yaml."
+        ),
+        follow_up_issue=None,
+    )
+    return data
 
 
 def coerce_flat_stack_fields(data: Any) -> Any:

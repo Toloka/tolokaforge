@@ -33,6 +33,7 @@ from tolokaforge.core.models import TerminationReason
 from tolokaforge.core.trial_grader import GradingFailedError, RunnerRPCTrialGrader
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
+from tolokaforge.runner.tool_factory import ToolFactory
 from tolokaforge.tools.registry import ToolExecutionStatus
 
 
@@ -167,7 +168,14 @@ class TestRunnerPipeline:
         assert response.metrics.exit_code == 0
 
     def test_grade_trial_no_grading_config(self, runner_service, mock_grpc_context):
-        """Test GradeTrial passes by default when no grading config."""
+        """A task declaring no grading at all: the fold's sentence is the whole account.
+
+        Nothing was asked for, so nothing is owed and the trial passes — and the fold
+        is what says so, because no component rendered anything to say it beside.
+        The sentence is asserted exactly and alone: a grade opening with a separator
+        is what a renderer contributing nothing produces if its output is appended to
+        rather than joined with the rest.
+        """
         trial_id = "no_grading_test:0"
 
         # Create task without grading config
@@ -197,9 +205,55 @@ class TestRunnerPipeline:
         assert response.success is True
         assert response.grade.binary_pass is True
         assert response.grade.score == 1.0
-        # Message changed from "No grading config" to "No grading components evaluated"
-        assert (
-            "No grading" in response.grade.reasons or "no grading" in response.grade.reasons.lower()
+        assert response.grade.reasons == (
+            "no component was configured and no weight names one, so nothing was "
+            "scored and nothing was owed"
+        )
+
+    def test_grade_trial_joins_the_segments_a_skipped_component_leaves(
+        self, runner_service, mock_grpc_context
+    ):
+        """Two segments and no renderer output: the join is what puts them together.
+
+        A pack declaring a transcript rule over a trial whose timeline carries no
+        events reaches ``GradeTrial`` with a skip note and a fold sentence and nothing
+        from the components' renderer, which is the shape that catches a composition
+        appending to that renderer's output — one segment would not, the separator
+        landing where the empty output was.
+        """
+        trial_id = "skipped_component_test:0"
+        task_description = {
+            "task_id": "skipped_component",
+            "name": "Skipped Component Test",
+            "category": "test",
+            "description": "A task whose only rule cannot be evaluated",
+            "adapter_type": "tau",
+            "system_prompt": "You are a test assistant.",
+            "initial_state": {"tables": {}, "schemas": []},
+            "agent_tools": [],
+            "user_tools": [],
+            "grading": {
+                "transcript_rules": {"must_contain": ["hello"]},
+                "combine_method": "weighted",
+                "weights": {"transcript_rules": 1.0},
+            },
+        }
+
+        runner_service.RegisterTrial(
+            register_request(
+                trial_spec_json(task_description, trial_id=trial_id), trial_id=trial_id
+            ),
+            mock_grpc_context,
+        )
+        response = runner_service.GradeTrial(
+            pb2.GradeTrialRequest(trial_id=trial_id), mock_grpc_context
+        )
+
+        assert response.success is True
+        assert response.grade.reasons == (
+            "transcript_rules.must_contain skipped: the trial's timeline carries no events"
+            " | no scored component carries any weight, so the trial earned nothing: "
+            "transcript_rules produced no verdict"
         )
 
     def test_grade_trial_not_found(self, runner_service, mock_grpc_context):
@@ -344,18 +398,19 @@ class TestRunnerPipeline:
 class TestRegisterTrialSearchPlanes:
     """RegisterTrial decouples the two search planes.
 
-    ``search.enabled`` and ``search.host`` are independent:
+    ``search.enabled`` and the TypeSense connection details are independent:
 
-    - ``host`` set  ⇒ TypeSense init runs (the search_policy registry), gated on
-      ``host`` ALONE — independent of ``enabled``.
+    - ``host`` AND ``documents_path`` set ⇒ TypeSense init runs (the
+      search_policy registry) — independent of ``enabled``. No task here sets
+      ``documents_path``, so none of them reaches that init.
     - ``enabled`` set ⇒ the task declares it needs rag-service; the RAG indexing
       block requires a configured ``rag_client`` and fails loud otherwise.
 
     Regression context (PR #102): once the core stack stopped setting
     ``RAG_SERVICE_URL`` (rag-env-honesty), ``rag_client is None`` on that stack.
     A TypeSense-only domain used to flip ``enabled=True`` only to get TypeSense
-    init, which then hard-failed on the RAG requirement. The fix gates TypeSense
-    init on ``host`` alone so such a domain sets ``enabled=False`` and registers.
+    init, which then hard-failed on the RAG requirement. TypeSense init is not
+    gated on ``enabled``, so such a domain sets ``enabled=False`` and registers.
     """
 
     @staticmethod
@@ -377,9 +432,6 @@ class TestRegisterTrialSearchPlanes:
     def test_typesense_only_registers_without_rag_client(self, mock_grpc_context, db_client):
         """REGRESSION: a TypeSense-only domain (enabled=False, host set) with NO
         rag_client registers successfully — it must NOT hit the RAG fail-loud.
-
-        mcp_core is absent in this repo, so ``_init_typesense_for_trial`` warns
-        and skips; the contract under test is only that registration succeeds.
         """
         from tolokaforge.runner.service import RunnerServiceImpl
 
@@ -458,7 +510,7 @@ class TestRegisterTrialSearchPlanes:
 
 
 class TestCallIdCrossesTheWire:
-    """The provider's tool-call id reaches the runner's recorded history.
+    """The trial's tool-call id reaches the runner's recorded history.
 
     Drives the real ``RegisterTrial`` / ``ExecuteTool`` handlers against the real
     in-process DB service, so what is asserted is the recorded history the
@@ -1024,6 +1076,168 @@ class TestTheToolBudgetIsTheOneThatFires:
         assert response.status == pb2.EXECUTION_STATUS_SUCCESS
         assert response.error_message == ""
         assert json.loads(response.output) == {"ok": True}
+
+
+class TestUserSideToolExecution:
+    """Each actor's tools live in its own registry, and ``ExecuteTool`` routes on
+    the request's ``executor`` field. A tool the task declared for the user is
+    executable only under ``executor="user"``; asking for it as the agent finds
+    nothing, because the agent's registry does not hold it.
+    """
+
+    def _register_with_user_tool(self, runner_service, mock_grpc_context, trial_id: str) -> None:
+        task = simple_task_description_dict()
+        task["user_tools"] = [
+            {
+                "name": "calculator",
+                "description": "Arithmetic",
+                "parameters": {"type": "object", "properties": {}},
+                "category": "compute",
+            }
+        ]
+        response = runner_service.RegisterTrial(
+            register_request(trial_spec_json(task, trial_id=trial_id), trial_id=trial_id),
+            mock_grpc_context,
+        )
+        assert response.success is True, response.error
+        assert response.num_agent_tools == 0
+        assert response.num_user_tools == 1
+
+    def test_a_user_declared_tool_executes_under_the_user_identity(
+        self, runner_service, mock_grpc_context
+    ) -> None:
+        trial_id = "user_tool_exec:0"
+        self._register_with_user_tool(runner_service, mock_grpc_context, trial_id)
+
+        response = runner_service.ExecuteTool(
+            execute_request(
+                trial_id,
+                "calculator",
+                arguments_json=json.dumps({"expression": "2 + 2"}),
+                executor="user",
+                call_id="call_u1",
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == pb2.EXECUTION_STATUS_SUCCESS, response.error_message
+        recorded = runner_service.trials[trial_id].recorded[-1]
+        assert (recorded.call_id, recorded.tool_name, recorded.executor) == (
+            "call_u1",
+            "calculator",
+            "user",
+        )
+
+    def test_the_same_tool_asked_for_as_the_agent_is_refused(
+        self, runner_service, mock_grpc_context
+    ) -> None:
+        """The refusal is what makes the conductor's slicing load-bearing: offer
+        the user's tool to the agent and every call it makes dies here."""
+        trial_id = "user_tool_refusal:0"
+        self._register_with_user_tool(runner_service, mock_grpc_context, trial_id)
+
+        response = runner_service.ExecuteTool(
+            execute_request(
+                trial_id,
+                "calculator",
+                arguments_json=json.dumps({"expression": "2 + 2"}),
+                executor="agent",
+                call_id="call_a1",
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.status == pb2.EXECUTION_STATUS_TOOL_NOT_FOUND
+        assert "calculator" in response.error_message
+
+
+class _RecordingLifecycleTool:
+    """A user tool that manages a per-trial session, and says when it was told to.
+
+    Shaped like the wrappers ``reconstruct_tools`` returns for a session-backed
+    builtin — ``has_lifecycle``, ``start``/``stop`` and an async ``execute`` — because
+    the sweep that starts one selects on the capability, not on the class.
+    """
+
+    has_lifecycle = True
+
+    def __init__(self) -> None:
+        self.started_for: str | None = None
+        self.stopped = False
+
+    def start(self, ctx: Any) -> None:
+        self.started_for = ctx.trial_id
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    async def execute(self, arguments: dict[str, Any]) -> str:
+        if self.started_for is None:
+            raise AssertionError("the session was never started, so this call has no session")
+        return f"ran in {self.started_for}"
+
+
+class TestAUserToolWithASessionIsStartedAndStopped:
+    """Registration starts a lifecycle tool the *user* was given, and reset stops it.
+
+    A ``bash_session`` or a compose-backed exec tool holds a per-trial session that
+    ``start`` opens; without it every call fails at run time on a pack that
+    registered, provisioned a stack and looked healthy. The sweep is capability-driven
+    and now walks both registries, so the actor a tool was declared for decides
+    nothing about whether it is set up.
+    """
+
+    _TOOL = "session_tool"
+
+    def _register(self, runner_service, mock_grpc_context, monkeypatch, trial_id: str):
+        session = _RecordingLifecycleTool()
+        original = ToolFactory._create_wrapper
+
+        def wrapper(factory, schema):
+            return session if schema.name == self._TOOL else original(factory, schema)
+
+        monkeypatch.setattr(ToolFactory, "_create_wrapper", wrapper)
+
+        task = simple_task_description_dict()
+        task["user_tools"] = [
+            {
+                "name": self._TOOL,
+                "description": "A tool holding a per-trial session",
+                "parameters": {"type": "object", "properties": {}},
+                "category": "compute",
+            }
+        ]
+        registered = runner_service.RegisterTrial(
+            register_request(trial_spec_json(task, trial_id=trial_id), trial_id=trial_id),
+            mock_grpc_context,
+        )
+        assert registered.success is True, registered.error
+        return session
+
+    def test_registration_starts_it_and_the_call_it_owns_succeeds(
+        self, runner_service, mock_grpc_context, monkeypatch
+    ) -> None:
+        trial_id = "user_lifecycle:0"
+        session = self._register(runner_service, mock_grpc_context, monkeypatch, trial_id)
+
+        assert session.started_for == trial_id
+
+        response = runner_service.ExecuteTool(
+            execute_request(trial_id, self._TOOL, executor="user", call_id="call_u1"),
+            mock_grpc_context,
+        )
+
+        assert response.status == pb2.EXECUTION_STATUS_SUCCESS, response.error_message
+        assert response.output == f"ran in {trial_id}"
+
+    def test_reset_stops_it(self, runner_service, mock_grpc_context, monkeypatch) -> None:
+        """The other half: a session left open outlives the trial that opened it."""
+        trial_id = "user_lifecycle_reset:0"
+        session = self._register(runner_service, mock_grpc_context, monkeypatch, trial_id)
+
+        runner_service.ResetTrial(pb2.ResetTrialRequest(trial_id=trial_id), mock_grpc_context)
+
+        assert session.stopped is True
 
 
 # NOTE: TestDBClientWithTestClient has been moved to tests/test_db_client.py

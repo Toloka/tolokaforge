@@ -11,7 +11,7 @@ queue-backed transport that decouples throughput from grader latency.
 This document describes the seam as it stands after the grader-detachment
 milestone, points at the four registered built-ins, and shows how a
 downstream package can register its own grader without touching engine
-code. For the design record, see [ADR-0035](adr/0035-grader-detachment.md).
+code. For the design record, see [ADR-0038](adr/0038-grader-detachment.md).
 
 ## The seam
 
@@ -95,7 +95,7 @@ judge_only = "tolokaforge.core.trial_grader:judge_backed_trial_grader_factory"
 
 Dials the standalone `tolokaforge.grader` service. Same call shape as
 `runner_rpc` but bound to the grader service's address instead of the
-runner's — the seam consumer that ADR-0035 built to enable independent
+runner's — the seam consumer that ADR-0038 built to enable independent
 deploy. The grader service ships as `tolokasoft1/tolokaforge-grader`
 alongside the runner / db-service / rag-service / mock-web images and
 runs `python -m tolokaforge.grader` on port 50052 by default.
@@ -114,7 +114,7 @@ grader_rpc = "tolokaforge.core.trial_grader:grader_rpc_trial_grader_factory"
 Queue-backed transport. The orchestrator worker publishes a grade job
 and blocks on a `concurrent.futures.Future`; grader workers consume the
 queue in parallel, so orchestrator worker threads no longer serialise
-on grader latency (ADR-0035 Decision 3). The queue backend is a plug-in
+on grader latency (ADR-0038 Decision 3). The queue backend is a plug-in
 behind the `GradeBroker` Protocol; the reference impl is
 `InMemoryGradeBroker` (thread-safe, `queue.Queue`-backed).
 
@@ -207,6 +207,6 @@ client from it.
 
 - [ADR-0014 — TrialGrader Protocol](adr/0014-trial-grader-protocol.md)
 - [ADR-0022 — Runtime Independence](adr/0022-runtime-independence.md)
-- [ADR-0035 — Grader Detachment](adr/0035-grader-detachment.md)
+- [ADR-0038 — Grader Detachment](adr/0038-grader-detachment.md)
 - [STANDALONE_RUNNER.md](STANDALONE_RUNNER.md) — the sibling doc for the
   runner-as-component surface

@@ -4,12 +4,15 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from tolokaforge.core.evaluators.action_evaluator import ActionEvaluator
-from tolokaforge.core.evaluators.communicate_evaluator import CommunicateEvaluator
 from tolokaforge.core.grading.check_runner import CheckRunner
-from tolokaforge.core.grading.checks_helpers import build_check_context, custom_checks_enabled
+from tolokaforge.core.grading.checks_helpers import (
+    build_check_context,
+    custom_checks_enabled,
+    custom_checks_reason,
+)
 from tolokaforge.core.grading.checks_interface import (
     CheckContext,
+    CheckResultSet,
     CustomChecksConfig,
     TaskContext,
     ToolCallStatus,
@@ -30,15 +33,20 @@ from tolokaforge.core.grading.combine_weights import (
 from tolokaforge.core.grading.golden_replay import (
     GoldenReplayRecord,
     incomplete_replay_reason,
+    read_declared_initial_state,
     refuse_unreplayable_golden_source,
     require_golden_replay_world,
+    resolve_initial_state,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, component_requested
 from tolokaforge.core.grading.state_checks import (
     StateChecker,
     extract_db_state,
+    state_digest,
 )
 from tolokaforge.core.grading.state_composition import (
+    AUTHORED_HASH_WEIGHT_CONTEXT,
+    HASH_SOURCE_KEYS,
     compose_state_checks_score,
     inert_hash_weight_reason,
     refuse_probes_beside_another_state_source,
@@ -46,7 +54,10 @@ from tolokaforge.core.grading.state_composition import (
 )
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
-from tolokaforge.core.grading.transcript import TranscriptChecker
+from tolokaforge.core.grading.transcript import (
+    evaluate_transcript_rules,
+    scored_transcript_rules,
+)
 from tolokaforge.core.models import (
     CustomCheckDetail,
     Grade,
@@ -61,8 +72,8 @@ from tolokaforge.core.models import (
 logger = logging.getLogger(__name__)
 
 _HASH_NOT_CHECKED_NO_SOURCE = (
-    "state_checks.hash is enabled but declares neither expected_state_hash nor "
-    "golden_actions, so the state hash was not checked"
+    f"state_checks.hash is enabled but declares none of {' or '.join(HASH_SOURCE_KEYS)}, "
+    "so the state hash was not checked"
 )
 
 
@@ -91,9 +102,6 @@ class GradingEngine:
         self.task_initial_state = task_initial_state
         self.task_mcp_server = task_mcp_server
         self.state_checker = StateChecker()
-        self.transcript_checker = TranscriptChecker()
-        self.action_evaluator = ActionEvaluator()
-        self.communicate_evaluator = CommunicateEvaluator()
 
     def grade_trajectory(
         self,
@@ -117,8 +125,7 @@ class GradingEngine:
             ValueError: ``state_checks`` declares ``db_probes`` beside a source this fold
                 also scores, so one ``state_checks`` component holds two verdicts with no
                 declared share between them. Re-resolved here rather than trusted from
-                load, because the ``hash`` block is an untyped dict a caller can mutate
-                after validation.
+                load, because the config is mutable after validation.
         """
         components = GradeComponents()
         reasons_parts = []
@@ -139,56 +146,21 @@ class GradingEngine:
 
             components.state_checks = state_score
 
-        # Transcript rules
+        # Transcript rules — the same function the runner's GradeTrial calls, over
+        # the same timeline and the same validated config, so the component score
+        # does not depend on which substrate graded the trial. A trial whose
+        # timeline carries no events leaves the component unscored unless the pack
+        # declared an activity floor, which is the same decision the runner folds.
         if self.config.transcript_rules:
-            # Use tau2 action evaluator if required_actions specified
-            if self.config.transcript_rules.required_actions:
-                action_result = self.action_evaluator.evaluate_actions(
-                    trajectory=trajectory.messages,
-                    required_actions=self.config.transcript_rules.required_actions,
+            scored_rules = scored_transcript_rules(timeline, self.config.transcript_rules)
+            if scored_rules is not None:
+                transcript_result = evaluate_transcript_rules(timeline, scored_rules)
+                components.transcript_rules = transcript_result.score
+                reasons_parts.extend(
+                    f"Transcript: {row.message}"
+                    for row in transcript_result.details
+                    if not row.passed
                 )
-                action_score = action_result.score
-                if action_result.reasons:
-                    reasons_parts.extend(action_result.reasons)
-            else:
-                action_score = 1.0
-
-            # Use tau2 communicate evaluator if communicate_info specified
-            if self.config.transcript_rules.communicate_info:
-                comm_result = self.communicate_evaluator.evaluate_communication(
-                    trajectory=trajectory.messages,
-                    communicate_info=self.config.transcript_rules.communicate_info,
-                )
-                comm_score = comm_result.score
-                if comm_result.reasons:
-                    reasons_parts.extend(comm_result.reasons)
-            else:
-                comm_score = 1.0
-
-            # Use legacy transcript checker for other rules
-            legacy_score, transcript_reasons = self.transcript_checker.grade(
-                timeline=timeline,
-                must_contain=self.config.transcript_rules.must_contain,
-                disallow_regex=self.config.transcript_rules.disallow_regex,
-                max_turns=self.config.transcript_rules.max_turns,
-                min_assistant_turns=self.config.transcript_rules.min_assistant_turns,
-                required_tools=(
-                    self.config.transcript_rules.tool_expectations.required_tools
-                    if self.config.transcript_rules.tool_expectations
-                    else None
-                ),
-                disallowed_tools=(
-                    self.config.transcript_rules.tool_expectations.disallowed_tools
-                    if self.config.transcript_rules.tool_expectations
-                    else None
-                ),
-            )
-            if transcript_reasons:
-                reasons_parts.append(f"Transcript: {transcript_reasons}")
-
-            # Combine transcript scores (product for strictness)
-            transcript_score = action_score * comm_score * legacy_score
-            components.transcript_rules = transcript_score
 
         # Trace checks — the same function the runner's GradeTrial calls, over the
         # same timeline, so the component score does not depend on which substrate
@@ -223,7 +195,7 @@ class GradingEngine:
             if custom_score is not None:
                 components.custom_checks = custom_score
             if custom_reasons:
-                reasons_parts.append(f"Custom: {custom_reasons}")
+                reasons_parts.append(custom_reasons)
 
         folded = self._combine(components)
         if folded.reason:
@@ -316,8 +288,8 @@ class GradingEngine:
         nothing to the fold.
 
         ``db_probes`` cannot share the component with either of them, and the refusal is
-        re-resolved here for the same reason the weight is: the ``hash`` block is an
-        untyped dict, so nothing stops a caller mutating it after validation.
+        re-resolved here for the same reason the weight is: the config is mutable, so
+        nothing stops a caller changing it after validation.
 
         Raises:
             ValueError: the block declares ``db_probes`` beside a source this fold would
@@ -342,12 +314,12 @@ class GradingEngine:
                 final_env_state, checks.jsonpaths
             )
 
-        # Re-resolved here rather than trusted from load: ``state_checks.hash`` is an
-        # untyped dict, so nothing stops a caller mutating it after validation.
+        # Re-resolved here rather than trusted from load: the block is mutable, so
+        # nothing stops a caller changing it after validation.
         hash_weight = resolve_hash_weight(
             checks.hash,
             jsonpaths=checks.jsonpaths,
-            context="grading.yaml state_checks.hash.weight",
+            context=AUTHORED_HASH_WEIGHT_CONTEXT,
         )
         score = compose_state_checks_score(
             hash_score=hash_score,
@@ -375,56 +347,79 @@ class GradingEngine:
         failed hash check. The replay record is ``None`` for every source but
         ``golden_actions``, the only one that replays anything.
 
-        The two sources are read in order, and the order bounds what the replay world
-        has to hold: a truthy ``expected_state_hash`` is compared in process and returns
-        before ``golden_actions`` is read at all, so a pack declaring both never replays
-        and needs no world.
+        The two sources need no read order between them, the block refusing either
+        beside the other. ``expect_initial_state`` compares in process, hashing the state
+        the task starts in by the rule the trial's own state is hashed by;
+        ``golden_actions`` is the only source needing a world to replay in.
+
+        A ``description`` the block declares is appended to every reason the verdict
+        carries, in the parenthesised shape ``state_checks.jsonpaths[*].description``
+        already reads into an assertion's reason.
 
         Raises:
-            UnreplayableGoldenSource: ``golden_actions`` is the effective source and is
-                truthy without being a list at all, so no reader can iterate it. Refused
-                at this read, above the world the actions would otherwise need. An element
+            UnresolvableInitialState: ``expect_initial_state`` is the source and the task
+                declares no initial state to compare against, so there is no expected
+                state and the trial is left unscored.
+            UnreplayableGoldenSource: ``golden_actions`` is the source and is truthy
+                without being a list at all, so no reader can iterate it. Refused at this
+                read, above the world the actions would otherwise need. An element
                 *inside* a list that is no mapping is a different shape, answered by the
                 replay's own name resolution.
-            UnbuildableGoldenReplayWorld: ``golden_actions`` is the effective source and
-                the task declares no world to replay them against, so there is no
-                expected state and the trial is left unscored.
+            UnbuildableGoldenReplayWorld: ``golden_actions`` is the source and the task
+                declares no world to replay them against, so there is no expected state
+                and the trial is left unscored.
         """
         checks = self.config.state_checks
-        hash_config = checks.hash or {}
-        if not hash_config.get("enabled", False):
+        hash_config = checks.hash
+        if hash_config is None or not hash_config.enabled:
             return None, [], None, None
 
         db_state = extract_db_state(final_env_state)
-        expected_hash = hash_config.get("expected_state_hash")
-        if expected_hash:
-            score, reason = self.state_checker.check_hash(
-                db_state, expected_hash, numeric_string_fields=checks.numeric_string_fields
+        score: float | None
+        diff_result: dict[str, Any] | None = None
+        replay: GoldenReplayRecord | None = None
+
+        if hash_config.expect_initial_state:
+            initial_state = resolve_initial_state(
+                task_dir=self.task_dir,
+                initial_state_json_db=(
+                    self.task_initial_state.json_db if self.task_initial_state else None
+                ),
             )
-            return score, [reason], None, None
+            score, reason = self.state_checker.check_hash(
+                db_state,
+                state_digest(initial_state, numeric_string_fields=checks.numeric_string_fields),
+                numeric_string_fields=checks.numeric_string_fields,
+            )
+            reasons = [reason]
+        elif not hash_config.golden_actions:
+            score, reasons = None, [_HASH_NOT_CHECKED_NO_SOURCE]
+        else:
+            golden_actions = hash_config.golden_actions
+            refuse_unreplayable_golden_source(golden_actions, context="grading.yaml")
+            world = require_golden_replay_world(
+                task_dir=self.task_dir,
+                initial_state_json_db=(
+                    self.task_initial_state.json_db if self.task_initial_state else None
+                ),
+                mcp_server=self.task_mcp_server,
+            )
+            score, reason, diff_result, replay = (
+                self.state_checker.check_hash_against_golden_replay(
+                    db_state=db_state,
+                    golden_actions=golden_actions,
+                    task_dir=world.task_dir,
+                    initial_state_path=world.initial_state_path,
+                    mcp_server_path=world.mcp_server_path,
+                    task_domain=self.task_domain,
+                    numeric_string_fields=checks.numeric_string_fields,
+                )
+            )
+            reasons = [reason]
 
-        golden_actions = hash_config.get("golden_actions")
-        if not golden_actions:
-            return None, [_HASH_NOT_CHECKED_NO_SOURCE], None, None
-        refuse_unreplayable_golden_source(golden_actions, context="grading.yaml")
-        world = require_golden_replay_world(
-            task_dir=self.task_dir,
-            initial_state_json_db=(
-                self.task_initial_state.json_db if self.task_initial_state else None
-            ),
-            mcp_server=self.task_mcp_server,
-        )
-
-        score, reason, diff_result, replay = self.state_checker.check_hash_against_golden_replay(
-            db_state=db_state,
-            golden_actions=golden_actions,
-            task_dir=world.task_dir,
-            initial_state_path=world.initial_state_path,
-            mcp_server_path=world.mcp_server_path,
-            task_domain=self.task_domain,
-            numeric_string_fields=checks.numeric_string_fields,
-        )
-        return score, [reason], diff_result, replay
+        if hash_config.description:
+            reasons = [f"{reason} ({hash_config.description})" for reason in reasons]
+        return score, reasons, diff_result, replay
 
     def _run_custom_checks(
         self,
@@ -441,16 +436,21 @@ class GradingEngine:
             custom_config: Custom checks configuration from grading.yaml
 
         Returns:
-            Tuple of (score, reasons_string, detailed_results). The score is ``None``
+            Tuple of (score, reason, detailed_results). The score is ``None``
             where the suite decided nothing — every check skipped, or the file declared
             none — so the component is left unscored rather than folded as a ``0.0``
-            nothing earned. A suite that could not run at all is a different answer and
+            nothing earned. A suite that failed to run at all is a different answer and
             keeps its ``0.0``: the checks the author declared were meant to decide the
             trial and could not, which is a failure rather than an absence.
+
+            The reason is the sentence :func:`custom_checks_reason` renders, on every
+            path — a pre-run failure builds the :class:`CheckResultSet` it would have
+            produced, so this component's account reads the same whichever substrate
+            graded the trial and whether or not the suite got as far as running.
         """
         if not self.task_dir:
             logger.warning("Cannot run custom checks: task_dir not set")
-            return 0.0, "task_dir not available", None
+            return 0.0, custom_checks_reason(CheckResultSet(error="task_dir not available")), None
 
         # Parse config
         config = CustomChecksConfig(**custom_config)
@@ -458,14 +458,22 @@ class GradingEngine:
 
         if not checks_file.exists():
             logger.warning(f"Custom checks file not found: {checks_file}")
-            return 0.0, f"checks file not found: {config.file}", None
+            return (
+                0.0,
+                custom_checks_reason(CheckResultSet(error=f"checks file not found: {config.file}")),
+                None,
+            )
 
         # Build CheckContext
         try:
             ctx = self._build_check_context(trajectory, final_env_state)
         except Exception as e:
             logger.error(f"Error building CheckContext: {e}")
-            return 0.0, f"context build error: {e}", None
+            return (
+                0.0,
+                custom_checks_reason(CheckResultSet(error=f"context build error: {e}")),
+                None,
+            )
 
         # Run checks
         logger.info(f"Running custom checks from {checks_file}")
@@ -506,22 +514,11 @@ class GradingEngine:
 
         if result.error:
             logger.error(f"Custom checks error: {result.error}")
-            return 0.0, f"execution error: {result.error}", detailed_results
-
-        # Build reasons string
-        reasons = []
-        if result.passed > 0:
-            reasons.append(f"{result.passed} passed")
-        if result.failed > 0:
-            reasons.append(f"{result.failed} failed")
-        if result.errors > 0:
-            reasons.append(f"{result.errors} errors")
-        if result.skipped > 0:
-            reasons.append(f"{result.skipped} skipped")
+            return 0.0, custom_checks_reason(result), detailed_results
 
         return (
             result.aggregate_score if result.decided_something else None,
-            ", ".join(reasons) if reasons else "no checks",
+            custom_checks_reason(result),
             detailed_results,
         )
 
@@ -533,9 +530,16 @@ class GradingEngine:
         """Build the host-side :class:`CheckContext` from a :class:`Trajectory`.
 
         Owns the transcript-from-``Trajectory`` transform (rich :class:`Message`
-        objects → author-facing :class:`CheckMessage`); the state-shape rule
-        is delegated to :func:`build_check_context` so the runner path applies
-        the same precedence by construction.
+        objects → author-facing :class:`CheckMessage`) and the read of whichever
+        shape the task declared its ``initial_state.json_db`` in, which is I/O and
+        therefore this call site's rather than :func:`build_check_context`'s; the
+        state-shape rule is delegated to :func:`build_check_context` so the runner
+        path applies the same precedence by construction.
+
+        Raises:
+            UnresolvableInitialState: the task declares ``initial_state.json_db`` as a
+                file no reader can resolve, which is a check's evidence missing rather
+                than empty. Handled by the caller as a context that could not be built.
         """
         messages: list[CheckMessage] = []
         for msg in trajectory.messages:
@@ -558,12 +562,13 @@ class GradingEngine:
                 )
             )
 
-        initial_json_db: dict[str, Any] | None = None
-        if self.task_initial_state and isinstance(self.task_initial_state.json_db, dict):
-            initial_json_db = self.task_initial_state.json_db
-
         return build_check_context(
-            initial_state_json_db=initial_json_db,
+            initial_state_json_db=read_declared_initial_state(
+                task_dir=self.task_dir,
+                initial_state_json_db=(
+                    self.task_initial_state.json_db if self.task_initial_state else None
+                ),
+            ),
             final_env_state=final_env_state,
             transcript=Transcript(messages=messages),
             task=TaskContext(

@@ -10,7 +10,10 @@ initial_state:
 
 tools:
   agent:
-    enabled: []
+    mcp_server: mcp_server.py
+    enabled:
+      - search_policy
+      - servicenow_csm_update_case
   user:
     enabled: []
 

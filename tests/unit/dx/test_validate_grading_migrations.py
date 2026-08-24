@@ -23,9 +23,12 @@ migration:
   one meant; a key the block does not declare is rejected naming the closest
   declared field and the accepted set.
 * ``transcript_rules``: a turn window whose ``min_assistant_turns`` floor sits above
-  its ``max_turns`` ceiling admits no assistant-turn count, and is rejected on both
-  substrates' models naming both keys and both values; a key the block does not
-  declare is rejected on both models too.
+  its ``max_turns`` ceiling admits no assistant-turn count, and is rejected naming both
+  keys and both values; a key the block does not declare is rejected too, and so is one
+  a ``required_actions`` / ``communicate_info`` element does not declare — each named
+  with the element's index, the closest declared field and that element's accepted set.
+  One model serves the authored block and the wire, so no rule here can hold on one
+  substrate and not the other.
 * ``trace_checks``: the whole matcher vocabulary is validated here, so a constraint
   that could only ever select nothing is rejected before a trial is paid for.
 * The shape tier, above every key's own rules: a grading key declared as anything
@@ -36,13 +39,22 @@ migration:
   contradicts is heard here rather than by whoever reads the migration report. It is
   the one gate that does, because the file cannot affect a grade and a run must not
   abort on authoring metadata.
+* ``state_checks.id_fields`` against the state the task seeds: a defective
+  declaration — a table absent from the seeded state, a key component absent from
+  every seeded record of its table, a key that does not uniquely identify them — is
+  refused by ``tolokaforge validate``; ``relaxed_validation`` downgrades the same
+  declaration to a pass; a ``json_db`` not on disk is refused naming the path; and a
+  pack whose adapter this command cannot read the seeded state of draws ``?``,
+  never a ``✗``.
 
-Every gate here is about the block's own shape, so the calls pass an unresolvable
-tool inventory: none of these rejections has anything to do with the task's tools,
-and the value that reports "nothing about the tools is checkable" is what makes that
-explicit. The calls outside a ``pytest.raises`` are the standing lock that an
-unresolvable inventory fails nothing — folding ``unchecked`` into the fatal channels
-reddens every one of them. What a *resolvable* inventory rejects is locked in
+Every *shape* gate here is about the block's own shape, so those calls pass an
+unresolvable tool inventory: none of those rejections has anything to do with the
+task's tools, and the value that reports "nothing about the tools is checkable" is
+what makes that explicit. The calls outside a ``pytest.raises`` are the standing
+lock that an unresolvable inventory fails nothing — folding ``unchecked`` into the
+fatal channels reddens every one of them. The ``id_fields``-vs-seeded-state tests
+are the exception: they drive the CLI, which resolves the seeded tables and holds
+the declaration against them. What a *resolvable* inventory rejects is locked in
 ``tests/unit/grading/test_grading_authoring_gate.py``.
 """
 
@@ -50,31 +62,39 @@ from __future__ import annotations
 
 import json
 import textwrap
+import types
 from pathlib import Path
+from typing import Any, Union, get_args, get_origin
 
 import pytest
 import yaml
 from click.testing import CliRunner
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
+from tests.utils.migration_packs import write_corpus_directory
 from tests.utils.trace_checks_configs import every_kind_block
-from tolokaforge.adapters._task_loader import _GRADING_BLOCK_SHAPES, validate_grading_yaml
+from tolokaforge.adapters._task_loader import (
+    _GRADING_BLOCK_SHAPES,
+    _TYPED_GRADING_BLOCKS,
+    validate_grading_yaml,
+)
 from tolokaforge.core.grading.combine_method import (
     COMBINE_METHODS,
     RETIRED_COMBINE_METHOD_ALIASES,
 )
 from tolokaforge.core.grading.config_validation import HashSourceLayer, ToolInventory
 from tolokaforge.core.models import (
+    CommunicateInfo,
     GradingCombineConfig,
     GradingConfig,
     GradingDefaults,
+    RequiredAction,
     StateChecksConfig,
+    TranscriptRulesConfig,
 )
-from tolokaforge.core.models import TranscriptRulesConfig as CoreTranscriptRules
 from tolokaforge.core.project_loader import resolve_effective_grading_combine
 from tolokaforge.dx.cli.main import cli
 from tolokaforge.runner.models import RunnerStateChecksConfig as RunnerStateChecks
-from tolokaforge.runner.models import RunnerTranscriptRulesConfig as RunnerTranscriptRules
 
 pytestmark = pytest.mark.unit
 
@@ -444,10 +464,10 @@ def _write_grading(tmp_path: Path, state_checks: dict) -> Path:
 @pytest.mark.parametrize(
     "hash_block",
     [
-        {"enabled": True, "expected_state_hash": "aaaa"},
+        {"enabled": True, "expect_initial_state": True},
         {"enabled": True, "golden_actions": _GOLDEN_ACTIONS},
     ],
-    ids=["expected_state_hash", "golden_actions"],
+    ids=["expect_initial_state", "golden_actions"],
 )
 def test_validate_rejects_a_two_source_pack_with_no_weight(tmp_path: Path, hash_block: dict):
     """Validate is where an author hears this: the engine's own model is not
@@ -463,14 +483,14 @@ def test_validate_rejects_a_two_source_pack_with_no_weight(tmp_path: Path, hash_
     [
         {
             "jsonpaths": _ASSERTIONS,
-            "hash": {"enabled": True, "expected_state_hash": "aaaa", "weight": 0.6},
+            "hash": {"enabled": True, "expect_initial_state": True, "weight": 0.6},
         },
         {"jsonpaths": _ASSERTIONS, "hash": {"enabled": False}},
         {"jsonpaths": _ASSERTIONS, "hash": {"enabled": False, "weight": 0.6}},
         {"jsonpaths": [], "hash": {"enabled": True, "golden_actions": _GOLDEN_ACTIONS}},
         {
             "jsonpaths": [],
-            "hash": {"enabled": True, "expected_state_hash": "aaaa", "weight": 1.0},
+            "hash": {"enabled": True, "expect_initial_state": True, "weight": 1.0},
         },
     ],
     ids=[
@@ -491,9 +511,9 @@ def test_validate_accepts_every_shape_the_weight_cannot_decide(tmp_path: Path, s
 @pytest.mark.parametrize(
     "hash_block",
     [
-        {"enabled": False, "expected_state_hash": "aaaa"},
-        {"enabled": False, "expected_state_hash": "aaaa", "weight": 0.6},
-        {"expected_state_hash": "aaaa"},
+        {"enabled": False, "expect_initial_state": True},
+        {"enabled": False, "expect_initial_state": True, "weight": 0.6},
+        {"expect_initial_state": True},
     ],
     ids=["flag_off", "flag_off_with_an_inert_weight", "flag_absent"],
 )
@@ -529,7 +549,7 @@ def test_validate_rejects_a_flag_with_nothing_to_compare_against(tmp_path: Path)
     StateChecksConfig(jsonpaths=_ASSERTIONS, hash=hash_block)
 
     grading = _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "hash": hash_block})
-    with pytest.raises(ValueError, match="declares no expected_state_hash or golden_actions"):
+    with pytest.raises(ValueError, match="declares no golden_actions or expect_initial_state"):
         validate_grading_yaml(grading, inventory=_UNRESOLVED, hash_sources=HashSourceLayer())
 
 
@@ -600,7 +620,7 @@ def test_validate_refuses_a_native_packs_sourceless_hash_through_the_resolver(tm
 
     out = result.stderr
     assert "0 valid, 1 invalid" in out
-    assert "declares no expected_state_hash or golden_actions" in out
+    assert "declares no golden_actions or expect_initial_state" in out
     assert result.exit_code != 0
 
 
@@ -610,7 +630,7 @@ def test_validate_rejects_a_weight_outside_the_unit_interval(tmp_path: Path, wei
         tmp_path,
         {
             "jsonpaths": _ASSERTIONS,
-            "hash": {"enabled": True, "expected_state_hash": "aaaa", "weight": weight},
+            "hash": {"enabled": True, "expect_initial_state": True, "weight": weight},
         },
     )
     with pytest.raises(ValueError, match=r"state_checks.hash.weight must be a real number"):
@@ -702,45 +722,54 @@ def test_validate_rejects_an_id_fields_key_that_cannot_key_its_table(
         validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
 
-def test_validate_accepts_a_pack_declaring_a_composite_key(tmp_path: Path):
-    """`positions: [account_id, symbol]` passes `tolokaforge validate` end to end.
+_SEEDED_POSITIONS = {
+    "positions": [
+        {"account_id": "A1", "symbol": "AAPL", "qty": 5},
+        {"account_id": "A1", "symbol": "MSFT", "qty": 7},
+    ]
+}
+"""Two rows ``account_id`` alone cannot tell apart, seeded with no ``ticker`` field."""
 
-    Driven through the CLI rather than ``validate_grading_yaml`` so the list form
-    is accepted by the whole load path, not just the config model in isolation.
-    ``validate`` never builds a ``TaskDescription``, so the adapter's
-    id_fields-vs-initial_state cross-check is out of its reach (#923) — that gate
-    is locked at its own boundary in
-    ``tests/unit/test_native_adapter_id_fields_validation.py``.
+
+def _write_keyed_pack(
+    root: Path,
+    *,
+    id_fields: dict[str, Any],
+    seeded: dict[str, Any] | None = _SEEDED_POSITIONS,
+    relaxed: bool = False,
+    adapter_type: str | None = None,
+) -> Path:
+    """A native pack declaring *id_fields* over *seeded*, and its task.yaml path.
+
+    *seeded* left ``None`` writes no ``initial_state.json`` while the task keeps
+    naming one, which is the pack whose seeded state cannot be read at all.
     """
-    task_dir = tmp_path / "composite_key"
+    task_dir = root / "keyed_pack"
     task_dir.mkdir(parents=True)
-    (task_dir / "initial_state.json").write_text(
-        json.dumps(
-            {
-                "positions": [
-                    {"account_id": "A1", "symbol": "AAPL", "qty": 5},
-                    {"account_id": "A1", "symbol": "MSFT", "qty": 7},
-                ]
-            }
-        )
-    )
-    (task_dir / "task.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "task_id": "composite_key_probe",
-                "name": "Composite key probe",
-                "category": "test",
-                "description": "Probe task for composite id_fields validation.",
-                "initial_state": {"json_db": "initial_state.json"},
-                "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
-                "user_simulator": {
-                    "mode": "scripted",
-                    "scripted_flow": [{"role": "user", "content": "hi"}],
-                },
-                "grading": "grading.yaml",
-            }
-        )
-    )
+    if seeded is not None:
+        (task_dir / "initial_state.json").write_text(json.dumps(seeded))
+    task: dict[str, Any] = {
+        "task_id": "keyed_pack",
+        "name": "Keyed pack",
+        "category": "test",
+        "description": "Probe task for id_fields validation.",
+        "initial_state": {"json_db": "initial_state.json"},
+        "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
+        "user_simulator": {
+            "mode": "scripted",
+            "scripted_flow": [{"role": "user", "content": "hi"}],
+        },
+        "grading": "grading.yaml",
+    }
+    if adapter_type is not None:
+        task["adapter_type"] = adapter_type
+    (task_dir / "task.yaml").write_text(yaml.safe_dump(task))
+    state_checks: dict[str, Any] = {
+        "jsonpaths": [{"path": "$.db.positions[0].qty", "equals": 5}],
+        "id_fields": id_fields,
+    }
+    if relaxed:
+        state_checks["relaxed_validation"] = True
     (task_dir / "grading.yaml").write_text(
         yaml.safe_dump(
             {
@@ -749,20 +778,107 @@ def test_validate_accepts_a_pack_declaring_a_composite_key(tmp_path: Path):
                     "weights": {"state_checks": 1.0},
                     "pass_threshold": 1.0,
                 },
-                "state_checks": {
-                    "jsonpaths": [{"path": "$.db.positions[0].qty", "equals": 5}],
-                    "id_fields": {"positions": ["account_id", "symbol"]},
-                },
+                "state_checks": state_checks,
             }
         )
     )
+    return task_dir / "task.yaml"
 
-    result = CliRunner(mix_stderr=False).invoke(
-        cli, ["validate", "--tasks", str(task_dir / "task.yaml")]
+
+def _validate(task_yaml: Path):
+    """``tolokaforge validate`` over one pack, wide enough that no path soft-wraps."""
+    return CliRunner(mix_stderr=False).invoke(
+        cli, ["validate", "--tasks", str(task_yaml)], env={"COLUMNS": "400"}
+    )
+
+
+def test_validate_accepts_a_pack_declaring_a_composite_key(tmp_path: Path):
+    """`positions: [account_id, symbol]` passes `tolokaforge validate` end to end.
+
+    Driven through the CLI rather than ``validate_grading_yaml`` so the list form is
+    accepted by the whole load path, not just the config model in isolation. The
+    declaration is also held against the state the task seeds here — the seeded rows
+    carry both components and only the pair tells them apart — so this is the passing
+    half of the cross-check the next test refuses; the adapter-boundary gate keeps its
+    own lock in ``tests/unit/test_native_adapter_id_fields_validation.py``.
+    """
+    result = _validate(
+        _write_keyed_pack(tmp_path, id_fields={"positions": ["account_id", "symbol"]})
     )
 
     assert "1 valid, 0 invalid" in result.stderr
     assert result.exit_code == 0
+
+
+def test_validate_refuses_a_key_component_the_seeded_records_do_not_carry(tmp_path: Path):
+    """The cross-check reaches the command an author runs before any run is started.
+
+    The pack seeds ``account_id`` / ``symbol`` and declares ``[account_id, ticker]``.
+    It used to exit 0 here and be refused only when the run built its task description,
+    after the author had already been told the pack was fine.
+    """
+    result = _validate(
+        _write_keyed_pack(tmp_path, id_fields={"positions": ["account_id", "ticker"]})
+    )
+
+    assert result.exit_code == 1
+    assert "positions" in result.stderr
+    assert "ticker" in result.stderr
+    assert "0 valid, 1 invalid" in result.stderr
+
+
+def test_validate_passes_a_defective_declaration_the_pack_relaxed(tmp_path: Path):
+    """``relaxed_validation`` downgrades at validate exactly as it does on the run path.
+
+    Same defective declaration as the refusal above: the escape hatch is the whole
+    difference, and a pack that relies on it must not be failed by the gate that exists
+    to let it through.
+    """
+    result = _validate(
+        _write_keyed_pack(tmp_path, id_fields={"positions": ["account_id", "ticker"]}, relaxed=True)
+    )
+
+    assert result.exit_code == 0
+    assert "1 valid, 0 invalid" in result.stderr
+
+
+def test_validate_refuses_a_pack_whose_seeded_state_is_not_on_disk(tmp_path: Path):
+    """A task naming a ``json_db`` that does not exist is refused naming the path.
+
+    Reading the seeded state at validate is what makes this answerable: the pack used
+    to validate clean and fail at run start with ``JSON DB file not found``, one whole
+    run later.
+    """
+    task_yaml = _write_keyed_pack(
+        tmp_path, id_fields={"positions": ["account_id", "symbol"]}, seeded=None
+    )
+
+    result = _validate(task_yaml)
+
+    assert result.exit_code == 1
+    assert "JSON DB file not found" in result.stderr
+    assert str(task_yaml.parent / "initial_state.json") in result.stderr
+
+
+def test_validate_reports_the_declaration_unchecked_for_an_adapter_it_cannot_read(tmp_path: Path):
+    """A pack this command cannot read the seeded state of draws a `?`, never a `✗`.
+
+    ``initial_state.json_db`` is the native reading. Holding another adapter's pack
+    against it would refuse packs that run fine, and passing it silently would read as
+    a clean bill of health for a declaration nothing checked — so the same defective
+    key that fails above is reported and never fatal here.
+    """
+    result = _validate(
+        _write_keyed_pack(
+            tmp_path,
+            id_fields={"positions": ["account_id", "ticker"]},
+            adapter_type="an_adapter_this_environment_does_not_install",
+        )
+    )
+
+    assert result.exit_code == 0
+    assert "? state_checks.id_fields not checked" in result.stderr
+    assert "1 valid, 0 invalid" in result.stderr
 
 
 def test_validate_names_a_misspelled_state_checks_key_and_the_accepted_set(tmp_path: Path):
@@ -810,6 +926,57 @@ def test_a_populated_retired_key_draws_its_migration_and_not_the_unknown_key_ref
     message = str(excinfo.value)
     assert "state_checks.env_assertions has been removed" in message, message
     assert "unknown key" not in message, message
+
+
+def test_validate_refuses_a_populated_retired_hash_key_naming_both_replacements(tmp_path: Path):
+    """The third read a pack passes through, and the only one an author runs on purpose.
+
+    A stored hash is written in one substrate's algebra and the other cannot compare
+    against it, so the gate refuses it here rather than letting a trial be paid for and
+    graded differently depending on where it ran. Both replacements are asserted
+    separately: a migration naming only ``golden_actions`` would send a refusal task —
+    which by definition replays nothing — to write actions it does not have.
+    """
+    grading = _write_grading(tmp_path, {"hash": {"enabled": True, "expected_state_hash": "a" * 64}})
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert "state_checks.hash.expected_state_hash has been retired" in message, message
+    assert "golden_actions" in message, message
+    assert "expect_initial_state" in message, message
+
+
+def test_validate_names_a_misspelled_hash_key_and_the_hash_blocks_accepted_set(tmp_path: Path):
+    """The block this refusal exists for, addressed one tier below the block that holds it.
+
+    Every key ``hash`` drops requests *nothing*: ``enalbed`` beside a real
+    ``expect_initial_state`` leaves the hash unscored while the trial grades on whatever
+    else the pack declared, which scores higher than the same block spelled correctly.
+    The parent's construction refuses the key either way; what is locked here is the
+    sentence, because the bare ``extra_forbidden`` names neither the file, the accepted
+    set, nor the field the author meant — and the accepted set is where an author reads
+    that ``description`` is a key this block takes.
+    """
+    grading = _write_grading(
+        tmp_path,
+        {"jsonpaths": _ASSERTIONS, "hash": {"enalbed": True, "expect_initial_state": True}},
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert "the task's own state_checks.hash block" in message, message
+    assert "unknown key 'enalbed'" in message, message
+    assert "did you mean 'enabled'?" in message, message
+    assert (
+        "state_checks.hash accepts: enabled, expect_initial_state, "
+        "golden_actions, weight, description." in message
+    ), message
 
 
 # ---------------------------------------------------------------------------
@@ -996,10 +1163,6 @@ def test_validate_cli_reports_a_misspelled_combine_key_as_invalid(tmp_path: Path
 # ---------------------------------------------------------------------------
 
 
-_TRANSCRIPT_MODELS = (CoreTranscriptRules, RunnerTranscriptRules)
-_MODEL_IDS = ("core", "runner")
-
-
 def _write_transcript_rules(tmp_path: Path, transcript_rules: object) -> Path:
     """Serialise the block beside a valid ``combine``, so a rejection below is the
     transcript gate's and not the combine gate's."""
@@ -1015,28 +1178,26 @@ def _write_transcript_rules(tmp_path: Path, transcript_rules: object) -> Path:
     return grading
 
 
-@pytest.mark.parametrize("model", _TRANSCRIPT_MODELS, ids=_MODEL_IDS)
 @pytest.mark.parametrize(
     ("floor", "ceiling"),
     [(5, 3), (4, 3), (2, 1)],
     ids=["clear", "off_by_one", "ceiling_of_one"],
 )
-def test_both_substrates_reject_an_unsatisfiable_turn_window(model: type, floor: int, ceiling: int):
-    """One predicate, both models: the engine and the runner agree on what loads.
+def test_the_transcript_block_rejects_an_unsatisfiable_turn_window(floor: int, ceiling: int):
+    """One model, so the engine and the runner cannot disagree about what loads.
 
     Asserted on the paired key-and-value text rather than the bare digits — a
     message naming only the bound it tripped leaves the author guessing which of
     the two keys to move, and digits alone appear in any pydantic error.
     """
     with pytest.raises(ValueError) as excinfo:
-        model(min_assistant_turns=floor, max_turns=ceiling)
+        TranscriptRulesConfig(min_assistant_turns=floor, max_turns=ceiling)
 
     message = str(excinfo.value)
     assert f"min_assistant_turns ({floor})" in message, message
     assert f"max_turns ({ceiling})" in message, message
 
 
-@pytest.mark.parametrize("model", _TRANSCRIPT_MODELS, ids=_MODEL_IDS)
 @pytest.mark.parametrize(
     "transcript_rules",
     [
@@ -1048,26 +1209,23 @@ def test_both_substrates_reject_an_unsatisfiable_turn_window(model: type, floor:
     ],
     ids=["floor_equals_ceiling", "all_keys_pack_shape", "floor_alone", "ceiling_alone", "neither"],
 )
-def test_both_substrates_accept_every_window_a_trial_can_land_in(
-    model: type, transcript_rules: dict
-):
+def test_the_transcript_block_accepts_every_window_a_trial_can_land_in(transcript_rules: dict):
     """The gate must stay narrow: only a pack declaring *both* can close the window.
 
     ``floor_equals_ceiling`` is satisfied by exactly that many turns, and
     ``all_keys_pack_shape`` is what ``tests/data/grading_parity/all_keys`` ships — the
     corpus shape a gate reading either key on its own would reject.
     """
-    model(**transcript_rules)
+    TranscriptRulesConfig(**transcript_rules)
 
 
-@pytest.mark.parametrize("model", _TRANSCRIPT_MODELS, ids=_MODEL_IDS)
 @pytest.mark.parametrize(
     "transcript_rules",
     [{"min_assistant_turns": 0}, {"max_turns": 0}],
     ids=["floor_below_the_domain", "ceiling_below_the_domain"],
 )
-def test_both_substrates_reject_a_turn_bound_below_the_domain(model: type, transcript_rules: dict):
-    """Each bound is declarable from 1 up, on the wire model as well as the core one.
+def test_the_transcript_block_rejects_a_turn_bound_below_the_domain(transcript_rules: dict):
+    """Each bound is declarable from 1 up.
 
     A floor of 0 asserts nothing, and the runtime key ledger tests a declared key by
     truthiness, so it would be an unpoliced declaration. A ceiling below 1 is the
@@ -1076,7 +1234,7 @@ def test_both_substrates_reject_a_turn_bound_below_the_domain(model: type, trans
     gate rejects when a pack writes both keys.
     """
     with pytest.raises(ValueError, match="greater than or equal to 1"):
-        model(**transcript_rules)
+        TranscriptRulesConfig(**transcript_rules)
 
 
 def test_validate_rejects_a_pack_whose_turn_window_admits_nothing(tmp_path: Path):
@@ -1102,7 +1260,10 @@ def test_validate_accepts_the_corpus_turn_window(tmp_path: Path):
     ("transcript_rules", "match"),
     [
         ({"min_assistant_turns": 0}, "greater than or equal to 1"),
-        ({"tool_expectations": {"required_toolz": ["db_update"]}}, "required_toolz"),
+        (
+            {"tool_expectations": {"required_toolz": ["db_update"]}},
+            r"transcript_rules\.tool_expectations accepts: ",
+        ),
         (
             {"must_contain": ["shipped"], "must_contian": ["refunded"]},
             "unknown key 'must_contian'",
@@ -1113,13 +1274,15 @@ def test_validate_accepts_the_corpus_turn_window(tmp_path: Path):
 def test_validate_rejects_a_malformed_transcript_block_beside_a_valid_window(
     tmp_path: Path, transcript_rules: dict, match: str
 ):
-    """The gate constructs the whole block, so its siblings are validated too.
+    """The gate answers every tier of this block, not only the window it is named for.
 
     A gate that read the two window fields off the raw dict and compared them
-    directly — never constructing the model — would leave all three of these loading: a
-    floor of 0 asserting nothing, a misspelled ``tool_expectations`` key grading as an
-    empty list, and a misspelled rule key at the top of the block doing the same one
-    level up.
+    directly — never constructing the model — would leave a floor of 0 asserting
+    nothing. The two misspellings are the addressed refusal's, one at the block's own
+    tier and one inside the ``tool_expectations`` block it nests, each of which would
+    otherwise grade as an empty list. The nested row matches the addressed sentence
+    rather than the key alone, which the model's bare ``extra_forbidden`` also quotes:
+    that spelling passes with the block unregistered and the refusal unaddressed.
     """
     with pytest.raises(ValueError, match=match):
         validate_grading_yaml(
@@ -1127,18 +1290,16 @@ def test_validate_rejects_a_malformed_transcript_block_beside_a_valid_window(
         )
 
 
-@pytest.mark.parametrize("model", _TRANSCRIPT_MODELS, ids=_MODEL_IDS)
-def test_both_substrates_refuse_a_rule_key_the_block_does_not_declare(model: type):
-    """One answer, both models: the engine and the runner agree on what loads.
+def test_the_transcript_block_refuses_a_rule_key_it_does_not_declare():
+    """One model, so the engine and the runner cannot disagree about what loads.
 
     Every rule here defaults to asserting nothing, so the dropped key graded the trial
     by the rules that survived — measured, ``must_contian: ['refund issued']`` scored
     ``1.0`` and passing on a transcript the authored ``must_contain`` scored ``0.75``
-    and failing. The runner model has refused this since it was written; the engine's
-    is what a ``grading.yaml`` is read by.
+    and failing.
     """
     with pytest.raises(ValidationError) as excinfo:
-        model(must_contian=["refund issued"])
+        TranscriptRulesConfig(must_contian=["refund issued"])
 
     assert [error["loc"] for error in excinfo.value.errors()] == [("must_contian",)]
 
@@ -1161,8 +1322,102 @@ def test_validate_names_a_misspelled_transcript_rule_key_and_the_accepted_set(tm
     assert str(grading) in message, message
     assert "did you mean 'must_contain'?" in message, message
     assert "the task's own transcript_rules block" in message, message
-    for field in CoreTranscriptRules.model_fields:
+    for field in TranscriptRulesConfig.model_fields:
         assert field in message, message
+
+
+# ---------------------------------------------------------------------------
+# transcript_rules' nested elements — a key a required_actions / communicate_info
+# element does not declare, refused at load
+#
+# The block's own keys are answered above. One tier down, every field has a default
+# a dropped key silently substituted: ``compare_args`` resolving to ``None`` compares
+# **every** declared argument, so a ``compare_arg`` typo made the check strictly
+# harder than the author wrote it and failed trials that satisfied what they wrote.
+# ---------------------------------------------------------------------------
+
+
+_A_REQUIRED_ACTION = {
+    "action_id": "cancel_the_order",
+    "requestor": "assistant",
+    "name": "cancel_order",
+    "arguments": {"order_id": "O1", "reason": "duplicate"},
+    "compare_args": ["order_id"],
+}
+
+_A_COMMUNICATE_INFO = {"info": "O-001", "required": True}
+
+
+def _with_key_renamed(element: dict, old: str, new: str) -> dict:
+    return {(new if key == old else key): value for key, value in element.items()}
+
+
+@pytest.mark.parametrize(
+    ("field_name", "element", "unknown", "declared"),
+    [
+        (
+            "required_actions",
+            _with_key_renamed(_A_REQUIRED_ACTION, "compare_args", "compare_arg"),
+            "compare_arg",
+            "compare_args",
+        ),
+        (
+            "required_actions",
+            _with_key_renamed(_A_REQUIRED_ACTION, "name", "tool_name"),
+            "tool_name",
+            "name",
+        ),
+        (
+            "communicate_info",
+            _with_key_renamed(_A_COMMUNICATE_INFO, "required", "requred"),
+            "requred",
+            "required",
+        ),
+    ],
+    ids=["a_dropped_plural", "the_wire_spelling_of_the_tool", "a_misspelled_opt_out"],
+)
+def test_validate_names_a_key_a_transcript_element_does_not_declare_and_the_accepted_set(
+    tmp_path: Path, field_name: str, element: dict, unknown: str, declared: str
+):
+    """#900's acceptance, one row per element list, at the tier an author reads.
+
+    ``the_wire_spelling_of_the_tool`` is the shape a pre-release engine's trial spec
+    carries: ``tool_name`` is the name the wire used before one model served both
+    surfaces, and an author who copied it from a recorded description gets told which
+    field replaced it rather than a bare ``extra_forbidden`` at a list index.
+
+    This is the gate's addressed message. That both elements refuse the key on the
+    model itself — so ``RegisterTrial`` and direct Python are refused too, which is
+    what makes the ``tool_name`` row a rename rather than a second accepted spelling
+    — is
+    ``tests/canonical/test_runner_models_reconcile.py::test_reconciled_wire_types_forbid_extras``.
+    """
+    grading = _write_transcript_rules(tmp_path, {field_name: [element]})
+    model = {"required_actions": RequiredAction, "communicate_info": CommunicateInfo}[field_name]
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert f"transcript_rules.{field_name}[0]" in message, message
+    assert f"unknown key '{unknown}'" in message, message
+    assert f"did you mean '{declared}'?" in message, message
+    for field in model.model_fields:
+        assert field in message, message
+
+
+def test_validate_accepts_the_transcript_elements_the_corpus_ships(tmp_path: Path):
+    """The refusing direction is worthless without this one: every in-repo pack's
+    elements carry exactly these key sets, measured across 41 ``required_actions`` and
+    16 ``communicate_info`` elements."""
+    validate_grading_yaml(
+        _write_transcript_rules(
+            tmp_path,
+            {"required_actions": [_A_REQUIRED_ACTION], "communicate_info": [_A_COMMUNICATE_INFO]},
+        ),
+        inventory=_UNRESOLVED,
+    )
 
 
 def test_validate_cli_reports_an_unsatisfiable_turn_window_as_invalid(tmp_path: Path):
@@ -1419,6 +1674,154 @@ def test_the_trace_checks_shape_refusal_names_both_keys_the_block_may_carry(tmp_
 
 
 # ---------------------------------------------------------------------------
+# the element tier — ``element_models`` restates a model fact, so it can drift
+#
+# ``_TypedGradingBlock.element_models`` names the list-valued fields whose *elements*
+# draw the addressed refusal, and it names them by string and by class. Nothing in the
+# registry makes that pair agree with the block model's own annotation, or makes a
+# newly-listed field arrive with an entry, so both are asserted against the models.
+# ---------------------------------------------------------------------------
+
+
+_UNION_ORIGINS = (types.UnionType, Union)
+
+_ELEMENT_ENTRIES = tuple(
+    pytest.param(name, field, model, id=f"{name}.{field}")
+    for name, block in _TYPED_GRADING_BLOCKS.items()
+    for field, model in block.element_models
+)
+
+
+def _element_model_of(annotation: object) -> type[BaseModel] | None:
+    """The model a field holds one list of, or ``None`` for every other shape.
+
+    ``list[Model] | None`` counts: an optional list still reaches the gate as a list of
+    elements, so reading only the bare ``list[Model]`` would let a field opt out of the
+    addressed refusal by gaining a default of ``None``.
+    """
+    candidates = get_args(annotation) if get_origin(annotation) in _UNION_ORIGINS else (annotation,)
+    for candidate in candidates:
+        if get_origin(candidate) is not list:
+            continue
+        (inner,) = get_args(candidate)
+        if isinstance(inner, type) and issubclass(inner, BaseModel):
+            return inner
+    return None
+
+
+@pytest.mark.parametrize(("block_name", "field_name", "element_model"), _ELEMENT_ENTRIES)
+def test_every_element_entry_names_the_model_its_block_field_actually_holds(
+    block_name: str, field_name: str, element_model: type[BaseModel]
+):
+    """An entry naming a sibling's model addresses the refusal at the wrong key set.
+
+    The gate reports ``element_model.model_fields`` as the accepted set, so an entry
+    that drifted from the annotation tells the author to write keys the element does
+    not declare — an addressed message that is worse than the bare refusal.
+    """
+    expected = list[element_model]
+    annotation = _TYPED_GRADING_BLOCKS[block_name].model.model_fields[field_name].annotation
+
+    assert annotation == expected, f"{block_name}.{field_name} is {annotation}, not {expected}"
+
+
+@pytest.mark.parametrize("block_name", sorted(_TYPED_GRADING_BLOCKS))
+def test_every_block_that_addresses_its_refusal_names_each_list_of_models_it_declares(
+    block_name: str,
+):
+    """A list-valued field added to a gated block arrives with an entry, or without one.
+
+    Without one its elements fall back to the bare ``extra_forbidden`` at a list index,
+    which is the message this registry exists to replace. ``trace_checks`` is the block
+    that draws that bare refusal by declaration, so its own flag — not a hand-kept
+    exemption here — is what excuses it.
+    """
+    block = _TYPED_GRADING_BLOCKS[block_name]
+    listed = {
+        field
+        for field, info in block.model.model_fields.items()
+        if _element_model_of(info.annotation) is not None
+    }
+    named = {field for field, _ in block.element_models}
+
+    assert named == (listed if block.gate_names_unknown_keys else set()), (
+        f"{block_name} declares {sorted(listed)} as lists of models but names "
+        f"{sorted(named)} for the addressed refusal"
+    )
+
+
+# ---------------------------------------------------------------------------
+# the nested-block tier — the same drift, one shape over
+#
+# ``_TypedGradingBlock.nested_block_models`` names the fields holding one block of
+# their own, and it names them by string and by class exactly as its list twin does.
+# Nothing in the registry makes that pair agree with the annotation, or makes a newly
+# declared block arrive with an entry, so both are asserted against the models here.
+# ---------------------------------------------------------------------------
+
+
+_NESTED_ENTRIES = tuple(
+    pytest.param(name, nested.field_name, nested.model, id=f"{name}.{nested.field_name}")
+    for name, block in _TYPED_GRADING_BLOCKS.items()
+    for nested in block.nested_block_models
+)
+
+
+def _nested_model_of(annotation: object) -> type[BaseModel] | None:
+    """The model a field holds one of, or ``None`` for every other shape.
+
+    ``Model | None`` counts for the reason its list twin's optional does: a block a
+    pack may omit still reaches the gate as a mapping wherever one is written, so
+    reading only the bare ``Model`` would let a field opt out of the addressed refusal
+    by gaining a default of ``None``.
+    """
+    candidates = get_args(annotation) if get_origin(annotation) in _UNION_ORIGINS else (annotation,)
+    for candidate in candidates:
+        if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+            return candidate
+    return None
+
+
+@pytest.mark.parametrize(("block_name", "field_name", "nested_model"), _NESTED_ENTRIES)
+def test_every_nested_entry_names_the_model_its_block_field_actually_holds(
+    block_name: str, field_name: str, nested_model: type[BaseModel]
+):
+    """An entry naming a sibling's model addresses the refusal at the wrong key set.
+
+    The gate reports ``nested_model.model_fields`` as the accepted set, so an entry that
+    drifted from the annotation tells the author to write keys the block does not
+    declare — and for ``state_checks.hash``, whose five keys are what this refusal is
+    for, that is worse than the bare one.
+    """
+    annotation = _TYPED_GRADING_BLOCKS[block_name].model.model_fields[field_name].annotation
+    held = _nested_model_of(annotation)
+
+    assert held is nested_model, f"{block_name}.{field_name} holds {held}, not {nested_model}"
+
+
+@pytest.mark.parametrize("block_name", sorted(_TYPED_GRADING_BLOCKS))
+def test_every_block_that_addresses_its_refusal_names_each_block_it_nests(block_name: str):
+    """A block nested inside a gated one arrives with an entry, or without one.
+
+    Without one its keys fall back to the bare ``extra_forbidden`` at a dotted path,
+    which is the message this registry exists to replace. ``trace_checks`` draws that
+    bare refusal by declaration, so its own flag excuses it here as it does one tier up.
+    """
+    block = _TYPED_GRADING_BLOCKS[block_name]
+    declared = {
+        field
+        for field, info in block.model.model_fields.items()
+        if _nested_model_of(info.annotation) is not None
+    }
+    named = {nested.field_name for nested in block.nested_block_models}
+
+    assert named == (declared if block.gate_names_unknown_keys else set()), (
+        f"{block_name} declares {sorted(declared)} as blocks of its own but names "
+        f"{sorted(named)} for the addressed refusal"
+    )
+
+
+# ---------------------------------------------------------------------------
 # migration.yaml — the sidecar is reached by validate, and by nothing a run pays for
 #
 # Every rule the declaration carries is locked in
@@ -1444,8 +1847,16 @@ _MIGRATED_GRADING = yaml.safe_dump(
 )
 
 
-def test_validate_cli_reports_a_mis_authored_migration_sidecar_as_invalid(tmp_path: Path):
-    """The entry names a criterion the rubric does not declare, which no other gate reads."""
+def test_validate_cli_reports_a_mis_authored_migration_sidecar_as_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The entry names a criterion the rubric does not declare, which no other gate reads.
+
+    The working directory is pinned because `validate` reads every `corpus` against it, and
+    the corpus below is written to resolve — the criterion is what is on trial here, and a
+    sidecar refused for two reasons at once would pass this test on the wrong one.
+    """
+    monkeypatch.chdir(tmp_path)
     task_dir = tmp_path / "mis_authored_migration"
     task_file = _write_task(task_dir, _MIGRATED_GRADING)
     (task_dir / "migration.yaml").write_text(
@@ -1456,6 +1867,11 @@ def test_validate_cli_reports_a_mis_authored_migration_sidecar_as_invalid(tmp_pa
                         "criterion": "never_declared",
                         "mode": "candidate",
                         "by": ["nothing_declares_this_either"],
+                        "corpus": str(
+                            write_corpus_directory(
+                                tmp_path / "corpus", criterion="checked_first"
+                            ).relative_to(tmp_path)
+                        ),
                         "was": {"description": "Something the rubric never said."},
                     }
                 ]
@@ -1468,6 +1884,7 @@ def test_validate_cli_reports_a_mis_authored_migration_sidecar_as_invalid(tmp_pa
     out = result.stderr
     assert "0 valid, 1 invalid" in out
     assert "names no criterion in the pack's rubric" in out
+    assert "is not a corpus directory" not in out
 
 
 def test_validate_cli_reports_a_task_carrying_no_sidecar_as_valid(tmp_path: Path):

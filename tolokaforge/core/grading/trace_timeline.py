@@ -12,6 +12,15 @@ has no status, latency or executor identity, and the record has no conversation.
 both grading substrates already hold, so a check written against the timeline
 evaluates identically whichever substrate grades the trial.
 
+The join key is the trial's **episode-unique call id**
+(:mod:`tolokaforge.core.tool_call_ids`), not the raw provider id: each view
+derives its own keys from its own observation order — the message view in
+declaration order, the record in ``sequence`` order — so the k-th declaration of
+an id pairs with the k-th record of it. What makes that pairing unambiguous is
+the suffix invariant: a turn's calls execute in declaration order and the episode
+stops at the first failure, so the declarations that never executed are always a
+trailing suffix rather than a gap in the middle.
+
 The guarantees the timeline makes, and the states it declares rather than
 papers over, are written out in ``docs/GRADING.md`` § "Trial event timeline".
 """
@@ -36,6 +45,7 @@ from tolokaforge.core.models import (
     ToolExecutionStatus,
     ToolExecutorIdentity,
 )
+from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds, episode_unique_call_ids
 
 __all__ = [
     "AttemptedCall",
@@ -60,9 +70,9 @@ class TraceEvent:
     ``executor``, ``status`` and ``latency_seconds`` come from the trial's
     tool-call record alone, so a call the trial never recorded carries ``None``
     for all three. ``result`` prefers the record — the record's failure text is
-    the executing layer's own and is untruncated, while the ``role: tool``
-    message words the same failure differently — and falls back to that message
-    on a timeline that carries no record view at all.
+    untruncated and carries no ``Error:`` prefix, unlike the ``role: tool``
+    message — and falls back to that message on a timeline that carries no
+    record view at all.
     """
 
     position: int
@@ -126,10 +136,11 @@ class AttemptedCall:
 class TimelineInconsistencyError(Exception):
     """The trial's two views cannot be joined into one timeline.
 
-    Raised rather than resolved. A duplicate ``call_id`` or a record naming a
-    call the message view does not contain is a broken harness invariant, not
-    task data, and picking a winner would produce exactly the ambiguous join the
-    ``call_id`` exists to prevent.
+    Raised rather than resolved. A record naming a call the message view does not
+    contain, a result answering one, or a record naming a different tool than the
+    declaration it paired with is a broken harness invariant, not task data, and
+    picking a winner would produce exactly the ambiguous join the key exists to
+    prevent.
     """
 
 
@@ -137,6 +148,22 @@ _KIND_BY_ROLE = {
     MessageRole.ASSISTANT: TraceEventKind.ASSISTANT_MESSAGE,
     MessageRole.USER: TraceEventKind.USER_MESSAGE,
 }
+
+
+# The literal prefix ``core/loop.py`` writes onto a failed tool call's
+# message body. Stripping it in the message-only branch of trace-timeline
+# reconstruction is what keeps ``result:`` matchers reading the same on a
+# bundle carrying ``tool_log.yaml`` and on the same bundle re-graded from
+# messages alone (#977).
+_ERROR_MESSAGE_PREFIX = "Error: "
+
+
+@dataclass(frozen=True)
+class _DeclaredCall:
+    """One call the message view asks for, under the key the trial joins it by."""
+
+    key: str
+    call: ToolCall
 
 
 def build_trial_timeline(
@@ -148,8 +175,9 @@ def build_trial_timeline(
 
     Event order follows the message view; within one message, tool calls follow
     recorded execution order, with calls that never executed after them in
-    declaration order. A call and its result are joined by ``call_id``, never by
-    position.
+    declaration order. A call and its result are joined by the episode-unique key
+    each view derives from its own observation order, never by position, and every
+    event carries that key as its ``call_id``.
 
     A ``TOOL_RESULT``'s text comes from the record. With no record view supplied at
     all — a trial re-graded from its bundle — it comes instead from the
@@ -163,18 +191,21 @@ def build_trial_timeline(
     not a message view.
 
     Raises:
-        TimelineInconsistencyError: a ``call_id`` occurs twice, a record names a
-            call the message view does not contain, or — with no records — a tool
-            result message names one.
+        TimelineInconsistencyError: a record's key matches no declared call, a
+            record names a different tool than the declaration it paired with, or
+            — with no records — a tool result's key matches no declared call.
     """
-    records = _index_by_call_id(recorded_calls)
+    records = _records_by_episode_key(recorded_calls)
     turns = [message for message in messages if message.role in _KIND_BY_ROLE]
+    declared = _declared_calls(turns)
+    if turns:
+        _require_records_reconcile(records, declared)
     # The record wins wherever both views describe one call, so the message-side
     # results are read only in its absence.
-    message_results = {} if records else _index_message_results(messages, turns)
+    message_results = {} if records else _index_message_results(messages, declared)
     builder = _TimelineBuilder(records, message_results)
     if turns:
-        builder.emit_message_view(turns)
+        builder.emit_message_view(turns, declared)
     else:
         builder.emit_records_alone()
     return TrialTimeline(
@@ -218,71 +249,130 @@ def attempted_calls(timeline: TrialTimeline) -> tuple[AttemptedCall, ...]:
     )
 
 
-def _index_by_call_id(recorded_calls: Sequence[RecordedToolCall]) -> dict[str, RecordedToolCall]:
-    index: dict[str, RecordedToolCall] = {}
-    for record in recorded_calls:
-        seen = index.get(record.call_id)
-        if seen is not None:
-            raise TimelineInconsistencyError(
-                f"tool-call id {record.call_id!r} was recorded twice, at sequences "
-                f"{seen.sequence} and {record.sequence}. The id is the only key that joins "
-                "a call to the result it produced, so a duplicate leaves the join ambiguous."
-            )
-        index[record.call_id] = record
-    return index
+def _records_by_episode_key(
+    recorded_calls: Sequence[RecordedToolCall],
+) -> dict[str, RecordedToolCall]:
+    """The record view keyed by occurrence, read in ``sequence`` — execution — order."""
+    in_sequence = sorted(recorded_calls, key=lambda record: record.sequence)
+    keys = episode_unique_call_ids([record.call_id for record in in_sequence])
+    return dict(zip(keys, in_sequence, strict=True))
 
 
-def _declared_call_ids(turns: Sequence[Message]) -> set[str]:
-    """Every call id the message view asks for — the only ids a result may name."""
-    return {call.id for message in turns for call in (message.tool_calls or [])}
+def _declared_calls(turns: Sequence[Message]) -> tuple[tuple[_DeclaredCall, ...], ...]:
+    """The message view's calls keyed by occurrence, one tuple per turn.
+
+    Declaration order — message order, then position within ``tool_calls`` — is
+    the order the keys are derived in, so the k-th declaration of an id carries
+    the same key as the k-th record of it.
+    """
+    assigner = EpisodeUniqueCallIds()
+    return tuple(
+        tuple(
+            _DeclaredCall(key=assigner.assign(call.id), call=call)
+            for call in (message.tool_calls or [])
+        )
+        for message in turns
+    )
 
 
-def _index_message_results(messages: Sequence[Message], turns: Sequence[Message]) -> dict[str, str]:
+def _declarations_by_key(declared: Sequence[Sequence[_DeclaredCall]]) -> dict[str, ToolCall]:
+    return {entry.key: entry.call for turn in declared for entry in turn}
+
+
+def _require_records_reconcile(
+    records: dict[str, RecordedToolCall], declared: Sequence[Sequence[_DeclaredCall]]
+) -> None:
+    """Every record answers a declaration, and names the tool that declaration named."""
+    declarations = _declarations_by_key(declared)
+    _require_every_record_linkable(records, declarations)
+    _require_every_record_names_its_declared_tool(records, declarations)
+
+
+def _require_every_record_linkable(
+    records: dict[str, RecordedToolCall], declarations: dict[str, ToolCall]
+) -> None:
+    unlinkable = sorted(
+        ((key, record) for key, record in records.items() if key not in declarations),
+        key=lambda entry: entry[1].sequence,
+    )
+    if not unlinkable:
+        return
+    key, first = unlinkable[0]
+    raise TimelineInconsistencyError(
+        f"recorded tool call {key!r} (sequence {first.sequence}, tool "
+        f"{first.tool_name!r}) matches no tool call in the message view, so the trial's "
+        f"two views of itself disagree. {len(unlinkable)} of {len(records)} "
+        "recorded calls are unlinkable."
+    )
+
+
+def _require_every_record_names_its_declared_tool(
+    records: dict[str, RecordedToolCall], declarations: dict[str, ToolCall]
+) -> None:
+    """The independent corroboration that the occurrence-order pairing is right.
+
+    Both views name the tool for every call, so where they disagree the pairing
+    that put them together is wrong — and a mis-pairing nothing notices is what
+    an order-based join has to be defended against.
+    """
+    for key, record in records.items():
+        declared = declarations[key]
+        if record.tool_name == declared.name:
+            continue
+        raise TimelineInconsistencyError(
+            f"recorded tool call {key!r} (sequence {record.sequence}) names tool "
+            f"{record.tool_name!r}, but the message view declares that call as "
+            f"{declared.name!r}. The two views disagree about what ran, so the call "
+            "and the result paired with it do not describe one call."
+        )
+
+
+def _index_message_results(
+    messages: Sequence[Message], declared: Sequence[Sequence[_DeclaredCall]]
+) -> dict[str, str]:
     """The text each ``role: tool`` message carries, keyed by the call it answers.
 
     Read only when no record view was supplied. That text is on disk in every
     recorded bundle, so dropping it would hide a tool's own output from every
     phrase rule — and hide it in the agent's favour for a disallowed pattern.
 
+    Keys are derived in message order, so the k-th result naming an id answers the
+    k-th declaration of it.
+
     Raises:
-        TimelineInconsistencyError: a result names a call the message view does
-            not declare, or two results name the same call.
+        TimelineInconsistencyError: a result's key matches no declared call.
     """
-    declared = _declared_call_ids(turns)
+    declared_keys = set(_declarations_by_key(declared))
+    assigner = EpisodeUniqueCallIds()
     results: dict[str, str] = {}
     for index, message in enumerate(messages):
         if message.role is not MessageRole.TOOL:
             continue
-        call_id = message.tool_call_id
-        if call_id is None or call_id not in declared:
+        key = None if message.tool_call_id is None else assigner.assign(message.tool_call_id)
+        if key is None or key not in declared_keys:
             raise TimelineInconsistencyError(
-                f"the tool result message at index {index} answers tool-call id {call_id!r}, "
+                f"the tool result message at index {index} answers tool-call id {key!r}, "
                 "which no tool call in the trial's message view declares. Its text is the "
                 "only surviving evidence of what that tool returned, so it can be neither "
                 "joined to a call nor dropped."
             )
-        if call_id in results:
-            raise TimelineInconsistencyError(
-                f"tool-call id {call_id!r} is answered twice, the second time by the tool "
-                f"result message at index {index}. The id is the only key that joins a call "
-                "to the result it produced, so a duplicate leaves the join ambiguous."
-            )
-        results[call_id] = message.content
+        results[key] = message.content
     return results
 
 
 def _execution_order(
-    calls: Sequence[ToolCall], records: dict[str, RecordedToolCall]
-) -> list[ToolCall]:
+    declared: Sequence[_DeclaredCall], records: dict[str, RecordedToolCall]
+) -> list[_DeclaredCall]:
     """One message's calls in the order they ran, then the ones that never ran.
 
     ``sequence`` is stamped at execution time, so it is execution order rather
     than the order the assistant declared the calls in.
     """
     executed = sorted(
-        (call for call in calls if call.id in records), key=lambda call: records[call.id].sequence
+        (entry for entry in declared if entry.key in records),
+        key=lambda entry: records[entry.key].sequence,
     )
-    return executed + [call for call in calls if call.id not in records]
+    return executed + [entry for entry in declared if entry.key not in records]
 
 
 class _TimelineBuilder:
@@ -294,92 +384,54 @@ class _TimelineBuilder:
         self._records = records
         self._message_results = message_results
         self._events: list[TraceEvent] = []
-        self._call_positions: dict[str, int] = {}
         self._generations = 0
 
     @property
     def events(self) -> tuple[TraceEvent, ...]:
         return tuple(self._events)
 
-    def emit_message_view(self, turns: Sequence[Message]) -> None:
-        self._require_every_record_linkable(turns)
-        for message in turns:
-            self._emit_turn(message)
+    def emit_message_view(
+        self, turns: Sequence[Message], declared: Sequence[Sequence[_DeclaredCall]]
+    ) -> None:
+        for message, calls in zip(turns, declared, strict=True):
+            self._emit_turn(message, calls)
 
     def emit_records_alone(self) -> None:
-        for record in sorted(self._records.values(), key=lambda record: record.sequence):
-            self._append_call(
-                call_id=record.call_id,
+        for key, record in sorted(self._records.items(), key=lambda entry: entry[1].sequence):
+            self._append(
+                kind=TraceEventKind.TOOL_CALL,
+                call_id=key,
                 tool_name=record.tool_name,
                 arguments=record.arguments,
                 executor=record.executor,
             )
-            self._append_result(record)
+            self._append_result(key, record)
 
-    def _emit_turn(self, message: Message) -> None:
+    def _emit_turn(self, message: Message, declared: Sequence[_DeclaredCall]) -> None:
         if message.role is MessageRole.ASSISTANT:
             self._generations += 1
         self._append(kind=_KIND_BY_ROLE[message.role], text=message.content)
-        for call in _execution_order(message.tool_calls or [], self._records):
-            self._emit_call(call)
+        for entry in _execution_order(declared, self._records):
+            self._emit_call(entry)
 
-    def _emit_call(self, call: ToolCall) -> None:
-        record = self._records.get(call.id)
-        self._append_call(
-            call_id=call.id,
-            tool_name=call.name,
-            arguments=call.arguments,
+    def _emit_call(self, declared: _DeclaredCall) -> None:
+        record = self._records.get(declared.key)
+        self._append(
+            kind=TraceEventKind.TOOL_CALL,
+            call_id=declared.key,
+            tool_name=declared.call.name,
+            arguments=declared.call.arguments,
             executor=record.executor if record is not None else None,
         )
         if record is not None:
-            self._append_result(record)
-        elif call.id in self._message_results:
-            self._append_message_result(call)
+            self._append_result(declared.key, record)
+        elif declared.key in self._message_results:
+            self._append_message_result(declared)
 
-    def _require_every_record_linkable(self, turns: Sequence[Message]) -> None:
-        declared = _declared_call_ids(turns)
-        unlinkable = sorted(
-            (record for record in self._records.values() if record.call_id not in declared),
-            key=lambda record: record.sequence,
-        )
-        if not unlinkable:
-            return
-        first = unlinkable[0]
-        raise TimelineInconsistencyError(
-            f"recorded tool call {first.call_id!r} (sequence {first.sequence}, tool "
-            f"{first.tool_name!r}) matches no tool call in the message view, so the trial's "
-            f"two views of itself disagree. {len(unlinkable)} of {len(self._records)} "
-            "recorded calls are unlinkable."
-        )
-
-    def _append_call(
-        self,
-        *,
-        call_id: str,
-        tool_name: str,
-        arguments: dict[str, Any],
-        executor: ToolExecutorIdentity | None,
-    ) -> None:
-        first = self._call_positions.get(call_id)
-        if first is not None:
-            raise TimelineInconsistencyError(
-                f"tool-call id {call_id!r} occurs twice in the trial, at positions {first} "
-                f"and {len(self._events)}. The id is the only key that joins a call to the "
-                "result it produced, so a duplicate leaves the join ambiguous."
-            )
-        self._call_positions[call_id] = len(self._events)
-        self._append(
-            kind=TraceEventKind.TOOL_CALL,
-            call_id=call_id,
-            tool_name=tool_name,
-            arguments=arguments,
-            executor=executor,
-        )
-
-    def _append_result(self, record: RecordedToolCall) -> None:
+    def _append_result(self, key: str, record: RecordedToolCall) -> None:
         self._append(
             kind=TraceEventKind.TOOL_RESULT,
-            call_id=record.call_id,
+            call_id=key,
             tool_name=record.tool_name,
             executor=record.executor,
             status=record.status,
@@ -387,13 +439,24 @@ class _TimelineBuilder:
             latency_seconds=record.latency_seconds,
         )
 
-    def _append_message_result(self, call: ToolCall) -> None:
-        """The result as the message view preserved it: text, and nothing a record carries."""
+    def _append_message_result(self, declared: _DeclaredCall) -> None:
+        """The result as the message view preserved it: text, and nothing a record carries.
+
+        Strips the ``"Error: "`` prefix ``core/loop.py:460`` writes onto the
+        message body for a failed call, so ``result:`` reads the same on
+        this branch as on ``_append_result`` (which pulls raw ``record.output``).
+        Without this, ``result: {regex: "^insufficient funds"}`` passed on a
+        bundle carrying ``tool_log.yaml`` and failed on the same bundle
+        re-graded without it — the "one text on both substrates" claim (#977)
+        would hold only for records, not for messages.
+        """
+        raw = self._message_results[declared.key]
+        result = raw[len(_ERROR_MESSAGE_PREFIX) :] if raw.startswith(_ERROR_MESSAGE_PREFIX) else raw
         self._append(
             kind=TraceEventKind.TOOL_RESULT,
-            call_id=call.id,
-            tool_name=call.name,
-            result=self._message_results[call.id],
+            call_id=declared.key,
+            tool_name=declared.call.name,
+            result=result,
         )
 
     def _append(

@@ -9,6 +9,7 @@
 #
 # Policy names map to implementations in tolokaforge.core.llm.*:
 #   schema_sanitizer:        passthrough | strict | gemini | gemini_recursive
+#                             | xai_grok_recursive
 #   prompt_policy:            none | dict_map_hints | dict_map_hints_ref
 #   content_policy:           openai | anthropic | nova
 #   response_policy:          standard | unwrap_input | json_coerce
@@ -127,6 +128,79 @@ presets:
     schema_sanitizer: strict
     response_policy: array_dict_map
     reasoning_codec: openai
+
+  # x-ai/grok-4.6 — model-specific overlay landed via auto-resolve
+  # (Slack-requested integration, PR #1161). Declared BEFORE the generic
+  # ``xai_grok`` preset (whose broader ``x-ai/*`` glob it would otherwise match)
+  # so first-match-wins routing picks it up for this one route only; every other
+  # x-ai/grok route keeps the bundled ``xai_grok`` axes untouched.
+  #
+  # It is a SUPERSET of ``xai_grok``: each of the three axes is a SUBCLASS of the
+  # policy it replaces, so every documented behaviour of the bundled preset is
+  # preserved by inheritance and nothing grok-family-wide regresses.
+  #
+  #   schema_sanitizer: strict         -> xai_grok_recursive
+  #   response_policy:  array_dict_map -> scalar_array_dict_map
+  #   reasoning_codec:  openai         -> openai_summary_replay
+  #
+  #   1. ``xai_grok_recursive`` (``XaiGrokRecursiveSchema``, ``StrictSchema``
+  #      lineage via ``GeminiRecursiveSchema``) fixes three SANITISER-side losses
+  #      the plain ``strict`` sanitiser inflicts before the request is ever sent:
+  #        * cyclic ``$ref`` — in-engine ``ValueError: StrictSchema: $ref
+  #          resolution exceeded depth 16``, ``recursive_ref`` 0/15 on all four
+  #          shapes. The raise fires pre-send, so Grok never received the tool.
+  #        * scalar dict-map values dropped — ``dict_map__scalar_values`` 0/15
+  #          (``{'SKU-A': {}, …}``).
+  #        * ``oneOf`` + ``discriminator`` dict-map values dropped —
+  #          ``union_in_dict_map`` 0/15 (map flattened to ``{"t1', ": {}, 'c1':
+  #          {}}``).
+  #      Grok's ``strict`` description / RE2-pattern stripping is kept intact
+  #      (both flags reset to the ``StrictSchema`` defaults —
+  #      ``re2_pattern_tolerance`` passes 15/15 WITH the strip on).
+  #   2. ``scalar_array_dict_map`` is the reverse-pivot half of (1): it unwraps
+  #      the synthetic ``{"value": X}`` map entries the sanitiser's scalar
+  #      carriage produces and pivots dict-maps nested one level inside
+  #      ``object`` params. Paired with ``carry_scalar_dict_map_value``; one
+  #      without the other is incoherent.
+  #   3. ``openai_summary_replay`` inherits the OpenAI ``extract`` VERBATIM (so
+  #      THINKING_EMITS_BLOCKS keeps its 15/15 summary surface) and adds only
+  #      ``encode_for_replay``, rebuilding the unsigned OpenRouter
+  #      ``reasoning_details`` envelope so ``test_unsigned_thinking_replay``
+  #      (0/15 natively: "assistant dict missing ``reasoning_details``") passes.
+  #      It synthesises no signature, so signed THINKING_REPLAY_ROUNDTRIP stays a
+  #      declared ceiling (see registry.py).
+  #
+  # Reprobe went 5/5 on every fix-target.
+  #
+  # REFUTED, do not re-try — ``reasoning_codec: gemini`` on this route. Resolve
+  # iteration 4 swapped this axis to chase signed replay (the ``qwen3.8-max``
+  # precedent above) and the controlled reprobe measured it CATASTROPHIC: all
+  # four fix-targets fell 5/5 -> 0/5 with ``ValueError: Unknown Gemini
+  # reasoning_details type: 'reasoning.summary'``, 15/15 identical. Grok-4.6
+  # labels its ``reasoning_details`` entries ``reasoning.summary``, a type
+  # ``GeminiReasoningCodec``'s block decoder RAISES on rather than skipping, so
+  # the codec aborts while PARSING every response — an engine-side exception, not
+  # a model regression. ``openai_summary_replay`` is immune: its inherited
+  # ``extract`` reads the flat ``reasoning`` / ``reasoning_content`` summary
+  # string and never walks the ``reasoning_details`` envelope. The qwen
+  # precedent does not transfer (qwen3.8-max emits ``summary_text`` blocks the
+  # Gemini codec accepts). See ``policies/xai.py`` for the second refuted
+  # hypothesis (a fenced-JSON prompt directive, measured harmful).
+  xai_grok_4_6:
+    match:
+      - "x-ai/grok-4.6*"
+      - "xai/grok-4.6*"
+      # Gateway-prefixed routes (openrouter/…, litellm_proxy/…) reach the same
+      # model through a transport prefix, so the vendor segment is anchored
+      # rather than matched anywhere in the string: a bare "*grok-4.6*" also
+      # claims foreign models whose name merely CONTAINS it, and future
+      # siblings (grok-4.60, grok-4.6-fast) whose axes are unmeasured.
+      - "*/x-ai/grok-4.6*"
+      - "*/xai/grok-4.6*"
+    schema_sanitizer: xai_grok_recursive
+    content_policy: openai
+    response_policy: scalar_array_dict_map
+    reasoning_codec: openai_summary_replay
 
   xai_grok:
     match:
@@ -402,6 +476,25 @@ presets:
     match:
       - "google/gemini-3.6-flash"
       - "openrouter/google/gemini-3.6-flash"
+    reasoning_codec: gemini
+    schema_sanitizer: gemini_recursive
+    response_policy: scalar_array_dict_map
+
+  # Gemini 3.7 Flash - third model in this Flash lineage to land the SAME
+  # pair of axes as its 3.5/3.6 siblings above. The observe baseline
+  # (2026-08-14, default preset, 31 capability probes x 15 reps) resolved to
+  # the generic ``gemini`` preset and reproduced the identical signature:
+  # ``recursive_ref`` 0/15 on all four shapes with an in-engine
+  # "$ref resolution exceeded depth 16" crash, plus the ``dict_map``
+  # ``scalar_values`` and ``nested_in_object`` variants 0/15. Routed through
+  # the already-shipped ``gemini_recursive`` sanitizer +
+  # ``scalar_array_dict_map`` response policy; reprobe went 5/5 on every
+  # fix-target. Exact match globs only, declared BEFORE the generic
+  # ``gemini`` glob (first-match-wins), so no sibling route is affected.
+  gemini_37_flash_recursive:
+    match:
+      - "google/gemini-3.7-flash"
+      - "openrouter/google/gemini-3.7-flash"
     reasoning_codec: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map

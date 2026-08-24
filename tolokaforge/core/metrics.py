@@ -323,8 +323,8 @@ def _measured_averages(measured: Sequence[Trajectory]) -> dict[str, Any]:
     trial halve a task's average score. ``scored_trials`` is that average's own
     denominator, counted from the same list, so the run-level micro can rebuild
     the numerator instead of assuming every measured trial was graded. The two
-    counts differ on any run that hit a ``HARNESS_ERROR`` trial, which never
-    reaches grading, or an ``UNGRADEABLE`` one, whose grading refused.
+    counts differ on any run that hit an ``UNGRADEABLE`` trial, whose grading
+    refused, or a ``trial_lost`` one, which is not graded at all.
     """
     scores = [t.grade.score for t in measured if t.grade is not None]
     return {

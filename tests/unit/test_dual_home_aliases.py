@@ -226,6 +226,28 @@ class TestDeprecatedTaskScopeFields:
             for w in caught
         )
 
+    def test_retired_max_idle_turns_on_orchestrator_says_so(self) -> None:
+        """The run-side copy answers the retired knob the same way the canonical
+        home does: the config loads, the knob is gone, and the message names the
+        replacement."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            cfg = RunConfig(
+                **_base(
+                    orchestrator={
+                        "stuck_heuristics": {"max_repeated_tool_calls": 5, "max_idle_turns": 12},
+                    },
+                ),
+            )
+        assert not hasattr(cfg.orchestrator.stuck_heuristics, "max_idle_turns")
+        assert any(
+            issubclass(w.category, DeprecationWarning)
+            and "max_idle_turns" in str(w.message)
+            and "ADR-0035" in str(w.message)
+            and "transcript_rules" in str(w.message)
+            for w in caught
+        ), [str(w.message) for w in caught]
+
     def test_continue_prompt_on_orchestrator_warns(self) -> None:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")

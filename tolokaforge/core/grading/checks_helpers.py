@@ -7,11 +7,12 @@ dicts, inspect tool-call sequences, and pattern-match text. Domain-specific
 helpers should be defined at the project level (e.g. ``tasks/airline/
 check_helpers.py``).
 
-Framework-internal utilities (``custom_checks_enabled``, ``build_check_context``)
-are called by BOTH grading paths — :class:`~tolokaforge.core.grading.combine.GradingEngine`
-on the host and the runner-side :class:`~tolokaforge.runner.service.RunnerServiceImpl`
-— so the two cannot diverge on when custom checks run or on the
-``final_env_state`` shape transform they depend on.
+Framework-internal utilities (``custom_checks_enabled``, ``build_check_context``,
+``custom_checks_reason``) are called by BOTH grading paths —
+:class:`~tolokaforge.core.grading.combine.GradingEngine` on the host and the
+runner-side :class:`~tolokaforge.runner.service.RunnerServiceImpl` — so the two
+cannot diverge on when custom checks run, on the ``final_env_state`` shape
+transform they depend on, or on what the grade says about the suite's verdict.
 
 Usage in ``checks.py``:
     from tolokaforge.core.grading.checks_helpers import (
@@ -27,11 +28,23 @@ from typing import Any, TypeGuard
 
 from tolokaforge.core.grading.checks_interface import (
     CheckContext,
+    CheckResultSet,
+    CheckStatus,
     CustomChecksConfig,
     EnvironmentState,
     TaskContext,
     Transcript,
 )
+
+#: Names the ``custom_checks`` component in ``Grade.reasons``, the way ``Transcript:``
+#: and ``Trace checks:`` name theirs. Both substrates emit segments under it.
+CUSTOM_CHECKS_REASON_PREFIX = "Custom checks:"
+
+#: Opens the sentence for a suite that never ran. It carries ``failed`` itself rather
+#: than inheriting it from the error it quotes: the same state — a component the fold
+#: reads as failed — must not be read one way when the executor says "Failed to
+#: load/run checks" and another when it says "checks file not found".
+CUSTOM_CHECKS_FAILED_TO_RUN = f"{CUSTOM_CHECKS_REASON_PREFIX} the suite failed to run —"
 
 # =============================================================================
 # Framework-internal: shared gate + CheckContext builder (both grading paths)
@@ -110,6 +123,48 @@ def build_check_context(
         transcript=transcript,
         task=task,
     )
+
+
+def custom_checks_reason(result: CheckResultSet) -> str:
+    """The sentence ``Grade.reasons`` carries for the ``custom_checks`` component.
+
+    Never empty: a caller with no suite to describe — a pack declaring no
+    ``custom_checks`` block, or one that disabled it — does not call this.
+
+    Four shapes, and which one a set falls into is the set's own answer rather than
+    the caller's. A suite carrying ``error`` failed to run, and the error is the only
+    thing that says why. A suite that reached no verdict says so instead of reporting
+    an aggregate over nothing, which is ``0.0`` and indistinguishable from having
+    failed. A suite that reached verdicts reports its score, how many checks reached
+    one, and every check that reached one and lost — by name and message, the way
+    ``Transcript:`` and ``Trace check <id>:`` name theirs. A skipped check reached no
+    verdict, so it is counted and not named.
+
+    Which of the four a reader downstream treats as a failure is decided here rather
+    than by the text this quotes. :func:`~tolokaforge.core.failure_attribution.attribute_failure`
+    keeps the segments of ``reasons`` matching ``"FAIL"`` case-insensitively, so the
+    two shapes the fold reads as a failed component — a suite with a losing check, and
+    one that never ran — carry ``fail`` in words this function writes, and the two it
+    does not carry none. A suite that reached no verdict is unscored rather than
+    failed, and a passing suite names no check, so neither can supply the substring by
+    accident.
+    """
+    if result.error:
+        return f"{CUSTOM_CHECKS_FAILED_TO_RUN} {result.error}"
+
+    decided = result.decided
+    skipped = result.skipped
+    if not decided:
+        nothing = "the file declared no check" if not result.results else f"all {skipped} skipped"
+        return f"{CUSTOM_CHECKS_REASON_PREFIX} no check reached a verdict — {nothing}"
+
+    head = f"{CUSTOM_CHECKS_REASON_PREFIX} score={result.aggregate_score:.2f}"
+    tail = f", {skipped} skipped" if skipped else ""
+    lost = [r for r in decided if r.status != CheckStatus.PASSED]
+    if not lost:
+        return f"{head}, all {len(decided)} checks passed{tail}"
+    named = "; ".join(f"{r.check_name}: {r.message}" for r in lost)
+    return f"{head}, {len(lost)} of {len(decided)} checks failed{tail} — {named}"
 
 
 # =============================================================================

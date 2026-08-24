@@ -1,0 +1,88 @@
+binary_pass: false
+score: 0.4
+components:
+  state_checks: 0.0
+  transcript_rules: null
+  trace_checks: 0.5
+  llm_judge: 1.0
+  custom_checks: null
+reasons: 'DB probes: FAIL: probe ''contamination_ca_opened'' — PASS: corrective action
+  uses the contamination reason code; PASS: the action is open; FAIL: exactly one
+  corrective action exists for lot 7 ($.row_count: expected equals 1, got 3) | Trace
+  checks: score=0.50 | Trace check the_lot_was_read_before_the_action_was_opened:
+  before is unmatched: left selected no event; failed under (lot_url=''http://app-service:8000/lots/7'')
+  | Judge: score=1.00 (The agent correctly identified lot LOT-1007, fetched the contamination
+  reason code (CAPA-01), opened exactly one corrective action, and wrote a clear,
+  operator-facing completion report. All three criteria are fully met: the lot is
+  named, the contamination reason is stated, and the report is concise and suitable
+  for handing to a shift lead. | Judge KB: none offered)'
+state_diff: null
+custom_checks_details: null
+trace_check_results:
+- id: the_reason_code_posted_was_read_from_the_catalog
+  kind: before
+  passed: true
+  weight: 1.0
+  severity: scored
+  message: ''
+  matched_positions:
+  - 2
+  - 5
+  undecided: false
+- id: the_lot_was_read_before_the_action_was_opened
+  kind: before
+  passed: false
+  weight: 1.0
+  severity: scored
+  message: 'before is unmatched: left selected no event; failed under (lot_url=''http://app-service:8000/lots/7'')'
+  matched_positions:
+  - 5
+  undecided: false
+- id: exactly_one_corrective_action_was_opened
+  kind: count
+  passed: true
+  weight: 1.0
+  severity: gate
+  message: ''
+  matched_positions:
+  - 5
+  undecided: false
+trace_checks_summary:
+  winning_path: ''
+  gate_failed: false
+  failed_gate_ids: []
+  paths: []
+criterion_results:
+- id: names_lot
+  met: true
+  score: 1.0
+  justification: |-
+    The report explicitly identifies the affected lot as "LOT-1007" multiple times. The title reads "Completion Report for Lot LOT-1007", the body states "A corrective action has been opened for lot LOT-1007 due to a contamination hit", and the note field also references "lot LOT-1007". The lot is clearly and unambiguously identified.
+    VERDICT: MET
+- id: states_reason
+  met: true
+  score: 1.0
+  justification: |-
+    The report explicitly states the corrective action was opened "due to a contamination hit reported by QC." The reason code is listed as "CAPA-01 (Contamination)" and the note says "Contamination hit reported by QC on lot LOT-1007." The contamination issue is clearly stated as the reason for the corrective action — not a generic or unrelated cause.
+    SCORE: 1
+- id: operator_facing
+  met: true
+  score: 1.0
+  justification: |-
+    The report is written in plain, clear language suitable for an operator to hand to a shift lead. It has a clear title, a brief summary sentence, and a structured details section. It ends with "This report is prepared for the shift lead." It is concise and readable — not raw API output or a debug dump. The details section does include technical fields like "Created At" timestamp and CA ID, which are informative rather than debug-style. Overall it reads as a professional completion note appropriate for an operator context.
+    SCORE: 1
+judge_status: completed
+judge_usage:
+  calls: 2
+  prompt_tokens: 6214
+  completion_tokens: 875
+  reasoning_tokens: 0
+  cost_usd: 0.0231648
+  tool_calls: 1
+  consistency_rejections: 0
+judge_kb_gating:
+  knowledge_search_disabled: false
+  offered: []
+  withheld: []
+judge_custom_prompt: false
+judge_agent_prompt_included: true

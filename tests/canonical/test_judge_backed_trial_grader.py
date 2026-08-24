@@ -6,7 +6,7 @@ custom-check machinery. This test locks that shape and pins the entry-point
 registration so a downstream grader can rely on the same discovery path as
 ``runner_rpc``.
 
-See ADR-0035 § Design Drivers (Decision 5 — a second impl proves the seam).
+See ADR-0038 § Design Drivers (Decision 5 — a second impl proves the seam).
 """
 
 from __future__ import annotations

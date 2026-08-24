@@ -4,7 +4,7 @@ Structurally identical to ``RunnerRPCTrialGrader`` in dispatch shape, but
 bound to the standalone grader service (:mod:`tolokaforge.grader`) instead
 of the runner. Same call surface, same auto-fail branches, same wire
 semantics — the difference is *what address the grader talks to*, which is
-the whole point of ADR-0035 (grader service ships on its own image, own
+the whole point of ADR-0038 (grader service ships on its own image, own
 release cadence, own host class).
 
 The service-side wire round-trip is exercised by the in-process gRPC

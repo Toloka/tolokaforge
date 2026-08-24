@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge"
-version = "0.18.1"
+version = "0.19.1"
 description = "Tolokaforge - LLM Tool-Use Benchmarking Harness"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -291,7 +291,9 @@ only-include = [
     "tolokaforge/core/model_data.py",
     "tolokaforge/core/netpolicy_constants.py",
     "tolokaforge/core/pricing.py",
+    "tolokaforge/core/redaction.py",
     "tolokaforge/core/run_display_events.py",
+    "tolokaforge/core/tool_call_ids.py",
     "tolokaforge/core/trial.py",
 ]
 exclude = [
@@ -301,15 +303,15 @@ exclude = [
     "tolokaforge/core/grading/agreement.py",
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/config_validation.py",
+    "tolokaforge/core/grading/corpus_curation.py",
     "tolokaforge/core/grading/migration_declaration.py",
     "tolokaforge/core/grading/replay.py",
+    "tolokaforge/core/grading/replay_layout.py",
     "tolokaforge/core/grading/rubric_migration.py",
     "tolokaforge/core/grading/state_checks.py",
     "tolokaforge/core/grading/trace_replay.py",
-    "tolokaforge/core/grading/transcript.py",
     "tolokaforge/core/grading/unknown_keys.py",
     "tolokaforge/core/llm/fallback_client.py",
-    "tolokaforge/tools/user_tools.py",
 ]
 
 # Force-include the repo-root ``.python-version`` dotfile into the subset
@@ -372,13 +374,13 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "tolokaforge_models/tests"]
+testpaths = ["tests", "tolokaforge_models/tests", "tolokaforge_coding_harnesses/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-norecursedirs = ["tests/data/projects/*/tests"]
+norecursedirs = ["tests/data/projects/*/tests", "tests/data/terminal_bench_tasks/*/tests"]
 addopts = [
     "-v",
     "--strict-markers",
@@ -411,7 +413,9 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["tolokaforge"]
+# Every package the workspace ships. `--cov` with no value reads this list, so a
+# `--cov=<pkg>` on a command line would replace it with a narrower one.
+source = ["tolokaforge", "tolokaforge_models", "tolokaforge_coding_harnesses"]
 omit = [
     "tolokaforge/*/tests/*",
     "*/test_*",
@@ -556,6 +560,7 @@ required-version = ">=0.9.5,<0.10"
 [tool.uv.workspace]
 members = [
     "tolokaforge_models",
+    "tolokaforge_coding_harnesses",
     "tools/automation",
     "tools/dev-mcp",
     "tools/pricing-updater",
@@ -569,6 +574,7 @@ dev-mcp = { workspace = true }
 rubric-calibrator = { workspace = true }
 tolokaforge = { workspace = true }
 tolokaforge-adapter-terminal-bench = { workspace = true }
+tolokaforge-coding-harnesses = { workspace = true }
 tolokaforge-models = { workspace = true }
 
 # PyPI as primary index for cross-platform compatibility

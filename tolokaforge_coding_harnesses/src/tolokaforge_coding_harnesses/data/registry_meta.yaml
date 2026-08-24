@@ -1,0 +1,62 @@
+# Registry-wide metadata: catalogs that apply across every harness entry
+# rather than being expressible on ``HarnessSpec`` itself. The file this
+# package reads as ``tolokaforge_coding_harnesses.SHIPPED_REGISTRY_META_FILE``;
+# the contract validating every value below is private to ``_registry.py``.
+
+# OpenRouter ``vendor/`` namespaces that ``harness_model`` drops from the model
+# name for harnesses declaring ``strip_vendor_namespace=True``. A new
+# OpenRouter namespace (e.g., ``mistralai/``) surfaces here as a one-line
+# YAML addition rather than a Python constant edit.
+openrouter_vendor_namespaces:
+  - "anthropic/"
+  - "openai/"
+  - "google/"
+  - "x-ai/"
+  - "meta-llama/"
+  - "moonshotai/"
+  - "qwen/"
+  - "deepseek/"
+
+# Environment variables a harness CLI may be given inside the task container.
+# A closed allow-list: every forwarded value lands in the per-trial compose
+# ``.env`` and then in the container the agent works in, so an open surface
+# would let a run config shadow the task's own environment with arbitrary
+# values.
+#
+# The Google/Gemini split, the OpenRouter/Kimi vendor-specific slots and the
+# LiteLLM entries all live here so an operator adding a new CLI's native
+# env-var name does so with a YAML edit instead of a Python edit.
+provider_env_keys:
+  - "ANTHROPIC_API_KEY"
+  - "ANTHROPIC_AUTH_TOKEN"
+  - "ANTHROPIC_BASE_URL"
+  - "OPENAI_API_KEY"
+  - "OPENAI_BASE_URL"
+  - "GOOGLE_API_KEY"
+  - "GEMINI_API_KEY"
+  - "GOOGLE_GEMINI_BASE_URL"
+  - "OPENROUTER_API_KEY"
+  - "OPENROUTER_BASE_URL"
+  - "KIMI_MODEL_API_KEY"
+  - "KIMI_MODEL_BASE_URL"
+  - "LITELLM_API_KEY"
+  - "LITELLM_BASE_URL"
+
+# Gateways a harness entry's ``gateway_route`` may name. Data, and read by
+# nobody here: no code in this package resolves ``base_url_env`` or
+# ``credential_env`` into a URL or a credential. The catalog exists so a route
+# names one endpoint by key instead of repeating it, and so the runtime that
+# does resolve the pair reads the same names the harness data shipped with.
+#
+# Shipped-only on purpose — this file carries no operator-overlay and no
+# plug-in layer, which is what keeps it outside both fingerprint digests. An
+# operator running their own gateway overlays the whole harness entry instead
+# (``examples/terminal_bench/gemini_litellm_overlay.yaml`` is the worked
+# example) and names no gateway at all. See ADR-0037.
+alternative_gateways:
+  toloka_litellm:
+    base_url_env: "LITELLM_BASE_URL"
+    credential_env: "LITELLM_API_KEY"
+    supports:
+      - "protocol_translation"
+      - "provider_pinning"

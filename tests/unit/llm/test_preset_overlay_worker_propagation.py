@@ -51,6 +51,7 @@ class TestEngineRunStatePersistence:
             run_id="run-001",
             presets_file="/some/overlay.yaml",
             models_fingerprint=fingerprint,
+            adapter_fingerprints={},
         )
         assert read_persisted_presets_file(tmp_path) == "/some/overlay.yaml"
         assert read_persisted_run_id(tmp_path) == "run-001"
@@ -59,6 +60,7 @@ class TestEngineRunStatePersistence:
             "run_id": "run-001",
             "presets_file": "/some/overlay.yaml",
             "models_fingerprint": fingerprint.model_dump(mode="json"),
+            "adapter_fingerprints": {},
         }
 
     def test_writing_none_persists_as_none(self, tmp_path: Path) -> None:
@@ -68,6 +70,7 @@ class TestEngineRunStatePersistence:
             run_id="run-002",
             presets_file=None,
             models_fingerprint=fingerprint,
+            adapter_fingerprints={},
         )
         assert read_persisted_presets_file(tmp_path) is None
         assert read_persisted_run_id(tmp_path) == "run-002"
@@ -78,6 +81,7 @@ class TestEngineRunStatePersistence:
             "run_id": "run-002",
             "presets_file": None,
             "models_fingerprint": fingerprint.model_dump(mode="json"),
+            "adapter_fingerprints": {},
         }
 
     def test_absent_file_returns_empty_state(self, tmp_path: Path) -> None:
@@ -93,12 +97,14 @@ class TestEngineRunStatePersistence:
             run_id="run-003",
             presets_file="/first.yaml",
             models_fingerprint=fingerprint,
+            adapter_fingerprints={},
         )
         write_engine_run_state(
             tmp_path,
             run_id="run-003",
             presets_file="/second.yaml",
             models_fingerprint=fingerprint,
+            adapter_fingerprints={},
         )
         assert read_persisted_presets_file(tmp_path) == "/second.yaml"
 
@@ -109,6 +115,7 @@ class TestEngineRunStatePersistence:
                 run_id="",
                 presets_file=None,
                 models_fingerprint=compute_models_fingerprint(),
+                adapter_fingerprints={},
             )
 
     def test_malformed_state_file_raises_loudly(self, tmp_path: Path) -> None:
@@ -160,6 +167,7 @@ class TestEngineRunStatePersistence:
             run_id="run-stub",
             presets_file=None,
             models_fingerprint=fingerprint,
+            adapter_fingerprints={},
         )
         assert read_persisted_models_fingerprint(tmp_path) == fingerprint
 
@@ -182,6 +190,7 @@ class TestWorkerOverlayResolution:
             run_id="run-resolver",
             presets_file=queue_overlay,
             models_fingerprint=compute_models_fingerprint(),
+            adapter_fingerprints={},
         )
         run_config = _minimal_run_config(presets_file=config_overlay)
         resolved = _activate_presets_overlay(
@@ -198,6 +207,7 @@ class TestWorkerOverlayResolution:
             run_id="run-resolver",
             presets_file=queue_overlay,
             models_fingerprint=compute_models_fingerprint(),
+            adapter_fingerprints={},
         )
         resolved = _activate_presets_overlay(
             cli_presets_file=cli_overlay,
@@ -229,6 +239,7 @@ class TestWorkerOverlayResolution:
             run_id="run-resolver",
             presets_file=None,
             models_fingerprint=compute_models_fingerprint(),
+            adapter_fingerprints={},
         )
         run_config = _minimal_run_config(presets_file=config_overlay)
         resolved = _activate_presets_overlay(

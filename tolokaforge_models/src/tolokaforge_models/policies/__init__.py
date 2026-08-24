@@ -28,6 +28,7 @@ from tolokaforge_models.policies.minimax import (
     JsonRecursiveCoerceResponse,
     MinimaxM3TagRecoveryResponse,
 )
+from tolokaforge_models.policies.xai import XaiGrokRecursiveSchema
 
 __all__ = [
     "GeminiRecursiveSchema",
@@ -38,4 +39,5 @@ __all__ = [
     "OpenAISummaryReplayReasoningCodec",
     "RefResolvingDictMapHints",
     "ScalarArrayDictMapResponse",
+    "XaiGrokRecursiveSchema",
 ]

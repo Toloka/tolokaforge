@@ -9,8 +9,9 @@ recorded timeline and joining the two verdicts per trial.
 
 It spends nothing — no agent, no environment service, no judge — and it never edits a pack.
 The guarantee is structural: `tolokaforge/core/grading/rubric_migration.py` reaches the
-trace-replay reader, the one production trace evaluator, the pure agreement maths and the task
-loader `tolokaforge validate` already uses, and stops there, which a clean-subprocess import
+trace-replay reader and its bundle discovery, the one production trace evaluator, the outcome
+classifier a run's own attribution uses, the pure agreement maths and the task loader
+`tolokaforge validate` already uses, and stops there, which a clean-subprocess import
 probe holds (`tests/canonical/test_rubric_migration.py::test_the_differential_reaches_neither_an_llm_client_nor_the_judge`).
 
 `reconcile` is a separate command from [`retrace`](TRACE_REPLAY.md) — which also spends
@@ -25,16 +26,22 @@ trial; neither of the free commands does.
 
 - **Before taking a migration.** Declare the criterion as a `candidate`, point `reconcile` at
   a corpus of recorded trials, and read whether the constraint and the judge ever disagreed.
-- **In CI, after taking one.** The constraint block is resolved from the *pack*, so editing a
-  shipped constraint changes what is recomputed over the frozen corpus. A migration's evidence
-  is therefore re-verified for free on every run and cannot rot silently.
+- **In CI, after taking one.** `tolokaforge reconcile --dry-run` with no `--source` re-verifies
+  every declaration in the tree over the corpus each one names. The constraint block is
+  resolved from the *pack*, so editing a shipped constraint changes what is recomputed over the
+  frozen corpus: a migration's evidence is re-verified for free on every run and cannot rot
+  silently.
 - **When a criterion's text is half a code check.** The residue — the part no tool record can
   answer — is what a `narrowed` entry declares and the judge keeps reading.
 
 ## Usage
 
 ```bash
-# Check every migration the packs behind a corpus declare. --dry-run because this corpus is
+# Every declared migration, each over the corpus its own declaration names. The CI
+# invocation: it writes nothing, so it needs --dry-run and takes no --replay-id.
+tolokaforge reconcile --dry-run
+
+# Check every migration the packs behind one corpus declare. --dry-run because this corpus is
 # committed: the report lands under --source, so without it the run dirties the tree.
 tolokaforge reconcile --source tests/data/migration_corpora/notes_duplicate_check --dry-run
 
@@ -45,6 +52,14 @@ tolokaforge reconcile --source results/<run-id>
 tolokaforge reconcile --source <corpus> --packs tests/data/migration_packs
 ```
 
+**With no `--source` the command sweeps the declarations instead of a corpus.** It resolves
+every `migration.yaml` under `--packs` and reconciles each entry over the corpus that entry
+itself names, one report per corpus, ordered by path. Two entries of one pack naming two
+corpora are two rows over two bodies of evidence; two packs claiming one criterion the same
+way are still [pooled](#pooling-across-tasks) into one. The sweep writes nothing at all, so
+`--replay-id` and an invocation without `--dry-run` are **refused** rather than ignored: both
+ask for a report that will not exist. The exit code is the same gate as below, over every row.
+
 **Reconciling a committed corpus wants `--dry-run`.** The report is written *under* `--source`
 (see [Output](#output)), so a run over anything tracked by git leaves a `reconcile/` directory
 behind in it. `.gitignore` covers the replay commands' output directories under any root, so
@@ -53,10 +68,10 @@ and it reaches exactly the same verdict.
 
 | Flag | Meaning |
 |---|---|
-| `--source` | The corpus: a run dir, a flat collection of bundle dirs, or a single bundle dir. A directory is a bundle iff it holds `task.yaml` + `trajectory.yaml`. |
-| `--packs` | Directory searched recursively for the pack each bundle's `task_id` names; repeatable, default `examples/`. |
-| `--replay-id` | Names the artifact subdirectory (letters, digits, `.`, `_`, `-`). Default: timestamped. |
-| `--dry-run` | Reach the verdict and report it, write nothing. |
+| `--source` | The corpus: a run dir, a flat collection of bundle dirs, or a single bundle dir. A directory is a bundle iff it directly holds `trajectory.yaml` ([JUDGE_REPLAY.md](JUDGE_REPLAY.md#what-gets-re-judged)). A discovered bundle recording a trial that never ran carries no `task.yaml`, names no pack, and is **excluded from the corpus by name** — the report's `excluded_bundles` — rather than blocking it. Omitted: every declared migration, each over the corpus it names. |
+| `--packs` | Directory searched recursively for the pack each bundle's `task_id` names, and for the declarations the sweep reconciles; repeatable, default `examples/`. |
+| `--replay-id` | Names the artifact subdirectory (letters, digits, `.`, `_`, `-`). Default: timestamped. Refused without `--source`. |
+| `--dry-run` | Reach the verdict and report it, write nothing. Required without `--source`. |
 
 There is deliberately **no** `--constraints`-style flag. The block comes from the pack the
 bundle's `task_id` resolves to, which is what makes the CI re-verification bite: a flag would
@@ -68,9 +83,9 @@ not load, and a pack whose constraints cannot be graded against the tool set a b
 recorded — the last because a constraint naming a tool the corpus never had would fail on
 every trial and read as a disagreement with the judge.
 
-A pack that names **no grading source at all** — no `grading:` field and no sibling
-`grading.yaml` — is an error too, naming the pack. It is refused under every `adapter_type` a
-pack may declare, which is stricter than
+A pack with **no grading block on disk** — naming no source at all (no `grading:` field and
+no sibling `grading.yaml`), or naming a path with no file at it — is an error too, naming the
+pack. It is refused under every `adapter_type` a pack may declare, which is stricter than
 [`tolokaforge validate`](CLI.md#task-validation), where the same absence passes with a `?`
 line for any adapter that resolves its own grading config: the migration is declared beside
 that file and the `trace_checks` block it names is what each recorded verdict is recomputed
@@ -86,12 +101,29 @@ its load-time refusals are in [GRADING.md § Trace Checks](GRADING.md#trace-chec
 | Field | Its role in the bar |
 |---|---|
 | `criterion` | Which recorded judge verdict is the reference label. |
-| `by` | The constraints recomputed as the candidate label — a **conjunction**: all of them must pass. |
+| `by` | The constraints recomputed as the candidate label — a **conjunction**: all of them must pass. Its route-scoped ids all sit in **one** route, since a trial is scored on the route it took; shared ids accompany any route's. |
+| `corpus` | The committed corpus the claim is measured over. **Required in every mode**, and it must resolve — see below. |
 | `was` | The pre-migration criterion shape, verified against the rubric each bundle recorded. |
 | `mode` | `candidate` / `narrowed` / `retired`. Decides which disagreement directions are tolerated. |
 | `residual` | The author's claim about what remains. Rendered, never graded. |
-| `evidence` | Where the verdicts live, and what they measured. `observations` and `kappa` are checked against what this run measures — [refusal 5](#what-an-entry-is-refused-for). |
-| `acknowledged` | Waivers, each naming its trial and why the judge's verdict is the one to discount. |
+| `evidence` | What the recorded verdicts measured. `observations` and `kappa` are checked against what this run measures — [refusal 5](#what-an-entry-is-refused-for). Required for `narrowed` / `retired`, forbidden on a `candidate`: it is the measurement a *decision* rests on, and a candidate has decided nothing. |
+| `acknowledged` | Waivers, each naming its trial and why the judge's verdict is the one to discount. The trial is a bundle under the entry's `corpus`, in every mode. |
+
+**The corpus resolves, or the declaration is refused at load.** A value names a directory
+carrying the `corpus.yaml` [`tolokaforge curate`](#building-a-corpus) writes, or one whose
+immediate subdirectories all do — exactly one level, which is the multi-part shape that
+command can write. The value is **relative**, and an absolute one is refused: it would win the
+join outright and resolve to itself whatever base was supplied, which would stop the corpus a
+run reads from being a property of the declaration.
+
+It is read against a **base the caller supplies**: unset, the declaration's own directory, so
+a corpus travels with an external pack; `tolokaforge validate` and `tolokaforge reconcile`
+pass the working directory, which is what the shipped repository-root-relative values are
+written from. The refusal names the resolved path and the base separately, so a run from the
+wrong directory says so rather than reporting a corpus nobody wrote. **The residue:** both
+shipped commands override the default, so a pack whose `corpus` is written relative to its own
+directory has no shipped invocation that resolves it today — the default is what a Python
+caller gets, and what a command giving an external pack its own base would need.
 
 ## The bar
 
@@ -133,6 +165,15 @@ nothing, retires nothing and changes no grade.
 
 ### What an entry is refused for
 
+Before any of these, at load: **a `by` whose route-scoped ids sit in different `alternatives`
+routes.** A trial is scored on the route it took, so the verdicts a reconciliation recomputes
+carry the shared constraints and the winning route's alone; a conjunction over two routes has
+no verdict for one of its ids on every trial and reaches no observation on any corpus. The
+refusal names both ids with the route each sits in. What a claim about two routes would need
+instead is **#1057**.
+
+Then, against the corpus:
+
 1. **An unacknowledged disagreement in a direction the mode does not tolerate.**
 2. **A stale acknowledgement** — a waiver whose disagreement is gone.
 3. **A `was` block the recorded rubric contradicts**, naming the bundle and the field.
@@ -140,14 +181,20 @@ nothing, retires nothing and changes no grade.
    criterion, naming both.
 5. **A declared `evidence` block the measurement contradicts.** `evidence.observations` and
    `evidence.kappa` are what a reviewer reads *instead of* re-running the command, so they are
-   the measurement or they are nothing. The rule is a **bound**, because `--source` may
-   deliberately be part of the corpus the declaration names: a run measuring *fewer*
-   observations says nothing, one measuring **more** has read a corpus the declaration
-   under-counts, and one that reaches the declared count must reproduce the declared κ. κ is
-   compared at three decimals — the precision the report prints, and therefore the number an
-   author copies. The residue this tier cannot close: a declaration over-*counting* its own
-   corpus is indistinguishable from a reconciliation over a subset, so only a run reaching the
-   declared count catches a κ that drifted.
+   the measurement or they are nothing. A run measuring **more** observations than the
+   declaration counted has read a corpus the declaration under-counts, and one reaching the
+   declared count must reproduce the declared κ, compared at three decimals — the precision
+   the report prints, and therefore the number an author copies.
+
+   **How far short of the declared count is charged depends on which invocation read it.**
+   Given a `--source`, the rule is a **bound**: the source may deliberately be part of the
+   corpus the declaration names — pointing at one arm of a two-arm corpus is how each half is
+   shown to be the other's falsifier — so a run measuring fewer observations says nothing.
+   Sweeping the declarations (no `--source`), it is an **equality**: the source *is* the
+   corpus the entry names, there is no part of it left out, and a count below the declared one
+   means bundles went missing. The residue the bound leaves — a declaration over-*counting* its
+   own corpus, indistinguishable from a reconciliation over a subset — is therefore closed for
+   the one invocation that can close it, which is the one CI runs.
 
 ### Why `was` is checked against the bundle and not the pack
 
@@ -179,13 +226,20 @@ corpus that quietly got smaller.
 | `no_verdict_for_criterion` | The grade holds no verdict for the named criterion. |
 | `constraint_verdict_unavailable` | A named constraint was undecided, or was route-scoped and its route did not win. |
 
-A bundle that cannot be **read** is different again: it is reported apart from the exclusions
-and it blocks, because a verdict over a corpus that partly failed to load is a verdict over an
-unknown denominator. It never aborts the run, whatever is wrong with it — bytes no decoder
-accepts in any of its artifacts, a `task.yaml` whose recorded rubric does not read as one, a
-`grade.yaml` whose `criterion_results` hold a row that is not a judge verdict or whose `score`
-or component values are not numbers. Each is one named entry under `unreadable_trials`, and
-every other trial in the corpus is still measured.
+A bundle that cannot be **read** is different again: it is reported apart from the
+per-criterion exclusions above and from the corpus-level `excluded_bundles` (the task-less
+bundle a trial that never ran leaves, excluded by name), and it blocks, because a verdict over
+a corpus that partly failed to load is a verdict over an unknown denominator. It never aborts
+the run, whatever is wrong with it — bytes no decoder accepts in any of its artifacts, a
+`task.yaml` absent on a bundle whose trajectory records a real episode, a `task.yaml` whose
+recorded rubric does not read as one, a `grade.yaml` whose `criterion_results` hold a row that
+is not a judge verdict or whose `score` or component values are not numbers. Each is one named
+entry under `unreadable_trials`, and every other trial in the corpus is still measured.
+
+A bundle whose `metrics.yaml` carries a `redaction` stamp lands there too, under a reason that
+names redaction rather than damage: it was rewritten by a policy before it was written, so it
+is not evidence of what the agent did, and a κ computed partly from it would be a number over
+an unknown denominator.
 
 ## Pooling across tasks
 
@@ -269,18 +323,134 @@ therefore satisfied by *declaring* a map, and this is where the declared map is 
 entry declaring the identity map on a criterion the judge scored below `1.0` reports the judge
 component **rising**, which is the accepted residual made visible rather than trusted.
 
-## The committed corpus
+## Which packs get a corpus
+
+**A pack gets a committed corpus exactly when it declares a `migration.yaml` entry.** The
+entry names the corpus, the corpus's composition is the manifest `tolokaforge curate` wrote
+into it, and `tolokaforge reconcile` with no `--source` re-verifies every one of them over the
+packs a reviewer reads.
+
+Most shipped packs carrying a rubric declare no migration, and they need no corpus. Such a
+pack asserts that none of its trace constraints claims any of its criteria — a claim a
+reviewer reads off the absence of the file, and one with nothing to triage against recorded
+verdicts. Declaring an entry is what turns that into a claim about evidence.
+
+**The signal to re-curate is a refusal, not a diary note.** Editing the rubric a `candidate`
+declares `was` against refuses the declaration at load, so a criterion whose text moved cannot
+keep a stale claim. Regenerating a corpus *after* taking the migration refuses it at reconcile
+with `recorded_rubric_contradicts_was`, because the fresh bundles record the post-migration
+rubric — see [Why `was` is checked against the bundle](#why-was-is-checked-against-the-bundle-and-not-the-pack).
+
+## Building a corpus
+
+`tolokaforge curate` turns recorded runs into a corpus. It spends nothing, writes only under
+`--into`, and states the composition it chose in the corpus's own `corpus.yaml`, so a reader
+can check the choice after the run directories behind it are gone — `results/` is gitignored,
+and the runs behind the corpus committed here are on nobody's disk.
+
+```bash
+# One half of a corpus, from three runs of the same arm.
+tolokaforge curate --criterion checked_duplicates_first \
+  --source results/<run-a> --source results/<run-b> --source results/<run-c> \
+  --into tests/data/migration_corpora/<criterion>/met --dry-run
+```
+
+| Flag | Meaning |
+|---|---|
+| `--source` | A recorded run dir (`trials/<task>/<idx>` subtree) or a single bundle dir; repeatable, because a corpus is usually assembled from several runs. Discovery is the one bundle identity every offline command uses: a directory is a bundle iff it directly holds `trajectory.yaml`. |
+| `--into` | The corpus directory to write. |
+| `--criterion` | The rubric criterion id whose recorded verdicts the corpus carries. |
+| `--exclude` | `<bundle-dir>=<reason>`; repeatable. The author's own judgment about one bundle, recorded in the manifest as `by: author` with the reason. |
+| `--replace` | Rewrite the whole `--into` directory. Without it, a destination already holding a `corpus.yaml` is an error — a corpus is never a half-refresh. |
+| `--dry-run` | Classify every discovered bundle and report, writing nothing. |
+
+**A bundle is admitted iff** it carries `task.yaml`, `trajectory.yaml` and `grade.yaml`; its
+`grade.yaml` records `judge_status: completed`; its `criterion_results` holds a verdict for
+`--criterion`; and it is not environment-dead. Every bundle that is not admitted is named on
+the console and in the manifest with its reason and the observation behind it. A run that
+admits nothing writes nothing and exits non-zero, naming the sources it searched.
+
+**Environment-dead is defined on the record, not on rendered text.** A bundle is
+environment-dead iff it carries a `tool_log.yaml`, that record holds at least one call, and
+**no** call has `status: success`: the trial's tools never worked and the judge scored a
+transcript of failures. `TraceEvent.status` comes from that record alone, and the `role: tool`
+message's `Error: ` prefix is harness-rendered rather than a field — so a **record-less**
+bundle is *not* rejected by this rule, because the claim would need evidence the bundle does
+not carry. Each admitted bundle's manifest entry carries `record_carried`, which says where
+the rule could reach.
+
+**The write set is the five files a differential reads** — `task.yaml`, `trajectory.yaml`,
+`grade.yaml`, `tools_schemas.yaml`, `metrics.yaml` — **plus `tool_log.yaml` wherever the
+source bundle had one**. A corpus is record-carrying exactly when its sources were, which is
+what a constraint reading `status`, `executor` or `latency_seconds` needs (see
+[The committed corpora](#the-committed-corpora)). Bundle directories are named
+`<run-id>_trial<index>`, uniformly; one run's two tasks share a trial index, so curating both
+into one corpus is refused rather than silently collapsed.
+
+`corpus.yaml` names the criterion, the task ids, the source runs, the curation time, every
+admitted bundle (its directory, source run, task id, agent and judge models, the judge's
+recorded `met`, and whether a record travelled with it) and every rejection (its source path,
+reason, `by: rule | author` and the observation behind it — `tool_calls: 6, succeeded: 0`).
+
+**A multi-part corpus is a directory whose subdirectories are corpora**, each written by its
+own invocation with its own `--into`. Nothing in the command knows about halves: `reconcile`
+discovers bundles recursively, so pointing it at the parent or at one part both work, and a
+one-sided part stays a corpus a reader can point a command at on its own.
+
+## The committed corpora
+
+Two corpora ship, one per declared migration, and they reach opposite verdicts. The notes
+corpus is evidence a narrow rests on; the `lot_ops` corpus refuses the candidacy it was
+generated for. Both are written by `tolokaforge curate` and re-verified in CI over the packs
+a reviewer reads.
+
+### `notes_duplicate_check` — the narrow's evidence
 
 `tests/data/migration_corpora/notes_duplicate_check/` is the repo's judge-labelled corpus:
 seventeen recorded trials of the notes duplicate-check criterion, in two halves, committed with
-plain git at ~13 KB per bundle. Each bundle is trimmed to the five files the differential reads —
-`task.yaml`, `trajectory.yaml`, `grade.yaml`, `tools_schemas.yaml`, `metrics.yaml` — and its
-directory name carries the run it came from.
+plain git at ~13 KB per bundle. It is a multi-part corpus in the sense above — each half is a
+corpus written by its own `tolokaforge curate` invocation, carrying its own `corpus.yaml`.
 
-| half | trials | task | the judge's `checked_duplicates_first` |
-|---|---|---|---|
-| `not_met/` | 5 | `notes_add_note_duplicate_check_gated` | not met on every one |
-| `met/` | 12 | `notes_add_note_duplicate_check_policy` | met on every one |
+| half | trials | task | the judge's `checked_duplicates_first` | tool-call record |
+|---|---|---|---|---|
+| `not_met/` | 5 | `notes_add_note_duplicate_check_gated` | not met on every one | none |
+| `met/` | 12 | `notes_add_note_duplicate_check_policy` | met on every one | every bundle |
+
+**Its composition is a file a machine wrote and a machine checks.** Each half's `corpus.yaml`
+names every bundle under it with the label its own `grade.yaml` recorded and the models that
+produced it, and every discovered trial that did *not* enter, with the observation behind the
+refusal. Canonical tests read the manifest against the tree in both directions and re-read each
+label off the bundle it describes, so a corpus that has drifted from its own account of itself
+reds rather than reconciling quietly.
+
+Both halves are reproducible by command, over runs under the gitignored `results/`:
+
+```bash
+tolokaforge curate --criterion checked_duplicates_first \
+  --source results/native_shared_domain_policy_demo_20260803_062316 \
+  --source results/native_shared_domain_policy_demo_20260803_063010 \
+  --source results/native_shared_domain_policy_demo_20260803_063150 \
+  --into tests/data/migration_corpora/notes_duplicate_check/met --replace
+
+tolokaforge curate --criterion checked_duplicates_first \
+  --source results/native_shared_domain_example_20260629_133126 \
+  --source results/native_shared_domain_example_20260702_140836 \
+  --source results/native_shared_domain_gate_demo_20260625_184817 \
+  --source results/native_shared_domain_gate_demo_20260626_101928 \
+  --source results/native_shared_domain_gate_demo_20260626_102829 \
+  --source results/native_shared_domain_gate_demo_20260804_122027 \
+  --into tests/data/migration_corpora/notes_duplicate_check/not_met --replace
+```
+
+**Twenty-one graded trials exist and seventeen are committed; the four that are not are
+refused by rule, and the manifests say so.** The three `20260803_062316` trials (6, 6 and 5
+recorded calls) and the `20260804_122027` gated trial (4) have every call at `status: error`:
+the task's MCP server never started, so the judge scored a transcript of failures on a trial
+whose environment was dead. The harness called those runs completed, `aggregate.json` reported
+no harness errors, and nothing but the tool-call record separates them from an admissible
+trial — which is why the sources they came from are named on the command line above rather than
+left out of it. Leaving them out would leave the corpus's boundary unstated once `results/` is
+gone.
 
 **The `not_met/` half is deliberately heterogeneous in its agent, and that is the measured
 finding rather than an untidiness.** Two of its five trials ran `anthropic/claude-sonnet-4-6` as
@@ -327,10 +497,70 @@ counterfactual's *source* is measurable, since a report that folded under the pa
 would be indistinguishable there. They carry the shipped `task_id`s, so `tests/data` is
 deliberately never a default root: a `task_id` resolving in two roots is an error.
 
-The corpus is deliberately heterogeneous: the `not_met/` bundles are `schema_version: 1` and
-record-less (no `tool_log.yaml`), which does not block a constraint reading no `status` or
-`result`. Any future migration whose constraint reads either needs a record-carrying corpus, and
-the `evidence` block is where that shows.
+**The halves differ in what a constraint can read over them, and that asymmetry is the
+sources', not the curation's.** The five `not_met/` bundles are `schema_version: 1` and
+record-less: their runs predate the persisted tool-call record, so `TraceEvent.status`,
+`executor` and `latency_seconds` are `None` there and the environment-dead rule had nothing to
+classify them by — their manifest entries say `record_carried: false`. All twelve `met/`
+bundles carry `tool_log.yaml`, because all twelve source runs did. This corpus's constraint
+reads neither `status` nor `result`, so the not-met half blocks nothing; a migration whose
+constraint reads either needs a corpus that is record-carrying throughout, which is a property
+of the runs it is curated from.
+
+### `lot_ops_names_lot` — a candidacy its own corpus refuses
+
+`tests/data/migration_corpora/lot_ops_names_lot/` holds ten recorded trials of `lot_ops_01`,
+generated for the `names_lot` candidacy and **refusing it**. Both source runs are committed
+run configs under `examples/native/multi_service_lot_ops/run_configs/`, one per arm:
+`corpus_generation_haiku.yaml` (agent `anthropic/claude-haiku-4-5`) and
+`corpus_generation_gpt_4o_mini.yaml` (agent `openai/gpt-4o-mini`), five repeats each, judge
+`anthropic/claude-sonnet-4-6`, ten turns. An arm *is* a config file, because `RunConfig.models`
+holds one model per role and `tolokaforge run` has no agent-model override.
+
+**The independent variable is the agent model and nothing else, so the variation is organic.**
+No arm's prompt instructs the behaviour the constraint measures — buying a label that way is
+what the [design limitation](#reading-the-evidence) below describes, and it would make the
+corpus evidence about the prompt rather than about the criterion.
+
+| what | measured |
+|---|---|
+| observations | 10, five per arm, every bundle record-carrying |
+| the judge's `names_lot` | met on all ten |
+| `the_lot_was_read_before_the_action_was_opened` | failed on all ten |
+| table | all ten in `judge_met_constraint_failed`, every other cell `0` |
+| accuracy / κ | `0.000` / `0.000` |
+| verdict | `refused` — and the command still exits `0` |
+
+**Every observation is a strict disagreement, which no mode tolerates.** The judge found the
+criterion met where the constraint failed, so the constraint is not even a necessary condition
+of it. The reason is in the transcripts rather than in the corpus: each trial issued exactly
+two HTTP calls — the reason-code catalog, then the POST — and never read the lot, because the
+user's own message supplies `lot_id 7` and the task's guidance asks only for the catalog. The
+constraint measures a step this task never asks for.
+
+**A refused `candidate` is the bar working, not a build break.** A candidate converts nothing,
+retires nothing and changes no grade, so its verdict is reported and gates nothing: the
+reconciliation exits `0` while naming the refusal. Making a shipped candidacy fail the build
+the moment its evidence arrived would be the opposite of what declaring one is for. What the
+declaration should become — a different `by`, or none — is a decision for the pack's author,
+and the corpus is what that decision now has to answer to.
+
+**This pack's counterfactual carries no row at all.** Its grade includes a `state_checks`
+component, which the runner folds from several sources and no single recorded field holds, so
+the recomposition cannot reproduce the verdict the runner already reached. All ten trials are
+listed under `unrecomputed_trials` with that reason, and no before/after projection exists —
+the structural consequence, for a substrate-graded pack, of the rule that
+[a projection is never believed](#the-counterfactual-what-the-migration-does-to-each-trials-verdict)
+over a composition that cannot reproduce the recorded verdict.
+
+Reproducible by command, over runs under the gitignored `results/`:
+
+```bash
+tolokaforge curate --criterion names_lot \
+  --source results/lot_ops_corpus_haiku_20260812_132740 \
+  --source results/lot_ops_corpus_gpt_4o_mini_20260812_133234 \
+  --into tests/data/migration_corpora/lot_ops_names_lot --replace
+```
 
 ## Reading the evidence
 
@@ -356,17 +586,21 @@ structurally by set-equality over its field names rather than by prose — an as
 **And the experimental-design limitation, stated rather than left to be noticed:** a corpus
 whose met half was produced by a prompt instructing exactly what the constraint measures
 cannot distinguish "the constraint matches the criterion" from "the agents did what they were
-told." That is precisely how the [`met/` half](#the-committed-corpus) was produced, so the κ of
-`1.0` it yields is a property of the design as much as of the criterion. A corpus of
-organically-varying trials would be stronger evidence and does not exist for any shipped pack
-yet (#793).
+told." That is precisely how the [`met/` half](#notes_duplicate_check--the-narrows-evidence)
+was produced, so the κ of `1.0` it yields is a property of the design as much as of the
+criterion. The [`lot_ops` corpus](#lot_ops_names_lot--a-candidacy-its-own-corpus-refuses) buys
+no label that way — its two arms differ in the agent model alone — and it is the corpus that
+refuses its claim, which is the shape of evidence that can.
 
 ## From Python
 
 ```python
 from pathlib import Path
 
-from tolokaforge.core.grading.rubric_migration import reconcile_corpus
+from tolokaforge.core.grading.rubric_migration import (
+    reconcile_corpus,
+    reconcile_declared_corpora,
+)
 
 report = reconcile_corpus(
     Path("tests/data/migration_corpora/notes_duplicate_check"),
@@ -376,12 +610,18 @@ report = reconcile_corpus(
 )
 for reason in report.blocking:
     print(reason)
+
+# Every declaration, each over the corpus it names — one report per corpus.
+for swept in reconcile_declared_corpora(packs=[Path("examples")], corpus_base=Path.cwd()):
+    print(swept.source, [entry.verdict.value for entry in swept.entries])
 ```
 
-`reconcile_corpus` raises `ReconcileError` for every defect that is a property of the
-invocation; a defect in one declaration is a refusal on that entry instead, so the run still
-reports every other entry. `ReconcileReport.blocking` is the exit contract: empty is what exit
-`0` means.
+Both raise `ReconcileError` for every defect that is a property of the invocation; a defect in
+one declaration is a refusal on that entry instead, so the run still reports every other entry.
+`ReconcileReport.blocking` is the exit contract: empty is what exit `0` means. `corpus_base` is
+the directory each declaration's `corpus` is read against — it defaults to the declaration's own
+directory, and the CLI passes the working directory, so nothing under `tolokaforge/core/`
+resolves a path off ambient state.
 
 The bar itself is pure — `reconcile_entry(entry, task_ids=…, trials=…)` decides every rule
 from a sequence of `TrialEvidence`, which is what makes the degenerate corpora (one trial, no

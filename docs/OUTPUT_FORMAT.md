@@ -21,17 +21,17 @@ bumped and this document is updated in the same commit.
 └── trials/
     └── {task_id}/
         └── {trial_index}/
-            ├── task.yaml
+            ├── task.yaml                   ← frozen task snapshot (through the redaction policy)
             ├── trajectory.yaml             ← message trace + status + metrics
             ├── tool_log.yaml               ← the trial's ordered tool-call record
-            ├── env.yaml
+            ├── env.yaml                    ← final env state (through the redaction policy)
             ├── metrics.yaml
-            ├── grade.yaml                  ← only when the trial produced a grade
-            ├── judge_trajectory.yaml       ← rubric-judge transcript (only when an LLM judge ran)
-            ├── judge_inputs.yaml           ← rubric-judge structured inputs for replay (only when an LLM judge ran)
-            ├── logs.yaml
+            ├── grade.yaml                  ← only when the trial produced a grade (through the redaction policy)
+            ├── judge_trajectory.yaml       ← rubric-judge transcript (when an LLM judge ran; withheld under a redacting policy)
+            ├── judge_inputs.yaml           ← rubric-judge structured inputs for replay (when an LLM judge ran; withheld under a redacting policy)
+            ├── logs.yaml                   ← structured trial logs (through the redaction policy)
             ├── prompts.yaml                ← agent + user-sim system prompts
-            ├── tools_schemas.yaml          ← post-policy tool list
+            ├── tools_schemas.yaml          ← post-policy tool list (through the redaction policy)
             └── services/                   ← per-service compose logs (on trial-body or graded failure)
                 ├── {service}.log
                 └── _capture.yaml           ← manifest (provision-failure path only)
@@ -64,9 +64,11 @@ rolled up run-wide in `aggregate.json` → `captured_service_logs` (see
 
 Written under `{output_dir}/` at run start by both `tolokaforge run` and
 `tolokaforge prepare`. Carries the engine-level inputs a worker subprocess
-needs to join a run and the resolved model-data snapshot the run was
-scored against, so a completed run identifies both the effective preset
-overlay and the exact tolokaforge-models resolution behind every score.
+needs to join a run, the resolved model-data snapshot the run was
+scored against, and whatever the installed adapter reports about its own
+resolved inputs — so a completed run identifies the effective preset
+overlay, the exact tolokaforge-models resolution behind every score, and
+the adapter-side inputs that drove the trials.
 
 ```json
 {
@@ -77,7 +79,8 @@ overlay and the exact tolokaforge-models resolution behind every score.
     "content_sha256": "9f0d…64-hex chars…",
     "api_version": 1,
     "minimum_engine_version": ">=0.17,<1.0"
-  }
+  },
+  "adapter_fingerprints": {}
 }
 ```
 
@@ -86,6 +89,7 @@ overlay and the exact tolokaforge-models resolution behind every score.
 | `run_id` | string | Canonical run identifier — the `{output_dir}` basename. Stamped on every `TrialSpec.run_id` so workers reuse it across the queue. |
 | `presets_file` | string \| null | Absolute path to the preset overlay active when `prepare` / `run` executed, or `null` when no overlay was in effect. Workers launched later from the same `--run-dir` read this to reinstall the same overlay without an explicit `--presets-file` on every invocation. |
 | `models_fingerprint` | object | Resolved model-data snapshot — see the sub-table below. Absent on runs prepared before this field was introduced; consumers that read this file with the `read_persisted_models_fingerprint` helper get `None` in that case. |
+| `adapter_fingerprints` | object | Per-adapter self-report, keyed by adapter type (`"terminal_bench"`, …). Each value is whatever that adapter's `fingerprint()` returned — the engine records it verbatim and neither validates nor interprets it, so the shape of a namespace is documented by the adapter that owns it, not here. `{}` when the installed adapter reports nothing, which is the shipped default. Each payload is derived from the adapter's own resolved content. Absent on runs prepared before this field was introduced; there is no read-side helper, so a consumer reading an older run directory must tolerate the missing key. |
 
 `models_fingerprint` sub-fields:
 
@@ -97,6 +101,8 @@ overlay and the exact tolokaforge-models resolution behind every score.
 | `minimum_engine_version` | string | PEP 440 specifier the model-data snapshot requires the engine to satisfy — sourced from `tolokaforge_models.minimum_engine_version` at compute time. Parsed via `packaging.specifiers.SpecifierSet`. |
 
 Written via [`tolokaforge.core.engine_run_state.write_engine_run_state`](../tolokaforge/core/engine_run_state.py) with the fingerprint computed by [`tolokaforge.core.model_data_fingerprint.compute_models_fingerprint`](../tolokaforge/core/model_data_fingerprint.py); the on-disk shape is locked by the `ModelsFingerprint` Pydantic model (`extra="forbid"`). See [`docs/adr/0030-tolokaforge-models-split.md`](adr/0030-tolokaforge-models-split.md) § "Fingerprinting for auditability" for the wheel-split context.
+
+`adapter_fingerprints` is populated from [`BaseAdapter.fingerprint()`](../tolokaforge/adapters/base.py) — see [`docs/ADAPTER_INTERFACE.md`](ADAPTER_INTERFACE.md) § Optional Methods for the seam an adapter overrides to report one. For the `terminal_bench` namespace, that adapter's [README](../external_adapters/tolokaforge-adapter-terminal-bench/README.md) § "What a run records about its registry" documents its payload.
 
 ## `LIMIT_HIT.json`
 
@@ -141,6 +147,10 @@ Written via [`tolokaforge.core.budgets.write_limit_hit_marker`](../tolokaforge/c
 * **Guardrail**: pairs a run's effective tool surface to its trial
   outputs so every investigation starts with the actual schemas — not
   a guess.
+* **Redaction**: each schema is a mapping, so a redacting artifact-write
+  policy reaches it — a credential-named parameter's declared default or
+  pinned header is replaced, and the file is named in `metrics.yaml`'s
+  [`redaction` stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote).
 
 ## `trials/{task_id}/{trial_index}/prompts.yaml`
 
@@ -167,6 +177,10 @@ Written via [`tolokaforge.core.budgets.write_limit_hit_marker`](../tolokaforge/c
     didn't run to write_prompts at all.
 * **Per-trial**: one file per trial, no dedup; same self-contained
   pattern as `tools_schemas.yaml`.
+* **Redaction**: a system prompt is rendered prose, so a key-name policy
+  has nothing to match on and the file is written as the run composed it
+  under every policy — see [`docs/SECURITY.md`](SECURITY.md:1) §
+  Artifact-Write Redaction for the boundary that puts it there.
 
 ## `trials/{task_id}/{trial_index}/task.yaml`
 
@@ -174,6 +188,12 @@ Snapshot of every identity the run was parameterised by. Readers use this
 to reproduce a trial, not the `task.yaml` file in the task source
 directory (they differ — this one is **frozen** at trial-start-time and
 carries resolved preset info).
+
+It is a plain mapping, so a redacting artifact-write policy reaches it: the
+free-form `policies` and `grading_config` blocks are a pack's own, and values
+under credential-named keys in them are replaced at every nesting level. The file
+is then named in `metrics.yaml`'s
+[`redaction` stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote).
 
 ```yaml
 task_id: "051fa6cb-..."
@@ -302,7 +322,7 @@ agent and user-simulator system prompts live in
 ```yaml
 task_id: "051fa6cb-..."
 trial_index: 0
-simulator_schema_version: 3
+simulator_schema_version: 4
 start_ts: "2026-01-01T12:00:00+00:00"
 end_ts: "2026-01-01T12:05:00+00:00"
 status: "completed"                                   # TrialStatus enum
@@ -328,6 +348,7 @@ messages:
           encrypted_data: "EvwBCkgIARABGAIi..."
       summary: null   # null when blocks already cover the content (Plan B)
       budget_used: 512
+    openrouter_generation_id: "gen-1787132417-e6DthuPJjrFMFf46ae5F"
     ts: "2026-01-01T12:00:01Z"
 user_reply_guard_events:                              # [] on a trial no detector ever flagged
   - message_index: 2
@@ -373,6 +394,18 @@ registered on the preset (see
 [`docs/LLM_LAYER.md`](LLM_LAYER.md) § `reasoning_codec`). Non-reasoning
 models emit `reasoning: null`.
 
+### `messages[*].openrouter_generation_id`
+
+OpenRouter's id for the generation that produced this message, so an assistant
+turn can be joined back to the routing decision behind it —
+`https://openrouter.ai/api/v1/generation?id=<id>` reports which upstream
+provider actually served that turn. Populated on assistant messages produced by
+an OpenRouter-routed call; `null` on every other role and every other route (no
+other provider sends the header it is read from). The same ids are indexed
+trial-level in [`metrics.yaml`](#trialstask_idtrial_indexmetricsyaml) as
+`openrouter_generation_ids`. See [LLM_LAYER.md](LLM_LAYER.md:1) § OpenRouter
+generation ids.
+
 ## `trials/{task_id}/{trial_index}/tool_log.yaml`
 
 The trial's ordered tool-call record — one
@@ -397,12 +430,20 @@ The trial's ordered tool-call record — one
 ```
 
 This is the **grader's** view of the trial, where `trajectory.yaml` carries the
-model's. Four of its fields are unreachable from a message trace: `status`
-(which each substrate words differently in prose — match on `status`, not on
-result text), `executor` (agent vs user simulator is invisible in a transcript),
+model's. Four of its fields are unreachable from a message trace: `status`,
+`executor` (agent vs user simulator is invisible in a transcript),
 `latency_seconds`, and `sequence` (trial-wide order *across* executors). `output`
-is the executing layer's own text, untruncated — on a failed call that differs
-from the `Error: …` wording the agent-facing `role: tool` message carries.
+is the tool's own text, untruncated — on a failed call, its own failure text,
+which the agent-facing `role: tool` message carries behind an `Error: ` prefix.
+
+`call_id` is the trial's **episode-unique** tool-call id — the same value the
+matching `tool_calls` entry and `role: tool` message in `trajectory.yaml` carry,
+since the agent loop assigns it before any of the three is written. For a
+provider that mints a unique id per call it is that provider's own id; for one
+that numbers its calls within a turn, and so emits the same id in two turns, the
+second occurrence is written `<id>#2` ([GRADING.md
+G3](GRADING.md#guarantees)). Nothing parses it — it is compared for equality —
+so `#` is inert wherever the id travels.
 
 A **sidecar** rather than a key on `trajectory.yaml`: the record repeats every
 tool's output, which on a tool-heavy trial is most of the bundle, so whoever
@@ -417,6 +458,13 @@ must keep apart:
 |---|---|---|
 | absent | `([], False)` | the bundle carries no record; a check over `status`, `executor` or `latency_seconds` is undecidable on it |
 | `[]` | `([], True)` | the trial called no tool |
+
+There is a third outcome, decided before the file is touched at all: a bundle
+whose `metrics.yaml` carries a [`redaction`
+stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote) raises
+`RedactedBundleError`. The check precedes the read so a redacted bundle that
+wrote no `tool_log.yaml` is refused rather than read back as a trial that called
+nothing.
 
 Absence is the permanent shape of a bundle written before this artifact existed —
 not an error, and not the same fact as an empty trial. A present file that does
@@ -464,6 +512,12 @@ environment:       # present only for manifest-driven trials (see below)
 Free-form snapshot of the environment state at trial end. Adapters /
 tasks control the shape; no schema version attached.
 
+It is a plain mapping, so a redacting artifact-write policy reaches it: values
+under credential-named keys are replaced at every nesting level, and the file is
+named in `metrics.yaml`'s [`redaction`
+stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote). Under the
+default policy the snapshot is written exactly as the adapter composed it.
+
 ### `environment` — resolved environment identity
 
 Manifest-driven trials (a task carrying an `environment_manifest`, i.e.
@@ -503,11 +557,31 @@ dataclass. Anthropic cache counters + reasoning-budget spend are
 first-class fields; a `provider_raw` dump of the litellm usage block is
 included for forensics. Each LLM API call is also recorded in
 `usage.calls[]` as a `ProviderRawCall` carrying its per-call tokens,
-`cost_usd`, `cost_source` (`"litellm"` / `"local"` / `"unknown"`), and
-`latency_s` — the trial-level `cost_usd` is the sum of those entries.
+`cost_usd`, `cost_source` (`"litellm"` / `"local"` / `"unknown"`),
+`latency_s`, and `openrouter_generation_id` — the trial-level `cost_usd` is the
+sum of those entries.
 
-To help analytics consumers detect schema evolution, every trial-level
-metrics file includes a root-level `schema_version: 4` marker. Generation 4
+`openrouter_generation_ids` lists every OpenRouter generation id the trial's
+agent calls returned, in call order; `usage.calls[*].openrouter_generation_id`
+is the same value attributed to its individual call. Each id resolves at
+`https://openrouter.ai/api/v1/generation?id=<id>` to the upstream provider that
+actually served that call, so a result suspected of being a routing artefact can
+be checked after the fact instead of re-run. Both are `null` / empty for every
+non-OpenRouter route — no other provider sends the header they are read from —
+so the list is shorter than `api_calls` whenever a call went elsewhere. The two
+surfaces are **not** positionally aligned: a response that returned the
+`x-generation-id` header but no usage block contributes an id to the flat list
+and no entry to `usage.calls`, so the flat list can be longer than `usage.calls`
+too. Consumers that need per-call attribution read `usage.calls`; consumers that
+need "did this trial reach OpenRouter at all" read the flat list. See
+[LLM_LAYER.md](LLM_LAYER.md:1) § OpenRouter generation ids.
+
+To help analytics consumers detect schema evolution, a trial-level metrics file
+written by `write_metrics` includes a root-level `schema_version: 4` marker. The
+one shape that carries no marker is a `metrics.yaml` the writer created for the
+redaction stamp alone, where the caller wrote no metrics of its own (see
+[`redaction`](#redaction--the-bundles-own-account-of-what-a-policy-rewrote)) —
+such a bundle is refused offline anyway. Generation 4
 bundles carry the trial's tool-call record as
 [`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml). They carry no
 `grade.yaml` in two cases — the trial was aborted by infrastructure before the
@@ -537,6 +611,9 @@ usage:
       cost_usd: 0.00912
       cost_source: litellm
       latency_s: 1.23
+      openrouter_generation_id: gen-1787132417-e6DthuPJjrFMFf46ae5F
+openrouter_generation_ids:   # one per OpenRouter-served call, in call order
+  - gen-1787132417-e6DthuPJjrFMFf46ae5F
 cost_usd: 0.127055
 tool_calls: 7
 tool_success_rate: 1.0
@@ -578,6 +655,14 @@ time measured around each call, failures included.
 `executor` and `latency_seconds` it aggregates live in
 [`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml).
 
+`tool_calls` and `tool_success_rate` count the **agent's** calls — the same
+scoping stuck detection and `transcript_rules.tool_expectations` apply, so a
+trial whose user actor called a tool of its own does not read as the agent having
+used one. `tool_usage` and `tool_log.yaml` carry every executor's calls, so on a
+task declaring `tools.user.enabled` the roll-up's call counts sum to more than
+`tool_calls`; `tool_log.yaml` is the only one of the three that says which
+executor made each call.
+
 Semantics per `usage` field (see
 [`docs/LLM_LAYER.md`](LLM_LAYER.md:1) § `usage` for the provider-routing
 table):
@@ -591,6 +676,63 @@ table):
 | `cache_creation_input_tokens` | Anthropic | Tokens written to the ephemeral cache this call |
 | `cache_read_input_tokens` | Anthropic | Tokens re-used from the ephemeral cache this call |
 | `provider_raw` | — | Best-effort dump of the *last* call's raw usage block |
+
+### `redaction` — the bundle's own account of what a policy rewrote
+
+Every mapping the writer puts on disk — tool-call arguments, the final environment
+snapshot, the task snapshot, the tool schemas, the verdict's diff and check
+details, each structured log record — passes through a redaction policy
+([`tolokaforge/core/redaction.py`](../tolokaforge/core/redaction.py)) on its way
+to disk. The default policy rewrites nothing and this key is **absent** — which is
+what every bundle a shipped run produces carries, since no run config selects
+another policy (see [`docs/SECURITY.md`](SECURITY.md:1) § Artifact-Write
+Redaction). Under a redacting policy the writer stamps what it did:
+
+```yaml
+redaction:
+  policy: sensitive_keys
+  artifacts:
+    - env.yaml
+    - grade.yaml
+    - logs.yaml
+    - task.yaml
+    - tool_log.yaml
+    - tools_schemas.yaml
+    - trajectory.yaml
+  omitted:
+    - judge_inputs.yaml
+    - judge_trajectory.yaml
+```
+
+| Field | Meaning |
+|---|---|
+| `policy` | The policy that wrote this bundle, from a closed vocabulary (`sensitive_keys` is the only redacting member today) |
+| `artifacts` | The files this bundle carries whose credential-named values were rewritten, sorted |
+| `omitted` | The files the policy withheld entirely rather than rewrote, sorted |
+
+Both lists are accumulated as the bundle is written, not declared ahead of time,
+so they name only files this bundle actually holds — on the [provision-failure
+bundle](#provision-failure-bundle) `artifacts` is `[trajectory.yaml]` alone.
+
+**The stamp is a property of the writer.** The moment a policy rewrites or
+withholds anything, the writer puts the stamp here — creating `metrics.yaml`
+where the caller writes no metrics of its own, which is what judge replay does
+when it writes a grade and its provenance into a replay directory. Such a file
+carries the stamp and **no `schema_version`**, since no metrics were composed for
+it — its `artifacts` names `grade.yaml`, the one file that path writes through the
+policy, and its `omitted` names both judge sidecars. Where the stamp cannot be written
+at all, the writer removes the artifacts it rewrote rather than leave them reading
+as faithful ones.
+
+**A stamped bundle is refused by every offline grading command.** The arguments it
+carries are not the arguments the agent sent, so a trace-check constraint over a
+rewritten argument would fail as *decided* rather than undecidable — a confident
+wrong answer. `retrace`, `rejudge`, `curate` and `reconcile` therefore refuse a
+stamped bundle by name instead of grading it (see
+[`docs/TRACE_REPLAY.md`](TRACE_REPLAY.md:1),
+[`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md:1) and
+[`docs/RUBRIC_MIGRATION.md`](RUBRIC_MIGRATION.md:1)). A stamp that is present and
+does not parse is refused too, rather than read as an absent one.
 
 ### `rate_limit_*` / `probe_*` — rate-limit probe accounting
 
@@ -859,6 +1001,13 @@ contains — on this path it is stamped and most of them are absent.
 Writing this bundle is best-effort: an I/O failure while writing it is logged
 and does not change the trial's failed result.
 
+Under a redacting artifact-write policy this bundle stamps only what it wrote:
+`metrics.yaml`'s [`redaction`](#redaction--the-bundles-own-account-of-what-a-policy-rewrote)
+names `artifacts: [trajectory.yaml]` — there is no `tool_log.yaml` to rewrite —
+and an empty `omitted`, since no judge ran to produce a transcript to withhold.
+The bundle is still refused by every offline grading command, before the missing
+record could be read as a trial that called no tool.
+
 ### `captured_service_logs` — on trial-body or graded failure
 
 When a trial is diagnostics-worthy — its body fails (`trajectory.status` is
@@ -987,6 +1136,15 @@ judge_agent_prompt_included: true  # null (no judge) | false (agent policy gated
 Score scale: `0.0` ≤ `score` ≤ `1.0`. `binary_pass` is the harness-level
 pass/fail; `score` is a fractional pass rate (used for tasks with partial
 credit).
+
+A redacting artifact-write policy reaches the mappings the verdict carries —
+`state_diff` holds the environment rows the runner diffed and
+`custom_checks_details[].details` whatever a pack's check recorded — replacing
+credential-named values at every nesting level and naming the file in
+`metrics.yaml`'s [`redaction`
+stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote). The judge's
+prose (`reasons`, each criterion's `justification`) is written as the judge
+produced it: a key-name rule has no key to read there.
 
 ### Trace-check verdicts
 
@@ -1157,12 +1315,19 @@ custom_checks_details:
 
 ## `trials/{task_id}/{trial_index}/judge_trajectory.yaml`
 
-The rubric judge's own message transcript — written **only** when an LLM
-judge ran and captured one (absent file ⇒ no judge transcript for this
-trial). Kept out of `grade.yaml` for the same reason agent prompts live
-in `prompts.yaml`: the transcript is often kilobytes of read-tool calls
-and inspection, and a reviewer opening `grade.yaml` wants the verdict,
-not the judge's working.
+The rubric judge's own message transcript — written when an LLM judge ran and
+captured one, and withheld under a redacting artifact-write policy. So an absent
+file has two readings, and `metrics.yaml`'s [`redaction`
+stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote) is the
+discriminator: no stamp ⇒ no judge transcript for this trial; a stamp naming this
+file under `omitted` ⇒ the transcript exists and was withheld. It is withheld
+rather than rewritten because the judge renders the agent's arguments into prose,
+which a key-name rule cannot reach.
+
+Kept out of `grade.yaml` for the same reason agent prompts live in
+`prompts.yaml`: the transcript is often kilobytes of read-tool calls and
+inspection, and a reviewer opening `grade.yaml` wants the verdict, not the
+judge's working.
 
 ```yaml
 messages:
@@ -1196,8 +1361,14 @@ most useful debugging artifact.
 
 ## `trials/{task_id}/{trial_index}/judge_inputs.yaml`
 
-The rubric judge's non-derivable `run()` inputs — written **only** when an
-LLM judge ran (absent file ⇒ no judge inputs for this trial). This is the
+The rubric judge's non-derivable `run()` inputs — written when an LLM judge ran,
+and withheld under a redacting artifact-write policy. So an absent file has two
+readings, and `metrics.yaml`'s [`redaction`
+stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote) is the
+discriminator, exactly as for `judge_trajectory.yaml`: no stamp ⇒ no judge inputs
+for this trial; a stamp naming this file under `omitted` ⇒ they exist and were
+withheld. It is withheld rather than rewritten because `state_diff_text` renders
+values into prose a key-name rule cannot reach. This is the
 record an offline **judge replay** reads to re-execute the judge over the
 recorded trajectory without live services: everything else the judge
 consumed is already structured elsewhere (the transcript in
@@ -1254,6 +1425,13 @@ Structured trial-level logs emitted by
 log call; `context` carries arbitrary key/value pairs the call site
 attached.
 
+A context's top-level credential-named keys are replaced where the call is
+logged, whatever policy wrote the bundle. A redacting artifact-write policy runs
+over each record on top of that, which is what reaches a credential nested inside
+a mapping-valued context, and names the file in `metrics.yaml`'s [`redaction`
+stamp](#redaction--the-bundles-own-account-of-what-a-policy-rewrote). A record's
+`message` is prose and is written as the call site composed it.
+
 ## `replays/{replay_id}/`
 
 Written by `tolokaforge rejudge` (see [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md)) —
@@ -1301,6 +1479,12 @@ The per-run comparison of the replay against the recorded originals:
 ```yaml
 replay_id: replay_20260718_010425
 judge_model: openrouter/openai/gpt-4.1-mini
+batch:                          # census over every discovered bundle
+  discovered: 3                 # the four dispositions below sum to this
+  replayed: 1
+  skipped_not_applicable: 1
+  skipped_no_grade: 1
+  failed: 0
 criteria_compared: 2            # denominator: criteria in COMPARABLE trials only
 criteria_agreed: 1
 agreement_rate: 0.5             # null when nothing was comparable
@@ -1339,7 +1523,9 @@ trials:
 * **Non-judge components are carried, not recomputed** — the deterministic
   state/transcript/db-probe components stay as recorded; replay only re-runs the
   `llm_judge` component (the aggregate deltas are over that component).
-* Not-applicable (non-judge) trials never enter the report.
+* Not-applicable trials never enter `trials`; the `batch` census counts them,
+  alongside every other disposition, and refuses to load when the four
+  dispositions do not sum to `discovered`.
 
 ## Reading Output Files
 
@@ -1412,11 +1598,11 @@ to be readable:
 |---|---|
 | `total_trials` | Every attempt the run made |
 | `measured_trials` | The denominator the run holds itself accountable for — every rate in the row except `avg_score` is over it |
-| `scored_trials` | The measured attempts that produced a grade — `avg_score`'s denominator, and the weight `avg_score_micro` uses |
+| `scored_trials` | The measured attempts that produced a grade — `avg_score`'s denominator, and the weight `avg_score_micro` uses. Below `measured_trials` on any run that hit an `ungradeable` attempt or a `trial_lost` one |
 | `infrastructure_aborts` | Per reason, the attempts excluded from that denominator: `{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`. All three keys are always present |
 | `harness_errors` | Attempts that failed on a defect of ours. Counted **inside** `measured_trials`; a non-zero value is a run-health signal |
-| `ungradeable` | Attempts whose grading refused. Also **inside** `measured_trials`, and a non-pass in `success_rate` / `pass@k`; the cause is in that trial's `trajectory.yaml` under `grading_error` |
-| `outcomes_by_reason` | Every termination reason observed, with the class it was counted as: `{"max_turns": {"class": "measured", "count": 7}}`. An ungradeable attempt terminates the way a graded one does, so it is keyed `ungradeable_<reason>`: `{"ungradeable_agent_done": {"class": "ungradeable", "count": 1}}` |
+| `ungradeable` | Attempts whose grading refused. Also **inside** `measured_trials`, and a non-pass in `success_rate` / `pass@k`; the cause is in that trial's `trajectory.yaml` under `grading_error`. A non-zero count makes `tolokaforge run` / `worker` exit `1` ([CLI.md § Run and worker exit codes](CLI.md#run-and-worker-exit-codes)), so this is the number to read when a completed run failed its CI step |
+| `outcomes_by_reason` | Every termination reason observed, with the class it was counted as: `{"max_turns": {"class": "measured", "count": 7}}`. An ungradeable attempt terminates the way a graded one does, so it is keyed `ungradeable_<reason>`: `{"ungradeable_agent_done": {"class": "ungradeable", "count": 1}}`. A trial whose runner no longer held it is keyed `trial_lost` with class `harness_error`, and carries no grade — a runner lost *after* the trial's last tool call instead lands under `ungradeable_<reason>`, because the agent finished and grading refused |
 
 `measured_trials + sum(infrastructure_aborts.values()) == total_trials`,
 `0 <= scored_trials <= measured_trials`, and — a trial being classified once —
@@ -1441,7 +1627,7 @@ evidence about us, and our own defects stay counted. See
 
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
-| `trajectory.yaml` | `simulator_schema_version` | `3` | Any revision to the LLM user-simulator prompt body or the conversation context it sees |
+| `trajectory.yaml` | `simulator_schema_version` | `4` | Any revision to the LLM user-simulator prompt body or the conversation context it sees |
 | `metrics.yaml` | `schema_version` | `4` | The per-trial bundle's file set or field semantics change |
 | `aggregate.json` | `schema_version` | `3` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, or the `outcomes_by_reason` class vocabulary |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
@@ -1450,6 +1636,7 @@ evidence about us, and our own defects stay counted. See
 | `prompts.yaml` | — | n/a | Two-key mapping; field names match the legacy `Trajectory.system_prompt` / `Trajectory.user_system_prompt` |
 | `tools_schemas.yaml` | — | n/a | Format is the litellm tool-schema dict list, post-`schema_sanitizer` |
 | `tool_log.yaml` | — (struct-typed) | n/a | Format is the `RecordedToolCall` list; its presence is stamped by `metrics.yaml`'s `schema_version` |
+| `metrics.yaml` (`redaction` block) | — (struct-typed) | n/a | Optional; mirrors `RedactionStamp`. Absent unless a redacting artifact-write policy wrote the bundle, so its introduction bumps no version — a reader that does not know the key sees the bundles it always saw |
 
 The `simulator_schema_version` row is mechanical on its first trigger:
 [`tests/canonical/test_simulator_prompt_generation.py`](../tests/canonical/test_simulator_prompt_generation.py)

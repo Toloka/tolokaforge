@@ -1,6 +1,6 @@
 task_id: canon-reasoning-001
 trial_index: 0
-simulator_schema_version: 3
+simulator_schema_version: 4
 start_ts: '2026-01-01T12:00:00+00:00'
 end_ts: '2026-01-01T12:00:00+00:00'
 status: completed
@@ -14,6 +14,7 @@ messages:
   tool_calls: null
   tool_call_id: null
   reasoning: null
+  openrouter_generation_id: null
   ts: '2026-01-01T12:00:00Z'
 - role: assistant
   content: I'll help with that.
@@ -35,5 +36,6 @@ messages:
     summary: Short summary of the model's private rationale.
     budget_used: 512
     transport: null
+  openrouter_generation_id: null
   ts: '2026-01-01T12:00:00Z'
 user_reply_guard_events: []

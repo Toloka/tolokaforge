@@ -30,6 +30,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
 from tests.canonical._factories import (
     make_env_endpoints,
@@ -260,6 +261,8 @@ def test_in_process_conductor_grade_fires_judgment_scored(tmp_path: Path) -> Non
         adapter_env=MagicMock(),
         tool_schemas=[],
         tool_executor=MagicMock(),
+        user_tool_schemas=[],
+        user_tool_executor=None,
     )
     trajectory = Trajectory(
         task_id="taskA",
@@ -482,7 +485,12 @@ def test_orchestrator_stores_events_from_deps() -> None:
 
 
 def _make_orchestrator_with_tasks(task_ids: list[str], repeats: int, shuffle: bool = False) -> Any:
-    """Build a bare :class:`Orchestrator` for pending-trial construction tests."""
+    """Build a bare :class:`Orchestrator` for pending-trial construction tests.
+
+    Its tasks seed a table because the grading block written beside them asserts a
+    ``path:`` over the trial's database, which is authorable only on a task that
+    provisions one.
+    """
     from tolokaforge.core.models import (
         ActorSpec,
         EvaluationConfig,
@@ -512,7 +520,7 @@ def _make_orchestrator_with_tasks(task_ids: list[str], repeats: int, shuffle: bo
             name=task_id,
             category="tool_use",
             description="d",
-            initial_state=InitialStateConfig(),
+            initial_state=InitialStateConfig(json_db={"items": [{"id": "I1"}]}),
             tools=ToolsConfig(),
             actors={"user": ActorSpec(mode="scripted")},
             grading="grading.yaml",
@@ -714,6 +722,11 @@ def test_build_trial_executor_threads_events_into_provisioning_executor() -> Non
 
 
 def _make_task_for_run(task_id: str) -> Any:
+    """The task the full-run ordering tests drive, seeding what its grading reads.
+
+    It seeds a table because the grading block beside it asserts a ``path:`` over
+    the trial's database, which is authorable only on a task that provisions one.
+    """
     from tolokaforge.core.models import (
         ActorSpec,
         InitialStateConfig,
@@ -726,7 +739,7 @@ def _make_task_for_run(task_id: str) -> Any:
         name=task_id,
         category="tool_use",
         description="d",
-        initial_state=InitialStateConfig(),
+        initial_state=InitialStateConfig(json_db={"items": [{"id": "I1"}]}),
         tools=ToolsConfig(),
         actors={"user": ActorSpec(mode="scripted")},
         grading="grading.yaml",
@@ -748,16 +761,26 @@ def _make_task_description_for_run(task_id: str) -> Any:
 
 
 def _adapter_for_run(task_dir: Path) -> Any:
-    """The adapter seam a full ``run()`` reads, over a pack with no grading file.
+    """The adapter seam a full ``run()`` reads, over a pack the pre-flight can grade.
 
-    *task_dir* is a real directory: the run's pre-flight resolves each task's
-    grading file under it and has nothing to check.
+    *task_dir* is a real directory, and the grading block every task here declares is
+    written into it — the smallest gradeable one, since nothing about these emissions
+    turns on what the pack grades by.
     """
+    (task_dir / "grading.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "combine": {"method": "weighted", "weights": {"state_checks": 1.0}},
+                "state_checks": {"jsonpaths": [{"path": "$.items", "operator": "exists"}]},
+            }
+        )
+    )
     adapter = MagicMock()
     adapter.to_task_description.side_effect = _make_task_description_for_run
     adapter.docker_stack_requirements.return_value = None
     adapter.trial_grader_name = "runner_rpc"
     adapter.get_task_dir.return_value = task_dir
+    adapter.fingerprint.return_value = None
     return adapter
 
 

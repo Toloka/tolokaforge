@@ -176,7 +176,7 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         ],
         "build_args": dict(_PYTHON_BUILD_ARGS),
     },
-    # Standalone grader service (ADR-0035, P4). Its Dockerfile is
+    # Standalone grader service (ADR-0038, P4). Its Dockerfile is
     # multi-stage — builds the base wheel + tolokaforge_models wheel from
     # source, installs into /opt/venv, and the runtime stage runs
     # ``python -m tolokaforge.grader``. A grader-only subset wheel is a

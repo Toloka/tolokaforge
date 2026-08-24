@@ -40,9 +40,10 @@ When a ``task.yaml`` carries a ``domain:`` ref, :func:`load_task_yaml`:
 A flat ``<task>/task.yaml`` without a ``domain:`` ref returns
 ``(TaskConfig, task_path.parent)`` — the legacy behaviour.
 
-It is also the single producer of a task's agent tool set and the JSON schemas
-behind it (:func:`resolve_agent_tool_schemas`), so the ``TaskDescription`` a run
-puts on the wire and the inventory a validation gate reads cannot drift apart.
+It is also the single producer of a task's tool set — either actor's — and the
+JSON schemas behind it (:func:`resolve_tool_schemas`), so the ``TaskDescription``
+a run puts on the wire and the inventory a validation gate reads cannot drift
+apart.
 """
 
 from __future__ import annotations
@@ -69,20 +70,31 @@ from tolokaforge.core.grading.config_validation import (
     CombineLayer,
     HashSourceLayer,
     ReplayWorld,
+    SeededTablesLayer,
     Skip,
     ToolInventory,
+    authored_hash_block,
     inspect_grading_authoring,
 )
 from tolokaforge.core.grading.golden_replay import classify_initial_state
+from tolokaforge.core.grading.state_composition import (
+    RETIRED_HASH_KEYS,
+    StateHashConfig,
+    refuse_retired_hash_keys,
+)
 from tolokaforge.core.grading.unknown_keys import refuse_unknown_grading_keys
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     RETIRED_STATE_CHECK_KEYS,
+    CommunicateInfo,
     GradingCombineConfig,
     GradingFindingSeverity,
+    RequiredAction,
     StateChecksConfig,
     TaskConfig,
     TaskDefaults,
+    ToolExecutorIdentity,
+    ToolExpectations,
     TraceChecksConfig,
     TranscriptRulesConfig,
 )
@@ -106,6 +118,7 @@ _PROJECT_SCOPED_DEFAULT_KEYS = frozenset(TaskDefaults.model_fields) - frozenset(
 _UNRESOLVED_COMBINE_LAYER = CombineLayer.unresolvable()
 _UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable()
 _UNRESOLVED_HASH_SOURCE_LAYER = HashSourceLayer.unresolvable()
+_UNRESOLVED_SEEDED_TABLES = SeededTablesLayer.unresolvable()
 
 
 _GRADING_BLOCK_SHAPES: dict[str, str] = {
@@ -162,6 +175,17 @@ reaches a read site, so the registry's key set is locked against
 
 
 @dataclass(frozen=True)
+class _NestedBlock:
+    """One block a typed block nests, and what its own model answers for itself."""
+
+    field_name: str
+    model: type[BaseModel]
+
+    retired_keys: frozenset[str] = frozenset()
+    """Keys the nested model answers in its own words — see ``answered_elsewhere``."""
+
+
+@dataclass(frozen=True)
 class _TypedGradingBlock:
     """One typed block a ``grading.yaml`` may declare, and how this gate reads it.
 
@@ -179,9 +203,28 @@ class _TypedGradingBlock:
     gate_names_unknown_keys: bool = True
     """Whether this gate writes the refusal for a key the block does not declare.
 
-    ``trace_checks`` is the one entry that does not: its model is the runner's own, so
-    an unknown key there draws the bare ``extra_forbidden`` naming no file and no
-    accepted set, the same as it does on the wire.
+    ``trace_checks`` is the one entry that does not: an unknown key there draws the
+    bare ``extra_forbidden`` naming no file and no accepted set, the same as it does
+    on the wire.
+    """
+
+    element_models: tuple[tuple[str, type[BaseModel]], ...] = ()
+    """List-valued fields whose *elements* draw the addressed refusal too, in order.
+
+    A key the block itself does not declare is answered by the model's own
+    ``extra="forbid"`` in one unaddressed line; a key an element does not declare is
+    answered the same way and reads worse, because the author has to count list
+    positions to find it. Every field named here gets the same message its parent
+    block gets, naming the element by index.
+    """
+
+    nested_block_models: tuple[_NestedBlock, ...] = ()
+    """Fields holding one block of their own, which draws the addressed refusal too.
+
+    The same tier as :attr:`element_models` and the other shape a block reaches it in:
+    a list of elements there, a single mapping here. Every field named here gets its
+    parent's message under its own dotted name, so the accepted set an author reads is
+    the nested block's rather than the one holding it.
     """
 
 
@@ -193,16 +236,30 @@ _TYPED_GRADING_BLOCKS: dict[str, _TypedGradingBlock] = {
     "combine": _TypedGradingBlock(model=GradingCombineConfig),
     # Every rule this block carries — a removed key's migration, a probe declared
     # beside a source this component also scores, a hash whose composition weight is
-    # undecidable in one shape — describes a pack a run would refuse to grade.
+    # undecidable in one shape — describes a pack a run would refuse to grade. Its
+    # ``hash`` block is addressed by name because every key that block drops requests
+    # nothing: the hash goes unscored and the trial grades on what survived, which is a
+    # better grade than the same block spelled correctly.
     "state_checks": _TypedGradingBlock(
         model=StateChecksConfig,
         retired_keys=RETIRED_STATE_CHECK_KEYS,
+        nested_block_models=(
+            _NestedBlock("hash", StateHashConfig, retired_keys=frozenset(RETIRED_HASH_KEYS)),
+        ),
     ),
     # A turn window whose floor sits above its ceiling admits no assistant-turn count,
     # so the component is 0.0 however the agent behaves. Constructing the block rather
-    # than the two fields also puts the ``min_assistant_turns`` domain and a misspelled
-    # key inside the ``extra="forbid"`` ``tool_expectations`` under the same gate.
-    "transcript_rules": _TypedGradingBlock(model=TranscriptRulesConfig),
+    # than the two fields also puts the ``min_assistant_turns`` domain under the same
+    # gate; a key ``tool_expectations`` does not declare grades as an empty list, so it
+    # is addressed at its own name rather than at the block holding it.
+    "transcript_rules": _TypedGradingBlock(
+        model=TranscriptRulesConfig,
+        element_models=(
+            ("required_actions", RequiredAction),
+            ("communicate_info", CommunicateInfo),
+        ),
+        nested_block_models=(_NestedBlock("tool_expectations", ToolExpectations),),
+    ),
     # Every rejection the matcher vocabulary makes — an unmatchable field for the kind,
     # a predicate asserting nothing, two constraint kinds under one require — is a check
     # that would otherwise select nothing and read as an agent failure at grade time.
@@ -225,6 +282,7 @@ def validate_grading_yaml(
     inventory: ToolInventory,
     replay_world: ReplayWorld = _UNRESOLVED_REPLAY_WORLD,
     hash_sources: HashSourceLayer = _UNRESOLVED_HASH_SOURCE_LAYER,
+    seeded_tables: SeededTablesLayer = _UNRESOLVED_SEEDED_TABLES,
     combine_layer: CombineLayer = _UNRESOLVED_COMBINE_LAYER,
     fail_on: GradingFindingSeverity = GradingFindingSeverity.ADVISORY,
 ) -> AuthoringReport:
@@ -239,13 +297,16 @@ def validate_grading_yaml(
     rule those models carry answers at authoring time; ``llm_judge`` is constructed only on a
     block declaring a ``rubric`` or the relocated ``model_ref``, which are the shapes its
     own migration names — an ``output_schema`` alone reaches no judge config here. For
-    the three blocks the engine's own models define — ``combine``, ``state_checks`` and
-    ``transcript_rules`` — a key the block does not declare is refused here naming the
+    three of those blocks — ``combine``, ``state_checks`` and ``transcript_rules``, plus
+    the positions they nest: the ``required_actions`` and ``communicate_info`` elements,
+    the ``hash`` block and the ``tool_expectations`` one —
+    a key the block does not declare is refused here naming the
     file, the closest declared field and the accepted set, which the models' own
     ``extra="forbid"`` refuses on every other path in one line without an address;
-    ``trace_checks`` and ``llm_judge`` draw that bare refusal here too. ``state_checks``'s two retired keys are not the addressed
-    refusal's business: populated, each draws the migration message naming its
-    replacement; inert, each is dropped so a recorded bundle still loads.
+    ``trace_checks`` and ``llm_judge`` draw that bare refusal here too. The retired keys
+    of ``state_checks`` and of its ``hash`` block are not the addressed refusal's
+    business: populated, each draws the migration message naming its replacement;
+    inert, each is dropped so a recorded bundle still loads.
 
     Validate is the earliest gate a task pack meets: the engine's own
     :class:`StateChecksConfig` is not constructed until artifacts are written, by
@@ -255,14 +316,12 @@ def validate_grading_yaml(
     actors. Every finding is named in one raise rather than the first one found,
     because an author fixing a pack wants the list.
 
-    A grading path that is not on disk returns an empty report: this gate reads a
-    file, and whether a task may name none at all is a task-level question
-    :func:`grading_source_under_adapter` answers off the adapter the task declares —
-    the native adapter grades from the file, while another may synthesise its whole
-    config without one.
-
     Args:
-        grading_path: The task's grading file.
+        grading_path: The task's grading file, on disk. Whether a task has a block to
+            read at all is a task-level question :func:`grading_source_under_adapter`
+            answers off the adapter the task declares, and both gates resolve it before
+            calling here, so this one is handed a file rather than deciding what its
+            absence means.
         inventory: The task's tool set. A caller that cannot resolve one passes
             :meth:`ToolInventory.unresolvable`, which skips every tool-aware rule
             into the returned report's ``unchecked`` and fails nothing.
@@ -273,8 +332,16 @@ def validate_grading_yaml(
         hash_sources: What supplies a hash source beneath the authored block. A
             caller that cannot say which adapter grades the task leaves the default,
             :meth:`HashSourceLayer.unresolvable`, which moves the hash-source rule's
-            finding into ``unchecked`` where that rule would have refused; the two
-            gates resolve it through :func:`hash_source_layer_under_adapter`.
+            finding into ``unchecked`` where that rule would have refused. The two
+            gates resolve it differently on purpose, as they do a grading source:
+            ``tolokaforge validate`` holds no adapter, so it asks the registered class
+            through :func:`hash_source_layer_under_adapter`, while a run's pre-flight
+            asks the adapter instance it is about to grade with.
+        seeded_tables: The tables the task seeds, which its ``state_checks.id_fields``
+            declaration keys, resolved through :func:`seeded_tables_under_adapter`. A
+            caller that cannot read them leaves the default,
+            :meth:`SeededTablesLayer.unresolvable`, which moves the declaration into
+            ``unchecked`` instead of holding it against a state nobody resolved.
         combine_layer: What the task's enclosing project supplies beneath its own
             ``combine`` block. A caller that cannot resolve it leaves the default,
             :meth:`CombineLayer.unresolvable`, which skips the two weight rules into
@@ -290,15 +357,18 @@ def validate_grading_yaml(
     Raises:
         ValueError / pydantic.ValidationError: If the grading block is invalid.
         RuntimeError: If the file or any grading key it declares is not a mapping.
+        FileNotFoundError: If *grading_path* is not on disk — the file vanished between
+            that resolution and this read. Both gates convert it to a named per-task
+            failure rather than letting a pack read as checked.
     """
-    if not grading_path.exists():
-        return AuthoringReport()
-
     with open(grading_path) as f:
         raw_grading_data = yaml.safe_load(f)
 
     refuse_malformed_grading_shapes(raw_grading_data, grading_path=grading_path)
     grading_data = raw_grading_data or {}
+    refuse_retired_hash_keys(
+        authored_hash_block(grading_data), context=f"Grading file {grading_path}"
+    )
 
     for block_name, typed in _TYPED_GRADING_BLOCKS.items():
         _construct_declared_block(
@@ -329,6 +399,7 @@ def validate_grading_yaml(
         inventory,
         replay_world=replay_world,
         hash_sources=hash_sources,
+        seeded_tables=seeded_tables,
         effective_combine=effective_combine,
     )
     if effective_combine is None:
@@ -396,8 +467,10 @@ def _construct_declared_block(
     """Construct *block* against the model that owns it, unless it is absent.
 
     Raises:
-        ValueError: If the block declares a key the model does not, where this gate
-            writes that refusal.
+        ValueError: If the block, an element of one of its
+            :attr:`_TypedGradingBlock.element_models` lists, or one of the blocks its
+            :attr:`_TypedGradingBlock.nested_block_models` names, declares a key the
+            model does not — where this gate writes that refusal.
         pydantic.ValidationError: If the block fails any rule its model carries.
     """
     if block is None:
@@ -410,6 +483,29 @@ def _construct_declared_block(
             grading_path=grading_path,
             answered_elsewhere=typed.retired_keys,
         )
+        for field_name, element_model in typed.element_models:
+            # An element that is no mapping at all has no keys to name; the
+            # construction below refuses it in pydantic's own words.
+            for index, element in enumerate(block.get(field_name) or []):
+                if isinstance(element, Mapping):
+                    refuse_unknown_grading_keys(
+                        element_model,
+                        element,
+                        block_name=f"{block_name}.{field_name}[{index}]",
+                        grading_path=grading_path,
+                    )
+        for nested_block in typed.nested_block_models:
+            nested = block.get(nested_block.field_name)
+            # A field carrying nothing is the absent block, and one carrying a
+            # non-mapping has no keys to name — the construction below answers both.
+            if isinstance(nested, Mapping):
+                refuse_unknown_grading_keys(
+                    nested_block.model,
+                    nested,
+                    block_name=f"{block_name}.{nested_block.field_name}",
+                    grading_path=grading_path,
+                    answered_elsewhere=nested_block.retired_keys,
+                )
     typed.model(**block)
 
 
@@ -554,8 +650,50 @@ def load_task(
     return task
 
 
-def agent_tool_configs(task: TaskConfig) -> dict[str, dict]:
-    """Per-tool init kwargs lifted from the ``tools.agent.<name>`` blocks.
+class ToolActor(str, Enum):
+    """The actor whose ``tools.<actor>`` block a tool resolution reads."""
+
+    AGENT = "agent"
+    USER = "user"
+
+
+ACTOR_EXECUTOR_IDENTITY: Mapping[ToolActor, ToolExecutorIdentity] = {
+    ToolActor.AGENT: ToolExecutorIdentity.AGENT,
+    ToolActor.USER: ToolExecutorIdentity.USER,
+}
+"""The block a declaration is written in, onto the identity a record of that call
+carries.
+
+:meth:`ToolInventory.declared_by` answers "what may this executor call" from a set
+built out of ``tools.<actor>.enabled``, and the authoring gate names the block back
+to the author from a recorded identity. Both rest on the two vocabularies agreeing,
+which is stated here and read where the inventory is built — so a third actor moves
+one map instead of silently landing its declarations under the wrong identity."""
+
+
+def actor_tool_block(task: Any, actor: ToolActor) -> dict[str, Any]:
+    """The ``tools.<actor>`` block: ``enabled``, ``mcp_server`` and per-tool kwargs.
+
+    A task object carrying no ``tools`` at all — what an external adapter's task
+    can be — declares nothing for either actor.
+    """
+    if task.tools is None:
+        return {}
+    return getattr(task.tools, actor.value)
+
+
+def enabled_tool_names(task: Any, actor: ToolActor) -> frozenset[str]:
+    """The tool names ``tools.<actor>.enabled`` lists."""
+    return frozenset(actor_tool_block(task, actor).get("enabled", []))
+
+
+def declared_tool_names(task: Any) -> frozenset[str]:
+    """Every tool name the task declares, whichever actor it declares it for."""
+    return frozenset().union(*(enabled_tool_names(task, actor) for actor in ToolActor))
+
+
+def tool_configs(task: TaskConfig, actor: ToolActor) -> dict[str, dict]:
+    """Per-tool init kwargs lifted from the ``tools.<actor>.<name>`` blocks.
 
     Only enabled tools are read. The kwargs reach the runner via
     ``ToolSchema.tool_config`` and drive the builtin instantiation whose schema
@@ -567,54 +705,62 @@ def agent_tool_configs(task: TaskConfig) -> dict[str, dict]:
             that would otherwise surface at trial registration as a ``TypeError``
             with no task in the message.
     """
+    block = actor_tool_block(task, actor)
     configs: dict[str, dict] = {}
-    for tool_name in task.tools.agent.get("enabled", []):
-        raw = task.tools.agent.get(tool_name)
+    for tool_name in block.get("enabled", []):
+        raw = block.get(tool_name)
         if raw is None:
             continue
         if not isinstance(raw, dict):
             raise ValueError(
-                f"tools.agent.{tool_name} must be a mapping of init kwargs "
+                f"tools.{actor.value}.{tool_name} must be a mapping of init kwargs "
                 f"(got {type(raw).__name__}={raw!r}) in task {task.task_id!r}"
             )
         configs[tool_name] = dict(raw)
     return configs
 
 
-def resolve_agent_tool_schemas(
-    task: TaskConfig, task_dir: Path, *, allow_subprocess: bool
+def resolve_tool_schemas(
+    task: TaskConfig, task_dir: Path, actor: ToolActor, *, allow_subprocess: bool
 ) -> dict[str, dict]:
-    """Resolve ``{tool_name: {"description", "parameters"}}`` for the agent's tools.
+    """Resolve ``{tool_name: {"description", "parameters"}}`` for *actor*'s tools.
 
-    An MCP task's schemas come from ``<task_dir>/fixtures/tools.json``; a task
+    An MCP block's schemas come from ``<task_dir>/fixtures/tools.json``; a block
     without an ``mcp_server`` gets them from the builtin registry.
 
     Args:
         task: The loaded task config.
         task_dir: The effective task dir, i.e. the second element of
             :func:`load_task_yaml`'s return.
-        allow_subprocess: When ``True``, an MCP task with no readable fixture is
+        actor: Whose ``tools.<actor>`` block to read.
+        allow_subprocess: When ``True``, an MCP block with no readable fixture is
             resolved by starting its server and querying ``tools/list``, and the
             answer is cached into the task tree. When ``False`` the resolution is
-            strictly read-only and that task resolves to no schemas at all — the
+            strictly read-only and that block resolves to no schemas at all — the
             mode a pre-run gate uses, because a gate must not mutate the tree it
             is validating.
 
     Raises:
         RuntimeError: If a live ``tools/list`` query is reached and fails.
-        ValueError: If a ``tools.agent.<name>`` block is not a mapping.
+        ValueError: If a ``tools.<actor>.<name>`` block is not a mapping.
     """
-    enabled: list[str] = task.tools.agent.get("enabled", [])
-    mcp_server_ref = task.tools.agent.get("mcp_server")
+    block = actor_tool_block(task, actor)
+    mcp_server_ref = block.get("mcp_server")
     if mcp_server_ref:
         return _load_rich_tool_schemas(
             task_dir, task_dir / mcp_server_ref, allow_subprocess=allow_subprocess
         )
-    return _builtin_tool_schemas(enabled, agent_tool_configs(task))
+    return _builtin_tool_schemas(block.get("enabled", []), tool_configs(task, actor))
 
 
 def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
     """The task's declared tool set and resolved schemas, without touching the tree.
+
+    Both actors' blocks are resolved, so a tool only the user declares carries its
+    schema as an agent tool does. A name both declare resolves once: a task ships
+    one MCP server — ``TaskConfig`` refuses a user block naming a second — so both
+    blocks read the same ``fixtures/tools.json``, and a builtin name resolves
+    against the one registry whichever block enabled it.
 
     A tool whose schema does not resolve — an MCP task with no committed
     ``fixtures/tools.json``, a name the builtin registry does not know, a fixture
@@ -625,14 +771,15 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
     grading block cannot draw an undeclared-tool error and an argument finding
     from the same name.
     """
-    declared = frozenset(task.tools.agent.get("enabled", [])) | frozenset(
-        task.tools.user.get("enabled", [])
-    )
-    schemas = resolve_agent_tool_schemas(task, task_dir, allow_subprocess=False)
+    declared_by_executor = {
+        ACTOR_EXECUTOR_IDENTITY[actor]: enabled_tool_names(task, actor) for actor in ToolActor
+    }
+    agent_declared = declared_by_executor[ToolExecutorIdentity.AGENT]
+    user_declared = declared_by_executor[ToolExecutorIdentity.USER]
+    declared = agent_declared | user_declared
     parameters = {
-        name: entry["parameters"]
-        for name, entry in schemas.items()
-        if name in declared and isinstance(entry.get("parameters"), dict)
+        **_declared_parameters(task, task_dir, ToolActor.USER, user_declared),
+        **_declared_parameters(task, task_dir, ToolActor.AGENT, agent_declared),
     }
     if "search_kb" in declared:
         # The runner rebuilds search_kb as a source-less RAG wrapper, so the
@@ -643,7 +790,26 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
         from tolokaforge.runner.tool_factory import create_search_kb_schema
 
         parameters["search_kb"] = create_search_kb_schema().parameters
-    return ToolInventory(declared=declared, parameters=parameters, known=True)
+    return ToolInventory(
+        declared=declared,
+        agent_declared=agent_declared,
+        user_declared=user_declared,
+        actor_split_known=True,
+        parameters=parameters,
+        known=True,
+    )
+
+
+def _declared_parameters(
+    task: TaskConfig, task_dir: Path, actor: ToolActor, declared: frozenset[str]
+) -> dict[str, Mapping[str, Any]]:
+    """*actor*'s resolved parameter schemas, for the tools *actor* declares."""
+    schemas = resolve_tool_schemas(task, task_dir, actor, allow_subprocess=False)
+    return {
+        name: entry["parameters"]
+        for name, entry in schemas.items()
+        if name in declared and isinstance(entry.get("parameters"), dict)
+    }
 
 
 def tool_inventory_under_adapter(
@@ -687,37 +853,104 @@ def replay_world_under_adapter(task: TaskConfig, adapter_type: str) -> ReplayWor
     )
 
 
-def hash_source_layer_under_adapter(adapter_type: str) -> HashSourceLayer:
-    """What supplies a hash source beneath a task's authored block, under *adapter_type*.
+def hash_source_layer_under_adapter(
+    task: TaskConfig, task_dir: Path, adapter_type: str
+) -> HashSourceLayer:
+    """What supplies a hash source beneath *task*'s authored block, under *adapter_type*.
 
-    The authored ``state_checks.hash`` keys are the native reading's whole layer, so a
-    native task's enabled-but-sourceless block grades nothing and is the gate's to
-    refuse. A task an external adapter owns gets :meth:`HashSourceLayer.unresolvable`
-    for the reason :func:`tool_inventory_under_adapter` gives: the frozen-core adapter
-    family computes the source it compares against from its own fixtures, a reading no
-    surface here resolves, so refusing the bare block would reject packs that grade
-    fine. Letting an adapter *answer* with the source it supplies — so a fixture it
-    lost is refused before the trial is paid for — is the layer's designed extension,
-    deliberately not built here.
+    The adapter answers for itself, through
+    :meth:`~tolokaforge.adapters.base.BaseAdapter.grading_hash_source_layer`: native
+    reports that the authored keys are the whole layer, an adapter computing the source
+    from its own fixtures reports that source and the state it is in, and the gate
+    decides which of those is fatal. An adapter type this environment has no class for
+    — not installed, or misspelled — answers :meth:`HashSourceLayer.unresolvable`,
+    because a pack whose grading nothing here can interrogate must be reported rather
+    than refused.
+    """
+    from tolokaforge.adapters import adapter_class
+
+    resolved = adapter_class(adapter_type)
+    if resolved is None:
+        return HashSourceLayer.unresolvable()
+    return resolved.grading_hash_source_layer(task, task_dir)
+
+
+def seeded_tables_from_task(task: TaskConfig, task_dir: Path) -> dict[str, list[dict[str, Any]]]:
+    """The tables *task* seeds through ``initial_state.json_db``, by collection name.
+
+    The native reading of a task's seeded state, shared by the task-description
+    build and the gates that hold a grading declaration against it. A string
+    names a JSON file under *task_dir*; a mapping is the seeded data written
+    inline; a task seeding neither seeds nothing. A named file that is not on
+    disk raises :class:`RuntimeError` — a task declaring state it cannot supply
+    is broken wherever it is read.
+    """
+    if not (task.initial_state and task.initial_state.json_db):
+        return {}
+    json_db = task.initial_state.json_db
+    if isinstance(json_db, str):
+        json_db_path = task_dir / json_db
+        if not json_db_path.exists():
+            raise RuntimeError(f"JSON DB file not found: {json_db_path}")
+        with open(json_db_path) as f:
+            data = json.load(f)
+    else:
+        data = json_db
+    return {name: _seeded_records(collection) for name, collection in data.items()}
+
+
+def seeded_tables_under_adapter(
+    task: TaskConfig, task_dir: Path, adapter_type: str
+) -> SeededTablesLayer:
+    """The tables to check *task*'s ``id_fields`` declaration against, under *adapter_type*.
+
+    ``initial_state.json_db`` is the *native* reading of what a task seeds, so a task an
+    external adapter owns gets :meth:`SeededTablesLayer.unresolvable` for the reason
+    :func:`tool_inventory_under_adapter` gives: holding a declaration against a state the
+    adapter does not seed would reject packs that run fine.
+
+    A native task whose ``json_db`` names a file that is not on disk raises out of here
+    rather than reporting an empty view, which is what makes the caller's per-task
+    failure accounting name the missing path — the same refusal the run path meets when
+    it builds the task description.
     """
     from tolokaforge.runner.models import AdapterType
 
     if adapter_type != AdapterType.NATIVE.value:
-        return HashSourceLayer.unresolvable()
-    return HashSourceLayer()
+        return SeededTablesLayer.unresolvable()
+    return SeededTablesLayer(tables=seeded_tables_from_task(task, task_dir))
+
+
+def _seeded_records(collection: Any) -> list[dict[str, Any]]:
+    """Normalise one seeded collection to the record list its table carries.
+
+    A list is already the records. A mapping is records keyed by id when every
+    value is itself a mapping, and one record otherwise — a mapping of
+    primitives is the table's single row, not a row per field. Anything else is
+    a single record too.
+    """
+    if isinstance(collection, list):
+        return collection
+    if isinstance(collection, dict):
+        values = list(collection.values())
+        if values and all(isinstance(value, dict) for value in values):
+            return values
+    return [collection]
 
 
 class GradingSourceKind(str, Enum):
     """Where a run of one task reads its grading block, or why it reads none."""
 
     ON_DISK = "on_disk"
-    """The task names a grading file, and the run reads its block from there."""
+    """The task names a grading file that is on disk, and the run reads its block from there."""
 
     WITHHELD = "withheld"
-    """The task names none, and the adapter it declares grades from one."""
+    """There is no block to read, and the adapter the task declares grades from one — so
+    the task cannot be graded and is refused before any trial."""
 
     UNINTERROGABLE = "uninterrogable"
-    """The task names none, and the adapter it declares answers for itself."""
+    """There is no block to read, and the adapter the task declares answers for itself — so
+    nothing here can pronounce on the absence."""
 
 
 @dataclass(frozen=True)
@@ -725,9 +958,10 @@ class GradingSource:
     """The grading file one task's run reads, or the sentence saying why there is none.
 
     An absence is two states, not one, because they decide opposite things: a task
-    whose declared adapter grades from a file and supplies none cannot be graded at
+    whose declared adapter grades from a file and has none to read cannot be graded at
     all, while a task whose declared adapter resolves its own is one nothing here
-    can pronounce on.
+    can pronounce on. Whether the file is unnamed or named and not on disk changes the
+    sentence each carries, not which of the two decisions it draws.
     """
 
     kind: GradingSourceKind
@@ -764,14 +998,19 @@ def grading_source_under_adapter(
 ) -> GradingSource:
     """Where *task*'s grading block is read from, under *adapter_type*.
 
-    A task naming a grading file is :attr:`GradingSourceKind.ON_DISK` whatever the
-    adapter — the path is joined, never stat'd, so a declared file that is not there
-    is the reading gate's question and not this one's.
+    A task naming a grading file that is on disk is :attr:`GradingSourceKind.ON_DISK`
+    whatever the adapter — that file is the block any adapter reading the field reads.
 
-    A task naming none is answered off *adapter_type*, because
-    :meth:`BaseAdapter.get_grading_config` is abstract and the implementations
-    disagree: :class:`NativeAdapter` refuses such a task, while an external adapter
-    may synthesise a whole config without reading the field.
+    Every other case is an absence, and which absence it is is answered off
+    *adapter_type*, because :meth:`BaseAdapter.get_grading_config` is abstract and the
+    implementations disagree: :class:`NativeAdapter` refuses a task it has no block to
+    read, while an external adapter may synthesise a whole config without reading the
+    field. So a task naming no file and a task naming one that is not there are both
+    :attr:`~GradingSourceKind.WITHHELD` under the native adapter and
+    :attr:`~GradingSourceKind.UNINTERROGABLE` under any other, differing in the sentence
+    they carry, which names the fix each needs. Under an adapter that answers for itself
+    a dangling ``grading:`` path is therefore reported unchecked rather than refused,
+    since nothing here can say whether that adapter reads the field at all.
 
     Which adapter that is, is the caller's to resolve, and the two gates resolve it
     differently on purpose. ``validate`` builds no description and reads the type the
@@ -783,9 +1022,34 @@ def grading_source_under_adapter(
     """
     from tolokaforge.runner.models import AdapterType
 
+    grades_from_the_file = adapter_type == AdapterType.NATIVE.value
     if task.grading is not None:
-        return GradingSource(kind=GradingSourceKind.ON_DISK, path=task_dir / task.grading)
-    if adapter_type != AdapterType.NATIVE.value:
+        declared = task_dir / task.grading
+        if declared.exists():
+            return GradingSource(kind=GradingSourceKind.ON_DISK, path=declared)
+        if not grades_from_the_file:
+            return GradingSource(
+                kind=GradingSourceKind.UNINTERROGABLE,
+                path=None,
+                reason=(
+                    f"this task declares grading source {task.grading!r} and no file is at "
+                    f"{declared}, and adapter {adapter_type!r} decides for itself what a task "
+                    "grades by, so whether it would ever have read that path is not checkable "
+                    "here"
+                ),
+            )
+        return GradingSource(
+            kind=GradingSourceKind.WITHHELD,
+            path=None,
+            reason=(
+                f"task {task.task_id!r} declares grading source {task.grading!r} and no "
+                f"file is at {declared}. Adapter {adapter_type!r} grades from that file, so "
+                "this task cannot be graded and is refused before any trial is scheduled. "
+                "Correct the `grading:` path to the block this task grades by, or create "
+                "that file."
+            ),
+        )
+    if not grades_from_the_file:
         return GradingSource(
             kind=GradingSourceKind.UNINTERROGABLE,
             path=None,
