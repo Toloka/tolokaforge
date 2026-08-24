@@ -51,6 +51,7 @@ def core_stack(
     mount_docker_socket: bool = False,
     rag_service_url: str | None = None,
     typesense_address: TypeSenseAddress | None = None,
+    expose_substrate: bool = False,
 ) -> EngineStack:
     """Create a core service stack with DB service and Runner.
 
@@ -93,6 +94,14 @@ def core_stack(
             API key is not a parameter: it reaches the runner only inside
             ``TOLOKAFORGE_SECRETS_JSON``, by being registered with the
             SecretManager before the stack is built.
+        expose_substrate: When true, injects
+            ``RUNNER_EXPOSE_SUBSTRATE=true`` so the runner registers its
+            :class:`SubstrateService` gRPC servicer on the same listen port
+            as :class:`RunnerService`. ``False`` (the default) leaves the
+            env var unset — the runner starts with the substrate surface
+            off and every ``SubstrateService/*`` call returns
+            ``UNIMPLEMENTED``, matching the honest-absence rule
+            ``RAG_SERVICE_URL`` uses.
 
     Returns:
         EngineStack configured with db-service and runner.
@@ -146,6 +155,11 @@ def core_stack(
     if typesense_address is not None:
         runner_env["TYPESENSE_HOST"] = typesense_address.host
         runner_env["TYPESENSE_PORT"] = str(typesense_address.port)
+    # Same honest-absence rule: injected iff the run asked to expose the
+    # read-only SubstrateService surface. Runner reads this env var in
+    # ``get_config()`` and registers the servicer on the same listen port.
+    if expose_substrate:
+        runner_env["RUNNER_EXPOSE_SUBSTRATE"] = "true"
     runner_depends = ["db-service"]
     runner_resources = ResourcePolicy(
         cap_drop=[Capability.ALL],

@@ -111,6 +111,48 @@ service RunnerService {
 }
 
 // =============================================================================
+// SubstrateService - read-only view of a trial's grading substrate.
+//
+// Registered on the same gRPC server + listen port as RunnerService iff
+// RunConfig.grader.expose_substrate: true is set (env var
+// RUNNER_EXPOSE_SUBSTRATE=true reaches the runner container). Runner
+// started with the flag off returns UNIMPLEMENTED for any
+// SubstrateService/* call. See docs/GRADER_SERVICE.md § "SubstrateService
+// (runner-side, read-only)".
+// =============================================================================
+
+service SubstrateService {
+  // Pre-execution state ({table: [rows]}).
+  rpc ReadInitialState(ReadInitialStateRequest) returns (ReadStateResponse);
+
+  // RAW final DB state — mirrors db_client.get_state. Judge state-diff
+  // and custom_checks read RAW; parity depends on this split.
+  rpc ReadFinalDBState(ReadFinalDBStateRequest) returns (ReadStateResponse);
+
+  // STABLE final DB state — mirrors db_client.get_stable_state (unstable
+  // fields filtered server-side by the DB service). Jsonpath grading
+  // reads STABLE.
+  rpc ReadFinalDBStateStable(ReadFinalDBStateStableRequest) returns (ReadStateResponse);
+
+  // One file under AGENT_WORK_DIR. Symlinks / non-files / missing paths
+  // return exists=false.
+  rpc ReadFilesystemPath(ReadFilesystemPathRequest) returns (ReadFilesystemPathResponse);
+
+  // Relative POSIX paths of every non-symlink UTF-8-decodable file under
+  // AGENT_WORK_DIR. Same filter _read_agent_visible_filesystem ships
+  // today — no path-component excluder.
+  rpc ListFilesystemDir(ListFilesystemDirRequest) returns (ListFilesystemDirResponse);
+
+  // Trial's per-trial KB. kb_available=false is a first-class "no KB
+  // provisioned" signal; the callback substrate returns None from
+  // knowledge_search() when it is false.
+  rpc KBSearch(KBSearchRequest) returns (KBSearchResponse);
+
+  // Substrate liveness + capacity. Distinct from RunnerService.HealthCheck.
+  rpc SubstrateHealthCheck(SubstrateHealthCheckRequest) returns (SubstrateHealthCheckResponse);
+}
+
+// =============================================================================
 // RegisterTrial - Initialise trial with a TrialSpec payload
 // =============================================================================
 

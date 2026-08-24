@@ -886,6 +886,15 @@ class GraderConfig(BaseModel):
     Transport-specific settings live in subblocks named after the
     transport. Only the subblock matching the selected ``name`` is
     consulted — an unrelated subblock is harmless data the factory ignores.
+
+    ``expose_substrate`` controls whether the runner exposes its
+    :class:`SubstrateService` gRPC surface — a read-only view of the
+    trial's substrate (initial state, DB reads, agent-visible filesystem,
+    per-trial KB) dialled by an independent grader container. Registered
+    on the same listen port as :class:`RunnerService`; a runner started
+    with the flag off returns ``UNIMPLEMENTED`` for any ``SubstrateService/*``
+    call. Default off so a brownfield deploy never accidentally opens the
+    surface.
     """
 
     model_config = {"extra": "forbid"}
@@ -893,6 +902,7 @@ class GraderConfig(BaseModel):
     name: str | None = None
     queue: QueueGraderConfig | None = None
     judge: JudgeGraderConfig | None = None
+    expose_substrate: bool = False
 
 
 class TracingConfig(BaseModel):
