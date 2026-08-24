@@ -151,8 +151,9 @@ def produce_grading_refusal(service: Any, context: Any) -> str:
     trial_id = f"{task_id}:0"
     register_collided_trial(service, context, simple_task_description(), trial_id=trial_id)
     grader = RunnerRPCTrialGrader(
-        runtime_backend=ServicerBackend(service, context),
+        runner_address="in-process-servicer:0",
         logger=StructuredLogger("test-grading-refusal"),
+        runner_client=ServicerBackend(service, context),
     )
     try:
         grader.grade(

@@ -21,8 +21,8 @@ from tolokaforge.core.trial_grader import RunnerRPCTrialGrader, TrialGrader
 pytestmark = pytest.mark.canonical
 
 
-class _StubRuntimeBackendForGrading:
-    """Minimal runtime-backend stand-in that satisfies the ``grade_trial``
+class _StubRunnerClientForGrading:
+    """Minimal ``GrpcRunnerClient`` stand-in that satisfies the ``grade_trial``
     surface the grader actually calls."""
 
     def grade_trial(self, trial_id: str, **_kwargs: object) -> dict[str, object]:
@@ -39,8 +39,9 @@ class _StubRuntimeBackendForGrading:
 
 def _make_grader() -> RunnerRPCTrialGrader:
     return RunnerRPCTrialGrader(
-        runtime_backend=_StubRuntimeBackendForGrading(),
+        runner_address="stub:0",
         logger=MagicMock(),
+        runner_client=_StubRunnerClientForGrading(),
     )
 
 

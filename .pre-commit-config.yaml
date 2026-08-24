@@ -28,3 +28,17 @@ repos:
     rev: v1.7.7
     hooks:
       - id: actionlint
+
+  # import-linter — plug-in seam boundary enforcement (ADR-0038). Runs
+  # against the whole tolokaforge package (not per-file) so it needs
+  # pass_filenames=false + always_run=true. Uses the same import-linter
+  # version pinned in [dependency-groups].dev via the local uv env.
+  - repo: local
+    hooks:
+      - id: import-linter
+        name: Import-boundary contracts
+        entry: uv run lint-imports
+        language: system
+        pass_filenames: false
+        always_run: true
+        types: [python]

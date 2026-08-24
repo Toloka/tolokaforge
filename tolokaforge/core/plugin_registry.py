@@ -171,10 +171,27 @@ class RuntimeBackendBuildContext:
 
 @dataclass(frozen=True)
 class TrialGraderContext:
-    """Dependencies a trial-grader factory receives from the orchestrator."""
+    """Serialisable configuration a trial-grader factory receives from the orchestrator.
 
-    runtime_backend: RuntimeBackend
+    Carries only data, not live objects: two endpoint strings plus the
+    run-scoped logger. A live gRPC channel would couple the grader to the
+    orchestrator's chosen runner instance and block a grader that runs on a
+    different machine — precisely the coupling the plug-in seam exists to
+    break (see ADR-0038).
+
+    :attr:`runner_address` is the runner service's gRPC address; the
+    ``runner_rpc`` grader dials it.
+
+    :attr:`grader_address` is the standalone grader service's gRPC address;
+    the ``grader_rpc`` grader dials it. Defaults to ``None`` when the
+    operator hasn't split the two — factories that need a grader-specific
+    endpoint fall back to :attr:`runner_address` in that case, keeping
+    single-address deployments trivially compatible.
+    """
+
+    runner_address: str | None
     logger: StructuredLogger
+    grader_address: str | None = None
 
 
 @dataclass(frozen=True)

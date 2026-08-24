@@ -35,6 +35,7 @@ remote grader service, or route to an entirely different Judge component
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import ValidationError
@@ -57,17 +58,26 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
-from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.trial import TrialSpec
 
 if TYPE_CHECKING:
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.plugin_registry import TrialGraderContext
+    from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
+    from tolokaforge.grader.client import GrpcGraderClient
+    from tolokaforge.grader.queue import GradeBroker
 
 __all__ = [
+    "GraderRPCTrialGrader",
     "GradingFailedError",
+    "JudgeBackedTrialGrader",
+    "JudgeGradeFn",
+    "QueueTrialGrader",
     "RunnerRPCTrialGrader",
     "TrialGrader",
+    "grader_rpc_trial_grader_factory",
+    "judge_backed_trial_grader_factory",
+    "queue_trial_grader_factory",
 ]
 
 
@@ -140,14 +150,32 @@ class RunnerRPCTrialGrader:
     raises :class:`GradingFailedError` when the RPC could not produce a
     verdict.
 
-    Instantiated per-run with a bound ``runtime_backend`` and the
-    per-run :class:`StructuredLogger`. The orchestrator constructs one
-    and injects it into every conductor.
+    Built per-run from a :class:`TrialGraderContext` — a *serialisable*
+    configuration (``runner_address`` + logger). The grader owns its own
+    :class:`~tolokaforge.core.shared_stack_runtime.GrpcRunnerClient` bound
+    to that address, so it stays independent of the orchestrator's runtime
+    backend — the seam that lets a future grader run on a different machine.
+
+    Tests may pass a ``runner_client`` directly to bypass real gRPC; the
+    stub must expose a ``grade_trial(trial_id, llm_messages_json, ...)``
+    method returning the same dict shape as
+    :meth:`GrpcRunnerClient.grade_trial`.
     """
 
-    def __init__(self, runtime_backend: RuntimeBackend, logger: StructuredLogger) -> None:
-        self.runtime_backend = runtime_backend
+    def __init__(
+        self,
+        runner_address: str,
+        logger: StructuredLogger,
+        *,
+        runner_client: GrpcRunnerClient | None = None,
+    ) -> None:
+        self.runner_address = runner_address
         self.logger = logger
+        if runner_client is None:
+            from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient as _Client
+
+            runner_client = _Client(runner_address=runner_address)
+        self.runner_client = runner_client
 
     def grade(
         self,
@@ -207,7 +235,7 @@ class RunnerRPCTrialGrader:
             )
 
         llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
-        grade_result = self.runtime_backend.grade_trial(
+        grade_result = self.runner_client.grade_trial(
             trial_id=spec.trial_id,
             llm_messages_json=llm_messages_json,
             termination_reason=(
@@ -399,5 +427,429 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
 
 
 def runner_rpc_trial_grader_factory(ctx: TrialGraderContext) -> RunnerRPCTrialGrader:
-    """Build a :class:`RunnerRPCTrialGrader` from a grader context."""
-    return RunnerRPCTrialGrader(runtime_backend=ctx.runtime_backend, logger=ctx.logger)
+    """Build a :class:`RunnerRPCTrialGrader` from a grader context.
+
+    Accepts ``ctx.runner_address is None`` at construction so orchestrator
+    fixtures paired with an in-memory backend can still build the grader
+    without touching the network. The misconfiguration surfaces at the
+    first :meth:`grade` call as a :class:`ConnectionError` from
+    :class:`GrpcRunnerClient.connect`'s health-check retry loop (~30 s
+    timeout) rather than a synchronous ``ValueError`` — the address is
+    only dialled when it is needed.
+    """
+    return RunnerRPCTrialGrader(runner_address=ctx.runner_address or "", logger=ctx.logger)
+
+
+JudgeGradeFn = Callable[[TrialSpec, Trajectory, str], "Grade | None"]
+"""The judge-backed grader's dispatch surface: given the trial's spec, its
+completed trajectory, and the agent's system prompt, return the :class:`Grade`
+the judge produced (or ``None`` when the trial produced nothing to grade).
+
+Kept as a plain ``Callable`` alias so the seam accepts any host-side wiring
+that reaches a judge: the offline replay path (``dx.cli.rejudge``), a
+JudgeBackedTrialGrader wrapping :class:`~tolokaforge.core.grading.judge.LLMJudge`
+directly, or a downstream package's judge integration.
+"""
+
+
+class JudgeBackedTrialGrader:
+    """:class:`TrialGrader` that invokes an injected judge callable directly,
+    without the runner's state / transcript / custom-check machinery.
+
+    The seam's second registered implementation (see ADR-0038, Decision 5):
+    a grader that dispatches to a judge rather than a runner-side RPC. Ships
+    as the plug-in shape for judge-only tasks (rubric-only fixtures, offline
+    replay); production integration with :class:`LLMJudge` is deferred as a
+    follow-up (see the milestone umbrella #1181).
+
+    The Protocol contract is unchanged: :meth:`grade` returns a :class:`Grade`,
+    or ``None`` when the trial produced nothing to grade. Auto-fail on
+    error / timeout / stuck-detected matches :class:`RunnerRPCTrialGrader` so
+    both implementations are drop-in swaps for the caller.
+    """
+
+    def __init__(self, judge_fn: JudgeGradeFn, logger: StructuredLogger) -> None:
+        self.judge_fn = judge_fn
+        self.logger = logger
+
+    def grade(
+        self,
+        spec: TrialSpec,
+        trajectory: Trajectory,
+        agent_system_prompt: str,
+    ) -> Grade | None:
+        task_id, trial_idx = _split_trial_id(spec.trial_id)
+
+        if classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+            self.logger.info(
+                "Trial aborted by infrastructure - not graded",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
+                termination_reason=(
+                    trajectory.termination_reason.value if trajectory.termination_reason else None
+                ),
+            )
+            return None
+
+        if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
+            self.logger.info(
+                "Trial did not complete successfully - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(llm_judge=0.0),
+                reasons=f"Trial failed with status: {trajectory.status.value}",
+            )
+
+        if trajectory.termination_reason == TerminationReason.STUCK_DETECTED:
+            self.logger.info(
+                "Trial stuck - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(llm_judge=0.0),
+                reasons="Agent got stuck (repeated actions without progress)",
+            )
+
+        grade = self.judge_fn(spec, trajectory, agent_system_prompt)
+        if grade is None:
+            self.logger.info(
+                "Judge returned no verdict",
+                task_id=task_id,
+                trial_index=trial_idx,
+            )
+        else:
+            self.logger.info(
+                "Grading via judge callable",
+                task_id=task_id,
+                trial_index=trial_idx,
+                score=grade.score,
+                binary_pass=grade.binary_pass,
+            )
+        return grade
+
+
+class GraderRPCTrialGrader:
+    """:class:`TrialGrader` that dispatches to the standalone
+    :class:`~tolokaforge.grader.service.GraderServiceImpl` over gRPC.
+
+    Deployment-shape sibling of :class:`RunnerRPCTrialGrader`: same call
+    shape, same auto-fail branches, same wire semantics — but bound to the
+    grader service's address instead of the runner's. Registered under the
+    ``grader_rpc`` entry point; selected by task config with
+    ``grader: grader_rpc``.
+
+    Per ADR-0038, the grader service is expected to run on a different
+    machine from the runner, on its own release cadence and scale unit. This
+    grader owns its own :class:`GrpcGraderClient`; tests may inject a stub
+    ``grader_client`` to skip real gRPC.
+    """
+
+    def __init__(
+        self,
+        grader_address: str,
+        logger: StructuredLogger,
+        *,
+        grader_client: GrpcGraderClient | None = None,
+    ) -> None:
+        self.grader_address = grader_address
+        self.logger = logger
+        if grader_client is None:
+            from tolokaforge.grader.client import GrpcGraderClient as _Client
+
+            grader_client = _Client(grader_address=grader_address)
+        self.grader_client = grader_client
+
+    def grade(
+        self,
+        spec: TrialSpec,
+        trajectory: Trajectory,
+        agent_system_prompt: str,
+    ) -> Grade | None:
+        task_id, trial_idx = _split_trial_id(spec.trial_id)
+
+        if classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+            self.logger.info(
+                "Trial aborted by infrastructure - not graded",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
+                termination_reason=(
+                    trajectory.termination_reason.value if trajectory.termination_reason else None
+                ),
+            )
+            return None
+
+        if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
+            self.logger.info(
+                "Trial did not complete successfully - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(state_checks=0.0),
+                reasons=f"Trial failed with status: {trajectory.status.value}",
+            )
+
+        if trajectory.termination_reason == TerminationReason.STUCK_DETECTED:
+            self.logger.info(
+                "Trial stuck - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(state_checks=0.0),
+                reasons="Agent got stuck (repeated actions without progress)",
+            )
+
+        llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
+        grade_result = self.grader_client.grade(
+            trial_id=spec.trial_id,
+            llm_messages_json=llm_messages_json,
+            termination_reason=(
+                trajectory.termination_reason.value if trajectory.termination_reason else None
+            ),
+        )
+
+        if not grade_result["success"]:
+            error_msg = grade_result.get("error") or "Unknown grading error"
+            self.logger.error(
+                "Grader service RPC failed",
+                task_id=task_id,
+                trial_index=trial_idx,
+                error=error_msg,
+            )
+            raise GradingFailedError(f"Grading failed for trial {spec.trial_id!r}: {error_msg}")
+
+        if grade_result.get("no_verdict"):
+            # The wire distinguishes "nothing to grade" (no verdict) from a
+            # grading failure — the ``TrialGrader`` Protocol returns ``None``
+            # for the former and raises ``GradingFailedError`` for the latter.
+            self.logger.info(
+                "Grader service produced no verdict",
+                task_id=task_id,
+                trial_index=trial_idx,
+            )
+            return None
+
+        grade = _parse_grade_result(grade_result["grade"])
+        self.logger.info(
+            "Grading via grader service RPC",
+            task_id=task_id,
+            trial_index=trial_idx,
+            score=grade.score,
+            binary_pass=grade.binary_pass,
+        )
+        return grade
+
+
+def grader_rpc_trial_grader_factory(ctx: TrialGraderContext) -> GraderRPCTrialGrader:
+    """Build a :class:`GraderRPCTrialGrader` from a grader context.
+
+    Uses ``ctx.grader_address`` when set (grader service on a distinct host)
+    and falls back to ``ctx.runner_address`` when the operator has not split
+    the two — single-address single-host deployments continue to work.
+
+    Fails loud when neither field is set (in-memory backend + grader_rpc is
+    a misconfiguration that would otherwise surface as a 30 s connect hang).
+    """
+    # ``ctx.grader_address`` / ``ctx.runner_address`` are ``str | None`` on
+    # the wire but the in-memory backend threads an empty string through
+    # ``getattr(runtime_backend, "runner_address", None)`` when the field
+    # is missing. Treat empty and ``None`` the same — either shape would
+    # otherwise pass the None guard and surface as a 30 s gRPC connect
+    # hang the docstring promises we catch here.
+    address = ctx.grader_address or ctx.runner_address
+    if not address:
+        raise ValueError(
+            "grader_rpc trial grader requires either ``grader_address`` or "
+            "``runner_address`` on the grader context (got no usable value on "
+            "either). Pair a network-reachable backend with the grader_rpc "
+            "grader, or select a grader that does not need an address."
+        )
+    return GraderRPCTrialGrader(grader_address=address, logger=ctx.logger)
+
+
+class QueueTrialGrader:
+    """:class:`TrialGrader` that publishes grade jobs to a :class:`GradeBroker`
+    and blocks on a per-trial :class:`concurrent.futures.Future`.
+
+    Where :class:`GraderRPCTrialGrader` gives independent deploy, this gives
+    independent *throughput scale*: grader workers consume the queue in
+    parallel, so orchestrator worker threads no longer serialise on grader
+    latency. The plug-in Protocol stays synchronous — the future keeps the
+    call semantics intact — and the queue backend is a plug-in behind the
+    :class:`GradeBroker` Protocol.
+
+    Ships with an :class:`~tolokaforge.grader.queue.InMemoryGradeBroker`
+    reference backend (ADR-0038's Decision 3: Redis Streams as the
+    reference wire; other backends behind the same Protocol are follow-ups).
+    Tests inject any :class:`GradeBroker` to exercise the seam.
+    """
+
+    #: Timeout the grader waits for the broker's future to resolve. Long
+    #: because a queue backend's worker pool may saturate; a hard failure
+    #: at the seam layer would mask a scaling problem the operator can
+    #: fix by adding consumers. Tunable via the constructor.
+    DEFAULT_TIMEOUT_S: float = 600.0
+
+    def __init__(
+        self,
+        broker: GradeBroker,
+        logger: StructuredLogger,
+        *,
+        timeout_s: float | None = None,
+    ) -> None:
+        self.broker = broker
+        self.logger = logger
+        self.timeout_s = timeout_s if timeout_s is not None else self.DEFAULT_TIMEOUT_S
+
+    def grade(
+        self,
+        spec: TrialSpec,
+        trajectory: Trajectory,
+        agent_system_prompt: str,
+    ) -> Grade | None:
+        from tolokaforge.grader.queue import GradeJob, new_job_id
+
+        task_id, trial_idx = _split_trial_id(spec.trial_id)
+
+        if classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+            self.logger.info(
+                "Trial aborted by infrastructure - not graded",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
+            )
+            return None
+
+        if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
+            self.logger.info(
+                "Trial did not complete successfully - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(state_checks=0.0),
+                reasons=f"Trial failed with status: {trajectory.status.value}",
+            )
+
+        if trajectory.termination_reason == TerminationReason.STUCK_DETECTED:
+            self.logger.info(
+                "Trial stuck - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(state_checks=0.0),
+                reasons="Agent got stuck (repeated actions without progress)",
+            )
+
+        llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
+        job = GradeJob(
+            job_id=new_job_id(),
+            trial_id=spec.trial_id,
+            llm_messages_json=llm_messages_json,
+            termination_reason=(
+                trajectory.termination_reason.value if trajectory.termination_reason else ""
+            ),
+            task_config_json="",
+            agent_system_prompt=agent_system_prompt,
+        )
+        future = self.broker.publish_job(job)
+        try:
+            grade = future.result(timeout=self.timeout_s)
+        except Exception as exc:  # noqa: BLE001 — surface loudly with our own type
+            # Timed-out and errored futures leave their broker entry live;
+            # without this, one stuck worker leaks one dict entry per trial.
+            # ``cancel_job`` is idempotent — a late ``publish_result`` from
+            # the worker then finds no entry and returns cleanly (the
+            # broker's post-close path treats the same shape as a no-op).
+            self.broker.cancel_job(job.job_id)
+            self.logger.error(
+                "Queue-backed grader failed",
+                task_id=task_id,
+                trial_index=trial_idx,
+                error=str(exc),
+            )
+            raise GradingFailedError(f"Grading failed for trial {spec.trial_id!r}: {exc}") from exc
+
+        if grade is None:
+            self.logger.info(
+                "Queue-backed grader returned no verdict",
+                task_id=task_id,
+                trial_index=trial_idx,
+            )
+        else:
+            self.logger.info(
+                "Grading via queue-backed grader",
+                task_id=task_id,
+                trial_index=trial_idx,
+                score=grade.score,
+                binary_pass=grade.binary_pass,
+            )
+        return grade
+
+
+def queue_trial_grader_factory(ctx: TrialGraderContext) -> QueueTrialGrader:  # noqa: ARG001
+    """Registered ``queue`` factory. Fails loud until a broker + workers are wired.
+
+    The context has no broker-selection field yet and no consumer pool is
+    provisioned by the engine, so a real ``grade: queue`` selection would
+    publish to a broker no one is listening to and hang for
+    ``QueueTrialGrader.DEFAULT_TIMEOUT_S`` before failing. Raising here
+    surfaces the misconfiguration at orchestrator startup, before any trial
+    dispatches, and points the operator at the follow-up that will thread
+    broker configuration through the context.
+
+    Tests construct :class:`QueueTrialGrader` directly with a broker + a
+    controlled worker pool — see ``tests/canonical/test_queue_trial_grader.py``.
+    """
+    raise NotImplementedError(
+        "``queue`` trial grader is registered but not yet wired to a broker + "
+        "worker pool at the engine layer. Instantiate ``QueueTrialGrader`` "
+        "directly with your own ``GradeBroker`` for now; the factory will land "
+        "once ``TrialGraderContext`` carries broker-selection configuration."
+    )
+
+
+def judge_backed_trial_grader_factory(
+    ctx: TrialGraderContext,
+) -> JudgeBackedTrialGrader:  # noqa: ARG001
+    """Registered ``judge_only`` factory. Fails loud until a production
+    judge is wired through the context.
+
+    Same altitude as :func:`queue_trial_grader_factory`: raise at factory
+    time so the operator sees the misconfiguration at orchestrator startup,
+    not deep inside :meth:`grade` after a trial has already been paid for.
+    Tests construct :class:`JudgeBackedTrialGrader` directly with a real
+    :data:`JudgeGradeFn`.
+    """
+    raise NotImplementedError(
+        "``judge_only`` trial grader is registered but not yet wired to a "
+        "production judge at the engine layer. Instantiate "
+        "``JudgeBackedTrialGrader`` directly with your own ``JudgeGradeFn`` "
+        "for now; the factory will land once ``TrialGraderContext`` carries "
+        "judge-selection configuration."
+    )

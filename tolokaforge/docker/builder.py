@@ -176,6 +176,18 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         ],
         "build_args": dict(_PYTHON_BUILD_ARGS),
     },
+    # Standalone grader service (ADR-0038, P4). Its Dockerfile is
+    # multi-stage — builds the base wheel + tolokaforge_models wheel from
+    # source, installs into /opt/venv, and the runtime stage runs
+    # ``python -m tolokaforge.grader``. A grader-only subset wheel is a
+    # follow-up; today the image ships the full tolokaforge distribution.
+    "grader": {
+        "name": "tolokaforge-grader",
+        "dockerfile": "tolokaforge/docker/dockerfiles/grader.Dockerfile",
+        "context": ".",
+        "context_files": _RUNNER_SOURCE_CONTEXT_FILES,
+        "build_args": dict(_PYTHON_BUILD_ARGS),
+    },
 }
 
 # Factories that augment a static base entry with wheel-resolver-dependent

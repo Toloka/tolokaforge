@@ -1,0 +1,194 @@
+// Grader Service Protocol
+// Host ↔ Grader communication for tolokaforge grader-detachment
+// See docs/GRADER_SERVICE.md and ADR-0038 for the design record.
+//
+// Message shapes below intentionally MIRROR runner.proto's Grade payload —
+// same field numbers, same enum values, same wire-level semantics. The two
+// services rev on independent cadences (ADR-0038), so the messages live in
+// this file rather than in an imported runner.proto; a canonical test locks
+// the mirror by recursing into every sub-message so a runner.proto change
+// that this file does not mirror fails the drift guard.
+
+syntax = "proto3";
+
+package tolokaforge.grader;
+
+option go_package = "tolokaforge/grader";
+
+// =============================================================================
+// Grader Service — dedicated Grade RPC, independent of the runner surface.
+// =============================================================================
+
+service GraderService {
+  // Compute a Grade for a completed trial.
+  //
+  // Stateless per call: the caller provides everything the grader needs.
+  // The response carries three distinct outcomes — a failure
+  // (success=false), a "nothing to grade" verdict (success=true,
+  // no_verdict=true), or a computed grade (success=true, no_verdict=false,
+  // grade set). This mirrors the ``TrialGrader.grade`` Protocol's tri-state
+  // return, so a grader-service caller and an in-process grader answer the
+  // same call with the same outcome for the same input.
+  rpc Grade(GradeRequest) returns (GradeResponse);
+
+  // Health check.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// =============================================================================
+// Requests / responses
+// =============================================================================
+
+message GradeRequest {
+  // Trial identifier (canonical "{task_id}:{trial_index}" format).
+  string trial_id = 1;
+
+  // Transcript encoded as LLM messages (JSON string).
+  string llm_messages_json = 2;
+
+  // Termination reason (TerminationReason value name); empty when the caller
+  // reports none. Mirrors runner.GradeTrialRequest.termination_reason.
+  string termination_reason = 3;
+
+  // Task config JSON — reserved for future rubric-carrying dispatch.
+  string task_config_json = 4;
+}
+
+message GradeResponse {
+  // Whether grading itself succeeded (distinct from the trial's outcome).
+  // false → error is set, grade unset, no_verdict unset.
+  bool success = 1;
+
+  // Error message when success=false.
+  string error = 2;
+
+  // The computed grade — populated only when success=true and
+  // no_verdict=false.
+  Grade grade = 3;
+
+  // The dispatch produced no verdict (nothing to grade — e.g. an
+  // infrastructure abort). Set alongside success=true, with grade unset.
+  // Callers translate this back to ``TrialGrader.grade`` returning ``None``.
+  // A silent zero would land in success_rate / avg_score / pass@k as an
+  // agent failure that no measurement supports — the wire holds the
+  // distinction.
+  bool no_verdict = 4;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+  ServingStatus status = 1;
+}
+
+// =============================================================================
+// Grade payload — mirrors runner.Grade
+// =============================================================================
+
+message Grade {
+  bool binary_pass = 1;
+  double score = 2;
+  GradeComponents components = 3;
+  string reasons = 4;
+  string state_diff_json = 5;
+  repeated CustomCheckResult custom_checks = 6;
+  repeated CriterionResult criterion_results = 7;
+  JudgeStatus judge_status = 8;
+  JudgeReport judge_report = 9;
+  repeated TraceConstraintResult trace_checks = 10;
+  TraceChecksSummary trace_checks_summary = 11;
+}
+
+// GradeComponents — mirrors runner.GradeComponents including the ``optional``
+// presence gate on ``trace_checks``. The first four fields carry the -1.0
+// sentinel for "not evaluated"; ``trace_checks`` uses presence instead so a
+// runner predating the field never lands as a scored zero.
+message GradeComponents {
+  double state_checks = 1;
+  double transcript_rules = 2;
+  double llm_judge = 3;
+  double custom_checks = 4;
+  optional double trace_checks = 5;
+}
+
+message CustomCheckResult {
+  string check_name = 1;
+  string status = 2;
+  double score = 3;
+  string message = 4;
+  string details_json = 5;
+}
+
+message CriterionResult {
+  string id = 1;
+  bool met = 2;
+  double score = 3;
+  string justification = 4;
+}
+
+enum JudgeStatus {
+  JUDGE_STATUS_UNSPECIFIED = 0;
+  JUDGE_STATUS_COMPLETED = 1;
+  JUDGE_STATUS_ERRORED = 2;
+}
+
+// JudgeReport — mirrors runner.JudgeReport EXACTLY, including field numbers.
+// A previous shape carried the fields in a different order which would have
+// silently drifted the wire once the encoder started populating them.
+message JudgeReport {
+  int32 calls = 1;
+  int32 prompt_tokens = 2;
+  int32 completion_tokens = 3;
+  int32 reasoning_tokens = 4;
+  double cost_usd = 5;
+  int32 tool_calls = 6;
+  string transcript_json = 7;
+  int32 consistency_rejections = 8;
+  bool knowledge_search_disabled = 9;
+  repeated string kb_tools_offered = 10;
+  repeated string kb_tools_withheld = 11;
+  string state_diff_text = 12;
+  repeated string read_tools_offered = 13;
+  bool custom_system_prompt = 14;
+  optional bool include_agent_system_prompt = 15;
+}
+
+// TraceConstraintResult — mirrors runner.TraceConstraintResult including
+// ``severity`` (field 7) and ``undecided`` (field 8). An earlier grader.proto
+// shape dropped both, so a Grade with trace_checks would have decoded on
+// the runner side with those fields silently zeroed.
+message TraceConstraintResult {
+  string id = 1;
+  string kind = 2;
+  bool passed = 3;
+  double weight = 4;
+  string message = 5;
+  repeated int32 matched_positions = 6;
+  string severity = 7;
+  bool undecided = 8;
+}
+
+// One alternative route's own outcome, whether or not it won.
+message TracePathResult {
+  string id = 1;
+  double score = 2;
+  bool gate_failed = 3;
+}
+
+// TraceChecksSummary — mirrors runner.TraceChecksSummary. The earlier
+// grader.proto shape used ``{route, gate_shut, gate_reason}`` which does not
+// match anything the runner produces; the runner side (and its Pydantic
+// model) uses ``{winning_path, gate_failed, failed_gate_ids, paths}``. Now
+// aligned so once the encoder populates the field, the grader-side decoder
+// reads the same shape a downstream conductor's runner-RPC grader would.
+message TraceChecksSummary {
+  string winning_path = 1;
+  bool gate_failed = 2;
+  repeated string failed_gate_ids = 3;
+  repeated TracePathResult paths = 4;
+}

@@ -58,7 +58,7 @@ assert "fixture_grader" in grader_names, f"fixture_grader not discovered: {sorte
 
 grader_factory = load_trial_grader("fixture_grader")
 assert grader_factory.__name__ == "fixture_grader_factory", grader_factory
-grader = grader_factory(TrialGraderContext(runtime_backend=backend, logger=StructuredLogger("probe")))
+grader = grader_factory(TrialGraderContext(runner_address="probe:0", logger=StructuredLogger("probe")))
 assert type(grader).__name__ == "FixtureGrader", type(grader).__name__
 
 conductor_names = [ep.name for ep in im.entry_points(group="tolokaforge.conductors")]

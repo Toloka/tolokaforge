@@ -778,8 +778,14 @@ class Orchestrator:
                 "Conductor cannot be built before the adapter is loaded. "
                 "Ensure load_tasks() has run successfully."
             )
+        # ``None`` when the backend has no runner surface (in-memory / test);
+        # the built-in address-needing factories (``runner_rpc``, ``grader_rpc``)
+        # raise loudly when they observe it. Downstream graders that do not need
+        # a network address (a stub, a callable-injected grader) receive the
+        # ``None`` verbatim and ignore it.
+        runner_address = getattr(runtime_backend, "runner_address", None)
         trial_grader = load_trial_grader(self.adapter.trial_grader_name)(
-            TrialGraderContext(runtime_backend=runtime_backend, logger=self.logger)
+            TrialGraderContext(runner_address=runner_address, logger=self.logger)
         )
 
         ctx = ConductorContext(

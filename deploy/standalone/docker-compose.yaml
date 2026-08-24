@@ -1,8 +1,9 @@
-# Standalone four-service tolokaforge runner stack.
+# Standalone five-service tolokaforge runner stack.
 #
 # A cold user with only Docker installed runs `docker compose up` here to stand
-# up the four published first-party images — runner, db-service, rag-service,
-# mock-web — on one network, with no repo clone and no in-tree image build.
+# up the five published first-party images — runner, db-service, rag-service,
+# mock-web, grader — on one network, with no repo clone and no in-tree image
+# build.
 # Copy `.env.example` to `.env` first (LLM keys); the keyless bring-up works
 # with no `.env`, but real (paid) trials need a provider key.
 #
@@ -27,7 +28,7 @@
 # Each image self-reports Docker health via its own HEALTHCHECK (the runner
 # probe is a gRPC channel-ready check per ADR-0024); this file never re-declares
 # a healthcheck and orders startup with `depends_on: condition: service_healthy`.
-# `docker compose up --wait` blocks on all four healthchecks. How long that
+# `docker compose up --wait` blocks on all five healthchecks. How long that
 # takes depends on where the rag-service image comes from: one built from the
 # tolokaforge tree carries the `all-MiniLM-L6-v2` weights and stands up in
 # seconds without contacting HuggingFace, while a published tag predating that
@@ -65,6 +66,23 @@ services:
     depends_on:
       db-service:
         condition: service_healthy
+    networks:
+      - runner-net
+
+  grader:
+    image: tolokasoft1/tolokaforge-grader:${TOLOKAFORGE_IMAGE_TAG:-latest}
+    platform: ${TOLOKAFORGE_PLATFORM:-linux/amd64}
+    ports:
+      - "50052:50052"
+    environment:
+      # LLM provider credentials — needed once the follow-up wires the
+      # production LLMJudge dispatch. The current entry mounts an unwired
+      # default dispatch (see ADR-0038 and grader/service.py).
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      TOLOKAFORGE_SECRETS_JSON: ${TOLOKAFORGE_SECRETS_JSON:-}
     networks:
       - runner-net
 

@@ -992,8 +992,9 @@ class TestDuplicateCallIdPublishesNoScore:
         self, runner_service, mock_grpc_context, collided_trial
     ):
         grader = RunnerRPCTrialGrader(
-            runtime_backend=ServicerBackend(runner_service, mock_grpc_context),
+            runner_address="in-process-servicer:0",
             logger=MagicMock(),
+            runner_client=ServicerBackend(runner_service, mock_grpc_context),
         )
         trajectory = collided_trajectory(task_id="task-1")
 
