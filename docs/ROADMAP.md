@@ -39,15 +39,10 @@ is independently shippable and builds on the previous one.
   plugin-first architecture (runtime backend, conductor, grader,
   adapter, tool, artifact writer, state store, secret provider,
   observability sink) gets a "how to plug in" guide.
-- **Coding-harness surface.** A trial can hand its LLM loop over to a
-  vendor coding-agent CLI installed inside the task container
-  (`claude-code`, `codex`, `gemini-cli`, `kimi-code`, `opencode`,
-  `grok-build`). The harness registry, installer, middleware proxy
-  and gateway-route metadata live in a top-level workspace member
-  ([`tolokaforge_coding_harnesses/`](../tolokaforge_coding_harnesses/))
-  that imports nothing from the engine, so a second consumer can read
-  the same recipe without inheriting an engine version pin. See
-  [docs/CODING_HARNESSES.md](CODING_HARNESSES.md).
+- **Coding-harness surface.** A cross-cutting arc — a trial can hand its
+  LLM loop over to a vendor coding-agent CLI installed inside the task
+  container. Shipped surface + design record are in the "Coding-harness
+  arc" release row below and in [docs/CODING_HARNESSES.md](CODING_HARNESSES.md).
 
 **Later (directional, not committed).** The direction is set but scope
 may shift as infrastructure needs evolve: an at-scale runtime backend

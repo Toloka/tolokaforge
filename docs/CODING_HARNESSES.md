@@ -68,17 +68,17 @@ harness is a fully replaceable slot on the run config, not a coupling.
 
 ## One-command demo
 
-Run `claude-code` on the shipped `fix-billing-holds` pack against Claude
-Sonnet 5:
+Run `claude-code` on the shipped `fix-billing-holds` pack:
 
 ```bash
 scripts/with_env.sh uv run tolokaforge run --config examples/terminal_bench/run_harness.yaml
 ```
 
-The `run_harness.yaml` driver config carries `agent_harness: claude-code` and
-`agent_model: openrouter/anthropic/claude-sonnet-5`; swap either field to
-matrix over harnesses or models. Per-trial artifacts land under
-`results/harness-claude-code/trials/fix-billing-holds/<N>/`.
+The [`run_harness.yaml`](../examples/terminal_bench/run_harness.yaml) driver
+config carries `agent_harness: claude-code` and `agent_model:
+openrouter/anthropic/claude-sonnet-4-6`; swap either field to matrix over
+harnesses or models. Per-trial artifacts land under
+`results/terminal_bench/fix-billing-holds-claude-code/trials/fix-billing-holds/<N>/`.
 
 Prerequisites (Docker daemon, `uv`, `.env` with a provider key), the switch
 between engine-loop and harness mode, per-harness recipes (Kimi K2.7

@@ -41,7 +41,7 @@ scripts/with_env.sh uv run tolokaforge run --config examples/terminal_bench/run_
 The same task packs also run under a vendor coding-agent CLI installed inside
 the trial container instead of the engine's own LLM loop.
 [`run_harness.yaml`](run_harness.yaml) is the driver config; it names
-`agent_harness: claude-code` and `agent_model: openrouter/anthropic/claude-sonnet-5`.
+`agent_harness: claude-code` and `agent_model: openrouter/anthropic/claude-sonnet-4-6`.
 Swap either field to matrix over harnesses or models:
 
 ```bash

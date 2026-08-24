@@ -487,13 +487,18 @@ and [`docs/CODING_HARNESSES.md`](docs/CODING_HARNESSES.md).
    `.env` and then in the container, so an open surface would let a run config
    shadow the task's own environment. Adding a new provider-env key needs an
    ADR entry (or an update to [ADR-0033](docs/adr/0033-external-harness-registry.md))
-   and the same PR must extend `validate_provider_env_keys` coverage.
-4. **Every registry-YAML edit bumps the canonical replay.** A `HarnessSpec`
-   value change (version pin, argv, container env, provider envelope,
-   `gateway_route`) rewrites what the trial artifact records, so
-   `tests/canonical/_harness_registry_replay/` must be regenerated in the
-   same PR and the diff justified. A version bump also lands with the
-   reference-invocation match the pin claims to preserve.
+   and the same PR extends `provider_env_keys` in that YAML so
+   `validate_provider_env_keys` accepts the new key.
+4. **Every registry-YAML edit bumps the canonical replay.** The metric in
+   `tests/canonical/snapshots/harness_registry_replay/metric.json` enumerates
+   every harness-surface-touching commit reachable from HEAD and classifies
+   each Bucket-A / Bucket-B (see
+   [`tests/canonical/test_harness_registry_replay.py`](tests/canonical/test_harness_registry_replay.py)).
+   Any `HarnessSpec` value change (version pin, argv, container env, provider
+   envelope, `gateway_route`) lands as a new commit on that surface, so the
+   snapshot must be regenerated in the same PR (dev MCP
+   `update_canonical_snapshots`) and the diff justified. A version bump also
+   lands with the reference-invocation match the pin claims to preserve.
 5. **Middleware-proxy edits need a container-integration test.**
    [`middleware_proxy.py`](tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/middleware_proxy.py)
    runs inside the trial container and its failure mode is a silent

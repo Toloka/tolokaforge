@@ -42,18 +42,21 @@ python3+pip, or curl+ca-certificates on demand.
 
 ```python
 from tolokaforge_coding_harnesses import (
-    HARNESSES,              # dict[str, HarnessSpec] — the effective registry
-    HarnessSpec,            # pydantic model — one entry
-    harness_command,        # (spec, model, *, secrets) -> shell command
-    harness_model,          # (spec, model) -> the model name the CLI receives
-    resolve_effective_registry,  # applies operator overlay + plug-in bundles
-    validate_harness,       # startup contract check
-    HarnessFingerprint,     # records CLI version + spec on the artifact
-    RuntimeGateway,         # gateway_route consumer surface (ADR-0037)
-    ContainerFileInjector,  # deliver config_files into a running container
-    SkillDelivery,          # per-task skill bundle delivery
+    HARNESSES,                   # dict[str, HarnessSpec] — the shipped registry
+    HarnessSpec,                 # pydantic model — one entry
+    harness_command,             # assembles the trial's shell command
+    harness_model,               # canonical model name the CLI receives
+    resolve_effective_registry,  # shipped + operator overlay + plug-in bundles
+    validate_harness,            # startup contract check
+    HarnessFingerprint,          # records CLI version + spec on the artifact
+    RuntimeGateway,              # gateway_route consumer surface (ADR-0037)
+    ContainerFileInjector,       # deliver config_files into a running container
+    SkillDelivery,               # per-task skill bundle delivery
 )
 ```
+
+Full signatures live in
+[`src/tolokaforge_coding_harnesses/_registry.py`](src/tolokaforge_coding_harnesses/_registry.py).
 
 `__all__` in [`src/tolokaforge_coding_harnesses/__init__.py`](src/tolokaforge_coding_harnesses/__init__.py)
 is the flat surface consumers import from; nothing else is public.
@@ -145,8 +148,9 @@ private to your organisation (out-of-tree plug-in).
   [`data/registry_meta.yaml`](src/tolokaforge_coding_harnesses/data/registry_meta.yaml).
   If the CLI needs a new install method, extend
   [`install-harness.sh`](src/tolokaforge_coding_harnesses/install-harness.sh).
-  Every registry change bumps the canonical replay snapshot at
-  `tests/canonical/_harness_registry_replay/`.
+  Every registry change bumps the commit-audit snapshot at
+  `tests/canonical/snapshots/harness_registry_replay/metric.json` — regenerate
+  it via the dev MCP `update_canonical_snapshots` in the same PR.
 - **Out-of-tree.** Ship a Python distribution that exposes a
   `PluginBundle` under the `HARNESS_REGISTRY_ENTRY_POINT_GROUP` entry-point
   group. See [ADR-0034 § "Plug-in discovery"](../docs/adr/0034-external-harness-plugin-discovery.md).
