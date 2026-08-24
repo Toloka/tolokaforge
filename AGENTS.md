@@ -458,6 +458,70 @@ Full six-step process: [`docs/ADD_NEW_MODEL.md`](docs/ADD_NEW_MODEL.md).
 
 The Bucket-A allow-list backing the [`tests/canonical/test_models_wheel_replay.py`](tests/canonical/test_models_wheel_replay.py) acceptance test tracks these paths. A new data-carrying file that lands **under an already-allowed prefix** (e.g. under `tolokaforge_models/`) is auto-classified Bucket A by [`tools/automation/src/automation/bucket_classifier.py`](tools/automation/src/automation/bucket_classifier.py)'s `BUCKET_A_ALLOWED_PREFIXES` and needs no classifier edit. A file **outside every allowed prefix** must be added to `BUCKET_A_ALLOWED_FILES` (single file) or `BUCKET_A_ALLOWED_PREFIXES` (new subtree) in the same PR. The classifier is exposed as `uv run automation classify-paths` for the `integrate-model.yml` finalize step.
 
+## Coding-harness registry rules
+
+The [`tolokaforge_coding_harnesses/`](tolokaforge_coding_harnesses/) workspace
+member is the shared registry of vendor coding-agent CLIs that harness-mode
+trials install into the task container. It is read by the shipped
+`terminal_bench` adapter and by any external runtime that wants to reproduce
+the same recipe. See
+[`tolokaforge_coding_harnesses/README.md`](tolokaforge_coding_harnesses/README.md)
+and [`docs/CODING_HARNESSES.md`](docs/CODING_HARNESSES.md).
+
+**Non-negotiable rules:**
+
+1. **Package boundary — no engine imports.** Nothing under
+   `tolokaforge_coding_harnesses/` may `import tolokaforge` or any submodule of
+   the engine. The invariant is what lets a second runtime read the same
+   registry data without inheriting an engine version pin.
+   [`tolokaforge_coding_harnesses/tests/unit/test_package_boundary.py`](tolokaforge_coding_harnesses/tests/unit/test_package_boundary.py)
+   holds the line; see [ADR-0036](docs/adr/0036-tolokaforge-coding-harnesses-split.md).
+2. **Harness/task-pack boundary.** Harness logic is generic — task-specific
+   assumptions (a language toolchain a specific task needs, a per-task
+   supervisor recipe, a bespoke instruction preamble) belong in the task pack.
+   A `HarnessSpec` field that reads "when task X …" or "unless task Y …" is
+   the wrong shape.
+3. **Closed provider-env allow-list.** `provider_env_keys` in
+   [`data/registry_meta.yaml`](tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/registry_meta.yaml)
+   is a closed catalog: every forwarded key lands in the per-trial compose
+   `.env` and then in the container, so an open surface would let a run config
+   shadow the task's own environment. Adding a new provider-env key needs an
+   ADR entry (or an update to [ADR-0033](docs/adr/0033-external-harness-registry.md))
+   and the same PR must extend `validate_provider_env_keys` coverage.
+4. **Every registry-YAML edit bumps the canonical replay.** A `HarnessSpec`
+   value change (version pin, argv, container env, provider envelope,
+   `gateway_route`) rewrites what the trial artifact records, so
+   `tests/canonical/_harness_registry_replay/` must be regenerated in the
+   same PR and the diff justified. A version bump also lands with the
+   reference-invocation match the pin claims to preserve.
+5. **Middleware-proxy edits need a container-integration test.**
+   [`middleware_proxy.py`](tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/middleware_proxy.py)
+   runs inside the trial container and its failure mode is a silent
+   fall-through to the CLI's baseline score. Any change to the proxy — new
+   body injection, new path filter, new upstream-env resolution — lands
+   with a container integration test that exercises the real proxy on a
+   real request, not a unit mock.
+6. **`gateway_route` and `harness_presets_file` stay in lock-step.** When
+   both paths ship the same recipe (a shipped overlay + spec data), the
+   canonical test at `tests/canonical/test_gateway_route_recipes.py` renders
+   both and compares. Editing one and not the other fails CI. See
+   [ADR-0037](docs/adr/0037-runtime-gateway-as-harness-data.md).
+
+**Adding a new harness:**
+
+- **In-tree** — add a `HarnessSpec` entry to
+  [`data/harnesses.yaml`](tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml)
+  with a comment next to every non-obvious field recording the failure mode
+  it prevents. Extend the installer if the CLI needs a new install method.
+- **Out-of-tree** — ship a `PluginBundle` under the
+  `HARNESS_REGISTRY_ENTRY_POINT_GROUP` entry-point group; see
+  [ADR-0034](docs/adr/0034-external-harness-plugin-discovery.md).
+
+Every new harness lands with a green real-CLI trial against a shipped example
+pack (`fix-billing-holds` or `fix-airline-segmentation`), a canonical
+snapshot capturing the assembled `harness_command`, and PR-quoted test output.
+No harness lands as data alone.
+
 ## Known Gotchas
 
 1. **Browser automation** requires Chromium: `uv run playwright install --with-deps chromium`

@@ -5,6 +5,7 @@ A benchmarking harness for evaluating tool-using LLM agents. Multi-turn agent/us
 ## Highlights
 
 - **Agent + User Loop** – Multi-turn conversations where both agent and user models call tools.
+- **Coding-harness mode** – Run any of six vendor coding-agent CLIs (`claude-code`, `codex`, `gemini-cli`, `kimi-code`, `opencode`, `grok-build`) inside the trial container instead of the engine's own loop, so a task pack can measure a CLI's scaffolding, not only a bare model. See [docs/CODING_HARNESSES.md](docs/CODING_HARNESSES.md).
 - **Sandboxed Execution** – Tool calls proxy into Dockerized services with no external network access.
 - **MCP-Compatible Tooling** – Tasks declare tools via Model Context Protocol or built-ins.
 - **Deterministic Grading** – JSONPath assertions, state hashes, transcript rules, optional LLM judges.
@@ -182,6 +183,39 @@ author your own stack, and how substrate grading works. For the case-matrix that
 decides which mode fits your task, see
 [ADR-0018](docs/adr/0018-multi-container-under-shared-runtime.md).
 
+## Coding-harness mode
+
+A trial can hand its LLM turn loop over to a vendor coding-agent CLI installed
+inside the task container. Six harnesses ship in the
+[`tolokaforge_coding_harnesses`](tolokaforge_coding_harnesses/) registry:
+
+| `agent_harness` | Vendor CLI |
+|---|---|
+| `claude-code` | `@anthropic-ai/claude-code` |
+| `codex` | `@openai/codex` |
+| `gemini-cli` | `@google/gemini-cli` |
+| `kimi-code` | `@moonshot-ai/kimi-code` |
+| `opencode` | `opencode-ai` |
+| `grok-build` | `x.ai/cli` |
+
+The same run config that drives an engine-loop run drives a harness-mode run —
+one field, `evaluation.harness_adapter.params.agent_harness`, switches modes.
+Per-trial artifacts land in the same bundle shape either way, so downstream
+tooling is unchanged.
+
+```yaml
+evaluation:
+  harness_adapter:
+    type: "terminal_bench"
+    params:
+      agent_harness: "claude-code"                        # switches modes
+      agent_model:   "openrouter/anthropic/claude-sonnet-5"
+```
+
+Start with [docs/CODING_HARNESSES.md](docs/CODING_HARNESSES.md) for when to
+reach for each mode; the full recipe reference is
+[docs/RUNNING_TERMINAL_BENCH.md](docs/RUNNING_TERMINAL_BENCH.md).
+
 ## Project Structure
 
 ```
@@ -190,6 +224,8 @@ tolokaforge/          # Installable Python package
 ├── core/             # Orchestration, grading, metrics, queue
 ├── tools/            # Built-in + MCP tool system
 └── env/              # Environment services (JSON DB, mock web, RAG)
+tolokaforge_coding_harnesses/   # Coding-harness registry, installer, middleware proxy
+tolokaforge_models/             # Model data + per-model policy subclasses
 examples/             # Reference task layouts with runnable run_config.yaml
 ├── native/           # default `native` adapter
 │   ├── browser_task/
@@ -222,6 +258,8 @@ examples/             # Reference task layouts with runnable run_config.yaml
 | Reset recipes (seed-backed per-trial reset) | [docs/RESET_RECIPES.md](docs/RESET_RECIPES.md) |
 | Isolated trials guide | [docs/isolated_trials.md](docs/isolated_trials.md) |
 | Multi-container task guide | [docs/MULTI_CONTAINER_GUIDE.md](docs/MULTI_CONTAINER_GUIDE.md) |
+| Coding-harness mode (vendor CLIs) | [docs/CODING_HARNESSES.md](docs/CODING_HARNESSES.md) |
+| Running terminal-bench (harness + engine loop) | [docs/RUNNING_TERMINAL_BENCH.md](docs/RUNNING_TERMINAL_BENCH.md) |
 | Adapter architecture | [docs/ADAPTER_ARCHITECTURE.md](docs/ADAPTER_ARCHITECTURE.md) |
 | Analytics & failure attribution | [docs/ANALYTICS.md](docs/ANALYTICS.md) |
 | Python package API | [docs/PYTHON_PACKAGE.md](docs/PYTHON_PACKAGE.md) |
