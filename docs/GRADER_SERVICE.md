@@ -268,6 +268,38 @@ is booked as ungradeable rather than as an agent failure.
 `tolokaforge/core/grading/substrate_client.py::GrpcSubstrateClient` is the
 underlying wire adapter — one instance per `(channel, trial_id)` pair.
 
+## Sub-component plug-in seams
+
+Below the composite dispatch, individual grade sub-components are Protocol
+seams a downstream package extends by registering an `importlib.metadata`
+entry point. Each seam has a shipped reference impl registered under a
+default name; the loader lives on `tolokaforge.core.plugin_registry` and
+follows the fail-loud shape [ADR-0022](adr/0022-runtime-independence.md)
+pins for every seam in the engine.
+
+| Seam | Entry-point group | Default | Contract |
+| --- | --- | --- | --- |
+| Custom check executor | `tolokaforge.custom_check_executors` | `check_runner` (production), `in_memory` (test fixture) | [`CheckExecutor`](../tolokaforge/core/grading/check_runner.py) — runs the pack's `checks.py` against the trial's evidence and returns a `CheckResultSet`. |
+| Judge model provider | `tolokaforge.judge_model_providers` | `litellm` (fronts [`LLMClient`](../tolokaforge/core/llm/client.py)) | [`JudgeModelProvider`](../tolokaforge/core/grading/judge_model_provider.py) — builds a `JudgeModel` (the `.generate` + `.classify_loop_error` surface `LLMJudge` drives) from a `ModelConfig`. |
+
+Register a downstream impl the same way as a `TrialGrader`:
+
+```toml
+# downstream package pyproject.toml
+[project.entry-points."tolokaforge.judge_model_providers"]
+openai_direct = "acme_judge:_openai_direct_provider_factory"
+```
+
+The runner resolves both defaults at startup via
+`load_custom_check_executor("check_runner")` and
+`load_judge_model_provider("litellm")` and caches the resulting instances
+on `RunnerServiceImpl`. The check executor is threaded through the
+composite `grade_custom_checks` dispatch (the seam the executor Protocol
+was written for); the judge model provider is available for rubric-side
+consumers. A downstream `pip install` of a package that registers under
+either group is picked up on the runner's next start with no framework
+change.
+
 ## See also
 
 - [ADR-0014 — TrialGrader Protocol](adr/0014-trial-grader-protocol.md)

@@ -36,7 +36,6 @@ from pydantic import ValidationError
 from tolokaforge.core.grading import composite
 from tolokaforge.core.grading.check_runner import (
     CheckExecutor,
-    CheckRunner,
     validate_checks_module,
 )
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
@@ -54,6 +53,7 @@ from tolokaforge.core.grading.jsonpath_addressing import (
     unreachable_target,
 )
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus
+from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 from tolokaforge.core.grading.substrate import GradingSubstrate, InProcessGradingSubstrate
@@ -71,6 +71,10 @@ from tolokaforge.core.models import (
     LLMJudgeConfig,
     ModelConfig,
     TerminationReason,
+)
+from tolokaforge.core.plugin_registry import (
+    load_custom_check_executor,
+    load_judge_model_provider,
 )
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
@@ -572,13 +576,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         Args:
             db_client: HTTP client for DB Service communication
             rag_client: Optional RAG service client for search tools
-            check_executor: Executor for the pack's ``checks.py``. Defaults to the
-                in-process :class:`CheckRunner`; tests inject
+            check_executor: Executor for the pack's ``checks.py``. Defaults to
+                the ``check_runner`` entry point of
+                ``tolokaforge.custom_check_executors``; tests inject
                 :class:`InMemoryCheckExecutor`.
         """
         self.db_client = db_client
         self.rag_client = rag_client
-        self.check_executor: CheckExecutor = check_executor or CheckRunner()
+        self.check_executor: CheckExecutor = (
+            check_executor
+            if check_executor is not None
+            else load_custom_check_executor("check_runner")()
+        )
+        self._judge_model_provider: JudgeModelProvider = load_judge_model_provider("litellm")()
         self.trials: dict[str, TrialContextRuntime] = {}
         self._available_adapters = list(BUILTIN_ADAPTERS)
         self._artifact_dirs: dict[str, Path] = {}  # trial_id -> temp dir for cleanup

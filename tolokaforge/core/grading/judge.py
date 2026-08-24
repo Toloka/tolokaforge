@@ -42,6 +42,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from tolokaforge.core.grading.judge_model_provider import JudgeModel
 from tolokaforge.core.grading.judge_tools import (
     GetDbStateTool,
     QueryDbTool,
@@ -669,9 +670,10 @@ class LLMJudge:
     marker contract is always appended), ``include_agent_system_prompt`` (embed the
     agent's policy in the judge's opening-message evidence — default on; gate off for
     self-contained rubrics), an
-    optionally injected ``llm_client`` (tests pass a scripted client; production
-    passes ``None`` and the judge builds one ``LLMClient(model_config)`` per
-    :meth:`run`), and the logger. :meth:`run` carries only the per-trial evidence.
+    optionally injected ``llm_client`` (any :class:`JudgeModel` — tests pass a
+    scripted client; production passes ``None`` and the judge builds one
+    ``LLMClient(model_config)`` per :meth:`run`), and the logger. :meth:`run`
+    carries only the per-trial evidence.
     """
 
     def __init__(
@@ -684,7 +686,7 @@ class LLMJudge:
         disable_knowledge_search: bool = False,
         custom_system_prompt: str | None = None,
         include_agent_system_prompt: bool = True,
-        llm_client: LLMClient | None = None,
+        llm_client: JudgeModel | None = None,
         logger: StructuredLogger | None = None,
     ) -> None:
         self._model_config = model_config
@@ -726,7 +728,7 @@ class LLMJudge:
         logger = self._logger or get_logger("rubric_judge")
         metrics = _JudgeMetricsSink()
 
-        client: LLMClient
+        client: JudgeModel
         if self._llm_client is not None:
             client = self._llm_client
         else:

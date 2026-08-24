@@ -210,6 +210,20 @@ conversational = "tolokaforge.core.actors.turn_policy:_conversational_policy_fac
 in_process = "tolokaforge.core.grading.substrate:InProcessGradingSubstrate"
 live_callback = "tolokaforge.core.grading.substrate_live:LiveRunnerCallbackGradingSubstrate"
 
+# Custom-check executor Protocol (``tolokaforge/core/grading/check_runner.py``).
+# ``check_runner`` is the production default (in-process ThreadPoolExecutor);
+# ``in_memory`` is the deterministic fixture the canonical tests reach.
+[project.entry-points."tolokaforge.custom_check_executors"]
+check_runner = "tolokaforge.core.grading.check_runner:_check_runner_factory"
+in_memory = "tolokaforge.core.grading.check_runner:_in_memory_check_executor_factory"
+
+# Judge model provider Protocol
+# (``tolokaforge/core/grading/judge_model_provider.py``). ``litellm`` matches
+# the underlying transport; a downstream ``openai_direct`` or ``vertex_ai``
+# provider registers alongside without a framework PR.
+[project.entry-points."tolokaforge.judge_model_providers"]
+litellm = "tolokaforge.core.grading.default_judge_model_provider:_litellm_judge_model_provider_factory"
+
 [tool.hatch.build]
 exclude = [
     "tasks/**",
