@@ -253,6 +253,21 @@ write verb (`set_` / `insert` / `update` / `write` / `delete` /
 in the generated base and fails the test before an implementation
 lands.
 
+The sanctioned client is
+[`LiveRunnerCallbackGradingSubstrate`](../tolokaforge/core/grading/substrate.py).
+An independent grader constructs one per trial, pointed at the runner's
+substrate address; every substrate read (`initial_state`, `final_state`,
+`final_state_stable`, `db_reader`, `knowledge_search`, `filesystem_root`,
+`filesystem_state`) issues at most one RPC per grade and caches the result.
+`filesystem_root` materialises the agent-visible tree eagerly to a private
+temp directory on first use — matching the runner's shipping filter
+(non-symlink, UTF-8-decodable) with no path-component excluder. Any
+`grpc.RpcError` is wrapped as `SubstrateUnreachableError`, which the grader
+translates into `GradingFailedError` so a runner that disappears mid-grade
+is booked as ungradeable rather than as an agent failure.
+`tolokaforge/core/grading/substrate_client.py::GrpcSubstrateClient` is the
+underlying wire adapter — one instance per `(channel, trial_id)` pair.
+
 ## See also
 
 - [ADR-0014 — TrialGrader Protocol](adr/0014-trial-grader-protocol.md)
