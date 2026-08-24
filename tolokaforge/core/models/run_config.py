@@ -837,10 +837,14 @@ class JudgeGraderConfig(BaseModel):
     """``judge_only`` grader settings.
 
     Absent means "use the task's own ``grading.llm_judge.customization``
-    exactly". Every field here is an optional override; ``None`` on the
-    field means the task's own value wins. The run-level override exists
-    for evaluation flights that want to A/B a judge customization across
-    a task pack without editing every task's grading.yaml.
+    exactly". Every field here is an *optional override*; ``None`` on the
+    field means the task's own value wins.
+
+    Two-state override, not three: this cannot express "reset a
+    task-level customization back to library defaults". An evaluation
+    flight that needs the default judge prompt against a pack whose
+    tasks set a strict prompt must (today) edit the tasks' grading.yaml.
+    A ``reset_*`` axis is a follow-up if this trips real flights.
     """
 
     model_config = {"extra": "forbid"}
@@ -848,6 +852,23 @@ class JudgeGraderConfig(BaseModel):
     disable_knowledge_search: bool | None = None
     custom_system_prompt: str | None = None
     include_agent_system_prompt: bool | None = None
+
+    @field_validator("custom_system_prompt")
+    @classmethod
+    def _reject_blank_system_prompt(cls, value: str | None) -> str | None:
+        """Same fail-loud contract as ``JudgeCustomization.system_prompt``:
+        an empty / whitespace-only override would replace the task's
+        (validated non-empty) prompt with essentially the marker
+        contract alone, defeating the customization it is supposed to
+        express. ``None`` (unset) stays valid — that's the "inherit"
+        case.
+        """
+        if value is not None and not value.strip():
+            raise ValueError(
+                "grader.judge.custom_system_prompt must not be empty or whitespace-only. "
+                "Omit the field to inherit the task's own customization."
+            )
+        return value
 
 
 class GraderConfig(BaseModel):

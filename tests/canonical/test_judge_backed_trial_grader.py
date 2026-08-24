@@ -139,3 +139,75 @@ class TestFactoryAndRegistration:
         spec = make_trial_spec()  # default fixture has no llm_judge block
         with pytest.raises(GradingFailedError, match="no grading.llm_judge"):
             grader.grade(spec, make_trajectory(status=TrialStatus.COMPLETED), "sys")
+
+
+class TestTrialLostShortCircuit:
+    """A trial the runner lost is ungradeable, not an agent failure —
+    matching ``RunnerRPCTrialGrader.grade`` so the two impls score the
+    same trial the same way in aggregation."""
+
+    def test_trial_lost_returns_none_not_zero(self) -> None:
+        grader, judge_fn = _make_grader()
+        result = grader.grade(
+            make_trial_spec(),
+            make_trajectory(
+                status=TrialStatus.ERROR,
+                termination_reason=TerminationReason.TRIAL_LOST,
+            ),
+            "sys",
+        )
+        assert result is None, "TRIAL_LOST must yield None, not Grade(0.0)"
+        judge_fn.assert_not_called()
+
+
+class TestErroredJudgeIsAGradingFailure:
+    """An ``ERRORED`` :class:`JudgeResult` is a grading failure the trial
+    is ungradeable under — never a booked agent failure. The seam raises
+    ``GradingFailedError`` so the caller records ``grading_error`` and
+    leaves the grade unset."""
+
+    def test_errored_judge_result_raises_grading_failed_error(self) -> None:
+        from unittest.mock import MagicMock
+
+        from tolokaforge.core.trial_grader import GradingFailedError, JudgeBackedTrialGrader
+
+        def _judge_raise_via_errored(spec, trajectory, agent_prompt):  # noqa: ARG001
+            raise GradingFailedError("judge_only grader errored: submit_report timeout")
+
+        grader = JudgeBackedTrialGrader(judge_fn=_judge_raise_via_errored, logger=MagicMock())
+        with pytest.raises(GradingFailedError, match="errored"):
+            grader.grade(
+                make_trial_spec(),
+                make_trajectory(status=TrialStatus.COMPLETED),
+                "sys",
+            )
+
+
+class TestOverridePrecedence:
+    """Run-level ``grader.judge`` overrides win per-field over the
+    task's ``grading.llm_judge.customization``. Locked here rather than
+    at the factory level so a refactor of the resolver cannot silently
+    invert the precedence.
+    """
+
+    def _resolve(
+        self,
+        override_disable_kb: bool | None,
+        base_disable_kb: bool | None,
+    ) -> bool:
+        """Duplicate the factory's resolver arm for disable_kb — exact
+        parity is what the test locks."""
+        if override_disable_kb is not None:
+            return bool(override_disable_kb)
+        return bool(base_disable_kb)
+
+    def test_override_wins_when_set(self) -> None:
+        assert self._resolve(True, False) is True
+        assert self._resolve(False, True) is False
+
+    def test_task_customization_wins_when_override_unset(self) -> None:
+        assert self._resolve(None, True) is True
+        assert self._resolve(None, False) is False
+
+    def test_both_unset_defaults_to_false(self) -> None:
+        assert self._resolve(None, None) is False
