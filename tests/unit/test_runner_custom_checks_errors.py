@@ -40,6 +40,7 @@ import pytest
 
 from tolokaforge.core.grading.check_runner import InMemoryCheckExecutor
 from tolokaforge.core.grading.checks_interface import CheckResult, CheckResultSet, CheckStatus
+from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
 from tolokaforge.runner.models import RunnerGradingConfig, RunnerInitialStateConfig
 from tolokaforge.runner.service import RunnerServiceImpl
 
@@ -80,6 +81,25 @@ def _build_servicer(*, check_executor: Any) -> RunnerServiceImpl:
     return RunnerServiceImpl(db_client=_StubDBClient(), check_executor=check_executor)
 
 
+def _substrate(*, final_state: dict[str, Any] | None = None) -> InProcessGradingSubstrate:
+    """The minimal substrate the composite touches on the executor-error paths.
+
+    ``final_state`` defaults to ``{}`` — the shape the runner's ``_StubDBClient``
+    produces above. The db_reader / kb_search / filesystem_root seams are not
+    reached from ``composite.grade_custom_checks``, so ``MagicMock`` / ``None``
+    keep them cheap.
+    """
+    from unittest.mock import MagicMock
+
+    return InProcessGradingSubstrate(
+        db_reader=MagicMock(),
+        knowledge_search=None,
+        filesystem_root=None,
+        initial_state={},
+        final_state=final_state if final_state is not None else {},
+    )
+
+
 def _await(servicer: RunnerServiceImpl, coro: Any) -> Any:
     """Drive ``_grade_custom_checks`` on the servicer's dedicated loop."""
     return servicer._run_async(coro)
@@ -101,7 +121,9 @@ class TestGradeCustomChecksExecutorErrors:
 
             score, wire, reason = _await(
                 servicer,
-                servicer._grade_custom_checks(trial_id, trial_context, llm_messages=[]),
+                servicer._grade_custom_checks(
+                    trial_id, trial_context, llm_messages=[], substrate=_substrate()
+                ),
             )
 
             assert score == 0.0
@@ -130,7 +152,9 @@ class TestGradeCustomChecksExecutorErrors:
 
             score, wire, reason = _await(
                 servicer,
-                servicer._grade_custom_checks("reconcile:0", trial_context, llm_messages=[]),
+                servicer._grade_custom_checks(
+                    "reconcile:0", trial_context, llm_messages=[], substrate=_substrate()
+                ),
             )
 
             assert score == -1.0
@@ -162,7 +186,9 @@ class TestGradeCustomChecksExecutorErrors:
 
             score, wire, reason = _await(
                 servicer,
-                servicer._grade_custom_checks(trial_id, trial_context, llm_messages=[]),
+                servicer._grade_custom_checks(
+                    trial_id, trial_context, llm_messages=[], substrate=_substrate()
+                ),
             )
 
             assert score == 0.0
@@ -200,7 +226,9 @@ class TestGradeCustomChecksExecutorErrors:
 
             score, wire, reason = _await(
                 servicer,
-                servicer._grade_custom_checks(trial_id, trial_context, llm_messages=[]),
+                servicer._grade_custom_checks(
+                    trial_id, trial_context, llm_messages=[], substrate=_substrate()
+                ),
             )
 
             assert score == -1.0
@@ -236,7 +264,9 @@ class TestGradeCustomChecksExecutorErrors:
 
             score, wire, reason = _await(
                 servicer,
-                servicer._grade_custom_checks(trial_id, trial_context, llm_messages=[]),
+                servicer._grade_custom_checks(
+                    trial_id, trial_context, llm_messages=[], substrate=_substrate()
+                ),
             )
 
             assert score == 0.0
@@ -324,7 +354,9 @@ class TestGradeCustomChecksExecutorErrors:
 
             score, wire, reason = _await(
                 servicer,
-                servicer._grade_custom_checks(trial_id, trial_context, llm_messages=[]),
+                servicer._grade_custom_checks(
+                    trial_id, trial_context, llm_messages=[], substrate=_substrate()
+                ),
             )
 
             assert score == expected
@@ -354,7 +386,9 @@ class TestGradeCustomChecksExecutorErrors:
 
             score, wire, reason = _await(
                 servicer,
-                servicer._grade_custom_checks(trial_id, trial_context, llm_messages=[]),
+                servicer._grade_custom_checks(
+                    trial_id, trial_context, llm_messages=[], substrate=_substrate()
+                ),
             )
 
             assert score == -1.0
@@ -418,7 +452,9 @@ class TestGradeCustomChecksExecutorErrors:
 
             _, _, reason = _await(
                 servicer,
-                servicer._grade_custom_checks(trial_id, trial_context, llm_messages=[]),
+                servicer._grade_custom_checks(
+                    trial_id, trial_context, llm_messages=[], substrate=_substrate()
+                ),
             )
 
             assert reason, "the component produced no verdict and no account of why"
@@ -439,7 +475,9 @@ class TestGradeCustomChecksExecutorErrors:
 
             score, wire, reason = _await(
                 servicer,
-                servicer._grade_custom_checks("reconcile:0", trial_context, llm_messages=[]),
+                servicer._grade_custom_checks(
+                    "reconcile:0", trial_context, llm_messages=[], substrate=_substrate()
+                ),
             )
 
             assert (score, wire, reason) == (-1.0, [], None)

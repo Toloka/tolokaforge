@@ -35,30 +35,12 @@ from pydantic import ValidationError
 
 from tolokaforge.core.grading import composite
 from tolokaforge.core.grading.check_runner import (
-    _CHECK_EXECUTOR_ERROR_NAME,
     CheckExecutor,
     CheckRunner,
     validate_checks_module,
 )
-from tolokaforge.core.grading.checks_helpers import (
-    build_check_context,
-    custom_checks_enabled,
-    custom_checks_reason,
-)
-from tolokaforge.core.grading.checks_interface import (
-    CheckResult,
-    CheckResultSet,
-    CustomChecksConfig,
-    TaskContext,
-    ToolCallStatus,
-    Transcript,
-)
-from tolokaforge.core.grading.checks_interface import (
-    Message as CheckMessage,
-)
-from tolokaforge.core.grading.checks_interface import (
-    ToolCall as CheckToolCall,
-)
+from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
+from tolokaforge.core.grading.checks_interface import CustomChecksConfig
 from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenReplayRecord,
@@ -191,81 +173,6 @@ _TOOL_TIMEOUT_SLACK_S = 5.0
 # judge's "harness-owned allowlist" rule (no generic MCP-tool passthrough — we
 # cannot classify arbitrary MCP tools' read-only-ness).
 _SEARCH_POLICY_TOOL_NAME = "search_policy"
-
-
-def _build_runner_check_transcript(
-    llm_messages: list[dict[str, Any]],
-) -> Transcript:
-    """Build a :class:`Transcript` from the runner's wire ``llm_messages``.
-
-    Wire ``tool_calls`` are OpenAI-shaped
-    (``{"function": {"name", "arguments": <json_str>}}``); this decodes them
-    back into :class:`ToolCall` with ``result=None`` (results are not carried in
-    ``llm_messages_json``), mirroring the host-side transcript build so a check
-    reads identical evidence from either grading path.
-    """
-    check_messages: list[CheckMessage] = []
-    for msg in llm_messages:
-        role = str(msg.get("role", ""))
-        content = str(msg.get("content", "") or "")
-        raw_tool_calls = msg.get("tool_calls") or []
-        tool_calls: list[CheckToolCall] = []
-        for raw_tc in raw_tool_calls:
-            fn = raw_tc.get("function") or {}
-            name = str(fn.get("name") or raw_tc.get("name") or "")
-            raw_args: Any = fn.get("arguments", raw_tc.get("arguments"))
-            if isinstance(raw_args, str):
-                try:
-                    args_dict = json.loads(raw_args) if raw_args else {}
-                except (json.JSONDecodeError, TypeError):
-                    args_dict = {}
-            elif isinstance(raw_args, dict):
-                args_dict = raw_args
-            else:
-                args_dict = {}
-            tool_calls.append(
-                CheckToolCall(
-                    name=name,
-                    arguments=args_dict,
-                    result=None,
-                    status=ToolCallStatus.SUCCESS,
-                )
-            )
-        check_messages.append(CheckMessage(role=role, content=content, tool_calls=tool_calls))
-    return Transcript(messages=check_messages)
-
-
-def _check_result_to_wire(result: CheckResult) -> "pb2.CustomCheckResult":
-    """Convert a :class:`CheckResult` to the wire ``pb2.CustomCheckResult``.
-
-    ``details`` (arbitrary dict) is JSON-encoded into the proto's
-    ``details_json`` string; empty when the check emitted no details.
-    """
-    status_str = result.status.value if hasattr(result.status, "value") else str(result.status)
-    details_json = json.dumps(result.details) if result.details else ""
-    return pb2.CustomCheckResult(
-        check_name=result.check_name,
-        status=status_str,
-        score=result.score,
-        message=result.message,
-        details_json=details_json,
-    )
-
-
-def _executor_error_to_wire(error: str) -> "pb2.CustomCheckResult":
-    """Wrap a top-level :class:`CheckResultSet` error as a wire result.
-
-    The audit — module-load failure / timeout / executor crash — travels to
-    the host under the reserved :data:`_CHECK_EXECUTOR_ERROR_NAME` sentinel
-    so the reasons string is not the only place it survives.
-    """
-    return pb2.CustomCheckResult(
-        check_name=_CHECK_EXECUTOR_ERROR_NAME,
-        status="error",
-        score=0.0,
-        message=error,
-        details_json="",
-    )
 
 
 def _tool_registered_for_trial(name: str, registered: Collection[str]) -> str | None:
@@ -1969,7 +1876,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             custom_checks_score,
             custom_check_wire_results,
             custom_checks_reasons,
-        ) = await self._grade_custom_checks(trial_id, trial_context, llm_messages)
+        ) = await self._grade_custom_checks(
+            trial_id, trial_context, llm_messages, substrate=substrate
+        )
         components.custom_checks_score = custom_checks_score
         # A pack that wrote the block but left it off never reaches the executor,
         # so the key is populated with nothing consuming it — the same shape as
@@ -2261,141 +2170,42 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id: str,
         trial_context: TrialContextRuntime,
         llm_messages: list[dict[str, Any]],
+        *,
+        substrate: GradingSubstrate,
     ) -> tuple[float, list["pb2.CustomCheckResult"], str | None]:
-        """Run the pack's ``checks.py`` against the trial's evidence.
+        """Delegate to :func:`composite.grade_custom_checks` over the runner's substrate.
 
-        Returns ``(score, wire_results, reason)``. The reason is the sentence
-        :func:`custom_checks_reason` renders and is what ``Grade.reasons`` carries
-        for this component; every return that ran or tried to run supplies one, so a
-        suite that failed before it started still says why. ``None`` is reserved for
-        the one case with no suite to describe: a pack that declared no
-        ``custom_checks`` block or disabled the one it declared.
+        The composite owns the custom-checks dispatch (config normalisation,
+        artifacts-dir gating, degrade-to-empty on DB failure, executor drive,
+        wire-result wrapping). This wrapper hands it the runner-owned pieces —
+        the per-trial ``artifacts_dir``, the sync :class:`CheckExecutor`, the
+        parsed ``TaskDescription``, and the ``InProcessGradingSubstrate`` built
+        once by :meth:`_build_grading_substrate` at the outer level and shared
+        with the state-checks + judge paths.
 
-        A missing/disabled config returns
-        ``(-1.0, [], None)`` so :func:`combine_grade_components` treats the
-        component as not-evaluated (the empty-active-set guard then fires
-        for a custom-checks-only pack instead of silently passing).
-
-        On executor error (missing ``checks.py``, module load failure,
-        timeout): a sentinel wire entry preserves the audit, and the score
-        follows ``fail_on_error`` — ``0.0`` when true (contributes to the
-        weighted total as a fail), ``-1.0`` when false (component not
-        evaluated).
-
-        A suite that ran and decided nothing — every check skipped, or the
-        file declared none — also returns ``-1.0``, the same answer the core
-        engine reaches through the shared
-        :attr:`CheckResultSet.decided_something`. Its aggregate over zero
-        verdicts is ``0.0``, which would fold as a component that failed.
+        Sync-in-async: :func:`composite.grade_custom_checks` is a sync function
+        whose ``substrate.final_state`` bridge to :meth:`db_client.get_state`
+        blocks via ``run_coroutine_threadsafe``, and whose ``check_executor.run``
+        is itself blocking. ``run_in_executor`` lands both on a worker thread so
+        the bridges resolve rather than deadlocking on this loop.
         """
+        from tolokaforge.core.grading.composite import grade_custom_checks
+
         grading_config = trial_context.grading_config
         custom_config_raw = grading_config.custom_checks if grading_config else None
-        if not custom_checks_enabled(custom_config_raw):
-            return -1.0, [], None
-
-        config = CustomChecksConfig(**custom_config_raw)
-
-        artifacts_dir = self._artifact_dirs.get(trial_id)
-        if artifacts_dir is None:
-            error_msg = (
-                f"custom_checks.enabled but no artifacts_dir for trial {trial_id!r} "
-                "(checks.py was not delivered by the adapter)"
-            )
-            logger.error("GradeTrial: %s - %s", trial_id, error_msg)
-            score = 0.0 if config.fail_on_error else -1.0
-            return (
-                score,
-                [_executor_error_to_wire(error_msg)],
-                custom_checks_reason(CheckResultSet(error=error_msg)),
-            )
-        checks_file = artifacts_dir / config.file
-
-        task_description = trial_context.task_description
-        initial_tables = task_description.initial_state.tables
-        initial_state_json_db: dict[str, Any] | None = (
-            dict(initial_tables) if initial_tables else None
-        )
-
-        # Try to fetch the trial's final DB state. On failure — DB Service
-        # unreachable, trial never registered (empty initial_state skips the
-        # init in ``RegisterTrial`` above), etc. — degrade to an empty
-        # ``final_env_state`` so ``build_check_context`` still gets a
-        # well-formed input and the check runs against an honest empty state
-        # rather than crashing the grade path. Any real state a tool call
-        # wrote to a functional DB is preserved (matches the substrate parity
-        # test's expectation that a fixture DB with data drives discrimination
-        # even when ``initial_state.tables`` is empty).
-        try:
-            final_state_response = await self.db_client.get_state(trial_id)
-            final_env_state: dict[str, Any] = final_state_response.data
-        except Exception as exc:  # noqa: BLE001 — grade path degrades to empty state; the DB failure surfaces via component metadata, not a crash
-            logger.warning(
-                "GradeTrial: %s - final DB state fetch failed (%s); grading against empty state",
-                trial_id,
-                exc,
-            )
-            final_env_state = {}
-
-        ctx = build_check_context(
-            initial_state_json_db=initial_state_json_db,
-            final_env_state=final_env_state,
-            transcript=_build_runner_check_transcript(llm_messages),
-            task=TaskContext(
-                task_id=task_description.task_id,
-                task_name=task_description.name,
-                task_description=task_description.description,
-                domain=task_description.category or "",
+        return await self._loop.run_in_executor(
+            None,
+            lambda: grade_custom_checks(
+                trial_id=trial_id,
+                config=custom_config_raw,
+                substrate=substrate,
+                llm_messages=llm_messages,
+                task_description=trial_context.task_description,
+                artifacts_dir=self._artifact_dirs.get(trial_id),
+                check_executor=self.check_executor,
+                logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
             ),
         )
-
-        logger.info(f"GradeTrial: {trial_id} - Running custom checks from {checks_file}")
-        try:
-            result: CheckResultSet = await self._loop.run_in_executor(
-                None,
-                lambda: self.check_executor.run(
-                    checks_file=checks_file,
-                    task_dir=artifacts_dir,
-                    ctx=ctx,
-                    config=config,
-                ),
-            )
-        except Exception as exc:
-            # An executor that raises rather than capturing into
-            # :class:`CheckResultSet` is a contract violation; convert it to
-            # the same sentinel-entry shape as ``result.error`` so the audit
-            # survives and the whole trial's grade is not lost to the outer
-            # handler.
-            logger.exception(
-                "GradeTrial: %s - custom checks executor raised",
-                trial_id,
-            )
-            score = 0.0 if config.fail_on_error else -1.0
-            return (
-                score,
-                [_executor_error_to_wire(str(exc))],
-                custom_checks_reason(CheckResultSet(error=str(exc))),
-            )
-
-        wire_results = [_check_result_to_wire(r) for r in result.results]
-        reason = custom_checks_reason(result)
-
-        if result.error:
-            logger.error(
-                "GradeTrial: %s - custom checks executor error: %s",
-                trial_id,
-                result.error,
-            )
-            wire_results.append(_executor_error_to_wire(result.error))
-            score = 0.0 if config.fail_on_error else -1.0
-            return score, wire_results, reason
-
-        logger.info(
-            f"GradeTrial: {trial_id} - custom checks: "
-            f"{result.passed}/{result.total} passed, score={result.aggregate_score:.2f}"
-        )
-        if not result.decided_something:
-            return -1.0, wire_results, reason
-        return result.aggregate_score, wire_results, reason
 
     def _resolve_judge_kb_search(
         self, trial_id: str, agent_tools: dict[str, Callable]

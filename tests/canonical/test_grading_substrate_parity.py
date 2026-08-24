@@ -148,6 +148,7 @@ from tolokaforge.core.grading.checks_helpers import CUSTOM_CHECKS_REASON_PREFIX
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import COMBINE_METHODS
 from tolokaforge.core.grading.combine_weights import MissingComponentWeight
+from tolokaforge.core.grading.composite import _build_runner_check_transcript
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord, resolve_initial_state
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
@@ -200,7 +201,6 @@ from tolokaforge.runner.models import (
 from tolokaforge.runner.service import (
     RunnerServiceImpl,
     TrialContextRuntime,
-    _build_runner_check_transcript,
 )
 
 pytestmark = pytest.mark.canonical
@@ -811,8 +811,11 @@ def _runner_custom_checks_score(
         trial_id = f"{task_description.task_id}:0"
         servicer._extract_tool_artifacts(trial_id, task_description.tool_artifacts)
         context = TrialContextRuntime(trial_id=trial_id, task_description=task_description)
+        substrate = servicer._build_grading_substrate(trial_id, context)
         score, _, _ = servicer._run_async(
-            servicer._grade_custom_checks(trial_id, context, case.runner_messages)
+            servicer._grade_custom_checks(
+                trial_id, context, case.runner_messages, substrate=substrate
+            )
         )
         return score
     finally:
