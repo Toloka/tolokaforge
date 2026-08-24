@@ -208,7 +208,7 @@ conversational = "tolokaforge.core.actors.turn_policy:_conversational_policy_fac
 # needed at that time).
 [project.entry-points."tolokaforge.grading_substrates"]
 in_process = "tolokaforge.core.grading.substrate:InProcessGradingSubstrate"
-live_callback = "tolokaforge.core.grading.substrate:LiveRunnerCallbackGradingSubstrate"
+live_callback = "tolokaforge.core.grading.substrate_live:LiveRunnerCallbackGradingSubstrate"
 
 [tool.hatch.build]
 exclude = [
@@ -318,6 +318,8 @@ exclude = [
     "tolokaforge/core/grading/replay_layout.py",
     "tolokaforge/core/grading/rubric_migration.py",
     "tolokaforge/core/grading/state_checks.py",
+    "tolokaforge/core/grading/substrate_client.py",
+    "tolokaforge/core/grading/substrate_live.py",
     "tolokaforge/core/grading/trace_replay.py",
     "tolokaforge/core/grading/unknown_keys.py",
     "tolokaforge/core/llm/fallback_client.py",

@@ -3619,6 +3619,19 @@ custom_checks:
   fail_on_error: true
 ```
 
+**Where the dispatch lives.** The custom-checks dispatch lives on the composite
+(`core/grading/composite.py: grade_custom_checks`) and reads its evidence through
+the `GradingSubstrate` seam: `substrate.initial_state()` feeds
+`ctx.initial_state`, and `substrate.final_state()` (RAW) feeds `ctx.final_state`
+— the shape a check's arithmetic over final DB rows needs. Any failure reaching
+the substrate's final state degrades to `{}` under the composite's single
+broad-except so the check still runs against an honest empty state and the
+audit signal survives on the log line downstream tooling greps for
+(`final DB state fetch failed (<exc>); grading against empty state`); the
+runner's `_grade_custom_checks` dispatches the composite off-loop via
+`loop.run_in_executor` so the substrate's blocking reads and the executor's
+own blocking `.run()` land on a worker thread.
+
 The full authoring API (`@init`, `@check`, `CheckContext`), the network
 doctrine (checks may not initiate network — the runner container's
 `no_internet` policy enforces at the container boundary; #673 tracks

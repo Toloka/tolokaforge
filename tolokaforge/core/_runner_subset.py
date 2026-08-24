@@ -121,6 +121,8 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/grading/replay_layout.py",
     "tolokaforge/core/grading/rubric_migration.py",
     "tolokaforge/core/grading/state_checks.py",
+    "tolokaforge/core/grading/substrate_client.py",
+    "tolokaforge/core/grading/substrate_live.py",
     "tolokaforge/core/grading/trace_replay.py",
     "tolokaforge/core/grading/unknown_keys.py",
     "tolokaforge/core/llm/fallback_client.py",
@@ -146,8 +148,14 @@ the subset would drag those orchestrator-only surfaces along with them, or
 fail at import time inside the runner container. ``migration_declaration``
 reaches ``core.output.artifacts`` and ``core.output_writer`` indirectly, through
 the ``corpus_curation`` import that resolves an entry's declared corpus against
-the manifest ``tolokaforge curate`` writes. The remaining five
-(``core.grading.agreement``, ``core.grading.config_validation``,
+the manifest ``tolokaforge curate`` writes. Two files ship the
+independent-grader gRPC path (``core.grading.substrate_client`` — the wire
+adapter for the runner's ``SubstrateService`` — and ``core.grading.substrate_live``
+— :class:`LiveRunnerCallbackGradingSubstrate` and its private gRPC helpers).
+The runner never instantiates them: they are the grader container's client
+side of the substrate seam, and shipping them inside the runner image would
+double-ship the compiled ``runner_pb2`` surface without a caller. The
+remaining five (``core.grading.agreement``, ``core.grading.config_validation``,
 ``core.grading.replay_layout``, ``core.grading.unknown_keys``,
 ``core.llm.fallback_client``) have only
 shared-spine imports — ``replay_layout`` imports nothing outside the standard

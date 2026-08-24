@@ -45,7 +45,10 @@ from tolokaforge.runner.runner_pb2 import (
 from tolokaforge.runner.runner_pb2_grpc import (
     RunnerServiceServicer,
     RunnerServiceStub,
+    SubstrateServiceServicer,
+    SubstrateServiceStub,
     add_RunnerServiceServicer_to_server,
+    add_SubstrateServiceServicer_to_server,
 )
 
 
@@ -98,4 +101,7 @@ __all__ = [
     "RunnerServiceStub",
     "RunnerServiceServicer",
     "add_RunnerServiceServicer_to_server",
+    "SubstrateServiceStub",
+    "SubstrateServiceServicer",
+    "add_SubstrateServiceServicer_to_server",
 ]

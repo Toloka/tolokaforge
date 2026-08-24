@@ -26,10 +26,29 @@ The runtime picture
 |                                     | (recipe in ADR-0039)                   |
 +-------------------------------------+----------------------------------------+
 
-Two impls ship today (in-process, live-callback). The remaining three are
-declared but not implemented — each raises ``NotImplementedError`` with a
-pointer to ADR-0039 so a downstream contributor who reaches for them sees
-the recipe rather than a mystery stub.
+Two impls ship today. :class:`InProcessGradingSubstrate` is the aggregate-image
+/ in-runner path — a thin view over live objects the caller owns.
+:class:`~tolokaforge.core.grading.substrate_live.LiveRunnerCallbackGradingSubstrate`
+is the independent-grader path — each read dials the runner's read-only
+:class:`SubstrateService` gRPC surface via
+:class:`~tolokaforge.core.grading.substrate_client.GrpcSubstrateClient`; any
+transport failure raises :class:`SubstrateUnreachableError` and the seam
+translates that into ``GradingFailedError`` at the composite dispatch. It lives
+in the sibling :mod:`~tolokaforge.core.grading.substrate_live` module because
+the runner subset does not ship the gRPC client. The remaining three
+implementations are declared but not implemented — each raises
+``NotImplementedError`` with a pointer to ADR-0039 so a downstream contributor
+who reaches for them sees the recipe rather than a mystery stub.
+
+Two views of the trial's final DB state ride the Protocol side by side:
+:meth:`GradingSubstrate.final_state` returns the **RAW** rows the judge's
+state-diff and ``custom_checks`` need to see every stored field, and
+:meth:`GradingSubstrate.final_state_stable` returns the **STABLE** rows
+jsonpath grading reads (unstable fields filtered server-side, so a
+run-scoped ``session_token`` never decides an author's assertion). Three
+call sites, two DB reads: the Protocol carries both accessors so the
+composite can pick the right one per component without a substrate having
+to guess.
 
 Substrate implementations are themselves a plug-in group
 (``tolokaforge.grading_substrates``): when the trajectory-storage service
@@ -38,6 +57,7 @@ ships, it registers a one-line entry point — no framework PR needed.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -48,7 +68,6 @@ if TYPE_CHECKING:
 __all__ = [
     "GradingSubstrate",
     "InProcessGradingSubstrate",
-    "LiveRunnerCallbackGradingSubstrate",
     "SharedMountGradingSubstrate",
     "SnapshotGradingSubstrate",
     "SubstrateUnreachableError",
@@ -119,11 +138,47 @@ class GradingSubstrate(Protocol):
         ...
 
     def final_state(self) -> dict[str, Any]:
-        """The trial's post-execution state: ``{table_name: [row, ...]}``.
+        """The trial's post-execution state, **RAW**: ``{table_name: [row, ...]}``.
 
-        The whole final DB state read at trial end. Used by state-check
-        jsonpath / hash grading, by custom checks, and by the judge's
-        ``state_diff`` construction.
+        The whole final DB state read at trial end without server-side filtering
+        — the shape the judge's ``state_diff`` construction and ``custom_checks``
+        consume, both of which need every stored field (including timestamps and
+        opaque tokens the DB service marks unstable) to compute a faithful diff.
+
+        Jsonpath grading reads a different view: unstable fields are filtered
+        server-side by the DB service so a run-scoped ``session_token`` cannot
+        drag every trial's assertion off. That view is returned by
+        :meth:`final_state_stable`; both accessors return the same
+        ``{table: [rows]}`` shape and only the row *contents* differ.
+        """
+        ...
+
+    def final_state_stable(self) -> dict[str, Any]:
+        """The trial's post-execution state, **STABLE**: ``{table_name: [row, ...]}``.
+
+        The same shape as :meth:`final_state` but with unstable fields filtered
+        out server-side by the DB service. The view jsonpath grading assertions
+        resolve against, so a per-run ``session_token`` does not decide an
+        author's ``$.db.users[0].session_token == 'S-1'``.
+
+        Implementations that source state lazily are free to memoise this
+        accessor separately from :meth:`final_state`; they are two DB reads.
+        """
+        ...
+
+    def filesystem_state(self) -> dict[str, str] | None:
+        """The agent-visible filesystem as ``{'/env/fs/agent-visible/<rel>': text}``,
+        or ``None`` when the trial has no workspace tree.
+
+        The shape jsonpath grading resolves ``$.filesystem['/env/fs/agent-
+        visible/<rel>']`` against — every non-symlink UTF-8-decodable file
+        below the agent-visible root, keyed by its logical path. Binary
+        files and symlinks are skipped, matching the runner's shipped
+        ``_read_agent_visible_filesystem`` filter.
+
+        ``None`` — first-class "the trial declared no filesystem surface" —
+        is distinct from ``{}`` (a workspace root that exists but holds no
+        readable files).
         """
         ...
 
@@ -141,6 +196,9 @@ class GradingSubstrate(Protocol):
 # ---------------------------------------------------------------------------
 
 
+_MISSING: Any = object()
+
+
 class InProcessGradingSubstrate:
     """The aggregate image / in-runner path: wraps live objects directly.
 
@@ -154,21 +212,44 @@ class InProcessGradingSubstrate:
     No network hop, no serialisation. The reference impl for the
     ``in_process`` name in the ``tolokaforge.grading_substrates`` entry
     point group.
+
+    Two shapes for :meth:`final_state`: pass ``final_state=`` to return a
+    pre-fetched value verbatim, or ``final_state_factory=`` for a
+    memoised-on-first-read lambda the composite can gate on. Both together
+    is a construction-time ``ValueError`` — the two argument shapes are
+    mutually exclusive. :meth:`final_state_stable` and
+    :meth:`filesystem_state` are factory-only; the composite lazily invokes
+    them at most once per grade call, and only when its own gates say
+    the read is needed.
     """
 
     def __init__(
         self,
+        *,
         db_reader: DBReader,
         knowledge_search: KnowledgeSearch | None,
         filesystem_root: Path | None,
-        initial_state: dict[str, Any],
-        final_state: dict[str, Any],
+        initial_state: dict[str, Any] | None = None,
+        final_state: dict[str, Any] | None = None,
+        final_state_factory: Callable[[], dict[str, Any]] | None = None,
+        final_state_stable_factory: Callable[[], dict[str, Any]] | None = None,
+        filesystem_state_factory: Callable[[], dict[str, str] | None] | None = None,
     ) -> None:
+        if final_state is not None and final_state_factory is not None:
+            raise ValueError(
+                "InProcessGradingSubstrate: 'final_state' and 'final_state_factory' "
+                "are mutually exclusive — pass one or the other, not both."
+            )
         self._db_reader = db_reader
         self._knowledge_search = knowledge_search
         self._filesystem_root = filesystem_root
-        self._initial_state = initial_state
+        self._initial_state = initial_state if initial_state is not None else {}
         self._final_state = final_state
+        self._final_state_factory = final_state_factory
+        self._final_state_stable_factory = final_state_stable_factory
+        self._filesystem_state_factory = filesystem_state_factory
+        self._final_state_stable_cache: dict[str, Any] | Any = _MISSING
+        self._filesystem_state_cache: dict[str, str] | None | Any = _MISSING
         self._closed = False
 
     def db_reader(self) -> DBReader:
@@ -184,72 +265,40 @@ class InProcessGradingSubstrate:
         return self._initial_state
 
     def final_state(self) -> dict[str, Any]:
+        if self._final_state is None and self._final_state_factory is not None:
+            self._final_state = self._final_state_factory()
+        if self._final_state is None:
+            raise RuntimeError(
+                "InProcessGradingSubstrate.final_state() called but neither "
+                "'final_state' nor 'final_state_factory' was supplied at "
+                "construction."
+            )
         return self._final_state
+
+    def final_state_stable(self) -> dict[str, Any]:
+        if self._final_state_stable_cache is _MISSING:
+            if self._final_state_stable_factory is None:
+                raise RuntimeError(
+                    "InProcessGradingSubstrate.final_state_stable() called but "
+                    "'final_state_stable_factory' was not supplied at "
+                    "construction — STABLE reads require explicit wiring so a "
+                    "caller reaching for the filtered view never silently gets "
+                    "RAW rows."
+                )
+            self._final_state_stable_cache = self._final_state_stable_factory()
+        return self._final_state_stable_cache
+
+    def filesystem_state(self) -> dict[str, str] | None:
+        if self._filesystem_state_cache is _MISSING:
+            if self._filesystem_state_factory is None:
+                self._filesystem_state_cache = None
+            else:
+                self._filesystem_state_cache = self._filesystem_state_factory()
+        return self._filesystem_state_cache
 
     def close(self) -> None:
         # Nothing to release — the caller owns the DB reader, KB search,
         # and workspace paths; the substrate is a thin view.
-        self._closed = True
-
-
-# ---------------------------------------------------------------------------
-# Shipped implementation 2 — LiveRunnerCallbackGradingSubstrate (scaffold)
-# ---------------------------------------------------------------------------
-#
-# NOTE: the class body below is scaffolded; the runner-side ``SubstrateService``
-# gRPC service + the ``GrpcSubstrateClient`` that dials it land in the
-# follow-up commits on this branch. Once those land, this class stops
-# raising and becomes the reference impl for the ``live_callback`` name.
-# Kept in this module today so ADR-0039's design is legible in one place.
-
-
-class LiveRunnerCallbackGradingSubstrate:
-    """The independent grader container path: dials the runner's read-only
-    :class:`SubstrateService` on demand.
-
-    Reads are lazy: each ``filesystem_root().read_file(path)`` becomes one
-    gRPC call. Small wire per call; grader lifecycle tied to the runner
-    being alive at grade time (the trade-off Inspect AI made too — see
-    ADR-0039).
-
-    A grader losing the runner mid-grade raises
-    :class:`SubstrateUnreachableError`; the seam translates that into
-    ``GradingFailedError`` so the trial is booked as ungradeable.
-    """
-
-    def __init__(self, runner_substrate_address: str, trial_id: str) -> None:
-        self.runner_substrate_address = runner_substrate_address
-        self.trial_id = trial_id
-        self._closed = False
-
-    def db_reader(self) -> DBReader:
-        raise NotImplementedError(
-            "LiveRunnerCallbackGradingSubstrate is not yet wired — the runner-side "
-            "SubstrateService lands in a follow-up commit on this branch. Track "
-            "milestone #36 / issue #1261. See ADR-0039."
-        )
-
-    def knowledge_search(self) -> KnowledgeSearch | None:
-        raise NotImplementedError(
-            "LiveRunnerCallbackGradingSubstrate is not yet wired — see #1261."
-        )
-
-    def filesystem_root(self) -> Path | None:
-        raise NotImplementedError(
-            "LiveRunnerCallbackGradingSubstrate is not yet wired — see #1261."
-        )
-
-    def initial_state(self) -> dict[str, Any]:
-        raise NotImplementedError(
-            "LiveRunnerCallbackGradingSubstrate is not yet wired — see #1261."
-        )
-
-    def final_state(self) -> dict[str, Any]:
-        raise NotImplementedError(
-            "LiveRunnerCallbackGradingSubstrate is not yet wired — see #1261."
-        )
-
-    def close(self) -> None:
         self._closed = True
 
 
