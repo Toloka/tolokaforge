@@ -25,18 +25,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from tolokaforge.core.grading.grade_components import (
-    NO_TIMELINE_EVENTS_SKIP,
-)
+from tolokaforge.core.grading.key_manifest import NO_TIMELINE_EVENTS_SKIP
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.transcript import (
     evaluate_transcript_rules,
     scored_transcript_rules,
-    transcript_rules_author_keys,
 )
+from tolokaforge.runner.grading_ledger import transcript_rules_author_keys
 
 if TYPE_CHECKING:
-    from tolokaforge.core.grading.grade_components import KeyAccountingRecord
+    from tolokaforge.core.grading.key_manifest import KeyAccountingRecord
     from tolokaforge.core.grading.trace_checks import TraceChecksResult
     from tolokaforge.core.grading.trace_timeline import TrialTimeline
     from tolokaforge.core.grading.transcript import (
