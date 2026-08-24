@@ -12,29 +12,39 @@ its methods as thin wrappers that delegate here, so behaviour parity
 holds by construction — every existing canonical test still exercises
 the same code path.
 
-Extraction is being landed in slices; slice B (this file's first
-iteration) carries the two transcript-shape helpers (`grade_transcript_
-rules`, `grade_trace_checks`) that need only a :class:`TrialTimeline`.
-The substrate-dependent helpers (state_checks, custom_checks, llm_judge)
-land in the subsequent slice on this branch, once the runner-side gRPC
-substrate service and the ``LiveRunnerCallbackGradingSubstrate`` are
-wired end-to-end.
+Layering exception. The composite lives at ``tolokaforge/core/grading/``
+and imports three symbols from the runner package: ``TraceChecksConfig``
+from :mod:`tolokaforge.runner.models`, ``transcript_rules_author_keys``
+from :mod:`tolokaforge.runner.grading_ledger`, and ``TrialNotFoundError``
+from :mod:`tolokaforge.runner.db_client`. The runner is the sole owner of
+the wire-shape config models and of the DB-service error hierarchy the
+composite catches; a composite → runner import is the accepted one-way
+exception documented in ADR-0039.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import asyncio
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
-from tolokaforge.core.grading.key_manifest import NO_TIMELINE_EVENTS_SKIP
+from tolokaforge.core.grading.jsonpath_addressing import addresses_the_database
+from tolokaforge.core.grading.key_manifest import EVALUATED, NO_TIMELINE_EVENTS_SKIP
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.transcript import (
     evaluate_transcript_rules,
     scored_transcript_rules,
 )
-from tolokaforge.runner.grading_ledger import transcript_rules_author_keys
+from tolokaforge.runner.db_client import TrialNotFoundError as DBTrialNotFoundError
+from tolokaforge.runner.grading import evaluate_db_probes, evaluate_jsonpath_checks
+from tolokaforge.runner.grading_ledger import (
+    DB_PROBES_KEY,
+    JSONPATHS_KEY,
+    transcript_rules_author_keys,
+)
 
 if TYPE_CHECKING:
-    from tolokaforge.core.grading.key_manifest import KeyAccountingRecord
+    from tolokaforge.core.grading.substrate import GradingSubstrate
     from tolokaforge.core.grading.trace_checks import TraceChecksResult
     from tolokaforge.core.grading.trace_timeline import TrialTimeline
     from tolokaforge.core.grading.transcript import (
@@ -42,7 +52,8 @@ if TYPE_CHECKING:
         TranscriptRulesConfig,
     )
     from tolokaforge.core.logging import StructuredLogger
-    from tolokaforge.runner.models import TraceChecksConfig
+    from tolokaforge.core.models import KeyAccountingRecord
+    from tolokaforge.runner.models import RunnerStateChecksConfig, TraceChecksConfig
 
 
 def grade_transcript_rules(
@@ -82,6 +93,123 @@ def grade_transcript_rules(
 
     result = evaluate_transcript_rules(timeline, scored_rules)
     return result, {**skipped_siblings, **result.accounted_keys}
+
+
+@dataclass(frozen=True)
+class StateChecksReadResult:
+    """The scored slots :func:`grade_state_checks_reads` returns.
+
+    ``jsonpath_score`` / ``db_probe_score`` are ``None`` when the composite
+    did not reach an assertion for that half — an empty checks list, or a
+    probe-less pack — and the runner leaves the corresponding
+    :class:`RunnerGradeComponents` slot untouched (which then folds as
+    'component not evaluated'). Every author key the composite reached is
+    added to ``accounted_keys`` so the caller can merge it into the
+    RPC-level ledger.
+    """
+
+    jsonpath_score: float | None
+    jsonpath_reasons: str | None
+    db_probe_score: float | None
+    db_probe_reasons: str | None
+    accounted_keys: dict[str, KeyAccountingRecord] = field(default_factory=dict)
+
+
+def grade_state_checks_reads(
+    *,
+    trial_id: str,
+    config: RunnerStateChecksConfig,
+    substrate: GradingSubstrate,
+    logger: StructuredLogger,
+) -> StateChecksReadResult:
+    """Score the pack's ``jsonpaths`` and ``db_probes`` against ``substrate``.
+
+    Config-time gates live here so the substrate does exactly the reads the
+    assertions require: a path-glob-only pack fetches neither DB nor
+    filesystem; a DB-addressing pack fetches only STABLE DB state via
+    :meth:`substrate.final_state_stable`; a filesystem-only-``path:`` pack
+    fetches only :meth:`substrate.filesystem_state`. The STABLE DB view is
+    the one jsonpath grading resolves against — the shipped runner reads
+    ``db_client.get_stable_state`` here, so a per-run ``session_token``
+    never drags an author's ``$.db.users[0].session_token == 'S-1'``.
+
+    A :class:`~tolokaforge.runner.db_client.TrialNotFoundError` from the
+    substrate's STABLE read is graceful degradation — filesystem-only tasks
+    never call ``db_client.init_trial()``, so an absent DB is the expected
+    shape for them, and DB-declared tasks whose ``$.db.*`` assertions cannot
+    match still get the per-assertion "Path not found" diagnosis from
+    :func:`evaluate_jsonpath_checks` rather than a blanket refusal.
+
+    ``db_probes`` scoring is orthogonal to the substrate: each probe carries
+    its own ``dsn`` and hits its task's postgres directly via
+    :func:`evaluate_db_probes`. The composite only bookkeeps the accounting
+    entry when a probe actually ran.
+
+    Sync-in-async note: the composite is a **sync** function. The InProcess
+    substrate's factories block on ``run_coroutine_threadsafe`` to bridge to
+    the runner's dedicated event-loop thread, which deadlocks when called
+    from that loop. The runner therefore dispatches this function via
+    ``loop.run_in_executor(None, ...)`` — matching the shipped
+    ``_grade_llm_judge`` bridge — so the substrate's blocking reads land off
+    the loop thread. Inside, ``evaluate_db_probes`` (async, asyncpg-backed)
+    is driven by an ephemeral :func:`asyncio.run` on the executor thread.
+    """
+    accounted: dict[str, KeyAccountingRecord] = {}
+
+    jsonpath_checks = config.jsonpath_checks or []
+    jsonpath_score: float | None = None
+    jsonpath_reasons: str | None = None
+    if jsonpath_checks:
+        logger.info(f"GradeTrial: {trial_id} - Evaluating {len(jsonpath_checks)} jsonpath checks")
+        path_checks = [check for check in jsonpath_checks if check.get("path") is not None]
+        state_dict_needed = bool(path_checks)
+        db_state_needed = any(addresses_the_database(check) for check in path_checks)
+        fs_state_needed = any(not addresses_the_database(check) for check in path_checks)
+        jsonpath_state: dict[str, Any] | None = None
+        if state_dict_needed:
+            db_state: dict[str, Any] = {}
+            if db_state_needed:
+                try:
+                    db_state = substrate.final_state_stable()
+                except DBTrialNotFoundError:
+                    # Filesystem-only tasks never call db_client.init_trial(), so
+                    # an absent DB is the expected shape. For tasks that DID
+                    # declare a DB this same branch fires and downstream
+                    # ``$.db.*`` assertions surface as "Path not found" — log
+                    # at warn so ops see the real cause rather than debugging
+                    # per-assertion failures.
+                    logger.warning(
+                        f"GradeTrial: {trial_id} - DB trial not found; grading "
+                        "with empty DB state"
+                    )
+            fs_state = substrate.filesystem_state() if fs_state_needed else None
+            jsonpath_state = {
+                "db": db_state,
+                "tables": db_state,
+                "filesystem": fs_state or {},
+            }
+        jsonpath_score, jsonpath_reasons = evaluate_jsonpath_checks(
+            jsonpath_checks, state=jsonpath_state
+        )
+        accounted[JSONPATHS_KEY] = EVALUATED
+        logger.info(f"GradeTrial: {trial_id} - Jsonpath checks: score={jsonpath_score:.2f}")
+
+    db_probe_score: float | None = None
+    db_probe_reasons: str | None = None
+    if config.db_probes:
+        logger.info(f"GradeTrial: {trial_id} - Evaluating {len(config.db_probes)} db probes")
+        probes = [probe.model_dump() for probe in config.db_probes]
+        db_probe_score, db_probe_reasons = asyncio.run(evaluate_db_probes(probes))
+        accounted[DB_PROBES_KEY] = EVALUATED
+        logger.info(f"GradeTrial: {trial_id} - DB probes: score={db_probe_score:.2f}")
+
+    return StateChecksReadResult(
+        jsonpath_score=jsonpath_score,
+        jsonpath_reasons=jsonpath_reasons,
+        db_probe_score=db_probe_score,
+        db_probe_reasons=db_probe_reasons,
+        accounted_keys=accounted,
+    )
 
 
 def grade_trace_checks(

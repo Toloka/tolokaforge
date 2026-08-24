@@ -9,8 +9,8 @@ unary RPC and translates:
   composite dispatch.
 * ``ReadStateResponse.trial_not_found`` → :class:`DBTrialNotFoundError` — the
   DB service has no rows for this trial; the composite catches this at
-  ``grade_state_checks_reads`` and degrades to an empty DB view, matching the
-  shipped runner semantics at ``RunnerServiceImpl._assemble_jsonpath_state``.
+  :func:`~tolokaforge.core.grading.composite.grade_state_checks_reads` and
+  degrades to an empty DB view so filesystem-only tasks still grade.
 
 Layering — this module lives at ``tolokaforge/core/grading/`` and imports one
 symbol (:class:`~tolokaforge.runner.db_client.TrialNotFoundError`) from the

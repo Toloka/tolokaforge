@@ -1145,14 +1145,14 @@ def test_grade_trial_fails_loud_when_an_evaluator_stops_decomposing_a_key(
     evaluated by neither substrate invisible, so the key the error must name is
     the kind's.
     """
-    from tolokaforge.runner import service as service_module
+    from tolokaforge.core.grading import composite as composite_module
 
-    real = getattr(service_module, evaluator_name)
+    real = getattr(composite_module, evaluator_name)
 
     def drifted(*args: Any, **kwargs: Any) -> Any:
         return real(*args, **kwargs).model_copy(update={"accounted_keys": {}})
 
-    monkeypatch.setattr(service_module, evaluator_name, drifted)
+    monkeypatch.setattr(composite_module, evaluator_name, drifted)
 
     response = _grade(
         runner_service,

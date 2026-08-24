@@ -122,6 +122,134 @@ class TestInProcessSubstrate:
         substrate.close()
         substrate.close()  # no exception
 
+    def test_final_state_stable_reads_the_stable_factory_output(self) -> None:
+        """STABLE jsonpath reads route through the stable factory — the
+        server-side unstable-field filter the runner's ``get_stable_state``
+        applies is what jsonpath scoring resolves against."""
+        stable_calls = 0
+
+        def factory() -> dict[str, Any]:
+            nonlocal stable_calls
+            stable_calls += 1
+            return {"users": [{"id": "u1", "name": "Alice"}]}
+
+        substrate = InProcessGradingSubstrate(
+            db_reader=MagicMock(),
+            knowledge_search=None,
+            filesystem_root=None,
+            initial_state={"users": [{"id": "u1"}]},
+            final_state={"users": [{"id": "u1", "name": "Alice", "token": "opaque"}]},
+            final_state_stable_factory=factory,
+        )
+
+        assert substrate.final_state_stable() == {"users": [{"id": "u1", "name": "Alice"}]}
+        # Memoised — a second read reuses the first factory answer.
+        assert substrate.final_state_stable() == {"users": [{"id": "u1", "name": "Alice"}]}
+        assert stable_calls == 1
+        # The RAW view carries fields the STABLE view filtered out.
+        assert substrate.final_state() == {
+            "users": [{"id": "u1", "name": "Alice", "token": "opaque"}]
+        }
+
+    def test_filesystem_state_returns_the_factorys_map_when_wired(self) -> None:
+        walked = {"/env/fs/agent-visible/notes.md": "# hello"}
+        calls = 0
+
+        def factory() -> dict[str, str]:
+            nonlocal calls
+            calls += 1
+            return walked
+
+        substrate = InProcessGradingSubstrate(
+            db_reader=MagicMock(),
+            knowledge_search=None,
+            filesystem_root=Path("/tmp/ws"),
+            initial_state={},
+            final_state={},
+            filesystem_state_factory=factory,
+        )
+
+        assert substrate.filesystem_state() == walked
+        # Memoised — a second read reuses the first factory answer.
+        assert substrate.filesystem_state() == walked
+        assert calls == 1
+
+    def test_filesystem_state_returns_empty_when_the_factory_returns_no_files(
+        self,
+    ) -> None:
+        """A workspace that exists but holds no readable files maps to ``{}`` —
+        the composite's jsonpath state carries an empty ``$.filesystem`` and
+        every ``$.filesystem['/env/fs/agent-visible/<rel>']`` resolves to nothing."""
+        substrate = InProcessGradingSubstrate(
+            db_reader=MagicMock(),
+            knowledge_search=None,
+            filesystem_root=Path("/tmp/ws"),
+            initial_state={},
+            final_state={},
+            filesystem_state_factory=lambda: {},
+        )
+        assert substrate.filesystem_state() == {}
+
+    def test_filesystem_state_returns_none_when_no_factory_is_wired(self) -> None:
+        """The Protocol's ``None`` answer — 'this trial declared no filesystem
+        surface' — surfaces via the absent factory. Distinct from ``{}`` (a
+        workspace root that exists but holds no readable files)."""
+        substrate = InProcessGradingSubstrate(
+            db_reader=MagicMock(),
+            knowledge_search=None,
+            filesystem_root=None,
+            initial_state={},
+            final_state={},
+        )
+        assert substrate.filesystem_state() is None
+
+    def test_final_state_and_final_state_factory_together_raise_at_construction(
+        self,
+    ) -> None:
+        """The two argument shapes for :meth:`final_state` are mutually exclusive —
+        supplying both is a construction-time ``ValueError`` naming both fields."""
+        with pytest.raises(ValueError, match="final_state.*final_state_factory"):
+            InProcessGradingSubstrate(
+                db_reader=MagicMock(),
+                knowledge_search=None,
+                filesystem_root=None,
+                initial_state={},
+                final_state={"users": [{"id": "u1"}]},
+                final_state_factory=lambda: {"users": [{"id": "u2"}]},
+            )
+
+    def test_final_state_stable_without_wiring_raises_fail_loud(self) -> None:
+        """A caller reaching for STABLE without wiring is a bug — the substrate
+        never silently returns RAW rows."""
+        substrate = InProcessGradingSubstrate(
+            db_reader=MagicMock(),
+            knowledge_search=None,
+            filesystem_root=None,
+            initial_state={},
+            final_state={"users": [{"id": "u1"}]},
+        )
+        with pytest.raises(RuntimeError, match="final_state_stable_factory"):
+            substrate.final_state_stable()
+
+    def test_final_state_factory_memoises_across_calls(self) -> None:
+        calls = 0
+
+        def factory() -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            return {"users": [{"id": "u1"}]}
+
+        substrate = InProcessGradingSubstrate(
+            db_reader=MagicMock(),
+            knowledge_search=None,
+            filesystem_root=None,
+            initial_state={},
+            final_state_factory=factory,
+        )
+        assert substrate.final_state() == {"users": [{"id": "u1"}]}
+        assert substrate.final_state() == {"users": [{"id": "u1"}]}
+        assert calls == 1
+
 
 _TRIAL_ID = "task:0"
 _INITIAL_TABLES = {"users": [{"id": "u1", "name": "Alice"}]}

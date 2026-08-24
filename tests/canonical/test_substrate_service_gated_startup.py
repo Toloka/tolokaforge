@@ -10,9 +10,9 @@ Locks the four behaviours Stage 1 of issue #1261 commits to:
    ``"true"`` → ``False``).
 3. A runner started with the flag off returns ``UNIMPLEMENTED`` on a
    ``SubstrateService/ReadFinalDBState`` call over an in-process gRPC
-   channel; with the flag on the same call returns the trial's DB state
-   assembled the same way ``RunnerServiceImpl._assemble_jsonpath_state``
-   assembles it today (RAW, mirroring ``db_client.get_state``).
+   channel; with the flag on the same call returns the trial's RAW DB
+   state, mirroring the runner's ``db_client.get_state`` — the shape
+   the judge state-diff and ``custom_checks`` consume.
 4. The servicer module is structurally read-only: it holds
    ``_READ_ONLY = True`` AND no public method's name matches a write
    verb (``set_`` / ``insert`` / ``update`` / ``write`` / ``delete``
@@ -231,8 +231,8 @@ class TestReadOnlyByConstruction:
 class TestGatedStartup:
     """The registration decision the runner's ``__main__`` makes: with the
     flag off, ``SubstrateService/*`` calls return ``UNIMPLEMENTED``; with
-    the flag on, the servicer answers with the trial's RAW final DB state
-    assembled the same way ``_assemble_jsonpath_state`` assembles it."""
+    the flag on, the servicer answers with the trial's RAW final DB state —
+    the shape the judge state-diff and ``custom_checks`` consume."""
 
     def test_flag_off_returns_unimplemented(self) -> None:
         with _running_runner(expose_substrate=False) as (channel, _runner):
@@ -247,7 +247,7 @@ class TestGatedStartup:
             response = stub.ReadFinalDBState(pb2.ReadFinalDBStateRequest(trial_id=_TRIAL_ID))
         # The wire shape is a JSON string of ``{table: [rows]}`` — same shape
         # ``GetStateResponse.state_json`` carries and the RAW state the
-        # runner's ``_assemble_jsonpath_state`` reads off ``get_state`` today.
+        # runner reads via ``db_client.get_state``.
         assert response.trial_not_found is False
         assert json.loads(response.state_json) == _RAW_STATE
 

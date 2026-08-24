@@ -3775,13 +3775,15 @@ def test_the_site_lock_rejects_a_site_that_filed_a_skip_where_it_evaluated(
 
     Patching the module-level ``EVALUATED`` stands in for the class of defect rather
     than reproducing one site's edit: every inline site reads this global, so the
-    downgrade lands on all of them at once.
+    downgrade lands on all of them at once. The jsonpath / probes accounting site
+    lives in the composite (state_checks is a composite helper), so the same
+    downgrade is applied there — a real defect landing on either site is caught.
     """
-    monkeypatch.setattr(
-        runner_service_module,
-        "EVALUATED",
-        KeyAccountingRecord(outcome=KeyAccounting.SKIPPED, detail="downgraded by injection"),
+    downgraded = KeyAccountingRecord(
+        outcome=KeyAccounting.SKIPPED, detail="downgraded by injection"
     )
+    monkeypatch.setattr(runner_service_module, "EVALUATED", downgraded)
+    monkeypatch.setattr(composite_module, "EVALUATED", downgraded)
 
     grading_config, response = _drive_parity_pack(
         _INJECTION_JSONPATHS,

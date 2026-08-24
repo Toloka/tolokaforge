@@ -33,6 +33,7 @@ from typing import Any
 import grpc
 from pydantic import ValidationError
 
+from tolokaforge.core.grading import composite
 from tolokaforge.core.grading.check_runner import (
     _CHECK_EXECUTOR_ERROR_NAME,
     CheckExecutor,
@@ -74,6 +75,7 @@ from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 from tolokaforge.core.grading.state_diff import render_state_diff
+from tolokaforge.core.grading.substrate import GradingSubstrate, InProcessGradingSubstrate
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
     TrialTimeline,
@@ -104,17 +106,13 @@ from tolokaforge.runner.grading import (
     build_grade_reasons,
     compose_runner_trial_verdict,
     compute_state_diff,
-    evaluate_db_probes,
-    evaluate_jsonpath_checks,
     resolve_state_checks_component,
 )
 from tolokaforge.runner.grading_ledger import (
     CUSTOM_CHECKS_DISABLED_SKIP,
     CUSTOM_CHECKS_KEY,
-    DB_PROBES_KEY,
     EVALUATED,
     HASH_DISABLED_SKIP,
-    JSONPATHS_KEY,
     LLM_JUDGE_KEY,
     NO_JUDGE_MESSAGES_SKIP,
     audit_accounted_keys,
@@ -1659,34 +1657,48 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error=f"Grading error: {type(e).__name__}: {str(e)}",
             )
 
-    async def _assemble_jsonpath_state(
-        self, trial_id: str, *, fetch_db: bool = True
-    ) -> dict[str, Any]:
-        # Feeds path: jsonpath state_checks. Two roots: "db"/"tables" carry
-        # the DB service's stable state (empty when the trial has no DB —
-        # filesystem-only tasks); "filesystem" mirrors /work/ back out under
-        # the logical /env/fs/agent-visible/ layout the task YAML asserts
-        # against, so ``$.filesystem['/env/fs/agent-visible/foo.py']`` can
-        # match the file the agent actually edited.
-        db_state: dict[str, Any] = {}
-        try:
-            if fetch_db:
-                stable = await self.db_client.get_stable_state(trial_id)
-                db_state = stable.data
-        except DBTrialNotFoundError:
-            # Filesystem-only tasks never call db_client.init_trial(), so an
-            # absent DB is the expected shape. For tasks that DID declare a
-            # DB this same branch fires and downstream ``$.db.*`` assertions
-            # surface as "Path not found" — log at warn so ops see the real
-            # cause rather than debugging per-assertion failures.
-            logger.warning(
-                f"GradeTrial: {trial_id} - DB trial not found; grading with empty DB state"
-            )
-        return {
-            "db": db_state,
-            "tables": db_state,
-            "filesystem": self._read_agent_visible_filesystem(),
-        }
+    def _build_grading_substrate(
+        self, trial_id: str, trial_context: TrialContextRuntime
+    ) -> GradingSubstrate:
+        """The single :class:`InProcessGradingSubstrate` the composite reads.
+
+        Three factories carry the runner's DB / filesystem reads: STABLE for
+        jsonpath, RAW for judge state-diff and custom_checks, and the
+        agent-visible-filesystem walk for path-glob assertions. Each is
+        memoised on first accessor call so a component the pack never
+        reaches for costs no round-trip. ``initial_state`` rides
+        ``TaskDescription.initial_state.tables`` — the pre-execution shape
+        the judge diffs against.
+        """
+        loop = self._loop
+        db_client = self.db_client
+
+        class _LoopBridgeDBReader:
+            """Sync :class:`DBReader` seam bridging to the async DB client on ``loop``."""
+
+            def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:
+                fut = asyncio.run_coroutine_threadsafe(db_client.get_state(trial_id, tables), loop)
+                return fut.result(timeout=30.0).data
+
+            def query(self, jsonpath: str) -> dict[str, Any]:
+                fut = asyncio.run_coroutine_threadsafe(db_client.query(trial_id, jsonpath), loop)
+                return {"results": fut.result(timeout=30.0).results}
+
+        def _get_raw_state() -> dict[str, Any]:
+            return self._run_async(self.db_client.get_state(trial_id)).data
+
+        def _get_stable_state() -> dict[str, Any]:
+            return self._run_async(self.db_client.get_stable_state(trial_id)).data
+
+        return InProcessGradingSubstrate(
+            db_reader=_LoopBridgeDBReader(),
+            knowledge_search=trial_context.resolve_kb_search(),
+            filesystem_root=self._judge_workspace_dir(trial_context),
+            initial_state=trial_context.task_description.initial_state.tables or {},
+            final_state_factory=_get_raw_state,
+            final_state_stable_factory=_get_stable_state,
+            filesystem_state_factory=self._read_agent_visible_filesystem,
+        )
 
     def _read_agent_visible_filesystem(self) -> dict[str, str]:
         # Inverse of the RegisterTrial provisioner's
@@ -1786,6 +1798,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error=f"Trial {trial_id!r} is not gradeable: {type(exc).__name__}: {exc}",
             )
 
+        # One substrate carries every read the composite evaluators need. Its
+        # three factories memoise on first accessor call so a component the
+        # config never reaches for costs no DB round-trip and no filesystem
+        # walk (jsonpath scoring reads STABLE, judge state-diff + custom_checks
+        # read RAW, jsonpath reshaping merges the filesystem in).
+        substrate = self._build_grading_substrate(trial_id, trial_context)
+
         # Get state_checks config (may name a hash source)
         state_checks_config = grading_config.state_checks
 
@@ -1833,49 +1852,35 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # `enabled: true` is set.
             accounted_keys.update(hash_family_skip_accounting(HASH_DISABLED_SKIP))
 
-        # A.2) JSONPATH ASSERTIONS (if jsonpath_checks exist)
-        if state_checks_config and state_checks_config.jsonpath_checks:
-            logger.info(
-                f"GradeTrial: {trial_id} - Evaluating "
-                f"{len(state_checks_config.jsonpath_checks)} jsonpath checks"
+        # A.2/A.3) JSONPATH ASSERTIONS + DB PROBES.
+        # The composite gates each read on the config's shape: a path-glob-only
+        # pack fetches nothing; a DB-addressing pack fetches only STABLE DB
+        # state; a filesystem-only-``path:`` pack fetches only the workspace
+        # walk. A probe score is the state_checks component's only source —
+        # a hash verdict or a jsonpath score declared beside a probe is
+        # refused up front.
+        if state_checks_config and (
+            state_checks_config.jsonpath_checks or state_checks_config.db_probes
+        ):
+            # The composite is sync so its substrate reads (which bridge back to
+            # this loop via ``run_coroutine_threadsafe``) land off-loop. Running
+            # it directly on the loop would deadlock at the first factory call.
+            state_reads_result = await self._loop.run_in_executor(
+                None,
+                lambda: composite.grade_state_checks_reads(
+                    trial_id=trial_id,
+                    config=state_checks_config,
+                    substrate=substrate,
+                    logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
+                ),
             )
-            # Only assemble a state dict when at least one assertion targets
-            # it via ``path:``. File-only (``path_glob:``) checks never needed
-            # a state dict; they read files off disk directly via
-            # ``evaluate_jsonpath_file_checks``. The DB round-trip inside the
-            # assembly is further gated on a check actually addressing the
-            # database, so a filesystem-only pack costs no DB call and gains
-            # no DB failure mode.
-            jsonpath_checks = state_checks_config.jsonpath_checks
-            jsonpath_state = None
-            if any(check.get("path") is not None for check in jsonpath_checks):
-                jsonpath_state = await self._assemble_jsonpath_state(
-                    trial_id,
-                    fetch_db=any(addresses_the_database(check) for check in jsonpath_checks),
-                )
-            jsonpath_score, jsonpath_reasons = evaluate_jsonpath_checks(
-                jsonpath_checks,
-                state=jsonpath_state,
-            )
-            components.jsonpath_score = jsonpath_score
-            components.jsonpath_reasons = jsonpath_reasons
-            accounted_keys[JSONPATHS_KEY] = EVALUATED
-            logger.info(f"GradeTrial: {trial_id} - Jsonpath checks: score={jsonpath_score:.2f}")
-
-        # A.3) DB PROBES (substrate SQL assertions) — the block's only state source:
-        # a hash verdict or a jsonpath score declared beside a probe is refused, so a
-        # probe score is the state_checks component rather than one of two candidates.
-        if state_checks_config and state_checks_config.db_probes:
-            logger.info(
-                f"GradeTrial: {trial_id} - Evaluating "
-                f"{len(state_checks_config.db_probes)} db probes"
-            )
-            probes = [probe.model_dump() for probe in state_checks_config.db_probes]
-            db_probe_score, db_probe_reasons = await evaluate_db_probes(probes)
-            components.db_probe_score = db_probe_score
-            components.db_probe_reasons = db_probe_reasons
-            accounted_keys[DB_PROBES_KEY] = EVALUATED
-            logger.info(f"GradeTrial: {trial_id} - DB probes: score={db_probe_score:.2f}")
+            if state_reads_result.jsonpath_score is not None:
+                components.jsonpath_score = state_reads_result.jsonpath_score
+                components.jsonpath_reasons = state_reads_result.jsonpath_reasons
+            if state_reads_result.db_probe_score is not None:
+                components.db_probe_score = state_reads_result.db_probe_score
+                components.db_probe_reasons = state_reads_result.db_probe_reasons
+            accounted_keys.update(state_reads_result.accounted_keys)
 
         # B) TRANSCRIPT RULES GRADING (if transcript_rules exist)
         transcript_rules_config = grading_config.transcript_rules
