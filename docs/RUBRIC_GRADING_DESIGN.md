@@ -31,8 +31,9 @@ rules; its aggregated score feeds the existing `weights.llm_judge` slot.
 ```
 orchestrator ──RegisterTrial──▶ runner            (TaskDescription incl. grading.llm_judge.rubric)
 orchestrator ──GradeTrial─────▶ runner._grade_trial_async
+                                  ├─ InProcessGradingSubstrate (one substrate, shared with state_checks)
                                   ├─ state checks / transcript rules
-                                  └─ rubric judge:  LLMJudge(...).run(...)
+                                  └─ composite.grade_llm_judge(substrate=...)
                                         ├─ LLMClient(judge_model_config) via build_capabilities  (run-level models.judge)
                                         ├─ ToolCallingLoop (no user sim; stop on submit_report; max_turns + wall-time)
                                         │     read-only tools: get_db_state/query_db, search_kb, read_file, submit_report
@@ -44,11 +45,21 @@ orchestrator ◀──GradeTrialResponse── proto Grade ── shared_stack_r
                                                                                           grade.yaml + judge_trajectory.yaml
 ```
 
+The judge dispatch lives on the composite (`core/grading/composite.py:
+grade_llm_judge`) and reads through the `GradingSubstrate` seam: DB tools
+bridge through `substrate.db_reader()`, the `initial → final` state-diff is
+built from `substrate.initial_state()` + `substrate.final_state()`, KB tools
+come from `substrate.knowledge_search()`, and `read_file` is offered only
+when `substrate.filesystem_root()` returns a path. The `InProcessGradingSubstrate`
+the runner constructs is the aggregate-image / in-runner shape — the judge
+runs in the runner process without a network hop.
+
 The judge runs on the **same `ToolCallingLoop`** the agent uses
 (`core/loop.py`), configured with no user simulator and a termination policy
 that stops the moment `submit_report` appears in the tool calls. The loop is
-sync; the async runner bridges it with `run_in_executor`, and DB-read tools
-bridge back to the runner event loop with `run_coroutine_threadsafe(...)`.
+sync; the async runner bridges the composite with `run_in_executor`, and the
+InProcess substrate's DB-read seam bridges back to the runner event loop with
+`run_coroutine_threadsafe(...)`.
 
 ## Key components
 

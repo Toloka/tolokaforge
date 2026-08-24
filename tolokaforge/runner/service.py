@@ -71,10 +71,9 @@ from tolokaforge.core.grading.jsonpath_addressing import (
     block_addresses_the_database,
     unreachable_target,
 )
-from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
+from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
-from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.grading.substrate import GradingSubstrate, InProcessGradingSubstrate
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
@@ -1817,8 +1816,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 return pb2.GradeTrialResponse(
                     success=False,
                     error=(
-                        f"Trial {trial_id!r} cannot be graded as authored: "
-                        f"{state_checks_refusal}"
+                        f"Trial {trial_id!r} cannot be graded as authored: {state_checks_refusal}"
                     ),
                 )
 
@@ -1918,7 +1916,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             if llm_messages:
                 logger.info(f"GradeTrial: {trial_id} - Evaluating LLM judge")
                 judge_result = await self._grade_llm_judge(
-                    trial_id, llm_judge_config, llm_messages, trial_context
+                    trial_id, llm_judge_config, llm_messages, trial_context, substrate=substrate
                 )
                 accounted_keys[LLM_JUDGE_KEY] = EVALUATED
                 judge_reasons = judge_result.reasons
@@ -2196,56 +2194,28 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         llm_judge_config: "LLMJudgeConfig",
         llm_messages: list[dict[str, Any]],
         trial_context: TrialContextRuntime,
+        *,
+        substrate: GradingSubstrate,
     ) -> "JudgeResult":
-        """Run the read-only rubric judge for one trial.
+        """Delegate to :func:`composite.grade_llm_judge` over the runner's substrate.
 
-        Async/sync bridge: ``_grade_trial_async`` runs ON the dedicated event
-        loop thread. The judge loop (``LLMJudge.run``) is synchronous and the
-        DB client is async, so we run the judge in a *thread executor*
-        (``run_in_executor``) and give its read-only DB tools a ``DBReader`` that
-        bridges each call back to this loop via
-        ``asyncio.run_coroutine_threadsafe`` — safe because the executor thread is
-        never the loop thread. Nothing here can deadlock the loop.
+        The composite owns the judge dispatch (rubric, tool gating, state-diff,
+        loop drive); this wrapper collects the trial-context passthroughs
+        (judge ``ModelConfig``, ``search_policy`` connector reuse, id_fields,
+        unstable_fields, schema PKs) and delegates. The ``InProcessGradingSubstrate``
+        built once by :meth:`_build_grading_substrate` at the outer level is
+        shared here — the judge's read-only DB tools go through
+        ``substrate.db_reader()``, the same ``_LoopBridgeDBReader`` closure the
+        state-checks path uses, and the diff-first default reads
+        ``substrate.initial_state()`` / ``substrate.final_state()`` (RAW).
 
-        Narrow input surface: only ``{agent_system_prompt, transcript, rubric,
-        read-tools}`` are passed; the deterministic-oracle config never reaches
-        the judge.
+        Sync-in-async: :func:`composite.grade_llm_judge` is a sync function whose
+        substrate reads (and the judge loop's own DB tool calls) bridge back to
+        this loop via ``run_coroutine_threadsafe``; driving it on the loop thread
+        would deadlock at the first call. ``run_in_executor`` lands the work on
+        a worker thread so the bridges resolve.
         """
-        loop = self._loop
-        db_client = self.db_client
-
-        class _LoopBridgeDBReader:
-            """Synchronous read seam bridging to the async DB client on ``loop``."""
-
-            def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:
-                fut = asyncio.run_coroutine_threadsafe(db_client.get_state(trial_id, tables), loop)
-                return fut.result(timeout=30.0).data
-
-            def query(self, jsonpath: str) -> dict[str, Any]:
-                fut = asyncio.run_coroutine_threadsafe(db_client.query(trial_id, jsonpath), loop)
-                return {"results": fut.result(timeout=30.0).results}
-
-        # Agent policy comes from the transcript's leading system message (the
-        # only oracle-free policy signal the runner has). Split from the
-        # transcript so it is injected as policy, not replayed as a turn.
-        agent_system_prompt, transcript = split_leading_system_message(list(llm_messages))
-
-        # search_kb only when a KnowledgeSearch was resolved for THIS trial at
-        # setup — the SAME per-trial index the agent's KB tool searched. Faithful
-        # gating: agent had a KB ⇒ judge gets the same KB; none ⇒ no tool. This
-        # replaces the old ``rag_url = self.rag_client.base_url`` path, which
-        # keyed on container-level client existence and hit the wrong (global)
-        # index.
-        kb_search = trial_context.resolve_kb_search()
-        # TypeSense KB plane: if the agent had the read-only ``search_policy`` tool
-        # (the documented mcp_core TypeSense connector), let the judge reuse THAT
-        # EXACT reconstructed tool via a read-only passthrough — same tool, query,
-        # backend, and ranking the agent saw. This is orthogonal to the rag
-        # ``kb_search`` path above; both end as read-only tools in the judge
-        # registry. See ``_build_judge_search_policy_tools``.
-        extra_read_tools = self._build_judge_search_policy_tools(trial_context)
-        # File readers only when a real workspace exists on this runner.
-        workspace_dir = self._judge_workspace_dir(trial_context)
+        from tolokaforge.core.grading.composite import grade_llm_judge
 
         # The judge model is a run-level config that rides the TrialSpec. The
         # orchestrator validates up front that it is present whenever any selected
@@ -2260,61 +2230,31 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 "models.judge; the orchestrator should have rejected this run up front."
             )
 
-        # Diff-first default: hand the judge the initial → final state delta (the
-        # agent's own edits) as its primary view of the outcome, instead of it
-        # dumping the whole final DB via get_db_state. This is NOT the
-        # trial-vs-golden diff (that would leak the oracle and bias grading, see
-        # docs/RUBRIC_GRADING_DESIGN.md #7/#8) — it reveals only what the agent changed.
-        # Persisted for free: the opening message it lands in is captured into
-        # judge_trajectory.yaml. Computed here on the loop thread where both
-        # states are in hand.
-        #
-        # This is an aid to the judge, not a grade component: if building it
-        # fails (DB read hiccup, unexpected state shape), degrade to no diff
-        # rather than failing the whole grade — the judge still has its read-only
-        # tools, and the hash / jsonpath components already computed must not be
-        # discarded. The judge's OWN fail-loud contract still governs grading;
-        # this only guards the optional context we hand it.
-        try:
-            state_diff_text = await self._build_judge_state_diff(trial_id, trial_context)
-        except Exception as exc:  # noqa: BLE001 — optional context, never fail the grade
-            logger.warning(
-                "Failed to build judge state diff; grading without it "
-                f"(trial_id={trial_id}, error={exc})"
-            )
-            state_diff_text = None
+        initial_state = trial_context.task_description.initial_state
+        id_fields = self._id_fields_for_trial(trial_id)
+        unstable_fields = {(u.table_name, u.field_name) for u in initial_state.unstable_fields}
+        # TypeSense KB plane: if the agent had the read-only ``search_policy`` tool
+        # (the documented mcp_core TypeSense connector), let the judge reuse THAT
+        # EXACT reconstructed tool via a read-only passthrough — same tool, query,
+        # backend, and ranking the agent saw. Agent-tool coupling keeps this seam
+        # runner-side; the composite receives the resolved list.
+        extra_read_tools = self._build_judge_search_policy_tools(trial_context)
 
-        # Judge-side tool gating. The agent's tool surface is
-        # untouched: the runner still resolves kb_search / extra_read_tools
-        # faithfully above; the judge withholds the KB-tagged ones by construction
-        # when the effective customization asks for it. Absent/None → False.
-        customization = llm_judge_config.customization
-        disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
-        custom_system_prompt = customization.system_prompt if customization else None
-        include_agent_system_prompt = (
-            customization.include_agent_system_prompt
-            if customization and customization.include_agent_system_prompt is not None
-            else True
-        )
-
-        def _run() -> JudgeResult:
-            return LLMJudge(
-                judge_model_config,
-                disable_knowledge_search=disable_knowledge_search,
-                custom_system_prompt=custom_system_prompt,
-                include_agent_system_prompt=include_agent_system_prompt,
-            ).run(
-                rubric=llm_judge_config.rubric,
-                agent_system_prompt=agent_system_prompt,
-                transcript=transcript,
-                db_reader=_LoopBridgeDBReader(),
-                kb_search=kb_search,
+        return await self._loop.run_in_executor(
+            None,
+            lambda: grade_llm_judge(
+                trial_id=trial_id,
+                config=llm_judge_config,
+                substrate=substrate,
+                llm_messages=llm_messages,
+                judge_model_config=judge_model_config,
                 extra_read_tools=extra_read_tools,
-                workspace_dir=workspace_dir,
-                state_diff=state_diff_text,
-            )
-
-        return await loop.run_in_executor(None, _run)
+                id_fields=id_fields,
+                unstable_fields=unstable_fields,
+                initial_state_schemas=initial_state.schemas,
+                logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
+            ),
+        )
 
     async def _grade_custom_checks(
         self,
@@ -2388,9 +2328,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         try:
             final_state_response = await self.db_client.get_state(trial_id)
             final_env_state: dict[str, Any] = final_state_response.data
-        except (
-            Exception
-        ) as exc:  # noqa: BLE001 — grade path degrades to empty state; the DB failure surfaces via component metadata, not a crash
+        except Exception as exc:  # noqa: BLE001 — grade path degrades to empty state; the DB failure surfaces via component metadata, not a crash
             logger.warning(
                 "GradeTrial: %s - final DB state fetch failed (%s); grading against empty state",
                 trial_id,
@@ -2458,37 +2396,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if not result.decided_something:
             return -1.0, wire_results, reason
         return result.aggregate_score, wire_results, reason
-
-    async def _build_judge_state_diff(
-        self, trial_id: str, trial_context: TrialContextRuntime
-    ) -> str | None:
-        """Render the ``initial → final`` DB state diff for the judge, or ``None``.
-
-        Returns ``None`` when there is no DB client or no initial-state tables for
-        this trial (e.g. non-DB tasks) — the judge then falls back to its
-        read-only tools. Otherwise fetches the raw final state (the same shape
-        ``get_db_state`` returns) and diffs it against the pre-run initial tables,
-        matching rows on the trial's declared ``state_checks.id_fields`` key
-        (layered over the task schemas' primary keys) and dropping
-        ``unstable_fields`` as noise so the diff shows only meaningful edits.
-        """
-        db_client = self.db_client
-        task_desc = trial_context.task_description
-        initial_state = task_desc.initial_state if task_desc else None
-        if db_client is None or initial_state is None or not initial_state.tables:
-            return None
-        final_state = (await db_client.get_state(trial_id)).data
-        primary_keys: dict[str, str | list[str]] = {
-            s.table_name: s.primary_key for s in initial_state.schemas
-        }
-        primary_keys.update(self._id_fields_for_trial(trial_id))
-        unstable_fields = {(u.table_name, u.field_name) for u in initial_state.unstable_fields}
-        return render_state_diff(
-            initial_state.tables,
-            final_state,
-            primary_keys=primary_keys,
-            unstable_fields=unstable_fields,
-        )
 
     def _resolve_judge_kb_search(
         self, trial_id: str, agent_tools: dict[str, Callable]

@@ -2140,7 +2140,7 @@ def _register_pack(
     config reads it back off ``servicer.trials[trial_id]``.
 
     ``judge_model_config`` rides the spec for a task declaring an ``llm_judge``
-    rubric, which ``_grade_llm_judge`` refuses to grade without.
+    rubric, which ``composite.grade_llm_judge`` refuses to grade without.
     """
     registered = servicer.RegisterTrial(
         register_request(
@@ -3650,11 +3650,13 @@ def _drive_llm_judge(
 ) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
     """Grade a rubric-configured trial with the model provider substituted.
 
-    The spec carries a judge ``ModelConfig``: ``_grade_llm_judge`` raises before it
-    ever constructs the judge without one, so the row would otherwise red on claim 2
-    for a reason with nothing to do with the recording site.
+    The spec carries a judge ``ModelConfig``: ``composite.grade_llm_judge`` raises
+    before it ever constructs the judge without one, so the row would otherwise
+    red on claim 2 for a reason with nothing to do with the recording site.
     """
-    monkeypatch.setattr(runner_service_module, "LLMJudge", _StubJudge)
+    from tolokaforge.core.grading import composite
+
+    monkeypatch.setattr(composite, "LLMJudge", _StubJudge)
     task_description = runner_models.TaskDescription.model_validate(_JUDGE_DRIVER_TASK)
     _register_pack(
         servicer,
