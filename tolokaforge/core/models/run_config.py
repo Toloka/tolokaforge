@@ -830,7 +830,7 @@ class QueueGraderConfig(BaseModel):
 
     workers: int = Field(default=4, ge=1)
     backend: Literal["in_memory"] = "in_memory"
-    worker_grader: str = "runner_rpc"
+    worker_grader: str = "grader_rpc"
 
 
 class GraderConfig(BaseModel):

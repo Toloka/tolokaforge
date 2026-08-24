@@ -501,6 +501,13 @@ class Orchestrator:
         self.results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
         self.adapter: BaseAdapter | None = None
+        # Trial graders whose ``close()`` must fire at run teardown. Populated
+        # by :meth:`_build_conductor`; drained in reverse order at the end of
+        # :meth:`run` / :meth:`run_worker` so a broker + worker-pool grader
+        # (``queue``) shuts down cleanly regardless of the caller's flow.
+        self._trial_graders_to_close: list = (
+            []
+        )  # list[TrialGrader]; annotated bare to avoid a runtime import cycle
         # Shared per-trial writer — every per-trial write goes through it
         # so the orchestrator stays decoupled from filesystem details and
         # alternative writers (in-memory tests, remote stores) can plug in.
@@ -800,6 +807,7 @@ class Orchestrator:
                 grader_config=grader_config,
             )
         )
+        self._trial_graders_to_close.append(trial_grader)
 
         ctx = ConductorContext(
             adapter=self.adapter,
@@ -2471,6 +2479,8 @@ class Orchestrator:
             except Exception as e:
                 self.logger.warning("Failed to destroy EngineStack", error=str(e))
 
+        self._close_trial_graders()
+
         # Generate reports
         self._generate_reports(output_dir)
         self._publish_grading_completeness()
@@ -2478,6 +2488,31 @@ class Orchestrator:
         resolved_output_dir = output_dir.resolve()
         self._events.run_finished(output_dir=resolved_output_dir)
         return resolved_output_dir
+
+    def _close_trial_graders(self) -> None:
+        """Release every ``TrialGrader`` built during this orchestrator's
+        lifetime, in reverse construction order.
+
+        The queue transport owns a broker + a worker pool that must shut
+        down before the process exits, and the ``grader_rpc`` transport
+        owns a gRPC channel. Every built-in Protocol implementation ships
+        a ``close()`` (a noop for the transport-less ones); a downstream
+        registered grader that lacks one is tolerated so an old
+        registration does not fail a new run at teardown.
+        """
+        while self._trial_graders_to_close:
+            grader = self._trial_graders_to_close.pop()
+            close = getattr(grader, "close", None)
+            if not callable(close):
+                continue
+            try:
+                close()
+            except Exception as exc:  # noqa: BLE001 — teardown must survive
+                self.logger.warning(
+                    "Trial grader close() raised",
+                    grader=type(grader).__name__,
+                    error=str(exc),
+                )
 
     def run_worker(self, output_dir: Path, max_attempts: int | None = None) -> dict[str, Any]:
         """Run as a worker consuming attempts from the durable queue.
@@ -2709,6 +2744,7 @@ class Orchestrator:
                 except Exception:
                     pass
 
+        self._close_trial_graders()
         self._publish_grading_completeness()
         summary = {
             "processed_attempts": processed,
