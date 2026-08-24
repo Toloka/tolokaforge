@@ -833,6 +833,23 @@ class QueueGraderConfig(BaseModel):
     worker_grader: str = "grader_rpc"
 
 
+class JudgeGraderConfig(BaseModel):
+    """``judge_only`` grader settings.
+
+    Absent means "use the task's own ``grading.llm_judge.customization``
+    exactly". Every field here is an optional override; ``None`` on the
+    field means the task's own value wins. The run-level override exists
+    for evaluation flights that want to A/B a judge customization across
+    a task pack without editing every task's grading.yaml.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    disable_knowledge_search: bool | None = None
+    custom_system_prompt: str | None = None
+    include_agent_system_prompt: bool | None = None
+
+
 class GraderConfig(BaseModel):
     """Run-level ``TrialGrader`` selection and per-transport settings.
 
@@ -854,6 +871,7 @@ class GraderConfig(BaseModel):
 
     name: str | None = None
     queue: QueueGraderConfig | None = None
+    judge: JudgeGraderConfig | None = None
 
 
 class TracingConfig(BaseModel):

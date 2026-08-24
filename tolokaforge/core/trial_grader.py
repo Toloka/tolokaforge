@@ -1015,20 +1015,101 @@ def _queue_worker_loop(
 
 def judge_backed_trial_grader_factory(
     ctx: TrialGraderContext,
-) -> JudgeBackedTrialGrader:  # noqa: ARG001
-    """Registered ``judge_only`` factory. Fails loud until a production
-    judge is wired through the context.
+) -> JudgeBackedTrialGrader:
+    """Registered ``judge_only`` factory — builds a rubric-judge dispatcher.
 
-    Same altitude as :func:`queue_trial_grader_factory`: raise at factory
-    time so the operator sees the misconfiguration at orchestrator startup,
-    not deep inside :meth:`grade` after a trial has already been paid for.
-    Tests construct :class:`JudgeBackedTrialGrader` directly with a real
-    :data:`JudgeGradeFn`.
+    Reads the run-level ``grader.judge`` overrides (or the task's own
+    ``grading.llm_judge.customization`` when no override is set) and
+    produces a :data:`JudgeGradeFn` that on each call:
+
+    1. Reads the task's rubric from
+       ``spec.task.grading.llm_judge.rubric``.
+    2. Reads the judge model from ``spec.judge_model_config`` (which
+       rides the run config's ``models["judge"]``).
+    3. Encodes the trajectory + agent policy through the same
+       :func:`encode_transcript_wire` + :func:`split_leading_system_message`
+       replay uses, so the transcript the judge sees is byte-identical
+       to the runner-side grading path.
+    4. Runs :class:`LLMJudge` with rubric + transcript only — no
+       ``db_reader`` / ``kb_search`` / ``workspace_dir`` / ``state_diff``,
+       because ``judge_only`` grades trajectories after the trial ended
+       and holds no live substrate state.
+    5. Translates the :class:`JudgeResult` back through
+       :func:`build_replay_grade` — the same shape offline replay
+       produces, so a ``judge_only`` grade and a replay grade are
+       type-identical downstream.
+
+    Fails loud on the two shapes the operator would want to know
+    immediately at run start: a task with no ``llm_judge`` block (the
+    task cannot be judged) and a run with no ``models["judge"]`` (the
+    dispatch has no model to call). Both surface at grade time as
+    :class:`GradingFailedError`.
     """
-    raise NotImplementedError(
-        "``judge_only`` trial grader is registered but not yet wired to a "
-        "production judge at the engine layer. Instantiate "
-        "``JudgeBackedTrialGrader`` directly with your own ``JudgeGradeFn`` "
-        "for now; the factory will land once ``TrialGraderContext`` carries "
-        "judge-selection configuration."
-    )
+    override = ctx.grader_config.judge if ctx.grader_config else None
+
+    def judge_fn(spec: TrialSpec, trajectory: Trajectory, agent_system_prompt: str) -> Grade | None:
+        import json
+
+        from tolokaforge.core.grading.judge import LLMJudge
+        from tolokaforge.core.grading.replay import build_replay_grade
+        from tolokaforge.core.grading.transcript_wire import (
+            encode_transcript_wire,
+            split_leading_system_message,
+        )
+
+        llm_judge_config = spec.task.grading.llm_judge
+        if llm_judge_config is None:
+            raise GradingFailedError(
+                f"judge_only cannot grade trial {spec.trial_id!r}: the task "
+                "declares no grading.llm_judge block."
+            )
+        if spec.judge_model_config is None:
+            raise GradingFailedError(
+                f"judge_only cannot grade trial {spec.trial_id!r}: the run "
+                "config declares no models.judge; add one, or select a "
+                "grader that does not need a judge model."
+            )
+
+        wire = encode_transcript_wire(trajectory, agent_system_prompt)
+        if wire is None:
+            # An empty trajectory with no policy — no evidence to judge
+            # against. ``JudgeBackedTrialGrader.grade`` will log the
+            # ``None`` verdict at the seam.
+            return None
+        judge_agent_prompt, transcript = split_leading_system_message(json.loads(wire))
+
+        customization = llm_judge_config.customization
+        disable_kb = (
+            override.disable_knowledge_search
+            if override is not None and override.disable_knowledge_search is not None
+            else bool(customization and customization.disable_knowledge_search)
+        )
+        custom_prompt = (
+            override.custom_system_prompt
+            if override is not None and override.custom_system_prompt is not None
+            else (customization.system_prompt if customization else None)
+        )
+        include_agent = (
+            override.include_agent_system_prompt
+            if override is not None and override.include_agent_system_prompt is not None
+            else (
+                customization.include_agent_system_prompt
+                if customization and customization.include_agent_system_prompt is not None
+                else True
+            )
+        )
+
+        judge = LLMJudge(
+            spec.judge_model_config,
+            disable_knowledge_search=disable_kb,
+            custom_system_prompt=custom_prompt,
+            include_agent_system_prompt=include_agent,
+        )
+        result = judge.run(
+            rubric=llm_judge_config.rubric,
+            agent_system_prompt=judge_agent_prompt,
+            transcript=transcript,
+        )
+        return build_replay_grade(result)
+
+    return JudgeBackedTrialGrader(judge_fn=judge_fn, logger=ctx.logger)
