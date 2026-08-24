@@ -278,6 +278,16 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         validator="_reject_fields_the_kind_never_carries",
     ),
     _Rejection(
+        label="status_literal_no_execution_produces",
+        block=_block(
+            _constraint(
+                {"present": {"match": {"kind": "tool_result", "status": {"equals": "expired"}}}}
+            )
+        ),
+        message="no tool executor produces",
+        validator="_reject_a_status_literal_no_execution_produces",
+    ),
+    _Rejection(
         label="immediately_before_without_among",
         block=_block(
             _constraint(
