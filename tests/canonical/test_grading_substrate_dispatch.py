@@ -49,8 +49,10 @@ import pytest
 from tests.utils.dummy_grading_substrate import DummyGradingSubstrate
 from tolokaforge.core.grading import composite
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
-from tolokaforge.core.grading.judge import JudgeStatus
+from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.grading.key_manifest import EVALUATED
+from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorContext
+from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.grading.substrate_live import LiveRunnerCallbackGradingSubstrate
 from tolokaforge.core.grading.trace_checks import TraceChecksResult
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
@@ -66,6 +68,7 @@ from tolokaforge.core.plugin_registry import (
     GRADING_SUBSTRATES_GROUP,
     _clear_discovery_cache,
     load_grading_substrate,
+    load_rubric_evaluator,
 )
 from tolokaforge.runner import (
     add_RunnerServiceServicer_to_server,
@@ -356,9 +359,12 @@ def _running_runner():
 
 
 def _install_scripted_client(monkeypatch: pytest.MonkeyPatch, script: list[Any]) -> None:
-    """Route ``LLMJudge``'s ``LLMClient(model_config)`` to a scripted stand-in."""
+    """Route :class:`LiteLLMJudgeModelProvider`'s ``LLMClient(model_config)``
+    to a scripted stand-in. Fires both when the runner path resolves the
+    shipping ``litellm`` provider (composite grade) and when composite
+    dispatch is driven directly against the same provider."""
     monkeypatch.setattr(
-        "tolokaforge.core.grading.judge.LLMClient",
+        "tolokaforge.core.grading.default_judge_model_provider.LLMClient",
         lambda *args, **kwargs: _ScriptedClient(script),
     )
 
@@ -434,16 +440,33 @@ def _reassemble_grade_from_composite(
         judge_reasons: str | None = None
         judge_gate_failed = False
         judge_report: pb2.JudgeReport | None = None
+        rubric_evaluator = load_rubric_evaluator("llm_judge")(
+            RubricEvaluatorContext(
+                judge_model_provider=runner._judge_model_provider,
+                logger=logger,  # type: ignore[arg-type]
+            )
+        )
+        initial_tables = substrate.initial_state()
+        state_diff_text: str | None = None
+        if initial_tables:
+            primary_keys: dict[str, str | list[str]] = {
+                s.table_name: s.primary_key for s in task_description.initial_state.schemas
+            }
+            state_diff_text = render_state_diff(
+                initial_tables,
+                substrate.final_state(),
+                primary_keys=primary_keys,
+                unstable_fields=set(),
+            )
         judge_result = composite.grade_llm_judge(
             trial_id=_TRIAL_ID,
             config=grading_config.llm_judge,
             substrate=substrate,
+            rubric_evaluator=rubric_evaluator,
             llm_messages=llm_messages,
             judge_model_config=_JUDGE_MODEL,
             extra_read_tools=[],
-            id_fields={},
-            unstable_fields=set(),
-            initial_state_schemas=list(task_description.initial_state.schemas),
+            state_diff=state_diff_text,
             logger=logger,  # type: ignore[arg-type]
         )
         accounted_keys[LLM_JUDGE_KEY] = EVALUATED

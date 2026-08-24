@@ -52,11 +52,16 @@ from tolokaforge.core.grading.jsonpath_addressing import (
     block_addresses_the_database,
     unreachable_target,
 )
-from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
+from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
-from tolokaforge.core.grading.substrate import GradingSubstrate, InProcessGradingSubstrate
+from tolokaforge.core.grading.state_diff import render_state_diff
+from tolokaforge.core.grading.substrate import (
+    GradingSubstrate,
+    InProcessGradingSubstrate,
+    SubstrateUnreachableError,
+)
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
     TrialTimeline,
@@ -75,6 +80,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.plugin_registry import (
     load_custom_check_executor,
     load_judge_model_provider,
+    load_rubric_evaluator,
 )
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
@@ -377,6 +383,61 @@ def _unreachable_state_checks_refusal(
             "trial's database (rooted at db or tables), or drop the assertion."
         )
     return None
+
+
+def _build_judge_state_diff(
+    *,
+    trial_id: str,
+    substrate: GradingSubstrate,
+    initial_state_schemas: list[Any],
+    id_fields: dict[str, str | list[str]],
+    unstable_fields: set[tuple[str, str]],
+    logger: "logging.Logger",
+) -> str | None:
+    """Render the ``initial → final`` DB state diff for the judge, or ``None``.
+
+    ``None`` is the diff-first default declining itself when there is nothing to
+    diff against: an empty ``initial_state`` — the shape non-DB tasks carry, and
+    what filesystem-only tasks report — has no baseline, so the judge falls back
+    to its read-only tools. The distinction between "no diff" and "diff
+    unavailable" stays with :func:`render_state_diff`'s explicit "No changes"
+    body for a diff that DID build but found no edits.
+
+    The trial's declared ``state_checks.id_fields`` is layered over the task
+    schemas' primary keys — the two together are the row-matching contract the
+    diff renders against — and ``unstable_fields`` drops server-marked noise so
+    only meaningful edits appear.
+
+    Best-effort context, not a grade component: :class:`SubstrateUnreachableError`
+    propagates so the seam can book the trial as ungradeable, but any other
+    substrate read failure (DB hiccup, unexpected shape) degrades to ``None`` —
+    the judge still has its read-only tools and the components already computed
+    by this call site are preserved. The judge's own fail-loud contract still
+    governs grading.
+    """
+    initial_tables = substrate.initial_state()
+    if not initial_tables:
+        return None
+    try:
+        final_state = substrate.final_state()
+    except SubstrateUnreachableError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — optional context, never fail the grade
+        logger.warning(
+            "Failed to build judge state diff; grading without it "
+            f"(trial_id={trial_id}, error={exc})"
+        )
+        return None
+    primary_keys: dict[str, str | list[str]] = {
+        s.table_name: s.primary_key for s in initial_state_schemas
+    }
+    primary_keys.update(id_fields)
+    return render_state_diff(
+        initial_tables,
+        final_state,
+        primary_keys=primary_keys,
+        unstable_fields=unstable_fields,
+    )
 
 
 def _backstop_seconds(tool: Any, trial_default: float) -> float:
@@ -2111,23 +2172,26 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     ) -> "JudgeResult":
         """Delegate to :func:`composite.grade_llm_judge` over the runner's substrate.
 
-        The composite owns the judge dispatch (rubric, tool gating, state-diff,
-        loop drive); this wrapper collects the trial-context passthroughs
-        (judge ``ModelConfig``, ``search_policy`` connector reuse, id_fields,
-        unstable_fields, schema PKs) and delegates. The ``InProcessGradingSubstrate``
-        built once by :meth:`_build_grading_substrate` at the outer level is
-        shared here — the judge's read-only DB tools go through
+        The composite owns the judge dispatch (rubric plumbing, forwarding to
+        the resolved :class:`RubricEvaluator`); this wrapper collects the
+        trial-context passthroughs (judge ``ModelConfig``, ``search_policy``
+        connector reuse), constructs the ``RubricEvaluator`` from the run-level
+        :attr:`_judge_model_provider` and per-trial customization flags,
+        renders the ``initial → final`` state diff for the evaluator's opening
+        message, and delegates. The ``InProcessGradingSubstrate`` built once
+        by :meth:`_build_grading_substrate` at the outer level is shared
+        here — the judge's read-only DB tools go through
         ``substrate.db_reader()``, the same ``_LoopBridgeDBReader`` closure the
-        state-checks path uses, and the diff-first default reads
-        ``substrate.initial_state()`` / ``substrate.final_state()`` (RAW).
+        state-checks path uses.
 
         Sync-in-async: :func:`composite.grade_llm_judge` is a sync function whose
-        substrate reads (and the judge loop's own DB tool calls) bridge back to
+        substrate reads (and the evaluator's own DB tool calls) bridge back to
         this loop via ``run_coroutine_threadsafe``; driving it on the loop thread
         would deadlock at the first call. ``run_in_executor`` lands the work on
         a worker thread so the bridges resolve.
         """
         from tolokaforge.core.grading.composite import grade_llm_judge
+        from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorContext
 
         # The judge model is a run-level config that rides the TrialSpec. The
         # orchestrator validates up front that it is present whenever any selected
@@ -2152,21 +2216,46 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # runner-side; the composite receives the resolved list.
         extra_read_tools = self._build_judge_search_policy_tools(trial_context)
 
-        return await self._loop.run_in_executor(
-            None,
-            lambda: grade_llm_judge(
+        customization = llm_judge_config.customization
+        disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
+        custom_system_prompt = customization.system_prompt if customization else None
+        include_agent_system_prompt = (
+            customization.include_agent_system_prompt
+            if customization and customization.include_agent_system_prompt is not None
+            else True
+        )
+        rubric_evaluator = load_rubric_evaluator("llm_judge")(
+            RubricEvaluatorContext(
+                judge_model_provider=self._judge_model_provider,
+                logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
+                disable_knowledge_search=disable_knowledge_search,
+                custom_system_prompt=custom_system_prompt,
+                include_agent_system_prompt=include_agent_system_prompt,
+            )
+        )
+
+        def _run() -> "JudgeResult":
+            state_diff_text = _build_judge_state_diff(
+                trial_id=trial_id,
+                substrate=substrate,
+                initial_state_schemas=list(initial_state.schemas),
+                id_fields=id_fields,
+                unstable_fields=unstable_fields,
+                logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
+            )
+            return grade_llm_judge(
                 trial_id=trial_id,
                 config=llm_judge_config,
                 substrate=substrate,
+                rubric_evaluator=rubric_evaluator,
                 llm_messages=llm_messages,
                 judge_model_config=judge_model_config,
                 extra_read_tools=extra_read_tools,
-                id_fields=id_fields,
-                unstable_fields=unstable_fields,
-                initial_state_schemas=initial_state.schemas,
+                state_diff=state_diff_text,
                 logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
-            ),
-        )
+            )
+
+        return await self._loop.run_in_executor(None, _run)
 
     async def _grade_custom_checks(
         self,

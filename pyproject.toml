@@ -224,6 +224,14 @@ in_memory = "tolokaforge.core.grading.check_runner:_in_memory_check_executor_fac
 [project.entry-points."tolokaforge.judge_model_providers"]
 litellm = "tolokaforge.core.grading.default_judge_model_provider:_litellm_judge_model_provider_factory"
 
+# Rubric evaluator Protocol
+# (``tolokaforge/core/grading/rubric_evaluator.py``). ``llm_judge`` is the
+# reference impl wrapping :class:`LLMJudge`; a downstream package registers
+# an alternative evaluator (e.g. a deterministic ruleset over the transcript)
+# alongside without a framework PR.
+[project.entry-points."tolokaforge.rubric_evaluators"]
+llm_judge = "tolokaforge.core.grading.default_rubric_evaluator:_llm_judge_rubric_evaluator_factory"
+
 [tool.hatch.build]
 exclude = [
     "tasks/**",

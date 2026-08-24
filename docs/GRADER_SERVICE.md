@@ -281,6 +281,7 @@ pins for every seam in the engine.
 | --- | --- | --- | --- |
 | Custom check executor | `tolokaforge.custom_check_executors` | `check_runner` (production), `in_memory` (test fixture) | [`CheckExecutor`](../tolokaforge/core/grading/check_runner.py) — runs the pack's `checks.py` against the trial's evidence and returns a `CheckResultSet`. |
 | Judge model provider | `tolokaforge.judge_model_providers` | `litellm` (fronts [`LLMClient`](../tolokaforge/core/llm/client.py)) | [`JudgeModelProvider`](../tolokaforge/core/grading/judge_model_provider.py) — builds a `JudgeModel` (the `.generate` + `.classify_loop_error` surface `LLMJudge` drives) from a `ModelConfig`. |
+| Rubric evaluator | `tolokaforge.rubric_evaluators` | `llm_judge` (wraps [`LLMJudge`](../tolokaforge/core/grading/judge.py)) | [`RubricEvaluator`](../tolokaforge/core/grading/rubric_evaluator.py) — grades one trial's rubric evidence into a `JudgeResult`. Constructed from a `RubricEvaluatorContext` carrying the resolved `JudgeModelProvider` + customization flags; receives the per-trial evidence at `.evaluate()`. |
 
 Register a downstream impl the same way as a `TrialGrader`:
 
@@ -288,17 +289,22 @@ Register a downstream impl the same way as a `TrialGrader`:
 # downstream package pyproject.toml
 [project.entry-points."tolokaforge.judge_model_providers"]
 openai_direct = "acme_judge:_openai_direct_provider_factory"
+
+[project.entry-points."tolokaforge.rubric_evaluators"]
+deterministic_rules = "acme_grader:_rules_evaluator_factory"
 ```
 
-The runner resolves both defaults at startup via
+The runner resolves the shipping defaults at startup via
 `load_custom_check_executor("check_runner")` and
 `load_judge_model_provider("litellm")` and caches the resulting instances
 on `RunnerServiceImpl`. The check executor is threaded through the
-composite `grade_custom_checks` dispatch (the seam the executor Protocol
-was written for); the judge model provider is available for rubric-side
-consumers. A downstream `pip install` of a package that registers under
-either group is picked up on the runner's next start with no framework
-change.
+composite `grade_custom_checks` dispatch. The judge model provider is
+threaded into the `RubricEvaluatorContext` that the runner constructs at
+grade time — `load_rubric_evaluator("llm_judge")(ctx)` — and the composite
+`grade_llm_judge` receives the resolved evaluator; no LLM transport ever
+appears in composite. A downstream `pip install` of a package that
+registers under any of these groups is picked up on the runner's next
+start with no framework change.
 
 ## See also
 

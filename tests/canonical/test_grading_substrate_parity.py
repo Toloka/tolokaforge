@@ -151,7 +151,7 @@ from tolokaforge.core.grading.combine_weights import MissingComponentWeight
 from tolokaforge.core.grading.composite import _build_runner_check_transcript
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord, resolve_initial_state
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
-from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
+from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
     Enforcement,
@@ -3543,10 +3543,13 @@ _PROBE_ROWS = [{"reason_code": "CAPA-01", "status": "open"}]
 
 
 class _StubJudge:
-    """Stands in for the model provider at the seam ``service.LLMJudge`` names.
+    """Stands in for the LLM call the reference :class:`LLMJudge` would make.
 
-    What it replaces is an external LLM call, not a recording site, an evaluator's
-    decision, the audit or the combine — all of those stay real on this path.
+    :class:`LLMJudgeRubricEvaluator` constructs one of these per
+    ``.evaluate()`` and drives its ``.run(...)``. Replacing the ``LLMJudge``
+    class in :mod:`default_rubric_evaluator` swaps out the external LLM
+    call, leaving the recording site, the evaluator's decision, the audit
+    and the combine real on this path.
     """
 
     def __init__(self, model_config: Any, **_kwargs: Any) -> None:
@@ -3657,9 +3660,9 @@ def _drive_llm_judge(
     before it ever constructs the judge without one, so the row would otherwise
     red on claim 2 for a reason with nothing to do with the recording site.
     """
-    from tolokaforge.core.grading import composite
+    from tolokaforge.core.grading import default_rubric_evaluator
 
-    monkeypatch.setattr(composite, "LLMJudge", _StubJudge)
+    monkeypatch.setattr(default_rubric_evaluator, "LLMJudge", _StubJudge)
     task_description = runner_models.TaskDescription.model_validate(_JUDGE_DRIVER_TASK)
     _register_pack(
         servicer,

@@ -7,12 +7,14 @@ External code discovers and loads alternative implementations of the
 :class:`~tolokaforge.core.service_readiness.ServiceReadinessProbe`,
 :class:`~tolokaforge.core.actors.turn_policy.TurnPolicy`,
 :class:`~tolokaforge.core.grading.substrate.GradingSubstrate`,
-:class:`~tolokaforge.core.grading.check_runner.CheckExecutor`, and
-:class:`~tolokaforge.core.grading.judge_model_provider.JudgeModelProvider`
+:class:`~tolokaforge.core.grading.check_runner.CheckExecutor`,
+:class:`~tolokaforge.core.grading.judge_model_provider.JudgeModelProvider`,
+and
+:class:`~tolokaforge.core.grading.rubric_evaluator.RubricEvaluator`
 Protocols through ``importlib.metadata`` entry-point groups — no in-tree
 edit, no monkey-patch. Each entry point resolves to a *factory callable*,
 mirroring the existing :data:`~tolokaforge.core.conductor.ConductorFactory`
-idiom. Four of the seams adapt divergent impl constructors to a per-group
+idiom. Five of the seams adapt divergent impl constructors to a per-group
 frozen-dataclass context (``Callable[[<Context>], <Impl>]``); the readiness
 probes, custom-check executors, and judge model providers need no build
 dependencies, so their factories are arg-less (``Callable[[], <Impl>]``).
@@ -31,6 +33,7 @@ The groups:
 * ``tolokaforge.grading_substrates`` → ``type[GradingSubstrate]``
 * ``tolokaforge.custom_check_executors`` → :data:`CustomCheckExecutorFactory`
 * ``tolokaforge.judge_model_providers`` → :data:`JudgeModelProviderFactory`
+* ``tolokaforge.rubric_evaluators`` → :data:`RubricEvaluatorFactory`
 
 Discovery is lazy and cached per group; it enumerates ``ep.name`` /
 ``ep.dist`` **without** calling ``ep.load()``. This splits the fail-loud
@@ -58,6 +61,7 @@ from tolokaforge.core.actors.turn_policy import TurnPolicy
 from tolokaforge.core.conductor import ConductorFactory
 from tolokaforge.core.grading.check_runner import CheckExecutor
 from tolokaforge.core.grading.judge_model_provider import JudgeModelProviderFactory
+from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorFactory
 from tolokaforge.core.grading.substrate import GradingSubstrate
 from tolokaforge.core.models.run_config import GraderConfig
 from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
@@ -81,6 +85,7 @@ __all__ = [
     "JudgeModelProviderFactory",
     "ReadinessProbeFactory",
     "RegistryError",
+    "RubricEvaluatorFactory",
     "RuntimeBackendBuildContext",
     "RuntimeBackendFactory",
     "TrialGraderContext",
@@ -93,6 +98,7 @@ __all__ = [
     "available_grading_substrates",
     "available_judge_model_providers",
     "available_readiness_probes",
+    "available_rubric_evaluators",
     "available_runtime_backends",
     "available_trial_graders",
     "available_turn_policies",
@@ -102,6 +108,7 @@ __all__ = [
     "load_grading_substrate",
     "load_judge_model_provider",
     "load_readiness_probe",
+    "load_rubric_evaluator",
     "load_runtime_backend",
     "load_trial_grader",
     "load_turn_policy",
@@ -115,6 +122,7 @@ TURN_POLICIES_GROUP = "tolokaforge.turn_policies"
 GRADING_SUBSTRATES_GROUP = "tolokaforge.grading_substrates"
 CUSTOM_CHECK_EXECUTORS_GROUP = "tolokaforge.custom_check_executors"
 JUDGE_MODEL_PROVIDERS_GROUP = "tolokaforge.judge_model_providers"
+RUBRIC_EVALUATORS_GROUP = "tolokaforge.rubric_evaluators"
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +359,16 @@ def load_judge_model_provider(name: str) -> JudgeModelProviderFactory:
     return cast(JudgeModelProviderFactory, _load(JUDGE_MODEL_PROVIDERS_GROUP, name))
 
 
+def load_rubric_evaluator(name: str) -> RubricEvaluatorFactory:
+    """Resolve a registered rubric-evaluator name to its factory callable.
+
+    The factory adapts a :class:`RubricEvaluatorContext` to a
+    :class:`RubricEvaluator`; the runner constructs the context (judge model
+    provider + policy flags) per trial.
+    """
+    return cast(RubricEvaluatorFactory, _load(RUBRIC_EVALUATORS_GROUP, name))
+
+
 def load_grading_substrate(name: str) -> type[GradingSubstrate]:
     """Resolve a registered grading-substrate name to its implementation class.
 
@@ -406,3 +424,8 @@ def available_custom_check_executors() -> list[str]:
 def available_judge_model_providers() -> list[str]:
     """Sorted names registered in the ``tolokaforge.judge_model_providers`` group."""
     return sorted(discover_entry_points(JUDGE_MODEL_PROVIDERS_GROUP))
+
+
+def available_rubric_evaluators() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.rubric_evaluators`` group."""
+    return sorted(discover_entry_points(RUBRIC_EVALUATORS_GROUP))
