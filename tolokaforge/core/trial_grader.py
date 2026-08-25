@@ -66,6 +66,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.trial import TrialSpec
+from tolokaforge.grader.wire_snapshot import build_grade_request_fields
 
 if TYPE_CHECKING:
     from tolokaforge.core.llm.client import LLMClient
@@ -291,6 +292,26 @@ def _split_trial_id(trial_id: str) -> tuple[str, int]:
     """Return ``(task_id, trial_index)`` from a canonical ``"{task_id}:{idx}"`` id."""
     task_id, idx_s = trial_id.rsplit(":", 1)
     return task_id, int(idx_s)
+
+
+def _refuse_hash_grading_on_grader_rpc(spec: TrialSpec) -> None:
+    """Fail loud when a hash-enabled task is dispatched over ``grader_rpc``.
+
+    The grader-side substrate (:class:`LiveRunnerCallbackGradingSubstrate`) is
+    read-only: it dials the runner's ``SubstrateService`` for state reads and
+    exposes no snapshot / reset / replay path. Hash grading depends on
+    replaying ``golden_actions`` against a reset initial state — the substrate
+    surface required to do that ships only inside the runner. Refuse at the
+    client so the misconfiguration surfaces without a gRPC round-trip and the
+    error names the actionable branch the operator has.
+    """
+    state_checks = spec.task.grading.state_checks
+    if state_checks is not None and state_checks.hash_enabled:
+        raise GradingFailedError(
+            "grader_rpc cannot execute hash-based grading — the substrate is "
+            "read-only. Configure grader: runner_rpc for this task, or "
+            "disable hash_enabled."
+        )
 
 
 def _parse_trace_check_results(payload: list[dict[str, Any]]) -> list[TraceConstraintResult]:
@@ -600,10 +621,12 @@ class GraderRPCTrialGrader:
         grader_address: str,
         logger: StructuredLogger,
         *,
+        runner_substrate_address: str | None = None,
         grader_client: GrpcGraderClient | None = None,
     ) -> None:
         self.grader_address = grader_address
         self.logger = logger
+        self.runner_substrate_address = runner_substrate_address or ""
         if grader_client is None:
             from tolokaforge.grader.client import GrpcGraderClient as _Client
 
@@ -672,13 +695,31 @@ class GraderRPCTrialGrader:
                 reasons="Agent got stuck (repeated actions without progress)",
             )
 
+        _refuse_hash_grading_on_grader_rpc(spec)
+        if not self.runner_substrate_address:
+            raise GradingFailedError(
+                "grader_rpc requires runner_substrate_address on the grader context — "
+                "see RunConfig.grader. The composite dispatcher dials the runner's "
+                "SubstrateService per trial and needs a reachable address."
+            )
+
         llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
+        wire = build_grade_request_fields(
+            spec=spec,
+            agent_system_prompt=agent_system_prompt,
+            runner_substrate_address=self.runner_substrate_address,
+        )
         grade_result = self.grader_client.grade(
             trial_id=spec.trial_id,
             llm_messages_json=llm_messages_json,
             termination_reason=(
                 trajectory.termination_reason.value if trajectory.termination_reason else None
             ),
+            task_config_json=wire.task_config_json,
+            judge_model_config_json=wire.judge_model_config_json,
+            task_description_json=wire.task_description_json,
+            runner_substrate_address=wire.runner_substrate_address,
+            agent_system_prompt=wire.agent_system_prompt,
         )
 
         if not grade_result["success"]:
@@ -743,7 +784,15 @@ def grader_rpc_trial_grader_factory(ctx: TrialGraderContext) -> GraderRPCTrialGr
             "either). Pair a network-reachable backend with the grader_rpc "
             "grader, or select a grader that does not need an address."
         )
-    return GraderRPCTrialGrader(grader_address=address, logger=ctx.logger)
+    # ``SubstrateService`` shares the runner's listen port —
+    # ``runner_substrate_address`` is the same value ``runner_rpc`` uses to
+    # dial the runner's ``GradeTrial`` today. The grader-side dispatcher
+    # opens a substrate channel to this address per trial.
+    return GraderRPCTrialGrader(
+        grader_address=address,
+        logger=ctx.logger,
+        runner_substrate_address=ctx.runner_address or "",
+    )
 
 
 class QueueTrialGrader:
@@ -774,12 +823,14 @@ class QueueTrialGrader:
         broker: GradeBroker,
         logger: StructuredLogger,
         *,
+        runner_substrate_address: str | None = None,
         timeout_s: float | None = None,
         workers: list[threading.Thread] | None = None,
         owns_broker: bool = False,
     ) -> None:
         self.broker = broker
         self.logger = logger
+        self.runner_substrate_address = runner_substrate_address or ""
         self.timeout_s = timeout_s if timeout_s is not None else self.DEFAULT_TIMEOUT_S
         # ``workers`` and ``owns_broker`` name the two lifecycle handles
         # :meth:`close` releases. The factory (``queue_trial_grader_factory``)
@@ -836,7 +887,21 @@ class QueueTrialGrader:
                 reasons="Agent got stuck (repeated actions without progress)",
             )
 
+        _refuse_hash_grading_on_grader_rpc(spec)
+        if not self.runner_substrate_address:
+            raise GradingFailedError(
+                "queue-backed grader requires runner_substrate_address on the "
+                "grader context — see RunConfig.grader. Each grade job carries "
+                "the address so the worker's composite dispatch can dial the "
+                "runner's SubstrateService."
+            )
+
         llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
+        wire = build_grade_request_fields(
+            spec=spec,
+            agent_system_prompt=agent_system_prompt,
+            runner_substrate_address=self.runner_substrate_address,
+        )
         job = GradeJob(
             job_id=new_job_id(),
             trial_id=spec.trial_id,
@@ -844,8 +909,11 @@ class QueueTrialGrader:
             termination_reason=(
                 trajectory.termination_reason.value if trajectory.termination_reason else ""
             ),
-            task_config_json="",
-            agent_system_prompt=agent_system_prompt,
+            task_config_json=wire.task_config_json,
+            judge_model_config_json=wire.judge_model_config_json,
+            task_description_json=wire.task_description_json,
+            runner_substrate_address=wire.runner_substrate_address,
+            agent_system_prompt=wire.agent_system_prompt,
         )
         future = self.broker.publish_job(job)
         try:
@@ -976,6 +1044,7 @@ def queue_trial_grader_factory(ctx: TrialGraderContext) -> QueueTrialGrader:
     return QueueTrialGrader(
         broker=broker,
         logger=ctx.logger,
+        runner_substrate_address=ctx.runner_address or "",
         workers=workers,
         owns_broker=True,
     )
@@ -1036,6 +1105,10 @@ def _queue_worker_loop(
                 llm_messages_json=job.llm_messages_json,
                 termination_reason=job.termination_reason,
                 task_config_json=job.task_config_json,
+                judge_model_config_json=job.judge_model_config_json,
+                task_description_json=job.task_description_json,
+                runner_substrate_address=job.runner_substrate_address,
+                agent_system_prompt=job.agent_system_prompt,
             )
             if not response["success"]:
                 error = response.get("error") or "Unknown grading error"

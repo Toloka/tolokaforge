@@ -149,7 +149,7 @@ def test_judge_model_rides_on_trial_spec():
 
 
 # ---------------------------------------------------------------------------
-# runner.service._build_judge_state_diff — the diff-first default over the substrate
+# composite.build_judge_state_diff — the diff-first default over the substrate
 # ---------------------------------------------------------------------------
 
 
@@ -180,9 +180,9 @@ def _logger():
 def test_build_judge_state_diff_none_when_no_initial_tables():
     """An empty ``initial_state`` has no baseline to diff against — the judge
     falls back to its read-only tools and no diff is injected."""
-    from tolokaforge.runner.service import _build_judge_state_diff
+    from tolokaforge.core.grading.composite import build_judge_state_diff
 
-    out = _build_judge_state_diff(
+    out = build_judge_state_diff(
         trial_id="trial",
         substrate=_substrate_for_diff({}, {"orders": []}),
         initial_state_schemas=[],
@@ -194,10 +194,10 @@ def test_build_judge_state_diff_none_when_no_initial_tables():
 
 
 def test_build_judge_state_diff_renders_modified_row():
+    from tolokaforge.core.grading.composite import build_judge_state_diff
     from tolokaforge.runner.models import TableSchema
-    from tolokaforge.runner.service import _build_judge_state_diff
 
-    out = _build_judge_state_diff(
+    out = build_judge_state_diff(
         trial_id="trial",
         substrate=_substrate_for_diff(
             {"orders": [{"id": 1, "status": "open"}]},
@@ -226,8 +226,8 @@ def test_build_judge_state_diff_layers_declared_id_fields_over_schema_pk():
     composite key — layered over the schema entry — can match the edit as a
     modification; dropping the layer (or reversing it) degrades to add/remove.
     """
+    from tolokaforge.core.grading.composite import build_judge_state_diff
     from tolokaforge.runner.models import TableSchema
-    from tolokaforge.runner.service import _build_judge_state_diff
 
     initial = {
         "positions": [
@@ -241,7 +241,7 @@ def test_build_judge_state_diff_layers_declared_id_fields_over_schema_pk():
             {"account_id": "A1", "symbol": "AAPL", "qty": 2},
         ]
     }
-    out = _build_judge_state_diff(
+    out = build_judge_state_diff(
         trial_id="trial",
         substrate=_substrate_for_diff(initial, final),
         initial_state_schemas=[
@@ -269,11 +269,11 @@ def test_build_judge_state_diff_substrate_unreachable_propagates():
 
     import pytest
 
+    from tolokaforge.core.grading.composite import build_judge_state_diff
     from tolokaforge.core.grading.substrate import (
         InProcessGradingSubstrate,
         SubstrateUnreachableError,
     )
-    from tolokaforge.runner.service import _build_judge_state_diff
 
     def _explode():
         raise SubstrateUnreachableError("the runner went away")
@@ -286,7 +286,7 @@ def test_build_judge_state_diff_substrate_unreachable_propagates():
         final_state_factory=_explode,
     )
     with pytest.raises(SubstrateUnreachableError):
-        _build_judge_state_diff(
+        build_judge_state_diff(
             trial_id="trial",
             substrate=substrate,
             initial_state_schemas=[],
@@ -303,8 +303,8 @@ def test_build_judge_state_diff_generic_final_state_failure_degrades_to_none():
     """
     from unittest.mock import MagicMock
 
+    from tolokaforge.core.grading.composite import build_judge_state_diff
     from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
-    from tolokaforge.runner.service import _build_judge_state_diff
 
     def _explode():
         raise RuntimeError("db hiccup")
@@ -316,7 +316,7 @@ def test_build_judge_state_diff_generic_final_state_failure_degrades_to_none():
         initial_state={"orders": [{"id": 1}]},
         final_state_factory=_explode,
     )
-    out = _build_judge_state_diff(
+    out = build_judge_state_diff(
         trial_id="trial",
         substrate=substrate,
         initial_state_schemas=[],

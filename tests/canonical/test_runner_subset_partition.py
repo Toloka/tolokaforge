@@ -107,6 +107,13 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         "tolokaforge/core/grading/default_transcript_rule_matcher.py",
         "tolokaforge/core/grading/judge.py",
         "tolokaforge/core/grading/rubric.py",
+        # Shared tool-artifact extraction helper. ``RunnerServiceImpl``
+        # reaches it via a function-local import at ``RegisterTrial`` time
+        # (``runner/service.py::_extract_tool_artifacts``) so a task packing
+        # ``tool_artifacts`` can decode ``checks.py`` + siblings before the
+        # trial starts — never at ``python -m tolokaforge.runner`` boot,
+        # which is why the boot-time closure walk does not observe it.
+        "tolokaforge/core/grading/tool_artifacts.py",
     }
 )
 

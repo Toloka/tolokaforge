@@ -326,7 +326,7 @@ message JudgeReport {
   // Empty when nothing was gated (flag off, or agent had no KB). Audit detail.
   repeated string kb_tools_withheld = 11;
   // The initial -> final DB state-delta string the judge was handed as its
-  // primary outcome view (the agent's own edits; see _build_judge_state_diff).
+  // primary outcome view (the agent's own edits; see composite.build_judge_state_diff).
   // Empty string when no diff was built (non-DB task, or a DB read hiccup
   // degraded to no diff). Offline replay rebuilds the judge's opening message
   // from this exact string.

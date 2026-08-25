@@ -1,10 +1,16 @@
 """``tolokaforge grader-service`` CLI entry — launches the standalone service.
 
 Runs the gRPC server on the configured port with the ``GraderServiceImpl``
-mounted. Production wiring (constructing a real ``LLMJudge``-backed dispatch
-from per-task rubric config) is deferred; today the CLI mounts an unwired
-dispatch that surfaces ``NotImplementedError`` to the caller, matching the
-``judge_only`` in-process grader's shape.
+mounted, wired to a :class:`GraderCompositeDispatch` — the dispatcher that
+turns each :class:`GradeDispatch` payload into a real :class:`Grade` by
+running the composite grading pipeline over a
+:class:`LiveRunnerCallbackGradingSubstrate` dialled at the trial's
+``runner_substrate_address``.
+
+The dispatch is stateless per call: every field the composite needs to
+grade the trial travels on the wire (see ``grader.proto`` schema v2 and
+``docs/GRADER_SERVICE.md``). The service can be pointed at from any
+orchestrator without a prior registration handshake.
 """
 
 from __future__ import annotations
@@ -18,18 +24,9 @@ from concurrent import futures
 import grpc
 
 from tolokaforge.core.logging import StructuredLogger
-from tolokaforge.core.models import Grade
 from tolokaforge.grader import grader_pb2_grpc
-from tolokaforge.grader.service import GradeDispatch, GraderServiceImpl
-
-
-def _unwired_judge_fn(dispatch: GradeDispatch) -> Grade | None:  # noqa: ARG001
-    raise NotImplementedError(
-        "grader-service is running with the unwired default judge dispatch. "
-        "Production wiring (LLMJudge from per-task rubric config, offline "
-        "rejudge integration) is deferred — see ADR-0038 and the "
-        "grader-detachment umbrella."
-    )
+from tolokaforge.grader.composite_dispatch import GraderCompositeDispatch
+from tolokaforge.grader.service import GraderServiceImpl
 
 
 def _resolve_port(cli_port: int | None) -> int:
@@ -47,7 +44,7 @@ def _resolve_port(cli_port: int | None) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="tolokaforge grader-service",
-        description="Standalone tolokaforge grader service (ADR-0038).",
+        description="Standalone tolokaforge grader service (ADR-0038, ADR-0039).",
     )
     parser.add_argument(
         "--port",
@@ -66,9 +63,10 @@ def main(argv: list[str] | None = None) -> int:
     port = _resolve_port(args.port)
     logger = StructuredLogger("grader-service")
 
+    dispatch = GraderCompositeDispatch(logger)
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=args.max_workers))
     grader_pb2_grpc.add_GraderServiceServicer_to_server(
-        GraderServiceImpl(judge_fn=_unwired_judge_fn, logger=logger),
+        GraderServiceImpl(judge_fn=dispatch.grade, logger=logger),
         server,
     )
     listen_addr = f"[::]:{port}"

@@ -100,6 +100,18 @@ deploy. The grader service ships as `tolokasoft1/tolokaforge-grader`
 alongside the runner / db-service / rag-service / mock-web images and
 runs `python -m tolokaforge.grader` on port 50052 by default.
 
+The standalone service mounts
+`tolokaforge.grader.composite_dispatch.GraderCompositeDispatch` as its
+`judge_fn`. Each `Grade` RPC deserialises the wire's
+`task_config_json` / `task_description_json` / `judge_model_config_json`,
+builds a fresh
+`tolokaforge.core.grading.substrate_live.LiveRunnerCallbackGradingSubstrate`
+against `runner_substrate_address`, and runs the composite grading
+functions (state checks / transcript rules / trace checks / llm judge /
+custom checks) mirroring the runner's `_grade_trial_async`. Hash grading
+is refused server-side too — the substrate is read-only. See
+[`docs/adr/0039-standalone-grader.md`](adr/0039-standalone-grader.md).
+
 The factory reads `ctx.grader_address` when the operator has split the
 runner and grader onto distinct hosts, and falls back to
 `ctx.runner_address` for single-address deployments.
@@ -133,22 +145,115 @@ queue = "tolokaforge.core.trial_grader:queue_trial_grader_factory"
 ## Deploying the standalone grader service
 
 The `tolokaforge-grader` image ships alongside the other four first-party
-images and is wired into `deploy/standalone/docker-compose.yaml`:
+images. `deploy/standalone/docker-compose.yaml` brings the five-service
+stack — db-service, rag-service, mock-web, runner, grader — up together
+with the wiring the grader-side composite dispatch needs:
 
 ```yaml
+runner:
+  environment:
+    RUNNER_EXPOSE_SUBSTRATE: "true"
 grader:
-  image: tolokasoft1/tolokaforge-grader:${TOLOKAFORGE_IMAGE_TAG:-latest}
   ports:
     - "50052:50052"
+  depends_on:
+    runner:
+      condition: service_healthy
 ```
 
-`docker compose up` from `deploy/standalone/` brings up the runner and
-the grader side by side; the runner reaches the grader by service-name
-DNS (`grader:50052` on the compose network) or the grader from the host
-(`localhost:50052`).
+`RUNNER_EXPOSE_SUBSTRATE=true` registers the read-only `SubstrateService`
+on the runner's existing gRPC listen port (`50051`); the grader dials it
+per trial for every substrate read (initial / final state,
+agent-visible filesystem, per-trial KB). `grader.depends_on:
+{runner: service_healthy}` orders startup so the grader accepts
+requests only after the runner's channel-ready HEALTHCHECK passes and
+the substrate is answering.
 
-The runtime command is fixed: `python -m tolokaforge.grader`. Reads
-`--port` (or `$GRADER_SERVICE_PORT`, default `50052`).
+`docker compose up --wait` from `deploy/standalone/` blocks on every
+service's HEALTHCHECK, including the grader's channel-ready probe. Once
+it returns, the runner reaches the grader by service-name DNS
+(`grader:50052`) and the host reaches either service at
+`localhost:5005{1,2}`.
+
+The grader-container runtime command is fixed: `python -m
+tolokaforge.grader`. Reads `--port` (or `$GRADER_SERVICE_PORT`, default
+`50052`). Provider credentials come off the compose file's env —
+`OPENROUTER_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` /
+`GEMINI_API_KEY` / `TOLOKAFORGE_SECRETS_JSON` — populated from
+`deploy/standalone/.env`. The grader requires a provider key only when
+the task exercises `llm_judge`; the other four grading components run
+against the keyless stack.
+
+`deploy/standalone/examples/grader_rpc/` documents the run-config shape
+that routes grading through the standalone service
+(`grader.name: grader_rpc`, `grader.expose_substrate: false`) and the
+`GrpcGraderClient` snippet that verifies the composite dispatcher
+produces a `Grade` end-to-end against a running stack.
+
+## The `Grade` wire
+
+`GraderService.Grade` is stateless per call: every field the grader-side
+composite dispatcher needs to grade the trial rides on the request. The
+wire carries eight named fields — the caller populates whichever ones
+its dispatch consumes and leaves the rest empty.
+
+| Field                         | # | Purpose                                                                                   |
+| ----------------------------- | - | ----------------------------------------------------------------------------------------- |
+| `trial_id`                    | 1 | Canonical `"{task_id}:{trial_index}"` identifier — the join key for logs and future stores. |
+| `llm_messages_json`           | 2 | Transcript as an LLM-messages JSON string; the timeline builder decodes it.               |
+| `termination_reason`          | 3 | `TerminationReason` value name; empty when the caller reports none.                       |
+| `task_config_json`            | 4 | `RunnerGradingConfig` JSON — the whole `grading:` block the composite dispatcher reads.   |
+| `judge_model_config_json`     | 5 | Optional `ModelConfig` JSON for the judge; empty when the task declares no `llm_judge`.   |
+| `task_description_json`       | 6 | `TaskDescription` JSON — carries `initial_state`, `state_checks.id_fields`, `unstable_fields`, and `tool_artifacts` (checks.py plus every sibling artefact module the pack imports). |
+| `runner_substrate_address`    | 7 | gRPC address of the runner's `SubstrateService`; the grader builds a `LiveRunnerCallbackGradingSubstrate` against it per trial. |
+| `agent_system_prompt`         | 8 | Post-policy system prompt — authoritative. The grader uses this directly rather than re-splitting the leading system message off `llm_messages_json`. |
+
+Field numbers are stable and additive: a future field lands on number 9
+so an existing client's payload never lands in a new slot. Provider +
+model-name evidence rides on field 5 so the grader constructs its
+`LLMClient` via the [`judge_model_providers` seam](#sub-component-plug-in-seams)
+without inferring provider from a model name (AGENTS.md Core Rule 10).
+
+### Client-side snapshot
+
+`GraderRPCTrialGrader` and `QueueTrialGrader` both call
+`tolokaforge.grader.wire_snapshot.build_grade_request_fields` to project
+a completed trial's `TrialSpec` into the wire fields the grader consumes
+above the trajectory-shaped trio. The builder returns a frozen
+`GradeRequestFields` dataclass; the caller unpacks each field into
+`GrpcGraderClient.grade` (`grader_rpc` transport) or into `GradeJob`
+(`queue` transport). Field derivation:
+
+| Wire field                | Source                                          |
+| ------------------------- | ----------------------------------------------- |
+| `task_config_json`        | `spec.task.grading.model_dump_json()`           |
+| `judge_model_config_json` | `spec.judge_model_config.model_dump_json()`, empty when `spec.judge_model_config is None` |
+| `task_description_json`   | `spec.task.model_dump_json()` — one field carries `initial_state`, `state_checks.id_fields`, `initial_state.unstable_fields`, and `tool_artifacts` |
+| `runner_substrate_address`| Passthrough from the grader's stored context (`ctx.runner_address`) |
+| `agent_system_prompt`     | Passthrough from the `TrialGrader.grade` caller |
+
+The builder is a pure projection: it reads only in-memory Pydantic
+models, opens no gRPC channel, and never touches the filesystem. Both
+graders take `runner_substrate_address` on `__init__` (threaded by
+`grader_rpc_trial_grader_factory` and `queue_trial_grader_factory` from
+`ctx.runner_address`, since `SubstrateService` shares the runner's listen
+port). Empty here fails loud at first `.grade()` with a
+`GradingFailedError` naming `runner_substrate_address` — a silent empty
+string would land at the grader as a 30 s gRPC connect hang.
+
+### Hash grading refuses on `grader_rpc`
+
+Hash grading depends on the runner's substrate reset / replay path; the
+grader-side `LiveRunnerCallbackGradingSubstrate` is read-only and cannot
+back it. Both grader-side transports refuse a task whose
+`grading.state_checks.hash_enabled` is true with a `GradingFailedError`
+naming the operator's actionable branch:
+
+> `grader_rpc cannot execute hash-based grading — the substrate is read-only. Configure grader: runner_rpc for this task, or disable hash_enabled.`
+
+The refusal is client-side (fires before any gRPC round-trip) so the
+misconfiguration surfaces without a network hop, and the trial books as
+ungradeable rather than as an agent failure.
 
 ## Registering a downstream grader
 

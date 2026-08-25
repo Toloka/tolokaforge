@@ -31,20 +31,20 @@ pytestmark = pytest.mark.canonical
 
 
 class _StubGraderClient:
-    """Grader-client stand-in whose ``grade`` returns a fixed dict."""
+    """Grader-client stand-in whose ``grade`` returns a fixed dict.
+
+    Records every kwargs dict its :meth:`grade` was called with so tests can
+    assert field-by-field on the wire payload the grader packed. The dict
+    shape matches :meth:`GrpcGraderClient.grade` and the wire the composite
+    dispatcher reads on the other end.
+    """
 
     def __init__(self, result: dict) -> None:
         self.result = result
-        self.calls: list[tuple[str, str, str | None]] = []
+        self.calls: list[dict[str, object]] = []
 
-    def grade(
-        self,
-        trial_id: str,
-        llm_messages_json: str,
-        termination_reason: str | None = None,
-        task_config_json: str = "",  # noqa: ARG002
-    ) -> dict:
-        self.calls.append((trial_id, llm_messages_json, termination_reason))
+    def grade(self, **kwargs: object) -> dict:
+        self.calls.append(kwargs)
         return self.result
 
 
@@ -60,11 +60,16 @@ def _success_result() -> dict:
     }
 
 
-def _make_grader(result: dict | None = None) -> tuple[GraderRPCTrialGrader, _StubGraderClient]:
+def _make_grader(
+    result: dict | None = None,
+    *,
+    runner_substrate_address: str = "runner:50051",
+) -> tuple[GraderRPCTrialGrader, _StubGraderClient]:
     stub = _StubGraderClient(result or _success_result())
     grader = GraderRPCTrialGrader(
         grader_address="stub:0",
         logger=MagicMock(),
+        runner_substrate_address=runner_substrate_address,
         grader_client=stub,
     )
     return grader, stub
@@ -93,7 +98,40 @@ class TestSuccessPath:
             status=TrialStatus.COMPLETED, termination_reason=TerminationReason.MAX_TURNS
         )
         grader.grade(make_trial_spec(), traj, "sys")
-        assert stub.calls[0][2] == TerminationReason.MAX_TURNS.value
+        assert stub.calls[0]["termination_reason"] == TerminationReason.MAX_TURNS.value
+
+
+class TestWirePayload:
+    """The grader packs every v2 wire field from the ``TrialSpec`` before it
+    dials the client. A drift here would silently under-populate the request
+    the composite dispatcher reads."""
+
+    def test_grade_packs_every_v2_wire_field_from_spec(self) -> None:
+        grader, stub = _make_grader()
+        spec = make_trial_spec()
+        grader.grade(
+            spec,
+            make_trajectory(status=TrialStatus.COMPLETED),
+            "You are the agent.",
+        )
+        assert len(stub.calls) == 1
+        call = stub.calls[0]
+        assert call["trial_id"] == spec.trial_id
+        # llm_messages_json is trajectory-derived — the client-side
+        # ``encode_transcript_wire`` produces a JSON payload with the
+        # policy leading system message; assert its shape is populated
+        # rather than pin its exact bytes (encoder shape is locked
+        # elsewhere).
+        assert isinstance(call["llm_messages_json"], str)
+        assert call["llm_messages_json"].startswith("[")
+        assert call["task_config_json"] == spec.task.grading.model_dump_json()
+        # No judge model configured on the default spec — the empty
+        # judge_model_config_json is the fail-loud signal to the composite
+        # dispatcher that this task has no ``llm_judge`` component.
+        assert call["judge_model_config_json"] == ""
+        assert call["task_description_json"] == spec.task.model_dump_json()
+        assert call["runner_substrate_address"] == "runner:50051"
+        assert call["agent_system_prompt"] == "You are the agent."
 
 
 class TestAutoFailBranches:
@@ -127,6 +165,18 @@ class TestFactoryAndRegistration:
         ctx = TrialGraderContext(runner_address="stub:0", logger=MagicMock())
         grader = grader_rpc_trial_grader_factory(ctx)
         assert isinstance(grader, GraderRPCTrialGrader)
+
+    def test_factory_threads_runner_address_to_runner_substrate_address(self) -> None:
+        """``SubstrateService`` shares the runner's listen port, so
+        ``ctx.runner_address`` is the same address the grader-side
+        dispatcher dials for state reads."""
+        ctx = TrialGraderContext(
+            runner_address="runner.grid-01:50051",
+            grader_address="grader.grid-02:50052",
+            logger=MagicMock(),
+        )
+        grader = grader_rpc_trial_grader_factory(ctx)
+        assert grader.runner_substrate_address == "runner.grid-01:50051"
 
     def test_registered_under_grader_rpc_entry_point(self) -> None:
         factory = load_trial_grader("grader_rpc")

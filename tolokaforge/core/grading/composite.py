@@ -33,6 +33,7 @@ one-way exception documented in ADR-0039.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -61,6 +62,7 @@ from tolokaforge.core.grading.checks_interface import (
 )
 from tolokaforge.core.grading.judge_result import JudgeResult
 from tolokaforge.core.grading.key_manifest import EVALUATED, NO_TIMELINE_EVENTS_SKIP
+from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.transcript import scored_transcript_rules
@@ -326,6 +328,61 @@ def grade_llm_judge(
         judge_model_config=judge_model_config,
         extra_read_tools=list(extra_read_tools),
         state_diff=state_diff,
+    )
+
+
+def build_judge_state_diff(
+    *,
+    trial_id: str,
+    substrate: GradingSubstrate,
+    initial_state_schemas: list[Any],
+    id_fields: dict[str, str | list[str]],
+    unstable_fields: set[tuple[str, str]],
+    logger: logging.Logger,
+) -> str | None:
+    """Render the ``initial → final`` DB state diff for the judge, or ``None``.
+
+    ``None`` is the diff-first default declining itself when there is nothing to
+    diff against: an empty ``initial_state`` — the shape non-DB tasks carry, and
+    what filesystem-only tasks report — has no baseline, so the judge falls back
+    to its read-only tools. The distinction between "no diff" and "diff
+    unavailable" stays with :func:`render_state_diff`'s explicit "No changes"
+    body for a diff that DID build but found no edits.
+
+    The trial's declared ``state_checks.id_fields`` is layered over the task
+    schemas' primary keys — the two together are the row-matching contract the
+    diff renders against — and ``unstable_fields`` drops server-marked noise so
+    only meaningful edits appear.
+
+    Best-effort context, not a grade component: :class:`SubstrateUnreachableError`
+    propagates so the seam can book the trial as ungradeable, but any other
+    substrate read failure (DB hiccup, unexpected shape) degrades to ``None`` —
+    the judge still has its read-only tools and the components already computed
+    by this call site are preserved. The judge's own fail-loud contract still
+    governs grading.
+    """
+    initial_tables = substrate.initial_state()
+    if not initial_tables:
+        return None
+    try:
+        final_state = substrate.final_state()
+    except SubstrateUnreachableError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — optional context, never fail the grade
+        logger.warning(
+            "Failed to build judge state diff; grading without it "
+            f"(trial_id={trial_id}, error={exc})"
+        )
+        return None
+    primary_keys: dict[str, str | list[str]] = {
+        s.table_name: s.primary_key for s in initial_state_schemas
+    }
+    primary_keys.update(id_fields)
+    return render_state_diff(
+        initial_tables,
+        final_state,
+        primary_keys=primary_keys,
+        unstable_fields=unstable_fields,
     )
 
 

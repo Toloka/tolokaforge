@@ -75,14 +75,23 @@ services:
     ports:
       - "50052:50052"
     environment:
-      # LLM provider credentials — needed once the follow-up wires the
-      # production LLMJudge dispatch. The current entry mounts an unwired
-      # default dispatch (see ADR-0038 and grader/service.py).
+      # LLM provider credentials — required whenever a task exercises the
+      # `llm_judge` component through this grader; supply either a per-provider
+      # key or the multi-provider `TOLOKAFORGE_SECRETS_JSON` blob. Every other
+      # grading component (state_checks, transcript_rules, trace_checks,
+      # custom_checks) runs without a key.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       TOLOKAFORGE_SECRETS_JSON: ${TOLOKAFORGE_SECRETS_JSON:-}
+    depends_on:
+      # The grader's `GraderCompositeDispatch` dials the runner's
+      # SubstrateService per trial, so the runner must be up and healthy
+      # first. `service_healthy` waits for the runner's own gRPC channel-ready
+      # HEALTHCHECK to pass.
+      runner:
+        condition: service_healthy
     networks:
       - runner-net
 
@@ -94,6 +103,11 @@ services:
     environment:
       DB_SERVICE_URL: http://db-service:8000
       RAG_SERVICE_URL: http://rag-service:8001
+      # Register the read-only SubstrateService on the runner's gRPC server
+      # (same listen port as RunnerService) so the standalone grader can dial
+      # it per trial for initial-state / final-state / filesystem / KB reads.
+      # ADR-0039 covers the substrate contract.
+      RUNNER_EXPOSE_SUBSTRATE: "true"
       # LLM provider credentials — optional for a keyless bring-up, required for
       # real (paid) trials. Set them in a sibling `.env` (see `.env.example`),
       # which docker compose auto-loads for interpolation. Supply either a

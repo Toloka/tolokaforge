@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Feat
+
+- **grader**: standalone service dispatches through the composite (six plug-in seams over `LiveRunnerCallbackGradingSubstrate`). `GraderCompositeDispatch` deserialises the wire v2 fields per request, builds the substrate against `runner_substrate_address`, runs the five grading components mirroring the runner's `_grade_trial_async`, and returns a real `Grade`. Hash-based grading is refused server-side (the substrate is read-only). `_build_judge_state_diff` + the tool-artifact extraction body are hoisted to `tolokaforge.core.grading.composite.build_judge_state_diff` + `tolokaforge.core.grading.tool_artifacts.extract_tool_artifacts` so runner and grader dispatch call the same helpers.
+
 ## v0.19.1 (2026-08-19)
 
 ### Feat
