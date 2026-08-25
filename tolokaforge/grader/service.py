@@ -37,23 +37,26 @@ if TYPE_CHECKING:
 class GradeDispatch:
     """Wire-level dispatch payload the service hands to its judge callable.
 
-    The standalone service is *stateless per call*: everything the injected
-    dispatch needs to run — the trial identifier, the encoded transcript, the
-    termination-reason string, and optional task-config JSON — travels on the
-    wire. This dataclass captures that shape without pulling in the engine's
-    Pydantic ``TrialSpec`` / ``Trajectory`` types, which carry
-    orchestrator-only fields (env-endpoints, seeds, run-scoped IDs) the
-    service cannot know about.
-
-    Production wiring adapts :class:`GradeDispatch` back to real ``TrialSpec``
-    / ``Trajectory`` values before dispatching to :class:`LLMJudge`; that
-    adapter lives on the milestone follow-up.
+    The standalone service is *stateless per call*: every field the injected
+    dispatch needs to grade the trial travels on the wire and lands on this
+    dataclass. The v2 fields (``judge_model_config_json`` through
+    ``agent_system_prompt``) carry the run-scoped context the composite
+    dispatcher would otherwise get in-process from ``RunnerServiceImpl`` —
+    the grader constructs its :class:`LiveRunnerCallbackGradingSubstrate`
+    against ``runner_substrate_address``, deserialises the task-scoped
+    ``TaskDescription`` / ``ModelConfig`` from the JSON fields, and uses
+    ``agent_system_prompt`` directly rather than re-splitting the leading
+    system message off ``llm_messages_json``.
     """
 
     trial_id: str
     llm_messages_json: str
     termination_reason: str
     task_config_json: str
+    judge_model_config_json: str
+    task_description_json: str
+    runner_substrate_address: str
+    agent_system_prompt: str
 
 
 JudgeGradeFn = Callable[[GradeDispatch], "Grade | None"]
@@ -230,6 +233,10 @@ class GraderServiceImpl(grader_pb2_grpc.GraderServiceServicer):
             llm_messages_json=request.llm_messages_json or "",
             termination_reason=request.termination_reason or "",
             task_config_json=request.task_config_json or "",
+            judge_model_config_json=request.judge_model_config_json or "",
+            task_description_json=request.task_description_json or "",
+            runner_substrate_address=request.runner_substrate_address or "",
+            agent_system_prompt=request.agent_system_prompt or "",
         )
         try:
             grade = self.judge_fn(dispatch)

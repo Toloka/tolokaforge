@@ -150,6 +150,35 @@ DNS (`grader:50052` on the compose network) or the grader from the host
 The runtime command is fixed: `python -m tolokaforge.grader`. Reads
 `--port` (or `$GRADER_SERVICE_PORT`, default `50052`).
 
+## The `Grade` wire
+
+`GraderService.Grade` is stateless per call: every field the grader-side
+composite dispatcher needs to grade the trial rides on the request. The
+wire carries eight named fields — the caller populates whichever ones
+its dispatch consumes and leaves the rest empty.
+
+| Field                         | # | Purpose                                                                                   |
+| ----------------------------- | - | ----------------------------------------------------------------------------------------- |
+| `trial_id`                    | 1 | Canonical `"{task_id}:{trial_index}"` identifier — the join key for logs and future stores. |
+| `llm_messages_json`           | 2 | Transcript as an LLM-messages JSON string; the timeline builder decodes it.               |
+| `termination_reason`          | 3 | `TerminationReason` value name; empty when the caller reports none.                       |
+| `task_config_json`            | 4 | `RunnerGradingConfig` JSON — the whole `grading:` block the composite dispatcher reads.   |
+| `judge_model_config_json`     | 5 | Optional `ModelConfig` JSON for the judge; empty when the task declares no `llm_judge`.   |
+| `task_description_json`       | 6 | `TaskDescription` JSON — carries `initial_state`, `state_checks.id_fields`, `unstable_fields`, and `tool_artifacts` (checks.py plus every sibling artefact module the pack imports). |
+| `runner_substrate_address`    | 7 | gRPC address of the runner's `SubstrateService`; the grader builds a `LiveRunnerCallbackGradingSubstrate` against it per trial. |
+| `agent_system_prompt`         | 8 | Post-policy system prompt — authoritative. The grader uses this directly rather than re-splitting the leading system message off `llm_messages_json`. |
+
+Field numbers are stable and additive: a future field lands on number 9
+so an existing client's payload never lands in a new slot. Provider +
+model-name evidence rides on field 5 so the grader constructs its
+`LLMClient` via the [`judge_model_providers` seam](#sub-component-plug-in-seams)
+without inferring provider from a model name (AGENTS.md Core Rule 10).
+
+The client-side snapshot builder that populates fields 4-8 from a
+completed trial's `TrialSpec` ships alongside the composite dispatcher —
+`GraderRPCTrialGrader` and `QueueTrialGrader` both call it before
+publishing.
+
 ## Registering a downstream grader
 
 A downstream `pip install` adds a new grader by:

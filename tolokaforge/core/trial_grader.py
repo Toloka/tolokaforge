@@ -845,6 +845,9 @@ class QueueTrialGrader:
                 trajectory.termination_reason.value if trajectory.termination_reason else ""
             ),
             task_config_json="",
+            judge_model_config_json="",
+            task_description_json="",
+            runner_substrate_address="",
             agent_system_prompt=agent_system_prompt,
         )
         future = self.broker.publish_job(job)
@@ -1036,6 +1039,10 @@ def _queue_worker_loop(
                 llm_messages_json=job.llm_messages_json,
                 termination_reason=job.termination_reason,
                 task_config_json=job.task_config_json,
+                judge_model_config_json=job.judge_model_config_json,
+                task_description_json=job.task_description_json,
+                runner_substrate_address=job.runner_substrate_address,
+                agent_system_prompt=job.agent_system_prompt,
             )
             if not response["success"]:
                 error = response.get("error") or "Unknown grading error"
