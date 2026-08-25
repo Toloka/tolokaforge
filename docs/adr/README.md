@@ -69,4 +69,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0036](0036-tolokaforge-coding-harnesses-split.md) | Coding-harness code as a top-level workspace package — `tolokaforge_coding_harnesses` | Accepted |
 | [0037](0037-runtime-gateway-as-harness-data.md) | A runtime gateway is harness data, and its token dialect belongs to the runtime that provisions it | Accepted |
 | [0038](0038-grader-detachment.md) | Grader detachment — grader as an independently deployable and scalable component | Proposed |
-| [0039](0039-standalone-grader.md) | Standalone-grader substrate — multi-topology grading behind one Protocol | Proposed |
+| [0039](0039-standalone-grader.md) | Standalone-grader substrate — multi-topology grading behind one Protocol | Accepted |
