@@ -592,23 +592,107 @@ def test_subset_wheel_carries_runner_reachable_entry_point_groups(
 ) -> None:
     """The subset wheel's ``entry_points.txt`` must carry every group the
     runner reaches through
-    :func:`~tolokaforge.core.plugin_registry.discover_entry_points` at boot
-    or during a Grade RPC. Without these, the runner container boots but
-    crashes on the first ``load_custom_check_executor('check_runner')``
-    call with "Unknown implementation" — the exact regression that broke
-    v0.20.0-rc.1's runtime start."""
+    :func:`~tolokaforge.core.plugin_registry.discover_entry_points` at
+    boot or during a Grade RPC, AND every row's ``module:attr`` target
+    must ship in the subset wheel. A missing group crashes the runner at
+    first seam load with "Unknown implementation" (the exact regression
+    that broke v0.20.0-rc.1's runtime start); a shipped group whose row
+    targets a module the subset excludes crashes with ``ModuleNotFoundError``
+    from ``.load()`` — same class of failure, one indirection deeper."""
+    import configparser
+
     from scripts.hatch.hatch_runner_subset_builder import (
         RUNNER_REACHABLE_ENTRY_POINT_GROUPS,
     )
 
     entry_points_txt = _wheel_read(subset_wheel_path, "*.dist-info/entry_points.txt")
+    parser = configparser.ConfigParser()
+    parser.read_string(entry_points_txt)
+    members = _wheel_members(subset_wheel_path)
     for group in RUNNER_REACHABLE_ENTRY_POINT_GROUPS:
-        header = f"[{group}]"
-        assert header in entry_points_txt, (
+        assert parser.has_section(group), (
             f"subset wheel entry_points.txt is missing runner-reachable "
-            f"group {header} — the runner container will crash at first "
+            f"group [{group}] — the runner container will crash at first "
             "seam load. Full entry_points.txt:\n" + entry_points_txt
         )
+        for name, target in parser.items(group):
+            module_dotted = target.partition(":")[0].strip()
+            module_rel = module_dotted.replace(".", "/") + ".py"
+            package_init = module_dotted.replace(".", "/") + "/__init__.py"
+            assert module_rel in members or package_init in members, (
+                f"subset wheel entry-point [{group}]/{name}={target} points at "
+                f"{module_dotted!r} but neither {module_rel} nor "
+                f"{package_init} ships in the subset wheel — .load() will "
+                "raise ModuleNotFoundError at first use."
+            )
+
+
+_LOADER_TO_GROUP: dict[str, str] = {
+    "load_runtime_backend": "tolokaforge.runtime_backends",
+    "load_trial_grader": "tolokaforge.trial_graders",
+    "load_conductor": "tolokaforge.conductors",
+    "load_readiness_probe": "tolokaforge.service_readiness_probes",
+    "load_turn_policy": "tolokaforge.turn_policies",
+    "load_custom_check_executor": "tolokaforge.custom_check_executors",
+    "load_judge_model_provider": "tolokaforge.judge_model_providers",
+    "load_rubric_evaluator": "tolokaforge.rubric_evaluators",
+    "load_transcript_rule_matcher": "tolokaforge.transcript_rule_matchers",
+    "load_state_check_backend": "tolokaforge.state_check_backends",
+    "load_trace_check_operator": "tolokaforge.trace_check_operators",
+    "load_grading_substrate": "tolokaforge.grading_substrates",
+}
+
+
+def test_subset_partition_load_calls_are_in_the_allowlist() -> None:
+    """Every ``load_*`` seam call reachable from the subset partition must
+    resolve to a group in ``RUNNER_REACHABLE_ENTRY_POINT_GROUPS``. This
+    closes the drift direction the header-only lock cannot: someone adds
+    a NEW runner-side ``load_&lt;seam&gt;(…)`` call, forgets the allowlist,
+    and the runner container boots then crashes on the first call.
+    A pyproject-side registration alone is not enough — the subset wheel's
+    ``entry_points.txt`` is what ``importlib.metadata`` reads inside the
+    slim image."""
+    from scripts.hatch.hatch_runner_subset_builder import (
+        RUNNER_REACHABLE_ENTRY_POINT_GROUPS,
+    )
+
+    allowlist = frozenset(RUNNER_REACHABLE_ENTRY_POINT_GROUPS)
+    subset_files = _enumerate_subset_files()
+    used_loaders: dict[str, set[str]] = {}
+    for rel in subset_files:
+        if not rel.endswith(".py"):
+            continue
+        source_path = REPO_ROOT / rel
+        try:
+            tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = None
+            if isinstance(func, ast.Name):
+                name = func.id
+            elif isinstance(func, ast.Attribute):
+                name = func.attr
+            if name in _LOADER_TO_GROUP:
+                used_loaders.setdefault(name, set()).add(rel)
+
+    missing_from_allowlist = {
+        loader: (_LOADER_TO_GROUP[loader], sorted(sites))
+        for loader, sites in used_loaders.items()
+        if _LOADER_TO_GROUP[loader] not in allowlist
+    }
+    assert not missing_from_allowlist, (
+        "subset partition reaches load_* seams whose groups are not in "
+        "RUNNER_REACHABLE_ENTRY_POINT_GROUPS — add each group to the allowlist "
+        "in scripts/hatch/hatch_runner_subset_builder.py:\n"
+        + "\n".join(
+            f"  {loader} → {group} (call sites: {', '.join(sites)})"
+            for loader, (group, sites) in sorted(missing_from_allowlist.items())
+        )
+    )
 
 
 def test_subset_wheel_ships_cli_shim_module(subset_wheel_path: Path) -> None:

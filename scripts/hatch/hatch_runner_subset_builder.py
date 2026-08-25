@@ -56,17 +56,24 @@ if TYPE_CHECKING:
 SUBSET_DISTRIBUTION_NAME = "tolokaforge-runner-subset"
 
 # Base wheel entry-point groups the runner subset MUST carry. Every seam
-# the runner reaches at boot or during a Grade RPC — turn policies, grading
-# substrates, and the seven sub-component seams (ADR-0040) — is loaded via
-# ``importlib.metadata.entry_points``, so the group's rows must appear in
-# the subset wheel's ``entry_points.txt`` even though their target modules
-# are already inside the subset partition. Groups NOT listed here
-# (``tolokaforge.runtime_backends``, ``tolokaforge.trial_graders``,
-# ``tolokaforge.conductors``, ``tolokaforge.service_readiness_probes``) are
-# orchestrator-only and their targets are excluded from the subset.
+# the runner reaches through ``load_*`` at boot or during a Grade RPC —
+# the six sub-component seams reachable from ``RunnerServiceImpl``
+# (ADR-0040) — is loaded via ``importlib.metadata.entry_points``, so the
+# group's rows must appear in the subset wheel's ``entry_points.txt``
+# even though their target modules are already inside the subset
+# partition. Groups NOT listed here — ``runtime_backends``,
+# ``trial_graders``, ``conductors``, ``service_readiness_probes``,
+# ``turn_policies`` (all called from ``tolokaforge.core.runner``, which
+# lives outside the subset partition; the runner container calls
+# ``tolokaforge.runner.__main__`` instead), and ``grading_substrates``
+# (runner instantiates ``InProcessGradingSubstrate`` directly; the
+# group's ``live_callback`` row targets ``substrate_live.py``, which is
+# grader-side and excluded from the subset partition) — are
+# deliberately kept out. The
+# ``test_subset_partition_load_calls_are_in_the_allowlist`` drift-lock
+# guards this list against a new runner-side ``load_*`` call being
+# added silently.
 RUNNER_REACHABLE_ENTRY_POINT_GROUPS: tuple[str, ...] = (
-    "tolokaforge.turn_policies",
-    "tolokaforge.grading_substrates",
     "tolokaforge.custom_check_executors",
     "tolokaforge.judge_model_providers",
     "tolokaforge.rubric_evaluators",
