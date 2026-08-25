@@ -348,3 +348,44 @@ class Capability(str, Enum):
     Distinct from :attr:`MULTI_TURN_ERROR_RECOVERY` because the prior
     turn did NOT fail — there's no error feedback to react to. The
     pathology is "treat success as a non-event"."""
+
+    REASONING_EFFORT_HONOURED = "reasoning_effort_honoured"
+    """Every effort level the engine can request (``low`` / ``medium`` /
+    ``high``) still produces reasoning on this route UNDER A REAL AGENTIC
+    CONTEXT — a long policy system prompt, a dozen tool schemas, several
+    prior turns with tool results, and a turn that needs a tool call with
+    a mandated field. Measured as non-zero ``usage.reasoning_tokens`` (or
+    surfaced reasoning text / summary).
+
+    Guards a failure mode :attr:`THINKING_EMITS_BLOCKS` cannot see: that
+    probe asks for ONE effort on a short prompt and passes when anything
+    surfaces. A route that thinks on a short prompt at every level but
+    silently disables thinking at ``medium`` once the context is heavy
+    still certifies there — and the Arena board runs every model at
+    ``medium`` in exactly such contexts.
+
+    Empirical motivation (``z-ai/glm-5.3`` via OpenRouter, 2026-08-24/25):
+    Z.AI's 5.3 reasoning API takes ``low`` / ``high`` / ``max`` (no
+    ``medium``, default ``max``) and its shim degrades an undefined level
+    to zero or near-zero reasoning tokens instead of rejecting it — but
+    only under a heavy context. Short single-turn prompt at ``medium``:
+    100–190 reasoning tokens. Five real logistics tasks replayed to the
+    turn before the create call, 3 samples each, at ``medium``: 0 / 0 /
+    17–54 reasoning tokens per task and the mandated field dropped 15/15
+    (the full Arena v1 eval: 0 reasoning tokens over 704 trials, pass@1
+    5.4% vs 65.6% at the provider default; pass^5 19.4 vs 5.2's 42.3 on
+    the same base model). ``high`` recovered 6/15, no parameter 13/15.
+    On the probe's own synthetic heavy context (2026-08-25): raw 5.3 at
+    ``medium`` 0 and ``low`` 0 reasoning tokens, ``high`` 129, provider
+    default 455; 5.2 151–160 at every level. The 5.2 route honours all
+    three levels; the 5.3 preset drops ``low`` and ``medium``.
+
+    The preset lever is ``param_value_rules`` on ``reasoning_effort``
+    (``override`` / ``drop`` / ``reject``); this probe proves the lever
+    took effect on the wire, and catches the next provider that
+    redefines its effort vocabulary. Non-reasoning models declare it
+    ``known_unsupported`` alongside the thinking capabilities;
+    budget-mode models (Anthropic ``thinking=``) have no effort
+    vocabulary to honour. Certificates not yet live-checked leave it
+    undeclared — the probe auto-skips — until their next certification
+    run; the auto-integration declares it for every new candidate."""

@@ -2109,6 +2109,9 @@ _ALL: list[MC] = [
                 C.LEXICAL_TOOL_INVENTION,
                 C.REQUIRED_FIELDS_COMPLETE,
                 C.PROGRESS_AFTER_SUCCESS,
+                # Honours low / medium / high on the OpenRouter route (the
+                # 5.3 sibling does not - see the z_ai_glm_5_3 preset's effort rule).
+                C.REASONING_EFFORT_HONOURED,
             }
         ),
         known_unsupported=frozenset(
@@ -2199,6 +2202,10 @@ _ALL: list[MC] = [
                 C.LEXICAL_TOOL_INVENTION,
                 C.REQUIRED_FIELDS_COMPLETE,
                 C.PROGRESS_AFTER_SUCCESS,
+                # Under the z_ai_glm_5_3 preset's effort rule (low / medium dropped
+                # to the provider default): heavy-context probe 440-472 reasoning
+                # tokens at every level (raw route: medium 0, low 0). Live 2026-08-25.
+                C.REASONING_EFFORT_HONOURED,
             }
         ),
         known_unsupported=frozenset(
@@ -2254,10 +2261,12 @@ _ALL: list[MC] = [
             {
                 # Non-reasoning model: emits no structured reasoning at
                 # all (0 reasoning tokens live 2026-06-05), so neither the
-                # emit nor the replay capabilities apply.
+                # emit nor the replay capabilities apply - and there is no
+                # effort level to honour.
                 C.THINKING_EMITS_BLOCKS,
                 C.THINKING_REPLAY_ROUNDTRIP,
                 C.UNSIGNED_THINKING_REPLAY,
+                C.REASONING_EFFORT_HONOURED,
                 # No ephemeral cache markers and the 2-call ~8 k-token
                 # auto-cache probe read cached_tokens=0 on both calls.
                 C.PROMPT_CACHING,
@@ -2306,10 +2315,12 @@ _ALL: list[MC] = [
                 # genuine field-name gap, not a construct the sanitizer can
                 # rewrite. Verified live 2026-06-05.
                 C.DISCRIMINATED_UNION_TOOL_CALL,
-                # Non-reasoning model (0 reasoning tokens live).
+                # Non-reasoning model (0 reasoning tokens live); no effort
+                # level to honour either.
                 C.THINKING_EMITS_BLOCKS,
                 C.THINKING_REPLAY_ROUNDTRIP,
                 C.UNSIGNED_THINKING_REPLAY,
+                C.REASONING_EFFORT_HONOURED,
                 # No ephemeral cache markers; auto-cache probe read 0.
                 C.PROMPT_CACHING,
                 C.IMPLICIT_PROMPT_CACHING,

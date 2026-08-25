@@ -1,4 +1,4 @@
-"""Preset routing — ``z_ai_glm_5_3`` (the routing half, PR #1277).
+"""Preset routing — ``z_ai_glm_5_3`` (routing half, PR #1277; effort-rule half, PR #1278).
 
 The entry is declared BEFORE the shared ``openrouter_dict_stringify_recovery``
 preset, whose ``z-ai/glm-5*`` glob would otherwise claim the route. That order
@@ -16,7 +16,16 @@ while every offline suite stayed green. These tests lock four invariants:
 4. the overlay is a full copy of the shared recovery stack plus the codec swap
    — ``_match_preset`` does first-match-wins with no fallback merge, so the
    re-declared ``passthrough`` / ``json_coerce`` / ``dict_map_hints`` lines are
-   load-bearing, not duplicates.
+   load-bearing, not duplicates;
+5. (PR #1278) ``param_value_rules`` DROP ``reasoning_effort`` when ``low`` or
+   ``medium`` is asked for, so the route runs at its own default (``max``);
+   ``high`` passes through; 5.2 has no such rule. Why: Z.AI's 5.3 reasoning
+   API defines ``low`` / ``high`` / ``max`` only (default ``max``) and, under a
+   real agentic context, its OpenRouter shim degrades ``medium`` to zero or
+   near-zero reasoning tokens instead of rejecting it — the Arena v1 eval ran
+   704 trials with 0 reasoning tokens (logistics pass@1 5.4% vs 65.6% at the
+   provider default). Replayed 5 tasks x 3 samples: medium 0/15, high 6/15,
+   no parameter 13/15 — hence ``drop``, not ``override: high``.
 """
 
 from __future__ import annotations
@@ -29,6 +38,7 @@ from tolokaforge.core.llm import (
     JsonCoerceResponse,
     OpenAIContent,
     PassthroughSchema,
+    ReasoningConfig,
     build_capabilities,
 )
 from tolokaforge.core.llm.presets import resolve_effective_preset
@@ -38,6 +48,34 @@ pytestmark = pytest.mark.unit
 
 PRESET = "z_ai_glm_5_3"
 FAMILY_PRESET = "openrouter_dict_stringify_recovery"
+
+
+def _adapt_kwargs(policy, effort: str) -> dict:  # type: ignore[no-untyped-def]
+    """The provider kwargs the policy emits for a requested *effort*."""
+    kwargs: dict = {}
+    policy.adapt(
+        kwargs,
+        config_temperature=None,
+        config_seed=None,
+        config_reasoning=ReasoningConfig(mode="adaptive", effort_hint=effort),  # type: ignore[arg-type]
+        temperature=None,
+        seed=None,
+        reasoning=None,
+    )
+    return kwargs
+
+
+def _effort_sent(policy, effort: str) -> str | None:  # type: ignore[no-untyped-def]
+    """The effort level that reaches the wire for a requested *effort*.
+
+    The OpenRouter provider block routes reasoning through
+    ``extra_body.reasoning.effort``; a bare ``GenerationParams`` emits the
+    plain ``reasoning_effort`` kwarg. Read whichever the policy produced.
+    """
+    kwargs = _adapt_kwargs(policy, effort)
+    if "reasoning_effort" in kwargs:
+        return kwargs["reasoning_effort"]
+    return kwargs.get("extra_body", {}).get("reasoning", {}).get("effort")
 
 
 @pytest.mark.parametrize(
@@ -87,3 +125,37 @@ def test_overlay_is_the_shared_stack_plus_the_codec_swap() -> None:
         assert isinstance(caps.content_policy, OpenAIContent)
     assert isinstance(glm53.reasoning_codec, OpenAISummaryReplayReasoningCodec)
     assert type(glm52.reasoning_codec) is OpenAIReasoningCodec
+
+
+def test_medium_is_dropped_with_evidence() -> None:
+    """Asked for ``medium``, the request carries NO reasoning parameter at all
+    (extra_body.reasoning absent, no plain kwarg) — the provider default runs."""
+    caps = build_capabilities("z-ai/glm-5.3", "openrouter")
+    kwargs = _adapt_kwargs(caps.params_policy, "medium")
+    assert "reasoning_effort" not in kwargs
+    assert "reasoning" not in kwargs.get("extra_body", {})
+    assert caps.params_policy.rule_for("reasoning_effort", "medium") is not None
+    evidence = caps.params_policy.rule_evidence("reasoning_effort", "medium")
+    assert "2026-08-24" in evidence and "z-ai/glm-5.3" in evidence and "13/15" in evidence
+
+
+def test_low_is_dropped_too() -> None:
+    """``low`` is documented by Z.AI yet degrades like ``medium`` under a heavy
+    context (0 reasoning tokens, 2026-08-24/25), so it gets the same rule."""
+    caps = build_capabilities("z-ai/glm-5.3", "openrouter")
+    kwargs = _adapt_kwargs(caps.params_policy, "low")
+    assert "reasoning_effort" not in kwargs
+    assert "reasoning" not in kwargs.get("extra_body", {})
+
+
+def test_high_passes_through_untouched() -> None:
+    """The one level the route honours (126–197 reasoning tokens) is sent as asked."""
+    caps = build_capabilities("z-ai/glm-5.3", "openrouter")
+    assert _effort_sent(caps.params_policy, "high") == "high"
+
+
+def test_glm52_has_no_effort_rule() -> None:
+    """The sibling honours ``medium`` live; it must not inherit the override."""
+    caps = build_capabilities("z-ai/glm-5.2", "openrouter")
+    assert caps.params_policy.rule_for("reasoning_effort", "medium") is None
+    assert _effort_sent(caps.params_policy, "medium") == "medium"
