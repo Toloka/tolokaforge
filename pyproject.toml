@@ -202,10 +202,10 @@ agent_only = "tolokaforge.core.actors.turn_policy:_agent_only_policy_factory"
 conversational = "tolokaforge.core.actors.turn_policy:_conversational_policy_factory"
 
 # ADR-0039 § "The single design abstraction" — GradingSubstrate implementations
-# resolvable by name. `in_process` and `live_callback` ship this milestone;
-# `trajectory_storage` / `snapshot` / `shared_mount` are reserved future
-# substrates and register themselves when they ship (no framework change
-# needed at that time).
+# resolvable by name. Two implementations ship today (``in_process`` +
+# ``live_callback``); ``trajectory_storage`` / ``snapshot`` / ``shared_mount``
+# are reserved future substrates and register themselves when they ship (no
+# framework change needed then).
 [project.entry-points."tolokaforge.grading_substrates"]
 in_process = "tolokaforge.core.grading.substrate:InProcessGradingSubstrate"
 live_callback = "tolokaforge.core.grading.substrate_live:LiveRunnerCallbackGradingSubstrate"
@@ -259,7 +259,7 @@ db_probes = "tolokaforge.core.grading.default_state_check_backends:_db_probes_st
 # entry-point. A downstream package registering ``equals_semver`` alongside
 # these 17 defaults extends the trace-check vocabulary without a framework
 # PR. The two binding operators are identified by the ``_binding`` suffix
-# on the registered name (Approved Decision #2 on ADR-0039); no marker
+# on the registered name (see ADR-0039); no marker
 # attribute, no parallel registry.
 [project.entry-points."tolokaforge.trace_check_operators"]
 equals = "tolokaforge.core.grading.trace_check_operator:equals"
