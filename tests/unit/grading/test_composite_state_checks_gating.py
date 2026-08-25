@@ -39,7 +39,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from tolokaforge.core.grading.composite import grade_state_checks_reads
-from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
+from tolokaforge.core.grading.default_state_check_backends import JsonpathStateCheckBackend
+from tolokaforge.core.grading.substrate import (
+    InProcessGradingSubstrate,
+    SubstrateUnreachableError,
+)
+from tolokaforge.core.plugin_registry import load_state_check_backend
 from tolokaforge.runner.db_client import TrialNotFoundError as DBTrialNotFoundError
 from tolokaforge.runner.models import RunnerStateChecksConfig
 
@@ -58,13 +63,20 @@ class _Counter:
         self.calls += 1
         if self._value is None:
             raise AssertionError(
-                f"factory {self._name!r} was invoked but this case requires it " "never fires"
+                f"factory {self._name!r} was invoked but this case requires it never fires"
             )
         return self._value
 
 
 def _logger() -> logging.Logger:
     return logging.getLogger("test-composite-gating")
+
+
+def _shipped_backends() -> dict[str, Any]:
+    return {
+        "jsonpath": load_state_check_backend("jsonpath")(),
+        "db_probes": load_state_check_backend("db_probes")(),
+    }
 
 
 def _run(
@@ -76,6 +88,7 @@ def _run(
         trial_id="task:0",
         config=config,
         substrate=substrate,
+        state_check_backends=_shipped_backends(),
         logger=_logger(),  # type: ignore[arg-type]  # StructuredLogger satisfied at runtime
     )
 
@@ -247,7 +260,7 @@ class TestDbTrialNotFoundDegrades:
             result = _run(config=config, substrate=substrate)
         assert result.jsonpath_score == pytest.approx(0.5)
         assert any(
-            "DB trial not found; grading with empty DB state" in rec.message
+            "GradeTrial: task:0 - DB trial not found; grading with empty DB state" in rec.message
             for rec in caplog.records
         ), caplog.text
         assert fs_factory.calls == 1
@@ -278,3 +291,34 @@ class TestConstructionInvariants:
         )
         with pytest.raises(RuntimeError, match="final_state_stable_factory"):
             substrate.final_state_stable()
+
+
+def test_jsonpath_backend_propagates_substrate_unreachable() -> None:
+    """A ``SubstrateUnreachableError`` from ``substrate.final_state_stable``
+    must NOT degrade — it propagates so the caller can book the trial as
+    ungradeable.
+
+    ``JsonpathStateCheckBackend.query`` catches only ``DBTrialNotFoundError``
+    (the absent-trial degradation). Any other read failure is a substrate
+    transport error the audit surfaces. Locking here catches a future
+    tightening of the ``except`` clause back over
+    :class:`SubstrateUnreachableError`. Parallels the custom-checks lock
+    at ``tests/unit/grading/test_composite_custom_checks_degradation.py``.
+    """
+
+    def raising_stable() -> dict[str, Any]:
+        raise SubstrateUnreachableError("grader lost the runner mid-grade")
+
+    substrate = InProcessGradingSubstrate(
+        db_reader=MagicMock(),
+        knowledge_search=None,
+        filesystem_root=None,
+        initial_state={},
+        final_state_stable_factory=raising_stable,
+    )
+    backend = JsonpathStateCheckBackend()
+    with pytest.raises(SubstrateUnreachableError):
+        backend.query(
+            expression=[{"path": "$.db.users[0].name", "equals": "Alice"}],
+            substrate=substrate,
+        )

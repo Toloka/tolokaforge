@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from tolokaforge.core.grading.judge import JudgeStatus
+from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.grading.replay import ReplayOutcomeStatus, run_replay_batch
 from tolokaforge.core.models import (
     CriterionResult,

@@ -36,7 +36,6 @@ from pydantic import ValidationError
 from tolokaforge.core.grading import composite
 from tolokaforge.core.grading.check_runner import (
     CheckExecutor,
-    CheckRunner,
     validate_checks_module,
 )
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
@@ -53,15 +52,23 @@ from tolokaforge.core.grading.jsonpath_addressing import (
     block_addresses_the_database,
     unreachable_target,
 )
-from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus
+from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
+from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
-from tolokaforge.core.grading.substrate import GradingSubstrate, InProcessGradingSubstrate
+from tolokaforge.core.grading.state_check_backend import StateCheckBackend
+from tolokaforge.core.grading.state_diff import render_state_diff
+from tolokaforge.core.grading.substrate import (
+    GradingSubstrate,
+    InProcessGradingSubstrate,
+    SubstrateUnreachableError,
+)
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
     TrialTimeline,
     build_trial_timeline,
 )
+from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcher
 from tolokaforge.core.grading.transcript_wire import (
     decode_transcript_wire,
     split_leading_system_message,
@@ -71,6 +78,13 @@ from tolokaforge.core.models import (
     LLMJudgeConfig,
     ModelConfig,
     TerminationReason,
+)
+from tolokaforge.core.plugin_registry import (
+    load_custom_check_executor,
+    load_judge_model_provider,
+    load_rubric_evaluator,
+    load_state_check_backend,
+    load_transcript_rule_matcher,
 )
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
@@ -393,6 +407,61 @@ def _unreachable_state_checks_refusal(
     return None
 
 
+def _build_judge_state_diff(
+    *,
+    trial_id: str,
+    substrate: GradingSubstrate,
+    initial_state_schemas: list[Any],
+    id_fields: dict[str, str | list[str]],
+    unstable_fields: set[tuple[str, str]],
+    logger: "logging.Logger",
+) -> str | None:
+    """Render the ``initial → final`` DB state diff for the judge, or ``None``.
+
+    ``None`` is the diff-first default declining itself when there is nothing to
+    diff against: an empty ``initial_state`` — the shape non-DB tasks carry, and
+    what filesystem-only tasks report — has no baseline, so the judge falls back
+    to its read-only tools. The distinction between "no diff" and "diff
+    unavailable" stays with :func:`render_state_diff`'s explicit "No changes"
+    body for a diff that DID build but found no edits.
+
+    The trial's declared ``state_checks.id_fields`` is layered over the task
+    schemas' primary keys — the two together are the row-matching contract the
+    diff renders against — and ``unstable_fields`` drops server-marked noise so
+    only meaningful edits appear.
+
+    Best-effort context, not a grade component: :class:`SubstrateUnreachableError`
+    propagates so the seam can book the trial as ungradeable, but any other
+    substrate read failure (DB hiccup, unexpected shape) degrades to ``None`` —
+    the judge still has its read-only tools and the components already computed
+    by this call site are preserved. The judge's own fail-loud contract still
+    governs grading.
+    """
+    initial_tables = substrate.initial_state()
+    if not initial_tables:
+        return None
+    try:
+        final_state = substrate.final_state()
+    except SubstrateUnreachableError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — optional context, never fail the grade
+        logger.warning(
+            "Failed to build judge state diff; grading without it "
+            f"(trial_id={trial_id}, error={exc})"
+        )
+        return None
+    primary_keys: dict[str, str | list[str]] = {
+        s.table_name: s.primary_key for s in initial_state_schemas
+    }
+    primary_keys.update(id_fields)
+    return render_state_diff(
+        initial_tables,
+        final_state,
+        primary_keys=primary_keys,
+        unstable_fields=unstable_fields,
+    )
+
+
 def _backstop_seconds(tool: Any, trial_default: float) -> float:
     """The band the runner applies around a call on *tool*.
 
@@ -590,13 +659,26 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         Args:
             db_client: HTTP client for DB Service communication
             rag_client: Optional RAG service client for search tools
-            check_executor: Executor for the pack's ``checks.py``. Defaults to the
-                in-process :class:`CheckRunner`; tests inject
+            check_executor: Executor for the pack's ``checks.py``. Defaults to
+                the ``check_runner`` entry point of
+                ``tolokaforge.custom_check_executors``; tests inject
                 :class:`InMemoryCheckExecutor`.
         """
         self.db_client = db_client
         self.rag_client = rag_client
-        self.check_executor: CheckExecutor = check_executor or CheckRunner()
+        self.check_executor: CheckExecutor = (
+            check_executor
+            if check_executor is not None
+            else load_custom_check_executor("check_runner")()
+        )
+        self._judge_model_provider: JudgeModelProvider = load_judge_model_provider("litellm")()
+        self._transcript_rule_matcher: TranscriptRuleMatcher = load_transcript_rule_matcher(
+            "default"
+        )()
+        self._state_check_backends: dict[str, StateCheckBackend] = {
+            "jsonpath": load_state_check_backend("jsonpath")(),
+            "db_probes": load_state_check_backend("db_probes")(),
+        }
         self.trials: dict[str, TrialContextRuntime] = {}
         self._available_adapters = list(BUILTIN_ADAPTERS)
         self._artifact_dirs: dict[str, Path] = {}  # trial_id -> temp dir for cleanup
@@ -1831,6 +1913,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     trial_id=trial_id,
                     config=state_checks_config,
                     substrate=substrate,
+                    state_check_backends=self._state_check_backends,
                     logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
                 ),
             )
@@ -2129,6 +2212,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_id=trial_id,
             config=transcript_rules_config,
             timeline=timeline,
+            matcher=self._transcript_rule_matcher,
             logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
         )
 
@@ -2156,23 +2240,26 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     ) -> "JudgeResult":
         """Delegate to :func:`composite.grade_llm_judge` over the runner's substrate.
 
-        The composite owns the judge dispatch (rubric, tool gating, state-diff,
-        loop drive); this wrapper collects the trial-context passthroughs
-        (judge ``ModelConfig``, ``search_policy`` connector reuse, id_fields,
-        unstable_fields, schema PKs) and delegates. The ``InProcessGradingSubstrate``
-        built once by :meth:`_build_grading_substrate` at the outer level is
-        shared here — the judge's read-only DB tools go through
+        The composite owns the judge dispatch (rubric plumbing, forwarding to
+        the resolved :class:`RubricEvaluator`); this wrapper collects the
+        trial-context passthroughs (judge ``ModelConfig``, ``search_policy``
+        connector reuse), constructs the ``RubricEvaluator`` from the run-level
+        :attr:`_judge_model_provider` and per-trial customization flags,
+        renders the ``initial → final`` state diff for the evaluator's opening
+        message, and delegates. The ``InProcessGradingSubstrate`` built once
+        by :meth:`_build_grading_substrate` at the outer level is shared
+        here — the judge's read-only DB tools go through
         ``substrate.db_reader()``, the same ``_LoopBridgeDBReader`` closure the
-        state-checks path uses, and the diff-first default reads
-        ``substrate.initial_state()`` / ``substrate.final_state()`` (RAW).
+        state-checks path uses.
 
         Sync-in-async: :func:`composite.grade_llm_judge` is a sync function whose
-        substrate reads (and the judge loop's own DB tool calls) bridge back to
+        substrate reads (and the evaluator's own DB tool calls) bridge back to
         this loop via ``run_coroutine_threadsafe``; driving it on the loop thread
         would deadlock at the first call. ``run_in_executor`` lands the work on
         a worker thread so the bridges resolve.
         """
         from tolokaforge.core.grading.composite import grade_llm_judge
+        from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorContext
 
         # The judge model is a run-level config that rides the TrialSpec. The
         # orchestrator validates up front that it is present whenever any selected
@@ -2197,21 +2284,45 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # runner-side; the composite receives the resolved list.
         extra_read_tools = self._build_judge_search_policy_tools(trial_context)
 
-        return await self._loop.run_in_executor(
-            None,
-            lambda: grade_llm_judge(
+        customization = llm_judge_config.customization
+        disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
+        custom_system_prompt = customization.system_prompt if customization else None
+        include_agent_system_prompt = (
+            customization.include_agent_system_prompt
+            if customization and customization.include_agent_system_prompt is not None
+            else True
+        )
+        rubric_evaluator = load_rubric_evaluator("llm_judge")(
+            RubricEvaluatorContext(
+                judge_model_provider=self._judge_model_provider,
+                disable_knowledge_search=disable_knowledge_search,
+                custom_system_prompt=custom_system_prompt,
+                include_agent_system_prompt=include_agent_system_prompt,
+            )
+        )
+
+        def _run() -> "JudgeResult":
+            state_diff_text = _build_judge_state_diff(
+                trial_id=trial_id,
+                substrate=substrate,
+                initial_state_schemas=list(initial_state.schemas),
+                id_fields=id_fields,
+                unstable_fields=unstable_fields,
+                logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
+            )
+            return grade_llm_judge(
                 trial_id=trial_id,
                 config=llm_judge_config,
                 substrate=substrate,
+                rubric_evaluator=rubric_evaluator,
                 llm_messages=llm_messages,
                 judge_model_config=judge_model_config,
                 extra_read_tools=extra_read_tools,
-                id_fields=id_fields,
-                unstable_fields=unstable_fields,
-                initial_state_schemas=initial_state.schemas,
+                state_diff=state_diff_text,
                 logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
-            ),
-        )
+            )
+
+        return await self._loop.run_in_executor(None, _run)
 
     async def _grade_custom_checks(
         self,

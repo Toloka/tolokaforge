@@ -6,14 +6,16 @@ The only thing that holds a hand-written table honest is running the shipped
 operators over real values of each type, which is what the brute-force cell test
 does: every cell is one parameter, so a flipped cell names itself.
 
-The comparisons it is measured against are ``trace_checks._BINDING_OPERATORS``
-rather than a second copy of that dispatch written here — a table answering for an
-operator the evaluator no longer calls answers for nothing.
+The comparisons it is measured against are the registered binding operators the
+evaluator itself dispatches through — resolved from the
+``tolokaforge.trace_check_operators`` entry-point group — rather than a second
+copy of that dispatch written here. A table answering for an operator the
+evaluator no longer calls answers for nothing.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from itertools import product
 from typing import Any
 
@@ -25,8 +27,26 @@ from tolokaforge.core.grading.predicates import (
     ever_satisfiable,
     json_type_of,
 )
-from tolokaforge.core.grading.trace_checks import _BINDING_OPERATORS
+from tolokaforge.core.plugin_registry import load_trace_check_operator
 from tolokaforge.runner.models import TRACE_PREDICATE_BINDING_OPERATORS
+
+
+def _binding_op(name: str) -> Callable[[Any, Any], bool]:
+    """Two-arg view of a registered binding operator, bound through a synthetic name.
+
+    A binding operator dispatches through a name in the constraint's ``bind``
+    environment — its signature is ``(value, expected_name, bindings) -> bool``.
+    The comparison the operator makes over one bound value is what this table
+    holds honest, so the wrapper binds ``expected`` to a fresh key and reads the
+    real bound value out of ``bindings``.
+    """
+    op = load_trace_check_operator(name)
+    return lambda value, bound: op(value, "b", {"b": bound})
+
+
+_BINDING_OPERATORS: Mapping[str, Callable[[Any, Any], bool]] = {
+    name: _binding_op(name) for name in TRACE_PREDICATE_BINDING_OPERATORS
+}
 
 pytestmark = pytest.mark.unit
 

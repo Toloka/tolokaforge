@@ -35,11 +35,11 @@ from pydantic import BaseModel, ValidationError, model_validator
 from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
 from tolokaforge.core.grading.judge import (
     DBReader,
-    JudgeResult,
     LLMJudge,
     model_config_from_ref,
 )
-from tolokaforge.core.grading.judge import JudgeStatus as JudgeRunStatus
+from tolokaforge.core.grading.judge_result import JudgeResult
+from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, SearchHit
 from tolokaforge.core.grading.replay_layout import (
     JUDGE_REPLAY_DIRNAME,

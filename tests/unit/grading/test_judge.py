@@ -14,11 +14,11 @@ import pytest
 from tolokaforge.core.grading.judge import (
     _JUDGE_MARKER_CONTRACT,
     _JUDGE_SYSTEM_PROMPT,
-    JudgeStatus,
     LLMJudge,
     _build_opening_message,
     _compose_judge_system_prompt,
 )
+from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall

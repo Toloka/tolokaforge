@@ -1247,6 +1247,19 @@ operator is therefore a runner-side pass that asserts nothing, and a core-side
 verdict that can disagree with it
 ([#466](https://github.com/toloka/tolokaforge/issues/466)).
 
+**The two source-scoring bodies resolve through the `tolokaforge.state_check_backends`
+entry-point group.** `jsonpath` scores `jsonpath_checks` against the substrate's
+STABLE DB view + agent-visible filesystem; `db_probes` opens each probe's declared
+postgres connection and applies its `expect` block. The composite
+`grade_state_checks_reads` dispatches through resolved `StateCheckBackend` instances
+the runner supplies at startup; a downstream package registering an alternative
+source (e.g. an `s3_diff` backend) alongside these two extends the state-check
+vocabulary without a framework PR — see `docs/GRADER_SERVICE.md` § "Sub-component
+plug-in seams". Hash grading is NOT part of the seam: its snapshot-and-replay
+semantics need write access to the trial's DB, so hash grading stays runner-
+integrated on `RunnerServiceImpl._execute_hash_grading` above the composite
+dispatch.
+
 ### Folding the hash verdict with `jsonpaths`
 
 `state_checks` has two possible sources — the state hash and the JSONPath
@@ -1709,6 +1722,14 @@ work is `transcript_rules.min_assistant_turns`, which is a separate declaration.
 tool-call record alone, so on a bundle re-graded without one a matcher reading
 either is [undecided](#when-a-constraint-cannot-be-decided) rather than unmatched
 — a named failing sub-check, never a pass in the agent's favour.
+
+**Every operator name resolves through the `tolokaforge.trace_check_operators`
+entry-point group.** `_operator_holds` looks up the registered callable per
+mention (cached in the entry-point discovery table); binding operators are
+identified by the `_binding` suffix on the registered name, no marker
+attribute. Registering `equals_semver` in a downstream package's
+`pyproject.toml` under this group extends the operator vocabulary without a
+framework PR — see `docs/GRADER_SERVICE.md` § "Sub-component plug-in seams".
 
 ### The config surface
 

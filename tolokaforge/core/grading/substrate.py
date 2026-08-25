@@ -15,8 +15,8 @@ The runtime picture
 +-------------------------------------+----------------------------------------+
 | Deployment shape                    | Substrate implementation               |
 +=====================================+========================================+
-| Aggregate image (this milestone)    | :class:`InProcessGradingSubstrate`     |
-| Independent grader (this milestone) | :class:`LiveRunnerCallbackGradingSub-  |
+| Aggregate image (shipping)          | :class:`InProcessGradingSubstrate`     |
+| Independent grader (shipping)       | :class:`LiveRunnerCallbackGradingSub-  |
 |                                     | strate`                                |
 | Trajectory-storage service (future) | :class:`TrajectoryStorageGradingSub-   |
 |                                     | strate` (recipe in ADR-0039)           |

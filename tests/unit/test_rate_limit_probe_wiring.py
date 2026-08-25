@@ -41,7 +41,8 @@ from tolokaforge.core.conductor import (
     conductor_supports_rate_limit_probe,
     require_rate_limit_probe_support,
 )
-from tolokaforge.core.grading.judge import JudgeStatus, LLMJudge
+from tolokaforge.core.grading.judge import LLMJudge
+from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.llm import LLMClient, UserSimulator
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.logging import get_logger

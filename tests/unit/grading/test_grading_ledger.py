@@ -1106,9 +1106,10 @@ def test_a_degenerate_trial_leaves_trace_checks_unscored(runner_service, mock_gr
 
 
 @pytest.mark.parametrize(
-    ("evaluator_name", "grading", "unaccounted_key", "message"),
+    ("evaluator_module", "evaluator_name", "grading", "unaccounted_key", "message"),
     [
         (
+            "tolokaforge.core.grading.default_transcript_rule_matcher",
             "evaluate_transcript_rules",
             {
                 "combine_method": "weighted",
@@ -1120,6 +1121,7 @@ def test_a_degenerate_trial_leaves_trace_checks_unscored(runner_service, mock_gr
             [{"role": "assistant", "content": "All done"}],
         ),
         (
+            "tolokaforge.core.grading.composite",
             "evaluate_trace_checks",
             _TRACE_CHECKS_GRADING,
             TRACE_CONSTRAINT_KEY_BY_KIND["all_of"],
@@ -1128,6 +1130,7 @@ def test_a_degenerate_trial_leaves_trace_checks_unscored(runner_service, mock_gr
     ],
 )
 def test_grade_trial_fails_loud_when_an_evaluator_stops_decomposing_a_key(
+    evaluator_module,
     evaluator_name,
     grading,
     unaccounted_key,
@@ -1144,15 +1147,21 @@ def test_grade_trial_fails_loud_when_an_evaluator_stops_decomposing_a_key(
     leaf-granular case: the block key alone being accounted would leave a kind
     evaluated by neither substrate invisible, so the key the error must name is
     the kind's.
-    """
-    from tolokaforge.core.grading import composite as composite_module
 
-    real = getattr(composite_module, evaluator_name)
+    ``evaluator_module`` names the module the drift is injected on: composite
+    for :func:`evaluate_trace_checks` (still imported directly at composite
+    load time), and the default matcher module for :func:`evaluate_transcript_rules`
+    (reached through the :class:`TranscriptRuleMatcher` seam).
+    """
+    import importlib
+
+    module = importlib.import_module(evaluator_module)
+    real = getattr(module, evaluator_name)
 
     def drifted(*args: Any, **kwargs: Any) -> Any:
         return real(*args, **kwargs).model_copy(update={"accounted_keys": {}})
 
-    monkeypatch.setattr(composite_module, evaluator_name, drifted)
+    monkeypatch.setattr(module, evaluator_name, drifted)
 
     response = _grade(
         runner_service,
