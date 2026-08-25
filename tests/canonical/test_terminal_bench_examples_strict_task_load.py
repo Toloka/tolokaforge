@@ -134,8 +134,13 @@ def test_a_harness_example_exists_and_is_fully_specified() -> None:
     harness_configs = []
     for config_path in _example_run_configs():
         config = RunConfig(**yaml.safe_load(config_path.read_text()))
-        adapter = config.evaluation.harness_adapter
-        harness = (adapter.params.get("agent_harness") if adapter else None) or ENGINE_LOOP
+        # Canonical home post-lift is ``models.agent.harness``; the parse-time
+        # alias validator on ``RunConfig`` moves the legacy
+        # ``evaluation.harness_adapter.params.agent_harness`` value here and
+        # deletes the legacy key, so this single read covers both shipped
+        # example shapes.
+        agent_model_config = config.models.get("agent") if config.models else None
+        harness = (agent_model_config.harness if agent_model_config else None) or ENGINE_LOOP
         if harness != ENGINE_LOOP:
             harness_configs.append((config_path, config, harness))
 
@@ -145,9 +150,12 @@ def test_a_harness_example_exists_and_is_fully_specified() -> None:
     )
     for config_path, config, harness in harness_configs:
         rel = config_path.relative_to(_REPO_ROOT)
-        params = config.evaluation.harness_adapter.params
+        agent_model_config = config.models.get("agent") if config.models else None
         assert harness in HARNESSES, f"{rel}: unknown agent_harness {harness!r}"
-        assert params.get("agent_model"), f"{rel}: a harness run must pin `agent_model`"
+        assert agent_model_config is not None and agent_model_config.name, (
+            f"{rel}: a harness run must declare ``models.agent.name`` "
+            "(also lifted from the legacy ``harness_adapter.params.agent_model``)"
+        )
         # The exec cannot be cut short, so the run budget must cover the
         # harness budget or the adapter refuses the run at trial setup.
         assert config.orchestrator.timeouts.episode_s >= 1800, (

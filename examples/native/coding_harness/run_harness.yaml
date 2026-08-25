@@ -1,0 +1,43 @@
+# Native-adapter run config exercising `models.agent.harness` end-to-end.
+#
+# This is the exemplar of the adapter-agnostic shape the coding-harness lift
+# introduces: any task on any adapter that opts into `supports_coding_harness`
+# declares the CLI right next to the model, and the engine's turn loop is
+# replaced by one invocation of that CLI inside the trial container.
+#
+# The native adapter (this run's harness_adapter) inherits
+# `CodingHarnessAdapterMixin`, so the run config's `models.agent.harness`
+# survives the orchestrator's config-validation gate.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "openrouter/anthropic/claude-sonnet-4-6"
+    harness: "claude-code"
+    temperature: 0.0
+    max_tokens: 4096
+
+compute:
+  workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
+  repeats: 1
+  strict_task_load: true
+  timeouts:
+    # The harness runs to completion inside one `docker exec`; the trial has
+    # no LLM turn loop to time-slice, so this budget must cover the whole
+    # invocation.
+    episode_s: 900
+    turn_s: 240
+
+evaluation:
+  projects:
+    - "examples/native/coding_harness"
+  tasks_glob: "task.yaml"
+  output_dir: "results/native-coding-harness"
+  harness_adapter:
+    type: "native"

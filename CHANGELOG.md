@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Feat
+
+- **schema**: `models.agent.harness` is the canonical home for the coding-harness selector, alongside `models.agent.name` for the model the CLI receives. A run declares "run this trial under `claude-code` on `openrouter/anthropic/claude-sonnet-4-6`" in one place, not two. See [ADR-0039](docs/adr/0039-coding-harness-adapter-agnostic.md).
+- **coding-harnesses**: `CodingHarnessAdapterMixin` in `tolokaforge_coding_harnesses/` gives any adapter the six wire-artefact helpers (spec resolution, command assembly, metadata handshake, bash tool schema, `test_execution` grading, standalone install-script Dockerfile layer) and the `supports_coding_harness = True` capability flag the orchestrator's config-validation gate reads. Inheriting the mixin alongside `BaseAdapter` is the whole opt-in.
+- **native**: the bundled `NativeAdapter` opts into coding-harness mode. A native run declaring `models.agent.harness` mints a `TaskDescription` with a single `bash` tool routed through `DockerComposeExecToolWrapper` (`service: "main"`, `compose_project_prefix: "tfnative_"`, `agent_visible_dir: "/work"`), `test_execution` grading, and the four-key harness metadata handshake — no MCP wiring required.
+- **examples**: `examples/native/coding_harness/` (fix-factorial) is the first shipped native harness pack — a single-service Python 3.11 compose stack, one small bug the agent fixes, `tests/test.sh` verifier writing `/logs/verifier/reward.txt`. Oracle preflight: buggy 0.667, fixed 1.000.
+- **runner**: harness-mode trials compose with `state_checks` / `transcript` / `rubric` grading, not only `test_execution`. When a trial's metadata carries both `agent_harness_command` and `agent_visible_dir` and a `DockerComposeExecToolWrapper` is registered for it, `_read_filesystem_for_state` snapshots the container's agent-visible directory into `state["filesystem"]` via the new `tolokaforge/runner/harness_state.py`. A JSONPath assertion against `$.filesystem['/work/factorial.py']` resolves against what the CLI actually left behind. `test_execution` still short-circuits at grading time, so terminal-bench's byte-identical replay is preserved naturally.
+
+### Changed
+
+- **schema**: legacy `evaluation.harness_adapter.params.agent_harness` / `agent_model` are lifted at parse time into `models.agent.harness` / `models.agent.name` with a `DeprecationWarning` per key naming the canonical home. Equal-value collisions warn once; differing values raise. Removal target: the next scheduled major-version bump.
+
 ## v0.19.1 (2026-08-19)
 
 ### Feat

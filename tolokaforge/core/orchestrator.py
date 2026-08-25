@@ -601,6 +601,18 @@ class Orchestrator:
             adapter_type = AdapterType.NATIVE
             params = {}
 
+        # Coding-harness selector: canonical home is ``models.agent.harness``
+        # (adapter-agnostic). Inject it into adapter params here so adapters
+        # that already read ``params["agent_harness"]`` keep working; the
+        # legacy ``harness_adapter.params.agent_harness`` shape is lifted to
+        # ``models.agent`` at parse time, so nothing else in this method sees
+        # the old location. ``models.agent.name`` doubles as the model the
+        # CLI receives — the same field the engine loop reads.
+        agent_model_config = self.config.models.get("agent") if self.config.models else None
+        if agent_model_config is not None and agent_model_config.harness is not None:
+            params.setdefault("agent_harness", agent_model_config.harness)
+            params.setdefault("agent_model", agent_model_config.name)
+
         # Add tasks_glob to params for both native and other adapters
         params["tasks_glob"] = self.config.evaluation.tasks_glob
         # ``evaluation.projects`` is the canonical field; the deprecated
@@ -1634,6 +1646,36 @@ class Orchestrator:
         # Create adapter if not already created
         if self.adapter is None:
             self.adapter = self._create_adapter()
+
+        # Coding-harness capability gate: refuse a run declaring
+        # ``models.agent.harness`` on an adapter that has not opted into the
+        # harness surface (``supports_coding_harness`` class attr from
+        # ``CodingHarnessAdapterMixin``). Fail here — before any container
+        # work — with a message that names the adapter and the harness slug
+        # so the operator sees which side of the pair does not match.
+        agent_model_config = self.config.models.get("agent") if self.config.models else None
+        if agent_model_config is not None and agent_model_config.harness is not None:
+            if not getattr(self.adapter, "supports_coding_harness", False):
+                adapter_type_name = (
+                    getattr(
+                        self.config.evaluation.harness_adapter,
+                        "type",
+                        "native",
+                    )
+                    if self.config.evaluation.harness_adapter
+                    else "native"
+                )
+                raise RuntimeError(
+                    f"models.agent.harness={agent_model_config.harness!r} but "
+                    f"adapter {adapter_type_name!r} does not opt into coding-"
+                    "harness mode. An adapter opts in by inheriting "
+                    "``tolokaforge_coding_harnesses.adapter_support."
+                    "CodingHarnessAdapterMixin`` (which sets "
+                    "``supports_coding_harness = True``). Either drop "
+                    "``models.agent.harness`` to run the engine's LLM loop, "
+                    "or switch to an adapter that supports the harness "
+                    "surface (currently: terminal_bench, native)."
+                )
 
         # Get task IDs from adapter
         task_ids = self.adapter.get_task_ids()

@@ -410,6 +410,16 @@ def _write_harness_build_context(staging_dir: Path, *, base_image: str, spec: Ha
 
     A :class:`~tolokaforge_coding_harnesses.SkillDelivery` may
     append to either file afterwards; :class:`ImageLayerSkillDelivery` does.
+
+    Kept in this adapter (rather than delegated to
+    :meth:`~tolokaforge_coding_harnesses.adapter_support.CodingHarnessAdapterMixin.write_install_script_layer`)
+    because the synthesised compose file's ``build.context`` is the staging
+    directory root — not the ``_harness/`` subdirectory the Dockerfile lives
+    in — so a skills bundle at the staging root remains reachable by a single
+    ``COPY`` line. The mixin writes a flat build context whose Dockerfile
+    ``COPY`` paths do not carry a ``_harness/`` prefix, which would drift the
+    dockerfile bytes locked by the ``tbench_echo_hello_harness`` canonical
+    snapshot.
     """
     harness_dir = staging_dir / _HARNESS_STAGING_DIR
     harness_dir.mkdir(exist_ok=True)
