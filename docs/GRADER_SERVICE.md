@@ -210,9 +210,7 @@ queue = "tolokaforge.core.trial_grader:queue_trial_grader_factory"
 
 `deploy/standalone/docker-compose.yaml` is the operator template — no
 Kubernetes manifest ships in-tree. Adapting the compose recipe to a
-Kubernetes cluster is the operator's job; the follow-up
-[#1272](https://github.com/Toloka/tolokaforge/issues/1272) tracks a
-first-party K8s example.
+Kubernetes cluster is the operator's job.
 
 The `tolokaforge-grader` image ships alongside the other four first-party
 images. `deploy/standalone/docker-compose.yaml` brings the five-service
