@@ -16,6 +16,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from tolokaforge_coding_harnesses.adapter_support import CodingHarnessAdapterMixin
+
 from tolokaforge.adapters.base import (
     AdapterEnvironment,
     BaseAdapter,
@@ -36,7 +38,6 @@ from tolokaforge.core.project_loader import resolve as resolve_environment_patch
 from tolokaforge.runner.models import (
     AdapterType,
     EnvironmentPatch,
-    InvocationStyle,
     NetworkPolicy,
     RunnerGradingConfig,
     RunnerInitialStateConfig,
@@ -44,7 +45,6 @@ from tolokaforge.runner.models import (
     StackPatch,
     TaskDescription,
     ToolSchema,
-    ToolSource,
 )
 from tolokaforge.secrets import expand_secret_refs, get_default
 from tolokaforge_adapter_terminal_bench.compose_synthesis import (
@@ -67,7 +67,6 @@ from tolokaforge_coding_harnesses import (
     ResolvedHarnessRegistry,
     SkillDelivery,
     compute_harness_fingerprint,
-    harness_command,
     provider_env_input,
     resolve_effective_registry,
     validate_harness,
@@ -144,9 +143,16 @@ def _resolve_provider_env(
     return resolved
 
 
-class TerminalBenchAdapter(BaseAdapter):
+class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     """Adapter that runs terminal-bench tasks through
     :class:`~tolokaforge.core.per_trial_runtime.PerTrialRuntimeBackend`.
+
+    Inheriting :class:`CodingHarnessAdapterMixin` opts this adapter into the
+    orchestrator's ``models.agent.harness`` config gate (via the mixin's
+    ``supports_coding_harness = True`` flag) and gives it the shared helpers
+    for command assembly, metadata emission, tool-schema payload, and
+    ``test_execution`` grading — leaving only the terminal-bench-specific
+    compose synthesis in this adapter.
     """
 
     def __init__(
@@ -392,51 +398,26 @@ class TerminalBenchAdapter(BaseAdapter):
             environment_manifest=manifest,
             agent_tools=[
                 ToolSchema(
-                    name="bash",
-                    description="Execute a bash command inside the task container",
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "command": {
-                                "type": "string",
-                                "description": "Shell command to run",
-                            }
-                        },
-                        "required": ["command"],
-                    },
-                    category="compute",
-                    # The runner-side compose-exec wrapper reads its subprocess
-                    # timeout off this field, so under harness mode it has to
-                    # carry the whole trial's agent budget: the CLI runs to
-                    # completion inside a single exec.
-                    timeout_s=(
-                        _AGENT_TOOL_TIMEOUT_S
-                        if self.agent_harness == ENGINE_LOOP
-                        else meta.agent_timeout_sec
-                    ),
-                    source=ToolSource(
+                    **self.emit_harness_tool_schema(
+                        service=env.agent_service,
+                        compose_project_prefix=PROJECT_PREFIX,
+                        # The runner-side compose-exec wrapper reads its subprocess
+                        # timeout off this field, so under harness mode it has to
+                        # carry the whole trial's agent budget: the CLI runs to
+                        # completion inside a single exec.
+                        timeout_s=(
+                            _AGENT_TOOL_TIMEOUT_S
+                            if self.agent_harness == ENGINE_LOOP
+                            else meta.agent_timeout_sec
+                        ),
                         toolset="terminal_bench",
-                        module_path="",
-                        class_name="bash",
-                        invocation_style=InvocationStyle.DOCKER_COMPOSE_EXEC,
-                        extra={
-                            "service": env.agent_service,
-                            "compose_project_prefix": PROJECT_PREFIX,
-                        },
-                    ),
+                    )
                 )
             ],
             user_tools=[],
             initial_state=RunnerInitialStateConfig(),
             user_simulator=RunnerUserSimulatorConfig(mode="scripted"),
-            grading=RunnerGradingConfig(
-                combine_method="weighted",
-                weights={"custom_checks": 1.0},
-                pass_threshold=0.5,
-                # Score by running the reference test suite in the env container.
-                # The runner dispatches on this method, not on the adapter name.
-                grading_method="test_execution",
-            ),
+            grading=RunnerGradingConfig(**self.emit_test_execution_grading()),
             metadata=self._metadata(meta),
         )
 
@@ -460,15 +441,18 @@ class TerminalBenchAdapter(BaseAdapter):
             "agent_harness": self.agent_harness,
         }
         if self.harness_spec is not None:
-            metadata["agent_harness_version"] = self.harness_spec.version
-            metadata["agent_harness_model"] = self.agent_model
-            metadata["agent_harness_command"] = harness_command(
+            command = self.build_harness_command(
                 self.agent_harness,
+                self.harness_spec,
                 meta.instruction,
                 self.agent_model,
-                self.harnesses,
                 self.agent_provider_env,
                 path_resolver=self.path_resolver,
+            )
+            metadata.update(
+                self.emit_harness_metadata(
+                    self.agent_harness, self.harness_spec, command, self.agent_model
+                )
             )
             skills_dir = installable_skills_dir(meta, self.harness_spec)
             if skills_dir is not None:

@@ -2124,3 +2124,28 @@ class TestHarnessTaskDescriptionMetadata:
             {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
         )
         assert adapter.to_task_description("echo-hello").agent_tools[0].timeout_s == 120.0
+
+
+class TestTerminalBenchAdapterCodingHarnessOptIn:
+    """The adapter opts into the orchestrator's ``models.agent.harness`` gate.
+
+    The gate is the class-level ``supports_coding_harness`` flag the
+    orchestrator's ``load_tasks`` reads (``tolokaforge/core/orchestrator.py``)
+    before routing a run that names a harness. Any refactor that drops the
+    :class:`CodingHarnessAdapterMixin` inheritance or shadows the flag with a
+    ``False`` here would silently make a shipped ``examples/terminal_bench``
+    harness run refuse to load, so lock the two together.
+    """
+
+    def test_class_inherits_the_coding_harness_mixin(self) -> None:
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+        from tolokaforge_coding_harnesses.adapter_support import (
+            CodingHarnessAdapterMixin,
+        )
+
+        assert issubclass(TerminalBenchAdapter, CodingHarnessAdapterMixin)
+
+    def test_supports_coding_harness_is_true(self) -> None:
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        assert TerminalBenchAdapter.supports_coding_harness is True
