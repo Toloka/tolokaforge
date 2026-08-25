@@ -2,7 +2,10 @@
 
 import base64
 import glob as glob_module
+import hashlib
 import json
+import shutil
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,16 +25,8 @@ from tolokaforge.adapters._task_loader import (
 from tolokaforge.adapters.base import (
     AdapterEnvironment,
     BaseAdapter,
-    ComposeImageBuild,
-    DockerStackRequirements,
 )
-from tolokaforge.adapters.native_harness_synthesis import (
-    PROJECT_PREFIX as NATIVE_HARNESS_PROJECT_PREFIX,
-)
-from tolokaforge.adapters.native_harness_synthesis import (
-    MaterialisedHarnessEnvironment,
-    materialise_harness_environment,
-)
+from tolokaforge.core.agent_driver import StagedTask
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.grading.config_validation import (
     CombineLayer,
@@ -50,14 +45,6 @@ from tolokaforge.core.project_loader import (
 )
 from tolokaforge.core.project_loader import resolve as resolve_environment
 from tolokaforge.runner.id_resolution import check_id_fields_against_seeded_tables
-from tolokaforge_coding_harnesses import (
-    ENGINE_LOOP,
-    CodingHarnessAdapterMixin,
-    HarnessSpec,
-    ResolvedHarnessRegistry,
-    resolve_effective_registry,
-    validate_harness,
-)
 
 if TYPE_CHECKING:
     from tolokaforge.runner.models import SearchConfig, TaskDescription, ToolSchema
@@ -138,7 +125,83 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
     return schemas
 
 
-class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
+_STAGING_ROOT = Path(tempfile.gettempdir()) / "tolokaforge-native-harness"
+"""Root directory per-task staging dirs are materialised under (see
+:meth:`NativeAdapter.stage_task`)."""
+
+_COMPOSE_PROJECT_PREFIX = "tfnative_"
+"""Compose project prefix baked into the pack's compose ``container_name``
+template (``tfnative_${TOLOKAFORGE_TRIAL_SLUG}_<service>``). Read by the
+runner-side ``DockerComposeExecToolWrapper`` to resolve the per-trial
+container a driver's bash tool execs into."""
+
+
+def _resolve_agent_service(compose_file: Path, task_id: str) -> str:
+    """Return the compose service a driver's bash tool would exec into.
+
+    Picks the service named ``main`` when present; otherwise the sole
+    service. Refuses ambiguity so the wire target is unambiguous.
+
+    Raises:
+        FileNotFoundError: *compose_file* does not exist.
+        ValueError: The compose file declares no services, or several
+            services none of which is named ``main``.
+    """
+    if not compose_file.exists():
+        raise FileNotFoundError(
+            f"native adapter: task {task_id!r} declares "
+            f"environment_manifest.stack.compose_file={compose_file!r}, "
+            "but that file does not exist"
+        )
+    doc = yaml.safe_load(compose_file.read_text()) or {}
+    services = doc.get("services") or {}
+    if not services:
+        raise ValueError(
+            f"native adapter: task {task_id!r} compose file {compose_file!r} declares no services"
+        )
+    if "main" in services:
+        return "main"
+    if len(services) == 1:
+        return next(iter(services))
+    raise ValueError(
+        f"native adapter: task {task_id!r} compose file "
+        f"{compose_file!r} declares {sorted(services)!r} but no service is "
+        "named 'main'; rename one to 'main' or leave a single service in the "
+        "compose file"
+    )
+
+
+def _copy_task_dir(task_dir: Path, staging_dir: Path) -> None:
+    """Copy *task_dir* into *staging_dir* excluding the oracle and caches.
+
+    ``solution/`` is dropped so a driver's CLI cannot exec it,
+    ``__pycache__`` directories are dropped so a stale cache does not follow
+    the copy.
+    """
+
+    def _ignore(_dir: str, names: list[str]) -> list[str]:
+        return [n for n in names if n in ("solution", "__pycache__")]
+
+    shutil.copytree(task_dir, staging_dir, ignore=_ignore, dirs_exist_ok=True)
+
+
+def _content_digest(task_dir: Path) -> str:
+    """Content hash of *task_dir*, so repeated calls for the same task land
+    in the same staging directory."""
+    hasher = hashlib.sha256()
+    for path in sorted(task_dir.rglob("*")):
+        if "__pycache__" in path.parts:
+            continue
+        rel = path.relative_to(task_dir).as_posix()
+        hasher.update(b"P|" + rel.encode() + b"\n")
+        if path.is_file():
+            hasher.update(b"C|")
+            hasher.update(path.read_bytes())
+            hasher.update(b"\n")
+    return hasher.hexdigest()[:16]
+
+
+class NativeAdapter(BaseAdapter):
     """
     Adapter for native TolokaForge file-based tasks.
 
@@ -146,12 +209,11 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     It provides the same interface as external adapters while loading tasks
     from YAML files.
 
-    Inheriting :class:`CodingHarnessAdapterMixin` opts this adapter into the
-    orchestrator's ``models.agent.coding_harness`` config gate (via the mixin's
-    ``supports_coding_harness = True`` flag) and gives it the shared helpers
-    for command assembly, metadata emission, tool-schema payload, and
-    ``test_execution`` grading — leaving only the native-side compose
-    synthesis in this adapter.
+    Carries no coding-harness mode state: a run driven by a vendor CLI
+    (``models.agent.coding_harness``) is applied by the orchestrator's
+    selected :class:`~tolokaforge.core.agent_driver.AgentDriver` around this
+    adapter's plain output — see :meth:`stage_task`, which hands the driver
+    the per-task compose staging root it layers a CLI install onto.
 
     Expected structure:
         tasks_glob: "tasks/project/tasks/**/task.yaml"
@@ -170,11 +232,6 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 - tasks_glob: Glob pattern for task files (required)
                 - base_dir: Base directory for resolving paths (default: ".")
                 - task_packs: Optional list of pack root directories to search
-                - agent_harness: coding-harness slug to route trials through
-                  a vendor CLI (injected by the orchestrator from
-                  ``models.agent.coding_harness``); omit for the engine loop
-                - agent_model: model string the CLI receives (injected from
-                  ``models.agent.name`` when ``agent_harness`` is set)
         """
         super().__init__(params)
         self.tasks_glob = params["tasks_glob"]
@@ -194,34 +251,6 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             "project_default_environment"
         )
 
-        # Coding-harness selector. Empty under the engine loop, which never
-        # reads it: the run config's model reaches litellm through the
-        # engine's own LLM layer there.
-        self._resolved_registry: ResolvedHarnessRegistry = resolve_effective_registry(
-            params.get("harness_presets_file"),
-            discover_plugins=not params.get("disable_harness_plugins", False),
-        )
-        self.agent_harness: str = validate_harness(
-            params.get("agent_harness", ENGINE_LOOP), self._resolved_registry.harnesses
-        )
-        self.agent_model: str = params.get("agent_model") or ""
-        if self.agent_harness != ENGINE_LOOP and not self.agent_model:
-            raise ValueError(
-                f"native adapter: agent_harness {self.agent_harness!r} requires "
-                "`agent_model` — the CLI selects its own default otherwise, so the "
-                "run config's model would not be the one measured. Set "
-                "`models.agent.name` in the run config."
-            )
-        # Optional CLI version override from ``models.agent.coding_harness_version``
-        # (or from the ``name@version`` slug on ``models.agent.coding_harness`` — the
-        # ``RunConfig`` pre-validator splits and populates both fields, and the
-        # orchestrator threads the version through here as its own param).
-        # ``None`` means "use the shipped registry pin".
-        self.agent_harness_version_override: str | None = (
-            params.get("agent_harness_version") or None
-        )
-        self._harness_environments: dict[str, MaterialisedHarnessEnvironment] = {}
-
         # Validate: tasks_glob must be relative when task_packs is provided
         if self.task_packs and Path(self.tasks_glob).is_absolute():
             raise ValueError(
@@ -240,20 +269,6 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         # task_id -> validated TaskConfig. Populated lazily on first
         # get_task() call via :func:`load_task_yaml`.
         self._tasks: dict[str, TaskConfig] = {}
-
-    @property
-    def harness_spec(self) -> HarnessSpec | None:
-        """This run's harness spec. ``None`` under the engine loop, which runs no CLI.
-
-        When ``agent_harness_version_override`` is set (from the
-        ``name@version`` slug or an explicit ``harness_version``), the resolved
-        spec's ``version`` is model-copied. Downstream consumers see the
-        override as if it were the shipped pin.
-        """
-        spec = self._resolved_registry.harnesses.get(self.agent_harness)
-        if spec is None or self.agent_harness_version_override is None:
-            return spec
-        return spec.model_copy(update={"version": self.agent_harness_version_override})
 
     def _discover_tasks(self) -> None:
         """Discover tasks matching glob pattern, optionally across task packs."""
@@ -541,68 +556,42 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         """
         return None
 
-    def docker_stack_requirements(self) -> DockerStackRequirements:
-        """Declare per-task images the orchestrator builds once per run.
+    def stage_task(self, task_id: str) -> StagedTask | None:
+        """Materialise a per-task staging dir a driver can layer onto.
 
-        Under harness mode the layered agent image is ``FROM`` the pack's own
-        image build, so both stages need addressable compose services — the
-        base build first, then the harness layer. Under the engine loop the
-        default (empty requirements) applies: no per-task image build.
+        Returns ``None`` when the task declares no compose stack — there is
+        no container for a driver to target. Otherwise copies the task
+        directory into a per-task staging dir keyed by a content digest (so
+        repeated calls for the same task land in the same place) and reports
+        the compose service a driver's bash tool would exec into.
         """
-        if self.agent_harness == ENGINE_LOOP:
-            return DockerStackRequirements()
-        builds: list[ComposeImageBuild] = []
-        for task_id in self.get_task_ids():
-            env = self._resolve_harness_environment(task_id)
-            if env is None:
-                continue
-            builds.append(
-                ComposeImageBuild(compose_file=env.compose_file, service=env.base_build_service)
-            )
-            builds.append(
-                ComposeImageBuild(compose_file=env.compose_file, service=env.agent_service)
-            )
-        return DockerStackRequirements(image_builds=builds)
-
-    def _resolve_harness_environment(self, task_id: str) -> MaterialisedHarnessEnvironment | None:
-        """Cache and return the synthesised harness environment for *task_id*.
-
-        Returns ``None`` under the engine loop or when the task declares no
-        compose file (harness mode requires a per-trial container the CLI's
-        bash tool can exec into). Under harness mode with a compose file the
-        staging dir is materialised once and cached.
-        """
-        if self.agent_harness == ENGINE_LOOP or self.harness_spec is None:
-            return None
-        cached = self._harness_environments.get(task_id)
-        if cached is not None:
-            return cached
         task = self.get_task(task_id)
         task_dir = self.get_task_dir(task_id)
-        if task.environment_manifest is None or task.environment_manifest.stack is None:
-            raise ValueError(
-                f"native adapter: task {task_id!r} runs under harness "
-                f"{self.agent_harness!r} but declares no environment_manifest.stack. "
-                "Declare a task-local `docker-compose.yaml` so the CLI has a "
-                "container to exec into."
-            )
-        compose_file = task.environment_manifest.stack.compose_file
-        if compose_file is None:
-            raise ValueError(
-                f"native adapter: task {task_id!r} runs under harness "
-                f"{self.agent_harness!r} but declares no "
-                "environment_manifest.stack.compose_file."
-            )
-        env = materialise_harness_environment(
+        manifest = task.environment_manifest
+        if manifest is None or manifest.stack is None or manifest.stack.compose_file is None:
+            return None
+
+        compose_file = Path(manifest.stack.compose_file)
+        agent_service = _resolve_agent_service(compose_file, task_id)
+
+        staging_dir = (_STAGING_ROOT / f"{task_id}-{_content_digest(task_dir)}").resolve()
+        _copy_task_dir(task_dir, staging_dir)
+        # Normalised to a fixed filename at the staging root regardless of
+        # the pack's own compose filename/location, so a driver's
+        # apply_container_layers always knows where to find it.
+        staged_compose_file = (staging_dir / "docker-compose.yaml").resolve()
+        if compose_file.resolve() != staged_compose_file:
+            shutil.copy2(compose_file, staged_compose_file)
+
+        return StagedTask(
             task_id=task_id,
-            task_dir=task_dir,
-            compose_file=Path(compose_file),
-            harness_spec=self.harness_spec,
-            agent_harness=self.agent_harness,
-            layer_writer=self.write_install_script_layer,
+            staging_dir=staging_dir,
+            compose_file=staged_compose_file,
+            agent_service=agent_service,
+            base_image=f"tolokaforge-native-{task_id}-base:local",
+            base_build_service=f"{agent_service}_base",
+            compose_project_prefix=_COMPOSE_PROJECT_PREFIX,
         )
-        self._harness_environments[task_id] = env
-        return env
 
     def to_task_description(self, task_id: str) -> "TaskDescription":
         """
@@ -614,12 +603,6 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         - Initialization actions from task.yaml
         - Grading config from grading.yaml
         - System prompt from system_prompt file
-
-        A run declaring ``models.agent.coding_harness`` takes the harness-mode
-        branch instead — the description carries a single ``bash`` tool that
-        execs into the per-trial container, ``test_execution`` grading, and
-        the four-key harness metadata handshake the conductor reads on
-        :attr:`~tolokaforge.runner.models.TaskDescription.metadata`.
 
         Args:
             task_id: Task identifier
@@ -642,8 +625,6 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 absent or empty is **not** refused: it reaches the wire as
                 ``tool_name=""`` and fails at resolve time, which is #886.
         """
-        if self.agent_harness != ENGINE_LOOP:
-            return self._to_harness_task_description(task_id)
         from datetime import datetime, timezone
 
         from tolokaforge.runner.models import (
@@ -960,105 +941,6 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         )
 
         return task_description
-
-    def _to_harness_task_description(self, task_id: str) -> "TaskDescription":
-        """Build a coding-harness-mode :class:`TaskDescription`.
-
-        The description carries one ``bash`` tool (the CLI's exec surface),
-        ``test_execution`` grading (the mixin's default), the four-key
-        harness metadata handshake the conductor branches on, and an
-        environment manifest pointing at the synthesised per-task compose
-        file that layers the CLI on the pack's own image.
-        """
-        from datetime import datetime, timezone
-
-        from tolokaforge.runner.models import (
-            AdapterType,
-            RunnerGradingConfig,
-            RunnerInitialStateConfig,
-            RunnerUserSimulatorConfig,
-            TaskDescription,
-            ToolSchema,
-        )
-
-        assert self.harness_spec is not None  # guarded by agent_harness != ENGINE_LOOP
-        task = self.get_task(task_id)
-        env = self._resolve_harness_environment(task_id)
-        if env is None:
-            # _resolve_harness_environment only returns None under the engine
-            # loop, which this branch is guarded off of. Any None here is a
-            # programming error surfacing as a typed refusal.
-            raise RuntimeError(
-                f"native adapter: harness-mode _to_harness_task_description called "
-                f"for task {task_id!r} but no harness environment was materialised"
-            )
-
-        instruction = task.initial_user_message or task.description or ""
-        command = self.build_harness_command(
-            self.agent_harness,
-            self.harness_spec,
-            instruction,
-            self.agent_model,
-        )
-        metadata: dict[str, Any] = {
-            "agent_harness": self.agent_harness,
-            # Where the CLI edits inside the trial container — the runner
-            # reads this back for state-checks grading so
-            # ``$.filesystem['/work/...']`` resolves against the harness's
-            # edits, not the runner container's own /work/. Native packs
-            # inherit /work as WORKDIR from the pack's base image, which the
-            # harness-install layer does not override.
-            "agent_visible_dir": "/work",
-        }
-        metadata.update(
-            self.emit_harness_metadata(
-                self.agent_harness, self.harness_spec, command, self.agent_model
-            )
-        )
-
-        # Point the environment manifest at the synthesised compose file so
-        # the per-trial runtime provisions the layered stack. The pack's
-        # `runner_service` is authored against its own compose (usually the
-        # pack's `main` service, before the adapter injects the tolokaforge
-        # runner sidecar); overwrite it here to name the injected `runner`.
-        original_patch = task.environment_manifest
-        assert original_patch is not None  # guarded by _resolve_harness_environment
-        stack = original_patch.stack.model_copy(
-            update={"compose_file": env.compose_file, "runner_service": "runner"}
-        )
-        harness_patch = original_patch.model_copy(update={"stack": stack})
-        environment_manifest = resolve_environment(
-            self._project_default_environment,
-            harness_patch,
-        )
-
-        episode_timeout_s = 900.0
-        tool_schema = ToolSchema(
-            **self.emit_harness_tool_schema(
-                service=env.agent_service,
-                compose_project_prefix=NATIVE_HARNESS_PROJECT_PREFIX,
-                timeout_s=episode_timeout_s,
-                toolset="native",
-            )
-        )
-        grading_config = RunnerGradingConfig(**self.emit_test_execution_grading())
-
-        return TaskDescription(
-            task_id=task_id,
-            name=task.name or task_id,
-            category=task.category or "coding_harness",
-            description=task.description or "",
-            adapter_type=AdapterType.NATIVE,
-            system_prompt=self.get_system_prompt(task_id) if task.system_prompt else "",
-            agent_tools=[tool_schema],
-            user_tools=[],
-            initial_state=RunnerInitialStateConfig(),
-            user_simulator=RunnerUserSimulatorConfig(mode="scripted"),
-            grading=grading_config,
-            generated_at=datetime.now(timezone.utc),
-            metadata=metadata,
-            environment_manifest=environment_manifest,
-        )
 
     # ------------------------------------------------------------------
     # Task artifact bundling (for Docker execution)

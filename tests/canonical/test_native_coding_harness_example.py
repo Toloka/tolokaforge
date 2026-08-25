@@ -5,9 +5,10 @@ coding-harness lift with something executable.
 
 The run config surviving :class:`RunConfig` validation is the first contract
 this suite locks. The second is the four-key harness metadata handshake the
-conductor branches on — a snapshot of the wire dict a run of the pack under
-``claude-code`` produces, so a byte-level drift in the mixin's command
-assembly or the adapter's metadata dict shape shows up here.
+conductor branches on — a snapshot of the wire dict a
+:class:`~tolokaforge.core.drivers.coding_harness.CodingHarnessDriver` applied
+to the pack's staged task under ``claude-code`` produces, so a byte-level
+drift in the driver's command assembly or metadata dict shape shows up here.
 """
 
 from __future__ import annotations
@@ -18,9 +19,11 @@ import pytest
 import yaml
 
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.drivers.coding_harness import CodingHarnessDriver, HarnessSelection
 from tolokaforge.core.models import RunConfig
+from tolokaforge.runner.models import TaskDescription
 
-pytestmark = pytest.mark.canonical
+pytestmark = [pytest.mark.canonical, pytest.mark.usefixtures("env_backed_secrets")]
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACK_ROOT = _REPO_ROOT / "examples" / "native" / "coding_harness"
@@ -39,18 +42,25 @@ def test_run_harness_yaml_loads_as_run_config() -> None:
     assert cfg.orchestrator.strict_task_load is True
 
 
-def test_native_adapter_builds_harness_task_description() -> None:
-    """The native adapter loads the pack task cleanly under harness mode."""
-    adapter = NativeAdapter(
-        {
-            "tasks_glob": "task.yaml",
-            "task_packs": [str(_PACK_ROOT)],
-            "agent_harness": "claude-code",
-            "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
-        }
-    )
+def _decorated_task_description() -> TaskDescription:
+    """Stage the pack's task and apply the driver, as the orchestrator will."""
+    adapter = NativeAdapter({"tasks_glob": "task.yaml", "task_packs": [str(_PACK_ROOT)]})
     assert adapter.get_task_ids() == ["fix_factorial"]
-    td = adapter.to_task_description("fix_factorial")
+    staged = adapter.stage_task("fix_factorial")
+    assert staged is not None
+    base = adapter.to_task_description("fix_factorial")
+    driver = CodingHarnessDriver(
+        HarnessSelection(
+            agent_harness="claude-code",
+            agent_model="openrouter/anthropic/claude-sonnet-4-6",
+        )
+    )
+    return driver.decorate_task_description(base, staged=staged)
+
+
+def test_native_adapter_builds_harness_task_description() -> None:
+    """The driver applies the harness shape onto the pack's staged task."""
+    td = _decorated_task_description()
     # Single bash tool via docker_compose_exec — the shape the runner-side
     # DockerComposeExecToolWrapper factory dispatches on.
     assert len(td.agent_tools) == 1
@@ -71,15 +81,7 @@ def test_harness_metadata_snapshot(canon_snapshot) -> None:
     is handled by the same commit that bumps the harness registry — the
     ``harness_registry_replay`` metric moves in lockstep with this snapshot.
     """
-    adapter = NativeAdapter(
-        {
-            "tasks_glob": "task.yaml",
-            "task_packs": [str(_PACK_ROOT)],
-            "agent_harness": "claude-code",
-            "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
-        }
-    )
-    td = adapter.to_task_description("fix_factorial")
+    td = _decorated_task_description()
     metadata = {
         key: td.metadata[key]
         for key in (

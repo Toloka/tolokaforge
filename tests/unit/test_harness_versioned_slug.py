@@ -170,56 +170,50 @@ class TestLegacyHarnessFieldLift:
         )
 
 
-class TestMixinResolverAppliesOverride:
+@pytest.mark.usefixtures("env_backed_secrets")
+class TestDriverResolvesVersionOverride:
+    """``CodingHarnessDriver`` — not the retired mixin — resolves the
+    ``version_override`` onto the shipped :class:`HarnessSpec`."""
+
     def test_override_replaces_spec_version(self) -> None:
-        from tolokaforge_coding_harnesses import (
-            HARNESSES,
-            CodingHarnessAdapterMixin,
-        )
+        from tolokaforge.core.drivers.coding_harness import CodingHarnessDriver, HarnessSelection
+        from tolokaforge_coding_harnesses import HARNESSES
 
         shipped_pin = HARNESSES["claude-code"].version
         assert shipped_pin != "9.9.9-fake"
 
-        class _Adapter(CodingHarnessAdapterMixin):
-            pass
-
-        adapter = _Adapter()
-        overridden = adapter.resolve_harness_spec(
-            "claude-code",
-            "openrouter/anthropic/claude-sonnet-4-6",
-            version_override="9.9.9-fake",
+        driver = CodingHarnessDriver(
+            HarnessSelection(
+                agent_harness="claude-code",
+                agent_model="openrouter/anthropic/claude-sonnet-4-6",
+                version_override="9.9.9-fake",
+            )
         )
-        assert overridden.version == "9.9.9-fake"
-        assert overridden.install_source == HARNESSES["claude-code"].install_source
-        assert overridden.install_method == HARNESSES["claude-code"].install_method
+        assert driver.spec.version == "9.9.9-fake"
+        assert driver.spec.install_source == HARNESSES["claude-code"].install_source
+        assert driver.spec.install_method == HARNESSES["claude-code"].install_method
 
     def test_missing_override_leaves_shipped_pin(self) -> None:
-        from tolokaforge_coding_harnesses import (
-            HARNESSES,
-            CodingHarnessAdapterMixin,
-        )
+        from tolokaforge.core.drivers.coding_harness import CodingHarnessDriver, HarnessSelection
+        from tolokaforge_coding_harnesses import HARNESSES
 
-        class _Adapter(CodingHarnessAdapterMixin):
-            pass
-
-        adapter = _Adapter()
-        spec = adapter.resolve_harness_spec(
-            "claude-code",
-            "openrouter/anthropic/claude-sonnet-4-6",
+        driver = CodingHarnessDriver(
+            HarnessSelection(
+                agent_harness="claude-code",
+                agent_model="openrouter/anthropic/claude-sonnet-4-6",
+            )
         )
-        assert spec.version == HARNESSES["claude-code"].version
+        assert driver.spec.version == HARNESSES["claude-code"].version
 
     def test_empty_override_raises(self) -> None:
-        from tolokaforge_coding_harnesses import CodingHarnessAdapterMixin
+        from tolokaforge.core.drivers.coding_harness import CodingHarnessDriver, HarnessSelection
 
-        class _Adapter(CodingHarnessAdapterMixin):
-            pass
-
-        adapter = _Adapter()
         with pytest.raises(ValueError) as excinfo:
-            adapter.resolve_harness_spec(
-                "claude-code",
-                "openrouter/anthropic/claude-sonnet-4-6",
-                version_override="",
+            CodingHarnessDriver(
+                HarnessSelection(
+                    agent_harness="claude-code",
+                    agent_model="openrouter/anthropic/claude-sonnet-4-6",
+                    version_override="",
+                )
             )
         assert "version_override" in str(excinfo.value)
