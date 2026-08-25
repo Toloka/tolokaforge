@@ -57,11 +57,9 @@ from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 from tolokaforge.core.grading.state_check_backend import StateCheckBackend
-from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.grading.substrate import (
     GradingSubstrate,
     InProcessGradingSubstrate,
-    SubstrateUnreachableError,
 )
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
@@ -389,61 +387,6 @@ def _unreachable_state_checks_refusal(
     return None
 
 
-def _build_judge_state_diff(
-    *,
-    trial_id: str,
-    substrate: GradingSubstrate,
-    initial_state_schemas: list[Any],
-    id_fields: dict[str, str | list[str]],
-    unstable_fields: set[tuple[str, str]],
-    logger: "logging.Logger",
-) -> str | None:
-    """Render the ``initial → final`` DB state diff for the judge, or ``None``.
-
-    ``None`` is the diff-first default declining itself when there is nothing to
-    diff against: an empty ``initial_state`` — the shape non-DB tasks carry, and
-    what filesystem-only tasks report — has no baseline, so the judge falls back
-    to its read-only tools. The distinction between "no diff" and "diff
-    unavailable" stays with :func:`render_state_diff`'s explicit "No changes"
-    body for a diff that DID build but found no edits.
-
-    The trial's declared ``state_checks.id_fields`` is layered over the task
-    schemas' primary keys — the two together are the row-matching contract the
-    diff renders against — and ``unstable_fields`` drops server-marked noise so
-    only meaningful edits appear.
-
-    Best-effort context, not a grade component: :class:`SubstrateUnreachableError`
-    propagates so the seam can book the trial as ungradeable, but any other
-    substrate read failure (DB hiccup, unexpected shape) degrades to ``None`` —
-    the judge still has its read-only tools and the components already computed
-    by this call site are preserved. The judge's own fail-loud contract still
-    governs grading.
-    """
-    initial_tables = substrate.initial_state()
-    if not initial_tables:
-        return None
-    try:
-        final_state = substrate.final_state()
-    except SubstrateUnreachableError:
-        raise
-    except Exception as exc:  # noqa: BLE001 — optional context, never fail the grade
-        logger.warning(
-            "Failed to build judge state diff; grading without it "
-            f"(trial_id={trial_id}, error={exc})"
-        )
-        return None
-    primary_keys: dict[str, str | list[str]] = {
-        s.table_name: s.primary_key for s in initial_state_schemas
-    }
-    primary_keys.update(id_fields)
-    return render_state_diff(
-        initial_tables,
-        final_state,
-        primary_keys=primary_keys,
-        unstable_fields=unstable_fields,
-    )
-
-
 def _backstop_seconds(tool: Any, trial_default: float) -> float:
     """The band the runner applies around a call on *tool*.
 
@@ -750,50 +693,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     def _extract_tool_artifacts(self, trial_id: str, artifacts: dict[str, str]) -> Path:
         """Extract base64-encoded tool artifacts to a temp directory.
 
-        Adds the temp directory to sys.path so tool modules can be imported.
-
-        Args:
-            trial_id: Trial identifier (for logging)
-            artifacts: dict of {relative_path: base64_content}
-
-        Returns:
-            Path to the temp directory containing extracted files
+        Delegates the extraction body to the shared
+        :func:`tolokaforge.core.grading.tool_artifacts.extract_tool_artifacts`
+        helper, then records the returned directory on
+        :attr:`_artifact_dirs` so :meth:`_cleanup_trial_artifacts` /
+        :meth:`shutdown` can remove it from ``sys.path`` and delete the
+        tree when the trial ends.
         """
-        import base64
-        import tempfile
+        from tolokaforge.core.grading.tool_artifacts import extract_tool_artifacts
 
-        safe_trial_id = trial_id.replace(":", "_").replace("/", "_")
-        extract_dir = Path(tempfile.mkdtemp(prefix=f"tolokaforge-artifacts-{safe_trial_id}-"))
-
-        for rel_path, b64_content in artifacts.items():
-            out_path = extract_dir / rel_path
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            content = base64.b64decode(b64_content)
-            out_path.write_bytes(content)
-
-        # Add to sys.path so tool modules can be imported
-        # Add the extract_dir itself (for packages like mcp_core/)
-        extract_str = str(extract_dir)
-        if extract_str not in sys.path:
-            sys.path.insert(0, extract_str)
-
-        # Also add tools/ subdirectory if it exists (some adapter layouts place
-        # their tool packages under a 'tools/' folder rather than the artifact root)
-        tools_dir = extract_dir / "tools"
-        if tools_dir.exists():
-            tools_str = str(tools_dir)
-            if tools_str not in sys.path:
-                sys.path.insert(0, tools_str)
-
-        # Track for cleanup
+        extract_dir = extract_tool_artifacts(trial_id, artifacts)
         self._artifact_dirs[trial_id] = extract_dir
-
-        logger.info(
-            "Extracted %d artifacts to %s, added to sys.path",
-            len(artifacts),
-            extract_dir,
-        )
-
         return extract_dir
 
     def _resolve_mcp_server_scripts(
@@ -2247,7 +2157,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         )
 
         def _run() -> "JudgeResult":
-            state_diff_text = _build_judge_state_diff(
+            state_diff_text = composite.build_judge_state_diff(
                 trial_id=trial_id,
                 substrate=substrate,
                 initial_state_schemas=list(initial_state.schemas),

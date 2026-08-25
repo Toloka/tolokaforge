@@ -56,6 +56,7 @@ Tolokaforge needs the grader to work under (1), (2), and (3) *this milestone* â€
 - Snapshot mode and shared-mount mode become documented, additive future shifts â€” the Protocol is already shaped for them.
 - Component evaluators become individually pluggable; operators can extend judges / rules / trace ops without touching the framework.
 - Extract-refactor of runner-side grading code onto the Protocol path unifies the codebase and locks behaviour parity by construction.
+- **Phase 3 landing (issue #1263).** `GraderCompositeDispatch` (`tolokaforge/grader/composite_dispatch.py`) is mounted by `python -m tolokaforge.grader`: it deserialises the wire v2 fields, builds `LiveRunnerCallbackGradingSubstrate` per trial, runs the composite grading pipeline, and returns a real `Grade` on the `grader_rpc` path.
 
 **Negative**
 

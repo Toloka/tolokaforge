@@ -100,6 +100,18 @@ deploy. The grader service ships as `tolokasoft1/tolokaforge-grader`
 alongside the runner / db-service / rag-service / mock-web images and
 runs `python -m tolokaforge.grader` on port 50052 by default.
 
+The standalone service mounts
+`tolokaforge.grader.composite_dispatch.GraderCompositeDispatch` as its
+`judge_fn`. Each `Grade` RPC deserialises the wire's
+`task_config_json` / `task_description_json` / `judge_model_config_json`,
+builds a fresh
+`tolokaforge.core.grading.substrate_live.LiveRunnerCallbackGradingSubstrate`
+against `runner_substrate_address`, and runs the composite grading
+functions (state checks / transcript rules / trace checks / llm judge /
+custom checks) mirroring the runner's `_grade_trial_async`. Hash grading
+is refused server-side too — the substrate is read-only. See
+[`docs/adr/0039-standalone-grader.md`](adr/0039-standalone-grader.md).
+
 The factory reads `ctx.grader_address` when the operator has split the
 runner and grader onto distinct hosts, and falls back to
 `ctx.runner_address` for single-address deployments.
