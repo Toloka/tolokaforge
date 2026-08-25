@@ -206,8 +206,11 @@ _FENCE = re.compile(r"^\s*(?:```|~~~)")
 """Both fence syntaxes CommonMark defines. A tilde fence is the hole a backtick-only
 predicate leaves: both readers would step over neither, agree on a short count, and pass."""
 
-# Every pack under the native example corpus, all of which build. Pinned so a pack
-# dropping out of the corpus fails rather than silently shrinking the walk over it.
+# Every pack under the native example corpus that grades through the native adapter's
+# grading contract, all of which build. Pinned so a pack dropping out of the corpus
+# fails rather than silently shrinking the walk over it. ``coding_harness`` is a
+# harness pack graded by its trial verifier — it ships no ``project.yaml`` and no
+# grading source, so the census below cannot address it and this walk skips it.
 _NATIVE_PACK_COUNT = 29
 
 
@@ -1090,7 +1093,11 @@ def test_the_walk_stops_where_the_census_declares_a_leaf() -> None:
 
 
 def test_the_example_corpus_emits_what_the_census_says_it_emits() -> None:
-    task_files = sorted(_NATIVE_EXAMPLES.rglob("task.yaml"))
+    task_files = sorted(
+        task_yaml
+        for task_yaml in _NATIVE_EXAMPLES.rglob("task.yaml")
+        if any((parent / "project.yaml").exists() for parent in task_yaml.parents)
+    )
     assert len(task_files) == _NATIVE_PACK_COUNT, (
         "the native example corpus changed size; a pack dropping out would otherwise "
         "shrink this lock's reach silently"

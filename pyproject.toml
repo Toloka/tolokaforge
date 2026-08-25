@@ -36,6 +36,11 @@ dependencies = [
     # the engine reaches through its entry-point registry at
     # :mod:`tolokaforge.core.model_data`.
     "tolokaforge-models>=1.0.0,<2.0.0",
+    # Coding-harness registry, spec models and adapter-support mixin (see
+    # ADR-0039). Imported unconditionally by :mod:`tolokaforge.adapters.native`
+    # and :mod:`tolokaforge.adapters.native_harness_synthesis`, so a headless
+    # ``pip install tolokaforge`` needs the sibling wheel on ``sys.path`` too.
+    "tolokaforge-coding-harnesses>=0.1.0,<1.0.0",
     # Core LLM integration
     "litellm>=1.83.14,!=1.92.0,<2.0.0",
     # Data validation and schemas

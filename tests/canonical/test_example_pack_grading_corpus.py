@@ -196,14 +196,17 @@ _EXAMPLES = EXAMPLES_ROOT
 _TEST_DATA = TEST_DATA_ROOT
 
 # Every task under ``examples/`` the corpus grades, so a guard that enumerated nothing
-# fails instead of passing over the empty set. The two files outside it are the
-# ``terminal_bench`` pair, which ship no enclosing project and are the corpus's two
-# known-invalid tasks.
+# fails instead of passing over the empty set. The three files outside it are the two
+# ``terminal_bench`` packs, which load as no ``TaskConfig`` at all, and the
+# ``coding_harness`` pack, which loads as a valid ``TaskConfig`` but declares no
+# grading source because its trial verifier writes the score itself — three packs
+# ``tolokaforge validate`` refuses.
 _GRADED_TASK_COUNT = 29
 # Tool schemas the corpus puts on the wire, across the 24 tasks that declare any, so a
 # parameter comparison that resolved nothing fails instead of passing over empty maps.
 _CORPUS_TOOL_COUNT = 56
 _TASKS_WITHOUT_A_PROJECT = (
+    _EXAMPLES / "native" / "coding_harness" / "task.yaml",
     _EXAMPLES / "terminal_bench" / "fix-airline-segmentation" / "task.yaml",
     _EXAMPLES / "terminal_bench" / "fix-billing-holds" / "task.yaml",
 )
@@ -1395,17 +1398,19 @@ def test_no_authored_pack_declares_a_probe_beside_another_state_source() -> None
     )
 
 
-def test_the_two_project_less_task_files_are_the_terminal_bench_pair() -> None:
+def test_the_project_less_task_files_stay_the_declared_set() -> None:
     """A native pack losing its project layer would otherwise drop out unnoticed."""
     orphans = tuple(
-        task_yaml
-        for task_yaml in sorted(_EXAMPLES.rglob("task.yaml"))
-        if enclosing_project(task_yaml) is None
+        sorted(
+            task_yaml
+            for task_yaml in _EXAMPLES.rglob("task.yaml")
+            if enclosing_project(task_yaml) is None
+        )
     )
-    assert orphans == _TASKS_WITHOUT_A_PROJECT
+    assert orphans == tuple(sorted(_TASKS_WITHOUT_A_PROJECT))
 
 
-def test_validate_gates_the_example_corpus_on_its_two_invalid_tasks() -> None:
+def test_validate_gates_the_example_corpus_on_its_invalid_tasks() -> None:
     """The corpus proof that layering the project defaults rejects nothing new.
 
     ``COLUMNS`` is set wide so the per-task lines carry a whole path each and the
