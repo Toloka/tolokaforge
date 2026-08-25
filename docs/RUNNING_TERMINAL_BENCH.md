@@ -176,7 +176,7 @@ same shape as engine-loop.
 | Codex | `codex` | `openrouter/openai/gpt-5.6-sol` | OpenAI-compat via OpenRouter. Writes a `~/.codex/config.toml` per trial. |
 | Grok Build | `grok-build` | `openrouter/x-ai/grok-4.5` | Auto-configures `~/.grok/config.toml` for OpenRouter. |
 | Kimi Code | `kimi-code` | `openrouter/moonshotai/kimi-k3` | Also runs `kimi-k2.7-code` — but see the middleware caveat below. |
-| OpenCode | `opencode` | `openrouter/meta/muse-glimmer-30b` | See the routing / auth notes below. |
+| OpenCode | `opencode` | `anthropic/claude-sonnet-4-6` | Claude family goes via opencode's shipped `anthropic` block. Other vendors: see the routing / auth notes below. |
 | Gemini CLI | `gemini-cli` | `openrouter/google/gemini-3.6-flash` | Shipped default is direct Google; LiteLLM overlay is the practical path (see below). |
 
 ### Recipe — Kimi K2.7 Code (`request_middleware`)
@@ -192,13 +192,28 @@ Nothing to configure — it applies automatically when `agent_harness: kimi-code
 The proxy binds `127.0.0.1:8899` inside the container and `KIMI_MODEL_BASE_URL`
 is rewritten to `http://127.0.0.1:8899` before the CLI starts.
 
-### Recipe — Muse Glimmer / any non-Anthropic OpenRouter model on opencode
+### Recipe — Claude family on opencode
+
+Name the model as `anthropic/<opencode-slug>` — e.g.
+`anthropic/claude-sonnet-4-6`, `anthropic/claude-sonnet-4-5`. Opencode's
+shipped `anthropic` provider block carries those slugs natively and its
+`baseURL` already points at OpenRouter's Anthropic-compat surface, so
+routing and the model-list check both pass. This is the shipped path for
+Claude models on opencode.
+
+### Recipe — Any non-Anthropic OpenRouter model on opencode
 
 Opencode's `strip_openrouter_prefix: false` (declared in `harnesses.yaml`)
-preserves the `openrouter/` prefix on the model name so opencode's config
-routes to its `openrouter` provider block (an OpenAI-compat surface pointing at
-`openrouter.ai/api/v1`). Nothing else to do — pass a model like
-`openrouter/meta/muse-glimmer-30b` or `openrouter/qwen/qwen3.7-max` verbatim.
+preserves the `openrouter/` prefix so a slug like
+`openrouter/meta/muse-glimmer-30b` or `openrouter/qwen/qwen3.7-max` routes
+to opencode's `openrouter` provider block (an OpenAI-compat surface pointing
+at `openrouter.ai/api/v1`). One extra step: opencode 1.18.x validates every
+incoming slug against the provider's declared `models` before any HTTP call
+and rejects unknown ones with `ProviderModelNotFoundError` in ~1.5s. The
+shipped `models` dict for the `openrouter` block is `{}`, so a run that
+takes this path names its target model via a `harness_presets_file`
+operator overlay that whole-replaces the opencode entry and populates the
+dict with the concrete slug the run uses.
 
 If you swap the shipped opencode config template for a different one, keep the
 `apiKey` field as bash `$ANTHROPIC_API_KEY` (not `${env:ANTHROPIC_API_KEY}`).

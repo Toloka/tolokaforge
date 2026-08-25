@@ -24,14 +24,6 @@ on:
     - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
-      harnesses:
-        description: "Comma-separated harness names (default: all six)"
-        default: "claude-code,codex,gemini-cli,kimi-code,opencode,grok-build"
-        type: string
-      packs:
-        description: "Comma-separated pack names under examples/terminal_bench/"
-        default: "fix-billing-holds,fix-airline-segmentation"
-        type: string
       cost_limit_per_trial:
         description: "USD cost cap per (harness × pack) job"
         default: "2"
@@ -41,11 +33,14 @@ on:
         default: "30m"
         type: string
 
-# Single-flight so a slow nightly run does not overlap the next one — matrix
-# results are additive and there is no value in interleaved runs sharing the
-# Docker daemon on the same runner.
+# Single-flight per trigger — a slow nightly does not overlap the next
+# nightly, and a manual dispatch does not queue behind a running nightly
+# (which the operator likely dispatched because they need to verify a fix
+# on the harness surface right now). ``matrix results are additive`` and
+# there is no value in interleaved same-trigger runs sharing the Docker
+# daemon on the same runner.
 concurrency:
-  group: coding-harness-matrix
+  group: coding-harness-matrix-${{ github.event_name }}
   cancel-in-progress: false
 
 permissions:
@@ -160,12 +155,14 @@ jobs:
         # LiteLLM (the CI provider path) uses `harness_presets_file`; the
         # engine reads the overlay verbatim and it whole-replaces the
         # `gemini-cli` entry. Every other harness inherits the shipped
-        # provider envelope unchanged.
+        # provider envelope unchanged. `uv run python` reaches the synced
+        # venv where PyYAML lives (bare `python` would resolve to system
+        # `/usr/bin/python3` with no `yaml` module — AGENTS.md § Package
+        # Manager).
         if: matrix.harness == 'gemini-cli'
         run: |
           set -euo pipefail
-          # Append the overlay path to the rendered config.
-          python -c "
+          uv run python -c "
           import pathlib, yaml
           p = pathlib.Path('.ci-runs/run.yaml')
           cfg = yaml.safe_load(p.read_text())

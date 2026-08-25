@@ -117,8 +117,21 @@ with the reason recorded inline.
 | `codex` | `openrouter/openai/gpt-5.6-sol` | OpenAI-compat via OpenRouter; writes `~/.codex/config.toml` + `auth.json`. |
 | `gemini-cli` | `openrouter/google/gemini-3.6-flash` | Shipped default routes at Google directly. LiteLLM gateway path via `harness_presets_file` — see [RUNNING_TERMINAL_BENCH.md § Gemini CLI](RUNNING_TERMINAL_BENCH.md#recipe--gemini-cli-litellm-gateway). |
 | `kimi-code` | `openrouter/moonshotai/kimi-k3` | Also `kimi-k2.7-code` — the shipped `request_middleware` pins Moonshot AI first-party routing on OpenRouter automatically. |
-| `opencode` | `openrouter/meta/muse-glimmer-30b` | `openrouter/*` prefix is preserved; the shipped config declares a matching `openrouter` provider block. |
+| `opencode` | `anthropic/claude-sonnet-4-6` | Routes through opencode's shipped `anthropic` provider block (`baseURL` points at OpenRouter's Anthropic-compat surface). Non-Anthropic vendors need an operator overlay populating the `openrouter` block's `models` dict — see the caveat below. |
 | `grok-build` | `openrouter/x-ai/grok-4.5` | Auto-configures `~/.grok/config.toml` for OpenRouter. |
+
+Two things about the `opencode` row are load-bearing on 1.18.x:
+
+- The `openrouter` provider block that opencode's shipped config declares
+  carries an empty `models` dict. opencode 1.18.x validates every incoming
+  slug against that dict before any HTTP call and refuses unknown ones with
+  `ProviderModelNotFoundError`. Reaching a non-Anthropic vendor through this
+  block needs an operator overlay populating `models` for the concrete slug
+  the run uses.
+- Claude family goes through opencode's separate, natively-populated
+  `anthropic` provider block instead, whose `baseURL` already points at
+  OpenRouter's Anthropic-compat surface. That is why the shipped example
+  above names `anthropic/claude-sonnet-4-6`, not `openrouter/anthropic/…`.
 
 ## Gateway routing (external runtimes only)
 
