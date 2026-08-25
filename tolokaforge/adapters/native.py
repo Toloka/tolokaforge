@@ -985,6 +985,13 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         )
         metadata: dict[str, Any] = {
             "agent_harness": self.agent_harness,
+            # Where the CLI edits inside the trial container — the runner
+            # reads this back for state-checks grading so
+            # ``$.filesystem['/work/...']`` resolves against the harness's
+            # edits, not the runner container's own /work/. Native packs
+            # inherit /work as WORKDIR from the pack's base image, which the
+            # harness-install layer does not override.
+            "agent_visible_dir": "/work",
         }
         metadata.update(
             self.emit_harness_metadata(

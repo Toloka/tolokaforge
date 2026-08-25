@@ -454,6 +454,14 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     self.agent_harness, self.harness_spec, command, self.agent_model
                 )
             )
+            # Where the CLI edits inside the trial container — the runner
+            # reads this back for state-checks grading. Terminal-bench packs
+            # conventionally set ``WORKDIR /app`` in their base image and the
+            # harness-install layer does not override it. Only read when a
+            # trial requests non-``test_execution`` grading; the shipped
+            # terminal-bench harness path stays on ``test_execution`` and
+            # bypasses the read.
+            metadata["agent_visible_dir"] = "/app"
             skills_dir = installable_skills_dir(meta, self.harness_spec)
             if skills_dir is not None:
                 metadata["harness_skills_bundle_sha"] = skills_bundle_digest(

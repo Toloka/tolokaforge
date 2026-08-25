@@ -128,6 +128,7 @@ from tolokaforge.runner.grading_ledger import (
     hash_family_skip_accounting,
     transcript_rules_author_keys,
 )
+from tolokaforge.runner.harness_state import snapshot_container_filesystem
 from tolokaforge.runner.id_resolution import (
     check_id_fields_against_seeded_tables,
     compute_diff_ops,
@@ -181,6 +182,23 @@ from tolokaforge.runner.tool_factory import (
 from tolokaforge.tools.registry import ToolExecutionStatus, raised_tool_failure_text
 
 logger = logging.getLogger(__name__)
+
+
+def _first_docker_compose_exec_tool(
+    tools: Collection[Callable],
+) -> DockerComposeExecToolWrapper | None:
+    """Return the first exec-capable wrapper among *tools*, or ``None``.
+
+    Used from two grade-time paths — ``_grade_via_test_execution`` (running
+    ``test.sh``) and ``_read_filesystem_for_state`` (snapshotting a harness
+    trial's tree) — that both need to reach into the trial container via the
+    same wrapper the runner already registered for the tool.
+    """
+    for tool in tools:
+        if isinstance(tool, DockerComposeExecToolWrapper):
+            return tool
+    return None
+
 
 # Service version
 SERVICE_VERSION = "1.0.0"
@@ -1671,10 +1689,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     ) -> dict[str, Any]:
         # Feeds path: jsonpath state_checks. Two roots: "db"/"tables" carry
         # the DB service's stable state (empty when the trial has no DB —
-        # filesystem-only tasks); "filesystem" mirrors /work/ back out under
-        # the logical /env/fs/agent-visible/ layout the task YAML asserts
-        # against, so ``$.filesystem['/env/fs/agent-visible/foo.py']`` can
-        # match the file the agent actually edited.
+        # filesystem-only tasks); "filesystem" mirrors the agent-visible
+        # directory back out. Harness-mode trials read the tree from inside
+        # the trial container via the exec-wrapper; every other trial mirrors
+        # /work/ under the logical /env/fs/agent-visible/ layout the task
+        # YAML asserts against, so
+        # ``$.filesystem['/env/fs/agent-visible/foo.py']`` matches the file
+        # the agent actually edited.
         db_state: dict[str, Any] = {}
         try:
             if fetch_db:
@@ -1689,11 +1710,43 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             logger.warning(
                 f"GradeTrial: {trial_id} - DB trial not found; grading with empty DB state"
             )
+        filesystem = await self._read_filesystem_for_state(trial_id)
         return {
             "db": db_state,
             "tables": db_state,
-            "filesystem": self._read_agent_visible_filesystem(),
+            "filesystem": filesystem,
         }
+
+    async def _read_filesystem_for_state(self, trial_id: str) -> dict[str, str]:
+        """Snapshot the trial's agent-visible files for jsonpath grading.
+
+        Routes on task metadata: a trial whose adapter emitted
+        ``agent_harness_command`` + ``agent_visible_dir`` runs its CLI inside a
+        separate container, so ``/work/`` inside this runner is not the tree
+        the assertions target. The exec-wrapper the runner already uses to
+        drive the CLI is the same one used here to enumerate the tree under
+        the container's agent-visible dir; every other trial reads back the
+        runner's own ``AGENT_WORK_DIR``.
+        """
+        trial_context = self.trials.get(trial_id)
+        if trial_context is not None:
+            metadata = trial_context.task_description.metadata or {}
+            agent_visible_dir = metadata.get("agent_visible_dir")
+            if metadata.get("agent_harness_command") and isinstance(agent_visible_dir, str):
+                bash_tool = _first_docker_compose_exec_tool(trial_context.agent_tools.values())
+                if bash_tool is not None:
+                    loop = asyncio.get_event_loop()
+                    return await loop.run_in_executor(
+                        None,
+                        snapshot_container_filesystem,
+                        bash_tool._exec_sync,
+                        agent_visible_dir,
+                    )
+                logger.warning(
+                    f"GradeTrial: {trial_id} - harness trial has no exec-capable tool; "
+                    "falling back to the runner's own /work/ walk"
+                )
+        return self._read_agent_visible_filesystem()
 
     def _read_agent_visible_filesystem(self) -> dict[str, str]:
         # Inverse of the RegisterTrial provisioner's
@@ -1805,8 +1858,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 return pb2.GradeTrialResponse(
                     success=False,
                     error=(
-                        f"Trial {trial_id!r} cannot be graded as authored: "
-                        f"{state_checks_refusal}"
+                        f"Trial {trial_id!r} cannot be graded as authored: {state_checks_refusal}"
                     ),
                 )
 
@@ -2407,9 +2459,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         try:
             final_state_response = await self.db_client.get_state(trial_id)
             final_env_state: dict[str, Any] = final_state_response.data
-        except (
+        except (  # noqa: BLE001 — grade path degrades to empty state; the DB failure surfaces via component metadata, not a crash
             Exception
-        ) as exc:  # noqa: BLE001 — grade path degrades to empty state; the DB failure surfaces via component metadata, not a crash
+        ) as exc:
             logger.warning(
                 "GradeTrial: %s - final DB state fetch failed (%s); grading against empty state",
                 trial_id,
@@ -3005,11 +3057,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         3. Return a ``GradeTrialResponse`` with the reward as score.
         """
         # Find an exec-capable lifecycle tool to run the suite in the env.
-        bash_tool: DockerComposeExecToolWrapper | None = None
-        for tool in trial_context.agent_tools.values():
-            if isinstance(tool, DockerComposeExecToolWrapper):
-                bash_tool = tool
-                break
+        bash_tool = _first_docker_compose_exec_tool(trial_context.agent_tools.values())
 
         if bash_tool is None:
             # Actionable for the adapter author: they asked for test-execution
