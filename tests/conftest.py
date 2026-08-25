@@ -108,6 +108,30 @@ def write_overlay(tmp_path: Path) -> Callable[[dict], str]:
     return _write
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register the parity-gate baseline refresh flag.
+
+    The canonical parity tests under
+    :mod:`tests.canonical.test_grader_parity_reference` rewrite their
+    committed ``expected_grade.json`` baselines when this flag is set and
+    stop before running equality assertions. Guarded so a run without the
+    flag stays in assert-mode; the flag is intentionally global so mixed
+    collections (``tests/canonical/`` alongside a scratch reproducer)
+    still read the same option through :attr:`pytest.Config.getoption`.
+    """
+    parser.addoption(
+        "--refresh-baselines",
+        action="store_true",
+        default=False,
+        help=(
+            "Rewrite committed grader-parity baselines from the runner_rpc "
+            "leg's output and stop before asserting equality. Intended for "
+            "canonical parity tests only; the resulting diff belongs in the "
+            "same commit as the code change that motivated it."
+        ),
+    )
+
+
 def pytest_collection_modifyitems(config, items):
     """Auto-skip tests marked with @pytest.mark.requires_api when no API keys are set."""
     api_keys = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY")

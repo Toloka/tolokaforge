@@ -1,0 +1,19 @@
+task_id: rubric_only_smoke
+name: Rubric-only parity smoke
+category: test
+description: |
+  Placeholder pack that proves the parity harness end-to-end loop: one
+  scripted-judge rubric, no state-checks or transcript rules, minimal
+  initial-state so the read-only substrate has bytes to serve on both
+  legs. The scripted client resolves the judge dispatch on its first
+  turn via ``submit_report``.
+adapter_type: tau
+schema_version: 1.0.0
+system_prompt: You are a test assistant.
+agent_tools: []
+user_tools: []
+initial_state:
+  tables:
+    users:
+      - id: u1
+        name: Alice

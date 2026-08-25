@@ -444,6 +444,72 @@ serve; hash grading stays runner-integrated on
 `RunnerServiceImpl._execute_hash_grading`, called by `_grade_trial_async`
 above the composite dispatch.
 
+## Parity gate
+
+The `runner_rpc` and `grader_rpc` legs must produce byte-identical
+`Grade` output for every combination of grading components a task
+declares — except the two accepted, documented divergences (KB
+passthrough for the judge; hash grading refused). A canonical parity
+gate at `tests/canonical/test_grader_parity_reference.py` locks that
+invariant against a growing corpus of reference packs.
+
+**Harness.** `tests/utils/grader_parity_harness.py` boots an in-process
+`RunnerServiceImpl` + `SubstrateServicer` and drives each leg against
+the same trial context:
+
+- `run_via_runner_rpc(pack, monkeypatch=...)` — calls
+  `RunnerServiceImpl.GradeTrial`; returns a `runner_pb2.Grade`.
+- `run_via_grader_rpc(pack, monkeypatch=...)` — constructs
+  `GraderCompositeDispatch`, builds a `GradeDispatch` from the pack's
+  wire fields, calls `.grade(...)`, and translates the resulting Python
+  `Grade` back to `grader_pb2.Grade` via the service's own
+  `_grade_to_wire` helper.
+- `assert_grader_rpc_refuses(pack, expected_error_fragment, monkeypatch=...)`
+  — asserts the grader leg raises `GradingFailedError` with the
+  expected message fragment (the refusal-contract branch a
+  hash-enabled pack lands on).
+- `serialise_grade(g)` — canonical JSON via
+  `MessageToDict(preserving_proto_field_name=True,
+  always_print_fields_with_no_presence=True)` followed by a `%.6g`
+  float normaliser. Both proto types (`runner_pb2.Grade`,
+  `grader_pb2.Grade`) project to the same dict shape; the two legs
+  converge at the canonical-dict layer, not at the proto-type layer.
+  The `trace_checks` optional-presence field materialises as `-1.0`
+  when the wire carries no presence — the runner leg's sentinel and
+  the grader leg's absent both mean "not evaluated" per the
+  `runner.proto` semantics.
+
+**Baselines.** Each pack under
+`tests/canonical/grader_parity_baselines/<name>/` ships a committed
+`expected_grade.json` captured via the harness on green
+`feat/standalone-grader`. The reference test asserts every leg
+matches the baseline byte-for-byte.
+
+**Pack shape.** One directory per pack, with:
+
+- `task.yaml` — `TaskDescription` fields (task_id, name, category,
+  description, adapter_type, system_prompt, initial_state, agent/user
+  tools). The harness folds `grading.yaml` onto its `grading`
+  attribute at load time.
+- `grading.yaml` — `RunnerGradingConfig` (weights, state_checks,
+  transcript_rules, trace_checks, llm_judge, custom_checks).
+- `trial.yaml` — wire dispatch fields: `trial_id`,
+  `termination_reason`, `agent_system_prompt`, `llm_messages`,
+  optional `judge_model_config`.
+- `parity.yaml` — declared `accepted_divergences: [...]`, optional
+  `judge_script: [...]` for packs exercising `llm_judge` (a
+  deterministic scripted-client stand-in that keeps the canonical
+  lane keyless), and optional `refusal_mode` / `expected_error_fragment`
+  for the hash-refusal contract.
+- `expected_grade.json` — the committed baseline.
+
+**Refresh.** `uv run pytest tests/canonical/test_grader_parity_reference.py
+--refresh-baselines` rewrites every pack's baseline from the runner
+leg's output and skips the equality assertions. The refresh is
+idempotent — a second run against the freshly-written baseline shows
+no diff. The resulting change belongs in the same commit as the code
+change that motivated it; `git diff` catches accidents during review.
+
 ## See also
 
 - [ADR-0014 — TrialGrader Protocol](adr/0014-trial-grader-protocol.md)
