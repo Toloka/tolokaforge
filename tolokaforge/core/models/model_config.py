@@ -41,6 +41,15 @@ class ModelConfig(BaseModel):
     temperature: float = 0.0
     max_tokens: int | None = None
     seed: int | None = None
+    # Coding-harness selector. When set, the trial's LLM loop is replaced by a
+    # single invocation of the named vendor CLI (``claude-code``, ``codex``,
+    # ``gemini-cli``, ``kimi-code``, ``opencode``, ``grok-build`` — see the
+    # ``tolokaforge_coding_harnesses`` package for the shipped registry) inside
+    # the trial container. Adapter-agnostic: any adapter whose
+    # ``supports_coding_harness`` capability flag is ``True`` accepts this
+    # field. Adapter identity is not checked here; the orchestrator's config
+    # gate refuses the combination when the resolved adapter does not opt in.
+    harness: str | None = None
     # Reasoning / thinking configuration. Must be a struct form —
     # bare strings (``reasoning: medium``) are rejected with a migration
     # pointer. See docs/CONFIG.md § reasoning for the schema.

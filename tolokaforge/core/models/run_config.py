@@ -948,6 +948,15 @@ _DUAL_HOME_STORAGE_QUEUE_ALIASES: tuple[tuple[str, str], ...] = (
 pairs. Legacy names carry the ``queue_`` prefix; canonical names
 don't (the ``queue`` sub-block is the namespace)."""
 
+_HARNESS_ADAPTER_PARAMS_ALIASES: tuple[tuple[str, str], ...] = (
+    ("agent_harness", "harness"),
+    ("agent_model", "name"),
+)
+"""``evaluation.harness_adapter.params.<legacy>`` → ``models.agent.<canonical>``
+field pairs. Both once lived in a ``terminal_bench``-adapter-specific
+params bag; the lift makes coding-harness selection a first-class
+run-config concept that any adapter can accept."""
+
 
 class RunConfig(BaseModel):
     """Complete run configuration"""
@@ -1032,6 +1041,72 @@ class RunConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
+    def _lift_harness_adapter_params_aliases(cls, values: Any) -> Any:
+        """Lift legacy ``evaluation.harness_adapter.params.agent_harness`` and
+        ``agent_model`` into their canonical homes on ``models.agent`` at
+        parse time.
+
+        The coding-harness surface's first shipped shape carried the
+        harness selector inside a ``terminal_bench``-adapter-specific
+        params bag. That coupling is retired: the harness rides
+        ``models.agent.harness`` (adapter-agnostic; any adapter whose
+        ``supports_coding_harness`` capability flag is ``True`` accepts
+        it), and the model the CLI receives is ``models.agent.name`` —
+        the same field the engine loop reads. Two lifts:
+
+        * ``harness_adapter.params.agent_harness`` → ``models.agent.harness``
+        * ``harness_adapter.params.agent_model`` → ``models.agent.name``
+
+        Collision policy matches the orchestrator dual-home lift below:
+        equal values warn once, differing values raise ``ValueError``
+        naming both keys. The legacy key is dropped from ``params`` so
+        adapter code has one source of truth.
+        """
+        if not isinstance(values, dict):
+            return values
+        evaluation_input = values.get("evaluation")
+        if not isinstance(evaluation_input, dict):
+            return values
+        harness_adapter_input = evaluation_input.get("harness_adapter")
+        if not isinstance(harness_adapter_input, dict):
+            return values
+        params_input = harness_adapter_input.get("params")
+        if not isinstance(params_input, dict):
+            return values
+        if "agent_harness" not in params_input and "agent_model" not in params_input:
+            return values
+
+        values = dict(values)
+        evaluation = dict(evaluation_input)
+        values["evaluation"] = evaluation
+        harness_adapter = dict(harness_adapter_input)
+        evaluation["harness_adapter"] = harness_adapter
+        params = dict(params_input)
+        harness_adapter["params"] = params
+
+        models_input = values.get("models")
+        models = dict(models_input) if isinstance(models_input, dict) else {}
+        agent_input = models.get("agent")
+        agent = dict(agent_input) if isinstance(agent_input, dict) else {}
+
+        for legacy_key, canonical_key in _HARNESS_ADAPTER_PARAMS_ALIASES:
+            _lift_alias(
+                params,
+                legacy_key,
+                agent,
+                canonical_key,
+                "models.agent",
+                legacy_container_label="evaluation.harness_adapter.params",
+            )
+
+        if agent:
+            models["agent"] = agent
+            values["models"] = models
+
+        return values
+
+    @model_validator(mode="before")
+    @classmethod
     def _lift_orchestrator_dual_home_aliases(cls, values: Any) -> Any:
         """Lift legacy ``orchestrator.*`` fields to their canonical
         ``compute.*`` / ``storage.queue.*`` homes at parse time.
@@ -1099,13 +1174,16 @@ def _lift_alias(
     canonical_container: dict[str, Any],
     canonical_key: str,
     canonical_container_label: str,
+    legacy_container_label: str = "orchestrator",
 ) -> None:
     """Lift a single legacy key into a canonical container in place.
 
     Removes the legacy key from *legacy_container* (so downstream reads
     can't accidentally see both). Emits ``DeprecationWarning`` when the
     legacy key was set; raises ``ValueError`` on a collision with a
-    different canonical value.
+    different canonical value. ``legacy_container_label`` names the path
+    the legacy key sits at (defaults to ``orchestrator`` — the historical
+    caller — so the two dual-home lifts read cleanly).
     """
     if legacy_key not in legacy_container:
         return
@@ -1113,15 +1191,15 @@ def _lift_alias(
     canonical_value = canonical_container.get(canonical_key)
     if canonical_value is not None and canonical_value != legacy_value:
         raise ValueError(
-            f"orchestrator.{legacy_key}={legacy_value!r} conflicts with "
+            f"{legacy_container_label}.{legacy_key}={legacy_value!r} conflicts with "
             f"{canonical_container_label}.{canonical_key}={canonical_value!r}; "
-            f"drop the legacy `orchestrator.{legacy_key}` and keep the "
+            f"drop the legacy `{legacy_container_label}.{legacy_key}` and keep the "
             f"canonical `{canonical_container_label}.{canonical_key}`."
         )
     if canonical_value is None:
         canonical_container[canonical_key] = legacy_value
     warnings.warn(
-        f"orchestrator.{legacy_key} is deprecated; use "
+        f"{legacy_container_label}.{legacy_key} is deprecated; use "
         f"{canonical_container_label}.{canonical_key} instead. Legacy "
         "field will be removed in a future release.",
         DeprecationWarning,
