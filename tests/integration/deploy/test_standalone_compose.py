@@ -214,7 +214,6 @@ def test_stack_grader_composite_dispatch_grades_transcript_rules(
             task_config_json=grading.model_dump_json(),
             task_description_json=task.model_dump_json(),
             runner_substrate_address=_RUNNER_SUBSTRATE_INTERNAL_ADDR,
-            agent_system_prompt="you are a helper",
         )
 
     assert result["success"] is True, (
@@ -227,10 +226,9 @@ def test_stack_grader_composite_dispatch_grades_transcript_rules(
     )
     grade = result["grade"]
     assert grade is not None, "grader returned success=True but no Grade payload"
-    assert grade["components"]["transcript_rules"] == pytest.approx(1.0), (
-        f"transcript_rules component did not score the ``must_contain`` hit: "
-        f"{grade['components']}"
-    )
+    assert grade["components"]["transcript_rules"] == pytest.approx(
+        1.0
+    ), f"transcript_rules component did not score the ``must_contain`` hit: {grade['components']}"
     assert (
         grade["binary_pass"] is True
     ), f"grader failed a trial whose only weighted component graded 1.0: {grade['reasons']}"

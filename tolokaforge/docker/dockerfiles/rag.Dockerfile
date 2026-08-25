@@ -4,6 +4,26 @@
 # See tolokaforge/env/rag_service/app.py for the API surface.
 
 ARG PYTHON_VERSION=3.12
+
+# ---------------------------------------------------------------------------
+# sibling-wheel-builder — build the workspace-sibling wheels the base wheel
+# depends on (tolokaforge_models, tolokaforge_coding_harnesses). Kept as a
+# separate stage so the sibling build cache only busts on sibling source
+# edits — the model bake below stays warm across unrelated tolokaforge
+# changes.
+# ---------------------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS sibling-wheel-builder
+
+WORKDIR /src
+
+RUN pip install --no-cache-dir "hatchling>=1.24,<2.0"
+
+COPY tolokaforge_models/ /src/tolokaforge_models/
+COPY tolokaforge_coding_harnesses/ /src/tolokaforge_coding_harnesses/
+
+RUN cd /src/tolokaforge_models && python -m hatchling build && \
+    cd /src/tolokaforge_coding_harnesses && python -m hatchling build
+
 FROM python:${PYTHON_VERSION}-slim
 
 WORKDIR /app
@@ -38,8 +58,13 @@ ENV EMBEDDING_MODEL=${EMBEDDING_MODEL}
 # this layer rather than silently `COPY`ing the wrong filename later.
 ARG WHEEL_FILENAME
 COPY ${WHEEL_FILENAME} /tmp/
-RUN pip install --no-cache-dir "/tmp/${WHEEL_FILENAME}" \
-    && rm -f "/tmp/${WHEEL_FILENAME}"
+COPY --from=sibling-wheel-builder /src/tolokaforge_models/dist/*.whl /tmp/wheels/
+COPY --from=sibling-wheel-builder /src/tolokaforge_coding_harnesses/dist/*.whl /tmp/wheels/
+# Install the sibling wheels first so their versions resolve before the
+# base wheel that depends on them.
+RUN pip install --no-cache-dir /tmp/wheels/tolokaforge_models-*.whl /tmp/wheels/tolokaforge_coding_harnesses-*.whl \
+    && pip install --no-cache-dir "/tmp/${WHEEL_FILENAME}" \
+    && rm -f "/tmp/${WHEEL_FILENAME}" /tmp/wheels/*.whl
 
 # Copy the service entrypoint last (rebuild only on app.py changes).
 # Lands at /app/app.py so ``uvicorn app:app`` continues to resolve it.

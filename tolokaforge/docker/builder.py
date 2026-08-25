@@ -205,9 +205,12 @@ _ALL_KNOWN_SERVICES = frozenset(IMAGE_DEFINITIONS)
 def _rag_definition() -> dict[str, Any]:
     """Augment the rag-service base entry with the resolved wheel + service files.
 
-    The rag service needs both the tolokaforge wheel (for
-    ``import tolokaforge.secrets``) and its own service files
-    (``requirements.txt`` + ``app.py``).
+    The rag service needs the tolokaforge wheel (for
+    ``import tolokaforge.secrets``), its own service files
+    (``requirements.txt`` + ``app.py``), and the workspace-sibling source
+    trees (``tolokaforge_models``, ``tolokaforge_coding_harnesses``) that
+    the Dockerfile's sibling-wheel-builder stage compiles into wheels the
+    tolokaforge base wheel depends on.
     """
     artifact = resolve_wheel()
     return {
@@ -215,6 +218,8 @@ def _rag_definition() -> dict[str, Any]:
         "context_files": [
             str(artifact.path),  # wheel (absolute → flat copy)
             "tolokaforge/env/rag_service/",  # service files (relative)
+            "tolokaforge_models/",  # sibling source for in-context wheel build
+            "tolokaforge_coding_harnesses/",  # sibling source for in-context wheel build
         ],
         "build_args": {**_PYTHON_BUILD_ARGS, "WHEEL_FILENAME": artifact.path.name},
     }

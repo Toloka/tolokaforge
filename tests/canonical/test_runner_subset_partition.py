@@ -587,6 +587,30 @@ def test_subset_wheel_binds_cli_shim_console_script(subset_wheel_path: Path) -> 
     )
 
 
+def test_subset_wheel_carries_runner_reachable_entry_point_groups(
+    subset_wheel_path: Path,
+) -> None:
+    """The subset wheel's ``entry_points.txt`` must carry every group the
+    runner reaches through
+    :func:`~tolokaforge.core.plugin_registry.discover_entry_points` at boot
+    or during a Grade RPC. Without these, the runner container boots but
+    crashes on the first ``load_custom_check_executor('check_runner')``
+    call with "Unknown implementation" — the exact regression that broke
+    v0.20.0-rc.1's runtime start."""
+    from scripts.hatch.hatch_runner_subset_builder import (
+        RUNNER_REACHABLE_ENTRY_POINT_GROUPS,
+    )
+
+    entry_points_txt = _wheel_read(subset_wheel_path, "*.dist-info/entry_points.txt")
+    for group in RUNNER_REACHABLE_ENTRY_POINT_GROUPS:
+        header = f"[{group}]"
+        assert header in entry_points_txt, (
+            f"subset wheel entry_points.txt is missing runner-reachable "
+            f"group {header} — the runner container will crash at first "
+            "seam load. Full entry_points.txt:\n" + entry_points_txt
+        )
+
+
 def test_subset_wheel_ships_cli_shim_module(subset_wheel_path: Path) -> None:
     """The subset wheel must include ``tolokaforge/runner/_cli.py`` as a
     Python source file; the console script binding is inert without it."""
