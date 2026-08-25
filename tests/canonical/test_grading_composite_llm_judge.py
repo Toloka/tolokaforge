@@ -1,9 +1,11 @@
 """``composite.grade_llm_judge`` — end-to-end judge dispatch parity lock.
 
-The composite owns the judge dispatch (rubric plumbing, tool-surface gating,
-diff-first default, ``LLMJudge`` construction and drive); the runner path
-delegates to it via ``run_in_executor``. This suite constructs an
-:class:`InProcessGradingSubstrate` over a hand-built ``{initial_tables,
+The composite delegates to a resolved :class:`RubricEvaluator` seam; the
+reference impl (``llm_judge``, :class:`LLMJudgeRubricEvaluator`) constructs
+an :class:`LLMJudge` per :meth:`.evaluate` and drives it. The runner path
+resolves the evaluator + renders the ``initial → final`` state diff and
+hands both to the composite via ``run_in_executor``. This suite constructs
+an :class:`InProcessGradingSubstrate` over a hand-built ``{initial_tables,
 final_tables, filesystem_root, kb_search, db_reader}`` fixture, drives
 :func:`composite.grade_llm_judge` with a scripted ``LLMClient`` (so the loop
 is deterministic), and asserts that the ``JudgeResult`` carries the same
@@ -11,10 +13,11 @@ status, score, and per-criterion verdicts the judge would report against
 the same evidence.
 
 The scripted client is injected by monkeypatching ``LLMClient`` where
-``LLMJudge`` imports it — ``LLMJudge`` builds its own client per :meth:`run`
-via ``LLMClient(model_config)``, and we override that constructor to return
+:class:`LLMJudge` imports it — ``LLMJudge`` builds its own client per
+:meth:`run` via ``LLMClient(model_config)`` when its
+``llm_client`` kwarg is ``None``, and we override that constructor to return
 a queued script instead. The judge orchestration under test is the composite's
-call site, not the LLM.
+call site + Protocol dispatch, not the LLM.
 """
 
 from __future__ import annotations
@@ -25,7 +28,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from tolokaforge.core.grading import composite
-from tolokaforge.core.grading.judge import JudgeStatus
+from tolokaforge.core.grading.default_rubric_evaluator import LLMJudgeRubricEvaluator
+from tolokaforge.core.grading.judge_result import JudgeStatus
+from tolokaforge.core.grading.rubric_evaluator import RubricEvaluator
+from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
@@ -81,14 +87,66 @@ class _ScriptedClient:
         return classify_loop_error(exc, ())
 
 
-def _install_scripted_client(monkeypatch: pytest.MonkeyPatch, script: list[Any]) -> _ScriptedClient:
-    """Route ``LLMJudge``'s ``LLMClient(model_config)`` to a scripted stand-in."""
-    client = _ScriptedClient(script)
-    monkeypatch.setattr(
-        "tolokaforge.core.grading.judge.LLMClient",
-        lambda *args, **kwargs: client,
+class _ScriptedJudgeModelProvider:
+    """Test :class:`JudgeModelProvider` — returns a preloaded scripted client
+    as the ``JudgeModel``. Bypasses the shipped ``litellm`` transport so the
+    canonical suite drives the judge loop deterministically."""
+
+    def __init__(self, client: _ScriptedClient) -> None:
+        self._client = client
+
+    def build(self, model_config: ModelConfig):
+        return self._client
+
+
+def _rubric_evaluator(
+    script: list[Any], config: LLMJudgeConfig | None = None
+) -> tuple[RubricEvaluator, _ScriptedClient]:
+    """Build the reference :class:`LLMJudgeRubricEvaluator` with the effective
+    customization flags a run-config would apply — matches the runner's
+    ``_grade_llm_judge`` construction one-for-one.
+
+    The evaluator's :class:`JudgeModelProvider` returns the scripted client
+    directly so the judge loop is deterministic — the shipped ``litellm``
+    transport never runs in the canonical path.
+    """
+    customization = config.customization if config is not None else None
+    disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
+    custom_system_prompt = customization.system_prompt if customization else None
+    include_agent_system_prompt = (
+        customization.include_agent_system_prompt
+        if customization and customization.include_agent_system_prompt is not None
+        else True
     )
-    return client
+    client = _ScriptedClient(script)
+    evaluator = LLMJudgeRubricEvaluator(
+        _ScriptedJudgeModelProvider(client),
+        disable_knowledge_search=disable_knowledge_search,
+        custom_system_prompt=custom_system_prompt,
+        include_agent_system_prompt=include_agent_system_prompt,
+    )
+    return evaluator, client
+
+
+def _render_diff(
+    substrate: InProcessGradingSubstrate,
+    schemas: list[TableSchema],
+) -> str | None:
+    """Reproduce the runner-side state-diff render for a canonical test.
+
+    Mirrors :meth:`RunnerServiceImpl._grade_llm_judge` — an empty
+    ``initial_state`` declines outright, otherwise the schemas' primary keys
+    layer under any per-trial ``id_fields`` (empty in these fixtures)."""
+    initial_tables = substrate.initial_state()
+    if not initial_tables:
+        return None
+    primary_keys: dict[str, str | list[str]] = {s.table_name: s.primary_key for s in schemas}
+    return render_state_diff(
+        initial_tables,
+        substrate.final_state(),
+        primary_keys=primary_keys,
+        unstable_fields=set(),
+    )
 
 
 def _rubric() -> Rubric:
@@ -129,9 +187,10 @@ def _substrate(
     initial_tables: dict[str, Any] | None = None,
     final_tables: dict[str, Any] | None = None,
 ) -> InProcessGradingSubstrate:
-    """Substrate exposing the reads ``grade_llm_judge`` touches: DB reader
-    seam (the judge's read-only tools bridge to it), initial + final tables
-    (for the state-diff), no KB and no filesystem in this fixture."""
+    """Substrate exposing the reads the judge touches: DB reader seam (the
+    judge's read-only tools bridge to it), initial + final tables (rendered
+    into ``state_diff`` runner-side), no KB and no filesystem in this
+    fixture."""
     return InProcessGradingSubstrate(
         db_reader=MagicMock(),
         knowledge_search=None,
@@ -150,19 +209,19 @@ class TestGradeLlmJudgeVerdicts:
     score, and per-criterion verdicts the judge would report against the
     same evidence."""
 
-    def test_completed_run_returns_scored_criterion_results(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _install_scripted_client(
-            monkeypatch,
-            [[("submit_report", _submit_args(refund_done=True, tone=1.0))]],
-        )
+    def test_completed_run_returns_scored_criterion_results(self) -> None:
         config = LLMJudgeConfig(rubric=_rubric())
+        substrate = _substrate()
+        evaluator, _ = _rubric_evaluator(
+            [[("submit_report", _submit_args(refund_done=True, tone=1.0))]],
+            config,
+        )
 
         result = composite.grade_llm_judge(
             trial_id="task:0",
             config=config,
-            substrate=_substrate(),
+            substrate=substrate,
+            rubric_evaluator=evaluator,
             llm_messages=[
                 {"role": "system", "content": "you are a refund agent"},
                 {"role": "user", "content": "please refund me"},
@@ -170,9 +229,7 @@ class TestGradeLlmJudgeVerdicts:
             ],
             judge_model_config=_JUDGE_MODEL,
             extra_read_tools=[],
-            id_fields={},
-            unstable_fields=set(),
-            initial_state_schemas=[],
+            state_diff=_render_diff(substrate, []),
             logger=_logger(),
         )
 
@@ -184,36 +241,35 @@ class TestGradeLlmJudgeVerdicts:
         assert by_id["refund_done"].met is True
         assert by_id["tone"].score == pytest.approx(1.0)
 
-    def test_state_diff_is_built_from_substrate_reads(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _install_scripted_client(
-            monkeypatch,
-            [[("submit_report", _submit_args(refund_done=True, tone=1.0))]],
-        )
+    def test_state_diff_is_built_from_substrate_reads(self) -> None:
         config = LLMJudgeConfig(rubric=_rubric())
         initial = {"orders": [{"id": 1, "status": "open"}]}
         final = {"orders": [{"id": 1, "status": "refunded"}]}
+        substrate = _substrate(initial_tables=initial, final_tables=final)
+        schemas = [
+            TableSchema(
+                table_name="orders",
+                fields={"id": "integer", "status": "string"},
+                primary_key="id",
+            )
+        ]
+        evaluator, _ = _rubric_evaluator(
+            [[("submit_report", _submit_args(refund_done=True, tone=1.0))]],
+            config,
+        )
 
         result = composite.grade_llm_judge(
             trial_id="task:0",
             config=config,
-            substrate=_substrate(initial_tables=initial, final_tables=final),
+            substrate=substrate,
+            rubric_evaluator=evaluator,
             llm_messages=[
                 {"role": "system", "content": "policy"},
                 {"role": "user", "content": "please refund me"},
             ],
             judge_model_config=_JUDGE_MODEL,
             extra_read_tools=[],
-            id_fields={},
-            unstable_fields=set(),
-            initial_state_schemas=[
-                TableSchema(
-                    table_name="orders",
-                    fields={"id": "integer", "status": "string"},
-                    primary_key="id",
-                )
-            ],
+            state_diff=_render_diff(substrate, schemas),
             logger=_logger(),
         )
         assert result.status is JudgeStatus.COMPLETED
@@ -221,26 +277,26 @@ class TestGradeLlmJudgeVerdicts:
         assert "orders: 1 modified" in result.state_diff
         assert 'status: "open" → "refunded"' in result.state_diff
 
-    def test_no_initial_state_yields_no_state_diff(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _install_scripted_client(
-            monkeypatch,
-            [[("submit_report", _submit_args(refund_done=False, tone=0.4))]],
-        )
+    def test_no_initial_state_yields_no_state_diff(self) -> None:
         config = LLMJudgeConfig(rubric=_rubric())
+        substrate = _substrate()
+        evaluator, _ = _rubric_evaluator(
+            [[("submit_report", _submit_args(refund_done=False, tone=0.4))]],
+            config,
+        )
 
         result = composite.grade_llm_judge(
             trial_id="task:0",
             config=config,
-            substrate=_substrate(),
+            substrate=substrate,
+            rubric_evaluator=evaluator,
             llm_messages=[
                 {"role": "system", "content": "policy"},
                 {"role": "user", "content": "hi"},
             ],
             judge_model_config=_JUDGE_MODEL,
             extra_read_tools=[],
-            id_fields={},
-            unstable_fields=set(),
-            initial_state_schemas=[],
+            state_diff=_render_diff(substrate, []),
             logger=_logger(),
         )
         assert result.status is JudgeStatus.COMPLETED
@@ -249,31 +305,26 @@ class TestGradeLlmJudgeVerdicts:
         assert by_id["refund_done"].met is False
         assert by_id["tone"].score == pytest.approx(0.4)
 
-    def test_judge_malfunction_returns_errored_with_no_score(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_judge_malfunction_returns_errored_with_no_score(self) -> None:
         """A judge that never calls ``submit_report`` exhausts its budget and
         returns ERRORED with no numeric score — the fail-loud contract the
         composite preserves from the runner."""
-        _install_scripted_client(
-            monkeypatch,
-            ["turn one, no tool call"] * 20,
-        )
         config = LLMJudgeConfig(rubric=_rubric())
+        substrate = _substrate()
+        evaluator, _ = _rubric_evaluator(["turn one, no tool call"] * 20, config)
 
         result = composite.grade_llm_judge(
             trial_id="task:0",
             config=config,
-            substrate=_substrate(),
+            substrate=substrate,
+            rubric_evaluator=evaluator,
             llm_messages=[
                 {"role": "system", "content": "policy"},
                 {"role": "user", "content": "hi"},
             ],
             judge_model_config=_JUDGE_MODEL,
             extra_read_tools=[],
-            id_fields={},
-            unstable_fields=set(),
-            initial_state_schemas=[],
+            state_diff=_render_diff(substrate, []),
             logger=_logger(),
         )
         assert result.status is JudgeStatus.ERRORED

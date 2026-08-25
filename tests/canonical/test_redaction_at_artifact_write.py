@@ -56,8 +56,8 @@ from tests.utils.conductor_phases import (
     runner_stub,
 )
 from tests.utils.provision_failure import FailProvisionBackend, provisioning_executor
-from tolokaforge.core.grading.judge import JudgeResult, JudgeUsage
-from tolokaforge.core.grading.judge import JudgeStatus as JudgeRunStatus
+from tolokaforge.core.grading.judge_result import JudgeResult, JudgeUsage
+from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.replay import (
     FidelityMode,
     KnowledgeSearchMode,

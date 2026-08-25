@@ -43,8 +43,8 @@ from pydantic import ValidationError
 
 from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
-from tolokaforge.core.grading.judge import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.judge import LLMJudge
+from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.replay import build_replay_grade
 from tolokaforge.core.grading.transcript_wire import (
     encode_transcript_wire,

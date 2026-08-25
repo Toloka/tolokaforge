@@ -409,7 +409,7 @@ def _empty_substrate():
 def test_grade_llm_judge_constructs_with_effective_disable_flag(
     monkeypatch, customization, expected
 ):
-    from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
+    from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, Rubric
 
@@ -424,7 +424,7 @@ def test_grade_llm_judge_constructs_with_effective_disable_flag(
                 status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
             )
 
-    monkeypatch.setattr("tolokaforge.core.grading.composite.LLMJudge", _SpyJudge)
+    monkeypatch.setattr("tolokaforge.core.grading.default_rubric_evaluator.LLMJudge", _SpyJudge)
 
     service = _service(None)
     try:
@@ -461,7 +461,7 @@ def test_grade_llm_judge_constructs_with_effective_custom_prompt(
 ):
     """``_grade_llm_judge`` computes the effective ``system_prompt`` from the merged
     customization and constructs the judge with it — ``None`` when no layer set it."""
-    from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
+    from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, Rubric
 
@@ -476,7 +476,7 @@ def test_grade_llm_judge_constructs_with_effective_custom_prompt(
                 status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
             )
 
-    monkeypatch.setattr("tolokaforge.core.grading.composite.LLMJudge", _SpyJudge)
+    monkeypatch.setattr("tolokaforge.core.grading.default_rubric_evaluator.LLMJudge", _SpyJudge)
 
     service = _service(None)
     try:
@@ -516,7 +516,7 @@ def test_grade_llm_judge_constructs_with_effective_include_agent_system_prompt(
     from the merged customization and constructs the judge with it — defaulting to
     ``True`` (include) when no layer sets it, not collapsing an unset flag to
     ``False``."""
-    from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
+    from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.runner.models import JudgeCustomization, LLMJudgeConfig, Rubric
 
@@ -531,7 +531,7 @@ def test_grade_llm_judge_constructs_with_effective_include_agent_system_prompt(
                 status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
             )
 
-    monkeypatch.setattr("tolokaforge.core.grading.composite.LLMJudge", _SpyJudge)
+    monkeypatch.setattr("tolokaforge.core.grading.default_rubric_evaluator.LLMJudge", _SpyJudge)
 
     service = _service(None)
     try:
@@ -560,7 +560,7 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
     ``custom_system_prompt`` / ``include_agent_system_prompt`` plus the replay inputs
     ``state_diff_text`` / ``read_tools_offered`` land on ``response.grade.judge_report``
     exactly as the judge reported them."""
-    from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
+    from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.runner import runner_pb2 as pb2
     from tolokaforge.runner.models import (
@@ -590,7 +590,7 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
                 include_agent_system_prompt=False,
             )
 
-    monkeypatch.setattr("tolokaforge.core.grading.composite.LLMJudge", _SpyJudge)
+    monkeypatch.setattr("tolokaforge.core.grading.default_rubric_evaluator.LLMJudge", _SpyJudge)
 
     rubric = Rubric(criteria=[{"id": "a", "description": "d", "kind": "binary", "weight": 1.0}])
     task_desc = TaskDescription(

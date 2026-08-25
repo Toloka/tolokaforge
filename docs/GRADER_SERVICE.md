@@ -268,6 +268,77 @@ is booked as ungradeable rather than as an agent failure.
 `tolokaforge/core/grading/substrate_client.py::GrpcSubstrateClient` is the
 underlying wire adapter — one instance per `(channel, trial_id)` pair.
 
+## Sub-component plug-in seams
+
+Below the composite dispatch, individual grade sub-components are Protocol
+seams a downstream package extends by registering an `importlib.metadata`
+entry point. Each seam has a shipped reference impl registered under a
+default name; the loader lives on `tolokaforge.core.plugin_registry` and
+follows the fail-loud shape [ADR-0022](adr/0022-runtime-independence.md)
+pins for every seam in the engine. Six sub-component seams cover the six
+evaluators the composite dispatch reaches. The [`.importlinter`
+`composite-sub-component-seams` contract](../.importlinter) enforces the
+negative-space of the seam by forbidding
+[`composite.py`](../tolokaforge/core/grading/composite.py) from importing
+any of the six reference-impl-holding modules — the composite reaches every
+sub-component only through its Protocol via a resolved-instance kwarg.
+
+| Group | Protocol module | Reference impls | Granularity |
+| --- | --- | --- | --- |
+| `tolokaforge.custom_check_executors` | [`check_runner.py::CheckExecutor`](../tolokaforge/core/grading/check_runner.py) | `CheckRunner` (production), `InMemoryCheckExecutor` (test fixture) | holistic |
+| `tolokaforge.judge_model_providers` | [`judge_model_provider.py::JudgeModelProvider`](../tolokaforge/core/grading/judge_model_provider.py) | `LiteLLMJudgeModelProvider` (fronts `LLMClient`) | holistic |
+| `tolokaforge.rubric_evaluators` | [`rubric_evaluator.py::RubricEvaluator`](../tolokaforge/core/grading/rubric_evaluator.py) | `LLMJudgeRubricEvaluator` (wraps `LLMJudge`) | holistic |
+| `tolokaforge.transcript_rule_matchers` | [`transcript_rule_matcher.py::TranscriptRuleMatcher`](../tolokaforge/core/grading/transcript_rule_matcher.py) | `DefaultTranscriptRuleMatcher` (wraps `evaluate_transcript_rules`) | holistic |
+| `tolokaforge.trace_check_operators` | [`trace_check_operator.py::TraceCheckOperator`](../tolokaforge/core/grading/trace_check_operator.py) | 17 shipped operator functions — 15 non-binding (`equals`, `equals_ci`, `contains`, `contains_ci`, `not_equals`, `regex`, `gt`, `gte`, `lt`, `lte`, `in_`, `not_in`, `len_gt`, `len_gte`, `exists`) + 2 binding (`equals_binding`, `contains_binding`) | per-operator |
+| `tolokaforge.state_check_backends` | [`state_check_backend.py::StateCheckBackend`](../tolokaforge/core/grading/state_check_backend.py) | `JsonpathStateCheckBackend`, `DbProbesStateCheckBackend` (hash is NOT a backend — runner-integrated) | per-source |
+
+Register a downstream impl the same way as a `TrialGrader`:
+
+```toml
+# downstream package pyproject.toml
+[project.entry-points."tolokaforge.judge_model_providers"]
+openai_direct = "acme_judge:_openai_direct_provider_factory"
+
+[project.entry-points."tolokaforge.rubric_evaluators"]
+deterministic_rules = "acme_grader:_rules_evaluator_factory"
+
+[project.entry-points."tolokaforge.state_check_backends"]
+s3_diff = "acme_grader:_s3_diff_state_check_backend_factory"
+```
+
+The runner resolves the shipping defaults at startup via
+`load_custom_check_executor("check_runner")`,
+`load_judge_model_provider("litellm")`,
+`load_transcript_rule_matcher("default")`, and
+`load_state_check_backend("jsonpath")` + `load_state_check_backend("db_probes")`,
+and caches the resulting instances on `RunnerServiceImpl`. The check
+executor is threaded through the composite `grade_custom_checks`
+dispatch. The judge model provider is threaded into the
+`RubricEvaluatorContext` that the runner constructs at grade time —
+`load_rubric_evaluator("llm_judge")(ctx)` — and the composite
+`grade_llm_judge` receives the resolved evaluator; no LLM transport ever
+appears in composite. The transcript-rule matcher is threaded through the
+composite `grade_transcript_rules` dispatch; the events-less-trial gate
+(`scored_transcript_rules`) and the per-key accounting stay in the
+composite so every deployment topology applies them identically. The
+state-check backends dict (`{"jsonpath": ..., "db_probes": ...}`) is
+threaded through the composite `grade_state_checks_reads` dispatch; each
+backend owns its source's read strategy so the composite dispatches
+without knowing either evaluator's internals. Trace-check operators
+resolve per-call inside
+`tolokaforge.core.grading.trace_checks._operator_holds`, which reads
+`load_trace_check_operator(name)` — the entry-point discovery cache means
+a name only pays the loader cost on its first mention. A
+downstream `pip install` of a package that registers under any of these
+groups is picked up on the runner's next start with no framework change.
+
+**Hash grading is deliberately NOT a state-check backend.** The
+`state_checks.hash` component has state-mutation semantics (snapshot →
+reset → replay → snapshot → restore) that the read-only substrate cannot
+serve; hash grading stays runner-integrated on
+`RunnerServiceImpl._execute_hash_grading`, called by `_grade_trial_async`
+above the composite dispatch.
+
 ## See also
 
 - [ADR-0014 — TrialGrader Protocol](adr/0014-trial-grader-protocol.md)

@@ -22,7 +22,7 @@ import pytest
 
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import build_timeline
-from tolokaforge.core.grading.trace_checks import _BINDING_OPERATORS, select_events
+from tolokaforge.core.grading.trace_checks import _binding_operator_names, select_events
 from tolokaforge.core.grading.trace_timeline import (
     TraceEvent,
     TraceEventKind,
@@ -313,7 +313,7 @@ def test_the_answer_table_spans_the_operators_a_predicate_declares():
     """
     assert set(_OPERATOR_ANSWERS) == TRACE_PREDICATE_OPERATORS
     assert set(ValuePredicate.model_fields) == TRACE_PREDICATE_OPERATORS
-    assert set(_BINDING_OPERATORS) == TRACE_PREDICATE_BINDING_OPERATORS
+    assert set(_binding_operator_names()) == TRACE_PREDICATE_BINDING_OPERATORS
     misrowed = {
         name: sorted(answer.predicate)
         for name, answer in _OPERATOR_ANSWERS.items()

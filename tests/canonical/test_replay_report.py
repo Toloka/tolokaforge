@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
+from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.replay import (
     FidelityMode,
     KnowledgeSearchMode,

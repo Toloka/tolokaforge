@@ -40,3 +40,36 @@ forbidden_modules =
     tolokaforge.core.grading
     tolokaforge.runner.service
 allow_indirect_imports = true
+
+
+# Sub-component seam invariants (ADR-0039).
+#
+# composite.py is the topology-neutral dispatch above the substrate. It
+# must reach every sub-component through its Protocol via a resolved
+# instance, never through a direct import of the reference-impl module.
+# A direct import would silently re-collapse the seam and force every
+# substrate + evaluator to co-locate with the composite.
+#
+# Six sub-component seams; six forbidden targets. The four ``default_*.py``
+# modules were carved out explicitly so this contract can fence them at
+# module granularity — a downstream can never accidentally reach through
+# composite into a reference impl. Protocol / Context / FactoryAlias
+# modules (rubric_evaluator, judge_model_provider, transcript_rule_matcher,
+# state_check_backend, trace_check_operator) are IMPLICIT-ALLOW — composite
+# legitimately imports the Protocol types under TYPE_CHECKING.
+# ``check_runner`` stays implicit-allow because composite has never
+# imported CheckRunner / InMemoryCheckExecutor directly (a resolved-
+# instance kwarg is the sole route).
+[importlinter:contract:composite-sub-component-seams]
+name = Composite dispatch holds every sub-component plug-in seam
+type = forbidden
+source_modules =
+    tolokaforge.core.grading.composite
+forbidden_modules =
+    tolokaforge.core.grading.judge
+    tolokaforge.core.llm.client
+    tolokaforge.core.grading.default_rubric_evaluator
+    tolokaforge.core.grading.default_judge_model_provider
+    tolokaforge.core.grading.default_transcript_rule_matcher
+    tolokaforge.core.grading.default_state_check_backends
+allow_indirect_imports = true
