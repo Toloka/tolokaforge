@@ -1,0 +1,46 @@
+# Standalone `grader_rpc` shape reference.
+#
+# Demonstrates the run-config shape that routes grading through the
+# standalone `tolokasoft1/tolokaforge-grader` service in
+# `../../docker-compose.yaml`:
+#
+#   - `grader.name: grader_rpc` selects the grader-service transport.
+#     Every grading component (state_checks, transcript_rules,
+#     trace_checks, llm_judge, custom_checks) runs inside the grader
+#     container, dialling the runner's SubstrateService per trial.
+#   - `grader.expose_substrate: false` — the compose file sets
+#     `RUNNER_EXPOSE_SUBSTRATE=true` on the runner container directly,
+#     so the orchestrator does not need to forward the flag.
+#
+# Wiring the operator-facing `grader_address` — the endpoint the
+# `grader_rpc` factory dials — is tracked as a follow-up on issue #1263;
+# `README.md` in this directory documents the `GrpcGraderClient` snippet
+# that verifies the grader dispatches a Grade against this compose stack
+# today.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 8
+  queue_backend: sqlite
+
+grader:
+  name: grader_rpc
+  expose_substrate: false
+
+evaluation:
+  projects:
+    - "examples/native/tool_use/dataset"
+  tasks_glob: "**/task.yaml"
+  output_dir: "results/standalone_grader_rpc_example"

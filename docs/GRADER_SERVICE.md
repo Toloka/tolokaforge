@@ -145,22 +145,50 @@ queue = "tolokaforge.core.trial_grader:queue_trial_grader_factory"
 ## Deploying the standalone grader service
 
 The `tolokaforge-grader` image ships alongside the other four first-party
-images and is wired into `deploy/standalone/docker-compose.yaml`:
+images. `deploy/standalone/docker-compose.yaml` brings the five-service
+stack — db-service, rag-service, mock-web, runner, grader — up together
+with the wiring the grader-side composite dispatch needs:
 
 ```yaml
+runner:
+  environment:
+    RUNNER_EXPOSE_SUBSTRATE: "true"
 grader:
-  image: tolokasoft1/tolokaforge-grader:${TOLOKAFORGE_IMAGE_TAG:-latest}
   ports:
     - "50052:50052"
+  depends_on:
+    runner:
+      condition: service_healthy
 ```
 
-`docker compose up` from `deploy/standalone/` brings up the runner and
-the grader side by side; the runner reaches the grader by service-name
-DNS (`grader:50052` on the compose network) or the grader from the host
-(`localhost:50052`).
+`RUNNER_EXPOSE_SUBSTRATE=true` registers the read-only `SubstrateService`
+on the runner's existing gRPC listen port (`50051`); the grader dials it
+per trial for every substrate read (initial / final state,
+agent-visible filesystem, per-trial KB). `grader.depends_on:
+{runner: service_healthy}` orders startup so the grader accepts
+requests only after the runner's channel-ready HEALTHCHECK passes and
+the substrate is answering.
 
-The runtime command is fixed: `python -m tolokaforge.grader`. Reads
-`--port` (or `$GRADER_SERVICE_PORT`, default `50052`).
+`docker compose up --wait` from `deploy/standalone/` blocks on every
+service's HEALTHCHECK, including the grader's channel-ready probe. Once
+it returns, the runner reaches the grader by service-name DNS
+(`grader:50052`) and the host reaches either service at
+`localhost:5005{1,2}`.
+
+The grader-container runtime command is fixed: `python -m
+tolokaforge.grader`. Reads `--port` (or `$GRADER_SERVICE_PORT`, default
+`50052`). Provider credentials come off the compose file's env —
+`OPENROUTER_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` /
+`GEMINI_API_KEY` / `TOLOKAFORGE_SECRETS_JSON` — populated from
+`deploy/standalone/.env`. The grader requires a provider key only when
+the task exercises `llm_judge`; the other four grading components run
+against the keyless stack.
+
+`deploy/standalone/examples/grader_rpc/` documents the run-config shape
+that routes grading through the standalone service
+(`grader.name: grader_rpc`, `grader.expose_substrate: false`) and the
+`GrpcGraderClient` snippet that verifies the composite dispatcher
+produces a `Grade` end-to-end against a running stack.
 
 ## The `Grade` wire
 
