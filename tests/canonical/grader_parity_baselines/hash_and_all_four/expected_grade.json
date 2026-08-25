@@ -1,0 +1,72 @@
+{
+  "binary_pass": true,
+  "components": {
+    "custom_checks": 1.0,
+    "llm_judge": 1.0,
+    "state_checks": 1.0,
+    "trace_checks": 1.0,
+    "transcript_rules": 1.0
+  },
+  "criterion_results": [
+    {
+      "id": "ok",
+      "justification": "all four other components agree\nVERDICT: MET\n",
+      "met": true,
+      "score": 1.0
+    }
+  ],
+  "custom_checks": [
+    {
+      "check_name": "order_was_shipped",
+      "details_json": "",
+      "message": "order O1 is shipped",
+      "score": 1.0,
+      "status": "passed"
+    }
+  ],
+  "judge_report": {
+    "calls": 1,
+    "completion_tokens": 5,
+    "consistency_rejections": 0,
+    "cost_usd": 0.001,
+    "custom_system_prompt": false,
+    "include_agent_system_prompt": true,
+    "kb_tools_offered": [],
+    "kb_tools_withheld": [],
+    "knowledge_search_disabled": false,
+    "prompt_tokens": 10,
+    "read_tools_offered": [
+      "get_db_state",
+      "query_db"
+    ],
+    "reasoning_tokens": 0,
+    "state_diff_text": "===== STATE CHANGES (what the agent changed: initial \u2192 final) =====\nNo changes detected in any table (agent left the state untouched).\n===== END STATE CHANGES =====",
+    "tool_calls": 0,
+    "transcript_json": "[{\"role\": \"user\", \"content\": \"The agent under evaluation operated under this policy / system prompt:\\n---\\nYou are a test assistant.\\n---\\n\\nHere is the full transcript of the agent's interaction:\\n===== TRANSCRIPT =====\\nUSER: Please refund order O1 and update the report.\\nASSISTANT: Reading the existing report first.\\n  -> tool_call read_file({\\\"path\\\": \\\"/reports/final.md\\\"})\\nTOOL: previous content\\nASSISTANT: Refund issued for order O1. Writing the updated report.\\n  -> tool_call write_file({\\\"path\\\": \\\"/reports/final.md\\\", \\\"content\\\": \\\"updated\\\"})\\nTOOL: ok\\n===== END TRANSCRIPT =====\\n\\nBelow is a diff of the database state the agent changed (initial \\u2192 final): the rows it added, removed, or modified, plus which tables it left untouched. Use it as your starting point for what the agent did.\\n===== STATE CHANGES (what the agent changed: initial \\u2192 final) =====\\nNo changes detected in any table (agent left the state untouched).\\n===== END STATE CHANGES =====\\n\\nThe diff shows changes, not the complete final state. For criteria about what must NOT change, invariants, absence, or the quality of a full final value, inspect the relevant state directly with query_db (or get_db_state as a last resort). Then grade each criterion and call submit_report.\"}, {\"role\": \"assistant\", \"content\": \"\", \"tool_calls\": [{\"id\": \"call_1_0\", \"name\": \"submit_report\", \"arguments\": {\"reasons\": \"order refunded and report updated\", \"ok\": true, \"ok_justification\": \"all four other components agree\\nVERDICT: MET\\n\"}}]}, {\"role\": \"system\", \"content\": \"submit_report received; judge terminating.\"}]"
+  },
+  "judge_status": "JUDGE_STATUS_COMPLETED",
+  "reasons": "State: hash match | JSONPath: State: PASS: order O1 is shipped | Transcript: all 1 rules passed | Trace checks: score=1.00 | Judge: score=1.00 (order refunded and report updated | Judge KB: none offered) | Custom checks: score=1.00, all 1 checks passed",
+  "score": 1.0,
+  "state_diff_json": "",
+  "trace_checks": [
+    {
+      "id": "every_report_written_was_read_first",
+      "kind": "before",
+      "matched_positions": [
+        2,
+        5
+      ],
+      "message": "",
+      "passed": true,
+      "severity": "scored",
+      "undecided": false,
+      "weight": 1.0
+    }
+  ],
+  "trace_checks_summary": {
+    "failed_gate_ids": [],
+    "gate_failed": false,
+    "paths": [],
+    "winning_path": ""
+  }
+}

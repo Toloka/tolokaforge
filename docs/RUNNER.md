@@ -143,6 +143,10 @@ different questions:
   `ProvisionError` (naming the resolved `host:port` and the container's listen
   addresses) rather than surfacing as a downstream client-connect timeout. See
   [RUNTIME_BACKENDS.md § Readiness gate](RUNTIME_BACKENDS.md#readiness-gate).
+- **RC-image parity exercise** — every published RC runner + grader image
+  pair is driven through the 10-pack per-component parity gate over the real
+  gRPC wire before promotion; see
+  [GRADER_SERVICE.md § Parity gate — RC-smoke guarantees](GRADER_SERVICE.md#parity-gate).
 
 ## Runner Image Contents
 

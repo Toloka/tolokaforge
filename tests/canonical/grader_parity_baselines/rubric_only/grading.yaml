@@ -1,0 +1,9 @@
+weights:
+  llm_judge: 1.0
+llm_judge:
+  rubric:
+    criteria:
+      - id: ok
+        description: Task completed
+        kind: binary
+        weight: 1.0

@@ -1,0 +1,28 @@
+trial_id: trace_checks_heavy:0
+termination_reason: agent_done
+agent_system_prompt: You are a test assistant.
+llm_messages:
+  - role: system
+    content: You are a test assistant.
+  - role: user
+    content: Please update /reports/final.md with today's status.
+  - role: assistant
+    content: Reading the existing report first.
+    tool_calls:
+      - id: call_read_1
+        function:
+          name: read_file
+          arguments: '{"path": "/reports/final.md"}'
+  - role: tool
+    content: 'previous content'
+    tool_call_id: call_read_1
+  - role: assistant
+    content: Writing the updated report.
+    tool_calls:
+      - id: call_write_1
+        function:
+          name: write_file
+          arguments: '{"path": "/reports/final.md", "content": "updated"}'
+  - role: tool
+    content: 'ok'
+    tool_call_id: call_write_1

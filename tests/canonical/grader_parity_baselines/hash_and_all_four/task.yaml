@@ -1,0 +1,20 @@
+task_id: hash_and_all_four
+name: Hash + all non-hash components composite (grader refusal)
+category: test
+description: |
+  Composes hash-based grading with every non-hash seam. The runner leg
+  grades all six components — the harness's stationary substrate lets hash
+  grading resolve to ``hash_match=True`` — while the grader leg refuses the
+  whole dispatch on the ``hash_enabled`` branch (``grader_rpc cannot execute
+  hash-based grading``). Documents the one accepted refusal divergence per
+  ADR-0039.
+adapter_type: tau
+schema_version: 1.0.0
+system_prompt: You are a test assistant.
+agent_tools: []
+user_tools: []
+initial_state:
+  tables:
+    orders:
+      - id: O1
+        status: shipped

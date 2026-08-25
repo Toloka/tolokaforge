@@ -1,0 +1,19 @@
+task_id: rubric_only
+name: Rubric-only parity isolation
+category: test
+description: |
+  Isolates the ``rubric_evaluators`` + ``judge_model_providers`` seam: the
+  grading config declares one binary rubric criterion, no state checks or
+  transcript rules, and the trial's substrate serves one seed table so the
+  read-only substrate has bytes for the judge's state diff. The scripted
+  client resolves the judge dispatch on its first turn via ``submit_report``.
+adapter_type: tau
+schema_version: 1.0.0
+system_prompt: You are a test assistant.
+agent_tools: []
+user_tools: []
+initial_state:
+  tables:
+    users:
+      - id: u1
+        name: Alice

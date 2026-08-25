@@ -1,0 +1,23 @@
+{
+  "binary_pass": true,
+  "components": {
+    "custom_checks": -1.0,
+    "llm_judge": -1.0,
+    "state_checks": 1.0,
+    "trace_checks": -1.0,
+    "transcript_rules": -1.0
+  },
+  "criterion_results": [],
+  "custom_checks": [],
+  "judge_status": "JUDGE_STATUS_UNSPECIFIED",
+  "reasons": "JSONPath: State: PASS: order O1 is shipped",
+  "score": 1.0,
+  "state_diff_json": "",
+  "trace_checks": [],
+  "trace_checks_summary": {
+    "failed_gate_ids": [],
+    "gate_failed": false,
+    "paths": [],
+    "winning_path": ""
+  }
+}

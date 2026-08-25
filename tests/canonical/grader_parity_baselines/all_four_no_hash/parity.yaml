@@ -1,0 +1,10 @@
+accepted_divergences: []
+refusal_mode: false
+judge_script:
+  - - name: submit_report
+      arguments:
+        reasons: order refunded and report updated
+        ok: true
+        ok_justification: |
+          all four other components agree
+          VERDICT: MET
