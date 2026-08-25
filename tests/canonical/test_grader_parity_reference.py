@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -29,14 +30,18 @@ from tests.utils.grader_parity_harness import (
     REFRESH_BASELINES_OPTION,
     ParityPack,
     assert_grader_rpc_refuses,
+    components_diff,
     load_parity_pack,
     read_baseline,
     refresh_or_assert_baseline,
     run_via_grader_rpc,
     run_via_runner_rpc,
     serialise_grade,
+    should_refresh_baselines,
+    write_baseline,
 )
 from tolokaforge.grader import grader_pb2
+from tolokaforge.runner.models import TraceChecksResult
 
 pytestmark = pytest.mark.canonical
 
@@ -60,6 +65,17 @@ _ISOLATION_PACK_IDS = [name for name, _ in _ISOLATION_PACKS]
 _ISOLATION_PACK_EXPECTED_BLOCK = dict(_ISOLATION_PACKS)
 
 _RUBRIC_ONLY_PACK_DIR = _BASELINES_ROOT / "rubric_only"
+
+# Composite packs that assert per-component parity across two or more seams.
+# The refusal case (``hash_and_all_four``) rides its own test — the grader leg
+# raises rather than producing a Grade — so it is excluded from this list.
+_COMPOSITE_PARITY_PACK_IDS: list[str] = [
+    "state_plus_transcript",
+    "state_plus_judge",
+    "all_four_no_hash",
+]
+_COMPOSITE_PARITY_PACK_DIRS = [_BASELINES_ROOT / name for name in _COMPOSITE_PARITY_PACK_IDS]
+_HASH_AND_ALL_FOUR_PACK_DIR = _BASELINES_ROOT / "hash_and_all_four"
 
 
 @pytest.mark.parametrize("pack_dir", _ISOLATION_PACK_DIRS, ids=_ISOLATION_PACK_IDS)
@@ -249,6 +265,212 @@ def test_assert_grader_rpc_refuses_matches_message(
             expected_error_fragment="this fragment is not in the refusal message",
             monkeypatch=monkeypatch,
         )
+
+
+@pytest.mark.parametrize("pack_dir", _COMPOSITE_PARITY_PACK_DIRS, ids=_COMPOSITE_PARITY_PACK_IDS)
+def test_composite_pack_parity(
+    pack_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Each composite pack's committed baseline matches both grading legs.
+
+    Runs both legs and asserts byte-for-byte equality against the pack's
+    committed baseline. Under ``--refresh-baselines`` the runner leg's
+    output overwrites the baseline and the assertion is skipped. Refusal
+    packs are covered by :func:`test_composite_pack_parity_hash_refusal`.
+    """
+    pack = load_parity_pack(pack_dir)
+    runner_grade = run_via_runner_rpc(pack, monkeypatch=monkeypatch)
+    grader_grade = run_via_grader_rpc(pack, monkeypatch=monkeypatch)
+    runner_serialised = serialise_grade(runner_grade)
+    grader_serialised = serialise_grade(grader_grade)
+    refresh_or_assert_baseline(
+        request,
+        pack,
+        runner_serialised=runner_serialised,
+        grader_serialised=grader_serialised,
+    )
+
+
+def test_composite_pack_parity_hash_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """The ``hash_and_all_four`` pack captures the accepted refusal divergence.
+
+    The runner leg grades every component (hash grading resolves to
+    ``hash_match=True`` against the harness's stationary substrate; the
+    other four components score alongside), and its serialised output is
+    the committed baseline. The grader leg refuses on the
+    ``hash_enabled`` branch — the expected-error fragment declared on
+    ``parity.yaml`` is the entire grader-side contract; no grader baseline
+    JSON is captured.
+    """
+    pack = load_parity_pack(_HASH_AND_ALL_FOUR_PACK_DIR)
+    assert pack.refusal_mode, f"{pack.directory.name!r} pack must declare refusal_mode: true"
+    assert (
+        pack.expected_error_fragment
+    ), f"{pack.directory.name!r} pack must declare expected_error_fragment"
+    runner_grade = run_via_runner_rpc(pack, monkeypatch=monkeypatch)
+    runner_serialised = serialise_grade(runner_grade)
+    if should_refresh_baselines(request.config):
+        write_baseline(pack, runner_serialised)
+        pytest.skip("baselines refreshed")
+    baseline = read_baseline(pack)
+    assert runner_serialised == baseline, (
+        "runner_rpc leg diverged from the committed baseline; "
+        "run pytest with --refresh-baselines to accept the new baseline."
+    )
+    assert_grader_rpc_refuses(
+        pack,
+        expected_error_fragment=pack.expected_error_fragment,
+        monkeypatch=monkeypatch,
+    )
+
+
+@pytest.mark.parametrize(
+    "pack_dir",
+    [*_COMPOSITE_PARITY_PACK_DIRS, _HASH_AND_ALL_FOUR_PACK_DIR],
+    ids=[*_COMPOSITE_PARITY_PACK_IDS, "hash_and_all_four"],
+)
+def test_composite_pack_judge_does_not_enable_kb_passthrough(pack_dir: Path) -> None:
+    """No composite pack turns on KB passthrough on its judge.
+
+    ADR-0039 records KB passthrough as an accepted grader-vs-runner
+    divergence (the grader image cannot reconstruct the runner's KB
+    corpus). A composite pack that enabled it would drift the two legs
+    on a component that isn't the seam under test, so the isolation
+    invariant only holds while every ``LLMJudgeConfig.customization``
+    declares :attr:`disable_knowledge_search` either as ``None`` (unset)
+    or ``True`` (explicitly disabled). ``False`` — the one setting that
+    keeps KB tools on the judge's surface — is refused here.
+    """
+    pack = load_parity_pack(pack_dir)
+    llm_judge = pack.grading_config.llm_judge
+    if llm_judge is None:
+        return
+    customization = llm_judge.customization
+    if customization is None:
+        return
+    assert customization.disable_knowledge_search is not False, (
+        f"pack {pack_dir.name!r} enables KB passthrough on its judge "
+        f"(disable_knowledge_search=False) — composite parity packs must not "
+        "exercise the ADR-0039 KB-passthrough divergence."
+    )
+
+
+def test_regression_sim_baseline_flip_names_the_component(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single-component flip in a scratch baseline surfaces at that component.
+
+    Copies ``all_four_no_hash`` to a temp directory, mutates its baseline
+    so ``components.trace_checks`` reads ``0.0`` while every other slot
+    matches the runner leg's output, then invokes
+    :func:`refresh_or_assert_baseline`. The raised ``AssertionError`` names
+    ``trace_checks`` and only ``trace_checks`` — proving the diff-naming
+    machinery reports the seam an operator must inspect. The committed
+    baseline is never touched.
+    """
+    pack = _copy_pack_to_tmp(_BASELINES_ROOT / "all_four_no_hash", tmp_path)
+    runner_grade = run_via_runner_rpc(pack, monkeypatch=monkeypatch)
+    grader_grade = run_via_grader_rpc(pack, monkeypatch=monkeypatch)
+    runner_serialised = serialise_grade(runner_grade)
+    grader_serialised = serialise_grade(grader_grade)
+    _flip_component_in_baseline(pack, "trace_checks", 0.0)
+
+    request_stub = _RequestStub(refresh_baselines=False)
+    with pytest.raises(AssertionError) as excinfo:
+        refresh_or_assert_baseline(
+            request_stub,
+            pack,
+            runner_serialised=runner_serialised,
+            grader_serialised=grader_serialised,
+        )
+    message = str(excinfo.value)
+    assert "trace_checks" in message, message
+    for other in ("state_checks", "transcript_rules", "llm_judge", "custom_checks"):
+        assert (
+            other not in message
+        ), f"baseline flip on trace_checks should not name {other!r}: {message}"
+
+
+def test_regression_sim_leg_divergence_names_the_component(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A leg-scoped scoring bug on ``grade_trace_checks`` surfaces at that seam.
+
+    Runs the runner leg with production :func:`grade_trace_checks`, then
+    monkeypatches the composite module's binding to a stub that scores
+    ``0.0`` and runs the grader leg. The two serialisations then diverge
+    only on the ``trace_checks`` component score — proving the parity gate
+    would name that seam on a real between-legs code divergence, not just
+    on a baseline mutation.
+    """
+    pack = load_parity_pack(_BASELINES_ROOT / "all_four_no_hash")
+    runner_grade = run_via_runner_rpc(pack, monkeypatch=monkeypatch)
+    runner_serialised = serialise_grade(runner_grade)
+
+    monkeypatch.setattr(
+        "tolokaforge.core.grading.composite.grade_trace_checks",
+        _fake_grade_trace_checks,
+    )
+    grader_grade = run_via_grader_rpc(pack, monkeypatch=monkeypatch)
+    grader_serialised = serialise_grade(grader_grade)
+
+    diverging = components_diff(runner_serialised, grader_serialised)
+    assert diverging == ["trace_checks"], diverging
+
+
+def _fake_grade_trace_checks(*_args: Any, **_kwargs: Any) -> TraceChecksResult:
+    """Divergent stub for the regression-sim leg-divergence test.
+
+    Returns an empty :class:`TraceChecksResult` — its ``score`` defaults to
+    ``-1.0`` (the "not evaluated" sentinel) and ``constraints`` is empty, so
+    the composite dispatcher folds a missing ``trace_checks`` slot alongside
+    a production runner leg that scored the same constraint at ``1.0``.
+    """
+    return TraceChecksResult()
+
+
+def _copy_pack_to_tmp(source_dir: Path, tmp_path: Path) -> ParityPack:
+    """Copy a committed pack into ``tmp_path`` and return the loaded pack.
+
+    Mirrors the small fixed set of files a composite pack ships. The temp
+    copy carries its own writable baseline so
+    ``test_regression_sim_baseline_flip_names_the_component`` can mutate
+    without touching the committed one.
+    """
+    scratch_dir = tmp_path / source_dir.name
+    scratch_dir.mkdir()
+    for name in (
+        "task.yaml",
+        "grading.yaml",
+        "trial.yaml",
+        "parity.yaml",
+        "expected_grade.json",
+        "checks.py",
+    ):
+        source = source_dir / name
+        if not source.exists():
+            continue
+        (scratch_dir / name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    return load_parity_pack(scratch_dir)
+
+
+def _flip_component_in_baseline(pack: ParityPack, component: str, new_value: float) -> None:
+    """Rewrite one ``components[<name>]`` entry in the pack's baseline.
+
+    Preserves the top-level JSON layout the harness writes so the flipped
+    file still parses; every other field stays byte-identical to the
+    committed baseline.
+    """
+    baseline_path = pack.directory / "expected_grade.json"
+    parsed = json.loads(baseline_path.read_text(encoding="utf-8"))
+    parsed.setdefault("components", {})[component] = new_value
+    baseline_path.write_text(json.dumps(parsed, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
 def _populated_grading_blocks(pack: ParityPack) -> set[str]:

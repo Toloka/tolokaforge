@@ -1,0 +1,19 @@
+task_id: state_plus_judge
+name: State-checks + LLM-judge composite parity
+category: test
+description: |
+  Composes the ``state_check_backends[jsonpath]`` seam and the
+  ``rubric_evaluators`` + ``judge_model_providers`` seam. The initial state
+  seeds a single row so the read-only substrate can answer the jsonpath
+  assertion; the scripted judge script resolves the judge dispatch on its
+  first turn via ``submit_report`` so the canonical lane stays keyless.
+adapter_type: tau
+schema_version: 1.0.0
+system_prompt: You are a test assistant.
+agent_tools: []
+user_tools: []
+initial_state:
+  tables:
+    orders:
+      - id: O1
+        status: shipped

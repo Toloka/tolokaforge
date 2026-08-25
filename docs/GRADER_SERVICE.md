@@ -540,6 +540,45 @@ neither dials a live postgres. The `custom_checks_only/` pack ships
 `runner._artifact_dirs[trial_id]` at the pack directory for the runner
 leg, so both legs load the same source under the same relative path.
 
+**Composite packs.** Four packs compose two or more seams so a
+divergence in cross-seam folding — the combined `state_checks` slot, the
+`weighted` combine method, or the ``reasons`` composition across
+components — surfaces where seams meet. `hash_and_all_four/` is the one
+pack whose grader leg refuses rather than grades: `state_checks.hash_enabled`
+reaches the grader-side `GraderCompositeDispatch.grade` refusal branch
+(`grader_rpc cannot execute hash-based grading`) — its `parity.yaml`
+declares `refusal_mode: true` and its committed `expected_grade.json`
+records the runner leg's Grade only. The refusal fragment is the entire
+grader-side contract.
+
+| Pack directory | Composition | Divergence handling |
+|---|---|---|
+| `state_plus_transcript/` | `state_checks.jsonpath_checks` + `transcript_rules` | pure parity; `accepted_divergences: []` |
+| `state_plus_judge/` | `state_checks.jsonpath_checks` + scripted `llm_judge` | pure parity; `accepted_divergences: []` |
+| `all_four_no_hash/` | jsonpath + transcript + trace + scripted judge + `custom_checks` | pure parity; `hash_enabled` off |
+| `hash_and_all_four/` | hash + jsonpath + transcript + trace + scripted judge + `custom_checks` | refusal: grader raises `GradingFailedError` matching `cannot execute hash-based grading`; only the runner leg produces a Grade |
+
+`test_composite_pack_parity` runs both legs for the first three; the
+refusal case is covered by `test_composite_pack_parity_hash_refusal`,
+which asserts the runner leg matches the committed baseline and
+`assert_grader_rpc_refuses` accepts the declared fragment.
+
+**Regression-detection lock.** Two canonical tests prove the parity
+gate would name the seam that regressed rather than only "the baseline
+diverged":
+
+- `test_regression_sim_baseline_flip_names_the_component` mutates one
+  `components[<name>]` entry in a temp-copy baseline. The failure
+  message emitted by `refresh_or_assert_baseline` names the mutated
+  component and no other — the committed baseline is never touched.
+- `test_regression_sim_leg_divergence_names_the_component` runs the
+  runner leg with production `grade_trace_checks`, then monkeypatches
+  the composite module's binding and runs the grader leg against the
+  divergent scoring. The two serialised Grades differ only on the
+  `components.trace_checks` slot per `components_diff` — proving the
+  parity gate would surface a real between-legs code divergence at
+  that seam.
+
 ## See also
 
 - [ADR-0014 — TrialGrader Protocol](adr/0014-trial-grader-protocol.md)

@@ -1,0 +1,15 @@
+weights:
+  state_checks: 1.0
+  llm_judge: 1.0
+state_checks:
+  jsonpath_checks:
+    - path: "$.db.orders[0].status"
+      equals: shipped
+      description: order O1 is shipped
+llm_judge:
+  rubric:
+    criteria:
+      - id: ok
+        description: Task completed
+        kind: binary
+        weight: 1.0

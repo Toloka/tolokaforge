@@ -62,7 +62,10 @@ from tolokaforge.runner import (
 )
 from tolokaforge.runner import grading as runner_grading
 from tolokaforge.runner.models import (
+    ResetTrialResponse,
+    RestoreSnapshotResponse,
     RunnerGradingConfig,
+    SnapshotResponse,
     StableStateResponse,
     StateResponse,
     TaskDescription,
@@ -312,7 +315,18 @@ class _FakeDBServiceClient:
     judge state-diff) draws from the same authored bytes, so a divergence
     between the two legs is a divergence in dispatch code — not in the
     stub's per-call bookkeeping.
+
+    The hash-grading surface (:meth:`get_stable_hash`, :meth:`create_snapshot`,
+    :meth:`restore_snapshot`, :meth:`reset_trial`) is a no-op family that
+    keeps the runner leg's :meth:`_execute_hash_grading` on its happy path
+    for a stationary trial: the trial and golden hashes are identical
+    constants, so hash grading resolves to ``hash_match=True`` without a
+    real snapshot / reset backend. Grader-leg hash grading is out of
+    reach — the composite dispatcher refuses ``hash_enabled`` up front —
+    so only the runner leg reaches these methods on any pack.
     """
+
+    _STABLE_HASH = "parity-harness-stable-hash"
 
     def __init__(self, tables: dict[str, list[dict[str, Any]]]) -> None:
         self._data = dict(tables)
@@ -330,6 +344,33 @@ class _FakeDBServiceClient:
         return StableStateResponse(
             data=dict(self._data), version=1, stable_hash="stable", filtered_fields=[]
         )
+
+    async def get_stable_hash(
+        self,
+        trial_id: str,  # noqa: ARG002
+        *,
+        numeric_string_fields: Any = None,  # noqa: ARG002
+    ) -> str:
+        return self._STABLE_HASH
+
+    async def create_snapshot(
+        self,
+        trial_id: str,  # noqa: ARG002
+        name: str,
+    ) -> SnapshotResponse:
+        return SnapshotResponse(status="ok", snapshot_name=name, version=1, hash=self._STABLE_HASH)
+
+    async def restore_snapshot(
+        self,
+        trial_id: str,  # noqa: ARG002
+        name: str,
+    ) -> RestoreSnapshotResponse:
+        return RestoreSnapshotResponse(
+            status="ok", restored_from=name, version=1, hash=self._STABLE_HASH
+        )
+
+    async def reset_trial(self, trial_id: str) -> ResetTrialResponse:  # noqa: ARG002
+        return ResetTrialResponse(status="ok", version=1, hash=self._STABLE_HASH)
 
     async def health_check(self) -> Any:
         raise AssertionError("parity harness does not exercise health_check")
@@ -681,6 +722,11 @@ def refresh_or_assert_baseline(
     the shipping default; the grader leg's baseline parity is the
     assertion the parity gate ships to catch.
 
+    A failing equality assertion carries the ``components`` slots that
+    diverged in its message — the ``GradeComponents`` wire fields
+    :func:`components_diff` returns — so an operator reading the pytest
+    report reads the seam that regressed before opening the diff.
+
     ``pytest.skip`` after a refresh is the "stops before asserting"
     sentinel — the assertions below never run in refresh mode.
     """
@@ -688,13 +734,63 @@ def refresh_or_assert_baseline(
         write_baseline(pack, runner_serialised)
         pytest.skip("baselines refreshed")
     baseline = read_baseline(pack)
-    assert runner_serialised == baseline, (
-        "runner_rpc leg diverged from the committed baseline; "
-        "run pytest with --refresh-baselines to accept the new baseline."
-    )
-    assert grader_serialised == baseline, (
-        "grader_rpc leg diverged from the committed baseline; "
-        "the two grading legs no longer produce byte-identical Grade output."
+    if runner_serialised != baseline:
+        raise AssertionError(
+            _build_diverging_components_message(
+                leg="runner_rpc",
+                serialised=runner_serialised,
+                baseline=baseline,
+                suffix="run pytest with --refresh-baselines to accept the new baseline.",
+            )
+        )
+    if grader_serialised != baseline:
+        raise AssertionError(
+            _build_diverging_components_message(
+                leg="grader_rpc",
+                serialised=grader_serialised,
+                baseline=baseline,
+                suffix="the two grading legs no longer produce byte-identical Grade output.",
+            )
+        )
+
+
+def components_diff(a_serialised: str, b_serialised: str) -> list[str]:
+    """Return the ``GradeComponents`` slots whose scores differ between two
+    serialised Grade JSONs.
+
+    Reads the top-level ``components`` mapping of each; a slot appears in
+    the result when the two mappings disagree at that key (either
+    different scores or one side missing). Slots the callers exercise are
+    ``state_checks``, ``transcript_rules``, ``trace_checks``, ``llm_judge``,
+    and ``custom_checks``; other top-level fields (``score``, ``reasons``,
+    detail lists) may diverge alongside a component but are not reported
+    here — regression tests exercise this at the wire-field granularity
+    the operator reads, not the aggregate.
+    """
+    a = json.loads(a_serialised).get("components") or {}
+    b = json.loads(b_serialised).get("components") or {}
+    keys = sorted(set(a) | set(b))
+    return [key for key in keys if a.get(key) != b.get(key)]
+
+
+def _build_diverging_components_message(
+    *,
+    leg: str,
+    serialised: str,
+    baseline: str,
+    suffix: str,
+) -> str:
+    diverging = components_diff(serialised, baseline)
+    if diverging:
+        component_list = ", ".join(diverging)
+        return (
+            f"{leg} leg diverged from the committed baseline on "
+            f"components [{component_list}]; {suffix}"
+        )
+    return (
+        f"{leg} leg diverged from the committed baseline outside the "
+        f"components map (score / reasons / detail lists differ but every "
+        f"component score matches); {suffix}"
     )
 
 
@@ -702,6 +798,7 @@ __all__ = [
     "REFRESH_BASELINES_OPTION",
     "ParityPack",
     "assert_grader_rpc_refuses",
+    "components_diff",
     "load_parity_pack",
     "read_baseline",
     "refresh_or_assert_baseline",
