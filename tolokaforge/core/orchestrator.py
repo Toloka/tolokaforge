@@ -612,6 +612,16 @@ class Orchestrator:
         if agent_model_config is not None and agent_model_config.harness is not None:
             params.setdefault("agent_harness", agent_model_config.harness)
             params.setdefault("agent_model", agent_model_config.name)
+            # A ``harness_version`` override — set either directly or via the
+            # ``name@version`` slug on ``harness`` — passes through as a
+            # separate param so the adapter's mixin call site can hand it to
+            # ``resolve_harness_spec(version_override=…)`` without parsing the
+            # slug a second time.
+            if agent_model_config.harness_version is not None:
+                params.setdefault(
+                    "agent_harness_version",
+                    agent_model_config.harness_version,
+                )
 
         # Add tasks_glob to params for both native and other adapters
         params["tasks_glob"] = self.config.evaluation.tasks_glob

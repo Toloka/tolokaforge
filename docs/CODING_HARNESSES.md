@@ -46,6 +46,36 @@ consumes `models.agent.name` verbatim (with per-harness vendor-prefix
 handling declared in the shipped
 [`data/harnesses.yaml`](../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml)).
 
+### Overriding the CLI version
+
+The shipped registry pins each CLI to a specific version so scored runs
+reproduce across machines. To try a different release without editing the
+registry, name it inline on the slug:
+
+```yaml
+models:
+  agent:
+    harness: "claude-code@2.2.0"    # overrides the shipped pin
+```
+
+Equivalently, use the struct form (identical after parse — visible in a
+config diff):
+
+```yaml
+models:
+  agent:
+    harness: "claude-code"
+    harness_version: "2.2.0"
+```
+
+The version segment passes to `install-harness.sh` at trial-image build
+time and lands on the recorded artefact's `HarnessSpec.version`, so
+replay can see the override. Trade-off: reproducibility. Two operators
+running the "same" run config with different overrides get different
+scores. Use for ad-hoc research; leave the field off for scored runs.
+Setting both the slug's `@version` and `harness_version` to different
+values is a hard error naming both.
+
 ### The capability-flag gate
 
 Not every adapter runs a coding-harness trial. An adapter opts in by

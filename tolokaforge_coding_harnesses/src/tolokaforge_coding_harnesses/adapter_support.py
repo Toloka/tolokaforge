@@ -85,6 +85,7 @@ class CodingHarnessAdapterMixin:
         provider_env: Mapping[str, str] | None = None,
         presets_file: str | None = None,
         plugin_discovery: bool = True,
+        version_override: str | None = None,
     ) -> HarnessSpec:
         """Resolve *agent_harness* against the effective registry.
 
@@ -100,9 +101,21 @@ class CodingHarnessAdapterMixin:
         and are validated then; it remains on the signature so an adapter can
         forward the run's envelope in one place.
 
+        *version_override* — when set (typically from
+        ``models.agent.harness_version`` or the ``name@version`` slug shape on
+        ``models.agent.harness``), the resolved spec's ``version`` is replaced
+        with this value. The rest of the spec is untouched, so ``install_source``
+        + ``install_method`` still target the vendor CLI's release channel and
+        ``install-harness.sh`` installs the requested version at trial-image
+        build time. Deviating from the shipped pin trades reproducibility for
+        flexibility: the recorded trial artefact reflects the override so replay
+        can see it, but two operators running the same run config with different
+        overrides get different scores.
+
         Raises:
-            ValueError: *agent_harness* is unknown, is :data:`ENGINE_LOOP`, or
-                *agent_model* is empty for a real harness.
+            ValueError: *agent_harness* is unknown, is :data:`ENGINE_LOOP`,
+                *agent_model* is empty for a real harness, or *version_override*
+                is the empty string.
         """
         del provider_env  # forwarded by adapters; validated at command-assembly time
         resolved: ResolvedHarnessRegistry = resolve_effective_registry(
@@ -122,6 +135,13 @@ class CodingHarnessAdapterMixin:
                 "agent_model — the CLI selects its own default otherwise, so the run "
                 "config's model would not be the one measured."
             )
+        if version_override is not None:
+            if not version_override:
+                raise ValueError(
+                    f"coding harness: agent_harness {agent_harness!r} version_override "
+                    "must be non-empty when set; drop the field to use the shipped pin."
+                )
+            spec = spec.model_copy(update={"version": version_override})
         return spec
 
     def build_harness_command(

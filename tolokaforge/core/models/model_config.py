@@ -49,7 +49,22 @@ class ModelConfig(BaseModel):
     # ``supports_coding_harness`` capability flag is ``True`` accepts this
     # field. Adapter identity is not checked here; the orchestrator's config
     # gate refuses the combination when the resolved adapter does not opt in.
+    #
+    # Two shapes accepted:
+    #   * ``"claude-code"`` — the shipped registry's pinned version is used
+    #     (reproducibility-first; recommended for scored runs).
+    #   * ``"claude-code@2.2.0"`` — the version segment overrides the shipped
+    #     pin at install time. A pre-validator splits the slug at ``@`` and
+    #     populates ``harness_version``; the field itself carries only the
+    #     name after parse. Meant for ad-hoc "try this CLI release" runs; the
+    #     recorded trial artefact reflects the override so replay is honest.
     harness: str | None = None
+    # Pinned CLI version override, populated either by writing this field
+    # directly or by using the ``name@version`` slug shape on ``harness``.
+    # ``None`` (the default) means the shipped registry's pin governs. A
+    # non-None value passes through to ``install-harness.sh`` as the version
+    # arg and lands verbatim on ``HarnessSpec.version`` for the resolved spec.
+    harness_version: str | None = None
     # Reasoning / thinking configuration. Must be a struct form —
     # bare strings (``reasoning: medium``) are rejected with a migration
     # pointer. See docs/CONFIG.md § reasoning for the schema.
@@ -63,6 +78,52 @@ class ModelConfig(BaseModel):
     # in this list. Empty list (default) → no fallback wrapper. See
     # docs/CONFIG.md § Fallback models.
     fallbacks: list["ModelConfig"] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _split_harness_slug(cls, values: Any) -> Any:
+        """Split ``harness: "<name>@<version>"`` into name + version.
+
+        Accepts the two documented shapes on ``harness``: a bare name that
+        defers to the shipped registry's pin, or a ``name@version`` slug that
+        overrides the pin at install time. When a slug is provided the pre-
+        validator populates ``harness_version`` and rewrites ``harness`` to
+        just the name so downstream code (adapters, orchestrator, registry
+        lookup) never has to know about the syntax.
+
+        Collision policy: writing the version through the slug AND through
+        the field is a hard error naming both values. Empty name (``@2.2``)
+        and empty version (``claude-code@``) are hard errors — an empty
+        segment is almost always a typo.
+        """
+        if not isinstance(values, dict):
+            return values
+        harness = values.get("harness")
+        if not isinstance(harness, str) or "@" not in harness:
+            return values
+        name, sep, version = harness.partition("@")
+        if not name:
+            raise ValueError(
+                f"models.agent.harness={harness!r}: empty name before '@'. "
+                "Write the CLI name (e.g. 'claude-code@2.2.0') or drop the '@'."
+            )
+        if not version:
+            raise ValueError(
+                f"models.agent.harness={harness!r}: empty version after '@'. "
+                "Write a concrete version (e.g. 'claude-code@2.2.0') or drop "
+                "the '@' to use the shipped pin."
+            )
+        existing_version = values.get("harness_version")
+        if existing_version is not None and existing_version != version:
+            raise ValueError(
+                f"models.agent.harness={harness!r} version segment "
+                f"({version!r}) conflicts with harness_version="
+                f"{existing_version!r}; pick one location."
+            )
+        values = dict(values)
+        values["harness"] = name
+        values["harness_version"] = version
+        return values
 
     @model_validator(mode="after")
     def _reject_openrouter_on_other_providers(self) -> "ModelConfig":

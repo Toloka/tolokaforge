@@ -206,6 +206,14 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 "`agent_model` — the CLI selects its own default otherwise, so the run "
                 "config's model would not be the one measured."
             )
+        # Optional CLI version override from ``models.agent.harness_version`` (or
+        # from the ``name@version`` slug on ``models.agent.harness`` — the
+        # ``RunConfig`` pre-validator splits and populates both fields, and the
+        # orchestrator threads the version through here as its own param). Empty
+        # under the engine loop; ``None`` means "use the shipped registry pin".
+        self.agent_harness_version_override: str | None = (
+            params.get("agent_harness_version") or None
+        )
         self.agent_provider_env: dict[str, str] = _resolve_provider_env(
             self.harness_spec.provider_env if self.harness_spec else {},
             params.get("agent_provider_env") or {},
@@ -223,8 +231,19 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
 
     @property
     def harness_spec(self) -> HarnessSpec | None:
-        """This run's harness spec. ``None`` under the engine loop, which runs no CLI."""
-        return self.harnesses.get(self.agent_harness)
+        """This run's harness spec. ``None`` under the engine loop, which runs no CLI.
+
+        When ``agent_harness_version_override`` is set (from the
+        ``name@version`` slug or an explicit ``harness_version``), the resolved
+        spec's ``version`` is model-copied. Downstream consumers —
+        ``install-harness.sh`` at image-build time, ``harness_command`` string
+        assembly, ``compute_harness_fingerprint`` on the artefact — see the
+        override as if it were the shipped pin.
+        """
+        spec = self.harnesses.get(self.agent_harness)
+        if spec is None or self.agent_harness_version_override is None:
+            return spec
+        return spec.model_copy(update={"version": self.agent_harness_version_override})
 
     def fingerprint(self) -> dict[str, Any]:
         """The harness registry this run resolved, under a ``harness`` namespace."""

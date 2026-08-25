@@ -212,6 +212,14 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 "run config's model would not be the one measured. Set "
                 "`models.agent.name` in the run config."
             )
+        # Optional CLI version override from ``models.agent.harness_version``
+        # (or from the ``name@version`` slug on ``models.agent.harness`` — the
+        # ``RunConfig`` pre-validator splits and populates both fields, and the
+        # orchestrator threads the version through here as its own param).
+        # ``None`` means "use the shipped registry pin".
+        self.agent_harness_version_override: str | None = (
+            params.get("agent_harness_version") or None
+        )
         self._harness_environments: dict[str, MaterialisedHarnessEnvironment] = {}
 
         # Validate: tasks_glob must be relative when task_packs is provided
@@ -235,8 +243,17 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
 
     @property
     def harness_spec(self) -> HarnessSpec | None:
-        """This run's harness spec. ``None`` under the engine loop, which runs no CLI."""
-        return self._resolved_registry.harnesses.get(self.agent_harness)
+        """This run's harness spec. ``None`` under the engine loop, which runs no CLI.
+
+        When ``agent_harness_version_override`` is set (from the
+        ``name@version`` slug or an explicit ``harness_version``), the resolved
+        spec's ``version`` is model-copied. Downstream consumers see the
+        override as if it were the shipped pin.
+        """
+        spec = self._resolved_registry.harnesses.get(self.agent_harness)
+        if spec is None or self.agent_harness_version_override is None:
+            return spec
+        return spec.model_copy(update={"version": self.agent_harness_version_override})
 
     def _discover_tasks(self) -> None:
         """Discover tasks matching glob pattern, optionally across task packs."""

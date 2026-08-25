@@ -185,7 +185,7 @@ mixin's own docstrings — read those, not this table):
 
 | Helper | Contract |
 |---|---|
-| `resolve_harness_spec(agent_harness, agent_model, provider_env=None, presets_file=None, plugin_discovery=True)` | Resolves against the shipped catalog + operator overlay + installed plug-ins, then validates. Refuses unknown harness names and empty models. |
+| `resolve_harness_spec(agent_harness, agent_model, provider_env=None, presets_file=None, plugin_discovery=True, version_override=None)` | Resolves against the shipped catalog + operator overlay + installed plug-ins, then validates. Refuses unknown harness names and empty models. `version_override` (from `models.agent.harness_version` or the `name@version` slug on `models.agent.harness`) replaces the shipped pin on the returned spec's `version` — every downstream consumer (Dockerfile install line, artefact metadata, fingerprint) sees the override. |
 | `build_harness_command(agent_harness, spec, instruction, model, provider_env=None, *, path_resolver=None)` | Assembles the `bash -c`-shaped command the trial exec runs. Threads argv, model routing, provider-env, and (when the spec declares it) the middleware-proxy preamble. |
 | `emit_harness_metadata(agent_harness, spec, command, model)` | Four-key handshake the conductor branches on: `agent_harness`, `agent_harness_version`, `agent_harness_model`, `agent_harness_command`. |
 | `emit_harness_tool_schema(*, service, compose_project_prefix, timeout_s, toolset="coding_harness")` | Payload for the runner's `bash` tool routed through `DockerComposeExecToolWrapper`. `timeout_s` must cover the whole trial. |
