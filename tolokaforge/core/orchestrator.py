@@ -195,21 +195,31 @@ def _actor_routes_a_compose_variant(task: Any, actor: ToolActor) -> bool:
     return False
 
 
-def _run_needs_docker_cli(adapter_type: str | None, tasks: list[Any]) -> bool:
+def _run_needs_docker_cli(
+    adapter_type: str | None,
+    tasks: list[Any],
+    coding_harness_active: bool = False,
+) -> bool:
     """Return True iff the run needs the docker CLI baked into the runner image.
 
-    Two triggers today:
+    Three triggers today:
 
     - Terminal-bench tasks exec the docker CLI + compose plugin in the runner
       (against the host daemon via the mounted socket).
     - Any task that routes a shipped tool through the compose variant (see
       :func:`_tasks_use_compose_variant_tools`) — the runner ``docker exec``\\ s
       into the sibling service.
+    - Any run declaring ``models.agent.coding_harness`` — the harness's bash
+      tool routes through ``DockerComposeExecToolWrapper`` regardless of
+      adapter (native, terminal-bench, or any future opt-in), so the runner
+      always ``docker exec``\\ s from itself into the sibling task container.
 
     Detected before build so the slim default image ships without the CLI for
     every other run. Pure function for unit testing.
     """
     if adapter_type == AdapterType.TERMINAL_BENCH:
+        return True
+    if coding_harness_active:
         return True
     return _tasks_use_compose_variant_tools(tasks)
 
@@ -589,6 +599,19 @@ class Orchestrator:
         adapter_config = self.config.evaluation.harness_adapter
         adapter_type = adapter_config.type if adapter_config else AdapterType.NATIVE.value
         return {adapter_type: payload}
+
+    def _coding_harness_active(self) -> bool:
+        """Whether the run declares ``models.agent.coding_harness``.
+
+        The runner ``docker exec``\\ s from itself into the sibling task
+        container in harness mode regardless of adapter (native,
+        terminal-bench, or any future opt-in), so the docker CLI + socket
+        mount are both required whenever this returns ``True``.
+        """
+        if not self.config.models:
+            return False
+        agent = self.config.models.get("agent")
+        return agent is not None and agent.coding_harness is not None
 
     def _create_adapter(self) -> BaseAdapter:
         """Create adapter based on configuration"""
@@ -1155,7 +1178,11 @@ class Orchestrator:
                 seeds=self._project_seed_registry(),
                 log_capture=log_capture,
                 events=self._events,
-                mount_docker_socket=_run_needs_docker_cli(adapter_type, self.tasks),
+                mount_docker_socket=_run_needs_docker_cli(
+                    adapter_type,
+                    self.tasks,
+                    coding_harness_active=self._coding_harness_active(),
+                ),
             )
         )
         self.logger.info(
@@ -2041,7 +2068,11 @@ class Orchestrator:
                     if self.config.evaluation.harness_adapter
                     else None
                 )
-                if _run_needs_docker_cli(adapter_type, self.tasks):
+                if _run_needs_docker_cli(
+                    adapter_type,
+                    self.tasks,
+                    coding_harness_active=self._coding_harness_active(),
+                ):
                     self.logger.info(
                         "Docker CLI required in runner image "
                         "(terminal-bench adapter or compose-variant tools detected)"

@@ -53,12 +53,58 @@ if TYPE_CHECKING:
 # identifier differs.
 SUBSET_DISTRIBUTION_NAME = "tolokaforge-runner-subset"
 
-# The subset-native CLI shim's ``[project.scripts]`` binding — literally the
-# entry-point table pip writes into ``site-packages/…-dist-info/entry_points.txt``
-# for the subset wheel. Kept as a module constant so ``pip show``,
-# ``importlib.metadata.entry_points``, and the canonical drift-lock test all
-# read the same string. See ADR-0027 for the shim.
-SUBSET_ENTRY_POINTS: str = "[console_scripts]\ntolokaforge = tolokaforge.runner._cli:main\n"
+# The subset wheel's ``entry_points.txt`` — literally what pip writes into
+# ``site-packages/…-dist-info/entry_points.txt``. Kept as a module constant so
+# ``pip show``, ``importlib.metadata.entry_points``, and the canonical
+# drift-lock test all read the same string. See ADR-0027 for the shim.
+#
+# Two audiences read this file at runtime inside the runner container:
+#   1. The console-script shim binds a subset-native ``tolokaforge`` CLI.
+#   2. The grader-detachment path (ADR-0038 / ADR-0040) resolves grading-side
+#      plugins — check executors, judge model providers, rubric evaluators,
+#      transcript-rule matchers, state-check backends, trace-check operators,
+#      grading substrates — through ``importlib.metadata.entry_points`` on
+#      the ``tolokaforge.*`` groups. Every group whose target module lives
+#      inside the runner subset (``tolokaforge/core/grading/…``) must be
+#      declared here or ``composite_dispatch`` refuses to start with
+#      ``Unknown implementation '<name>' in entry-point group
+#      'tolokaforge.<group>'. Known names: (none registered).``
+#
+# Runtime backends / trial graders / conductors / turn policies are
+# orchestrator-side entry points — the runner never dispatches through them,
+# so they stay off this file.
+SUBSET_ENTRY_POINTS: str = (
+    "[console_scripts]\n"
+    "tolokaforge = tolokaforge.runner._cli:main\n"
+    "\n"
+    "[tolokaforge.grading_substrates]\n"
+    "in_process = tolokaforge.core.grading.substrate:InProcessGradingSubstrate\n"
+    "live_callback = tolokaforge.core.grading.substrate_live:LiveRunnerCallbackGradingSubstrate\n"
+    "\n"
+    "[tolokaforge.custom_check_executors]\n"
+    "check_runner = tolokaforge.core.grading.check_runner:_check_runner_factory\n"
+    "in_memory = tolokaforge.core.grading.check_runner:_in_memory_check_executor_factory\n"
+    "\n"
+    "[tolokaforge.judge_model_providers]\n"
+    "litellm = tolokaforge.core.grading.default_judge_model_provider:_litellm_judge_model_provider_factory\n"
+    "\n"
+    "[tolokaforge.rubric_evaluators]\n"
+    "llm_judge = tolokaforge.core.grading.default_rubric_evaluator:_llm_judge_rubric_evaluator_factory\n"
+    "\n"
+    "[tolokaforge.transcript_rule_matchers]\n"
+    "default = tolokaforge.core.grading.default_transcript_rule_matcher:_default_transcript_rule_matcher_factory\n"
+    "\n"
+    "[tolokaforge.state_check_backends]\n"
+    "jsonpath = tolokaforge.core.grading.default_state_check_backends:_jsonpath_state_check_backend_factory\n"
+    "db_probes = tolokaforge.core.grading.default_state_check_backends:_db_probes_state_check_backend_factory\n"
+    "\n"
+    "[tolokaforge.trace_check_operators]\n"
+    "equals = tolokaforge.core.grading.trace_check_operator:equals\n"
+    "equals_ci = tolokaforge.core.grading.trace_check_operator:equals_ci\n"
+    "contains = tolokaforge.core.grading.trace_check_operator:contains_op\n"
+    "contains_ci = tolokaforge.core.grading.trace_check_operator:contains_ci\n"
+    "not_equals = tolokaforge.core.grading.trace_check_operator:not_equals\n"
+)
 
 
 # Runtime dependencies the runner container needs.
