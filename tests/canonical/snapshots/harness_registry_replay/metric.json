@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 12,
+  "bucket_b_count": 11,
   "commits": [
     {
       "adapter_paths": [
@@ -1749,61 +1749,56 @@
     },
     {
       "adapter_paths": [
-        "AGENTS.md",
-        "README.md",
-        "docs/CODING_HARNESSES.md",
-        "docs/ROADMAP.md",
-        "tolokaforge_coding_harnesses/README.md"
-      ],
-      "bucket": "B",
-      "date": "2026-08-24",
-      "pr": null,
-      "reason": "5 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "3d591a96142a18f20bd064e02b64cd089edb1000",
-      "subject": "docs(coding-harnesses): make the harness surface discoverable",
-      "touched_files": [
-        "AGENTS.md",
-        "README.md",
-        "docs/CODING_HARNESSES.md",
-        "docs/ROADMAP.md",
-        "examples/terminal_bench/README.md",
-        "tolokaforge_coding_harnesses/README.md"
-      ]
-    },
-    {
-      "adapter_paths": [
-        "AGENTS.md",
-        "docs/CODING_HARNESSES.md",
-        "docs/ROADMAP.md",
-        "tolokaforge_coding_harnesses/README.md"
-      ],
-      "bucket": "B",
-      "date": "2026-08-24",
-      "pr": null,
-      "reason": "4 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "5580dd86071d62d57a240e54ce0e6db825088bb9",
-      "subject": "docs(coding-harnesses): review fixes \u2014 canonical replay path, run_harness.yaml alignment, signature honesty",
-      "touched_files": [
-        "AGENTS.md",
-        "docs/CODING_HARNESSES.md",
-        "docs/ROADMAP.md",
-        "examples/terminal_bench/README.md",
-        "tolokaforge_coding_harnesses/README.md"
-      ]
-    },
-    {
-      "adapter_paths": [
-        "tests/canonical/snapshots/harness_registry_replay/metric.json"
+        "tolokaforge_coding_harnesses/README.md",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/__init__.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py",
+        "tolokaforge_coding_harnesses/tests/canonical/test_pypi_ready.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_adapter_support.py"
       ],
       "bucket": "B",
       "date": "2026-08-25",
       "pr": null,
-      "reason": "1 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "80722fb55b365a29e52ccc23b868c373213fd05b",
-      "subject": "docs(harnesses.yaml): correct the opencode routing story on 1.18.18",
+      "reason": "5 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "02296884bbee2e4996632fe007f808a514c59a83",
+      "subject": "feat(coding-harnesses): extract CodingHarnessAdapterMixin",
       "touched_files": [
+        "tolokaforge_coding_harnesses/README.md",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/__init__.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py",
+        "tolokaforge_coding_harnesses/tests/canonical/test_pypi_ready.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_adapter_support.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        ".github/workflows/coding-harness-matrix.yml",
+        "AGENTS.md",
+        "README.md",
+        "docs/CODING_HARNESSES.md",
+        "docs/ROADMAP.md",
+        "docs/RUNNING_TERMINAL_BENCH.md",
         "tests/canonical/snapshots/harness_registry_replay/metric.json",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml"
+        "tolokaforge_coding_harnesses/README.md",
+        "tolokaforge_coding_harnesses/tests/canonical/test_pypi_ready.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-25",
+      "pr": 1257,
+      "reason": "9 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "db89028afe58278ffdd2a71a9bcd4007c8b6170e",
+      "subject": "docs(coding-harnesses): make the harness surface discoverable (Stage 1 of harness ecosystem plan) (#1257)",
+      "touched_files": [
+        ".github/workflows/coding-harness-matrix.yml",
+        "AGENTS.md",
+        "README.md",
+        "docs/CODING_HARNESSES.md",
+        "docs/ROADMAP.md",
+        "docs/RUNNING_TERMINAL_BENCH.md",
+        "examples/terminal_bench/README.md",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tolokaforge_coding_harnesses/README.md",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml",
+        "tolokaforge_coding_harnesses/tests/canonical/test_pypi_ready.py"
       ]
     }
   ]
