@@ -2,7 +2,7 @@
   "_meta": {
     "description": "Model pricing in USD per 1M tokens. Source: OpenRouter API.",
     "source_url": "https://openrouter.ai/api/v1/models",
-    "updated_at": "2026-08-14T10:17:21.788923+00:00",
+    "updated_at": "2026-08-25T11:40:29.130510+00:00",
     "notes": "Run `uv run pricing-updater update` to refresh from OpenRouter API."
   },
   "models": {
@@ -1891,6 +1891,11 @@
     "z-ai/glm-5.2": {
       "input": 0.93,
       "output": 3.0,
+      "cache_read": 0.26
+    },
+    "z-ai/glm-5.3": {
+      "input": 1.4,
+      "output": 4.4,
       "cache_read": 0.26
     },
     "z-ai/glm-5v-turbo": {

@@ -305,6 +305,60 @@ presets:
     prompt_policy: dict_map_hints
     reasoning_codec: openai_summary_replay
 
+  # z-ai/glm-5.3 — model-specific overlay landed via auto-resolve (PR #1277).
+  # Declared BEFORE the shared ``openrouter_dict_stringify_recovery`` preset
+  # (whose ``z-ai/glm-5*`` glob already claimed this route) so first-match-wins
+  # routing picks it up for this one model; every other z-ai/glm-5 sibling keeps
+  # the shared axes untouched.
+  #
+  # It is a SUPERSET of that shared preset: ``passthrough`` schema +
+  # ``json_coerce`` response + ``dict_map_hints`` prompt are re-declared
+  # VERBATIM (the overlay entry SHADOWS the shared one rather than merging with
+  # it, so dropping them here would silently regress the dict-stringify recovery
+  # the whole baseline was measured under). Exactly ONE axis changes:
+  #
+  #   reasoning_codec: openai -> openai_summary_replay
+  #
+  # The observe baseline (2026-08-25, measured ON the shared preset since its
+  # glob already claimed glm-5.3) is a clean tool-caller: all 25 tool-call /
+  # shape probes 15/15 (dict_map, discriminated-union two-turn, recursive $ref,
+  # heterogeneous arrays, allOf merge, decimal), all 6 shape variants 15/15, and
+  # 0 tool-arg rejections across 688 tool calls / 199 wire trials. The one
+  # preset-fixable failure was ``test_unsigned_thinking_replay`` 0/15
+  # ("assistant dict missing ``reasoning_details`` — the codec's
+  # encode_for_replay path is not running"): the plain ``openai`` codec's
+  # ``encode_for_replay`` is a no-op, so the outgoing assistant dict carried no
+  # envelope at all. ``openai_summary_replay``
+  # (``OpenAISummaryReplayReasoningCodec``) inherits the OpenAI ``extract``
+  # VERBATIM — so THINKING_EMITS_BLOCKS keeps its 15/15 summary surface (the
+  # route reports 38–64 reasoning_tokens per call) — and adds only the unsigned
+  # OpenRouter ``reasoning_details`` rebuild. Same delta that went 5/5 on
+  # deepseek-v4-flash-0731 and grok-4.6; reprobe went 5/5 here.
+  #
+  # It synthesises no signature, so signed ``THINKING_REPLAY_ROUNDTRIP`` ("no
+  # signed blocks on turn 1", 15/15) stays a declared ceiling — the honest half
+  # of the pair this codec deliberately does NOT flip. ``PROMPT_CACHING`` (0
+  # cache_creation_input_tokens on an 8.2 k-token first call, 15/15) is the other
+  # ceiling: no Anthropic-style ephemeral cache exists on this z-ai route, so no
+  # ``cache_policy`` can manufacture one (``anthropic_ephemeral`` would only
+  # inject cache_control markers the route ignores) — same posture as the
+  # glm-5.1 / glm-5.2 siblings. ``IMPLICIT_PROMPT_CACHING`` passes 15/15 and
+  # stays required. See registry.py.
+  z_ai_glm_5_3:
+    match:
+      # Exact vendor-anchored globs only. A bare "*glm-5.3*" would also claim
+      # foreign routes whose name merely contains it; the gateway-prefixed forms
+      # (openrouter/…, litellm_proxy/…) reach the same model through a transport
+      # prefix, so the vendor segment is anchored rather than matched anywhere
+      # in the string.
+      - "z-ai/glm-5.3"
+      - "z-ai/glm-5.3*"
+      - "*/z-ai/glm-5.3*"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+    prompt_policy: dict_map_hints
+    reasoning_codec: openai_summary_replay
+
   # Open-weights / OpenAI-API-compatible routes whose tool-call adapters
   # stringify nested object / Dict[str, T] arguments — same failure mode
   # ``JsonCoerceResponse`` was built for on Qwen.
