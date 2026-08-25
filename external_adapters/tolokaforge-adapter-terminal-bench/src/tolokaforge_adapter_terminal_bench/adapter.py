@@ -7,16 +7,20 @@ staging directory materialised by
 :mod:`tolokaforge_adapter_terminal_bench.compose_synthesis`; the
 orchestrator's per-trial runtime brings the stack up and the runner-side
 bash tool only ``docker exec``s into the already-running agent container.
+
+Carries no coding-harness mode state: a run driven by a vendor CLI
+(``models.agent.coding_harness``) is applied by the orchestrator's
+selected :class:`~tolokaforge.core.agent_driver.AgentDriver` around this
+adapter's plain output — see :meth:`TerminalBenchAdapter.stage_task`,
+which hands the driver the per-task compose staging root it layers a
+CLI install onto.
 """
 
 from __future__ import annotations
 
 import tempfile
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
-
-from tolokaforge_coding_harnesses.adapter_support import CodingHarnessAdapterMixin
 
 from tolokaforge.adapters.base import (
     AdapterEnvironment,
@@ -24,6 +28,7 @@ from tolokaforge.adapters.base import (
     ComposeImageBuild,
     DockerStackRequirements,
 )
+from tolokaforge.core.agent_driver import StagedTask
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -38,6 +43,7 @@ from tolokaforge.core.project_loader import resolve as resolve_environment_patch
 from tolokaforge.runner.models import (
     AdapterType,
     EnvironmentPatch,
+    InvocationStyle,
     NetworkPolicy,
     RunnerGradingConfig,
     RunnerInitialStateConfig,
@@ -45,32 +51,18 @@ from tolokaforge.runner.models import (
     StackPatch,
     TaskDescription,
     ToolSchema,
+    ToolSource,
 )
-from tolokaforge.secrets import expand_secret_refs, get_default
 from tolokaforge_adapter_terminal_bench.compose_synthesis import (
-    DEFAULT_SKILL_DELIVERY,
+    HARNESS_BASE_SERVICE_SUFFIX,
     PROJECT_PREFIX,
     MaterialisedEnvironment,
-    installable_skills_dir,
+    agent_image_tag,
     materialise_task_environment,
-    skills_bundle_digest,
 )
 from tolokaforge_adapter_terminal_bench.task_parser import (
     TerminalBenchTask,
     discover_tasks,
-)
-from tolokaforge_coding_harnesses import (
-    DEFAULT_PATH_RESOLVER,
-    ENGINE_LOOP,
-    HarnessSpec,
-    PathResolver,
-    ResolvedHarnessRegistry,
-    SkillDelivery,
-    compute_harness_fingerprint,
-    provider_env_input,
-    resolve_effective_registry,
-    validate_harness,
-    validate_provider_env_keys,
 )
 
 _AGENT_TOOL_TIMEOUT_S = 120.0
@@ -90,94 +82,23 @@ _REMOVED_PARAMS: dict[str, str] = {
 }
 
 
-def _resolve_provider_env(
-    shipped: dict[str, str], declared: dict[str, str], agent_harness: str
-) -> dict[str, str]:
-    """Effective provider envelope: *shipped* defaults, *declared* winning.
-
-    A run config that names no ``agent_provider_env`` gets the harness's own
-    :attr:`HarnessSpec.provider_env` — the CLI reaches its provider without the
-    operator re-deriving an envelope the harness already knows. Declaring one
-    key (a different endpoint, a different vault name) keeps the rest of the
-    shipped envelope rather than replacing it.
-
-    Values go through :func:`~tolokaforge.secrets.expand_secret_refs`, so a run
-    config names a credential as ``${secret:NAME}`` instead of carrying it
-    literally. The empty-envelope early return is what keeps the engine loop's
-    canonical and ``--dry-run`` paths from constructing a ``SecretManager`` at
-    all — ``get_default()`` would otherwise lazily build one to resolve nothing.
-    """
-    effective = shipped | declared
-    if not effective:
-        return {}
-    validate_provider_env_keys(effective)
-    secrets = get_default()
-    resolved = {
-        key: expand_secret_refs(
-            value,
-            secrets,
-            where=(
-                f"terminal-bench adapter_params.agent_provider_env[{key!r}]"
-                if key in declared
-                else f"terminal-bench harness {agent_harness!r} provider_env[{key!r}]"
-            ),
-        )
-        for key, value in effective.items()
-    }
-    # Each value is written as one ``KEY=value`` line in the per-trial compose
-    # ``.env``. A newline splits the line and turns the remainder into a
-    # variable of its own; a ``$`` starts a compose interpolation and the value
-    # is truncated there. Either way the container gets a mangled credential
-    # and the CLI fails with a provider auth error many layers from the cause,
-    # so refuse here, where the offending key can be named.
-    unrepresentable = sorted(
-        key for key, value in resolved.items() if any(char in value for char in ("\n", "\r", "$"))
-    )
-    if unrepresentable:
-        raise ValueError(
-            f"terminal-bench adapter: provider env value(s) for {unrepresentable!r} "
-            "contain a newline or a `$`; each value becomes one line of the per-trial "
-            "compose `.env`, where a newline splits the line and a `$` starts an "
-            "interpolation. Neither survives intact."
-        )
-    return resolved
-
-
-class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
+class TerminalBenchAdapter(BaseAdapter):
     """Adapter that runs terminal-bench tasks through
     :class:`~tolokaforge.core.per_trial_runtime.PerTrialRuntimeBackend`.
 
-    Inheriting :class:`CodingHarnessAdapterMixin` opts this adapter into the
-    orchestrator's ``models.agent.harness`` config gate (via the mixin's
-    ``supports_coding_harness = True`` flag) and gives it the shared helpers
-    for command assembly, metadata emission, tool-schema payload, and
-    ``test_execution`` grading — leaving only the terminal-bench-specific
-    compose synthesis in this adapter.
+    Carries no coding-harness mode state: a run driven by a vendor CLI is
+    applied by the orchestrator's selected
+    :class:`~tolokaforge.core.agent_driver.AgentDriver` around this
+    adapter's plain output — see :meth:`stage_task`.
     """
 
-    def __init__(
-        self,
-        params: dict[str, Any],
-        *,
-        path_resolver: PathResolver | None = None,
-        skill_delivery: SkillDelivery | None = None,
-    ):
+    def __init__(self, params: dict[str, Any]):
         for removed, replacement in _REMOVED_PARAMS.items():
             if removed in params:
                 raise ValueError(
                     f"terminal-bench adapter: param {removed!r} was removed — {replacement}."
                 )
         super().__init__(params)
-        # Construction seams, not run-config keys: which filesystem the CLI
-        # lands on and how a skills bundle gets there are properties of the
-        # runtime driving this adapter, and `get_adapter` builds every adapter
-        # as `AdapterClass(params)`.
-        self.path_resolver: PathResolver = (
-            DEFAULT_PATH_RESOLVER if path_resolver is None else path_resolver
-        )
-        self.skill_delivery: SkillDelivery = (
-            DEFAULT_SKILL_DELIVERY if skill_delivery is None else skill_delivery
-        )
         first_pack = self.task_packs[0] if self.task_packs else None
         first_pack_str = str(first_pack) if first_pack else None
 
@@ -189,36 +110,6 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             params.get("network_policy", NetworkPolicy.FULL_INTERNET.value)
         )
         self.prebuild_images: bool = params.get("prebuild_images", True)
-        self._resolved_registry: ResolvedHarnessRegistry = resolve_effective_registry(
-            params.get("harness_presets_file"),
-            discover_plugins=not params.get("disable_harness_plugins", False),
-        )
-        self.harnesses: Mapping[str, HarnessSpec] = self._resolved_registry.harnesses
-        self.agent_harness: str = validate_harness(
-            params.get("agent_harness", ENGINE_LOOP), self.harnesses
-        )
-        # Empty under the engine loop, which never reads it: the run config's
-        # model reaches litellm through the engine's own LLM layer there.
-        self.agent_model: str = params.get("agent_model") or ""
-        if self.agent_harness != ENGINE_LOOP and not self.agent_model:
-            raise ValueError(
-                f"terminal-bench adapter: agent_harness {self.agent_harness!r} requires "
-                "`agent_model` — the CLI selects its own default otherwise, so the run "
-                "config's model would not be the one measured."
-            )
-        # Optional CLI version override from ``models.agent.harness_version`` (or
-        # from the ``name@version`` slug on ``models.agent.harness`` — the
-        # ``RunConfig`` pre-validator splits and populates both fields, and the
-        # orchestrator threads the version through here as its own param). Empty
-        # under the engine loop; ``None`` means "use the shipped registry pin".
-        self.agent_harness_version_override: str | None = (
-            params.get("agent_harness_version") or None
-        )
-        self.agent_provider_env: dict[str, str] = _resolve_provider_env(
-            self.harness_spec.provider_env if self.harness_spec else {},
-            params.get("agent_provider_env") or {},
-            self.agent_harness,
-        )
         staging_root = params.get("staging_root")
         self.staging_root: Path = (
             Path(staging_root).expanduser().resolve()
@@ -228,30 +119,6 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
 
         self._tasks: dict[str, TerminalBenchTask] = {}
         self._environments: dict[str, MaterialisedEnvironment] = {}
-
-    @property
-    def harness_spec(self) -> HarnessSpec | None:
-        """This run's harness spec. ``None`` under the engine loop, which runs no CLI.
-
-        When ``agent_harness_version_override`` is set (from the
-        ``name@version`` slug or an explicit ``harness_version``), the resolved
-        spec's ``version`` is model-copied. Downstream consumers —
-        ``install-harness.sh`` at image-build time, ``harness_command`` string
-        assembly, ``compute_harness_fingerprint`` on the artefact — see the
-        override as if it were the shipped pin.
-        """
-        spec = self.harnesses.get(self.agent_harness)
-        if spec is None or self.agent_harness_version_override is None:
-            return spec
-        return spec.model_copy(update={"version": self.agent_harness_version_override})
-
-    def fingerprint(self) -> dict[str, Any]:
-        """The harness registry this run resolved, under a ``harness`` namespace."""
-        return {
-            "harness": compute_harness_fingerprint(
-                self._resolved_registry, self.agent_harness
-            ).model_dump(mode="json")
-        }
 
     # -- discovery ------------------------------------------------------------
 
@@ -286,11 +153,6 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             staging_root=self.staging_root,
             image_registry=self.image_registry,
             image_tag=self.image_tag,
-            agent_harness=self.agent_harness,
-            harness_registry=self.harnesses,
-            provider_env_keys=sorted(self.agent_provider_env),
-            path_resolver=self.path_resolver,
-            skill_delivery=self.skill_delivery,
         )
         self._environments[task_id] = env
         return env
@@ -298,11 +160,11 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     # -- Docker stack requirements -------------------------------------------
 
     def docker_stack_requirements(self) -> DockerStackRequirements:
-        """Declare the per-task agent images the orchestrator builds once per run.
+        """Declare the per-task agent image the orchestrator builds once per run.
 
-        A harness-layered task contributes two entries, base before layer —
-        the layer's Dockerfile is ``FROM`` the base image, and the orchestrator
-        builds the list in order.
+        A coding-harness driver declares its own layered-image build via its
+        ``apply_container_layers`` seam; this only ever declares the pack's
+        own build.
 
         Skipped under ``prebuild_images: false``, for callers pre-warming
         images themselves.
@@ -312,14 +174,28 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         builds = []
         for task_id in self.get_task_ids():
             env = self._environment(task_id)
-            if env.base_build_service is not None:
-                builds.append(
-                    ComposeImageBuild(compose_file=env.compose_file, service=env.base_build_service)
-                )
             builds.append(
                 ComposeImageBuild(compose_file=env.compose_file, service=env.agent_service)
             )
         return DockerStackRequirements(image_builds=builds)
+
+    def stage_task(self, task_id: str) -> StagedTask:
+        """Hand a coding-harness driver the per-task staging root it layers onto.
+
+        Terminal-bench tasks always ship a compose file, so this never
+        returns ``None`` — every task stages.
+        """
+        self._ensure_discovered()
+        env = self._environment(task_id)
+        return StagedTask(
+            task_id=task_id,
+            staging_dir=env.staging_dir,
+            compose_file=env.compose_file,
+            agent_service=env.agent_service,
+            base_image=agent_image_tag(task_id, self.image_registry, self.image_tag),
+            base_build_service=f"{env.agent_service}{HARNESS_BASE_SERVICE_SUFFIX}",
+            compose_project_prefix=PROJECT_PREFIX,
+        )
 
     # -- task loading ---------------------------------------------------------
 
@@ -350,13 +226,7 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     def _environment_patch(self, task_id: str) -> EnvironmentPatch:
         env = self._environment(task_id)
         return EnvironmentPatch(
-            stack=StackPatch(
-                compose_file=env.compose_file,
-                runner_service="runner",
-                inputs={
-                    provider_env_input(key): value for key, value in self.agent_provider_env.items()
-                },
-            ),
+            stack=StackPatch(compose_file=env.compose_file, runner_service="runner"),
             network_policy=self.network_policy,
         )
 
@@ -417,76 +287,61 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
             environment_manifest=manifest,
             agent_tools=[
                 ToolSchema(
-                    **self.emit_harness_tool_schema(
-                        service=env.agent_service,
-                        compose_project_prefix=PROJECT_PREFIX,
-                        # The runner-side compose-exec wrapper reads its subprocess
-                        # timeout off this field, so under harness mode it has to
-                        # carry the whole trial's agent budget: the CLI runs to
-                        # completion inside a single exec.
-                        timeout_s=(
-                            _AGENT_TOOL_TIMEOUT_S
-                            if self.agent_harness == ENGINE_LOOP
-                            else meta.agent_timeout_sec
-                        ),
+                    name="bash",
+                    description="Execute a bash command inside the task container",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string", "description": "Shell command to run"}
+                        },
+                        "required": ["command"],
+                    },
+                    category="compute",
+                    timeout_s=_AGENT_TOOL_TIMEOUT_S,
+                    source=ToolSource(
                         toolset="terminal_bench",
-                    )
+                        module_path="",
+                        class_name="bash",
+                        invocation_style=InvocationStyle.DOCKER_COMPOSE_EXEC,
+                        extra={
+                            "service": env.agent_service,
+                            "compose_project_prefix": PROJECT_PREFIX,
+                        },
+                    ),
                 )
             ],
             user_tools=[],
             initial_state=RunnerInitialStateConfig(),
             user_simulator=RunnerUserSimulatorConfig(mode="scripted"),
-            grading=RunnerGradingConfig(**self.emit_test_execution_grading()),
+            grading=RunnerGradingConfig(
+                combine_method="weighted",
+                weights={"custom_checks": 1.0},
+                pass_threshold=0.5,
+                grading_method="test_execution",
+            ),
             metadata=self._metadata(meta),
         )
 
     def _metadata(self, meta: TerminalBenchTask) -> dict[str, Any]:
         """Adapter extras on the runner-side task projection.
 
-        ``agent_harness_command`` is the whole of what the engine core needs to
-        know about a coding-harness CLI: present means run this command once in
-        place of the LLM turn loop, absent means run the loop. The CLI's name
-        and argv stay inside this adapter.
-
-        ``harness_skills_bundle_sha`` appears only when a skills bundle reached
-        the image — the task shipped one and the harness had somewhere to put
-        it. Absent therefore reads as "this agent had no skills", which a
-        bundle-shaped placeholder value could not say.
+        ``initial_user_message`` and ``agent_visible_dir`` are mode-agnostic:
+        a run driven by a vendor coding-harness CLI reads them back through
+        the orchestrator's selected
+        :class:`~tolokaforge.core.agent_driver.AgentDriver` to build the
+        per-task command and locate the CLI's edits, respectively. The engine
+        loop ignores both.
         """
-        metadata: dict[str, Any] = {
+        return {
             "difficulty": meta.difficulty,
             "tags": meta.tags,
             "verifier_timeout_sec": meta.verifier_timeout_sec,
-            "agent_harness": self.agent_harness,
+            "initial_user_message": meta.instruction or "",
+            # Terminal-bench packs conventionally set ``WORKDIR /app`` in
+            # their base image; the harness-install layer does not override
+            # it.
+            "agent_visible_dir": "/app",
         }
-        if self.harness_spec is not None:
-            command = self.build_harness_command(
-                self.agent_harness,
-                self.harness_spec,
-                meta.instruction,
-                self.agent_model,
-                self.agent_provider_env,
-                path_resolver=self.path_resolver,
-            )
-            metadata.update(
-                self.emit_harness_metadata(
-                    self.agent_harness, self.harness_spec, command, self.agent_model
-                )
-            )
-            # Where the CLI edits inside the trial container — the runner
-            # reads this back for state-checks grading. Terminal-bench packs
-            # conventionally set ``WORKDIR /app`` in their base image and the
-            # harness-install layer does not override it. Only read when a
-            # trial requests non-``test_execution`` grading; the shipped
-            # terminal-bench harness path stays on ``test_execution`` and
-            # bypasses the read.
-            metadata["agent_visible_dir"] = "/app"
-            skills_dir = installable_skills_dir(meta, self.harness_spec)
-            if skills_dir is not None:
-                metadata["harness_skills_bundle_sha"] = skills_bundle_digest(
-                    meta.task_dir, skills_dir
-                )
-        return metadata
 
     # -- lifecycle helpers ----------------------------------------------------
 

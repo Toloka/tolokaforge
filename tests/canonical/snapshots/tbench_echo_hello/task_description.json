@@ -90,8 +90,9 @@
   },
   "initialization_actions": [],
   "metadata": {
-    "agent_harness": "engine-loop",
+    "agent_visible_dir": "/app",
     "difficulty": "easy",
+    "initial_user_message": "Create a file /tmp/hello.txt containing the text \"Hello, World!\".\n",
     "tags": [
       "shell",
       "basics"

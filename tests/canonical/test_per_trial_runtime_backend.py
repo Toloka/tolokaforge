@@ -663,55 +663,6 @@ class TestComposeEnvFile:
         assert "reserved" in err.reason
         assert "compose up failed" not in err.reason
 
-    def test_terminal_bench_provider_env_reaches_the_env_file(
-        self,
-        patched_backend: PerTrialRuntimeBackend,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """The terminal-bench adapter's ``agent_provider_env`` end-to-end.
-
-        A harness CLI reads its credentials from the container's environment,
-        which compose interpolates from this ``.env`` at up-time. Driven through
-        the real adapter rather than a hand-built manifest so the whole chain is
-        covered — adapter param, ``StackPatch.inputs``, ``project_loader.resolve``,
-        ``EnvironmentManifest.stack_inputs``, ``write_compose_env_file``.
-        """
-        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
-
-        class _TbenchCompose(_FakeCompose):
-            """The synthesised compose names its runner service ``runner``."""
-
-            def __init__(self, *args: Any, **kwargs: Any) -> None:
-                super().__init__(*args, **kwargs)
-                self.exposed_services["runner"] = {50051: 50100}
-
-        monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _TbenchCompose)
-
-        tasks_dir = Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
-        adapter = TerminalBenchAdapter(
-            {
-                "terminal_bench_dir": str(tasks_dir),
-                "staging_root": str(tmp_path / "staging"),
-                "agent_harness": "claude-code",
-                "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
-                "agent_provider_env": {
-                    "ANTHROPIC_API_KEY": "sk-canon",
-                    "ANTHROPIC_BASE_URL": "https://proxy.example",
-                },
-            }
-        )
-        spec = _make_trial_spec(
-            trial_id="echo-hello:0",
-            manifest=adapter.to_task_description("echo-hello").environment_manifest,
-        )
-        handle = patched_backend.provision(spec)
-        assert isinstance(handle, _LocalEnvHandle)
-        lines = [line for line in (handle.temp_dir / ".env").read_text().splitlines() if line]
-        assert "TBENCH_PROVIDER_ANTHROPIC_API_KEY=sk-canon" in lines
-        assert "TBENCH_PROVIDER_ANTHROPIC_BASE_URL=https://proxy.example" in lines
-        assert lines[-1] == "TOLOKAFORGE_TRIAL_SLUG=echo-hello_0"
-
 
 # ---------------------------------------------------------------------------
 # Reset-recipe failure attribution — the reset seam owns ``stage="reset_recipe"``
