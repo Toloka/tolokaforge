@@ -1426,6 +1426,19 @@ params:
   contrast, yields the provider's default budget rather than the level asked
   for — the same warning as `override` applies.
 
+Two shipped precedents show the choice. The `gemini` preset **rejects**
+`reasoning_effort=medium` on the direct route (a litellm transport defect with a
+working alternative: the OpenRouter route). The `z_ai_glm_5_3`
+preset **drops** `reasoning_effort` when `low` or `medium` is asked for `z-ai/glm-5.3`:
+the provider's effort vocabulary is `low` / `high` / `max` and, under a real
+agentic context, its shim degrades an undefined level to zero reasoning tokens
+instead of rejecting it, so a like-for-like `medium` does not exist on that
+route; the provider default was the only level that recovered the task (5 tasks
+x 3 samples: medium 0/15, high 6/15, default 13/15), and refusing `medium`
+would make the model unevaluable under a shared config rather than comparable.
+The `REASONING_EFFORT_HONOURED` capability probe is what verifies either choice
+on the wire.
+
 **All three actions work on every rulable parameter.** The engine does not
 decide which combination is sensible — that is a configuration choice, and the
 operator making it knows their own tolerance for a changed request. What the

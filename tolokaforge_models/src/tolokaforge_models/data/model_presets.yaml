@@ -362,6 +362,45 @@ presets:
     response_policy: json_coerce
     prompt_policy: dict_map_hints
     reasoning_codec: openai_summary_replay
+    # Plus ONE effort rule (PR #1278, REASONING_EFFORT_HONOURED). Z.AI's 5.3
+    # reasoning API takes low / high / max (no medium; default max) and its
+    # shim does not reject an undefined level: under a real agentic context
+    # (long policy prompt, ~20 tool schemas, prior tool turns) it degrades
+    # medium - and low, though documented - to zero or near-zero reasoning
+    # tokens, and the model then drops mandated tool fields. Short prompts
+    # think normally, which is why the probes above never saw it. Five real
+    # tasks x 3 samples replayed to the create call: medium 0/15 mandated
+    # field (0-54 reasoning tokens; the Arena v1 eval: 0 reasoning tokens over
+    # 704 trials, pass@1 5.4%), high 6/15, no parameter 13/15 (200-420
+    # tokens). Hence drop, not override:high; not reject, which would make the
+    # model unevaluable under the one shared board config. On the probe's own
+    # synthetic heavy context: raw medium 0 / low 0 / high 129 / default 455;
+    # with the rule medium 440-459, low 472. Every drop is logged with what
+    # was asked and what was sent.
+    params:
+      param_value_rules:
+        reasoning_effort:
+          medium:
+            action: drop
+            evidence: >-
+              2026-08-24/25, z-ai/glm-5.3 via OpenRouter: the 5.3 reasoning API
+              defines low/high/max only (default max) and the Z.AI shim degrades
+              an undefined level under a real agentic context to zero or
+              near-zero reasoning tokens instead of rejecting it. Five logistics
+              tasks x 3 samples, replayed to the turn before the create call:
+              medium 0/15 mandated organization_id (0-54 reasoning tokens; Arena
+              v1 eval 0 reasoning tokens over 704 trials, pass@1 5.4%), high 6/15,
+              no parameter (= max) 13/15 with 200-420 reasoning tokens. Omitting
+              the parameter is the only level that recovered the task.
+          low:
+            action: drop
+            evidence: >-
+              2026-08-24/25, z-ai/glm-5.3 via OpenRouter: low is a documented
+              level yet the shim degrades it under a real agentic context the
+              same way as medium - 0 reasoning tokens on the 2026-08-24 wire
+              probes and 0 on the 2026-08-25 heavy-context probe (high 129,
+              provider default 455). Omitted for the same reason as medium.
+
 
   # Open-weights / OpenAI-API-compatible routes whose tool-call adapters
   # stringify nested object / Dict[str, T] arguments — same failure mode

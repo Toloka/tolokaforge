@@ -76,7 +76,9 @@ class TestCapabilityShape:
     def test_capability_membership_stable(self) -> None:
         # Any accidental add/drop of a Capability trips this guard
         # before the canonical registry test sees the change.
-        assert len(list(Capability)) == 23
+        # 24 = the 23 pre-#1278 capabilities + REASONING_EFFORT_HONOURED.
+        assert len(list(Capability)) == 24
+        assert Capability.REASONING_EFFORT_HONOURED in set(Capability)
 
 
 class TestModelCertificateConstruction:
