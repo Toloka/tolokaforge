@@ -56,6 +56,70 @@ The name resolves through the `tolokaforge.trial_graders` entry-point
 registry (backed by `importlib.metadata`), so a downstream package that
 registers a grader name becomes selectable via the same field.
 
+<a id="configuration-runconfig-grader"></a>
+
+## Configuration — `RunConfig.grader.*`
+
+`RunConfig.grader` is the run-level block that selects the `TrialGrader`
+implementation and carries transport-specific settings. Absent means
+"use whatever the adapter's `trial_grader_name` names" — the pre-block
+behaviour every existing run keeps. Fields:
+
+| Field | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `name` | `str \| None` | `None` | Overrides `adapter.trial_grader_name` for this run when set. Value is the entry-point name of a registered `TrialGraderFactory` — one of the four built-ins (`runner_rpc`, `judge_only`, `grader_rpc`, `queue`) or a downstream-registered name. |
+| `expose_substrate` | `bool` | `false` | When true, the runner registers `SubstrateService` on its listen port so an independent grader container can read the trial's substrate. Off by default so a brownfield deploy never accidentally opens the surface. See [SubstrateService (runner-side, read-only)](#substrateservice-runner-side-read-only). |
+| `queue` | `QueueGraderConfig \| None` | `None` | Consumed only when `name: queue`. |
+| `judge` | `JudgeGraderConfig \| None` | `None` | Consumed only when `name: judge_only`. |
+
+Only the subblock matching the selected `name` is consulted; an
+unrelated subblock is data the factory ignores.
+
+`QueueGraderConfig` — transport settings for `name: queue`:
+
+| Field | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `workers` | `int` (≥ 1) | `4` | Consumer-pool size — the throughput knob the transport exists to unlock. |
+| `backend` | `"in_memory"` | `"in_memory"` | Names the `GradeBroker` implementation. |
+| `worker_grader` | `str` | `"grader_rpc"` | Downstream `TrialGrader` each worker dispatches to — a `TrialGraderFactory` name from `tolokaforge.trial_graders`. Layering `queue` on top of another registered grader adds throughput scale without duplicating grading logic. |
+
+`JudgeGraderConfig` — overrides for `name: judge_only`. Absent means
+"use the task's own `grading.llm_judge.customization` exactly"; every
+field is an optional override, and `None` on a field means the task's
+own value wins.
+
+| Field | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `disable_knowledge_search` | `bool \| None` | `None` | Optional override of the task-level customization; `None` inherits. |
+| `custom_system_prompt` | `str \| None` | `None` | Optional override. Blank or whitespace-only is refused fail-loud (`grader.judge.custom_system_prompt must not be empty or whitespace-only`); omit the field to inherit. |
+| `include_agent_system_prompt` | `bool \| None` | `None` | Optional override; `None` inherits. |
+
+Two-state override, not three: the `judge` block cannot express "reset
+a task-level customization back to library defaults". A flight that
+needs the default judge prompt against a pack whose tasks set a strict
+prompt edits the tasks' `grading.yaml`.
+
+Worked `run_config.yaml` excerpt with all four `grader.*` fields
+side-by-side:
+
+```yaml
+grader:
+  name: queue                # selects QueueTrialGrader
+  expose_substrate: true     # runner registers SubstrateService on 50051
+  queue:                     # consumed because name == queue
+    workers: 8
+    backend: in_memory
+    worker_grader: grader_rpc  # each worker dials the standalone grader
+  judge:                     # ignored while name != judge_only
+    disable_knowledge_search: true
+    custom_system_prompt: "Strict factual judge."
+    include_agent_system_prompt: false
+```
+
+Shipped source of truth:
+[`GraderConfig` / `QueueGraderConfig` / `JudgeGraderConfig`](../tolokaforge/core/models/run_config.py)
+in `tolokaforge.core.models.run_config`.
+
 ## Built-in graders
 
 Four implementations ship with tolokaforge.
@@ -143,6 +207,12 @@ queue = "tolokaforge.core.trial_grader:queue_trial_grader_factory"
 ```
 
 ## Deploying the standalone grader service
+
+`deploy/standalone/docker-compose.yaml` is the operator template — no
+Kubernetes manifest ships in-tree. Adapting the compose recipe to a
+Kubernetes cluster is the operator's job; the follow-up
+[#1272](https://github.com/Toloka/tolokaforge/issues/1272) tracks a
+first-party K8s example.
 
 The `tolokaforge-grader` image ships alongside the other four first-party
 images. `deploy/standalone/docker-compose.yaml` brings the five-service
@@ -443,6 +513,102 @@ reset → replay → snapshot → restore) that the read-only substrate cannot
 serve; hash grading stays runner-integrated on
 `RunnerServiceImpl._execute_hash_grading`, called by `_grade_trial_async`
 above the composite dispatch.
+
+## Wire cost per grade component
+
+On `runner_rpc` / `InProcessGradingSubstrate`, every entry on this
+table is a direct object access — no wire, no materialisation. The
+`grader_rpc` column names the substrate reads each component triggers
+on `LiveRunnerCallbackGradingSubstrate`; each RPC is documented in the
+[SubstrateService section](#substrateservice-runner-side-read-only).
+
+| Component | `runner_rpc` (`InProcessGradingSubstrate`) | `grader_rpc` (`LiveRunnerCallbackGradingSubstrate`) |
+| --- | --- | --- |
+| `state_checks.jsonpath` | direct access | 1 × `ReadFinalDBStateStable` (cached); when a jsonpath references the filesystem view, 1 × `ListFilesystemDir` + N × `ReadFilesystemPath` via the first `filesystem_state` read (cached). |
+| `state_checks.db_probes` | direct access | No substrate RPC — probes open their task-declared DSN directly, same as InProcess. |
+| `transcript_rules` | direct access | No substrate RPC — evaluated over the in-memory transcript. |
+| `trace_checks` | direct access | No substrate RPC — evaluated over the in-memory event timeline. |
+| `custom_checks` | direct access | Eager materialisation of `filesystem_root` on first read: 1 × `ListFilesystemDir` + N × `ReadFilesystemPath` (one per non-symlink, UTF-8-decodable file under `AGENT_WORK_DIR`). Plus 1 × `ReadFinalDBState` when a check touches `db_reader`. |
+| `llm_judge` | direct access | 1 × `ReadInitialState` + 1 × `ReadFinalDBState` for the state-diff; per `search_kb` tool call, 1 × `KBSearch`; per `read_file` tool call, the same eager `filesystem_root` materialisation as `custom_checks` on first use (subsequent reads served from the private temp tree). |
+
+Substrate accessors cache: once
+`LiveRunnerCallbackGradingSubstrate.final_state()` /
+`.final_state_stable()` / `.initial_state()` / `.filesystem_state()` /
+`.filesystem_root()` has returned once, a second call in the same trial
+pays no RPC.
+
+`filesystem_root` is the notable asymmetry: on first read,
+`LiveRunnerCallbackGradingSubstrate` walks the runner's agent-visible
+tree via `ListFilesystemDir` and eagerly downloads every file to a
+private temp directory — matching the runner's shipping filter
+(non-symlink, UTF-8-decodable) with no path-component excluder. A large
+workspace pays a one-off wire cost proportional to the tree size on the
+first component that reads it.
+
+**When to prefer `runner_rpc` for coding-task deploys.** Coding tasks
+that leave large workspaces — Python-workspace or terminal-bench packs
+where the agent produces hundreds of megabytes under `AGENT_WORK_DIR` —
+pay the `filesystem_root` materialisation cost on `grader_rpc` and gain
+nothing from the split, since the grader-side composite dispatch has no
+throughput advantage over the runner-side one for a single trial. For
+those packs, keep `grader.name: runner_rpc` (the shipping default): the
+grader runs in-process against the trial's live substrate and skips the
+wire.
+
+**Reserved future: shared-mount cheap substrate.** The single-host
+topology where an independent grader container reads the substrate off
+a shared filesystem/DB mount is the reserved `SharedMountGradingSubstrate`
+recipe — see [ADR-0039](adr/0039-standalone-grader.md), reserved-future
+substrate SWE-bench pattern. Not shipped today; the two shipping
+substrates are `InProcess` and `LiveCallback`.
+
+<a id="extension-points-the-seven-plug-in-groups"></a>
+
+## Extension points — the seven plug-in groups
+
+Seven `importlib.metadata` entry-point groups let a downstream package
+extend the grader without a framework change: one substrate group and
+six sub-component seams. Each group has a matching loader on
+[`tolokaforge.core.plugin_registry`](../tolokaforge/core/plugin_registry.py):
+
+- `tolokaforge.grading_substrates` — `load_grading_substrate(name)` returns the `GradingSubstrate` **class** (the caller instantiates it with per-trial arguments).
+- `tolokaforge.custom_check_executors` — `load_custom_check_executor(name)` returns a factory.
+- `tolokaforge.judge_model_providers` — `load_judge_model_provider(name)` returns a factory.
+- `tolokaforge.rubric_evaluators` — `load_rubric_evaluator(name)` returns a factory.
+- `tolokaforge.transcript_rule_matchers` — `load_transcript_rule_matcher(name)` returns a factory.
+- `tolokaforge.state_check_backends` — `load_state_check_backend(name)` returns a factory.
+- `tolokaforge.trace_check_operators` — `load_trace_check_operator(name)` returns the **operator callable** directly (no factory wrapper; the callable itself is the contract).
+
+Copy-paste block for a downstream `pyproject.toml`:
+
+```toml
+[project.entry-points."tolokaforge.grading_substrates"]
+my_substrate = "my_package:my_substrate_class"
+
+[project.entry-points."tolokaforge.custom_check_executors"]
+my_check_executor = "my_package:my_check_executor_factory"
+
+[project.entry-points."tolokaforge.judge_model_providers"]
+my_judge = "my_package:my_judge_provider_factory"
+
+[project.entry-points."tolokaforge.rubric_evaluators"]
+my_rubric = "my_package:my_rubric_evaluator_factory"
+
+[project.entry-points."tolokaforge.transcript_rule_matchers"]
+my_matcher = "my_package:my_matcher_factory"
+
+[project.entry-points."tolokaforge.state_check_backends"]
+my_state_backend = "my_package:my_state_backend_factory"
+
+[project.entry-points."tolokaforge.trace_check_operators"]
+my_operator = "my_package:my_operator"
+```
+
+`tolokaforge.trial_graders` is the eighth registration point — the
+top-level grader-name seam ADR-0038 shipped, already documented in
+[Registering a downstream grader](#registering-a-downstream-grader).
+A downstream package registering a new grader name lands there, not
+in any of the seven groups above.
 
 ## Parity gate
 
