@@ -19,99 +19,154 @@ Pick by what you are measuring.
 |---|---|---|
 | A model's raw capability on a task | **Engine-loop mode** | The engine's [`ModelCapabilities`](LLM_LAYER.md) policies apply — schema sanitizers, cache markers, reasoning replay, response coercion. Cost and tokens are honestly reported via `litellm`. |
 | A coding CLI's scaffolding on top of a model | **Harness mode** | The CLI's own prompt shape, tool ontology and step logic dominate the outcome — you're evaluating the whole vendor product, not the bare model. |
-| Head-to-head between two CLIs on the same task pack | **Harness mode** | Change one field (`agent_harness`); everything else stays constant. |
+| Head-to-head between two CLIs on the same task pack | **Harness mode** | Change one field (`models.agent.harness`); everything else stays constant. |
 | A model in a way another team can independently reproduce end-to-end | **Harness mode** with a shipped CLI | The CLI version is pinned in the registry; the artifact records the pin. |
 
-## Shipped harnesses
+## Declaring a harness
 
-Six vendor coding-agent CLIs ship in-tree.
-[`tolokaforge_coding_harnesses/`](../tolokaforge_coding_harnesses/) is the
-package; the source of truth for the catalog is
-[`tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml`](../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml).
+A run config declares the harness alongside the model on `models.agent`:
 
-| `agent_harness` | Vendor CLI | Install | Pin |
-|---|---|---|---|
-| `claude-code` | `@anthropic-ai/claude-code` | npm | 2.1.233 |
-| `codex` | `@openai/codex` | npm | 0.147.0 |
-| `gemini-cli` | `@google/gemini-cli` | npm | 0.55.1 |
-| `kimi-code` | `@moonshot-ai/kimi-code` | npm | 0.28.1 |
-| `opencode` | `opencode-ai` | npm | 1.18.18 |
-| `grok-build` | `x.ai/cli` install script | curl-bash | 0.2.91 |
+```yaml
+models:
+  agent:
+    provider: "openrouter"
+    name: "openrouter/anthropic/claude-sonnet-4-6"
+    harness: "claude-code"          # any shipped harness name; omit for engine loop
+    temperature: 0.0
+evaluation:
+  projects: ["examples/native/coding_harness"]
+  harness_adapter:
+    type: "native"
+```
 
-Adding a harness — in-tree or out-of-tree as a Python entry-point plug-in — is
-covered in the [package README](../tolokaforge_coding_harnesses/README.md#adding-a-harness)
-and [ADR-0034](adr/0034-external-harness-plugin-discovery.md).
+`models.agent.harness = null` (the default) keeps the engine's turn loop.
+A non-empty string is a coding-harness name resolved against the effective
+registry ([ADR-0033](adr/0033-external-harness-registry.md)) and the CLI
+consumes `models.agent.name` verbatim (with per-harness vendor-prefix
+handling declared in the shipped
+[`data/harnesses.yaml`](../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml)).
 
-## How the surface composes
+### The capability-flag gate
 
-Three moving parts, each with a clear responsibility.
+Not every adapter runs a coding-harness trial. An adapter opts in by
+inheriting
+[`CodingHarnessAdapterMixin`](../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py)
+alongside `BaseAdapter`; the mixin sets
+`supports_coding_harness: ClassVar[bool] = True`. The orchestrator's
+`load_tasks` reads that flag on the resolved adapter; a run declaring
+`models.agent.harness` against an adapter whose flag reads `False`
+refuses before any container work, naming both sides of the mismatch
+and the currently-opted-in set. Two adapters ship the opt-in today:
+`native` and `terminal_bench`. See
+[ADR-0039](adr/0039-coding-harness-adapter-agnostic.md).
 
-- **Harness registry** — the catalog of `HarnessSpec` entries. Data-driven, no
-  engine dependency (an external runtime can read the same data without
-  pulling the engine in). Lives in the top-level
-  [`tolokaforge_coding_harnesses/`](../tolokaforge_coding_harnesses/) workspace
-  member ([ADR-0036](adr/0036-tolokaforge-coding-harnesses-split.md)).
-- **Consumer adapter** — the piece that materialises the trial container,
-  installs the CLI (via
-  [`install-harness.sh`](../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/install-harness.sh)),
-  writes any per-harness config files, boots the middleware proxy if the spec
-  declares one, and `docker exec`s the CLI. The shipped consumer is the
-  [`terminal_bench` adapter](../external_adapters/tolokaforge-adapter-terminal-bench/).
-- **Task pack** — the task-specific compose stack (`docker-compose.yaml` +
-  `environment/Dockerfile`) + instruction (`task.toml` / `task.yaml`) +
-  verifier (`tests/test.sh` writing `/logs/verifier/reward.txt`). Shipped
-  examples: [`examples/terminal_bench/fix-billing-holds/`](../examples/terminal_bench/fix-billing-holds/)
-  and [`examples/terminal_bench/fix-airline-segmentation/`](../examples/terminal_bench/fix-airline-segmentation/).
+## What each shipped adopter provides
 
-The registry stays task-agnostic; the task pack stays harness-agnostic. A
-harness is a fully replaceable slot on the run config, not a coupling.
+Two adapters ship the mixin today. Both accept `models.agent.harness`;
+they differ in how they materialise the trial container around the CLI.
+
+### The native adapter
+
+Bundled with the engine (`tolokaforge.adapters.native.NativeAdapter`).
+In harness mode the adapter mints its own `TaskDescription`, bypassing
+MCP wiring: a single `bash` tool routed through
+`DockerComposeExecToolWrapper` (`service: "main"`,
+`compose_project_prefix: "tfnative_"`, `agent_visible_dir: "/work"`),
+`test_execution` grading against `/logs/verifier/reward.txt`, and the
+four-key harness metadata handshake. The example pack in
+[`examples/native/coding_harness/`](../examples/native/coding_harness/)
+(fix-factorial) is the reference layout — a single-service compose
+stack (Python 3.11), one small bug the agent fixes, a `tests/test.sh`
+verifier.
+
+### The terminal-bench adapter
+
+Ships out-of-tree as
+[`tolokaforge-adapter-terminal-bench`](../external_adapters/tolokaforge-adapter-terminal-bench/).
+Materialises the task's own compose stack, injects `runner` /
+`db-service` sidecars, and layers the harness image via the
+adapter-local
+[`compose_synthesis._write_harness_build_context`](../external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py)
+(which bridges to the mixin's `write_install_script_layer` from the
+compose context root rather than a nested build dir). Example packs live
+under [`examples/terminal_bench/`](../examples/terminal_bench/)
+(`fix-billing-holds`, `fix-airline-segmentation`) with the shipped
+driver [`examples/terminal_bench/run_harness.yaml`](../examples/terminal_bench/run_harness.yaml).
+The trial's agent-visible dir is `/app`.
+
+## Grading composability
+
+Harness mode composes with **any** grading method. Two paths:
+
+- **`test_execution`** — the mixin's default. The runner reads a reward
+  float from `/logs/verifier/reward.txt` and returns before assembling
+  jsonpath state. Both shipped example packs use this shape (`tests/test.sh`
+  writes the file). Byte-identical wire output between adapter versions is
+  proven by the canonical snapshot at
+  `tests/canonical/snapshots/tbench_echo_hello_harness/`.
+- **`state_checks` / `transcript` / `rubric`** — assemble through the
+  standard combiner. When a harness-mode trial's metadata carries both
+  `agent_harness_command` and `agent_visible_dir` AND a
+  `DockerComposeExecToolWrapper` is registered for it, the runner
+  snapshots the container's agent-visible directory into
+  `state["filesystem"]` via
+  [`tolokaforge/runner/harness_state.py`](../tolokaforge/runner/harness_state.py).
+  A `state_checks` assertion against
+  `$.filesystem['/work/factorial.py']` resolves against what the CLI
+  actually left behind — the same shape a non-harness native task uses
+  today.
+
+## The six shipped harnesses
+
+Six vendor coding-agent CLIs ship in-tree. The catalog lives in
+[`tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml`](../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml);
+the package's [`README.md`](../tolokaforge_coding_harnesses/README.md#shipped-harnesses)
+carries the version-pin table.
+
+| `models.agent.harness` | Vendor CLI | Install |
+|---|---|---|
+| `claude-code` | `@anthropic-ai/claude-code` | npm |
+| `codex` | `@openai/codex` | npm |
+| `gemini-cli` | `@google/gemini-cli` | npm |
+| `kimi-code` | `@moonshot-ai/kimi-code` | npm |
+| `opencode` | `opencode-ai` | npm |
+| `grok-build` | `x.ai/cli` install script | curl-bash |
+
+Provider envelopes, model-name conventions and per-CLI quirks (permission
+flags, root-under-sandbox, config-file precedence) live in the YAML
+alongside each entry with the failure mode each flag prevents recorded
+inline.
 
 ## One-command demo
 
-Run `claude-code` on the shipped `fix-billing-holds` pack:
+Run `claude-code` on the native `fix-factorial` pack:
+
+```bash
+scripts/with_env.sh uv run tolokaforge run --config examples/native/coding_harness/run_harness.yaml
+```
+
+Or on the terminal-bench `fix-billing-holds` pack:
 
 ```bash
 scripts/with_env.sh uv run tolokaforge run --config examples/terminal_bench/run_harness.yaml
 ```
 
-The [`run_harness.yaml`](../examples/terminal_bench/run_harness.yaml) driver
-config carries `agent_harness: claude-code` and `agent_model:
-openrouter/anthropic/claude-sonnet-4-6`; swap either field to matrix over
-harnesses or models. Per-trial artifacts land under
-`results/terminal_bench/fix-billing-holds-claude-code/trials/fix-billing-holds/<N>/`.
+Swap `models.agent.harness` or `models.agent.name` to matrix over CLIs
+or models. Per-trial artifacts land under the run's `evaluation.output_dir`.
 
-Prerequisites (Docker daemon, `uv`, `.env` with a provider key), the switch
-between engine-loop and harness mode, per-harness recipes (Kimi K2.7
-middleware, opencode routing, Gemini LiteLLM gateway) and result-bundle layout
-all live in the end-to-end guide:
+Prerequisites (Docker daemon, `uv`, `.env` with a provider key), the
+switch between engine-loop and harness mode, per-harness recipes
+(Kimi K2.7 middleware, opencode routing, Gemini LiteLLM gateway) and
+result-bundle layout all live in the end-to-end guide:
 [**docs/RUNNING_TERMINAL_BENCH.md**](RUNNING_TERMINAL_BENCH.md).
-
-## The one field that switches modes
-
-```yaml
-evaluation:
-  harness_adapter:
-    type: "terminal_bench"
-    params:
-      agent_harness: "claude-code"     # any of the six above, or "engine-loop"
-      agent_model:   "openrouter/anthropic/claude-sonnet-5"
-```
-
-`agent_harness: engine-loop` (or leaving the field off) keeps the engine's
-turn loop; any accepted harness name layers the vendor CLI into the trial
-image instead. `agent_model` is required in harness mode — the adapter reads
-it directly because the run's `models.agent` config is not visible on this
-code path.
 
 ## Per-harness quick reference
 
 Rows here name the shape you'll write in a run config; per-CLI quirks
-(permission-mode flags, model-name conventions, provider-env envelopes) live
-next to each entry in the shipped
-[`harnesses.yaml`](../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml)
-with the reason recorded inline.
+live next to each entry in the shipped
+[`harnesses.yaml`](../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml).
 
-| Harness | Example `agent_model` | Notes |
+| Harness | Example `models.agent.name` | Notes |
 |---|---|---|
 | `claude-code` | `openrouter/anthropic/claude-sonnet-5` | Anthropic-compat via OpenRouter. |
 | `codex` | `openrouter/openai/gpt-5.6-sol` | OpenAI-compat via OpenRouter; writes `~/.codex/config.toml` + `auth.json`. |
@@ -133,6 +188,29 @@ Two things about the `opencode` row are load-bearing on 1.18.x:
   OpenRouter's Anthropic-compat surface. That is why the shipped example
   above names `anthropic/claude-sonnet-4-6`, not `openrouter/anthropic/…`.
 
+## Adding a harness
+
+Two shapes. In-tree — edit
+[`data/harnesses.yaml`](../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml)
+and any new install method in
+[`install-harness.sh`](../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/install-harness.sh);
+out-of-tree — ship a Python entry-point plug-in under
+`HARNESS_REGISTRY_ENTRY_POINT_GROUP` ([ADR-0034](adr/0034-external-harness-plugin-discovery.md)).
+Both are documented in
+[`tolokaforge_coding_harnesses/README.md § Adding a harness`](../tolokaforge_coding_harnesses/README.md#adding-a-harness).
+
+## Adopting the mixin in an adapter
+
+An adapter opts into harness mode by inheriting
+`CodingHarnessAdapterMixin` alongside `BaseAdapter`. The mixin sets
+`supports_coding_harness = True` (which the orchestrator's gate reads)
+and provides six helpers: registry resolution, command assembly, the
+metadata handshake, the bash tool schema payload, the `test_execution`
+grading payload, and the standalone install-script Dockerfile layer.
+The shape and the payload-dict return convention live in
+[`tolokaforge_coding_harnesses/README.md § Adopting the mixin`](../tolokaforge_coding_harnesses/README.md#adopting-the-mixin);
+the design record is [ADR-0039](adr/0039-coding-harness-adapter-agnostic.md).
+
 ## Gateway routing (external runtimes only)
 
 A second consumer that attaches to an already-running container — a runtime
@@ -145,12 +223,35 @@ record. `tests/canonical/test_gateway_route_recipes.py` keeps the
 `gateway_route` data and the shipped
 `harness_presets_file` overlay in lock-step.
 
+## Compatibility — the legacy config shape
+
+A pre-lift shape parses too:
+
+```yaml
+evaluation:
+  harness_adapter:
+    type: "terminal_bench"
+    params:
+      agent_harness: "claude-code"
+      agent_model: "openrouter/anthropic/claude-sonnet-4-6"
+```
+
+`RunConfig._lift_harness_adapter_params_aliases` lifts each key into
+its canonical home on `models.agent.{harness,name}` at parse time,
+emits one `DeprecationWarning` per key naming the new location, and
+drops the legacy entry from `params`. A collision between equal values
+warns once; differing values raise. Removal target: the next scheduled
+major-version bump. The lift keeps existing run configs working through
+one deprecation window; a new run config should write the canonical
+shape.
+
 ## Related docs
 
-- [tolokaforge_coding_harnesses/README.md](../tolokaforge_coding_harnesses/README.md) — the package landing page: how the registry resolves, the middleware proxy, adding a harness.
+- [tolokaforge_coding_harnesses/README.md](../tolokaforge_coding_harnesses/README.md) — the package landing page: how the registry resolves, the middleware proxy, adopting the mixin, adding a harness.
 - [docs/RUNNING_TERMINAL_BENCH.md](RUNNING_TERMINAL_BENCH.md) — the end-to-end how-to. Run configs, per-harness recipes, result-bundle layout, common pitfalls.
-- [external_adapters/tolokaforge-adapter-terminal-bench/README.md](../external_adapters/tolokaforge-adapter-terminal-bench/README.md) — the consumer adapter. Routing options (OpenRouter / LiteLLM / per-harness split), synthesis details, per-trial materialisation.
+- [external_adapters/tolokaforge-adapter-terminal-bench/README.md](../external_adapters/tolokaforge-adapter-terminal-bench/README.md) — the terminal-bench adopter. Routing options (OpenRouter / LiteLLM / per-harness split), synthesis details, per-trial materialisation.
 - [ADR-0033](adr/0033-external-harness-registry.md) — YAML-driven registry design.
 - [ADR-0034](adr/0034-external-harness-plugin-discovery.md) — entry-point plug-in discovery.
 - [ADR-0036](adr/0036-tolokaforge-coding-harnesses-split.md) — the package hoist and boundary invariant.
 - [ADR-0037](adr/0037-runtime-gateway-as-harness-data.md) — gateway routing as harness data.
+- [ADR-0039](adr/0039-coding-harness-adapter-agnostic.md) — the adapter-agnostic lift and the mixin contract.

@@ -523,6 +523,17 @@ and [`docs/CODING_HARNESSES.md`](docs/CODING_HARNESSES.md).
    the package) ships in both the sdist and the wheel. Any PR touching
    `tolokaforge_coding_harnesses/pyproject.toml`, its `data/`, or the
    package's non-Python siblings must keep this test green.
+8. **Adapters opt into coding-harness mode by inheriting
+   `CodingHarnessAdapterMixin`.** The orchestrator's config-validation
+   gate refuses `models.agent.harness` against any adapter whose
+   `supports_coding_harness` class attr reads `False` (the `BaseAdapter`
+   default). The mixin sets it as a class-level default, so inheriting is
+   the whole opt-in — a bespoke boolean on an adapter class without the
+   mixin's six helpers is not it. New adapters that accept the harness
+   field MUST inherit
+   [`tolokaforge_coding_harnesses.CodingHarnessAdapterMixin`](tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py)
+   alongside `BaseAdapter`. Design record:
+   [ADR-0039](docs/adr/0039-coding-harness-adapter-agnostic.md).
 
 **Adding a new harness:**
 

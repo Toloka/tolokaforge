@@ -160,6 +160,56 @@ private to your organisation (out-of-tree plug-in).
   [`src/tolokaforge_coding_harnesses/testing.py`](src/tolokaforge_coding_harnesses/testing.py)
   ships the `isolate_discovery` helper for plug-in test suites.
 
+## Adopting the mixin
+
+An adapter opts a task pack into coding-harness mode by inheriting
+[`CodingHarnessAdapterMixin`](src/tolokaforge_coding_harnesses/adapter_support.py)
+alongside `BaseAdapter`. Class shape:
+
+```python
+from tolokaforge.adapters.base import BaseAdapter
+from tolokaforge_coding_harnesses import CodingHarnessAdapterMixin
+
+
+class MyAdapter(CodingHarnessAdapterMixin, BaseAdapter):
+    ...
+```
+
+The mixin sets `supports_coding_harness: ClassVar[bool] = True` — the
+capability flag the engine's config-validation gate reads. Adapters
+that do not inherit the mixin (or override the flag to `False`) refuse
+a run declaring `models.agent.harness` before any container work.
+
+Six helpers ship on the mixin. Contracts (parameters live in the
+mixin's own docstrings — read those, not this table):
+
+| Helper | Contract |
+|---|---|
+| `resolve_harness_spec(agent_harness, agent_model, provider_env=None, presets_file=None, plugin_discovery=True)` | Resolves against the shipped catalog + operator overlay + installed plug-ins, then validates. Refuses unknown harness names and empty models. |
+| `build_harness_command(agent_harness, spec, instruction, model, provider_env=None, *, path_resolver=None)` | Assembles the `bash -c`-shaped command the trial exec runs. Threads argv, model routing, provider-env, and (when the spec declares it) the middleware-proxy preamble. |
+| `emit_harness_metadata(agent_harness, spec, command, model)` | Four-key handshake the conductor branches on: `agent_harness`, `agent_harness_version`, `agent_harness_model`, `agent_harness_command`. |
+| `emit_harness_tool_schema(*, service, compose_project_prefix, timeout_s, toolset="coding_harness")` | Payload for the runner's `bash` tool routed through `DockerComposeExecToolWrapper`. `timeout_s` must cover the whole trial. |
+| `emit_test_execution_grading()` | Payload for the runner's `RunnerGradingConfig`. Grades by reading `/logs/verifier/reward.txt`. |
+| `write_install_script_layer(context_dir, base_image, spec, middleware_proxy=False)` | Writes a standalone Dockerfile snippet + the shipped install script (and the middleware proxy when declared) into `context_dir`. Returns the Dockerfile's relative path. |
+
+**Payload dicts, not engine types.** `emit_harness_tool_schema` and
+`emit_test_execution_grading` return dicts. Adapters construct the
+engine types at the call site (`ToolSchema(**payload)`,
+`RunnerGradingConfig(**payload)`); pydantic v2 reconstructs nested
+types (`ToolSource` from `source={…}`) transparently. This preserves
+the boundary invariant — `tolokaforge_coding_harnesses/` imports no
+engine module.
+
+**Reference adopters.** The bundled
+[`NativeAdapter`](../tolokaforge/adapters/native.py) drives a native
+task pack via harness mode when `models.agent.harness` is set; the
+out-of-tree
+[`TerminalBenchAdapter`](../external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py)
+adopts the mixin with compose synthesis wrapped around
+`write_install_script_layer` from the compose context root. See
+[ADR-0039](../docs/adr/0039-coding-harness-adapter-agnostic.md) for the
+design record.
+
 ## Related docs
 
 - [docs/RUNNING_TERMINAL_BENCH.md](../docs/RUNNING_TERMINAL_BENCH.md) — the
@@ -179,3 +229,5 @@ private to your organisation (out-of-tree plug-in).
   package hoist and boundary invariant.
 - [ADR-0037](../docs/adr/0037-runtime-gateway-as-harness-data.md) — gateway
   routing as harness data.
+- [ADR-0039](../docs/adr/0039-coding-harness-adapter-agnostic.md) — the
+  adapter-agnostic lift and the mixin contract.
