@@ -66,7 +66,6 @@ class GrpcGraderClient:
         judge_model_config_json: str = "",
         task_description_json: str = "",
         runner_substrate_address: str = "",
-        agent_system_prompt: str = "",
     ) -> dict:
         """Send a ``Grade`` RPC and return the same dict shape as
         :meth:`GrpcRunnerClient.grade_trial` — so ``GraderRPCTrialGrader`` can
@@ -89,7 +88,6 @@ class GrpcGraderClient:
             judge_model_config_json=judge_model_config_json or "",
             task_description_json=task_description_json or "",
             runner_substrate_address=runner_substrate_address or "",
-            agent_system_prompt=agent_system_prompt or "",
         )
         response = self.stub.Grade(request)
         result: dict = {

@@ -28,10 +28,10 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class GradeRequestFields:
-    """The five ``GradeRequest`` wire fields the client-side snapshot builder
+    """The four ``GradeRequest`` wire fields the client-side snapshot builder
     populates from a :class:`TrialSpec`.
 
-    Fields correspond to :class:`grader_pb2.GradeRequest` numbers 4-8. The
+    Fields correspond to :class:`grader_pb2.GradeRequest` numbers 4-7. The
     trajectory-shaped trio (``trial_id`` / ``llm_messages_json`` /
     ``termination_reason``) rides on the individual ``TrialGrader``
     implementations because it depends on the completed :class:`Trajectory`,
@@ -66,16 +66,10 @@ class GradeRequestFields:
     this address per trial. Passed through verbatim from the ``TrialGrader``'s
     stored value — the snapshot builder never dials it."""
 
-    agent_system_prompt: str
-    """The post-policy agent system prompt. Passed through verbatim from the
-    ``TrialGrader.grade`` caller — the grader uses this directly rather than
-    re-splitting the leading system message off ``llm_messages_json``."""
-
 
 def build_grade_request_fields(
     *,
     spec: TrialSpec,
-    agent_system_prompt: str,
     runner_substrate_address: str,
 ) -> GradeRequestFields:
     """Project a completed trial's :class:`TrialSpec` into the wire fields
@@ -98,5 +92,4 @@ def build_grade_request_fields(
         judge_model_config_json=judge_model_config_json,
         task_description_json=spec.task.model_dump_json(),
         runner_substrate_address=runner_substrate_address,
-        agent_system_prompt=agent_system_prompt,
     )

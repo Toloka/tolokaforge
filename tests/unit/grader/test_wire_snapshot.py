@@ -84,11 +84,10 @@ def _spec_with(
 
 
 class TestReturnShape:
-    def test_returns_frozen_dataclass_with_the_five_wire_fields(self) -> None:
+    def test_returns_frozen_dataclass_with_the_four_wire_fields(self) -> None:
         spec = _spec_with(grading=_grading_config())
         result = build_grade_request_fields(
             spec=spec,
-            agent_system_prompt="You are the agent.",
             runner_substrate_address="runner:50051",
         )
         assert isinstance(result, GradeRequestFields)
@@ -107,7 +106,6 @@ class TestFieldDerivation:
         spec = _spec_with(grading=grading)
         result = build_grade_request_fields(
             spec=spec,
-            agent_system_prompt="",
             runner_substrate_address="",
         )
         assert result.task_config_json == grading.model_dump_json()
@@ -127,7 +125,6 @@ class TestFieldDerivation:
         spec = _spec_with(grading=_grading_config(state_checks=state_checks))
         result = build_grade_request_fields(
             spec=spec,
-            agent_system_prompt="",
             runner_substrate_address="",
         )
         parsed = json.loads(result.task_description_json)
@@ -145,7 +142,6 @@ class TestFieldDerivation:
         spec = _spec_with(grading=_grading_config(), initial_state=initial_state)
         result = build_grade_request_fields(
             spec=spec,
-            agent_system_prompt="",
             runner_substrate_address="",
         )
         parsed = json.loads(result.task_description_json)
@@ -162,7 +158,6 @@ class TestFieldDerivation:
         spec = _spec_with(grading=_grading_config(), tool_artifacts=artifacts)
         result = build_grade_request_fields(
             spec=spec,
-            agent_system_prompt="",
             runner_substrate_address="",
         )
         parsed = json.loads(result.task_description_json)
@@ -174,7 +169,6 @@ class TestJudgeModelConfig:
         spec = _spec_with(grading=_grading_config(), judge_model_config=None)
         result = build_grade_request_fields(
             spec=spec,
-            agent_system_prompt="",
             runner_substrate_address="",
         )
         assert result.judge_model_config_json == ""
@@ -187,28 +181,16 @@ class TestJudgeModelConfig:
         )
         result = build_grade_request_fields(
             spec=spec,
-            agent_system_prompt="",
             runner_substrate_address="",
         )
         assert result.judge_model_config_json == judge.model_dump_json()
 
 
 class TestPassthroughs:
-    def test_agent_system_prompt_is_verbatim(self) -> None:
-        spec = _spec_with(grading=_grading_config())
-        prompt = "You are the test agent.\nFollow the policy."
-        result = build_grade_request_fields(
-            spec=spec,
-            agent_system_prompt=prompt,
-            runner_substrate_address="",
-        )
-        assert result.agent_system_prompt == prompt
-
     def test_runner_substrate_address_is_verbatim(self) -> None:
         spec = _spec_with(grading=_grading_config())
         result = build_grade_request_fields(
             spec=spec,
-            agent_system_prompt="",
             runner_substrate_address="runner.grid-01:50051",
         )
         assert result.runner_substrate_address == "runner.grid-01:50051"
@@ -246,6 +228,5 @@ class TestNoSideEffects:
         # Should not raise — the builder never touches gRPC or filesystem.
         build_grade_request_fields(
             spec=spec,
-            agent_system_prompt="",
             runner_substrate_address="runner:50051",
         )

@@ -1,9 +1,9 @@
 """Wire v2 contract of the standalone grader service.
 
-``GraderService.Grade`` carries eight named fields — the four the
+``GraderService.Grade`` carries seven named fields — the four the
 composite dispatcher needs to drive its plug-in seams without an
 in-process ``RunnerServiceImpl`` (``trial_id``, ``llm_messages_json``,
-``termination_reason``, ``task_config_json``) plus four additions:
+``termination_reason``, ``task_config_json``) plus three additions:
 
 - ``judge_model_config_json`` — the judge's ``ModelConfig`` JSON so the
   grader constructs its ``LLMClient`` via the provider seam without
@@ -13,10 +13,12 @@ in-process ``RunnerServiceImpl`` (``trial_id``, ``llm_messages_json``,
   ``tool_artifacts`` from one field.
 - ``runner_substrate_address`` — the runner's ``SubstrateService`` gRPC
   address the ``LiveRunnerCallbackGradingSubstrate`` dials.
-- ``agent_system_prompt`` — the post-policy system prompt the grader uses
-  directly (no re-split of ``llm_messages_json``'s leading system message).
 
-This test locks two properties: (a) the proto shape carries all eight
+The post-policy agent system prompt already rides ``llm_messages_json`` as
+its leading ``role=system`` message; the grader recovers it via
+``split_leading_system_message``, so no separate wire field is needed.
+
+This test locks two properties: (a) the proto shape carries all seven
 fields with the field numbers and types the plan pins, and
 (b) :meth:`GrpcGraderClient.grade` round-trips every field verbatim into
 the injected judge callable's :class:`GradeDispatch`. If either breaks,
@@ -56,11 +58,10 @@ _EXPECTED_FIELDS: dict[str, tuple[int, int]] = {
     "judge_model_config_json": (5, FieldDescriptor.CPPTYPE_STRING),
     "task_description_json": (6, FieldDescriptor.CPPTYPE_STRING),
     "runner_substrate_address": (7, FieldDescriptor.CPPTYPE_STRING),
-    "agent_system_prompt": (8, FieldDescriptor.CPPTYPE_STRING),
 }
 
 
-def test_grade_request_proto_carries_the_eight_wire_v2_fields() -> None:
+def test_grade_request_proto_carries_the_seven_wire_v2_fields() -> None:
     """Every wire field lands at the number and type the plan pins.
 
     A field-number reshuffle silently reinterprets stored data, so this test
@@ -87,7 +88,7 @@ def _running_service(judge_fn):
 
     Uses a real (localhost) listener rather than an in-memory channel so the
     grpc-py serialisation layer is exercised — that is the thing this test
-    exists to lock down for the four new v2 fields.
+    exists to lock down for the three new v2 fields.
     """
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     grader_pb2_grpc.add_GraderServiceServicer_to_server(
@@ -140,7 +141,6 @@ def test_client_grade_round_trips_every_wire_field_to_dispatch() -> None:
             judge_model_config_json='{"provider":"litellm","name":"gpt-4"}',
             task_description_json='{"id":"task_id","tool_artifacts":{}}',
             runner_substrate_address="runner:50051",
-            agent_system_prompt="You are the test agent.",
         )
 
     assert result["success"] is True
@@ -154,7 +154,6 @@ def test_client_grade_round_trips_every_wire_field_to_dispatch() -> None:
         judge_model_config_json='{"provider":"litellm","name":"gpt-4"}',
         task_description_json='{"id":"task_id","tool_artifacts":{}}',
         runner_substrate_address="runner:50051",
-        agent_system_prompt="You are the test agent.",
     )
 
 
@@ -188,7 +187,6 @@ def test_client_grade_defaults_v2_fields_to_empty_strings() -> None:
         judge_model_config_json="",
         task_description_json="",
         runner_substrate_address="",
-        agent_system_prompt="",
     )
 
 

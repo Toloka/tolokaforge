@@ -77,7 +77,6 @@ class GradeJob:
     judge_model_config_json: str
     task_description_json: str
     runner_substrate_address: str
-    agent_system_prompt: str
 
 
 @dataclass(frozen=True)

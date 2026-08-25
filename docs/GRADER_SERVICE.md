@@ -264,21 +264,20 @@ produces a `Grade` end-to-end against a running stack.
 
 `GraderService.Grade` is stateless per call: every field the grader-side
 composite dispatcher needs to grade the trial rides on the request. The
-wire carries eight named fields — the caller populates whichever ones
+wire carries seven named fields — the caller populates whichever ones
 its dispatch consumes and leaves the rest empty.
 
 | Field                         | # | Purpose                                                                                   |
 | ----------------------------- | - | ----------------------------------------------------------------------------------------- |
 | `trial_id`                    | 1 | Canonical `"{task_id}:{trial_index}"` identifier — the join key for logs and future stores. |
-| `llm_messages_json`           | 2 | Transcript as an LLM-messages JSON string; the timeline builder decodes it.               |
+| `llm_messages_json`           | 2 | Transcript as an LLM-messages JSON string; the timeline builder decodes it. The agent system prompt rides as the leading `role=system` message; the grader recovers it via `split_leading_system_message`. |
 | `termination_reason`          | 3 | `TerminationReason` value name; empty when the caller reports none.                       |
 | `task_config_json`            | 4 | `RunnerGradingConfig` JSON — the whole `grading:` block the composite dispatcher reads.   |
 | `judge_model_config_json`     | 5 | Optional `ModelConfig` JSON for the judge; empty when the task declares no `llm_judge`.   |
 | `task_description_json`       | 6 | `TaskDescription` JSON — carries `initial_state`, `state_checks.id_fields`, `unstable_fields`, and `tool_artifacts` (checks.py plus every sibling artefact module the pack imports). |
 | `runner_substrate_address`    | 7 | gRPC address of the runner's `SubstrateService`; the grader builds a `LiveRunnerCallbackGradingSubstrate` against it per trial. |
-| `agent_system_prompt`         | 8 | Post-policy system prompt — authoritative. The grader uses this directly rather than re-splitting the leading system message off `llm_messages_json`. |
 
-Field numbers are stable and additive: a future field lands on number 9
+Field numbers are stable and additive: a future field lands on number 8
 so an existing client's payload never lands in a new slot. Provider +
 model-name evidence rides on field 5 so the grader constructs its
 `LLMClient` via the [`judge_model_providers` seam](#sub-component-plug-in-seams)
@@ -300,7 +299,6 @@ above the trajectory-shaped trio. The builder returns a frozen
 | `judge_model_config_json` | `spec.judge_model_config.model_dump_json()`, empty when `spec.judge_model_config is None` |
 | `task_description_json`   | `spec.task.model_dump_json()` — one field carries `initial_state`, `state_checks.id_fields`, `initial_state.unstable_fields`, and `tool_artifacts` |
 | `runner_substrate_address`| Passthrough from the grader's stored context (`ctx.runner_address`) |
-| `agent_system_prompt`     | Passthrough from the `TrialGrader.grade` caller |
 
 The builder is a pure projection: it reads only in-memory Pydantic
 models, opens no gRPC channel, and never touches the filesystem. Both
@@ -660,8 +658,7 @@ matches the baseline byte-for-byte.
 - `grading.yaml` — `RunnerGradingConfig` (weights, state_checks,
   transcript_rules, trace_checks, llm_judge, custom_checks).
 - `trial.yaml` — wire dispatch fields: `trial_id`,
-  `termination_reason`, `agent_system_prompt`, `llm_messages`,
-  optional `judge_model_config`.
+  `termination_reason`, `llm_messages`, optional `judge_model_config`.
 - `parity.yaml` — declared `accepted_divergences: [...]`, optional
   `judge_script: [...]` for packs exercising `llm_judge` (a
   deterministic scripted-client stand-in that keeps the canonical

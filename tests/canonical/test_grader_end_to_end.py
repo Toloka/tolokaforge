@@ -149,7 +149,6 @@ def test_grade_rpc_returns_real_grade_end_to_end(monkeypatch: pytest.MonkeyPatch
             judge_model_config_json="",
             task_description_json=task.model_dump_json(),
             runner_substrate_address="stub:50051",
-            agent_system_prompt="You are a test assistant.",
         )
 
     assert result["success"] is True, result.get("error")
@@ -196,7 +195,6 @@ def test_grade_rpc_translates_grading_failed_error_to_success_false(
             judge_model_config_json="",
             task_description_json=task.model_dump_json(),
             runner_substrate_address="stub:50051",
-            agent_system_prompt="",
         )
     assert result["success"] is False
     assert "hash-based grading" in (result["error"] or "")

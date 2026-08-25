@@ -131,7 +131,6 @@ class TestWirePayload:
         assert call["judge_model_config_json"] == ""
         assert call["task_description_json"] == spec.task.model_dump_json()
         assert call["runner_substrate_address"] == "runner:50051"
-        assert call["agent_system_prompt"] == "You are the agent."
 
 
 class TestAutoFailBranches:

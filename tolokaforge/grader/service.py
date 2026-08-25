@@ -5,9 +5,8 @@ callable and translating the returned :class:`~tolokaforge.core.models.Grade`
 back to the wire type. Stateless per call: the caller supplies every field
 the composite dispatch needs to grade the trial (trajectory as LLM messages,
 termination reason, task-config JSON, judge-model-config JSON,
-task-description JSON, runner substrate address, agent system prompt) so the
-service can be pointed at from any orchestrator without a prior registration
-handshake.
+task-description JSON, runner substrate address) so the service can be pointed
+at from any orchestrator without a prior registration handshake.
 
 Standalone wiring — the CLI entry point at :mod:`tolokaforge.grader.__main__`
 mounts :class:`~tolokaforge.grader.composite_dispatch.GraderCompositeDispatch`
@@ -43,13 +42,14 @@ class GradeDispatch:
     The standalone service is *stateless per call*: every field the injected
     dispatch needs to grade the trial travels on the wire and lands on this
     dataclass. The v2 fields (``judge_model_config_json`` through
-    ``agent_system_prompt``) carry the run-scoped context the composite
+    ``runner_substrate_address``) carry the run-scoped context the composite
     dispatcher would otherwise get in-process from ``RunnerServiceImpl`` —
     the grader constructs its :class:`LiveRunnerCallbackGradingSubstrate`
-    against ``runner_substrate_address``, deserialises the task-scoped
-    ``TaskDescription`` / ``ModelConfig`` from the JSON fields, and uses
-    ``agent_system_prompt`` directly rather than re-splitting the leading
-    system message off ``llm_messages_json``.
+    against ``runner_substrate_address`` and deserialises the task-scoped
+    ``TaskDescription`` / ``ModelConfig`` from the JSON fields. The agent
+    system prompt already rides ``llm_messages_json`` as its leading system
+    message; the composite dispatcher recovers it via
+    :func:`split_leading_system_message`.
     """
 
     trial_id: str
@@ -59,7 +59,6 @@ class GradeDispatch:
     judge_model_config_json: str
     task_description_json: str
     runner_substrate_address: str
-    agent_system_prompt: str
 
 
 JudgeGradeFn = Callable[[GradeDispatch], "Grade | None"]
@@ -239,7 +238,6 @@ class GraderServiceImpl(grader_pb2_grpc.GraderServiceServicer):
             judge_model_config_json=request.judge_model_config_json or "",
             task_description_json=request.task_description_json or "",
             runner_substrate_address=request.runner_substrate_address or "",
-            agent_system_prompt=request.agent_system_prompt or "",
         )
         # Local import: ``tolokaforge.core.trial_grader`` imports
         # ``tolokaforge.grader.wire_snapshot`` at module top, which triggers

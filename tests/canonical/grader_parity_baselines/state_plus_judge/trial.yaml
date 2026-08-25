@@ -1,6 +1,5 @@
 trial_id: state_plus_judge:0
 termination_reason: agent_done
-agent_system_prompt: You are a test assistant.
 judge_model_config:
   provider: openai
   name: gpt-4o-mini

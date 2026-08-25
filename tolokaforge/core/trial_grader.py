@@ -706,7 +706,6 @@ class GraderRPCTrialGrader:
         llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
         wire = build_grade_request_fields(
             spec=spec,
-            agent_system_prompt=agent_system_prompt,
             runner_substrate_address=self.runner_substrate_address,
         )
         grade_result = self.grader_client.grade(
@@ -719,7 +718,6 @@ class GraderRPCTrialGrader:
             judge_model_config_json=wire.judge_model_config_json,
             task_description_json=wire.task_description_json,
             runner_substrate_address=wire.runner_substrate_address,
-            agent_system_prompt=wire.agent_system_prompt,
         )
 
         if not grade_result["success"]:
@@ -899,7 +897,6 @@ class QueueTrialGrader:
         llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
         wire = build_grade_request_fields(
             spec=spec,
-            agent_system_prompt=agent_system_prompt,
             runner_substrate_address=self.runner_substrate_address,
         )
         job = GradeJob(
@@ -913,7 +910,6 @@ class QueueTrialGrader:
             judge_model_config_json=wire.judge_model_config_json,
             task_description_json=wire.task_description_json,
             runner_substrate_address=wire.runner_substrate_address,
-            agent_system_prompt=wire.agent_system_prompt,
         )
         future = self.broker.publish_job(job)
         try:
@@ -1108,7 +1104,6 @@ def _queue_worker_loop(
                 judge_model_config_json=job.judge_model_config_json,
                 task_description_json=job.task_description_json,
                 runner_substrate_address=job.runner_substrate_address,
-                agent_system_prompt=job.agent_system_prompt,
             )
             if not response["success"]:
                 error = response.get("error") or "Unknown grading error"

@@ -33,7 +33,6 @@ one-way exception documented in ADR-0039.
 from __future__ import annotations
 
 import json
-import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -338,7 +337,7 @@ def build_judge_state_diff(
     initial_state_schemas: list[Any],
     id_fields: dict[str, str | list[str]],
     unstable_fields: set[tuple[str, str]],
-    logger: logging.Logger,
+    logger: StructuredLogger,
 ) -> str | None:
     """Render the ``initial → final`` DB state diff for the judge, or ``None``.
 

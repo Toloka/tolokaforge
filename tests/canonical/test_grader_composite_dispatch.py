@@ -236,7 +236,6 @@ def _dispatch(
         judge_model_config_json=judge_model.model_dump_json() if judge_model is not None else "",
         task_description_json=task.model_dump_json(),
         runner_substrate_address=_ADDRESS,
-        agent_system_prompt="You are a test assistant.",
     )
 
 

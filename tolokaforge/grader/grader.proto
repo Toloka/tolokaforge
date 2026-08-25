@@ -72,11 +72,6 @@ message GradeRequest {
   // gRPC address of the runner's SubstrateService — the composite dispatch
   // builds a LiveRunnerCallbackGradingSubstrate against it per trial.
   string runner_substrate_address = 7;
-
-  // Post-policy agent system prompt — authoritative. The grader uses this
-  // directly and does not re-split llm_messages_json's leading system
-  // message.
-  string agent_system_prompt = 8;
 }
 
 message GradeResponse {

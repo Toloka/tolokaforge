@@ -13,8 +13,7 @@ Pack layout on disk (per pack directory):
   system_prompt).
 * ``grading.yaml`` — :class:`~tolokaforge.runner.models.RunnerGradingConfig`.
 * ``trial.yaml`` — wire fields the harness drives grading with: ``trial_id``,
-  ``termination_reason``, ``agent_system_prompt``, ``llm_messages``,
-  ``judge_model_config``.
+  ``termination_reason``, ``llm_messages``, ``judge_model_config``.
 * ``parity.yaml`` — accepted divergences declaration, optional ``judge_script``
   (scripted GenerationResult sequence for packs exercising ``llm_judge``),
   optional ``db_probe_rows`` mapping (deterministic rows the harness serves
@@ -101,7 +100,6 @@ class ParityPack:
       JSON string; the same payload lands on both wires.
     * ``termination_reason`` — enum-name string; ``""`` when the caller
       reports none.
-    * ``agent_system_prompt`` — post-policy authoritative system prompt.
     * ``judge_model_config`` — the judge's :class:`ModelConfig`, or ``None``
       when the pack declares no ``llm_judge`` block.
     * ``judge_script`` — deterministic scripted responses for the judge's
@@ -133,7 +131,6 @@ class ParityPack:
     trial_id: str
     llm_messages_json: str
     termination_reason: str
-    agent_system_prompt: str
     judge_model_config: ModelConfig | None
     judge_script: list[Any]
     accepted_divergences: tuple[str, ...]
@@ -195,7 +192,6 @@ def load_parity_pack(pack_dir: Path) -> ParityPack:
         trial_id=str(trial_data["trial_id"]),
         llm_messages_json=llm_messages_json,
         termination_reason=str(trial_data.get("termination_reason", "")),
-        agent_system_prompt=str(trial_data.get("agent_system_prompt", "")),
         judge_model_config=judge_model_config,
         judge_script=judge_script,
         accepted_divergences=accepted,
@@ -522,7 +518,6 @@ def _build_grade_dispatch(pack: ParityPack, *, substrate_address: str) -> GradeD
         judge_model_config_json=judge_json,
         task_description_json=pack.task_description.model_dump_json(),
         runner_substrate_address=substrate_address,
-        agent_system_prompt=pack.agent_system_prompt,
     )
 
 
@@ -563,10 +558,9 @@ def run_via_grader_rpc(
     :class:`grader_pb2.Grade` shipped over the wire.
 
     The pack's wire dispatch fields (task_config_json,
-    task_description_json, judge_model_config_json, runner_substrate_address,
-    agent_system_prompt) round-trip through Pydantic JSON so the harness
-    exercises the deserialisation the standalone grader-service caller
-    would trigger.
+    task_description_json, judge_model_config_json, runner_substrate_address)
+    round-trip through Pydantic JSON so the harness exercises the
+    deserialisation the standalone grader-service caller would trigger.
     """
     _install_scripted_client(monkeypatch, pack.judge_script)
     if pack.db_probe_rows:

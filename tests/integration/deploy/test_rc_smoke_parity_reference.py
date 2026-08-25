@@ -215,7 +215,6 @@ def _call_grade_over_wire(pack: ParityPack):
         judge_model_config_json=judge_json,
         task_description_json=pack.task_description.model_dump_json(),
         runner_substrate_address=_RUNNER_SUBSTRATE_INTERNAL_ADDR,
-        agent_system_prompt=pack.agent_system_prompt,
     )
     with grpc.insecure_channel(_GRADER_HOST_ADDR) as channel:
         stub = grader_pb2_grpc.GraderServiceStub(channel)

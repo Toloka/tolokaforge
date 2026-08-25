@@ -49,7 +49,6 @@ _EXPECTED_JOB_FIELDS = (
     "judge_model_config_json",
     "task_description_json",
     "runner_substrate_address",
-    "agent_system_prompt",
 )
 
 
@@ -107,7 +106,6 @@ def _run_loop_once(broker: InMemoryGradeBroker, client: _CapturingClient) -> Non
             judge_model_config_json='{"provider":"litellm","name":"gpt-4"}',
             task_description_json='{"id":"task_id","tool_artifacts":{}}',
             runner_substrate_address="runner:50051",
-            agent_system_prompt="You are the test agent.",
         )
         future = broker.publish_job(job)
         assert future.result(timeout=2) is None  # no_verdict → grade=None
@@ -132,7 +130,6 @@ def test_queue_worker_forwards_every_field_verbatim_to_client_grade() -> None:
         "judge_model_config_json": '{"provider":"litellm","name":"gpt-4"}',
         "task_description_json": '{"id":"task_id","tool_artifacts":{}}',
         "runner_substrate_address": "runner:50051",
-        "agent_system_prompt": "You are the test agent.",
     }
 
 
@@ -160,7 +157,6 @@ def test_queue_worker_forwards_empty_defaults_verbatim() -> None:
             judge_model_config_json="",
             task_description_json="",
             runner_substrate_address="",
-            agent_system_prompt="",
         )
         future = broker.publish_job(job)
         assert future.result(timeout=2) is None
@@ -176,5 +172,4 @@ def test_queue_worker_forwards_empty_defaults_verbatim() -> None:
         "judge_model_config_json": "",
         "task_description_json": "",
         "runner_substrate_address": "",
-        "agent_system_prompt": "",
     }

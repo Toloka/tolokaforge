@@ -452,7 +452,7 @@ class GraderCompositeDispatch:
             initial_state_schemas=initial_state_schemas,
             id_fields=id_fields,
             unstable_fields=unstable_fields,
-            logger=self._logger,  # type: ignore[arg-type]
+            logger=self._logger,
         )
         judge_result = composite.grade_llm_judge(
             trial_id=trial_id,
