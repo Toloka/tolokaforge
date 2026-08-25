@@ -59,9 +59,9 @@ def test_grade_job_carries_every_wire_field() -> None:
     step under-populate; a silent drop would erase v2 context on the queue
     path."""
     got = tuple(f.name for f in dataclasses.fields(GradeJob))
-    assert got == _EXPECTED_JOB_FIELDS, (
-        "GradeJob field shape drifted. Expected: " f"{_EXPECTED_JOB_FIELDS!r}. Got: {got!r}."
-    )
+    assert (
+        got == _EXPECTED_JOB_FIELDS
+    ), f"GradeJob field shape drifted. Expected: {_EXPECTED_JOB_FIELDS!r}. Got: {got!r}."
 
 
 # -----------------------------------------------------------------------------
@@ -140,8 +140,8 @@ def test_queue_worker_forwards_empty_defaults_verbatim() -> None:
     """A job the producer packs with empty-string defaults reaches
     :meth:`client.grade` as empty strings — not omitted kwargs and not
     Python ``None``. Composite dispatch's fail-loud missing-field check
-    (Stage 3) fires on the empty string; converting them to ``None`` here
-    would make that check unreachable.
+    fires on the empty string; converting them to ``None`` here would
+    make that check unreachable.
     """
     broker = InMemoryGradeBroker()
     client = _CapturingClient()

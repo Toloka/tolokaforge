@@ -7,12 +7,13 @@ channel, never touches the filesystem — every field is either a
 ``.model_dump_json()`` on an in-memory Pydantic model or a plain-string
 passthrough.
 
-This test surfaces two shapes of regression Stage 3 depends on catching
-early: a wire field that silently under-populates (missing round-trip of
-``id_fields`` / ``unstable_fields`` / ``tool_artifacts`` on the
-``task_description_json``), or a judge-config field that lands as
-non-empty when the trial's ``spec.judge_model_config`` is unset (the
-grader would then construct a judge for a task that declared none).
+This test surfaces two shapes of regression the composite dispatch
+depends on catching early: a wire field that silently under-populates
+(missing round-trip of ``id_fields`` / ``unstable_fields`` /
+``tool_artifacts`` on the ``task_description_json``), or a judge-config
+field that lands as non-empty when the trial's
+``spec.judge_model_config`` is unset (the grader would then construct a
+judge for a task that declared none).
 """
 
 from __future__ import annotations

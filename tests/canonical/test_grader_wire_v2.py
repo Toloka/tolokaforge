@@ -1,10 +1,9 @@
 """Wire v2 contract of the standalone grader service.
 
-``GraderService.Grade`` carries eight named fields — the four v1 shipped
-under Phase 1 and Phase 2 (``trial_id``, ``llm_messages_json``,
-``termination_reason``, ``task_config_json``) and the four v2 additions
-Phase 3 needs so the standalone grader dispatches through the composite
-plug-in seams without an in-process ``RunnerServiceImpl``:
+``GraderService.Grade`` carries eight named fields — the four the
+composite dispatcher needs to drive its plug-in seams without an
+in-process ``RunnerServiceImpl`` (``trial_id``, ``llm_messages_json``,
+``termination_reason``, ``task_config_json``) plus four additions:
 
 - ``judge_model_config_json`` — the judge's ``ModelConfig`` JSON so the
   grader constructs its ``LLMClient`` via the provider seam without
@@ -20,10 +19,9 @@ plug-in seams without an in-process ``RunnerServiceImpl``:
 This test locks two properties: (a) the proto shape carries all eight
 fields with the field numbers and types the plan pins, and
 (b) :meth:`GrpcGraderClient.grade` round-trips every field verbatim into
-the injected judge callable's :class:`GradeDispatch`. If either breaks a
-Stage 2 client — or a Stage 3 composite dispatcher — reading the wire
-would silently observe a different payload than the one that left the
-producer.
+the injected judge callable's :class:`GradeDispatch`. If either breaks,
+the grader client and the composite dispatcher would silently observe a
+different payload than the one that left the producer.
 """
 
 from __future__ import annotations
@@ -67,8 +65,8 @@ def test_grade_request_proto_carries_the_eight_wire_v2_fields() -> None:
 
     A field-number reshuffle silently reinterprets stored data, so this test
     asserts the numbering the composite dispatcher and its client both rely
-    on — moving ``task_description_json`` off field 6 would make a Stage 2
-    client's payload land in ``runner_substrate_address`` on the grader.
+    on — moving ``task_description_json`` off field 6 would make a client's
+    payload land in ``runner_substrate_address`` on the grader.
     """
     descriptor = grader_pb2.GradeRequest.DESCRIPTOR
     got = {f.name: (f.number, f.cpp_type) for f in descriptor.fields}
@@ -164,12 +162,10 @@ def test_client_grade_defaults_v2_fields_to_empty_strings() -> None:
     """A caller that has not populated a v2 field lands an empty string on
     the wire — not a Python ``None`` and not the field's absence.
 
-    Stage 2 will populate every v2 field; a Stage 1 caller (this stage's
-    ``GradeJob`` construction site in ``trial_grader.py``) still passes
-    empty strings so the round-trip stays byte-preserving until Stage 2
-    lands. The composite dispatcher rejects an empty ``task_config_json``
-    or ``task_description_json`` in Stage 3 — the empty default here is
-    what makes that fail-loud check reachable.
+    The composite dispatcher rejects an empty ``task_config_json`` or
+    ``task_description_json``; the empty-string default that the client
+    lands on the wire when a caller omits a v2 field is what makes that
+    fail-loud check reachable.
     """
     captured: list[GradeDispatch] = []
 

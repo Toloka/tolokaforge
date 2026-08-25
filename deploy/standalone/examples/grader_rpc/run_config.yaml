@@ -12,8 +12,8 @@
 #     `RUNNER_EXPOSE_SUBSTRATE=true` on the runner container directly,
 #     so the orchestrator does not need to forward the flag.
 #
-# Wiring the operator-facing `grader_address` — the endpoint the
-# `grader_rpc` factory dials — is tracked as a follow-up on issue #1263;
+# The operator-facing `grader_address` — the endpoint the `grader_rpc`
+# factory dials — is not yet plumbed through the orchestrator.
 # `README.md` in this directory documents the `GrpcGraderClient` snippet
 # that verifies the grader dispatches a Grade against this compose stack
 # today.

@@ -52,8 +52,8 @@ message GradeRequest {
 
   // RunnerGradingConfig JSON — carries the full grading block the composite
   // dispatch consumes (state_checks, transcript_rules, trace_checks,
-  // llm_judge, custom_checks). Empty when the caller has not populated it
-  // (Phase 1 wire); the composite dispatcher rejects requests missing it.
+  // llm_judge, custom_checks). Empty when the caller has not populated it;
+  // the composite dispatcher rejects requests missing it.
   string task_config_json = 4;
 
   // Optional[ModelConfig] JSON — the judge's model config, empty when the

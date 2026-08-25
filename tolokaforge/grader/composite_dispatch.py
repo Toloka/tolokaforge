@@ -42,6 +42,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from tolokaforge.core.grading import composite
+from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.grading.tool_artifacts import extract_tool_artifacts
 from tolokaforge.core.grading.trace_checks import TraceChecksResult
@@ -82,6 +83,7 @@ from tolokaforge.runner.models import (
     RunnerGradingConfig,
     TaskDescription,
 )
+from tolokaforge.runner.protocol import parse_termination_reason
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge_result import JudgeResult
@@ -146,8 +148,7 @@ class GraderCompositeDispatch:
             )
         if not dispatch.runner_substrate_address:
             raise GradingFailedError(
-                "grader_rpc requires runner_substrate_address on GradeRequest "
-                "(missing on v2 wire)"
+                "grader_rpc requires runner_substrate_address on GradeRequest (missing on v2 wire)"
             )
 
         try:
@@ -200,7 +201,10 @@ class GraderCompositeDispatch:
         added_sys_path: list[str] = []
         if tool_artifacts:
             artifacts_dir = extract_tool_artifacts(dispatch.trial_id, tool_artifacts)
-            for entry in (str(artifacts_dir), str(artifacts_dir / "tools")):
+            candidate_entries = [str(artifacts_dir)]
+            if (artifacts_dir / "tools").exists():
+                candidate_entries.append(str(artifacts_dir / "tools"))
+            for entry in candidate_entries:
                 if entry in sys.path:
                     added_sys_path.append(entry)
 
@@ -247,152 +251,61 @@ class GraderCompositeDispatch:
         substrate: GradingSubstrate,
         artifacts_dir: Any,
     ) -> Grade:
-        """Drive the composite functions and fold their outputs into a :class:`Grade`.
-
-        Mirrors the order and combine algebra of ``_grade_trial_async``
-        (:mod:`tolokaforge.runner.service`) minus hash + accounted-keys
-        ledger + verdict compose. See the module docstring's "layering
-        exception" note for why the runner-owned compose helpers are the
-        combine surface Phase 3 accepts a reverse dep on.
-        """
+        """Mirror ``_grade_trial_async`` (runner) minus hash / accounted-keys ledger."""
         trial_id = dispatch.trial_id
-        llm_messages: list[dict[str, Any]] = (
-            json.loads(dispatch.llm_messages_json) if dispatch.llm_messages_json else []
-        )
-        if llm_messages:
-            _, transcript = split_leading_system_message(llm_messages)
-            timeline = build_trial_timeline(
-                decode_transcript_wire(transcript), [], dispatch.termination_reason or None
-            )
-        else:
-            timeline = build_trial_timeline([], [], dispatch.termination_reason or None)
-
+        llm_messages: list[dict[str, Any]] = json.loads(dispatch.llm_messages_json or "[]")
+        timeline = _build_timeline(llm_messages, dispatch.termination_reason)
         components = RunnerGradeComponents()
         state_checks_config = grading_config.state_checks
-
-        if state_checks_config and (
-            state_checks_config.jsonpath_checks or state_checks_config.db_probes
-        ):
-            state_reads = composite.grade_state_checks_reads(
-                trial_id=trial_id,
-                config=state_checks_config,
-                substrate=substrate,
-                state_check_backends=self._state_check_backends,
-                logger=self._logger,
-            )
-            if state_reads.jsonpath_score is not None:
-                components.jsonpath_score = state_reads.jsonpath_score
-                components.jsonpath_reasons = state_reads.jsonpath_reasons or ""
-            if state_reads.db_probe_score is not None:
-                components.db_probe_score = state_reads.db_probe_score
-                components.db_probe_reasons = state_reads.db_probe_reasons or ""
-
-        transcript_result: TranscriptEvaluationResult | None = None
-        if grading_config.transcript_rules:
-            transcript_result, _accounting = composite.grade_transcript_rules(
-                trial_id=trial_id,
-                config=grading_config.transcript_rules,
-                timeline=timeline,
-                matcher=self._transcript_rule_matcher,
-                logger=self._logger,
-            )
-            if transcript_result is not None:
-                components.transcript_pass = transcript_result.passed
-                components.transcript_score = transcript_result.score
-
-        trace_result = TraceChecksResult()
-        if grading_config.trace_checks:
-            trace_result = composite.grade_trace_checks(
-                trial_id=trial_id,
-                config=grading_config.trace_checks,
-                timeline=timeline,
-                logger=self._logger,
-            )
-            if trace_result.constraints:
-                components.trace_checks_score = trace_result.score
-
-        llm_judge_config = grading_config.llm_judge
-        judge_status = JudgeStatus.UNSPECIFIED
-        judge_gate_failed = False
-        judge_result: JudgeResult | None = None
-        if llm_judge_config and llm_messages:
-            assert (
-                judge_model_config is not None
-            ), "llm_judge branch requires judge_model_config — validated above"
-            rubric_evaluator = self._build_rubric_evaluator(llm_judge_config)
-            state_diff_text = composite.build_judge_state_diff(
-                trial_id=trial_id,
-                substrate=substrate,
-                initial_state_schemas=initial_state_schemas,
-                id_fields=id_fields,
-                unstable_fields=unstable_fields,
-                logger=self._logger,  # type: ignore[arg-type]
-            )
-            judge_result = composite.grade_llm_judge(
-                trial_id=trial_id,
-                config=llm_judge_config,
-                substrate=substrate,
-                rubric_evaluator=rubric_evaluator,
-                llm_messages=llm_messages,
-                judge_model_config=judge_model_config,
-                extra_read_tools=[],
-                state_diff=state_diff_text,
-                logger=self._logger,
-            )
-            if judge_result.status.value == "errored":
-                judge_status = JudgeStatus.ERRORED
-            else:
-                judge_status = JudgeStatus.COMPLETED
-                judge_gate_failed = judge_result.gate_failed
-                if judge_result.score is not None:
-                    components.llm_judge_score = judge_result.score
-
-        custom_score, custom_wire_results, custom_reasons = composite.grade_custom_checks(
+        self._grade_state_checks_block(
             trial_id=trial_id,
-            config=grading_config.custom_checks,
+            state_checks_config=state_checks_config,
             substrate=substrate,
+            components=components,
+        )
+        transcript_result = self._grade_transcript_rules_block(
+            trial_id=trial_id,
+            config=grading_config.transcript_rules,
+            timeline=timeline,
+            components=components,
+        )
+        trace_result = self._grade_trace_checks_block(
+            trial_id=trial_id,
+            config=grading_config.trace_checks,
+            timeline=timeline,
+            components=components,
+        )
+        judge_result, judge_status, judge_gate_failed = self._grade_llm_judge_block(
+            trial_id=trial_id,
+            llm_judge_config=grading_config.llm_judge,
+            judge_model_config=judge_model_config,
             llm_messages=llm_messages,
+            substrate=substrate,
+            initial_state_schemas=initial_state_schemas,
+            id_fields=id_fields,
+            unstable_fields=unstable_fields,
+            components=components,
+        )
+        custom_wire_results, custom_reasons = self._grade_custom_checks_block(
+            trial_id=trial_id,
+            grading_config=grading_config,
             task_description=task_description,
+            llm_messages=llm_messages,
+            substrate=substrate,
             artifacts_dir=artifacts_dir,
-            check_executor=self._check_executor,
-            logger=self._logger,
+            components=components,
         )
-        components.custom_checks_score = custom_score
-
-        state_checks_slot = resolve_state_checks_component(
-            hash_score=components.hash_score,
-            jsonpath_score=components.jsonpath_score,
-            db_probe_score=components.db_probe_score,
-            hash_weight=state_checks_config.hash_weight if state_checks_config else None,
-        )
-        verdict = compose_runner_trial_verdict(
-            components.model_dump(),
-            grading_config.model_dump(),
+        state_checks_slot, verdict, reasons = _compose_verdict_and_reasons(
+            components=components,
+            grading_config=grading_config,
+            state_checks_config=state_checks_config,
             judge_gate_failed=judge_gate_failed,
-            trace_gate_failed=trace_result.gate_failed,
+            judge_status=judge_status,
+            judge_result=judge_result,
+            transcript_result=transcript_result,
+            trace_result=trace_result,
+            custom_reasons=custom_reasons,
         )
-        components.llm_judge_score = verdict.judge_component
-
-        judge_reasons = judge_result.reasons if judge_result is not None else None
-        reason_segments = [
-            build_grade_reasons(
-                components.model_dump(),
-                None,
-                transcript_result.model_dump() if transcript_result is not None else None,
-                judge_reasons=judge_reasons or None,
-                trace_checks_result=trace_result.model_dump(mode="json"),
-                golden_replay=None,
-                custom_checks_reasons=custom_reasons,
-            )
-        ]
-        if judge_status is JudgeStatus.ERRORED:
-            reason_segments.append(f"JUDGE ERRORED: {judge_reasons}")
-        if state_checks_slot.inert_weight_reason:
-            reason_segments.append(state_checks_slot.inert_weight_reason)
-        if verdict.reason:
-            reason_segments.append(verdict.reason)
-        reasons = " | ".join(segment for segment in reason_segments if segment)
-
         return _build_grade(
             verdict_score=verdict.score,
             verdict_pass=verdict.binary_pass,
@@ -404,6 +317,160 @@ class GraderCompositeDispatch:
             judge_result=judge_result,
             judge_status=judge_status,
         )
+
+    def _grade_state_checks_block(
+        self,
+        *,
+        trial_id: str,
+        state_checks_config: Any,
+        substrate: GradingSubstrate,
+        components: RunnerGradeComponents,
+    ) -> None:
+        """Run the ``state_checks`` reads block and fold results onto ``components``."""
+        if not state_checks_config:
+            return
+        if not (state_checks_config.jsonpath_checks or state_checks_config.db_probes):
+            return
+        state_reads = composite.grade_state_checks_reads(
+            trial_id=trial_id,
+            config=state_checks_config,
+            substrate=substrate,
+            state_check_backends=self._state_check_backends,
+            logger=self._logger,
+        )
+        if state_reads.jsonpath_score is not None:
+            components.jsonpath_score = state_reads.jsonpath_score
+            components.jsonpath_reasons = state_reads.jsonpath_reasons or ""
+        if state_reads.db_probe_score is not None:
+            components.db_probe_score = state_reads.db_probe_score
+            components.db_probe_reasons = state_reads.db_probe_reasons or ""
+
+    def _grade_transcript_rules_block(
+        self,
+        *,
+        trial_id: str,
+        config: Any,
+        timeline: Any,
+        components: RunnerGradeComponents,
+    ) -> TranscriptEvaluationResult | None:
+        """Run the transcript-rules block and fold the pass / score onto ``components``."""
+        if not config:
+            return None
+        transcript_result, _accounting = composite.grade_transcript_rules(
+            trial_id=trial_id,
+            config=config,
+            timeline=timeline,
+            matcher=self._transcript_rule_matcher,
+            logger=self._logger,
+        )
+        if transcript_result is not None:
+            components.transcript_pass = transcript_result.passed
+            components.transcript_score = transcript_result.score
+        return transcript_result
+
+    def _grade_trace_checks_block(
+        self,
+        *,
+        trial_id: str,
+        config: Any,
+        timeline: Any,
+        components: RunnerGradeComponents,
+    ) -> TraceChecksResult:
+        """Run the trace-checks block; populate ``components.trace_checks_score`` when scored."""
+        if not config:
+            return TraceChecksResult()
+        trace_result = composite.grade_trace_checks(
+            trial_id=trial_id,
+            config=config,
+            timeline=timeline,
+            logger=self._logger,
+        )
+        if trace_result.constraints:
+            components.trace_checks_score = trace_result.score
+        return trace_result
+
+    def _grade_custom_checks_block(
+        self,
+        *,
+        trial_id: str,
+        grading_config: RunnerGradingConfig,
+        task_description: TaskDescription,
+        llm_messages: list[dict[str, Any]],
+        substrate: GradingSubstrate,
+        artifacts_dir: Any,
+        components: RunnerGradeComponents,
+    ) -> tuple[list[Any], str | None]:
+        """Run custom checks and fold the score onto ``components``.
+
+        Returns ``(custom_wire_results, custom_reasons)`` for the reason
+        composition and Grade assembly downstream.
+        """
+        custom_score, custom_wire_results, custom_reasons = composite.grade_custom_checks(
+            trial_id=trial_id,
+            config=grading_config.custom_checks,
+            substrate=substrate,
+            llm_messages=llm_messages,
+            task_description=task_description,
+            artifacts_dir=artifacts_dir,
+            check_executor=self._check_executor,
+            logger=self._logger,
+        )
+        components.custom_checks_score = custom_score
+        return custom_wire_results, custom_reasons
+
+    def _grade_llm_judge_block(
+        self,
+        *,
+        trial_id: str,
+        llm_judge_config: Any,
+        judge_model_config: ModelConfig | None,
+        llm_messages: list[dict[str, Any]],
+        substrate: GradingSubstrate,
+        initial_state_schemas: list[Any],
+        id_fields: dict[str, str | list[str]],
+        unstable_fields: set[tuple[str, str]],
+        components: RunnerGradeComponents,
+    ) -> tuple[JudgeResult | None, JudgeStatus, bool]:
+        """Load the rubric-evaluator seam, render the state diff, and grade.
+
+        Returns ``(judge_result, wire_judge_status, judge_gate_failed)``.
+        A skipped judge (missing config or empty transcript) reports
+        :attr:`JudgeStatus.UNSPECIFIED` with a ``None`` result; a runner
+        errored status maps to :attr:`JudgeStatus.ERRORED`. On a
+        completed run, ``components.llm_judge_score`` is populated when
+        the judge produced a numeric score.
+        """
+        if not (llm_judge_config and llm_messages):
+            return None, JudgeStatus.UNSPECIFIED, False
+        assert (
+            judge_model_config is not None
+        ), "llm_judge branch requires judge_model_config — validated above"
+        rubric_evaluator = self._build_rubric_evaluator(llm_judge_config)
+        state_diff_text = composite.build_judge_state_diff(
+            trial_id=trial_id,
+            substrate=substrate,
+            initial_state_schemas=initial_state_schemas,
+            id_fields=id_fields,
+            unstable_fields=unstable_fields,
+            logger=self._logger,  # type: ignore[arg-type]
+        )
+        judge_result = composite.grade_llm_judge(
+            trial_id=trial_id,
+            config=llm_judge_config,
+            substrate=substrate,
+            rubric_evaluator=rubric_evaluator,
+            llm_messages=llm_messages,
+            judge_model_config=judge_model_config,
+            extra_read_tools=[],
+            state_diff=state_diff_text,
+            logger=self._logger,
+        )
+        if judge_result.status is JudgeRunStatus.ERRORED:
+            return judge_result, JudgeStatus.ERRORED, False
+        judge_gate_failed = judge_result.gate_failed
+        if judge_result.score is not None:
+            components.llm_judge_score = judge_result.score
+        return judge_result, JudgeStatus.COMPLETED, judge_gate_failed
 
     def _build_rubric_evaluator(self, llm_judge_config: Any) -> RubricEvaluator:
         """Load the ``llm_judge`` rubric-evaluator seam with per-trial context.
@@ -430,6 +497,78 @@ class GraderCompositeDispatch:
                 include_agent_system_prompt=include_agent_system_prompt,
             )
         )
+
+
+def _build_timeline(
+    llm_messages: list[dict[str, Any]],
+    raw_termination_reason: str,
+) -> Any:
+    """Build the grader-side :class:`TrialTimeline` from the wire alone.
+
+    Empty ``llm_messages`` produces a records-empty timeline that still
+    reflects the termination reason. The composite skips llm_judge in
+    that case but the timeline call must reconcile without raising so
+    the trace-checks branch runs.
+    """
+    termination_reason = parse_termination_reason(raw_termination_reason)
+    if llm_messages:
+        _, transcript = split_leading_system_message(llm_messages)
+        return build_trial_timeline(decode_transcript_wire(transcript), [], termination_reason)
+    return build_trial_timeline([], [], termination_reason)
+
+
+def _compose_verdict_and_reasons(
+    *,
+    components: RunnerGradeComponents,
+    grading_config: RunnerGradingConfig,
+    state_checks_config: Any,
+    judge_gate_failed: bool,
+    judge_status: JudgeStatus,
+    judge_result: JudgeResult | None,
+    transcript_result: TranscriptEvaluationResult | None,
+    trace_result: TraceChecksResult,
+    custom_reasons: str | None,
+) -> tuple[Any, Any, str]:
+    """Fold state-checks slot, verdict, and reason segments into their wire shapes.
+
+    Mutates ``components.llm_judge_score`` to the composed judge component
+    (matching the runner's ``_grade_trial_async`` combine order). Returns
+    ``(state_checks_slot, verdict, reasons)``.
+    """
+    state_checks_slot = resolve_state_checks_component(
+        hash_score=components.hash_score,
+        jsonpath_score=components.jsonpath_score,
+        db_probe_score=components.db_probe_score,
+        hash_weight=state_checks_config.hash_weight if state_checks_config else None,
+    )
+    verdict = compose_runner_trial_verdict(
+        components.model_dump(),
+        grading_config.model_dump(),
+        judge_gate_failed=judge_gate_failed,
+        trace_gate_failed=trace_result.gate_failed,
+    )
+    components.llm_judge_score = verdict.judge_component
+
+    judge_reasons = judge_result.reasons if judge_result is not None else None
+    reason_segments = [
+        build_grade_reasons(
+            components.model_dump(),
+            None,
+            transcript_result.model_dump() if transcript_result is not None else None,
+            judge_reasons=judge_reasons or None,
+            trace_checks_result=trace_result.model_dump(mode="json"),
+            golden_replay=None,
+            custom_checks_reasons=custom_reasons,
+        )
+    ]
+    if judge_status is JudgeStatus.ERRORED:
+        reason_segments.append(f"JUDGE ERRORED: {judge_reasons}")
+    if state_checks_slot.inert_weight_reason:
+        reason_segments.append(state_checks_slot.inert_weight_reason)
+    if verdict.reason:
+        reason_segments.append(verdict.reason)
+    reasons = " | ".join(segment for segment in reason_segments if segment)
+    return state_checks_slot, verdict, reasons
 
 
 def _components_to_grade_components(

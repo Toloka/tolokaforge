@@ -165,8 +165,8 @@ def test_grade_rpc_translates_grading_failed_error_to_success_false(
 ) -> None:
     """A grade the dispatch refuses (hash-enabled task) surfaces on the wire
     as ``success=False`` with the dispatch's error text — the same shape a
-    :class:`NotImplementedError` used to produce, so an existing seam
-    consumer sees no shape change on refusal."""
+    raised :class:`NotImplementedError` or :class:`GradingFailedError`
+    produces on the wire, so seam consumers see one refusal shape."""
     from tolokaforge.runner.models import RunnerStateChecksConfig
 
     grading = RunnerGradingConfig(

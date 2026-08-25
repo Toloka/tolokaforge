@@ -39,7 +39,7 @@ def test_unwired_judge_fn_symbol_is_gone() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             assert node.name != "_unwired_judge_fn", (
                 f"{_GRADER_MAIN_PATH} still defines _unwired_judge_fn — "
-                "Phase 3 retires the placeholder"
+                "the grader boot must wire GraderCompositeDispatch instead"
             )
         if isinstance(node, ast.Assign):
             for target in node.targets:

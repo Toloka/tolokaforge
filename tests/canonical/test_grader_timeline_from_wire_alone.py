@@ -9,13 +9,13 @@ the latter — its only inputs are the wire fields — so
 with an empty records list.
 
 This suite locks the preflight-probe outcome documented in
-``docs/adr/0039-standalone-grader.md`` § Phase 3: for a wire that carries
-no assistant tool_calls (the shape the Phase 1 parity fixture ships), the
-records-empty timeline is structurally identical to the records-present
-one, so trace-check verdicts are byte-equal on either side. If a future
-change to :func:`build_trial_timeline` breaks that equivalence — a shape
-where the records-empty branch diverges — this suite fails before Stage 3
-callers rely on a divergent timeline.
+``docs/adr/0039-standalone-grader.md``: for a wire that carries no
+assistant tool_calls, the records-empty call reconciles without raising
+and yields the same event count the same fixture reaches through the
+runner-side codepath. If a future change to :func:`build_trial_timeline`
+breaks that equivalence — a shape where the records-empty branch
+diverges — this suite fails before the composite dispatcher relies on a
+divergent timeline.
 """
 
 from __future__ import annotations
@@ -43,14 +43,16 @@ _PARITY_FIXTURE_LLM_MESSAGES = [
 ]
 
 
-def test_grader_timeline_from_wire_alone_matches_records_present_shape() -> None:
-    """The wire-only timeline (``records=[]``) matches the runner-side one.
+def test_grader_timeline_from_wire_alone_reconciles_without_recorded_calls() -> None:
+    """A wire-only build reconciles without raising and yields two events.
 
-    Fixture: the same messages the Phase 1 parity gate ships. Neither the
-    wire transcript nor the runner-side records carry tool calls for this
-    fixture, so the two timelines are trivially equal — the load-bearing
-    assertion is that the records-empty call does NOT raise
-    :class:`TimelineInconsistencyError` and produces the same event count.
+    Fixture: a system + user + assistant transcript with no tool calls —
+    the shape the parity gate ships. ``build_trial_timeline`` with
+    ``records=[]`` must NOT raise :class:`TimelineInconsistencyError` and
+    must produce one event per non-system turn (user + assistant = 2).
+    Anything else would mean the grader-side timeline needs a
+    ``recorded_calls_json`` wire field before the dispatcher can drop
+    ``trial_context.recorded``.
     """
     llm_messages = list(_PARITY_FIXTURE_LLM_MESSAGES)
     _, transcript = split_leading_system_message(llm_messages)
@@ -59,22 +61,18 @@ def test_grader_timeline_from_wire_alone_matches_records_present_shape() -> None
     try:
         wire_only_timeline = build_trial_timeline(decoded, [], None)
     except TimelineInconsistencyError as exc:
-        pytest.fail(
-            f"grader-side timeline (records=[]) failed reconciliation: {exc!r}. "
-            "Stage 1 needs a `recorded_calls_json` wire field before Stage 3 "
-            "dispatcher can drop `trial_context.recorded`."
-        )
+        pytest.fail(f"grader-side timeline (records=[]) failed reconciliation: {exc!r}.")
 
-    records_present_timeline = build_trial_timeline(decoded, [], None)
-    assert [e.kind for e in wire_only_timeline.events] == [
-        e.kind for e in records_present_timeline.events
+    assert [e.kind.value for e in wire_only_timeline.events] == [
+        "user_message",
+        "assistant_message",
     ]
 
 
 def test_grader_timeline_from_wire_alone_empty_transcript_is_safe() -> None:
     """An empty transcript builds a records-empty timeline without raising.
 
-    ``GraderCompositeDispatch`` reaches this branch when the client fowards
+    ``GraderCompositeDispatch`` reaches this branch when the client forwards
     an empty ``llm_messages_json`` (a trial the agent never got to run
     that was still graded). The composite skips llm_judge in that case;
     the timeline call must not raise before the skip fires.
@@ -84,7 +82,7 @@ def test_grader_timeline_from_wire_alone_empty_transcript_is_safe() -> None:
 
 
 def test_grader_timeline_preserves_decoded_events_from_json() -> None:
-    """Round-trip the parity-fixture messages through the JSON wire.
+    """Round-trip the parity fixture messages through the JSON wire.
 
     ``dispatch.llm_messages_json`` arrives as a string; the composite
     calls ``json.loads`` before splitting the leading system message.

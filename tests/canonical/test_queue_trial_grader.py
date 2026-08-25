@@ -292,8 +292,8 @@ class TestFactoryAndRegistration:
         assert grader._workers == [], "close() clears the worker list"
 
     def test_factory_threads_runner_address_to_runner_substrate_address(self) -> None:
-        """``SubstrateService`` shares the runner's listen port per Phase 1;
-        each worker's ``GradeJob`` carries ``ctx.runner_address`` so the
+        """``SubstrateService`` shares the runner's listen port; each
+        worker's ``GradeJob`` carries ``ctx.runner_address`` so the
         grader-side composite dispatcher can dial it per trial."""
         from tolokaforge.core.models.run_config import GraderConfig, QueueGraderConfig
 

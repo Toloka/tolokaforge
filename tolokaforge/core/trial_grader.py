@@ -784,7 +784,7 @@ def grader_rpc_trial_grader_factory(ctx: TrialGraderContext) -> GraderRPCTrialGr
             "either). Pair a network-reachable backend with the grader_rpc "
             "grader, or select a grader that does not need an address."
         )
-    # ``SubstrateService`` shares the runner's listen port per Phase 1 —
+    # ``SubstrateService`` shares the runner's listen port —
     # ``runner_substrate_address`` is the same value ``runner_rpc`` uses to
     # dial the runner's ``GradeTrial`` today. The grader-side dispatcher
     # opens a substrate channel to this address per trial.

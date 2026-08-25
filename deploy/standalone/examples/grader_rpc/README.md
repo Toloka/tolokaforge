@@ -95,7 +95,6 @@ at run time. Today the orchestrator threads the runner's `runner_address`
 onto every grader context and the `grader_rpc` factory falls back to it
 when no dedicated grader address is set — so an orchestrator run against
 this compose without extra plumbing would dial `runner:50051` and miss
-the grader container entirely. Wiring the operator-facing
-`grader_address` (env var or config field) is tracked as a follow-up on
-issue #1263; the `GrpcGraderClient` snippet above is the load-bearing
-end-to-end verification until then.
+the grader container entirely. The operator-facing `grader_address`
+wiring is not yet plumbed through the orchestrator; the `GrpcGraderClient`
+snippet above is the load-bearing end-to-end verification path today.

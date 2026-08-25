@@ -104,7 +104,7 @@ class TestSuccessPath:
 class TestWirePayload:
     """The grader packs every v2 wire field from the ``TrialSpec`` before it
     dials the client. A drift here would silently under-populate the request
-    Stage 3's composite dispatcher reads."""
+    the composite dispatcher reads."""
 
     def test_grade_packs_every_v2_wire_field_from_spec(self) -> None:
         grader, stub = _make_grader()
@@ -167,8 +167,8 @@ class TestFactoryAndRegistration:
         assert isinstance(grader, GraderRPCTrialGrader)
 
     def test_factory_threads_runner_address_to_runner_substrate_address(self) -> None:
-        """``SubstrateService`` shares the runner's listen port per Phase 1,
-        so ``ctx.runner_address`` is the same address the grader-side
+        """``SubstrateService`` shares the runner's listen port, so
+        ``ctx.runner_address`` is the same address the grader-side
         dispatcher dials for state reads."""
         ctx = TrialGraderContext(
             runner_address="runner.grid-01:50051",
