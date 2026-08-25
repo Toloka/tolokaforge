@@ -48,6 +48,22 @@ Tolokaforge needs the grader to work under (1), (2), and (3) *this milestone* �
 
 **Backward compatibility is a first-class deliverable.** `runner_rpc` behaviour is preserved from the operator's view. Every existing `grading.yaml` runs untouched. No task auto-migrates to `grader_rpc`.
 
+## Non-goals and rationale — why the shipped grader is not fully independent
+
+The deployed grader image dials back to the runner over `SubstrateService` gRPC (`LiveRunnerCallbackGradingSubstrate`). A grader that reads only what crosses `GradeRequest` — no callback, no runner dependency at grade time — is what most operators mean by "fully independent grader." **That's `SnapshotGradingSubstrate` (Harbor pattern), and it is deliberately deferred to a future milestone.** The reasoning:
+
+- **Wire size for the target workloads.** Snapshot-on-wire packs the trial's initial + final DB state, filesystem tree, KB corpus, and `checks.py` bytes into one `GradeRequest`. For a state-routed task (a few tables, a handful of tool calls) the payload is small — under 100 KB. For a coding-task workspace (terminal-bench, SWE-bench-adjacent tasks) the filesystem tree alone is ~100 MB after the shipped `_read_agent_visible_filesystem` filter (which excludes symlinks and non-UTF-8 files but does NOT prune `node_modules` / `.venv` / `.git` — verified in `runner/service.py:1691-1716`). A default-behaviour grader that ships every trial's full workspace over one gRPC message would make each grade RPC a multi-hundred-megabyte transfer under a payload limit designed for control-plane messages.
+- **The alternative today is cheap and correct.** `LiveRunnerCallbackGradingSubstrate` does one RPC per read — `db_reader().get_state()` is one round trip, each `filesystem_root().read_file(path)` is one round trip. Small tasks pay for what they use; large tasks materialise the filesystem tree once eagerly (documented in `docs/GRADER_SERVICE.md § Wire cost per grade component`) and stay under the wire budget by construction because the payload never crosses in a single frame.
+- **Independence is available where it's cheap.** Operators who need a wire-independent grader today have two paths that ship in this milestone: (a) `runner_rpc` with `InProcessGradingSubstrate` — the grader and runner are one process, no wire at all, no independence needed; (b) `grader_rpc` with `LiveRunnerCallbackGradingSubstrate` — the grader is a separate container that dials the runner for reads. Neither is "the grader takes a snapshot and walks away," but both are correct and shipped.
+- **The Protocol is shaped for the third path.** When snapshot-on-wire becomes required (offline replay, cross-region grading, a task family whose workspace is small enough to ship whole), `SnapshotGradingSubstrate` registers as one entry-point line under `tolokaforge.grading_substrates`. `grader.proto` extends with the additive fields it needs (v3). The composite dispatch above the substrate does not change. This ADR carries a concrete wiring recipe below.
+
+**Operator-facing knob today.** Choose `grader.name: runner_rpc` for coding-task workloads with large workspaces — the docs (`docs/GRADER_SERVICE.md § Wire cost per grade component`) make this explicit and name the crossover empirically. `grader.name: grader_rpc` is correct and shipping for the deployment shape where the grader lives separately from the runner and the workspace stays small.
+
+**Two other deliberate non-goals of this milestone:**
+
+- **Hash grading on `grader_rpc`.** State-mutation semantics (snapshot → reset → replay golden actions → snapshot → restore) cannot ride a read-only substrate. `grader_rpc` refuses hash-enabled tasks with an actionable branch pointing at `runner_rpc`. Fixing this would require a write surface on the substrate — outside the scope of the read-only contract this milestone ships.
+- **`search_policy` KB passthrough on `grader_rpc`.** The judge's KB-search tool is coupled to `mcp_core` / TypeSense infrastructure. Reconstructing that grader-side would mean pulling `mcp_core` into the grader image. Documented divergence; filed as ADR-0039 follow-up #1274.
+
 ## Consequences
 
 **Positive**
