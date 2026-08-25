@@ -19,7 +19,7 @@ _sym_db = _symbol_database.Default()
 
 
 DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
-    b'\n\x0cgrader.proto\x12\x12tolokaforge.grader"q\n\x0cGradeRequest\x12\x10\n\x08trial_id\x18\x01 \x01(\t\x12\x19\n\x11llm_messages_json\x18\x02 \x01(\t\x12\x1a\n\x12termination_reason\x18\x03 \x01(\t\x12\x18\n\x10task_config_json\x18\x04 \x01(\t"m\n\rGradeResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12(\n\x05grade\x18\x03 \x01(\x0b\x32\x19.tolokaforge.grader.Grade\x12\x12\n\nno_verdict\x18\x04 \x01(\x08"\x14\n\x12HealthCheckRequest"\x98\x01\n\x13HealthCheckResponse\x12\x45\n\x06status\x18\x01 \x01(\x0e\x32\x35.tolokaforge.grader.HealthCheckResponse.ServingStatus":\n\rServingStatus\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02"\x81\x04\n\x05Grade\x12\x13\n\x0b\x62inary_pass\x18\x01 \x01(\x08\x12\r\n\x05score\x18\x02 \x01(\x01\x12\x37\n\ncomponents\x18\x03 \x01(\x0b\x32#.tolokaforge.grader.GradeComponents\x12\x0f\n\x07reasons\x18\x04 \x01(\t\x12\x17\n\x0fstate_diff_json\x18\x05 \x01(\t\x12<\n\rcustom_checks\x18\x06 \x03(\x0b\x32%.tolokaforge.grader.CustomCheckResult\x12>\n\x11\x63riterion_results\x18\x07 \x03(\x0b\x32#.tolokaforge.grader.CriterionResult\x12\x35\n\x0cjudge_status\x18\x08 \x01(\x0e\x32\x1f.tolokaforge.grader.JudgeStatus\x12\x35\n\x0cjudge_report\x18\t \x01(\x0b\x32\x1f.tolokaforge.grader.JudgeReport\x12?\n\x0ctrace_checks\x18\n \x03(\x0b\x32).tolokaforge.grader.TraceConstraintResult\x12\x44\n\x14trace_checks_summary\x18\x0b \x01(\x0b\x32&.tolokaforge.grader.TraceChecksSummary"\x97\x01\n\x0fGradeComponents\x12\x14\n\x0cstate_checks\x18\x01 \x01(\x01\x12\x18\n\x10transcript_rules\x18\x02 \x01(\x01\x12\x11\n\tllm_judge\x18\x03 \x01(\x01\x12\x15\n\rcustom_checks\x18\x04 \x01(\x01\x12\x19\n\x0ctrace_checks\x18\x05 \x01(\x01H\x00\x88\x01\x01\x42\x0f\n\r_trace_checks"m\n\x11\x43ustomCheckResult\x12\x12\n\ncheck_name\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\r\n\x05score\x18\x03 \x01(\x01\x12\x0f\n\x07message\x18\x04 \x01(\t\x12\x14\n\x0c\x64\x65tails_json\x18\x05 \x01(\t"P\n\x0f\x43riterionResult\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0b\n\x03met\x18\x02 \x01(\x08\x12\r\n\x05score\x18\x03 \x01(\x01\x12\x15\n\rjustification\x18\x04 \x01(\t"\xbc\x03\n\x0bJudgeReport\x12\r\n\x05\x63\x61lls\x18\x01 \x01(\x05\x12\x15\n\rprompt_tokens\x18\x02 \x01(\x05\x12\x19\n\x11\x63ompletion_tokens\x18\x03 \x01(\x05\x12\x18\n\x10reasoning_tokens\x18\x04 \x01(\x05\x12\x10\n\x08\x63ost_usd\x18\x05 \x01(\x01\x12\x12\n\ntool_calls\x18\x06 \x01(\x05\x12\x17\n\x0ftranscript_json\x18\x07 \x01(\t\x12\x1e\n\x16\x63onsistency_rejections\x18\x08 \x01(\x05\x12!\n\x19knowledge_search_disabled\x18\t \x01(\x08\x12\x18\n\x10kb_tools_offered\x18\n \x03(\t\x12\x19\n\x11kb_tools_withheld\x18\x0b \x03(\t\x12\x17\n\x0fstate_diff_text\x18\x0c \x01(\t\x12\x1a\n\x12read_tools_offered\x18\r \x03(\t\x12\x1c\n\x14\x63ustom_system_prompt\x18\x0e \x01(\x08\x12(\n\x1binclude_agent_system_prompt\x18\x0f \x01(\x08H\x00\x88\x01\x01\x42\x1e\n\x1c_include_agent_system_prompt"\xa2\x01\n\x15TraceConstraintResult\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04kind\x18\x02 \x01(\t\x12\x0e\n\x06passed\x18\x03 \x01(\x08\x12\x0e\n\x06weight\x18\x04 \x01(\x01\x12\x0f\n\x07message\x18\x05 \x01(\t\x12\x19\n\x11matched_positions\x18\x06 \x03(\x05\x12\x10\n\x08severity\x18\x07 \x01(\t\x12\x11\n\tundecided\x18\x08 \x01(\x08"A\n\x0fTracePathResult\x12\n\n\x02id\x18\x01 \x01(\t\x12\r\n\x05score\x18\x02 \x01(\x01\x12\x13\n\x0bgate_failed\x18\x03 \x01(\x08"\x8c\x01\n\x12TraceChecksSummary\x12\x14\n\x0cwinning_path\x18\x01 \x01(\t\x12\x13\n\x0bgate_failed\x18\x02 \x01(\x08\x12\x17\n\x0f\x66\x61iled_gate_ids\x18\x03 \x03(\t\x12\x32\n\x05paths\x18\x04 \x03(\x0b\x32#.tolokaforge.grader.TracePathResult*a\n\x0bJudgeStatus\x12\x1c\n\x18JUDGE_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n\x16JUDGE_STATUS_COMPLETED\x10\x01\x12\x18\n\x14JUDGE_STATUS_ERRORED\x10\x02\x32\xbd\x01\n\rGraderService\x12L\n\x05Grade\x12 .tolokaforge.grader.GradeRequest\x1a!.tolokaforge.grader.GradeResponse\x12^\n\x0bHealthCheck\x12&.tolokaforge.grader.HealthCheckRequest\x1a\'.tolokaforge.grader.HealthCheckResponseB\x14Z\x12tolokaforge/graderb\x06proto3'
+    b'\n\x0cgrader.proto\x12\x12tolokaforge.grader"\xf0\x01\n\x0cGradeRequest\x12\x10\n\x08trial_id\x18\x01 \x01(\t\x12\x19\n\x11llm_messages_json\x18\x02 \x01(\t\x12\x1a\n\x12termination_reason\x18\x03 \x01(\t\x12\x18\n\x10task_config_json\x18\x04 \x01(\t\x12\x1f\n\x17judge_model_config_json\x18\x05 \x01(\t\x12\x1d\n\x15task_description_json\x18\x06 \x01(\t\x12 \n\x18runner_substrate_address\x18\x07 \x01(\t\x12\x1b\n\x13\x61gent_system_prompt\x18\x08 \x01(\t"m\n\rGradeResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12(\n\x05grade\x18\x03 \x01(\x0b\x32\x19.tolokaforge.grader.Grade\x12\x12\n\nno_verdict\x18\x04 \x01(\x08"\x14\n\x12HealthCheckRequest"\x98\x01\n\x13HealthCheckResponse\x12\x45\n\x06status\x18\x01 \x01(\x0e\x32\x35.tolokaforge.grader.HealthCheckResponse.ServingStatus":\n\rServingStatus\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02"\x81\x04\n\x05Grade\x12\x13\n\x0b\x62inary_pass\x18\x01 \x01(\x08\x12\r\n\x05score\x18\x02 \x01(\x01\x12\x37\n\ncomponents\x18\x03 \x01(\x0b\x32#.tolokaforge.grader.GradeComponents\x12\x0f\n\x07reasons\x18\x04 \x01(\t\x12\x17\n\x0fstate_diff_json\x18\x05 \x01(\t\x12<\n\rcustom_checks\x18\x06 \x03(\x0b\x32%.tolokaforge.grader.CustomCheckResult\x12>\n\x11\x63riterion_results\x18\x07 \x03(\x0b\x32#.tolokaforge.grader.CriterionResult\x12\x35\n\x0cjudge_status\x18\x08 \x01(\x0e\x32\x1f.tolokaforge.grader.JudgeStatus\x12\x35\n\x0cjudge_report\x18\t \x01(\x0b\x32\x1f.tolokaforge.grader.JudgeReport\x12?\n\x0ctrace_checks\x18\n \x03(\x0b\x32).tolokaforge.grader.TraceConstraintResult\x12\x44\n\x14trace_checks_summary\x18\x0b \x01(\x0b\x32&.tolokaforge.grader.TraceChecksSummary"\x97\x01\n\x0fGradeComponents\x12\x14\n\x0cstate_checks\x18\x01 \x01(\x01\x12\x18\n\x10transcript_rules\x18\x02 \x01(\x01\x12\x11\n\tllm_judge\x18\x03 \x01(\x01\x12\x15\n\rcustom_checks\x18\x04 \x01(\x01\x12\x19\n\x0ctrace_checks\x18\x05 \x01(\x01H\x00\x88\x01\x01\x42\x0f\n\r_trace_checks"m\n\x11\x43ustomCheckResult\x12\x12\n\ncheck_name\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\r\n\x05score\x18\x03 \x01(\x01\x12\x0f\n\x07message\x18\x04 \x01(\t\x12\x14\n\x0c\x64\x65tails_json\x18\x05 \x01(\t"P\n\x0f\x43riterionResult\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0b\n\x03met\x18\x02 \x01(\x08\x12\r\n\x05score\x18\x03 \x01(\x01\x12\x15\n\rjustification\x18\x04 \x01(\t"\xbc\x03\n\x0bJudgeReport\x12\r\n\x05\x63\x61lls\x18\x01 \x01(\x05\x12\x15\n\rprompt_tokens\x18\x02 \x01(\x05\x12\x19\n\x11\x63ompletion_tokens\x18\x03 \x01(\x05\x12\x18\n\x10reasoning_tokens\x18\x04 \x01(\x05\x12\x10\n\x08\x63ost_usd\x18\x05 \x01(\x01\x12\x12\n\ntool_calls\x18\x06 \x01(\x05\x12\x17\n\x0ftranscript_json\x18\x07 \x01(\t\x12\x1e\n\x16\x63onsistency_rejections\x18\x08 \x01(\x05\x12!\n\x19knowledge_search_disabled\x18\t \x01(\x08\x12\x18\n\x10kb_tools_offered\x18\n \x03(\t\x12\x19\n\x11kb_tools_withheld\x18\x0b \x03(\t\x12\x17\n\x0fstate_diff_text\x18\x0c \x01(\t\x12\x1a\n\x12read_tools_offered\x18\r \x03(\t\x12\x1c\n\x14\x63ustom_system_prompt\x18\x0e \x01(\x08\x12(\n\x1binclude_agent_system_prompt\x18\x0f \x01(\x08H\x00\x88\x01\x01\x42\x1e\n\x1c_include_agent_system_prompt"\xa2\x01\n\x15TraceConstraintResult\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04kind\x18\x02 \x01(\t\x12\x0e\n\x06passed\x18\x03 \x01(\x08\x12\x0e\n\x06weight\x18\x04 \x01(\x01\x12\x0f\n\x07message\x18\x05 \x01(\t\x12\x19\n\x11matched_positions\x18\x06 \x03(\x05\x12\x10\n\x08severity\x18\x07 \x01(\t\x12\x11\n\tundecided\x18\x08 \x01(\x08"A\n\x0fTracePathResult\x12\n\n\x02id\x18\x01 \x01(\t\x12\r\n\x05score\x18\x02 \x01(\x01\x12\x13\n\x0bgate_failed\x18\x03 \x01(\x08"\x8c\x01\n\x12TraceChecksSummary\x12\x14\n\x0cwinning_path\x18\x01 \x01(\t\x12\x13\n\x0bgate_failed\x18\x02 \x01(\x08\x12\x17\n\x0f\x66\x61iled_gate_ids\x18\x03 \x03(\t\x12\x32\n\x05paths\x18\x04 \x03(\x0b\x32#.tolokaforge.grader.TracePathResult*a\n\x0bJudgeStatus\x12\x1c\n\x18JUDGE_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n\x16JUDGE_STATUS_COMPLETED\x10\x01\x12\x18\n\x14JUDGE_STATUS_ERRORED\x10\x02\x32\xbd\x01\n\rGraderService\x12L\n\x05Grade\x12 .tolokaforge.grader.GradeRequest\x1a!.tolokaforge.grader.GradeResponse\x12^\n\x0bHealthCheck\x12&.tolokaforge.grader.HealthCheckRequest\x1a\'.tolokaforge.grader.HealthCheckResponseB\x14Z\x12tolokaforge/graderb\x06proto3'
 )
 
 _globals = globals()
@@ -28,34 +28,34 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "grader_pb2", _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
     _globals["DESCRIPTOR"]._loaded_options = None
     _globals["DESCRIPTOR"]._serialized_options = b"Z\022tolokaforge/grader"
-    _globals["_JUDGESTATUS"]._serialized_start = 2124
-    _globals["_JUDGESTATUS"]._serialized_end = 2221
-    _globals["_GRADEREQUEST"]._serialized_start = 36
-    _globals["_GRADEREQUEST"]._serialized_end = 149
-    _globals["_GRADERESPONSE"]._serialized_start = 151
-    _globals["_GRADERESPONSE"]._serialized_end = 260
-    _globals["_HEALTHCHECKREQUEST"]._serialized_start = 262
-    _globals["_HEALTHCHECKREQUEST"]._serialized_end = 282
-    _globals["_HEALTHCHECKRESPONSE"]._serialized_start = 285
-    _globals["_HEALTHCHECKRESPONSE"]._serialized_end = 437
-    _globals["_HEALTHCHECKRESPONSE_SERVINGSTATUS"]._serialized_start = 379
-    _globals["_HEALTHCHECKRESPONSE_SERVINGSTATUS"]._serialized_end = 437
-    _globals["_GRADE"]._serialized_start = 440
-    _globals["_GRADE"]._serialized_end = 953
-    _globals["_GRADECOMPONENTS"]._serialized_start = 956
-    _globals["_GRADECOMPONENTS"]._serialized_end = 1107
-    _globals["_CUSTOMCHECKRESULT"]._serialized_start = 1109
-    _globals["_CUSTOMCHECKRESULT"]._serialized_end = 1218
-    _globals["_CRITERIONRESULT"]._serialized_start = 1220
-    _globals["_CRITERIONRESULT"]._serialized_end = 1300
-    _globals["_JUDGEREPORT"]._serialized_start = 1303
-    _globals["_JUDGEREPORT"]._serialized_end = 1747
-    _globals["_TRACECONSTRAINTRESULT"]._serialized_start = 1750
-    _globals["_TRACECONSTRAINTRESULT"]._serialized_end = 1912
-    _globals["_TRACEPATHRESULT"]._serialized_start = 1914
-    _globals["_TRACEPATHRESULT"]._serialized_end = 1979
-    _globals["_TRACECHECKSSUMMARY"]._serialized_start = 1982
-    _globals["_TRACECHECKSSUMMARY"]._serialized_end = 2122
-    _globals["_GRADERSERVICE"]._serialized_start = 2224
-    _globals["_GRADERSERVICE"]._serialized_end = 2413
+    _globals["_JUDGESTATUS"]._serialized_start = 2252
+    _globals["_JUDGESTATUS"]._serialized_end = 2349
+    _globals["_GRADEREQUEST"]._serialized_start = 37
+    _globals["_GRADEREQUEST"]._serialized_end = 277
+    _globals["_GRADERESPONSE"]._serialized_start = 279
+    _globals["_GRADERESPONSE"]._serialized_end = 388
+    _globals["_HEALTHCHECKREQUEST"]._serialized_start = 390
+    _globals["_HEALTHCHECKREQUEST"]._serialized_end = 410
+    _globals["_HEALTHCHECKRESPONSE"]._serialized_start = 413
+    _globals["_HEALTHCHECKRESPONSE"]._serialized_end = 565
+    _globals["_HEALTHCHECKRESPONSE_SERVINGSTATUS"]._serialized_start = 507
+    _globals["_HEALTHCHECKRESPONSE_SERVINGSTATUS"]._serialized_end = 565
+    _globals["_GRADE"]._serialized_start = 568
+    _globals["_GRADE"]._serialized_end = 1081
+    _globals["_GRADECOMPONENTS"]._serialized_start = 1084
+    _globals["_GRADECOMPONENTS"]._serialized_end = 1235
+    _globals["_CUSTOMCHECKRESULT"]._serialized_start = 1237
+    _globals["_CUSTOMCHECKRESULT"]._serialized_end = 1346
+    _globals["_CRITERIONRESULT"]._serialized_start = 1348
+    _globals["_CRITERIONRESULT"]._serialized_end = 1428
+    _globals["_JUDGEREPORT"]._serialized_start = 1431
+    _globals["_JUDGEREPORT"]._serialized_end = 1875
+    _globals["_TRACECONSTRAINTRESULT"]._serialized_start = 1878
+    _globals["_TRACECONSTRAINTRESULT"]._serialized_end = 2040
+    _globals["_TRACEPATHRESULT"]._serialized_start = 2042
+    _globals["_TRACEPATHRESULT"]._serialized_end = 2107
+    _globals["_TRACECHECKSSUMMARY"]._serialized_start = 2110
+    _globals["_TRACECHECKSSUMMARY"]._serialized_end = 2250
+    _globals["_GRADERSERVICE"]._serialized_start = 2352
+    _globals["_GRADERSERVICE"]._serialized_end = 2541
 # @@protoc_insertion_point(module_scope)

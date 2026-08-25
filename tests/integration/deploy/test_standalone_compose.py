@@ -1,14 +1,15 @@
 """Live bring-up of the standalone compose recipe, two image-source modes.
 
 ``deploy/standalone/docker-compose.yaml`` is the shipped reference recipe. This
-suite stands the whole four-service stack up with ``docker compose up`` — no
+suite stands the whole five-service stack up with ``docker compose up`` — no
 mocked compose — and asserts the behaviour a cold user depends on: every service
-reaches Docker ``healthy`` and the runner answers a real ``HealthCheck`` RPC with
-a serving status wired through to db-service.
+reaches Docker ``healthy``, the runner answers a real ``HealthCheck`` RPC with a
+serving status wired through to db-service, and the grader answers a real
+``Grade`` RPC through the composite dispatcher.
 
 Two modes drive the same recipe:
 
-- **local** (every PR, keyless): builds the four images from the current tree and
+- **local** (every PR, keyless): builds the five images from the current tree and
   tags each ``tolokasoft1/tolokaforge-<component>:local``, then brings the stack
   up with ``TOLOKAFORGE_IMAGE_TAG=local``. This is the always-runs behaviour lock.
 - **published** (nightly/release): pulls ``tolokasoft1/tolokaforge-*:latest`` and
@@ -21,12 +22,12 @@ ADR-0024 ``run-trial`` exec wire (``requires_api``): a bundled db-service trial
 and a rag_search trial (``search_kb`` → rag-service), each proving its peer
 functionally participates in a graded ``TrialResult`` through the stack.
 
-``docker compose up --wait`` blocks on all four healthchecks, and the wait each
-mode needs is different. A tree-built rag-service carries ``all-MiniLM-L6-v2``
-inside the image and stands up offline in seconds, so the local lane waits 120s
-— ample over a four-service bring-up. The published lane pulls
-``tolokasoft1/…:latest``, which predates that bake and still downloads the model
-on first start, so its wait stays download-sized at 300s.
+``docker compose up --wait`` blocks on every service's HEALTHCHECK, and the wait
+each mode needs is different. A tree-built rag-service carries
+``all-MiniLM-L6-v2`` inside the image and stands up offline in seconds, so the
+local lane waits 120s — ample over a five-service bring-up. The published lane
+pulls ``tolokasoft1/…:latest``, which predates that bake and still downloads the
+model on first start, so its wait stays download-sized at 300s.
 """
 
 from __future__ import annotations
@@ -68,6 +69,12 @@ _IMAGE_SOURCE_MODES: tuple[str, ...] = ("local", "published")
 _COMPOSE_WAIT_TIMEOUT_S: dict[str, int] = {"local": 120, "published": 300}
 
 _RUNNER_ADDR = "localhost:50051"
+_GRADER_ADDR = "localhost:50052"
+
+# Substrate address the grader dials per Grade — service-name DNS on the
+# compose network, since the grader-side dispatcher opens the substrate
+# channel from inside its own container, not from the host.
+_RUNNER_SUBSTRATE_INTERNAL_ADDR = "runner:50051"
 
 # A bundled example that exercises db-service (db_query/db_update) plus the
 # filesystem tools — a real trial genuinely routed through the composed stack.
@@ -149,6 +156,84 @@ def test_stack_runner_health_check_serving(composed_stack: StackHandle) -> None:
         client.close()
     assert health["status"] == "healthy", f"runner HealthCheck not serving: {health}"
     assert health["db_service_connected"], f"runner reports db-service disconnected: {health}"
+
+
+def test_stack_grader_composite_dispatch_grades_transcript_rules(
+    composed_stack: StackHandle,
+) -> None:
+    """The composed grader answers a real ``Grade`` RPC through composite dispatch.
+
+    Locks the end-to-end wire the standalone image ships: the caller populates
+    every v2 :class:`GradeRequest` field, ``GraderServiceImpl`` decodes it,
+    ``GraderCompositeDispatch`` drives ``composite.grade_transcript_rules``
+    over the trial's transcript, and the response carries a computed
+    :class:`Grade` — proof the "unwired" default is retired end-to-end.
+
+    Transcript-rules-only fixture: no LLM key required, no substrate reads
+    reached (``state_checks`` / ``llm_judge`` / ``custom_checks`` all
+    disabled), so the assertion holds against the keyless stack. The wire
+    still populates ``runner_substrate_address`` because the composite
+    validates it required at request-decode.
+    """
+    from tolokaforge.grader.client import GrpcGraderClient
+    from tolokaforge.runner.models import (
+        RunnerGradingConfig,
+        RunnerInitialStateConfig,
+        TaskDescription,
+        TranscriptRulesConfig,
+    )
+
+    grading = RunnerGradingConfig(
+        weights={"transcript_rules": 1.0},
+        transcript_rules=TranscriptRulesConfig(must_contain=["done"]),
+        pass_threshold=0.5,
+    )
+    task = TaskDescription(
+        task_id="grader_smoke",
+        name="grader smoke",
+        category="smoke",
+        description="grader composite dispatch smoke",
+        adapter_type="native",
+        system_prompt="you are a helper",
+        initial_state=RunnerInitialStateConfig(),
+        grading=grading,
+    )
+    transcript = json.dumps(
+        [
+            {"role": "system", "content": "you are a helper"},
+            {"role": "user", "content": "please finish"},
+            {"role": "assistant", "content": "done"},
+        ]
+    )
+
+    with GrpcGraderClient(grader_address=_GRADER_ADDR) as client:
+        result = client.grade(
+            trial_id="grader_smoke:0",
+            llm_messages_json=transcript,
+            termination_reason="agent_done",
+            task_config_json=grading.model_dump_json(),
+            task_description_json=task.model_dump_json(),
+            runner_substrate_address=_RUNNER_SUBSTRATE_INTERNAL_ADDR,
+            agent_system_prompt="you are a helper",
+        )
+
+    assert result["success"] is True, (
+        f"grader refused the Grade RPC — composite dispatch did not "
+        f"produce a verdict: {result['error']!r}"
+    )
+    assert result["no_verdict"] is False, (
+        "grader reported no_verdict on a well-formed transcript-rules trial — "
+        "the composite dispatch bailed instead of grading"
+    )
+    grade = result["grade"]
+    assert grade is not None, "grader returned success=True but no Grade payload"
+    assert grade["components"]["transcript_rules"] == pytest.approx(1.0), (
+        f"transcript_rules component did not score the ``must_contain`` hit: "
+        f"{grade['components']}"
+    )
+    assert (
+        grade["binary_pass"] is True
+    ), f"grader failed a trial whose only weighted component graded 1.0: {grade['reasons']}"
 
 
 def _agent_posted_to_mock_web(trajectory: Trajectory) -> bool:

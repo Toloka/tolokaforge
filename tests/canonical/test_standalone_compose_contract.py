@@ -1,17 +1,19 @@
-"""Locks the wiring contract of the standalone four-service compose recipe.
+"""Locks the wiring contract of the standalone five-service compose recipe.
 
 ``deploy/standalone/docker-compose.yaml`` is a published reference recipe (a
-compatibility surface): a cold user runs the four ``tolokasoft1/tolokaforge-*``
+compatibility surface): a cold user runs the five ``tolokasoft1/tolokaforge-*``
 images with ``docker compose up`` and expects the same wiring the in-tree stack
 uses. This guard parses the file and asserts that wiring — image references, the
 tag variable, the overridable ``platform`` pins (defaulting to ``linux/amd64``),
-service DNS names, the runner's env, the ``json-db`` alias, the
-``service_healthy`` startup ordering — so any unintended field change trips CI.
-It also asserts the absence cases that carry contract meaning: no ``MOCK_WEB_URL``
-(the runner reads no such var), no host port beyond the runner's ``50051``, and
-no re-declared ``healthcheck`` (each image self-reports its own). A parsed
-structure golden, not a byte golden: it locks the contract, not incidental YAML
-or comment formatting.
+service DNS names, the runner's env (including ``RUNNER_EXPOSE_SUBSTRATE=true``
+that opens the substrate surface the grader dials), the ``json-db`` alias, and
+the ``service_healthy`` startup ordering — so any unintended field change trips
+CI. It also asserts the absence cases that carry contract meaning: no
+``MOCK_WEB_URL`` (the runner reads no such var), no host port beyond the
+runner's ``50051`` and the grader's ``50052``, and no re-declared
+``healthcheck`` (each image self-reports its own). A parsed structure golden,
+not a byte golden: it locks the contract, not incidental YAML or comment
+formatting.
 """
 
 from __future__ import annotations
@@ -49,7 +51,7 @@ def test_service_names_and_image_refs() -> None:
     compose = _load_compose()
     services = compose["services"]
     assert set(services) == _EXPECTED_SERVICES, (
-        "the standalone stack is exactly the four first-party services; the "
+        "the standalone stack is exactly the five first-party services; the "
         "compose service names double as the DNS names the runner env and task "
         "code resolve"
     )
@@ -85,6 +87,25 @@ def test_runner_env_and_port() -> None:
     assert "MOCK_WEB_URL" not in env, (
         "the runner reads no MOCK_WEB_URL — mock-web is reached by service-name "
         "DNS, so injecting the var would be dead wiring"
+    )
+
+
+def test_runner_env_expose_substrate_is_true() -> None:
+    """The runner opens its read-only SubstrateService on the shared gRPC port.
+
+    Registered on the same listen port as ``RunnerService`` per ADR-0039,
+    gated on ``RUNNER_EXPOSE_SUBSTRATE=true`` (a truthy string, matching the
+    env parse at ``tolokaforge/runner/__main__.py``). The standalone grader
+    dials this surface per trial via ``LiveRunnerCallbackGradingSubstrate`` for
+    every substrate read — a runner started without the flag returns
+    ``UNIMPLEMENTED`` on every ``SubstrateService/*`` call.
+    """
+    runner_env = _load_compose()["services"]["runner"]["environment"]
+    assert runner_env.get("RUNNER_EXPOSE_SUBSTRATE") == "true", (
+        'runner env must declare RUNNER_EXPOSE_SUBSTRATE: "true" so its gRPC '
+        "server registers SubstrateServicer alongside RunnerService — the "
+        "surface the standalone grader dials for substrate reads per trial "
+        f"(found: {runner_env.get('RUNNER_EXPOSE_SUBSTRATE')!r})"
     )
 
 
@@ -134,6 +155,29 @@ def test_startup_ordering_on_service_healthy() -> None:
     assert "depends_on" not in services["rag-service"], (
         "rag-service has no dependents and no dependencies; nothing in the recipe "
         "is gated on its startup"
+    )
+
+
+def test_grader_depends_on_runner_service_healthy() -> None:
+    """Grader startup waits for the runner's HEALTHCHECK before it begins.
+
+    ``GraderCompositeDispatch`` builds a fresh
+    ``LiveRunnerCallbackGradingSubstrate`` per ``Grade`` request against the
+    runner's SubstrateService. Bringing the grader up first would let it
+    accept requests before the substrate answers, so the compose file gates
+    the grader on ``runner`` reporting ``service_healthy`` — the runner's own
+    gRPC channel-ready HEALTHCHECK, which also fronts SubstrateService.
+    """
+    grader_depends = _load_compose()["services"]["grader"].get("depends_on", {})
+    runner_dep = grader_depends.get("runner")
+    assert runner_dep is not None, (
+        "grader must declare depends_on: runner so it starts after the runner's "
+        f"SubstrateService is answering (found depends_on: {sorted(grader_depends)})"
+    )
+    assert runner_dep["condition"] == "service_healthy", (
+        "grader must wait for the runner's HEALTHCHECK (service_healthy), not "
+        f"service_started — the substrate must be answering, not merely booting "
+        f"(found: {runner_dep['condition']!r})"
     )
 
 

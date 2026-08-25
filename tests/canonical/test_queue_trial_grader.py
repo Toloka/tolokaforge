@@ -38,10 +38,17 @@ pytestmark = pytest.mark.canonical
 
 
 def _make_grader(
-    broker: GradeBroker | None = None, timeout_s: float = 5.0
+    broker: GradeBroker | None = None,
+    timeout_s: float = 5.0,
+    runner_substrate_address: str = "runner:50051",
 ) -> tuple[QueueTrialGrader, GradeBroker]:
     broker = broker if broker is not None else InMemoryGradeBroker()
-    grader = QueueTrialGrader(broker=broker, logger=MagicMock(), timeout_s=timeout_s)
+    grader = QueueTrialGrader(
+        broker=broker,
+        logger=MagicMock(),
+        runner_substrate_address=runner_substrate_address,
+        timeout_s=timeout_s,
+    )
     return grader, broker
 
 
@@ -115,6 +122,53 @@ class TestBasicDispatch:
             worker.join(timeout=2)
         assert isinstance(result, Grade)
         assert result.score == pytest.approx(0.8)
+
+
+class TestWirePayloadOnJob:
+    """The producer packs every v2 wire field into the ``GradeJob`` before
+    publishing. A drift in the packing step would silently under-populate
+    the payload each worker forwards to :meth:`GrpcGraderClient.grade`."""
+
+    def test_grade_packs_every_v2_wire_field_from_spec(self) -> None:
+        from tolokaforge.grader.queue import BrokerClosed, GradeJob
+
+        broker = InMemoryGradeBroker()
+        grader, _ = _make_grader(broker=broker)
+        spec = make_trial_spec()
+
+        captured: list[GradeJob] = []
+        completion = threading.Event()
+
+        def _observer() -> None:
+            try:
+                job = broker.next_job(timeout=2)
+            except BrokerClosed:
+                return
+            assert job is not None
+            captured.append(job)
+            broker.publish_result(GradeResult(job_id=job.job_id, grade=_canned_verdict(), error=""))
+            completion.set()
+
+        worker = threading.Thread(target=_observer, daemon=True)
+        worker.start()
+        try:
+            grader.grade(
+                spec,
+                make_trajectory(status=TrialStatus.COMPLETED),
+                "You are the agent.",
+            )
+        finally:
+            completion.wait(timeout=2)
+            worker.join(timeout=2)
+
+        assert len(captured) == 1
+        job = captured[0]
+        assert job.trial_id == spec.trial_id
+        assert job.task_config_json == spec.task.grading.model_dump_json()
+        assert job.judge_model_config_json == ""
+        assert job.task_description_json == spec.task.model_dump_json()
+        assert job.runner_substrate_address == "runner:50051"
+        assert job.agent_system_prompt == "You are the agent."
 
 
 class TestAutoFailBranches:
@@ -236,6 +290,24 @@ class TestFactoryAndRegistration:
         for worker in workers:
             assert not worker.is_alive(), "close() must drain the worker pool"
         assert grader._workers == [], "close() clears the worker list"
+
+    def test_factory_threads_runner_address_to_runner_substrate_address(self) -> None:
+        """``SubstrateService`` shares the runner's listen port; each
+        worker's ``GradeJob`` carries ``ctx.runner_address`` so the
+        grader-side composite dispatcher can dial it per trial."""
+        from tolokaforge.core.models.run_config import GraderConfig, QueueGraderConfig
+
+        ctx = TrialGraderContext(
+            runner_address="runner.grid-01:50051",
+            grader_address="grader.grid-02:50052",
+            logger=MagicMock(),
+            grader_config=GraderConfig(queue=QueueGraderConfig(workers=1)),
+        )
+        grader = queue_trial_grader_factory(ctx)
+        try:
+            assert grader.runner_substrate_address == "runner.grid-01:50051"
+        finally:
+            grader.close()
 
     def test_factory_rejects_missing_address(self) -> None:
         """The queue transport needs a downstream ``grader_rpc`` target;
