@@ -174,10 +174,46 @@ model-name evidence rides on field 5 so the grader constructs its
 `LLMClient` via the [`judge_model_providers` seam](#sub-component-plug-in-seams)
 without inferring provider from a model name (AGENTS.md Core Rule 10).
 
-The client-side snapshot builder that populates fields 4-8 from a
-completed trial's `TrialSpec` ships alongside the composite dispatcher —
-`GraderRPCTrialGrader` and `QueueTrialGrader` both call it before
-publishing.
+### Client-side snapshot
+
+`GraderRPCTrialGrader` and `QueueTrialGrader` both call
+`tolokaforge.grader.wire_snapshot.build_grade_request_fields` to project
+a completed trial's `TrialSpec` into the wire fields the grader consumes
+above the trajectory-shaped trio. The builder returns a frozen
+`GradeRequestFields` dataclass; the caller unpacks each field into
+`GrpcGraderClient.grade` (`grader_rpc` transport) or into `GradeJob`
+(`queue` transport). Field derivation:
+
+| Wire field                | Source                                          |
+| ------------------------- | ----------------------------------------------- |
+| `task_config_json`        | `spec.task.grading.model_dump_json()`           |
+| `judge_model_config_json` | `spec.judge_model_config.model_dump_json()`, empty when `spec.judge_model_config is None` |
+| `task_description_json`   | `spec.task.model_dump_json()` — one field carries `initial_state`, `state_checks.id_fields`, `initial_state.unstable_fields`, and `tool_artifacts` |
+| `runner_substrate_address`| Passthrough from the grader's stored context (`ctx.runner_address`) |
+| `agent_system_prompt`     | Passthrough from the `TrialGrader.grade` caller |
+
+The builder is a pure projection: it reads only in-memory Pydantic
+models, opens no gRPC channel, and never touches the filesystem. Both
+graders take `runner_substrate_address` on `__init__` (threaded by
+`grader_rpc_trial_grader_factory` and `queue_trial_grader_factory` from
+`ctx.runner_address`, since `SubstrateService` shares the runner's listen
+port per Phase 1). Empty here fails loud at first `.grade()` with a
+`GradingFailedError` naming `runner_substrate_address` — a silent empty
+string would land at the grader as a 30 s gRPC connect hang.
+
+### Hash grading refuses on `grader_rpc`
+
+Hash grading depends on the runner's substrate reset / replay path; the
+grader-side `LiveRunnerCallbackGradingSubstrate` is read-only and cannot
+back it. Both grader-side transports refuse a task whose
+`grading.state_checks.hash_enabled` is true with a `GradingFailedError`
+naming the operator's actionable branch:
+
+> `grader_rpc cannot execute hash-based grading — the substrate is read-only. Configure grader: runner_rpc for this task, or disable hash_enabled.`
+
+The refusal is client-side (fires before any gRPC round-trip) so the
+misconfiguration surfaces without a network hop, and the trial books as
+ungradeable rather than as an agent failure.
 
 ## Registering a downstream grader
 
