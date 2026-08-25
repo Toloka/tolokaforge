@@ -39,6 +39,10 @@ is independently shippable and builds on the previous one.
   plugin-first architecture (runtime backend, conductor, grader,
   adapter, tool, artifact writer, state store, secret provider,
   observability sink) gets a "how to plug in" guide.
+- **Coding-harness surface.** A cross-cutting arc — a trial can hand its
+  LLM loop over to a vendor coding-agent CLI installed inside the task
+  container. Shipped surface + design record are in the "Coding-harness
+  arc" release row below and in [docs/CODING_HARNESSES.md](CODING_HARNESSES.md).
 
 **Later (directional, not committed).** The direction is set but scope
 may shift as infrastructure needs evolve: an at-scale runtime backend
@@ -67,6 +71,7 @@ it, and additional runtime backends (microVM, Modal, EC2).
 | tbd       | Runner as an independently-usable component — expose existing Protocols (`RuntimeBackend`, `TrialGrader`, `Conductor`) as entry-point extension groups; slim the runner Docker image so it installs a runner-only subset; ship a `tolokaforge run-trial` CLI mode with a stable subprocess contract so external harnesses can drive the runtime as an agent. Same package, same wheel; no multi-package split.                                          | Planned    | [0022](adr/0022-runtime-independence.md) |
 | tbd       | Open agent loop — streaming event emission on `Conductor`; opt-in `ConductorControl` Protocol for pause/resume + external-message injection. Composes on top of the runner-as-independent-component work above.                                                                                                                                                                                                                                     | Planned    | tbd (ADR-0017 will land first) |
 | tbd       | Extension-point documentation — a "how to plug in" guide per entry point in the plugin-first architecture.                                                                                                                                                                                                                                                                                                                                          | Planned    | —                          |
+| Coding-harness arc | The harness registry + installer + middleware proxy + gateway-route data ships in a top-level workspace member ([`tolokaforge_coding_harnesses/`](../tolokaforge_coding_harnesses/)); six vendor CLIs are shipped; the `terminal_bench` adapter consumes the registry via `agent_harness`. See [docs/CODING_HARNESSES.md](CODING_HARNESSES.md). | Shipped | [0033](adr/0033-external-harness-registry.md), [0034](adr/0034-external-harness-plugin-discovery.md), [0036](adr/0036-tolokaforge-coding-harnesses-split.md), [0037](adr/0037-runtime-gateway-as-harness-data.md) |
 
 Versions past the current release are **targets, not commitments** —
 scope may shift as each release lands. The ordering is fixed.

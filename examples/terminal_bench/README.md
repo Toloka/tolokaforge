@@ -36,6 +36,28 @@ scripts/with_env.sh uv run tolokaforge run --config examples/terminal_bench/run_
 scripts/with_env.sh uv run tolokaforge run --config examples/terminal_bench/run_airline_segmentation.yaml
 ```
 
+## Run under a coding-harness CLI
+
+The same task packs also run under a vendor coding-agent CLI installed inside
+the trial container instead of the engine's own LLM loop.
+[`run_harness.yaml`](run_harness.yaml) is the driver config; it names
+`agent_harness: claude-code` and `agent_model: openrouter/anthropic/claude-sonnet-4-6`.
+Swap either field to matrix over harnesses or models:
+
+```bash
+scripts/with_env.sh uv run tolokaforge run --config examples/terminal_bench/run_harness.yaml
+```
+
+Six harnesses ship (`claude-code`, `codex`, `gemini-cli`, `kimi-code`,
+`opencode`, `grok-build`). The Gemini/LiteLLM gateway path ships as a
+whole-entry overlay in [`gemini_litellm_overlay.yaml`](gemini_litellm_overlay.yaml).
+
+Per-harness recipes (Kimi K2.7 middleware, opencode routing, Gemini gateway),
+provider-env envelopes and result-bundle layout live in the end-to-end guide:
+[`docs/RUNNING_TERMINAL_BENCH.md`](../../docs/RUNNING_TERMINAL_BENCH.md). When
+to reach for harness mode vs engine-loop mode is covered in
+[`docs/CODING_HARNESSES.md`](../../docs/CODING_HARNESSES.md).
+
 ## How it works
 
 - **Discovery** — `TerminalBenchAdapter` scans this directory for subfolders
@@ -101,6 +123,9 @@ Terminal-bench tasks run under `PerTrialRuntimeBackend`. Backend selection is ta
 
 ## Related docs
 
+- `docs/CODING_HARNESSES.md` — coding-harness mode: when to use each mode, per-harness quick reference
+- `docs/RUNNING_TERMINAL_BENCH.md` — end-to-end how-to for both engine-loop and harness modes
 - `docs/ADAPTER_ARCHITECTURE.md` — how adapters plug into the orchestrator
 - `docs/RUNTIME_BACKENDS.md` — runtime backends + adapter compatibility
 - `external_adapters/tolokaforge-adapter-terminal-bench/` — the adapter source
+- `tolokaforge_coding_harnesses/README.md` — the harness registry package

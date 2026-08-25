@@ -1,0 +1,196 @@
+name: coding-harness-matrix
+
+# Nightly (harness × task-pack) matrix that drives every shipped vendor coding
+# CLI through the shipped terminal-bench example packs. Signals that the
+# coding-harness surface stays testably green — a real end-to-end pass, not
+# just a documented capability.
+#
+# One job per (harness, pack) — the 6-CLI matrix fans out so a single stuck
+# CLI does not tie up the others. Budget is per-job (`--cost-limit`); the
+# workflow's aggregate ceiling is that value × the number of jobs.
+#
+# `--image-source build` is mandatory: the runner Dockerfile installs the
+# docker CLI + docker-compose plugin behind INSTALL_DOCKER_CLI=true, which
+# the orchestrator sets whenever the terminal-bench adapter is used, but it
+# only takes effect on a locally-built runner. A pulled runner ships without
+# either binary; the orchestrator refuses to start in that case with an
+# actionable message (see tolokaforge/docker/image_source_policy.py). CI
+# builds locally by construction here.
+
+on:
+  schedule:
+    # 06:00 UTC every day. Kept off Sundays would save no meaningful cost;
+    # keeping it daily catches a regression the day it lands.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      cost_limit_per_trial:
+        description: "USD cost cap per (harness × pack) job"
+        default: "2"
+        type: string
+      time_limit_per_trial:
+        description: "Wall-clock cap per (harness × pack) job (e.g. 30m)"
+        default: "30m"
+        type: string
+
+# Single-flight per trigger — a slow nightly does not overlap the next
+# nightly, and a manual dispatch does not queue behind a running nightly
+# (which the operator likely dispatched because they need to verify a fix
+# on the harness surface right now). ``matrix results are additive`` and
+# there is no value in interleaved same-trigger runs sharing the Docker
+# daemon on the same runner.
+concurrency:
+  group: coding-harness-matrix-${{ github.event_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ============================================================================
+  # Matrix job — one runner per (harness, pack)
+  # ============================================================================
+  # The 6-vendor × 2-pack fan-out sits at 12 jobs. Every job is independent, so
+  # a stuck harness fails alone and the others keep reporting.
+  trial:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        harness: [claude-code, codex, gemini-cli, kimi-code, opencode, grok-build]
+        pack: [fix-billing-holds, fix-airline-segmentation]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.5"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python (pinned in .python-version)
+        run: uv python install "$(cat .python-version)"
+
+      - name: Install dependencies
+        run: uv sync --dev --locked
+
+      - name: Install terminal-bench adapter
+        # The adapter is a workspace member; installing it editable makes the
+        # `terminal_bench` adapter registration available under
+        # `tolokaforge.adapters` entry-point discovery.
+        run: uv pip install -e external_adapters/tolokaforge-adapter-terminal-bench
+
+      - name: Docker daemon check
+        run: docker info
+
+      - name: Pick model for harness
+        id: model
+        # One model per harness — the shipped default provider envelope routes
+        # each through OpenRouter (gemini-cli routes through LiteLLM per the
+        # shipped overlay). A model bump lands with an ADR and updates this map
+        # in the same PR.
+        run: |
+          case "${{ matrix.harness }}" in
+            claude-code) echo "model=openrouter/anthropic/claude-sonnet-4-6" >> "$GITHUB_OUTPUT" ;;
+            codex)       echo "model=openrouter/openai/gpt-5.6-sol"          >> "$GITHUB_OUTPUT" ;;
+            gemini-cli)  echo "model=openrouter/google/gemini-3.6-flash"     >> "$GITHUB_OUTPUT" ;;
+            kimi-code)   echo "model=openrouter/moonshotai/kimi-k3"          >> "$GITHUB_OUTPUT" ;;
+            # opencode 1.18.x rejects `openrouter/*` slugs: its shipped
+            # `openrouter` provider block declares an empty `models` dict, so
+            # `openrouter/anthropic/claude-sonnet-4-6` raises
+            # `ProviderModelNotFoundError` before any HTTP call. Route through
+            # opencode's native `anthropic` block (whose `baseURL` the shipped
+            # config already points at OpenRouter's Anthropic-compat surface)
+            # by naming the model in opencode's own hyphenated form. Verified
+            # on tbench balanced-10 packs 2026-08-25.
+            opencode)    echo "model=anthropic/claude-sonnet-4-6" >> "$GITHUB_OUTPUT" ;;
+            grok-build)  echo "model=openrouter/x-ai/grok-4.5"               >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Render run config
+        # A run config generated on the fly beats a matrix of committed configs:
+        # the pack × harness matrix would be 12 near-duplicate YAML files
+        # otherwise. Every field is a small transform of the matrix axes.
+        run: |
+          set -euo pipefail
+          mkdir -p .ci-runs
+          cat > .ci-runs/run.yaml <<YAML
+          models:
+            agent:
+              provider: openrouter
+              name: "${{ steps.model.outputs.model }}"
+              temperature: 0.0
+              max_tokens: 4096
+          compute:
+            workers: 1
+          storage:
+            queue:
+              backend: sqlite
+          orchestrator:
+            workers: 1
+            repeats: 1
+            strict_task_load: true
+            timeouts:
+              episode_s: 1800
+              turn_s: 240
+          evaluation:
+            projects:
+              - "examples/terminal_bench"
+            tasks_glob: "${{ matrix.pack }}/task.yaml"
+            output_dir: "results/${{ matrix.harness }}--${{ matrix.pack }}"
+            harness_adapter:
+              type: terminal_bench
+              params:
+                terminal_bench_dir: "examples/terminal_bench"
+                task_ids: ["${{ matrix.pack }}"]
+                agent_harness: "${{ matrix.harness }}"
+                agent_model: "${{ steps.model.outputs.model }}"
+          YAML
+
+      - name: Render gemini-cli overlay (if applicable)
+        # gemini-cli's shipped default is direct Google. Routing through
+        # LiteLLM (the CI provider path) uses `harness_presets_file`; the
+        # engine reads the overlay verbatim and it whole-replaces the
+        # `gemini-cli` entry. Every other harness inherits the shipped
+        # provider envelope unchanged. `uv run python` reaches the synced
+        # venv where PyYAML lives (bare `python` would resolve to system
+        # `/usr/bin/python3` with no `yaml` module — AGENTS.md § Package
+        # Manager).
+        if: matrix.harness == 'gemini-cli'
+        run: |
+          set -euo pipefail
+          uv run python -c "
+          import pathlib, yaml
+          p = pathlib.Path('.ci-runs/run.yaml')
+          cfg = yaml.safe_load(p.read_text())
+          cfg['evaluation']['harness_adapter']['params']['harness_presets_file'] = 'examples/terminal_bench/gemini_litellm_overlay.yaml'
+          p.write_text(yaml.safe_dump(cfg, sort_keys=False))
+          "
+
+      - name: Run
+        env:
+          # Provider envs the shipped `HarnessSpec.provider_env` maps consume
+          # via `${secret:...}` — SecretManager reads them at run start.
+          OPENROUTER_API_KEY: ${{ secrets.CODING_HARNESS_MATRIX_OPENROUTER_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.CODING_HARNESS_MATRIX_GEMINI_API_KEY }}
+          LITELLM_API_KEY: ${{ secrets.CODING_HARNESS_MATRIX_LITELLM_API_KEY }}
+          LITELLM_BASE_URL: ${{ secrets.CODING_HARNESS_MATRIX_LITELLM_BASE_URL }}
+        run: |
+          set -euo pipefail
+          uv run tolokaforge run \
+            --config .ci-runs/run.yaml \
+            --image-source build \
+            --cost-limit "${{ inputs.cost_limit_per_trial || '2' }}" \
+            --time-limit "${{ inputs.time_limit_per_trial || '30m' }}"
+
+      - name: Upload result bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.harness }}-${{ matrix.pack }}
+          path: results/
+          retention-days: 14
+          if-no-files-found: warn

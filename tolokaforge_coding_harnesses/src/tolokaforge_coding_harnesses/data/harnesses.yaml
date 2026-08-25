@@ -341,17 +341,29 @@ harnesses:
     # the OpenRouter namespace on the model name.
     strip_vendor_namespace: false
     # opencode's config template defines a provider *literally* named
-    # `openrouter` (see the config_files entry below). Callers using
+    # `openrouter` (see the config_files entry below). A caller using
     # `openrouter/<vendor>/<model>` slugs (e.g. `openrouter/meta/muse-glimmer-30b`,
-    # `openrouter/qwen/qwen3.7-max`) rely on the ``openrouter/`` prefix
-    # reaching that provider block. Stripping it here (the default for the
-    # other CLIs) re-routes the trial to a vendor provider opencode's config
-    # never declared (``meta``, ``qwen``, ``moonshotai``), and opencode
-    # crashes with ``UnknownError: Unexpected server error`` in ~2s. Every
-    # `openrouter/<vendor>/*` route besides `openrouter/anthropic/*` hits
-    # this trap — the anthropic path escaped notice by accidentally
-    # matching opencode's separate ``anthropic`` provider block after the
-    # strip.
+    # `openrouter/qwen/qwen3.7-max`) needs the ``openrouter/`` prefix
+    # preserved to reach that provider block; stripping it (the default
+    # for the other CLIs) re-routes the trial to a vendor provider
+    # opencode's config never declared (``meta``, ``qwen``, ``moonshotai``)
+    # and opencode crashes with ``UnknownError: Unexpected server error`` in
+    # ~2s. Preserving the prefix is what this flag is for.
+    #
+    # Note that a caller reaching the ``openrouter`` block also needs the
+    # target model listed in that block's ``models`` dict (currently ``{}``);
+    # opencode 1.18.x rejects unknown slugs with ``ProviderModelNotFoundError``
+    # before an HTTP call. Populating that dict is what opens the OpenRouter
+    # OpenAI-compat surface up per new model — the operator overlays the
+    # entry with a filled-in ``models`` map.
+    #
+    # For **Claude-family** models the practical recipe is different: name
+    # the model as ``anthropic/<opencode-slug>`` (e.g. ``anthropic/claude-sonnet-4-6``,
+    # ``anthropic/claude-sonnet-4-5``) — opencode's shipped ``anthropic``
+    # provider block already carries those models natively AND its
+    # ``baseURL`` points at OpenRouter's Anthropic-compat surface. Both the
+    # routing and the model-list check pass without touching the
+    # ``openrouter`` block.
     strip_openrouter_prefix: false
     # opencode's config-dir env vars point at a scratch path under the
     # log volume so anything opencode writes ends up captured.
@@ -366,8 +378,12 @@ harnesses:
     # HarnessSpec.config_files. Two provider blocks:
     #
     # 1. `anthropic` — points at OpenRouter's Anthropic-compat surface so
-    #    Claude-family models (`anthropic/claude-*`, `openrouter/anthropic/*`)
-    #    reach OpenRouter through the SDK opencode bundles.
+    #    Claude-family models named `anthropic/<opencode-slug>` (e.g.
+    #    `anthropic/claude-sonnet-4-6`) reach OpenRouter through the SDK
+    #    opencode bundles. This is the working recipe for Claude family.
+    #    A caller naming the same model as `openrouter/anthropic/…` sends
+    #    the request to the *other* block below instead, which rejects
+    #    it because the models dict is empty (see block 2).
     # 2. `openrouter` — an explicit OpenAI-compat provider named `openrouter`
     #    so a caller using an `openrouter/<vendor>/<model>` slug (e.g.
     #    `openrouter/meta/muse-spark-1.1`, `openrouter/qwen/qwen3.7-max`)
@@ -375,7 +391,12 @@ harnesses:
     #    bundled vendor-native provider for that prefix. Without this block,
     #    opencode parses `moonshotai/`, `meta/`, `qwen/` as vendor selectors
     #    and routes to `api.moonshot.ai` / etc., which 401s on the
-    #    OpenRouter key.
+    #    OpenRouter key. Every model reached through this block must be
+    #    listed in its `models` dict — opencode 1.18.x validates against
+    #    it and raises `ProviderModelNotFoundError` for anything not there.
+    #    The shipped dict is `{}` so this block accepts nothing today; the
+    #    operator overlay names any concrete model an operator wants to
+    #    route through it.
     #
     # `ANTHROPIC_BASE_URL` MUST end in `/v1`. opencode 1.x routes
     # anthropic-provider traffic through `@ai-sdk/anthropic` (bundled;
@@ -391,8 +412,12 @@ harnesses:
     #
     # The `openrouter` provider uses `@ai-sdk/openai-compatible`, which
     # opencode bundles for arbitrary OpenAI-compat endpoints. The models
-    # dict must be present but can be empty — opencode uses the model
-    # name from the CLI arg verbatim as the slug the endpoint receives.
+    # dict must be present AND must list every concrete model an operator
+    # wants to route through this block — opencode 1.18.x validates the
+    # slug against the provider's declared models before any HTTP call,
+    # and raises `ProviderModelNotFoundError` on unknown ones. The shipped
+    # `{}` is a no-op placeholder; a run that needs OpenRouter's
+    # OpenAI-compat surface overlays the entry with a filled-in map.
     #
     # NOTE on ``apiKey``: opencode 1.18.x reads its own ``${env:VAR}``
     # substitutions on the ``anthropic`` provider block (which opencode
