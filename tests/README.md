@@ -105,6 +105,7 @@ tests/
 │   ├── test_adapter_convert_packaging.py    # wheel-inspection packaging smoke
 │   ├── test_adapter_convert_entry_point.py  # entry-point discovery smoke (scratch-venv install)
 │   ├── fixtures/            # tolokaforge-adapter-demo: demo conversion adapter installed into a scratch venv
+│   ├── grader_parity_baselines/  # Grader parity pack corpus — one dir per pack, each carrying trial.yaml, grading.yaml, parity.yaml and the committed expected_grade.json; read by both the canonical parity test and the RC-smoke sibling
 │   └── snapshots/           # Committed golden JSON files
 ├── integration/             # Docker/API integration tests
 │   ├── coding_harnesses/    # tolokaforge_coding_harnesses against real containers
@@ -248,6 +249,22 @@ Compare output against committed golden snapshots in `snapshots/`.
   reconciliation failure, not a shortcut. `build_timeline` lands every call on the
   last assistant turn, while `build_turn_timeline` takes the calls per turn — which
   is what an ordering or turn-window property needs.
+- Grader parity reference (`test_grader_parity_reference.py`) — the ten packs under
+  `tests/canonical/grader_parity_baselines/` are graded through both the in-process
+  substrate leg and the composite dispatch that speaks the standalone grader's gRPC,
+  and both wire `Grade` messages must byte-match the committed
+  `expected_grade.json` under the shared `serialise_grade` projection. A failure
+  means the two grader shapes have drifted; the `hash_and_all_four` pack additionally
+  pins the composite dispatch's refusal message against the ADR-0040 fragment. The
+  isolation invariant — one non-trivial grading block per isolation pack — is locked
+  by `test_isolation_pack_config_is_single_seam`, so a divergence at one seam
+  surfaces at exactly one pack. The RC-smoke sibling
+  (`tests/integration/deploy/test_rc_smoke_parity_reference.py`) reads the SAME
+  corpus over real containers — an import-time
+  `assert _BASELINES_ROOT.is_dir()` in each module fails collection if the corpus
+  goes missing, so a corpus fork is refused rather than silently skipped. Regenerate
+  the baselines with `--refresh-baselines` (see `docs/GRADER_SERVICE.md § Parity
+  gate` for the ADR-0040 substrate contract the packs pin).
 - Schema version stamps documented (`test_schema_version_stamps_documented.py`) — the
   stamps `docs/OUTPUT_FORMAT.md` § Schema Version Stamps publishes, both the table's
   rows and the bare `schema_version: N` literals the prose repeats, must equal the
@@ -398,6 +415,16 @@ Use `--update-canon` flag to regenerate the snapshots under `snapshots/` after
 intentional changes. The guard modules above that compare code against a doc or a
 hand-edited manifest have no snapshot behind them, so the flag does not reach them —
 they are reconciled by editing the file the failure names.
+
+The `--refresh-baselines` flag is the parallel affordance for the grader parity
+gate: it rewrites the committed `expected_grade.json` under each
+`tests/canonical/grader_parity_baselines/<pack>/` from the substrate leg's output
+and stops before asserting equality. `--update-canon` does not reach these
+baselines — they sit outside `snapshots/` because the RC-smoke sibling reads them
+too, so they are the shared corpus rather than one lane's golden. See
+`docs/GRADER_SERVICE.md § Parity gate` for the ADR-0040 substrate contract the
+packs pin; the resulting diff belongs in the same commit as the code change that
+motivated it.
 
 ### Integration Tests (`tests/integration/`)
 

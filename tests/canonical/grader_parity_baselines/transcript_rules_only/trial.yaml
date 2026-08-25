@@ -1,0 +1,9 @@
+trial_id: transcript_rules_only:0
+termination_reason: agent_done
+llm_messages:
+  - role: system
+    content: You are a test assistant.
+  - role: user
+    content: Please refund the customer.
+  - role: assistant
+    content: Refund issued for order O1.

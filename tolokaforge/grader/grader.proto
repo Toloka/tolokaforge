@@ -50,8 +50,28 @@ message GradeRequest {
   // reports none. Mirrors runner.GradeTrialRequest.termination_reason.
   string termination_reason = 3;
 
-  // Task config JSON — reserved for future rubric-carrying dispatch.
+  // RunnerGradingConfig JSON — carries the full grading block the composite
+  // dispatch consumes (state_checks, transcript_rules, trace_checks,
+  // llm_judge, custom_checks). Empty when the caller has not populated it;
+  // the composite dispatcher rejects requests missing it.
   string task_config_json = 4;
+
+  // Optional[ModelConfig] JSON — the judge's model config, empty when the
+  // task declares no llm_judge block. Provider + name evidence rides here
+  // so the grader constructs its LLMClient via the plug-in seam without
+  // inferring provider from a model name (AGENTS.md Core Rule 10).
+  string judge_model_config_json = 5;
+
+  // TaskDescription JSON — carries initial_state,
+  // state_checks.id_fields, initial_state.unstable_fields, and
+  // tool_artifacts (dict[str,str] base64 — checks.py plus every sibling
+  // artefact module the pack imports). Every grader-side state-diff and
+  // custom-check input derives from this one field.
+  string task_description_json = 6;
+
+  // gRPC address of the runner's SubstrateService — the composite dispatch
+  // builds a LiveRunnerCallbackGradingSubstrate against it per trial.
+  string runner_substrate_address = 7;
 }
 
 message GradeResponse {

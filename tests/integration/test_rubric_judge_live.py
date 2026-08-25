@@ -25,10 +25,10 @@ import yaml
 
 from tests.utils.docker_helpers import current_runner_image_id, is_docker_daemon_available
 from tolokaforge.core.grading.judge import (
-    JudgeStatus,
     LLMJudge,
     model_config_from_ref,
 )
+from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.grading.kb_search import SearchHit
 from tolokaforge.core.grading.rubric import SubmitReportValidationError, parse_submit_report
 from tolokaforge.runner.models import Rubric

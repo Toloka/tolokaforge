@@ -18,10 +18,12 @@ edit surface back at its logical path. Two routes:
   decodes the tree in-process. Keys land under the container's declared
   ``agent_visible_dir`` (e.g. ``/work/factorial.py``).
 
-The runner catches ``TrialNotFoundError`` from the DB client so a
-filesystem-only trial (one whose task never provisions ``initial_state.tables``
-and therefore never calls ``db_client.init_trial()``) still assembles a
-jsonpath state rooted at ``$.filesystem[…]``.
+The result feeds ``composite.grade_state_checks_reads`` through the
+substrate's ``filesystem_state`` accessor — see
+``tests/canonical/test_grading_composite_state_checks.py`` and
+``tests/unit/grading/test_composite_state_checks_gating.py`` for the
+composite's own behaviour locks over the merged ``$.db`` / ``$.tables`` /
+``$.filesystem`` state.
 """
 
 from __future__ import annotations
@@ -35,19 +37,18 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from tolokaforge.runner import service as service_module
-from tolokaforge.runner.db_client import TrialNotFoundError
 from tolokaforge.runner.tool_factory import DockerComposeExecToolWrapper
 
 pytestmark = pytest.mark.unit
 
 
 class _StubRunnerServiceImpl:
-    """Bind just the methods under test onto a minimal instance.
+    """Bind just the method under test onto a minimal instance.
 
     The full RunnerServiceImpl constructor spins up a gRPC server, a DB client,
     an LLM stack and an OTEL exporter — none of which the filesystem-read
-    helper touches. Binding the two methods directly to a plain object keeps
-    the test hermetic.
+    helper touches. Binding the method directly to a plain object keeps the
+    test hermetic.
     """
 
     def __init__(self, db_client) -> None:  # noqa: ANN001 — test stub
@@ -56,7 +57,6 @@ class _StubRunnerServiceImpl:
 
     _read_agent_visible_filesystem = service_module.RunnerServiceImpl._read_agent_visible_filesystem
     _read_filesystem_for_state = service_module.RunnerServiceImpl._read_filesystem_for_state
-    _assemble_jsonpath_state = service_module.RunnerServiceImpl._assemble_jsonpath_state
 
 
 @pytest.fixture
@@ -123,52 +123,6 @@ def test_read_agent_visible_filesystem_skips_symlinks(
     assert fs == {"/env/fs/agent-visible/readme.txt": "ok"}
 
 
-@pytest.mark.asyncio
-async def test_assemble_jsonpath_state_handles_missing_db_trial(
-    redirect_work_dir: Path,
-) -> None:
-    """Filesystem-only tasks never call db_client.init_trial(), so
-    ``get_stable_state`` raises ``TrialNotFoundError``. The assembler must
-    treat that as an empty DB state instead of propagating the error —
-    otherwise the outer catch-all in GradeTrial rewrites it as
-    ``Grading error: TrialNotFoundError`` and the trial fails to grade at
-    all, even for assertions that only need $.filesystem.
-    """
-    (redirect_work_dir / "buggy_math.py").write_text("amount * (1 + tax_rate)\n")
-
-    db_client = AsyncMock()
-    db_client.get_stable_state = AsyncMock(side_effect=TrialNotFoundError("t-1"))
-    svc = _StubRunnerServiceImpl(db_client=db_client)
-
-    state = await svc._assemble_jsonpath_state("t-1")
-
-    assert state["db"] == {}
-    assert state["tables"] == {}
-    assert state["filesystem"] == {
-        "/env/fs/agent-visible/buggy_math.py": "amount * (1 + tax_rate)\n",
-    }
-
-
-@pytest.mark.asyncio
-async def test_assemble_jsonpath_state_merges_db_and_filesystem(
-    redirect_work_dir: Path,
-) -> None:
-    (redirect_work_dir / "buggy_math.py").write_text("amount * (1 + tax_rate)\n")
-
-    stable_response = type("R", (), {"data": {"users": [{"id": 1, "name": "alice"}]}})()
-    db_client = AsyncMock()
-    db_client.get_stable_state = AsyncMock(return_value=stable_response)
-    svc = _StubRunnerServiceImpl(db_client=db_client)
-
-    state = await svc._assemble_jsonpath_state("t-1")
-
-    assert state["db"] == {"users": [{"id": 1, "name": "alice"}]}
-    assert state["tables"] == state["db"]
-    assert state["filesystem"] == {
-        "/env/fs/agent-visible/buggy_math.py": "amount * (1 + tax_rate)\n",
-    }
-
-
 # ---------------------------------------------------------------------------
 # Harness-mode routing — the runner execs into the trial container rather
 # than reading its own /work/. The metadata handshake carries both the CLI's
@@ -230,8 +184,7 @@ def _harness_trial_context(
     return ctx
 
 
-@pytest.mark.asyncio
-async def test_harness_trial_reads_filesystem_via_exec_wrapper() -> None:
+def test_harness_trial_reads_filesystem_via_exec_wrapper() -> None:
     """When metadata carries ``agent_harness_command`` + ``agent_visible_dir``
     and an exec-capable tool is registered, the runner execs ``tar | base64``
     inside the trial container and decodes the tree in-process — keys land
@@ -250,7 +203,7 @@ async def test_harness_trial_reads_filesystem_via_exec_wrapper() -> None:
         bash_tool=bash_tool,
     )
 
-    fs = await svc._read_filesystem_for_state("t-1")
+    fs = svc._read_filesystem_for_state("t-1")
 
     assert fs == {"/work/factorial.py": "def factorial(n): return 1\n"}
     # Both container-side commands actually issued.
@@ -258,8 +211,7 @@ async def test_harness_trial_reads_filesystem_via_exec_wrapper() -> None:
     assert any("tar --exclude=./.git" in cmd for cmd in bash_tool.calls)
 
 
-@pytest.mark.asyncio
-async def test_engine_loop_trial_still_walks_the_runner_workdir(
+def test_engine_loop_trial_still_walks_the_runner_workdir(
     redirect_work_dir: Path,
 ) -> None:
     """A non-harness trial reads back the runner's own ``AGENT_WORK_DIR`` —
@@ -275,15 +227,14 @@ async def test_engine_loop_trial_still_walks_the_runner_workdir(
         bash_tool=None,
     )
 
-    fs = await svc._read_filesystem_for_state("t-1")
+    fs = svc._read_filesystem_for_state("t-1")
 
     assert fs == {
         "/env/fs/agent-visible/buggy_math.py": "amount * (1 + tax_rate)\n",
     }
 
 
-@pytest.mark.asyncio
-async def test_harness_trial_without_exec_tool_falls_back_to_workdir(
+def test_harness_trial_without_exec_tool_falls_back_to_workdir(
     redirect_work_dir: Path,
 ) -> None:
     """A harness trial that registered no exec-capable tool falls back to
@@ -298,13 +249,12 @@ async def test_harness_trial_without_exec_tool_falls_back_to_workdir(
         bash_tool=None,
     )
 
-    fs = await svc._read_filesystem_for_state("t-1")
+    fs = svc._read_filesystem_for_state("t-1")
 
     assert fs == {"/env/fs/agent-visible/left_behind.py": "still here\n"}
 
 
-@pytest.mark.asyncio
-async def test_harness_trial_without_agent_visible_dir_falls_back(
+def test_harness_trial_without_agent_visible_dir_falls_back(
     redirect_work_dir: Path,
 ) -> None:
     """A harness trial whose adapter omitted ``agent_visible_dir`` falls back
@@ -319,13 +269,12 @@ async def test_harness_trial_without_agent_visible_dir_falls_back(
         bash_tool=_StubBashTool([]),  # would fail loud on exec attempt
     )
 
-    fs = await svc._read_filesystem_for_state("t-1")
+    fs = svc._read_filesystem_for_state("t-1")
 
     assert fs == {"/env/fs/agent-visible/runner_side.py": "still here\n"}
 
 
-@pytest.mark.asyncio
-async def test_unregistered_trial_walks_workdir(
+def test_unregistered_trial_walks_workdir(
     redirect_work_dir: Path,
 ) -> None:
     """A read for a trial no longer in ``self.trials`` falls back to the
@@ -335,20 +284,19 @@ async def test_unregistered_trial_walks_workdir(
 
     svc = _StubRunnerServiceImpl(db_client=AsyncMock())
 
-    fs = await svc._read_filesystem_for_state("does-not-exist")
+    fs = svc._read_filesystem_for_state("does-not-exist")
 
     assert fs == {"/env/fs/agent-visible/orphan.py": "orphan\n"}
 
 
-@pytest.mark.asyncio
-async def test_harness_state_composes_with_jsonpath_check() -> None:
+def test_harness_state_composes_with_jsonpath_check() -> None:
     """The composition claim: a harness trial's edits are seen by state_checks.
 
-    Assembles the state the runner service would hand to
-    :class:`StateChecker`, drives one JSONPath assertion against a file the
-    "CLI" wrote inside the container, and confirms the assertion resolves.
-    This is the whole point of the lift: any adapter's harness-mode trial can
-    grade under any state-based grading mode.
+    Threads the harness-mode filesystem read into the ``{db, tables, filesystem}``
+    shape ``composite.grade_state_checks_reads`` hands the :class:`StateChecker`,
+    then drives one JSONPath assertion against a file the "CLI" wrote inside
+    the container. This is the whole point of the lift: any adapter's
+    harness-mode trial can grade under any state-based grading mode.
     """
     from tolokaforge.core.grading.state_checks import StateChecker
 
@@ -366,7 +314,8 @@ async def test_harness_state_composes_with_jsonpath_check() -> None:
         bash_tool=bash_tool,
     )
 
-    state = await svc._assemble_jsonpath_state("t-1", fetch_db=False)
+    filesystem = svc._read_filesystem_for_state("t-1")
+    state = {"db": {}, "tables": {}, "filesystem": filesystem}
     score, reasons = StateChecker().check_jsonpaths(
         state,
         [

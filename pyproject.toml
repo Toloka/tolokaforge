@@ -201,6 +201,85 @@ tcp = "tolokaforge.core.service_readiness:tcp_readiness_probe_factory"
 agent_only = "tolokaforge.core.actors.turn_policy:_agent_only_policy_factory"
 conversational = "tolokaforge.core.actors.turn_policy:_conversational_policy_factory"
 
+# ADR-0040 § "The single design abstraction" — GradingSubstrate implementations
+# resolvable by name. Two implementations ship today (``in_process`` +
+# ``live_callback``); ``trajectory_storage`` / ``snapshot`` / ``shared_mount``
+# are reserved future substrates and register themselves when they ship (no
+# framework change needed then).
+[project.entry-points."tolokaforge.grading_substrates"]
+in_process = "tolokaforge.core.grading.substrate:InProcessGradingSubstrate"
+live_callback = "tolokaforge.core.grading.substrate_live:LiveRunnerCallbackGradingSubstrate"
+
+# Custom-check executor Protocol (``tolokaforge/core/grading/check_runner.py``).
+# ``check_runner`` is the production default (in-process ThreadPoolExecutor);
+# ``in_memory`` is the deterministic fixture the canonical tests reach.
+[project.entry-points."tolokaforge.custom_check_executors"]
+check_runner = "tolokaforge.core.grading.check_runner:_check_runner_factory"
+in_memory = "tolokaforge.core.grading.check_runner:_in_memory_check_executor_factory"
+
+# Judge model provider Protocol
+# (``tolokaforge/core/grading/judge_model_provider.py``). ``litellm`` matches
+# the underlying transport; a downstream ``openai_direct`` or ``vertex_ai``
+# provider registers alongside without a framework PR.
+[project.entry-points."tolokaforge.judge_model_providers"]
+litellm = "tolokaforge.core.grading.default_judge_model_provider:_litellm_judge_model_provider_factory"
+
+# Rubric evaluator Protocol
+# (``tolokaforge/core/grading/rubric_evaluator.py``). ``llm_judge`` is the
+# reference impl wrapping :class:`LLMJudge`; a downstream package registers
+# an alternative evaluator (e.g. a deterministic ruleset over the transcript)
+# alongside without a framework PR.
+[project.entry-points."tolokaforge.rubric_evaluators"]
+llm_judge = "tolokaforge.core.grading.default_rubric_evaluator:_llm_judge_rubric_evaluator_factory"
+
+# Transcript-rule matcher Protocol
+# (``tolokaforge/core/grading/transcript_rule_matcher.py``). ``default`` is
+# the reference impl wrapping :func:`evaluate_transcript_rules`; a downstream
+# package registers an alternative matcher (e.g. a stricter policy over the
+# same rule vocabulary) alongside without a framework PR.
+[project.entry-points."tolokaforge.transcript_rule_matchers"]
+default = "tolokaforge.core.grading.default_transcript_rule_matcher:_default_transcript_rule_matcher_factory"
+
+# State-check backend Protocol
+# (``tolokaforge/core/grading/state_check_backend.py``). ``jsonpath`` scores
+# jsonpath assertions against the substrate's STABLE DB view + filesystem;
+# ``db_probes`` opens task-declared postgres connections and applies each
+# probe's ``expect`` block. Hash grading is deliberately NOT registered
+# here — its snapshot-and-replay semantics need write access to the trial's
+# DB, so hash grading stays runner-integrated on
+# ``RunnerServiceImpl._execute_hash_grading`` (see the seam module docstring
+# and ``docs/GRADER_SERVICE.md`` § "Sub-component plug-in seams").
+[project.entry-points."tolokaforge.state_check_backends"]
+jsonpath = "tolokaforge.core.grading.default_state_check_backends:_jsonpath_state_check_backend_factory"
+db_probes = "tolokaforge.core.grading.default_state_check_backends:_db_probes_state_check_backend_factory"
+
+# Trace-check operator seam
+# (``tolokaforge/core/grading/trace_check_operator.py``). Per-operator
+# granularity: every operator a ``ValuePredicate`` may declare is one
+# entry-point. A downstream package registering ``equals_semver`` alongside
+# these 17 defaults extends the trace-check vocabulary without a framework
+# PR. The two binding operators are identified by the ``_binding`` suffix
+# on the registered name (see ADR-0040); no marker
+# attribute, no parallel registry.
+[project.entry-points."tolokaforge.trace_check_operators"]
+equals = "tolokaforge.core.grading.trace_check_operator:equals"
+equals_ci = "tolokaforge.core.grading.trace_check_operator:equals_ci"
+contains = "tolokaforge.core.grading.trace_check_operator:contains_op"
+contains_ci = "tolokaforge.core.grading.trace_check_operator:contains_ci"
+not_equals = "tolokaforge.core.grading.trace_check_operator:not_equals"
+regex = "tolokaforge.core.grading.trace_check_operator:regex_matches"
+gt = "tolokaforge.core.grading.trace_check_operator:gt"
+gte = "tolokaforge.core.grading.trace_check_operator:gte"
+lt = "tolokaforge.core.grading.trace_check_operator:lt"
+lte = "tolokaforge.core.grading.trace_check_operator:lte"
+in_ = "tolokaforge.core.grading.trace_check_operator:in_op"
+not_in = "tolokaforge.core.grading.trace_check_operator:not_in_op"
+len_gt = "tolokaforge.core.grading.trace_check_operator:len_gt"
+len_gte = "tolokaforge.core.grading.trace_check_operator:len_gte"
+exists = "tolokaforge.core.grading.trace_check_operator:exists"
+equals_binding = "tolokaforge.core.grading.trace_check_operator:equals_binding"
+contains_binding = "tolokaforge.core.grading.trace_check_operator:contains_binding"
+
 [tool.hatch.build]
 exclude = [
     "tasks/**",
@@ -290,6 +369,7 @@ only-include = [
     "tolokaforge/core/loop.py",
     "tolokaforge/core/model_data.py",
     "tolokaforge/core/netpolicy_constants.py",
+    "tolokaforge/core/plugin_registry.py",
     "tolokaforge/core/pricing.py",
     "tolokaforge/core/redaction.py",
     "tolokaforge/core/run_display_events.py",
@@ -309,6 +389,8 @@ exclude = [
     "tolokaforge/core/grading/replay_layout.py",
     "tolokaforge/core/grading/rubric_migration.py",
     "tolokaforge/core/grading/state_checks.py",
+    "tolokaforge/core/grading/substrate_client.py",
+    "tolokaforge/core/grading/substrate_live.py",
     "tolokaforge/core/grading/trace_replay.py",
     "tolokaforge/core/grading/unknown_keys.py",
     "tolokaforge/core/llm/fallback_client.py",

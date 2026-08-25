@@ -143,13 +143,18 @@ from tests.utils.grading_parity_packs import (
 from tests.utils.runner_requests import execute_request, register_request, trial_spec_json
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
+from tolokaforge.core.grading import composite as composite_module
+from tolokaforge.core.grading import (
+    default_transcript_rule_matcher as default_transcript_rule_matcher_module,
+)
 from tolokaforge.core.grading.checks_helpers import CUSTOM_CHECKS_REASON_PREFIX
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import COMBINE_METHODS
 from tolokaforge.core.grading.combine_weights import MissingComponentWeight
+from tolokaforge.core.grading.composite import _build_runner_check_transcript
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord, resolve_initial_state
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
-from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
+from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
     Enforcement,
@@ -199,7 +204,6 @@ from tolokaforge.runner.models import (
 from tolokaforge.runner.service import (
     RunnerServiceImpl,
     TrialContextRuntime,
-    _build_runner_check_transcript,
 )
 
 pytestmark = pytest.mark.canonical
@@ -810,8 +814,11 @@ def _runner_custom_checks_score(
         trial_id = f"{task_description.task_id}:0"
         servicer._extract_tool_artifacts(trial_id, task_description.tool_artifacts)
         context = TrialContextRuntime(trial_id=trial_id, task_description=task_description)
+        substrate = servicer._build_grading_substrate(trial_id, context)
         score, _, _ = servicer._run_async(
-            servicer._grade_custom_checks(trial_id, context, case.runner_messages)
+            servicer._grade_custom_checks(
+                trial_id, context, case.runner_messages, substrate=substrate
+            )
         )
         return score
     finally:
@@ -2139,7 +2146,7 @@ def _register_pack(
     config reads it back off ``servicer.trials[trial_id]``.
 
     ``judge_model_config`` rides the spec for a task declaring an ``llm_judge``
-    rubric, which ``_grade_llm_judge`` refuses to grade without.
+    rubric, which ``composite.grade_llm_judge`` refuses to grade without.
     """
     registered = servicer.RegisterTrial(
         register_request(
@@ -3539,10 +3546,13 @@ _PROBE_ROWS = [{"reason_code": "CAPA-01", "status": "open"}]
 
 
 class _StubJudge:
-    """Stands in for the model provider at the seam ``service.LLMJudge`` names.
+    """Stands in for the LLM call the reference :class:`LLMJudge` would make.
 
-    What it replaces is an external LLM call, not a recording site, an evaluator's
-    decision, the audit or the combine — all of those stay real on this path.
+    :class:`LLMJudgeRubricEvaluator` constructs one of these per
+    ``.evaluate()`` and drives its ``.run(...)``. Replacing the ``LLMJudge``
+    class in :mod:`default_rubric_evaluator` swaps out the external LLM
+    call, leaving the recording site, the evaluator's decision, the audit
+    and the combine real on this path.
     """
 
     def __init__(self, model_config: Any, **_kwargs: Any) -> None:
@@ -3649,11 +3659,13 @@ def _drive_llm_judge(
 ) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
     """Grade a rubric-configured trial with the model provider substituted.
 
-    The spec carries a judge ``ModelConfig``: ``_grade_llm_judge`` raises before it
-    ever constructs the judge without one, so the row would otherwise red on claim 2
-    for a reason with nothing to do with the recording site.
+    The spec carries a judge ``ModelConfig``: ``composite.grade_llm_judge`` raises
+    before it ever constructs the judge without one, so the row would otherwise
+    red on claim 2 for a reason with nothing to do with the recording site.
     """
-    monkeypatch.setattr(runner_service_module, "LLMJudge", _StubJudge)
+    from tolokaforge.core.grading import default_rubric_evaluator
+
+    monkeypatch.setattr(default_rubric_evaluator, "LLMJudge", _StubJudge)
     task_description = runner_models.TaskDescription.model_validate(_JUDGE_DRIVER_TASK)
     _register_pack(
         servicer,
@@ -3774,13 +3786,15 @@ def test_the_site_lock_rejects_a_site_that_filed_a_skip_where_it_evaluated(
 
     Patching the module-level ``EVALUATED`` stands in for the class of defect rather
     than reproducing one site's edit: every inline site reads this global, so the
-    downgrade lands on all of them at once.
+    downgrade lands on all of them at once. The jsonpath / probes accounting site
+    lives in the composite (state_checks is a composite helper), so the same
+    downgrade is applied there — a real defect landing on either site is caught.
     """
-    monkeypatch.setattr(
-        runner_service_module,
-        "EVALUATED",
-        KeyAccountingRecord(outcome=KeyAccounting.SKIPPED, detail="downgraded by injection"),
+    downgraded = KeyAccountingRecord(
+        outcome=KeyAccounting.SKIPPED, detail="downgraded by injection"
     )
+    monkeypatch.setattr(runner_service_module, "EVALUATED", downgraded)
+    monkeypatch.setattr(composite_module, "EVALUATED", downgraded)
 
     grading_config, response = _drive_parity_pack(
         _INJECTION_JSONPATHS,
@@ -3796,22 +3810,32 @@ def test_the_site_lock_rejects_a_site_that_filed_a_skip_where_it_evaluated(
 
 
 @pytest.mark.parametrize(
-    ("evaluator_name", "author_key"),
+    ("evaluator_module", "evaluator_name", "author_key"),
     [
-        ("evaluate_trace_checks", _INJECTION_TRACE),
-        ("evaluate_transcript_rules", _INJECTION_TRANSCRIPT),
+        (composite_module, "evaluate_trace_checks", _INJECTION_TRACE),
+        (
+            default_transcript_rule_matcher_module,
+            "evaluate_transcript_rules",
+            _INJECTION_TRANSCRIPT,
+        ),
     ],
 )
 def test_the_site_lock_rejects_an_evaluator_that_stopped_accounting(
-    evaluator_name, author_key, test_data_dir, runner_service, mock_grpc_context, monkeypatch
+    evaluator_module,
+    evaluator_name,
+    author_key,
+    test_data_dir,
+    runner_service,
+    mock_grpc_context,
+    monkeypatch,
 ):
     """Claim 2: the evaluator still scores, but records no key — the audit fails the RPC."""
-    real = getattr(runner_service_module, evaluator_name)
+    real = getattr(evaluator_module, evaluator_name)
 
     def drifted(*args: Any, **kwargs: Any) -> Any:
         return real(*args, **kwargs).model_copy(update={"accounted_keys": {}})
 
-    monkeypatch.setattr(runner_service_module, evaluator_name, drifted)
+    monkeypatch.setattr(evaluator_module, evaluator_name, drifted)
 
     grading_config, response = _drive_parity_pack(
         author_key,
@@ -3830,12 +3854,12 @@ def test_the_site_lock_rejects_an_evaluated_record_over_an_evaluation_that_did_n
     test_data_dir, runner_service, mock_grpc_context, monkeypatch
 ):
     """Claim 4: real accounting filed EVALUATED while the component stayed unscored."""
-    real = runner_service_module.evaluate_transcript_rules
+    real = default_transcript_rule_matcher_module.evaluate_transcript_rules
 
     def hollow(*args: Any, **kwargs: Any) -> Any:
         return real(*args, **kwargs).model_copy(update={"score": _UNSCORED_COMPONENT})
 
-    monkeypatch.setattr(runner_service_module, "evaluate_transcript_rules", hollow)
+    monkeypatch.setattr(default_transcript_rule_matcher_module, "evaluate_transcript_rules", hollow)
 
     grading_config, response = _drive_parity_pack(
         _INJECTION_TRANSCRIPT,

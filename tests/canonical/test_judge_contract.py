@@ -17,9 +17,9 @@ from tolokaforge.core.grading.judge import (
     InMemoryJudge,
     Judge,
     JudgeCallLog,
-    JudgeStatus,
     LLMJudge,
 )
+from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.runner.models import Rubric
 

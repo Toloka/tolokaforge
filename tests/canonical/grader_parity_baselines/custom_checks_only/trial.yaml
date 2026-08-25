@@ -1,0 +1,9 @@
+trial_id: custom_checks_only:0
+termination_reason: agent_done
+llm_messages:
+  - role: system
+    content: You are a test assistant.
+  - role: user
+    content: Please confirm the shipment.
+  - role: assistant
+    content: Order O1 has been shipped.

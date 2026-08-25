@@ -1,0 +1,10 @@
+accepted_divergences: []
+refusal_mode: false
+judge_script:
+  - - name: submit_report
+      arguments:
+        reasons: order O1 shipped as declared
+        ok: true
+        ok_justification: |
+          state matches expected shipped status
+          VERDICT: MET

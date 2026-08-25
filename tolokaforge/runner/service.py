@@ -33,31 +33,13 @@ from typing import Any
 import grpc
 from pydantic import ValidationError
 
+from tolokaforge.core.grading import composite
 from tolokaforge.core.grading.check_runner import (
-    _CHECK_EXECUTOR_ERROR_NAME,
     CheckExecutor,
-    CheckRunner,
     validate_checks_module,
 )
-from tolokaforge.core.grading.checks_helpers import (
-    build_check_context,
-    custom_checks_enabled,
-    custom_checks_reason,
-)
-from tolokaforge.core.grading.checks_interface import (
-    CheckResult,
-    CheckResultSet,
-    CustomChecksConfig,
-    TaskContext,
-    ToolCallStatus,
-    Transcript,
-)
-from tolokaforge.core.grading.checks_interface import (
-    Message as CheckMessage,
-)
-from tolokaforge.core.grading.checks_interface import (
-    ToolCall as CheckToolCall,
-)
+from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
+from tolokaforge.core.grading.checks_interface import CustomChecksConfig
 from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenReplayRecord,
@@ -70,20 +52,21 @@ from tolokaforge.core.grading.jsonpath_addressing import (
     block_addresses_the_database,
     unreachable_target,
 )
-from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
+from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
+from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
-from tolokaforge.core.grading.state_diff import render_state_diff
-from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
+from tolokaforge.core.grading.state_check_backend import StateCheckBackend
+from tolokaforge.core.grading.substrate import (
+    GradingSubstrate,
+    InProcessGradingSubstrate,
+)
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
     TrialTimeline,
     build_trial_timeline,
 )
-from tolokaforge.core.grading.transcript import (
-    evaluate_transcript_rules,
-    scored_transcript_rules,
-)
+from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcher
 from tolokaforge.core.grading.transcript_wire import (
     decode_transcript_wire,
     split_leading_system_message,
@@ -93,6 +76,13 @@ from tolokaforge.core.models import (
     LLMJudgeConfig,
     ModelConfig,
     TerminationReason,
+)
+from tolokaforge.core.plugin_registry import (
+    load_custom_check_executor,
+    load_judge_model_provider,
+    load_rubric_evaluator,
+    load_state_check_backend,
+    load_transcript_rule_matcher,
 )
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
@@ -109,24 +99,18 @@ from tolokaforge.runner.grading import (
     build_grade_reasons,
     compose_runner_trial_verdict,
     compute_state_diff,
-    evaluate_db_probes,
-    evaluate_jsonpath_checks,
     resolve_state_checks_component,
 )
 from tolokaforge.runner.grading_ledger import (
     CUSTOM_CHECKS_DISABLED_SKIP,
     CUSTOM_CHECKS_KEY,
-    DB_PROBES_KEY,
     EVALUATED,
     HASH_DISABLED_SKIP,
-    JSONPATHS_KEY,
     LLM_JUDGE_KEY,
     NO_JUDGE_MESSAGES_SKIP,
-    NO_TIMELINE_EVENTS_SKIP,
     audit_accounted_keys,
     hash_family_accounting,
     hash_family_skip_accounting,
-    transcript_rules_author_keys,
 )
 from tolokaforge.runner.harness_state import snapshot_container_filesystem
 from tolokaforge.runner.id_resolution import (
@@ -219,81 +203,6 @@ _TOOL_TIMEOUT_SLACK_S = 5.0
 # judge's "harness-owned allowlist" rule (no generic MCP-tool passthrough — we
 # cannot classify arbitrary MCP tools' read-only-ness).
 _SEARCH_POLICY_TOOL_NAME = "search_policy"
-
-
-def _build_runner_check_transcript(
-    llm_messages: list[dict[str, Any]],
-) -> Transcript:
-    """Build a :class:`Transcript` from the runner's wire ``llm_messages``.
-
-    Wire ``tool_calls`` are OpenAI-shaped
-    (``{"function": {"name", "arguments": <json_str>}}``); this decodes them
-    back into :class:`ToolCall` with ``result=None`` (results are not carried in
-    ``llm_messages_json``), mirroring the host-side transcript build so a check
-    reads identical evidence from either grading path.
-    """
-    check_messages: list[CheckMessage] = []
-    for msg in llm_messages:
-        role = str(msg.get("role", ""))
-        content = str(msg.get("content", "") or "")
-        raw_tool_calls = msg.get("tool_calls") or []
-        tool_calls: list[CheckToolCall] = []
-        for raw_tc in raw_tool_calls:
-            fn = raw_tc.get("function") or {}
-            name = str(fn.get("name") or raw_tc.get("name") or "")
-            raw_args: Any = fn.get("arguments", raw_tc.get("arguments"))
-            if isinstance(raw_args, str):
-                try:
-                    args_dict = json.loads(raw_args) if raw_args else {}
-                except (json.JSONDecodeError, TypeError):
-                    args_dict = {}
-            elif isinstance(raw_args, dict):
-                args_dict = raw_args
-            else:
-                args_dict = {}
-            tool_calls.append(
-                CheckToolCall(
-                    name=name,
-                    arguments=args_dict,
-                    result=None,
-                    status=ToolCallStatus.SUCCESS,
-                )
-            )
-        check_messages.append(CheckMessage(role=role, content=content, tool_calls=tool_calls))
-    return Transcript(messages=check_messages)
-
-
-def _check_result_to_wire(result: CheckResult) -> "pb2.CustomCheckResult":
-    """Convert a :class:`CheckResult` to the wire ``pb2.CustomCheckResult``.
-
-    ``details`` (arbitrary dict) is JSON-encoded into the proto's
-    ``details_json`` string; empty when the check emitted no details.
-    """
-    status_str = result.status.value if hasattr(result.status, "value") else str(result.status)
-    details_json = json.dumps(result.details) if result.details else ""
-    return pb2.CustomCheckResult(
-        check_name=result.check_name,
-        status=status_str,
-        score=result.score,
-        message=result.message,
-        details_json=details_json,
-    )
-
-
-def _executor_error_to_wire(error: str) -> "pb2.CustomCheckResult":
-    """Wrap a top-level :class:`CheckResultSet` error as a wire result.
-
-    The audit — module-load failure / timeout / executor crash — travels to
-    the host under the reserved :data:`_CHECK_EXECUTOR_ERROR_NAME` sentinel
-    so the reasons string is not the only place it survives.
-    """
-    return pb2.CustomCheckResult(
-        check_name=_CHECK_EXECUTOR_ERROR_NAME,
-        status="error",
-        score=0.0,
-        message=error,
-        details_json="",
-    )
 
 
 def _tool_registered_for_trial(name: str, registered: Collection[str]) -> str | None:
@@ -693,13 +602,26 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         Args:
             db_client: HTTP client for DB Service communication
             rag_client: Optional RAG service client for search tools
-            check_executor: Executor for the pack's ``checks.py``. Defaults to the
-                in-process :class:`CheckRunner`; tests inject
+            check_executor: Executor for the pack's ``checks.py``. Defaults to
+                the ``check_runner`` entry point of
+                ``tolokaforge.custom_check_executors``; tests inject
                 :class:`InMemoryCheckExecutor`.
         """
         self.db_client = db_client
         self.rag_client = rag_client
-        self.check_executor: CheckExecutor = check_executor or CheckRunner()
+        self.check_executor: CheckExecutor = (
+            check_executor
+            if check_executor is not None
+            else load_custom_check_executor("check_runner")()
+        )
+        self._judge_model_provider: JudgeModelProvider = load_judge_model_provider("litellm")()
+        self._transcript_rule_matcher: TranscriptRuleMatcher = load_transcript_rule_matcher(
+            "default"
+        )()
+        self._state_check_backends: dict[str, StateCheckBackend] = {
+            "jsonpath": load_state_check_backend("jsonpath")(),
+            "db_probes": load_state_check_backend("db_probes")(),
+        }
         self.trials: dict[str, TrialContextRuntime] = {}
         self._available_adapters = list(BUILTIN_ADAPTERS)
         self._artifact_dirs: dict[str, Path] = {}  # trial_id -> temp dir for cleanup
@@ -789,50 +711,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     def _extract_tool_artifacts(self, trial_id: str, artifacts: dict[str, str]) -> Path:
         """Extract base64-encoded tool artifacts to a temp directory.
 
-        Adds the temp directory to sys.path so tool modules can be imported.
-
-        Args:
-            trial_id: Trial identifier (for logging)
-            artifacts: dict of {relative_path: base64_content}
-
-        Returns:
-            Path to the temp directory containing extracted files
+        Delegates the extraction body to the shared
+        :func:`tolokaforge.core.grading.tool_artifacts.extract_tool_artifacts`
+        helper, then records the returned directory on
+        :attr:`_artifact_dirs` so :meth:`_cleanup_trial_artifacts` /
+        :meth:`shutdown` can remove it from ``sys.path`` and delete the
+        tree when the trial ends.
         """
-        import base64
-        import tempfile
+        from tolokaforge.core.grading.tool_artifacts import extract_tool_artifacts
 
-        safe_trial_id = trial_id.replace(":", "_").replace("/", "_")
-        extract_dir = Path(tempfile.mkdtemp(prefix=f"tolokaforge-artifacts-{safe_trial_id}-"))
-
-        for rel_path, b64_content in artifacts.items():
-            out_path = extract_dir / rel_path
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            content = base64.b64decode(b64_content)
-            out_path.write_bytes(content)
-
-        # Add to sys.path so tool modules can be imported
-        # Add the extract_dir itself (for packages like mcp_core/)
-        extract_str = str(extract_dir)
-        if extract_str not in sys.path:
-            sys.path.insert(0, extract_str)
-
-        # Also add tools/ subdirectory if it exists (some adapter layouts place
-        # their tool packages under a 'tools/' folder rather than the artifact root)
-        tools_dir = extract_dir / "tools"
-        if tools_dir.exists():
-            tools_str = str(tools_dir)
-            if tools_str not in sys.path:
-                sys.path.insert(0, tools_str)
-
-        # Track for cleanup
+        extract_dir = extract_tool_artifacts(trial_id, artifacts)
         self._artifact_dirs[trial_id] = extract_dir
-
-        logger.info(
-            "Extracted %d artifacts to %s, added to sys.path",
-            len(artifacts),
-            extract_dir,
-        )
-
         return extract_dir
 
     def _resolve_mcp_server_scripts(
@@ -1684,40 +1573,58 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error=f"Grading error: {type(e).__name__}: {str(e)}",
             )
 
-    async def _assemble_jsonpath_state(
-        self, trial_id: str, *, fetch_db: bool = True
-    ) -> dict[str, Any]:
-        # Feeds path: jsonpath state_checks. Two roots: "db"/"tables" carry
-        # the DB service's stable state (empty when the trial has no DB —
-        # filesystem-only tasks); "filesystem" mirrors the agent-visible
-        # directory back out. Harness-mode trials read the tree from inside
-        # the trial container via the exec-wrapper; every other trial mirrors
-        # /work/ under the logical /env/fs/agent-visible/ layout the task
-        # YAML asserts against, so
-        # ``$.filesystem['/env/fs/agent-visible/foo.py']`` matches the file
-        # the agent actually edited.
-        db_state: dict[str, Any] = {}
-        try:
-            if fetch_db:
-                stable = await self.db_client.get_stable_state(trial_id)
-                db_state = stable.data
-        except DBTrialNotFoundError:
-            # Filesystem-only tasks never call db_client.init_trial(), so an
-            # absent DB is the expected shape. For tasks that DID declare a
-            # DB this same branch fires and downstream ``$.db.*`` assertions
-            # surface as "Path not found" — log at warn so ops see the real
-            # cause rather than debugging per-assertion failures.
-            logger.warning(
-                f"GradeTrial: {trial_id} - DB trial not found; grading with empty DB state"
-            )
-        filesystem = await self._read_filesystem_for_state(trial_id)
-        return {
-            "db": db_state,
-            "tables": db_state,
-            "filesystem": filesystem,
-        }
+    def _build_grading_substrate(
+        self, trial_id: str, trial_context: TrialContextRuntime
+    ) -> GradingSubstrate:
+        """The single :class:`InProcessGradingSubstrate` the composite reads.
 
-    async def _read_filesystem_for_state(self, trial_id: str) -> dict[str, str]:
+        Three factories carry the runner's DB / filesystem reads: STABLE for
+        jsonpath, RAW for judge state-diff and custom_checks, and the
+        agent-visible-filesystem walk for path-glob assertions. Each is
+        memoised on first accessor call so a component the pack never
+        reaches for costs no round-trip. ``initial_state`` rides
+        ``TaskDescription.initial_state.tables`` — the pre-execution shape
+        the judge diffs against.
+
+        Filesystem reads are harness-aware: a trial whose adapter emitted
+        ``agent_harness_command`` + ``agent_visible_dir`` gets its tree
+        snapshotted from inside its own container via the exec-wrapper;
+        every other trial reads back the runner's own ``AGENT_WORK_DIR``.
+        """
+        loop = self._loop
+        db_client = self.db_client
+
+        class _LoopBridgeDBReader:
+            """Sync :class:`DBReader` seam bridging to the async DB client on ``loop``."""
+
+            def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:
+                fut = asyncio.run_coroutine_threadsafe(db_client.get_state(trial_id, tables), loop)
+                return fut.result(timeout=30.0).data
+
+            def query(self, jsonpath: str) -> dict[str, Any]:
+                fut = asyncio.run_coroutine_threadsafe(db_client.query(trial_id, jsonpath), loop)
+                return {"results": fut.result(timeout=30.0).results}
+
+        def _get_raw_state() -> dict[str, Any]:
+            return self._run_async(self.db_client.get_state(trial_id)).data
+
+        def _get_stable_state() -> dict[str, Any]:
+            return self._run_async(self.db_client.get_stable_state(trial_id)).data
+
+        def _get_filesystem_state() -> dict[str, str]:
+            return self._read_filesystem_for_state(trial_id)
+
+        return InProcessGradingSubstrate(
+            db_reader=_LoopBridgeDBReader(),
+            knowledge_search=trial_context.resolve_kb_search(),
+            filesystem_root=self._judge_workspace_dir(trial_context),
+            initial_state=trial_context.task_description.initial_state.tables or {},
+            final_state_factory=_get_raw_state,
+            final_state_stable_factory=_get_stable_state,
+            filesystem_state_factory=_get_filesystem_state,
+        )
+
+    def _read_filesystem_for_state(self, trial_id: str) -> dict[str, str]:
         """Snapshot the trial's agent-visible files for jsonpath grading.
 
         Routes on task metadata: a trial whose adapter emitted
@@ -1727,6 +1634,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         drive the CLI is the same one used here to enumerate the tree under
         the container's agent-visible dir; every other trial reads back the
         runner's own ``AGENT_WORK_DIR``.
+
+        Sync: the substrate's ``filesystem_state_factory`` is invoked from a
+        worker thread inside :meth:`loop.run_in_executor`, so the blocking
+        exec + workdir walk here land off-loop without further wrapping.
         """
         trial_context = self.trials.get(trial_id)
         if trial_context is not None:
@@ -1735,13 +1646,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             if metadata.get("agent_harness_command") and isinstance(agent_visible_dir, str):
                 bash_tool = _first_docker_compose_exec_tool(trial_context.agent_tools.values())
                 if bash_tool is not None:
-                    loop = asyncio.get_event_loop()
-                    return await loop.run_in_executor(
-                        None,
-                        snapshot_container_filesystem,
-                        bash_tool._exec_sync,
-                        agent_visible_dir,
-                    )
+                    return snapshot_container_filesystem(bash_tool._exec_sync, agent_visible_dir)
                 logger.warning(
                     f"GradeTrial: {trial_id} - harness trial has no exec-capable tool; "
                     "falling back to the runner's own /work/ walk"
@@ -1846,6 +1751,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error=f"Trial {trial_id!r} is not gradeable: {type(exc).__name__}: {exc}",
             )
 
+        # One substrate carries every read the composite evaluators need. Its
+        # three factories memoise on first accessor call so a component the
+        # config never reaches for costs no DB round-trip and no filesystem
+        # walk (jsonpath scoring reads STABLE, judge state-diff + custom_checks
+        # read RAW, jsonpath reshaping merges the filesystem in).
+        substrate = self._build_grading_substrate(trial_id, trial_context)
+
         # Get state_checks config (may name a hash source)
         state_checks_config = grading_config.state_checks
 
@@ -1892,49 +1804,36 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # `enabled: true` is set.
             accounted_keys.update(hash_family_skip_accounting(HASH_DISABLED_SKIP))
 
-        # A.2) JSONPATH ASSERTIONS (if jsonpath_checks exist)
-        if state_checks_config and state_checks_config.jsonpath_checks:
-            logger.info(
-                f"GradeTrial: {trial_id} - Evaluating "
-                f"{len(state_checks_config.jsonpath_checks)} jsonpath checks"
+        # A.2/A.3) JSONPATH ASSERTIONS + DB PROBES.
+        # The composite gates each read on the config's shape: a path-glob-only
+        # pack fetches nothing; a DB-addressing pack fetches only STABLE DB
+        # state; a filesystem-only-``path:`` pack fetches only the workspace
+        # walk. A probe score is the state_checks component's only source —
+        # a hash verdict or a jsonpath score declared beside a probe is
+        # refused up front.
+        if state_checks_config and (
+            state_checks_config.jsonpath_checks or state_checks_config.db_probes
+        ):
+            # The composite is sync so its substrate reads (which bridge back to
+            # this loop via ``run_coroutine_threadsafe``) land off-loop. Running
+            # it directly on the loop would deadlock at the first factory call.
+            state_reads_result = await self._loop.run_in_executor(
+                None,
+                lambda: composite.grade_state_checks_reads(
+                    trial_id=trial_id,
+                    config=state_checks_config,
+                    substrate=substrate,
+                    state_check_backends=self._state_check_backends,
+                    logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
+                ),
             )
-            # Only assemble a state dict when at least one assertion targets
-            # it via ``path:``. File-only (``path_glob:``) checks never needed
-            # a state dict; they read files off disk directly via
-            # ``evaluate_jsonpath_file_checks``. The DB round-trip inside the
-            # assembly is further gated on a check actually addressing the
-            # database, so a filesystem-only pack costs no DB call and gains
-            # no DB failure mode.
-            jsonpath_checks = state_checks_config.jsonpath_checks
-            jsonpath_state = None
-            if any(check.get("path") is not None for check in jsonpath_checks):
-                jsonpath_state = await self._assemble_jsonpath_state(
-                    trial_id,
-                    fetch_db=any(addresses_the_database(check) for check in jsonpath_checks),
-                )
-            jsonpath_score, jsonpath_reasons = evaluate_jsonpath_checks(
-                jsonpath_checks,
-                state=jsonpath_state,
-            )
-            components.jsonpath_score = jsonpath_score
-            components.jsonpath_reasons = jsonpath_reasons
-            accounted_keys[JSONPATHS_KEY] = EVALUATED
-            logger.info(f"GradeTrial: {trial_id} - Jsonpath checks: score={jsonpath_score:.2f}")
-
-        # A.3) DB PROBES (substrate SQL assertions) — the block's only state source:
-        # a hash verdict or a jsonpath score declared beside a probe is refused, so a
-        # probe score is the state_checks component rather than one of two candidates.
-        if state_checks_config and state_checks_config.db_probes:
-            logger.info(
-                f"GradeTrial: {trial_id} - Evaluating "
-                f"{len(state_checks_config.db_probes)} db probes"
-            )
-            probes = [probe.model_dump() for probe in state_checks_config.db_probes]
-            db_probe_score, db_probe_reasons = await evaluate_db_probes(probes)
-            components.db_probe_score = db_probe_score
-            components.db_probe_reasons = db_probe_reasons
-            accounted_keys[DB_PROBES_KEY] = EVALUATED
-            logger.info(f"GradeTrial: {trial_id} - DB probes: score={db_probe_score:.2f}")
+            if state_reads_result.jsonpath_score is not None:
+                components.jsonpath_score = state_reads_result.jsonpath_score
+                components.jsonpath_reasons = state_reads_result.jsonpath_reasons
+            if state_reads_result.db_probe_score is not None:
+                components.db_probe_score = state_reads_result.db_probe_score
+                components.db_probe_reasons = state_reads_result.db_probe_reasons
+            accounted_keys.update(state_reads_result.accounted_keys)
 
         # B) TRANSCRIPT RULES GRADING (if transcript_rules exist)
         transcript_rules_config = grading_config.transcript_rules
@@ -1972,7 +1871,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             if llm_messages:
                 logger.info(f"GradeTrial: {trial_id} - Evaluating LLM judge")
                 judge_result = await self._grade_llm_judge(
-                    trial_id, llm_judge_config, llm_messages, trial_context
+                    trial_id, llm_judge_config, llm_messages, trial_context, substrate=substrate
                 )
                 accounted_keys[LLM_JUDGE_KEY] = EVALUATED
                 judge_reasons = judge_result.reasons
@@ -2025,7 +1924,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             custom_checks_score,
             custom_check_wire_results,
             custom_checks_reasons,
-        ) = await self._grade_custom_checks(trial_id, trial_context, llm_messages)
+        ) = await self._grade_custom_checks(
+            trial_id, trial_context, llm_messages, substrate=substrate
+        )
         components.custom_checks_score = custom_checks_score
         # A pack that wrote the block but left it off never reaches the executor,
         # so the key is populated with nothing consuming it — the same shape as
@@ -2210,56 +2111,33 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         transcript_rules_config: TranscriptRulesConfig,
         timeline: TrialTimeline,
     ) -> tuple[TranscriptEvaluationResult | None, dict[str, KeyAccountingRecord]]:
-        """Score the pack's transcript rules, returning ``(result, accounted keys)``.
+        """Runner-side wrapper for :func:`tolokaforge.core.grading.composite.grade_transcript_rules`.
 
-        Which rules an events-less timeline leaves evaluable is
-        :func:`scored_transcript_rules`, shared with the core engine so the fold
-        does not depend on which substrate graded the trial. A ``None`` result is
-        that decision coming back empty. When it comes back as the activity floor
-        alone, the floor's siblings are recorded as skipped — the blanket skip goes
-        down first so the floor's own record survives it.
+        The composite owns the dispatch every deployment topology runs;
+        this wrapper preserves the runner's internal callsite shape.
         """
-        scored_rules = scored_transcript_rules(timeline, transcript_rules_config)
-        if scored_rules is None:
-            logger.info(
-                f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool calls)"
-            )
-            return None, dict.fromkeys(transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP)
+        from tolokaforge.core.grading.composite import grade_transcript_rules
 
-        skipped_siblings: dict[str, KeyAccountingRecord] = {}
-        if timeline.events:
-            logger.info(f"GradeTrial: {trial_id} - Evaluating transcript rules")
-        else:
-            logger.info(
-                f"GradeTrial: {trial_id} - Evaluating the activity floor alone "
-                "(no messages or tool calls)"
-            )
-            skipped_siblings = dict.fromkeys(
-                transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP
-            )
-
-        result = evaluate_transcript_rules(timeline, scored_rules)
-        return result, {**skipped_siblings, **result.accounted_keys}
+        return grade_transcript_rules(
+            trial_id=trial_id,
+            config=transcript_rules_config,
+            timeline=timeline,
+            matcher=self._transcript_rule_matcher,
+            logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
+        )
 
     def _grade_trace_checks(
         self, trial_id: str, config: TraceChecksConfig, timeline: TrialTimeline
     ) -> TraceChecksResult:
-        """Score the pack's trace checks over the timeline both substrates build.
+        """Runner-side wrapper for :func:`tolokaforge.core.grading.composite.grade_trace_checks` (ADR-0040)."""
+        from tolokaforge.core.grading.composite import grade_trace_checks
 
-        A result carrying no constraint verdicts is the trial that left no trace
-        of itself — a timeline with neither a conversational turn nor a tool call
-        — where every constraint would score against evidence the trial does not
-        have. The component is then left out of the combine, and the evaluator's
-        own accounting records the skip against each kind the block declared.
-        """
-        result = evaluate_trace_checks(timeline, config)
-        if not result.constraints:
-            logger.info(
-                f"GradeTrial: {trial_id} - Skipping trace checks (no messages or tool calls)"
-            )
-            return result
-        logger.info(f"GradeTrial: {trial_id} - Trace checks: score={result.score:.2f}")
-        return result
+        return grade_trace_checks(
+            trial_id=trial_id,
+            config=config,
+            timeline=timeline,
+            logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
+        )
 
     async def _grade_llm_judge(
         self,
@@ -2267,56 +2145,31 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         llm_judge_config: "LLMJudgeConfig",
         llm_messages: list[dict[str, Any]],
         trial_context: TrialContextRuntime,
+        *,
+        substrate: GradingSubstrate,
     ) -> "JudgeResult":
-        """Run the read-only rubric judge for one trial.
+        """Delegate to :func:`composite.grade_llm_judge` over the runner's substrate.
 
-        Async/sync bridge: ``_grade_trial_async`` runs ON the dedicated event
-        loop thread. The judge loop (``LLMJudge.run``) is synchronous and the
-        DB client is async, so we run the judge in a *thread executor*
-        (``run_in_executor``) and give its read-only DB tools a ``DBReader`` that
-        bridges each call back to this loop via
-        ``asyncio.run_coroutine_threadsafe`` — safe because the executor thread is
-        never the loop thread. Nothing here can deadlock the loop.
+        The composite owns the judge dispatch (rubric plumbing, forwarding to
+        the resolved :class:`RubricEvaluator`); this wrapper collects the
+        trial-context passthroughs (judge ``ModelConfig``, ``search_policy``
+        connector reuse), constructs the ``RubricEvaluator`` from the run-level
+        :attr:`_judge_model_provider` and per-trial customization flags,
+        renders the ``initial → final`` state diff for the evaluator's opening
+        message, and delegates. The ``InProcessGradingSubstrate`` built once
+        by :meth:`_build_grading_substrate` at the outer level is shared
+        here — the judge's read-only DB tools go through
+        ``substrate.db_reader()``, the same ``_LoopBridgeDBReader`` closure the
+        state-checks path uses.
 
-        Narrow input surface: only ``{agent_system_prompt, transcript, rubric,
-        read-tools}`` are passed; the deterministic-oracle config never reaches
-        the judge.
+        Sync-in-async: :func:`composite.grade_llm_judge` is a sync function whose
+        substrate reads (and the evaluator's own DB tool calls) bridge back to
+        this loop via ``run_coroutine_threadsafe``; driving it on the loop thread
+        would deadlock at the first call. ``run_in_executor`` lands the work on
+        a worker thread so the bridges resolve.
         """
-        loop = self._loop
-        db_client = self.db_client
-
-        class _LoopBridgeDBReader:
-            """Synchronous read seam bridging to the async DB client on ``loop``."""
-
-            def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:
-                fut = asyncio.run_coroutine_threadsafe(db_client.get_state(trial_id, tables), loop)
-                return fut.result(timeout=30.0).data
-
-            def query(self, jsonpath: str) -> dict[str, Any]:
-                fut = asyncio.run_coroutine_threadsafe(db_client.query(trial_id, jsonpath), loop)
-                return {"results": fut.result(timeout=30.0).results}
-
-        # Agent policy comes from the transcript's leading system message (the
-        # only oracle-free policy signal the runner has). Split from the
-        # transcript so it is injected as policy, not replayed as a turn.
-        agent_system_prompt, transcript = split_leading_system_message(list(llm_messages))
-
-        # search_kb only when a KnowledgeSearch was resolved for THIS trial at
-        # setup — the SAME per-trial index the agent's KB tool searched. Faithful
-        # gating: agent had a KB ⇒ judge gets the same KB; none ⇒ no tool. This
-        # replaces the old ``rag_url = self.rag_client.base_url`` path, which
-        # keyed on container-level client existence and hit the wrong (global)
-        # index.
-        kb_search = trial_context.resolve_kb_search()
-        # TypeSense KB plane: if the agent had the read-only ``search_policy`` tool
-        # (the documented mcp_core TypeSense connector), let the judge reuse THAT
-        # EXACT reconstructed tool via a read-only passthrough — same tool, query,
-        # backend, and ranking the agent saw. This is orthogonal to the rag
-        # ``kb_search`` path above; both end as read-only tools in the judge
-        # registry. See ``_build_judge_search_policy_tools``.
-        extra_read_tools = self._build_judge_search_policy_tools(trial_context)
-        # File readers only when a real workspace exists on this runner.
-        workspace_dir = self._judge_workspace_dir(trial_context)
+        from tolokaforge.core.grading.composite import grade_llm_judge
+        from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorContext
 
         # The judge model is a run-level config that rides the TrialSpec. The
         # orchestrator validates up front that it is present whenever any selected
@@ -2331,34 +2184,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 "models.judge; the orchestrator should have rejected this run up front."
             )
 
-        # Diff-first default: hand the judge the initial → final state delta (the
-        # agent's own edits) as its primary view of the outcome, instead of it
-        # dumping the whole final DB via get_db_state. This is NOT the
-        # trial-vs-golden diff (that would leak the oracle and bias grading, see
-        # docs/RUBRIC_GRADING_DESIGN.md #7/#8) — it reveals only what the agent changed.
-        # Persisted for free: the opening message it lands in is captured into
-        # judge_trajectory.yaml. Computed here on the loop thread where both
-        # states are in hand.
-        #
-        # This is an aid to the judge, not a grade component: if building it
-        # fails (DB read hiccup, unexpected state shape), degrade to no diff
-        # rather than failing the whole grade — the judge still has its read-only
-        # tools, and the hash / jsonpath components already computed must not be
-        # discarded. The judge's OWN fail-loud contract still governs grading;
-        # this only guards the optional context we hand it.
-        try:
-            state_diff_text = await self._build_judge_state_diff(trial_id, trial_context)
-        except Exception as exc:  # noqa: BLE001 — optional context, never fail the grade
-            logger.warning(
-                "Failed to build judge state diff; grading without it "
-                f"(trial_id={trial_id}, error={exc})"
-            )
-            state_diff_text = None
+        initial_state = trial_context.task_description.initial_state
+        id_fields = self._id_fields_for_trial(trial_id)
+        unstable_fields = {(u.table_name, u.field_name) for u in initial_state.unstable_fields}
+        # TypeSense KB plane: if the agent had the read-only ``search_policy`` tool
+        # (the documented mcp_core TypeSense connector), let the judge reuse THAT
+        # EXACT reconstructed tool via a read-only passthrough — same tool, query,
+        # backend, and ranking the agent saw. Agent-tool coupling keeps this seam
+        # runner-side; the composite receives the resolved list.
+        extra_read_tools = self._build_judge_search_policy_tools(trial_context)
 
-        # Judge-side tool gating. The agent's tool surface is
-        # untouched: the runner still resolves kb_search / extra_read_tools
-        # faithfully above; the judge withholds the KB-tagged ones by construction
-        # when the effective customization asks for it. Absent/None → False.
         customization = llm_judge_config.customization
         disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
         custom_system_prompt = customization.system_prompt if customization else None
@@ -2367,198 +2202,78 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             if customization and customization.include_agent_system_prompt is not None
             else True
         )
-
-        def _run() -> JudgeResult:
-            return LLMJudge(
-                judge_model_config,
+        rubric_evaluator = load_rubric_evaluator("llm_judge")(
+            RubricEvaluatorContext(
+                judge_model_provider=self._judge_model_provider,
                 disable_knowledge_search=disable_knowledge_search,
                 custom_system_prompt=custom_system_prompt,
                 include_agent_system_prompt=include_agent_system_prompt,
-            ).run(
-                rubric=llm_judge_config.rubric,
-                agent_system_prompt=agent_system_prompt,
-                transcript=transcript,
-                db_reader=_LoopBridgeDBReader(),
-                kb_search=kb_search,
+            )
+        )
+
+        def _run() -> "JudgeResult":
+            state_diff_text = composite.build_judge_state_diff(
+                trial_id=trial_id,
+                substrate=substrate,
+                initial_state_schemas=list(initial_state.schemas),
+                id_fields=id_fields,
+                unstable_fields=unstable_fields,
+                logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
+            )
+            return grade_llm_judge(
+                trial_id=trial_id,
+                config=llm_judge_config,
+                substrate=substrate,
+                rubric_evaluator=rubric_evaluator,
+                llm_messages=llm_messages,
+                judge_model_config=judge_model_config,
                 extra_read_tools=extra_read_tools,
-                workspace_dir=workspace_dir,
                 state_diff=state_diff_text,
+                logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
             )
 
-        return await loop.run_in_executor(None, _run)
+        return await self._loop.run_in_executor(None, _run)
 
     async def _grade_custom_checks(
         self,
         trial_id: str,
         trial_context: TrialContextRuntime,
         llm_messages: list[dict[str, Any]],
+        *,
+        substrate: GradingSubstrate,
     ) -> tuple[float, list["pb2.CustomCheckResult"], str | None]:
-        """Run the pack's ``checks.py`` against the trial's evidence.
+        """Delegate to :func:`composite.grade_custom_checks` over the runner's substrate.
 
-        Returns ``(score, wire_results, reason)``. The reason is the sentence
-        :func:`custom_checks_reason` renders and is what ``Grade.reasons`` carries
-        for this component; every return that ran or tried to run supplies one, so a
-        suite that failed before it started still says why. ``None`` is reserved for
-        the one case with no suite to describe: a pack that declared no
-        ``custom_checks`` block or disabled the one it declared.
+        The composite owns the custom-checks dispatch (config normalisation,
+        artifacts-dir gating, degrade-to-empty on DB failure, executor drive,
+        wire-result wrapping). This wrapper hands it the runner-owned pieces —
+        the per-trial ``artifacts_dir``, the sync :class:`CheckExecutor`, the
+        parsed ``TaskDescription``, and the ``InProcessGradingSubstrate`` built
+        once by :meth:`_build_grading_substrate` at the outer level and shared
+        with the state-checks + judge paths.
 
-        A missing/disabled config returns
-        ``(-1.0, [], None)`` so :func:`combine_grade_components` treats the
-        component as not-evaluated (the empty-active-set guard then fires
-        for a custom-checks-only pack instead of silently passing).
-
-        On executor error (missing ``checks.py``, module load failure,
-        timeout): a sentinel wire entry preserves the audit, and the score
-        follows ``fail_on_error`` — ``0.0`` when true (contributes to the
-        weighted total as a fail), ``-1.0`` when false (component not
-        evaluated).
-
-        A suite that ran and decided nothing — every check skipped, or the
-        file declared none — also returns ``-1.0``, the same answer the core
-        engine reaches through the shared
-        :attr:`CheckResultSet.decided_something`. Its aggregate over zero
-        verdicts is ``0.0``, which would fold as a component that failed.
+        Sync-in-async: :func:`composite.grade_custom_checks` is a sync function
+        whose ``substrate.final_state`` bridge to :meth:`db_client.get_state`
+        blocks via ``run_coroutine_threadsafe``, and whose ``check_executor.run``
+        is itself blocking. ``run_in_executor`` lands both on a worker thread so
+        the bridges resolve rather than deadlocking on this loop.
         """
+        from tolokaforge.core.grading.composite import grade_custom_checks
+
         grading_config = trial_context.grading_config
         custom_config_raw = grading_config.custom_checks if grading_config else None
-        if not custom_checks_enabled(custom_config_raw):
-            return -1.0, [], None
-
-        config = CustomChecksConfig(**custom_config_raw)
-
-        artifacts_dir = self._artifact_dirs.get(trial_id)
-        if artifacts_dir is None:
-            error_msg = (
-                f"custom_checks.enabled but no artifacts_dir for trial {trial_id!r} "
-                "(checks.py was not delivered by the adapter)"
-            )
-            logger.error("GradeTrial: %s - %s", trial_id, error_msg)
-            score = 0.0 if config.fail_on_error else -1.0
-            return (
-                score,
-                [_executor_error_to_wire(error_msg)],
-                custom_checks_reason(CheckResultSet(error=error_msg)),
-            )
-        checks_file = artifacts_dir / config.file
-
-        task_description = trial_context.task_description
-        initial_tables = task_description.initial_state.tables
-        initial_state_json_db: dict[str, Any] | None = (
-            dict(initial_tables) if initial_tables else None
-        )
-
-        # Try to fetch the trial's final DB state. On failure — DB Service
-        # unreachable, trial never registered (empty initial_state skips the
-        # init in ``RegisterTrial`` above), etc. — degrade to an empty
-        # ``final_env_state`` so ``build_check_context`` still gets a
-        # well-formed input and the check runs against an honest empty state
-        # rather than crashing the grade path. Any real state a tool call
-        # wrote to a functional DB is preserved (matches the substrate parity
-        # test's expectation that a fixture DB with data drives discrimination
-        # even when ``initial_state.tables`` is empty).
-        try:
-            final_state_response = await self.db_client.get_state(trial_id)
-            final_env_state: dict[str, Any] = final_state_response.data
-        except (  # noqa: BLE001 — grade path degrades to empty state; the DB failure surfaces via component metadata, not a crash
-            Exception
-        ) as exc:
-            logger.warning(
-                "GradeTrial: %s - final DB state fetch failed (%s); grading against empty state",
-                trial_id,
-                exc,
-            )
-            final_env_state = {}
-
-        ctx = build_check_context(
-            initial_state_json_db=initial_state_json_db,
-            final_env_state=final_env_state,
-            transcript=_build_runner_check_transcript(llm_messages),
-            task=TaskContext(
-                task_id=task_description.task_id,
-                task_name=task_description.name,
-                task_description=task_description.description,
-                domain=task_description.category or "",
+        return await self._loop.run_in_executor(
+            None,
+            lambda: grade_custom_checks(
+                trial_id=trial_id,
+                config=custom_config_raw,
+                substrate=substrate,
+                llm_messages=llm_messages,
+                task_description=trial_context.task_description,
+                artifacts_dir=self._artifact_dirs.get(trial_id),
+                check_executor=self.check_executor,
+                logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
             ),
-        )
-
-        logger.info(f"GradeTrial: {trial_id} - Running custom checks from {checks_file}")
-        try:
-            result: CheckResultSet = await self._loop.run_in_executor(
-                None,
-                lambda: self.check_executor.run(
-                    checks_file=checks_file,
-                    task_dir=artifacts_dir,
-                    ctx=ctx,
-                    config=config,
-                ),
-            )
-        except Exception as exc:
-            # An executor that raises rather than capturing into
-            # :class:`CheckResultSet` is a contract violation; convert it to
-            # the same sentinel-entry shape as ``result.error`` so the audit
-            # survives and the whole trial's grade is not lost to the outer
-            # handler.
-            logger.exception(
-                "GradeTrial: %s - custom checks executor raised",
-                trial_id,
-            )
-            score = 0.0 if config.fail_on_error else -1.0
-            return (
-                score,
-                [_executor_error_to_wire(str(exc))],
-                custom_checks_reason(CheckResultSet(error=str(exc))),
-            )
-
-        wire_results = [_check_result_to_wire(r) for r in result.results]
-        reason = custom_checks_reason(result)
-
-        if result.error:
-            logger.error(
-                "GradeTrial: %s - custom checks executor error: %s",
-                trial_id,
-                result.error,
-            )
-            wire_results.append(_executor_error_to_wire(result.error))
-            score = 0.0 if config.fail_on_error else -1.0
-            return score, wire_results, reason
-
-        logger.info(
-            f"GradeTrial: {trial_id} - custom checks: "
-            f"{result.passed}/{result.total} passed, score={result.aggregate_score:.2f}"
-        )
-        if not result.decided_something:
-            return -1.0, wire_results, reason
-        return result.aggregate_score, wire_results, reason
-
-    async def _build_judge_state_diff(
-        self, trial_id: str, trial_context: TrialContextRuntime
-    ) -> str | None:
-        """Render the ``initial → final`` DB state diff for the judge, or ``None``.
-
-        Returns ``None`` when there is no DB client or no initial-state tables for
-        this trial (e.g. non-DB tasks) — the judge then falls back to its
-        read-only tools. Otherwise fetches the raw final state (the same shape
-        ``get_db_state`` returns) and diffs it against the pre-run initial tables,
-        matching rows on the trial's declared ``state_checks.id_fields`` key
-        (layered over the task schemas' primary keys) and dropping
-        ``unstable_fields`` as noise so the diff shows only meaningful edits.
-        """
-        db_client = self.db_client
-        task_desc = trial_context.task_description
-        initial_state = task_desc.initial_state if task_desc else None
-        if db_client is None or initial_state is None or not initial_state.tables:
-            return None
-        final_state = (await db_client.get_state(trial_id)).data
-        primary_keys: dict[str, str | list[str]] = {
-            s.table_name: s.primary_key for s in initial_state.schemas
-        }
-        primary_keys.update(self._id_fields_for_trial(trial_id))
-        unstable_fields = {(u.table_name, u.field_name) for u in initial_state.unstable_fields}
-        return render_state_diff(
-            initial_state.tables,
-            final_state,
-            primary_keys=primary_keys,
-            unstable_fields=unstable_fields,
         )
 
     def _resolve_judge_kb_search(

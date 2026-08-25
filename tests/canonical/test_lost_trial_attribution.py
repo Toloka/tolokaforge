@@ -219,13 +219,21 @@ def test_a_lost_trial_is_counted_against_the_run_and_scored_not_at_all(
     describing agent performance with a fault of ours.
     """
     trajectory, _, _ = loop_route
-    backend = MagicMock()
-    grader = RunnerRPCTrialGrader(runtime_backend=backend, logger=MagicMock())
+    # PR #1202 migrated ``RunnerRPCTrialGrader`` off a live ``runtime_backend``
+    # onto an injectable ``runner_client``. The intent — a TRIAL_LOST
+    # trajectory returns ``None`` without dialing the runner — is unchanged;
+    # only the injection surface moved.
+    runner_client = MagicMock()
+    grader = RunnerRPCTrialGrader(
+        runner_address="ignored:0",
+        logger=MagicMock(),
+        runner_client=runner_client,
+    )
 
     trajectory.grade = grader.grade(make_trial_spec(), trajectory, "You are an agent.")
 
     assert trajectory.grade is None
-    backend.grade_trial.assert_not_called()
+    runner_client.grade_trial.assert_not_called()
 
     passed = make_trajectory(termination_reason=TerminationReason.AGENT_DONE)
     passed.grade = Grade(

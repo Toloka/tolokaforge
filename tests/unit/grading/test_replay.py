@@ -35,7 +35,7 @@ from tests.unit.grading.test_judge import ScriptedClient
 from tests.utils.five_shape_run import write_five_shape_run
 from tests.utils.provision_failure import write_provision_failure_bundle
 from tolokaforge.core.failure_attribution import TrialOutcomeClass
-from tolokaforge.core.grading.judge import JudgeStatus as JudgeRunStatus
+from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.replay import (
     REPLAY_UNAVAILABLE,
     FidelityMode,

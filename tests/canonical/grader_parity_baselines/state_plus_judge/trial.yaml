@@ -1,0 +1,13 @@
+trial_id: state_plus_judge:0
+termination_reason: agent_done
+judge_model_config:
+  provider: openai
+  name: gpt-4o-mini
+  temperature: 0.0
+llm_messages:
+  - role: system
+    content: You are a test assistant.
+  - role: user
+    content: Please confirm order O1 shipped.
+  - role: assistant
+    content: Order O1 has been shipped.

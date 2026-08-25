@@ -43,7 +43,13 @@ from pydantic import ValidationError
 
 from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
-from tolokaforge.core.grading.transcript_wire import encode_transcript_wire
+from tolokaforge.core.grading.judge import LLMJudge
+from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
+from tolokaforge.core.grading.replay import build_replay_grade
+from tolokaforge.core.grading.transcript_wire import (
+    encode_transcript_wire,
+    split_leading_system_message,
+)
 from tolokaforge.core.models import (
     CriterionResult,
     CustomCheckDetail,
@@ -60,8 +66,10 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.trial import TrialSpec
+from tolokaforge.grader.wire_snapshot import build_grade_request_fields
 
 if TYPE_CHECKING:
+    from tolokaforge.core.llm.client import LLMClient
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.plugin_registry import TrialGraderContext
     from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
@@ -286,6 +294,26 @@ def _split_trial_id(trial_id: str) -> tuple[str, int]:
     return task_id, int(idx_s)
 
 
+def _refuse_hash_grading_on_grader_rpc(spec: TrialSpec) -> None:
+    """Fail loud when a hash-enabled task is dispatched over ``grader_rpc``.
+
+    The grader-side substrate (:class:`LiveRunnerCallbackGradingSubstrate`) is
+    read-only: it dials the runner's ``SubstrateService`` for state reads and
+    exposes no snapshot / reset / replay path. Hash grading depends on
+    replaying ``golden_actions`` against a reset initial state — the substrate
+    surface required to do that ships only inside the runner. Refuse at the
+    client so the misconfiguration surfaces without a gRPC round-trip and the
+    error names the actionable branch the operator has.
+    """
+    state_checks = spec.task.grading.state_checks
+    if state_checks is not None and state_checks.hash_enabled:
+        raise GradingFailedError(
+            "grader_rpc cannot execute hash-based grading — the substrate is "
+            "read-only. Configure grader: runner_rpc for this task, or "
+            "disable hash_enabled."
+        )
+
+
 def _parse_trace_check_results(payload: list[dict[str, Any]]) -> list[TraceConstraintResult]:
     """The runner's per-constraint trace-check verdicts, or a grading failure.
 
@@ -508,6 +536,21 @@ class JudgeBackedTrialGrader:
             )
             return None
 
+        if trajectory.termination_reason == TerminationReason.TRIAL_LOST:
+            # Same shape as ``RunnerRPCTrialGrader``: a trial the runner
+            # lost is never counted as an agent failure. Returning
+            # ``None`` keeps the trial ungradeable — in the denominator
+            # of ``total_trials`` but excluded from every rate — while
+            # ``Grade(binary_pass=False)`` would score it as an agent
+            # miss the measurement does not support.
+            self.logger.info(
+                "Trial lost by the runner - not graded",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
+            )
+            return None
+
         if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
             self.logger.info(
                 "Trial did not complete successfully - automatic fail",
@@ -578,10 +621,12 @@ class GraderRPCTrialGrader:
         grader_address: str,
         logger: StructuredLogger,
         *,
+        runner_substrate_address: str | None = None,
         grader_client: GrpcGraderClient | None = None,
     ) -> None:
         self.grader_address = grader_address
         self.logger = logger
+        self.runner_substrate_address = runner_substrate_address or ""
         if grader_client is None:
             from tolokaforge.grader.client import GrpcGraderClient as _Client
 
@@ -605,6 +650,20 @@ class GraderRPCTrialGrader:
                 termination_reason=(
                     trajectory.termination_reason.value if trajectory.termination_reason else None
                 ),
+            )
+            return None
+
+        if trajectory.termination_reason == TerminationReason.TRIAL_LOST:
+            # Mirror ``RunnerRPCTrialGrader``: a lost trial is
+            # ungradeable, not an agent failure. ``None`` keeps it in
+            # the denominator (``total_trials``) but excluded from every
+            # rate — a ``Grade(binary_pass=False)`` would inflate
+            # failure rates with a substrate loss.
+            self.logger.info(
+                "Trial lost by the runner - not graded",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
             )
             return None
 
@@ -636,13 +695,29 @@ class GraderRPCTrialGrader:
                 reasons="Agent got stuck (repeated actions without progress)",
             )
 
+        _refuse_hash_grading_on_grader_rpc(spec)
+        if not self.runner_substrate_address:
+            raise GradingFailedError(
+                "grader_rpc requires runner_substrate_address on the grader context — "
+                "see RunConfig.grader. The composite dispatcher dials the runner's "
+                "SubstrateService per trial and needs a reachable address."
+            )
+
         llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
+        wire = build_grade_request_fields(
+            spec=spec,
+            runner_substrate_address=self.runner_substrate_address,
+        )
         grade_result = self.grader_client.grade(
             trial_id=spec.trial_id,
             llm_messages_json=llm_messages_json,
             termination_reason=(
                 trajectory.termination_reason.value if trajectory.termination_reason else None
             ),
+            task_config_json=wire.task_config_json,
+            judge_model_config_json=wire.judge_model_config_json,
+            task_description_json=wire.task_description_json,
+            runner_substrate_address=wire.runner_substrate_address,
         )
 
         if not grade_result["success"]:
@@ -707,7 +782,15 @@ def grader_rpc_trial_grader_factory(ctx: TrialGraderContext) -> GraderRPCTrialGr
             "either). Pair a network-reachable backend with the grader_rpc "
             "grader, or select a grader that does not need an address."
         )
-    return GraderRPCTrialGrader(grader_address=address, logger=ctx.logger)
+    # ``SubstrateService`` shares the runner's listen port —
+    # ``runner_substrate_address`` is the same value ``runner_rpc`` uses to
+    # dial the runner's ``GradeTrial`` today. The grader-side dispatcher
+    # opens a substrate channel to this address per trial.
+    return GraderRPCTrialGrader(
+        grader_address=address,
+        logger=ctx.logger,
+        runner_substrate_address=ctx.runner_address or "",
+    )
 
 
 class QueueTrialGrader:
@@ -738,12 +821,14 @@ class QueueTrialGrader:
         broker: GradeBroker,
         logger: StructuredLogger,
         *,
+        runner_substrate_address: str | None = None,
         timeout_s: float | None = None,
         workers: list[threading.Thread] | None = None,
         owns_broker: bool = False,
     ) -> None:
         self.broker = broker
         self.logger = logger
+        self.runner_substrate_address = runner_substrate_address or ""
         self.timeout_s = timeout_s if timeout_s is not None else self.DEFAULT_TIMEOUT_S
         # ``workers`` and ``owns_broker`` name the two lifecycle handles
         # :meth:`close` releases. The factory (``queue_trial_grader_factory``)
@@ -800,7 +885,20 @@ class QueueTrialGrader:
                 reasons="Agent got stuck (repeated actions without progress)",
             )
 
+        _refuse_hash_grading_on_grader_rpc(spec)
+        if not self.runner_substrate_address:
+            raise GradingFailedError(
+                "queue-backed grader requires runner_substrate_address on the "
+                "grader context — see RunConfig.grader. Each grade job carries "
+                "the address so the worker's composite dispatch can dial the "
+                "runner's SubstrateService."
+            )
+
         llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
+        wire = build_grade_request_fields(
+            spec=spec,
+            runner_substrate_address=self.runner_substrate_address,
+        )
         job = GradeJob(
             job_id=new_job_id(),
             trial_id=spec.trial_id,
@@ -808,8 +906,10 @@ class QueueTrialGrader:
             termination_reason=(
                 trajectory.termination_reason.value if trajectory.termination_reason else ""
             ),
-            task_config_json="",
-            agent_system_prompt=agent_system_prompt,
+            task_config_json=wire.task_config_json,
+            judge_model_config_json=wire.judge_model_config_json,
+            task_description_json=wire.task_description_json,
+            runner_substrate_address=wire.runner_substrate_address,
         )
         future = self.broker.publish_job(job)
         try:
@@ -940,6 +1040,7 @@ def queue_trial_grader_factory(ctx: TrialGraderContext) -> QueueTrialGrader:
     return QueueTrialGrader(
         broker=broker,
         logger=ctx.logger,
+        runner_substrate_address=ctx.runner_address or "",
         workers=workers,
         owns_broker=True,
     )
@@ -1000,6 +1101,9 @@ def _queue_worker_loop(
                 llm_messages_json=job.llm_messages_json,
                 termination_reason=job.termination_reason,
                 task_config_json=job.task_config_json,
+                judge_model_config_json=job.judge_model_config_json,
+                task_description_json=job.task_description_json,
+                runner_substrate_address=job.runner_substrate_address,
             )
             if not response["success"]:
                 error = response.get("error") or "Unknown grading error"
@@ -1015,20 +1119,122 @@ def _queue_worker_loop(
 
 def judge_backed_trial_grader_factory(
     ctx: TrialGraderContext,
-) -> JudgeBackedTrialGrader:  # noqa: ARG001
-    """Registered ``judge_only`` factory. Fails loud until a production
-    judge is wired through the context.
+    *,
+    llm_client: LLMClient | None = None,
+) -> JudgeBackedTrialGrader:
+    """Registered ``judge_only`` factory — builds a rubric-judge dispatcher.
 
-    Same altitude as :func:`queue_trial_grader_factory`: raise at factory
-    time so the operator sees the misconfiguration at orchestrator startup,
-    not deep inside :meth:`grade` after a trial has already been paid for.
-    Tests construct :class:`JudgeBackedTrialGrader` directly with a real
-    :data:`JudgeGradeFn`.
+    Reads the run-level ``grader.judge`` overrides (or the task's own
+    ``grading.llm_judge.customization`` when no override is set) and
+    produces a :data:`JudgeGradeFn` that on each call:
+
+    1. Reads the task's rubric from ``spec.task.grading.llm_judge.rubric``.
+    2. Reads the judge model from ``spec.judge_model_config`` (which
+       rides the run config's ``models["judge"]``).
+    3. Encodes the trajectory + agent policy through the same
+       :func:`encode_transcript_wire` + :func:`split_leading_system_message`
+       replay uses, so the transcript the judge sees is byte-identical
+       to the runner-side grading path.
+    4. Runs :class:`LLMJudge` with rubric + transcript only — no
+       ``db_reader`` / ``kb_search`` / ``workspace_dir`` / ``state_diff``,
+       because ``judge_only`` grades trajectories after the trial ended
+       and holds no live substrate state.
+    5. Raises :class:`GradingFailedError` on an ``ERRORED`` judge run —
+       the fail-loud contract that trial_grader.py's ``GradingFailedError``
+       docstring names. A judge malfunction MUST NOT be booked as an
+       agent failure; the seam records ``grading_error`` and leaves the
+       grade unset. Only a ``COMPLETED`` verdict is translated through
+       :func:`build_replay_grade` into a persistable :class:`Grade`.
+
+    Failure surface at grade time (not factory time — the same factory
+    serves both rubric-carrying and rubric-less tasks in one run, so
+    per-task decisions belong at dispatch): a task with no
+    ``grading.llm_judge`` block, and a run with no ``models["judge"]``.
+    Both surface as :class:`GradingFailedError` naming the trial.
+
+    ``llm_client`` is a test-only injection point mirroring
+    :func:`~tolokaforge.core.grading.replay.replay_trial`; production
+    callers leave it ``None`` and the judge builds its own client.
     """
-    raise NotImplementedError(
-        "``judge_only`` trial grader is registered but not yet wired to a "
-        "production judge at the engine layer. Instantiate "
-        "``JudgeBackedTrialGrader`` directly with your own ``JudgeGradeFn`` "
-        "for now; the factory will land once ``TrialGraderContext`` carries "
-        "judge-selection configuration."
-    )
+    override = ctx.grader_config.judge if ctx.grader_config else None
+    logger = ctx.logger
+
+    def judge_fn(spec: TrialSpec, trajectory: Trajectory, agent_system_prompt: str) -> Grade | None:
+        llm_judge_config = spec.task.grading.llm_judge
+        if llm_judge_config is None:
+            raise GradingFailedError(
+                f"judge_only cannot grade trial {spec.trial_id!r}: the task "
+                "declares no grading.llm_judge block."
+            )
+        if spec.judge_model_config is None:
+            raise GradingFailedError(
+                f"judge_only cannot grade trial {spec.trial_id!r}: the run "
+                "config declares no models.judge; add one, or select a "
+                "grader that does not need a judge model."
+            )
+
+        wire = encode_transcript_wire(trajectory, agent_system_prompt)
+        if wire is None:
+            # Empty trajectory with no policy — no evidence to judge
+            # against. ``JudgeBackedTrialGrader.grade`` logs the
+            # ``None`` verdict at the seam.
+            return None
+        judge_agent_prompt, transcript = split_leading_system_message(json.loads(wire))
+
+        # Task customization is the base; the run-level override wins
+        # per-field when it is not ``None``. The override cannot express
+        # "reset to library default" — see :class:`JudgeGraderConfig`.
+        customization = llm_judge_config.customization
+        base_disable_kb = customization.disable_knowledge_search if customization else None
+        base_custom_prompt = customization.system_prompt if customization else None
+        base_include_agent = customization.include_agent_system_prompt if customization else None
+
+        disable_kb_resolved = (
+            override.disable_knowledge_search
+            if override is not None and override.disable_knowledge_search is not None
+            else base_disable_kb
+        )
+        custom_prompt = (
+            override.custom_system_prompt
+            if override is not None and override.custom_system_prompt is not None
+            else base_custom_prompt
+        )
+        include_agent_resolved = (
+            override.include_agent_system_prompt
+            if override is not None and override.include_agent_system_prompt is not None
+            else base_include_agent
+        )
+        # LLMJudge's own defaults for the two bool knobs are
+        # ``disable_knowledge_search=False`` and
+        # ``include_agent_system_prompt=True``; collapse the tri-state
+        # here so both fields resolve consistently (the reviewer flagged
+        # an asymmetry where one collapsed via ``bool()`` and the other
+        # kept the tri-state).
+        judge = LLMJudge(
+            spec.judge_model_config,
+            disable_knowledge_search=bool(disable_kb_resolved),
+            custom_system_prompt=custom_prompt,
+            include_agent_system_prompt=(
+                include_agent_resolved if include_agent_resolved is not None else True
+            ),
+            llm_client=llm_client,
+            logger=logger,
+        )
+        result = judge.run(
+            rubric=llm_judge_config.rubric,
+            agent_system_prompt=judge_agent_prompt,
+            transcript=transcript,
+        )
+        # Fail-loud contract: an ERRORED judge is a grading failure the
+        # trial is ungradeable under, never a booked agent failure. The
+        # ``JudgeBackedTrialGrader.grade`` caller catches nothing here;
+        # the seam's ``GradingFailedError`` surface is what carries the
+        # verdict-of-nothing forward.
+        if result.status is JudgeRunStatus.ERRORED:
+            raise GradingFailedError(
+                f"judge_only grader errored for trial {spec.trial_id!r}: "
+                f"{result.reasons or 'no reason recorded'}"
+            )
+        return build_replay_grade(result)
+
+    return JudgeBackedTrialGrader(judge_fn=judge_fn, logger=ctx.logger)

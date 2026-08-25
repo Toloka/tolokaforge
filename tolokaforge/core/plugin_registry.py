@@ -1,26 +1,49 @@
-"""Fail-loud entry-point registries for the five swappable seams.
+"""Fail-loud entry-point registries for the swappable seams.
 
 External code discovers and loads alternative implementations of the
 :class:`~tolokaforge.core.runtime.RuntimeBackend`,
 :class:`~tolokaforge.core.trial_grader.TrialGrader`,
 :class:`~tolokaforge.core.conductor.Conductor`,
-:class:`~tolokaforge.core.service_readiness.ServiceReadinessProbe`, and
-:class:`~tolokaforge.core.actors.turn_policy.TurnPolicy` Protocols
-through ``importlib.metadata`` entry-point groups — no in-tree edit, no
-monkey-patch. Each entry point resolves to a *factory callable*, mirroring the
-existing :data:`~tolokaforge.core.conductor.ConductorFactory` idiom. Four of
-the seams adapt divergent impl constructors to a per-group frozen-dataclass
-context (``Callable[[<Context>], <Impl>]``); the readiness probes need no
-build dependencies, so their factory is arg-less
-(``Callable[[], ServiceReadinessProbe]``).
+:class:`~tolokaforge.core.service_readiness.ServiceReadinessProbe`,
+:class:`~tolokaforge.core.actors.turn_policy.TurnPolicy`,
+:class:`~tolokaforge.core.grading.substrate.GradingSubstrate`,
+:class:`~tolokaforge.core.grading.check_runner.CheckExecutor`,
+:class:`~tolokaforge.core.grading.judge_model_provider.JudgeModelProvider`,
+:class:`~tolokaforge.core.grading.rubric_evaluator.RubricEvaluator`,
+:class:`~tolokaforge.core.grading.transcript_rule_matcher.TranscriptRuleMatcher`,
+:class:`~tolokaforge.core.grading.state_check_backend.StateCheckBackend`,
+and
+:data:`~tolokaforge.core.grading.trace_check_operator.TraceCheckOperator`
+Protocols through ``importlib.metadata`` entry-point groups — no in-tree
+edit, no monkey-patch. Each holistic seam resolves to a *factory callable*,
+mirroring the existing :data:`~tolokaforge.core.conductor.ConductorFactory`
+idiom. Five of the seams adapt divergent impl constructors to a per-group
+frozen-dataclass context (``Callable[[<Context>], <Impl>]``); the readiness
+probes, custom-check executors, judge model providers, transcript-rule
+matchers, and state-check backends need no build dependencies, so their
+factories are arg-less (``Callable[[], <Impl>]``).
+The grading-substrate loader resolves directly to the ``GradingSubstrate``
+implementation *class* — the substrate seam is constructed per-trial with
+topology-specific arguments the plug-in group cannot generically supply,
+so callers instantiate the returned class themselves (see ADR-0040).
+The trace-check-operator loader resolves directly to the operator callable
+— one operator per entry point, no factory wrapper, since the callable
+itself IS the seam contract.
 
-The five groups:
+The groups:
 
 * ``tolokaforge.runtime_backends`` → :data:`RuntimeBackendFactory`
 * ``tolokaforge.trial_graders`` → :data:`TrialGraderFactory`
 * ``tolokaforge.conductors`` → :data:`~tolokaforge.core.conductor.ConductorFactory`
 * ``tolokaforge.service_readiness_probes`` → :data:`ReadinessProbeFactory`
 * ``tolokaforge.turn_policies`` → :data:`TurnPolicyFactory`
+* ``tolokaforge.grading_substrates`` → ``type[GradingSubstrate]``
+* ``tolokaforge.custom_check_executors`` → :data:`CustomCheckExecutorFactory`
+* ``tolokaforge.judge_model_providers`` → :data:`JudgeModelProviderFactory`
+* ``tolokaforge.rubric_evaluators`` → :data:`RubricEvaluatorFactory`
+* ``tolokaforge.transcript_rule_matchers`` → :data:`TranscriptRuleMatcherFactory`
+* ``tolokaforge.state_check_backends`` → :data:`StateCheckBackendFactory`
+* ``tolokaforge.trace_check_operators`` → :data:`TraceCheckOperator`
 
 Discovery is lazy and cached per group; it enumerates ``ep.name`` /
 ``ep.dist`` **without** calling ``ep.load()``. This splits the fail-loud
@@ -44,44 +67,80 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
-from tolokaforge.core.actors.turn_policy import TurnPolicy
-from tolokaforge.core.conductor import ConductorFactory
+from tolokaforge.core.grading.check_runner import CheckExecutor
+from tolokaforge.core.grading.judge_model_provider import JudgeModelProviderFactory
+from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorFactory
+from tolokaforge.core.grading.state_check_backend import StateCheckBackendFactory
+from tolokaforge.core.grading.substrate import GradingSubstrate
+from tolokaforge.core.grading.trace_check_operator import TraceCheckOperator
+from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcherFactory
 from tolokaforge.core.models.run_config import GraderConfig
 from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
-from tolokaforge.core.runtime import RuntimeBackend
-from tolokaforge.core.service_readiness import ServiceReadinessProbe
-from tolokaforge.core.trial_grader import TrialGrader
 
 if TYPE_CHECKING:
     from importlib.metadata import EntryPoint
 
     from tolokaforge.core.actors.actor import Actor
+    from tolokaforge.core.actors.turn_policy import TurnPolicy
     from tolokaforge.core.compose_materialisation import LogCaptureConfig
+    from tolokaforge.core.conductor import Conductor, ConductorContext
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import SeedRef
+    from tolokaforge.core.runtime import RuntimeBackend
+    from tolokaforge.core.service_readiness import ServiceReadinessProbe
     from tolokaforge.core.trial import EnvironmentManifest
+    from tolokaforge.core.trial_grader import TrialGrader
+
+# Orchestrator-side Protocol modules (``conductor``, ``runtime``, ``service_readiness``,
+# ``trial_grader``, ``actors.turn_policy``) are TYPE_CHECKING imports above. Their
+# module-level closures reach ``adapters``, ``LLMClient``, ``LLMJudge``, and other
+# orchestrator-only surface that the runner subset does not ship. The Factory
+# aliases below carry the Protocol names as string forward references so
+# ``typing.Callable[...]`` can subscript them at runtime without triggering the
+# heavy import — ``cast()`` erases the alias, so the runtime object never needs
+# the concrete class.
 
 __all__ = [
     "ConductorFactory",
+    "CustomCheckExecutorFactory",
     "DuplicateRegistrationError",
+    "JudgeModelProviderFactory",
     "ReadinessProbeFactory",
     "RegistryError",
+    "RubricEvaluatorFactory",
     "RuntimeBackendBuildContext",
     "RuntimeBackendFactory",
+    "StateCheckBackendFactory",
+    "TraceCheckOperator",
+    "TranscriptRuleMatcherFactory",
     "TrialGraderContext",
     "TrialGraderFactory",
     "TurnPolicyContext",
     "TurnPolicyFactory",
     "UnknownImplementationError",
     "available_conductors",
+    "available_custom_check_executors",
+    "available_grading_substrates",
+    "available_judge_model_providers",
     "available_readiness_probes",
+    "available_rubric_evaluators",
     "available_runtime_backends",
+    "available_state_check_backends",
+    "available_trace_check_operators",
+    "available_transcript_rule_matchers",
     "available_trial_graders",
     "available_turn_policies",
     "discover_entry_points",
     "load_conductor",
+    "load_custom_check_executor",
+    "load_grading_substrate",
+    "load_judge_model_provider",
     "load_readiness_probe",
+    "load_rubric_evaluator",
     "load_runtime_backend",
+    "load_state_check_backend",
+    "load_trace_check_operator",
+    "load_transcript_rule_matcher",
     "load_trial_grader",
     "load_turn_policy",
 ]
@@ -91,6 +150,13 @@ TRIAL_GRADERS_GROUP = "tolokaforge.trial_graders"
 CONDUCTORS_GROUP = "tolokaforge.conductors"
 SERVICE_READINESS_PROBES_GROUP = "tolokaforge.service_readiness_probes"
 TURN_POLICIES_GROUP = "tolokaforge.turn_policies"
+GRADING_SUBSTRATES_GROUP = "tolokaforge.grading_substrates"
+CUSTOM_CHECK_EXECUTORS_GROUP = "tolokaforge.custom_check_executors"
+JUDGE_MODEL_PROVIDERS_GROUP = "tolokaforge.judge_model_providers"
+RUBRIC_EVALUATORS_GROUP = "tolokaforge.rubric_evaluators"
+TRANSCRIPT_RULE_MATCHERS_GROUP = "tolokaforge.transcript_rule_matchers"
+STATE_CHECK_BACKENDS_GROUP = "tolokaforge.state_check_backends"
+TRACE_CHECK_OPERATORS_GROUP = "tolokaforge.trace_check_operators"
 
 
 # ---------------------------------------------------------------------------
@@ -213,10 +279,12 @@ class TurnPolicyContext:
     user_simulator: Actor | None = None
 
 
-RuntimeBackendFactory = Callable[[RuntimeBackendBuildContext], RuntimeBackend]
-TrialGraderFactory = Callable[[TrialGraderContext], TrialGrader]
-ReadinessProbeFactory = Callable[[], ServiceReadinessProbe]
-TurnPolicyFactory = Callable[[TurnPolicyContext], TurnPolicy]
+RuntimeBackendFactory = Callable[[RuntimeBackendBuildContext], "RuntimeBackend"]
+TrialGraderFactory = Callable[[TrialGraderContext], "TrialGrader"]
+ReadinessProbeFactory = Callable[[], "ServiceReadinessProbe"]
+TurnPolicyFactory = Callable[[TurnPolicyContext], "TurnPolicy"]
+ConductorFactory = Callable[["ConductorContext"], "Conductor"]
+CustomCheckExecutorFactory = Callable[[], CheckExecutor]
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +384,70 @@ def load_turn_policy(name: str) -> TurnPolicyFactory:
     return cast(TurnPolicyFactory, _load(TURN_POLICIES_GROUP, name))
 
 
+def load_custom_check_executor(name: str) -> CustomCheckExecutorFactory:
+    """Resolve a registered custom-check-executor name to its factory callable."""
+    return cast(CustomCheckExecutorFactory, _load(CUSTOM_CHECK_EXECUTORS_GROUP, name))
+
+
+def load_judge_model_provider(name: str) -> JudgeModelProviderFactory:
+    """Resolve a registered judge-model-provider name to its factory callable."""
+    return cast(JudgeModelProviderFactory, _load(JUDGE_MODEL_PROVIDERS_GROUP, name))
+
+
+def load_rubric_evaluator(name: str) -> RubricEvaluatorFactory:
+    """Resolve a registered rubric-evaluator name to its factory callable.
+
+    The factory adapts a :class:`RubricEvaluatorContext` to a
+    :class:`RubricEvaluator`; the runner constructs the context (judge model
+    provider + policy flags) per trial.
+    """
+    return cast(RubricEvaluatorFactory, _load(RUBRIC_EVALUATORS_GROUP, name))
+
+
+def load_transcript_rule_matcher(name: str) -> TranscriptRuleMatcherFactory:
+    """Resolve a registered transcript-rule-matcher name to its factory callable."""
+    return cast(TranscriptRuleMatcherFactory, _load(TRANSCRIPT_RULE_MATCHERS_GROUP, name))
+
+
+def load_state_check_backend(name: str) -> StateCheckBackendFactory:
+    """Resolve a registered state-check-backend name to its factory callable.
+
+    The seam covers substrate-consuming backends; hash grading is
+    deliberately not registered here — its snapshot-and-replay semantics
+    need write access to the trial's DB and stay runner-integrated on
+    :meth:`RunnerServiceImpl._execute_hash_grading`.
+    """
+    return cast(StateCheckBackendFactory, _load(STATE_CHECK_BACKENDS_GROUP, name))
+
+
+def load_trace_check_operator(name: str) -> TraceCheckOperator:
+    """Resolve a registered trace-check operator name to its callable.
+
+    The seam is per-operator, and the callable itself IS the contract: no
+    factory wrapper. A binding operator is identified by the ``_binding``
+    suffix on its registered name (ADR-0040); the callable's shape does
+    not change.
+    """
+    return cast(TraceCheckOperator, _load(TRACE_CHECK_OPERATORS_GROUP, name))
+
+
+def load_grading_substrate(name: str) -> type[GradingSubstrate]:
+    """Resolve a registered grading-substrate name to its implementation class.
+
+    Unlike the other loaders — which return a factory callable adapting a
+    per-group context to an impl — this one returns the substrate *class*
+    itself. Substrates are constructed per-trial with topology-specific
+    arguments (runner address + trial id for ``live_callback``; live
+    ``db_reader`` / factories for ``in_process``; a snapshot bundle for
+    future ``snapshot``) that no shared context can generically supply, so
+    the caller instantiates the class it received.
+
+    Fail-loud on unknown names via :class:`UnknownImplementationError`,
+    matching every other loader in this module.
+    """
+    return cast(type[GradingSubstrate], _load(GRADING_SUBSTRATES_GROUP, name))
+
+
 def available_runtime_backends() -> list[str]:
     """Sorted names registered in the ``tolokaforge.runtime_backends`` group."""
     return sorted(discover_entry_points(RUNTIME_BACKENDS_GROUP))
@@ -339,3 +471,38 @@ def available_readiness_probes() -> list[str]:
 def available_turn_policies() -> list[str]:
     """Sorted names registered in the ``tolokaforge.turn_policies`` group."""
     return sorted(discover_entry_points(TURN_POLICIES_GROUP))
+
+
+def available_grading_substrates() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.grading_substrates`` group."""
+    return sorted(discover_entry_points(GRADING_SUBSTRATES_GROUP))
+
+
+def available_custom_check_executors() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.custom_check_executors`` group."""
+    return sorted(discover_entry_points(CUSTOM_CHECK_EXECUTORS_GROUP))
+
+
+def available_judge_model_providers() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.judge_model_providers`` group."""
+    return sorted(discover_entry_points(JUDGE_MODEL_PROVIDERS_GROUP))
+
+
+def available_rubric_evaluators() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.rubric_evaluators`` group."""
+    return sorted(discover_entry_points(RUBRIC_EVALUATORS_GROUP))
+
+
+def available_transcript_rule_matchers() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.transcript_rule_matchers`` group."""
+    return sorted(discover_entry_points(TRANSCRIPT_RULE_MATCHERS_GROUP))
+
+
+def available_state_check_backends() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.state_check_backends`` group."""
+    return sorted(discover_entry_points(STATE_CHECK_BACKENDS_GROUP))
+
+
+def available_trace_check_operators() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.trace_check_operators`` group."""
+    return sorted(discover_entry_points(TRACE_CHECK_OPERATORS_GROUP))

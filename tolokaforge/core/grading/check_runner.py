@@ -765,6 +765,30 @@ class InMemoryCheckExecutor:
 
 
 # =============================================================================
+# Entry-point factories — registered under ``tolokaforge.custom_check_executors``
+# =============================================================================
+
+
+def _check_runner_factory() -> CheckExecutor:
+    """Arg-less factory for the production :class:`CheckRunner`.
+
+    Registered as the ``check_runner`` entry point in
+    ``tolokaforge.custom_check_executors``.
+    """
+    return CheckRunner()
+
+
+def _in_memory_check_executor_factory() -> CheckExecutor:
+    """Arg-less factory for the deterministic :class:`InMemoryCheckExecutor`.
+
+    Registered as the ``in_memory`` entry point in
+    ``tolokaforge.custom_check_executors`` — the fixture the canonical
+    tests reach for.
+    """
+    return InMemoryCheckExecutor()
+
+
+# =============================================================================
 # Public API exports
 # =============================================================================
 

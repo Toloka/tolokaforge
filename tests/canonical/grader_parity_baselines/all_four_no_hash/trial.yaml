@@ -1,0 +1,31 @@
+trial_id: all_four_no_hash:0
+termination_reason: agent_done
+judge_model_config:
+  provider: openai
+  name: gpt-4o-mini
+  temperature: 0.0
+llm_messages:
+  - role: system
+    content: You are a test assistant.
+  - role: user
+    content: Please refund order O1 and update the report.
+  - role: assistant
+    content: Reading the existing report first.
+    tool_calls:
+      - id: call_read_1
+        function:
+          name: read_file
+          arguments: '{"path": "/reports/final.md"}'
+  - role: tool
+    content: 'previous content'
+    tool_call_id: call_read_1
+  - role: assistant
+    content: Refund issued for order O1. Writing the updated report.
+    tool_calls:
+      - id: call_write_1
+        function:
+          name: write_file
+          arguments: '{"path": "/reports/final.md", "content": "updated"}'
+  - role: tool
+    content: 'ok'
+    tool_call_id: call_write_1

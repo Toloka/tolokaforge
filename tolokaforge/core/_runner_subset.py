@@ -65,10 +65,19 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     # compose materialisation, engine run state, backend capabilities,
     # runtime / conductor / trial-grader protocol definitions, the
     # ``run_trial`` library entry, run queue, resume, project loader,
-    # plugin registry, metrics, budgets, ``model_data_fingerprint``, and
-    # the remaining utility modules — is orchestrator-only. ``model_data``
-    # is included; its orchestrator-only compute sibling
-    # ``model_data_fingerprint`` is not.
+    # metrics, budgets, ``model_data_fingerprint``, and the remaining
+    # utility modules — is orchestrator-only. ``model_data`` is included;
+    # its orchestrator-only compute sibling ``model_data_fingerprint`` is
+    # not. ``plugin_registry`` is included: the runner reaches it through
+    # ``load_custom_check_executor`` / ``load_judge_model_provider`` /
+    # ``load_rubric_evaluator`` / ``load_state_check_backend`` /
+    # ``load_transcript_rule_matcher`` at ``RunnerServiceImpl.__init__``
+    # and again through ``trace_checks``'s ``load_trace_check_operator``,
+    # so the module must ship with the subset. Its orchestrator-side
+    # Protocol imports (``Conductor``, ``RuntimeBackend``,
+    # ``ServiceReadinessProbe``, ``TrialGrader``, ``TurnPolicy``) are
+    # TYPE_CHECKING only; the runtime closure of ``plugin_registry`` is
+    # grader-side.
     "tolokaforge/core/__init__.py",
     "tolokaforge/core/_runner_subset.py",
     "tolokaforge/core/deprecations.py",
@@ -77,6 +86,7 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     "tolokaforge/core/loop.py",
     "tolokaforge/core/model_data.py",
     "tolokaforge/core/netpolicy_constants.py",
+    "tolokaforge/core/plugin_registry.py",
     "tolokaforge/core/pricing.py",
     "tolokaforge/core/redaction.py",
     "tolokaforge/core/run_display_events.py",
@@ -121,6 +131,8 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/grading/replay_layout.py",
     "tolokaforge/core/grading/rubric_migration.py",
     "tolokaforge/core/grading/state_checks.py",
+    "tolokaforge/core/grading/substrate_client.py",
+    "tolokaforge/core/grading/substrate_live.py",
     "tolokaforge/core/grading/trace_replay.py",
     "tolokaforge/core/grading/unknown_keys.py",
     "tolokaforge/core/llm/fallback_client.py",
@@ -146,8 +158,14 @@ the subset would drag those orchestrator-only surfaces along with them, or
 fail at import time inside the runner container. ``migration_declaration``
 reaches ``core.output.artifacts`` and ``core.output_writer`` indirectly, through
 the ``corpus_curation`` import that resolves an entry's declared corpus against
-the manifest ``tolokaforge curate`` writes. The remaining five
-(``core.grading.agreement``, ``core.grading.config_validation``,
+the manifest ``tolokaforge curate`` writes. Two files ship the
+independent-grader gRPC path (``core.grading.substrate_client`` — the wire
+adapter for the runner's ``SubstrateService`` — and ``core.grading.substrate_live``
+— :class:`LiveRunnerCallbackGradingSubstrate` and its private gRPC helpers).
+The runner never instantiates them: they are the grader container's client
+side of the substrate seam, and shipping them inside the runner image would
+double-ship the compiled ``runner_pb2`` surface without a caller. The
+remaining five (``core.grading.agreement``, ``core.grading.config_validation``,
 ``core.grading.replay_layout``, ``core.grading.unknown_keys``,
 ``core.llm.fallback_client``) have only
 shared-spine imports — ``replay_layout`` imports nothing outside the standard

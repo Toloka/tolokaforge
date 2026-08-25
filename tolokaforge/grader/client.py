@@ -58,14 +58,24 @@ class GrpcGraderClient:
 
     def grade(
         self,
+        *,
         trial_id: str,
         llm_messages_json: str,
         termination_reason: str | None = None,
         task_config_json: str = "",
+        judge_model_config_json: str = "",
+        task_description_json: str = "",
+        runner_substrate_address: str = "",
     ) -> dict:
         """Send a ``Grade`` RPC and return the same dict shape as
         :meth:`GrpcRunnerClient.grade_trial` — so ``GraderRPCTrialGrader`` can
         reuse the runner's ``_parse_grade_result`` mapping without diverging.
+
+        The keyword-only signature carries every :class:`GradeRequest` field
+        the wire ships. The four v2 fields default to the empty string so a
+        caller that has not populated them yet lets the grader surface a
+        fail-loud "missing required v2 field" — a silent zero would land in
+        composite dispatch and produce a nonsensical Grade.
         """
         if not self.stub:
             self.connect()
@@ -75,6 +85,9 @@ class GrpcGraderClient:
             llm_messages_json=llm_messages_json or "",
             termination_reason=termination_reason or "",
             task_config_json=task_config_json or "",
+            judge_model_config_json=judge_model_config_json or "",
+            task_description_json=task_description_json or "",
+            runner_substrate_address=runner_substrate_address or "",
         )
         response = self.stub.Grade(request)
         result: dict = {

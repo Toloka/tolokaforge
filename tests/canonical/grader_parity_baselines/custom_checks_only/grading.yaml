@@ -1,0 +1,5 @@
+weights:
+  custom_checks: 1.0
+custom_checks:
+  enabled: true
+  file: checks.py

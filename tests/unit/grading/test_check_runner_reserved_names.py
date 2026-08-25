@@ -2,14 +2,16 @@
 
 A pack author who writes ``@check\\ndef __executor__(...)`` would produce a
 wire ``custom_checks`` list where two entries share ``check_name`` — the
-author's check *and* the sentinel emitted by ``_executor_error_to_wire``
+author's check *and* the sentinel emitted by
+``composite._executor_error_to_wire``
 on a top-level executor failure. The loader refuses the ambiguity at load
 time so the sentinel remains unambiguous end-to-end.
 
 The reserved set lives in
 :data:`tolokaforge.core.grading.check_runner._RESERVED_CHECK_NAMES`, with
 the sentinel value in :data:`_CHECK_EXECUTOR_ERROR_NAME` (the single
-source of truth also referenced from :mod:`tolokaforge.runner.service`).
+source of truth also referenced from
+:mod:`tolokaforge.core.grading.composite`).
 """
 
 from __future__ import annotations

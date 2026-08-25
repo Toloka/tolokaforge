@@ -1,0 +1,19 @@
+task_id: state_plus_transcript
+name: State-checks + transcript-rules composite parity
+category: test
+description: |
+  Composes the ``state_check_backends[jsonpath]`` seam and the
+  ``transcript_rule_matchers`` seam so both fold into the combined ``score``.
+  The initial state seeds one ``orders`` row so the read-only substrate can
+  answer the jsonpath assertion; the trial's assistant turn carries the
+  required text so the transcript rule fires deterministically.
+adapter_type: tau
+schema_version: 1.0.0
+system_prompt: You are a test assistant.
+agent_tools: []
+user_tools: []
+initial_state:
+  tables:
+    orders:
+      - id: O1
+        status: shipped

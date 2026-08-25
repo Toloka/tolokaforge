@@ -14,6 +14,11 @@ Environment Variables:
         set only when a rag-service is actually running (full stack). Unset =>
         the runner builds no RAG client and the judge gets no search_kb tool.
     RUNNER_PORT: gRPC server port (default: 50051)
+    RUNNER_EXPOSE_SUBSTRATE: When "true" (any casing), the runner registers its
+        read-only :class:`SubstrateService` gRPC servicer alongside
+        :class:`RunnerService` on the same listen port. Unset / any other
+        value => the surface is off and every ``SubstrateService/*`` call
+        returns ``UNIMPLEMENTED``.
     LOG_LEVEL: Logging level (default: INFO)
     TOLOKAFORGE_SECRETS_JSON: JSON-serialized credential map injected by the
         orchestrator at container start. Bootstraps the SecretManager
@@ -31,10 +36,14 @@ from concurrent import futures
 
 import grpc
 
-from tolokaforge.runner import add_RunnerServiceServicer_to_server
+from tolokaforge.runner import (
+    add_RunnerServiceServicer_to_server,
+    add_SubstrateServiceServicer_to_server,
+)
 from tolokaforge.runner.db_client import DBServiceClient
 from tolokaforge.runner.rag_client import RAGServiceClient
 from tolokaforge.runner.service import RunnerServiceImpl
+from tolokaforge.runner.substrate_service import SubstrateServicer
 from tolokaforge.secrets import (
     CONTAINER_SECRETS_ENV_VAR,
     SecretManager,
@@ -118,6 +127,10 @@ def get_config() -> dict:
         # rag-service on this stack). Honest absence => no RAG client.
         "rag_service_url": os.environ.get("RAG_SERVICE_URL"),
         "runner_port": int(os.environ.get("RUNNER_PORT", DEFAULT_RUNNER_PORT)),
+        # Honest-absence: env absent (or any value other than case-insensitive
+        # "true") means the substrate surface stays off. Same style
+        # RAG_SERVICE_URL uses.
+        "expose_substrate": os.environ.get("RUNNER_EXPOSE_SUBSTRATE", "").strip().lower() == "true",
         "log_level": os.environ.get("LOG_LEVEL", DEFAULT_LOG_LEVEL),
         "max_workers": int(os.environ.get("MAX_WORKERS", DEFAULT_MAX_WORKERS)),
     }
@@ -139,6 +152,7 @@ class RunnerServer:
         port: int,
         max_workers: int = DEFAULT_MAX_WORKERS,
         rag_service_url: str | None = None,
+        expose_substrate: bool = False,
     ):
         """
         Initialize the Runner server.
@@ -148,11 +162,15 @@ class RunnerServer:
             port: gRPC server port
             max_workers: Maximum number of worker threads
             rag_service_url: Optional URL of the RAG Service
+            expose_substrate: When true, register the read-only
+                :class:`SubstrateService` gRPC servicer alongside
+                :class:`RunnerService` on the same listen port.
         """
         self.db_service_url = db_service_url
         self.rag_service_url = rag_service_url
         self.port = port
         self.max_workers = max_workers
+        self.expose_substrate = expose_substrate
         self.server: grpc.Server | None = None
         self.db_client: DBServiceClient | None = None
         self.rag_client: RAGServiceClient | None = None
@@ -193,6 +211,16 @@ class RunnerServer:
 
         # Add service to server
         add_RunnerServiceServicer_to_server(self.service, self.server)
+
+        # Substrate surface: registered on the same server + port iff the
+        # operator opted in (RUNNER_EXPOSE_SUBSTRATE=true → grader.expose_
+        # substrate: true in run_config.yaml). Off => callers see
+        # UNIMPLEMENTED for any SubstrateService/* call.
+        if self.expose_substrate:
+            add_SubstrateServiceServicer_to_server(SubstrateServicer(self.service), self.server)
+            self.logger.info("SubstrateService: exposed on runner listen port")
+        else:
+            self.logger.info("SubstrateService: not exposed")
 
         # Bind to port
         listen_addr = f"[::]:{self.port}"
@@ -291,6 +319,7 @@ async def run_server() -> None:
     logger.info(f"  DB Service URL: {config['db_service_url']}")
     logger.info(f"  RAG Service URL: {config['rag_service_url'] or 'not configured'}")
     logger.info(f"  Runner Port: {config['runner_port']}")
+    logger.info(f"  Expose SubstrateService: {config['expose_substrate']}")
     logger.info(f"  Log Level: {config['log_level']}")
     logger.info(f"  Max Workers: {config['max_workers']}")
     logger.info("=" * 60)
@@ -301,6 +330,7 @@ async def run_server() -> None:
         port=config["runner_port"],
         max_workers=config["max_workers"],
         rag_service_url=config["rag_service_url"],
+        expose_substrate=config["expose_substrate"],
     )
 
     # Setup signal handlers

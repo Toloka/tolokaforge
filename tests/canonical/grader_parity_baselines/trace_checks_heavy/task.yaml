@@ -1,0 +1,15 @@
+task_id: trace_checks_heavy
+name: Trace-checks (bind + before + within) parity isolation
+category: test
+description: |
+  Isolates the ``trace_check_operators`` seam via one constraint that combines
+  three operators: ``bind`` extracts the path a ``write_file`` names, ``before``
+  requires a ``read_file`` at that same path to precede the write, and
+  ``within`` restricts both matchers to the trial's first three assistant
+  turns. No state / transcript / judge / custom-check blocks — a scoring
+  divergence on any trace operator surfaces at this pack alone.
+adapter_type: tau
+schema_version: 1.0.0
+system_prompt: You are a test assistant.
+agent_tools: []
+user_tools: []

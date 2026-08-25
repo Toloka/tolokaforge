@@ -35,7 +35,7 @@ from __future__ import annotations
 import itertools
 import operator
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence, Sized
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -48,7 +48,7 @@ from tolokaforge.core.grading.key_manifest import (
     TRACE_CONSTRAINTS_KEY,
     UNBOUND_BINDING_SKIP,
 )
-from tolokaforge.core.grading.predicates import contains, ever_satisfiable, json_type_of
+from tolokaforge.core.grading.predicates import ever_satisfiable, json_type_of
 from tolokaforge.core.grading.trace_timeline import (
     TraceEvent,
     TraceEventKind,
@@ -83,6 +83,9 @@ from tolokaforge.core.models import (
     TurnWindow,
     ValuePredicate,
 )
+
+# ``plugin_registry`` is imported lazily inside the two functions below that
+# use it (``_operator_holds`` + ``_binding_operator_names``) — see their bodies.
 
 __all__ = ["MatcherOutcome", "evaluate_trace_checks", "select_events"]
 
@@ -332,7 +335,7 @@ def _comparison_records(
     A predicate is a conjunction, so both references are read: an author who wrote
     two of them made two mistakes and is owed both.
     """
-    references = [(name, getattr(predicate, name)) for name in sorted(_BINDING_OPERATORS)]
+    references = [(name, getattr(predicate, name)) for name in _binding_operator_names()]
     return [
         _ComparisonRecord(
             event=event,
@@ -454,75 +457,36 @@ def _operator_holds(name: str, value: Any, expected: Any, bindings: Mapping[str,
     Only ``exists`` reads a ``None``. Every other operator is false there rather
     than answering about a value the trial does not have — ``not_equals`` against an
     absent argument would otherwise hold, which is the vacuous truth the timeline
-    contract forbids.
+    contract forbids. The gate is a dispatch invariant declared once here rather
+    than repeated inside every registered operator.
 
-    A binding operator substitutes and delegates: ``expected`` is a name rather than
-    a value, and the comparison is the one the literal form makes, so a constraint
-    over a single candidate scores exactly as the same constraint with that value
-    written out. The name is in the environment by construction — a reference to a
-    name the constraint does not bind is a load error.
+    ``name`` resolves through the ``tolokaforge.trace_check_operators`` entry-point
+    group — the only dispatch table this evaluator reads.
     """
     if value is None and name != "exists":
         return False
-    if name in _BINDING_OPERATORS:
-        return _BINDING_OPERATORS[name](value, bindings[expected])
-    return _OPERATORS[name](value, expected)
+    from tolokaforge.core.plugin_registry import load_trace_check_operator
+
+    op = load_trace_check_operator(name)
+    return op(value, expected, bindings)
 
 
-def _as_number(value: Any) -> float | None:
-    """``value`` as a number, or ``None`` when it is not one — ``bool`` is not one."""
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    return float(value)
+def _binding_operator_names() -> list[str]:
+    """Registered operator names whose semantics substitute a bound value.
 
+    Materialised from the entry-point registry, filtered by the ``_binding``
+    suffix — the sole marker for binding operators (ADR-0040). The discovery
+    scan is cached in ``plugin_registry``, so a per-call filter is O(N) over
+    the registry size (17 shipped + downstream) and does not fire the loader.
+    """
+    from tolokaforge.core.plugin_registry import (
+        TRACE_CHECK_OPERATORS_GROUP,
+        discover_entry_points,
+    )
 
-def _numeric(compare: Callable[[float, float], bool]) -> Callable[[Any, Any], bool]:
-    def holds(value: Any, bound: float) -> bool:
-        number = _as_number(value)
-        return number is not None and compare(number, bound)
-
-    return holds
-
-
-def _by_length(compare: Callable[[int, int], bool]) -> Callable[[Any, Any], bool]:
-    def holds(value: Any, bound: int) -> bool:
-        return isinstance(value, Sized) and compare(len(value), bound)
-
-    return holds
-
-
-def _equals_ci(value: Any, expected: str) -> bool:
-    return isinstance(value, str) and value.casefold() == expected.casefold()
-
-
-def _matches_regex(value: Any, pattern: str) -> bool:
-    return isinstance(value, str) and re.search(pattern, value) is not None
-
-
-_OPERATORS: Mapping[str, Callable[[Any, Any], bool]] = {
-    "equals": operator.eq,
-    "equals_ci": _equals_ci,
-    "contains": contains,
-    "contains_ci": lambda value, needle: contains(value, needle, ci=True),
-    "not_equals": operator.ne,
-    "regex": _matches_regex,
-    "gt": _numeric(operator.gt),
-    "gte": _numeric(operator.ge),
-    "lt": _numeric(operator.lt),
-    "lte": _numeric(operator.le),
-    "in_": lambda value, allowed: value in allowed,
-    "not_in": lambda value, rejected: value not in rejected,
-    "len_gt": _by_length(operator.gt),
-    "len_gte": _by_length(operator.ge),
-    "exists": lambda value, expected: (value is not None) is expected,
-}
-
-# A reference substitutes its bound value into the comparison the literal operator
-# already makes, so the two spellings cannot drift into two readings of one word.
-_BINDING_OPERATORS: Mapping[str, Callable[[Any, Any], bool]] = {
-    "equals_binding": operator.eq,
-    "contains_binding": contains,
-}
+    return sorted(
+        n for n in discover_entry_points(TRACE_CHECK_OPERATORS_GROUP) if n.endswith("_binding")
+    )
 
 
 def evaluate_trace_checks(timeline: TrialTimeline, config: TraceChecksConfig) -> TraceChecksResult:

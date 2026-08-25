@@ -326,7 +326,7 @@ message JudgeReport {
   // Empty when nothing was gated (flag off, or agent had no KB). Audit detail.
   repeated string kb_tools_withheld = 11;
   // The initial -> final DB state-delta string the judge was handed as its
-  // primary outcome view (the agent's own edits; see _build_judge_state_diff).
+  // primary outcome view (the agent's own edits; see composite.build_judge_state_diff).
   // Empty string when no diff was built (non-DB task, or a DB read hiccup
   // degraded to no diff). Offline replay rebuilds the judge's opening message
   // from this exact string.
@@ -557,4 +557,170 @@ message HealthCheckResponse {
 
   // Available tool adapters
   repeated string available_adapters = 5;
+}
+
+// =============================================================================
+// SubstrateService - read-only view of a trial's grading substrate.
+//
+// Exposed by the runner iff RunConfig.grader.expose_substrate is true. Serves
+// the same trials the runner already holds; both servicers are registered on
+// the same gRPC server + same listen port. Read-only by construction: the
+// servicer implements no write handler and its class holds a _READ_ONLY
+// invariant used by the read-only structural test. Distinct from
+// RunnerService.GetState because a standalone grader needs the trial's WHOLE
+// substrate (initial state, filesystem, KB) — not just the current DB dump.
+// =============================================================================
+
+service SubstrateService {
+  // Read the trial's pre-execution state ({table: [rows]}).
+  rpc ReadInitialState(ReadInitialStateRequest) returns (ReadStateResponse);
+
+  // Read the trial's post-execution DB state, RAW — mirrors
+  // db_client.get_state (unfiltered rows). Used by judge state-diff +
+  // custom_checks; parity depends on this NOT being papered over with the
+  // stable variant.
+  rpc ReadFinalDBState(ReadFinalDBStateRequest) returns (ReadStateResponse);
+
+  // Read the trial's post-execution DB state, STABLE — mirrors
+  // db_client.get_stable_state (unstable fields filtered server-side by the
+  // DB service). Used by jsonpath state-checks grading.
+  rpc ReadFinalDBStateStable(ReadFinalDBStateStableRequest) returns (ReadStateResponse);
+
+  // Read one file under the trial's AGENT_WORK_DIR (path relative). Returns
+  // exists=false for a missing / non-file / symlink path; is_file=true with
+  // content_utf8 for text; is_file=true with content_bytes_b64 (base64) for
+  // any file that fails UTF-8 decode. Mirrors the same filter
+  // _read_agent_visible_filesystem applies today.
+  rpc ReadFilesystemPath(ReadFilesystemPathRequest) returns (ReadFilesystemPathResponse);
+
+  // List the trial's agent-visible workspace: relative POSIX paths of every
+  // non-symlink UTF-8-decodable file under AGENT_WORK_DIR. Same filter
+  // _read_agent_visible_filesystem ships today — no path-component excluder
+  // for node_modules / .venv / .git; a coding-harness workspace carries
+  // those trees on the wire.
+  rpc ListFilesystemDir(ListFilesystemDirRequest) returns (ListFilesystemDirResponse);
+
+  // Query the trial's per-trial KB (rag-service). kb_available=false is a
+  // first-class signal ("this trial has no KB provisioned"); the callback
+  // substrate returns None from knowledge_search() when kb_available is
+  // false rather than dialing an unreachable endpoint.
+  rpc KBSearch(KBSearchRequest) returns (KBSearchResponse);
+
+  // Substrate liveness + capacity signal. Distinct from RunnerService.
+  // HealthCheck (that endpoint reports RunnerService plumbing; this one
+  // reports the substrate seam and its active-trial count).
+  rpc SubstrateHealthCheck(SubstrateHealthCheckRequest) returns (SubstrateHealthCheckResponse);
+}
+
+// -----------------------------------------------------------------------------
+// SubstrateService — state reads
+// -----------------------------------------------------------------------------
+
+message ReadInitialStateRequest {
+  string trial_id = 1;
+}
+
+message ReadFinalDBStateRequest {
+  string trial_id = 1;
+  // Specific tables to return (empty = all). Same semantic as GetStateRequest.
+  // tables.
+  repeated string tables = 2;
+}
+
+message ReadFinalDBStateStableRequest {
+  string trial_id = 1;
+}
+
+// Read-only view of one substrate state read. Same {table: [rows]} JSON shape
+// GetStateResponse.state_json carries; the STABLE variant's rows are
+// server-filtered per the DB service's unstable-fields declaration.
+message ReadStateResponse {
+  // {table_name: [row, ...]} JSON. Empty JSON object ("{}") when the trial
+  // has no DB tables (filesystem-only tasks) — see DBTrialNotFoundError
+  // fallback below.
+  string state_json = 1;
+  // Set when the trial is not registered with the DB service (RAW / STABLE
+  // reads only). Callers apply degrade-to-empty policy at the composite
+  // layer, matching the shipped runner semantics.
+  bool trial_not_found = 2;
+}
+
+// -----------------------------------------------------------------------------
+// SubstrateService — filesystem reads
+// -----------------------------------------------------------------------------
+
+message ReadFilesystemPathRequest {
+  string trial_id = 1;
+  // Path relative to AGENT_WORK_DIR (POSIX-style).
+  string path = 2;
+}
+
+message ReadFilesystemPathResponse {
+  // A missing path, a symlink, a non-file, and a file the servicer cannot
+  // read yield exists=false. Callers treat that as "not part of the
+  // agent-visible surface", never as an error.
+  bool exists = 1;
+  bool is_file = 2;
+  bool is_dir = 3;
+  // Populated iff is_file AND the file decodes as UTF-8. Mutually
+  // exclusive with content_bytes_b64.
+  string content_utf8 = 4;
+  // Populated iff is_file AND the file refuses UTF-8 decode. Base64 of the
+  // raw bytes; callers that only expose text-file assertions ignore it.
+  string content_bytes_b64 = 5;
+}
+
+message ListFilesystemDirRequest {
+  string trial_id = 1;
+}
+
+message ListFilesystemDirResponse {
+  // Relative POSIX paths of every non-symlink UTF-8-decodable file under
+  // AGENT_WORK_DIR. Ordered by walk order (rglob), stable within one
+  // servicer version.
+  repeated string rel_paths = 1;
+}
+
+// -----------------------------------------------------------------------------
+// SubstrateService — KB reads
+// -----------------------------------------------------------------------------
+
+message KBSearchRequest {
+  string trial_id = 1;
+  string query = 2;
+  int32 top_k = 3;
+  // Hybrid keyword/semantic weight; backends that ignore it (TypeSense) are
+  // free to.
+  double alpha = 4;
+}
+
+message KBSearchResponse {
+  // First-class "this trial has no KB" signal. The callback substrate's
+  // knowledge_search() returns None when kb_available is false, matching
+  // the Protocol contract (KB-less tasks are a normal shape, not an error).
+  bool kb_available = 1;
+  repeated SubstrateSearchHit hits = 2;
+}
+
+message SubstrateSearchHit {
+  string doc_id = 1;
+  string source = 2;
+  double score = 3;
+  string text = 4;
+}
+
+// -----------------------------------------------------------------------------
+// SubstrateService — health
+// -----------------------------------------------------------------------------
+
+message SubstrateHealthCheckRequest {}
+
+message SubstrateHealthCheckResponse {
+  // "ready" | "degraded" | "unavailable". A caller checks the string; a
+  // future revision may add finer-grained states without breaking wire
+  // decoding.
+  string status = 1;
+  // Trials currently registered with the runner — same value RunnerService.
+  // HealthCheck.num_active_trials reports.
+  int32 active_trials = 2;
 }

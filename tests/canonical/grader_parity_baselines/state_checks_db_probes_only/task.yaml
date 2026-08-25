@@ -1,0 +1,22 @@
+task_id: state_checks_db_probes_only
+name: State-checks db_probes parity isolation
+category: test
+description: |
+  Isolates the ``state_check_backends[db_probes]`` seam: the grading config
+  declares one substrate SQL probe against a task-declared postgres, no
+  jsonpath / transcript / trace / judge / custom-check blocks. The canonical
+  lane never opens a network connection — ``parity.yaml`` scripts the rows
+  the probe query returns via the harness's ``_fetch_probe_rows`` monkeypatch,
+  so both legs see the same deterministic input.
+adapter_type: tau
+schema_version: 1.0.0
+system_prompt: You are a test assistant.
+agent_tools: []
+user_tools: []
+initial_state:
+  tables:
+    corrective_actions:
+      - id: 1
+        lot_id: 7
+        reason_code: CAPA-01
+        status: open

@@ -1,0 +1,23 @@
+task_id: all_four_no_hash
+name: All non-hash components composite parity
+category: test
+description: |
+  Composes every non-hash grading seam in one pack: jsonpath state check,
+  transcript rule, trace-check constraint (bind + before + within), scripted
+  LLM judge, and a custom-check module. The initial state seeds one ``orders``
+  row so both the jsonpath assertion and the custom check score against the
+  same substrate reads; the trial's tool-call sequence lets the trace-check
+  constraint match, and the assistant turn carries the transcript rule's
+  required phrase. Hash grading is off so the runner leg's ``_execute_hash_grading``
+  is not reached — the grader-leg refusal branch stays out of scope for this
+  pack.
+adapter_type: tau
+schema_version: 1.0.0
+system_prompt: You are a test assistant.
+agent_tools: []
+user_tools: []
+initial_state:
+  tables:
+    orders:
+      - id: O1
+        status: shipped

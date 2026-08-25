@@ -2,16 +2,18 @@
 
 Answers :class:`grader_pb2.GradeRequest` by delegating to an injected judge
 callable and translating the returned :class:`~tolokaforge.core.models.Grade`
-back to the wire type. Stateless per call: the caller supplies everything
-the grader needs (trajectory as LLM messages, termination reason,
-task-config JSON) so the service can be pointed at from any orchestrator
-without a prior registration handshake.
+back to the wire type. Stateless per call: the caller supplies every field
+the composite dispatch needs to grade the trial (trajectory as LLM messages,
+termination reason, task-config JSON, judge-model-config JSON,
+task-description JSON, runner substrate address) so the service can be pointed
+at from any orchestrator without a prior registration handshake.
 
-Real-judge wiring (constructing an :class:`~tolokaforge.core.grading.judge.LLMJudge`
-from per-task rubric config) is deferred to the milestone follow-up on
-:mod:`~tolokaforge.core.trial_grader.JudgeBackedTrialGrader`; the seam
-carries a ``JudgeGradeFn`` callable so both the standalone service and the
-in-process ``judge_only`` grader share the same dispatch surface.
+Standalone wiring — the CLI entry point at :mod:`tolokaforge.grader.__main__`
+mounts :class:`~tolokaforge.grader.composite_dispatch.GraderCompositeDispatch`
+as ``judge_fn``. Tests inject a stub callable that returns a canned
+:class:`Grade`; the seam carries a :data:`JudgeGradeFn` callable so both the
+standalone service and the in-process ``judge_only`` grader share the same
+dispatch surface.
 """
 
 from __future__ import annotations
@@ -37,23 +39,26 @@ if TYPE_CHECKING:
 class GradeDispatch:
     """Wire-level dispatch payload the service hands to its judge callable.
 
-    The standalone service is *stateless per call*: everything the injected
-    dispatch needs to run — the trial identifier, the encoded transcript, the
-    termination-reason string, and optional task-config JSON — travels on the
-    wire. This dataclass captures that shape without pulling in the engine's
-    Pydantic ``TrialSpec`` / ``Trajectory`` types, which carry
-    orchestrator-only fields (env-endpoints, seeds, run-scoped IDs) the
-    service cannot know about.
-
-    Production wiring adapts :class:`GradeDispatch` back to real ``TrialSpec``
-    / ``Trajectory`` values before dispatching to :class:`LLMJudge`; that
-    adapter lives on the milestone follow-up.
+    The standalone service is *stateless per call*: every field the injected
+    dispatch needs to grade the trial travels on the wire and lands on this
+    dataclass. The v2 fields (``judge_model_config_json`` through
+    ``runner_substrate_address``) carry the run-scoped context the composite
+    dispatcher would otherwise get in-process from ``RunnerServiceImpl`` —
+    the grader constructs its :class:`LiveRunnerCallbackGradingSubstrate`
+    against ``runner_substrate_address`` and deserialises the task-scoped
+    ``TaskDescription`` / ``ModelConfig`` from the JSON fields. The agent
+    system prompt already rides ``llm_messages_json`` as its leading system
+    message; the composite dispatcher recovers it via
+    :func:`split_leading_system_message`.
     """
 
     trial_id: str
     llm_messages_json: str
     termination_reason: str
     task_config_json: str
+    judge_model_config_json: str
+    task_description_json: str
+    runner_substrate_address: str
 
 
 JudgeGradeFn = Callable[[GradeDispatch], "Grade | None"]
@@ -230,12 +235,21 @@ class GraderServiceImpl(grader_pb2_grpc.GraderServiceServicer):
             llm_messages_json=request.llm_messages_json or "",
             termination_reason=request.termination_reason or "",
             task_config_json=request.task_config_json or "",
+            judge_model_config_json=request.judge_model_config_json or "",
+            task_description_json=request.task_description_json or "",
+            runner_substrate_address=request.runner_substrate_address or "",
         )
+        # Local import: ``tolokaforge.core.trial_grader`` imports
+        # ``tolokaforge.grader.wire_snapshot`` at module top, which triggers
+        # the ``tolokaforge.grader`` package init that pulls this module —
+        # a top-level import here would close the cycle.
+        from tolokaforge.core.trial_grader import GradingFailedError
+
         try:
             grade = self.judge_fn(dispatch)
-        except NotImplementedError as exc:
+        except (NotImplementedError, GradingFailedError) as exc:
             self.logger.info(
-                "Grader service invoked with unwired judge dispatch",
+                "Grader service refused to grade",
                 trial_id=request.trial_id,
                 error=str(exc),
             )

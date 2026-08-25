@@ -215,6 +215,23 @@ jobs:
             uv run pytest tests/integration/deploy/test_published_images_rc_smoke.py \
             -v --tb=short -m "integration and requires_docker"
 
+      # The 10-pack per-component parity gate — runs the same corpus the
+      # canonical parity test locks (`tests/canonical/grader_parity_baselines/`)
+      # against the RC runner + grader images over the real gRPC wire. Two
+      # tiers: six no-judge packs assert byte-identical Grade against the
+      # committed baseline; three llm_judge packs assert the keyless
+      # wire-shape (judge_status=ERRORED, non-judge components match); the
+      # hash pack asserts the documented refusal. Keyless — the wire-shape
+      # tier's whole property is the errored-judge outcome from a missing
+      # LLM key. A red gate blocks move-tags alongside the image-level
+      # smoke above.
+      - name: Run reference parity suite against pulled RC images
+        run: |
+          version="${GITHUB_REF_NAME#image-v}"
+          TOLOKAFORGE_SMOKE_IMAGE_TAG="$version" \
+            uv run pytest tests/integration/deploy/test_rc_smoke_parity_reference.py \
+            -v --tb=short -m "integration and requires_docker"
+
   auto-promote-rc-to-stable:
     name: Auto-promote rc → stable (retag digest + move :latest + release notes)
     needs: smoke

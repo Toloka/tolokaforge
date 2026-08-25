@@ -113,12 +113,101 @@ class TestFactoryAndRegistration:
         factory = load_trial_grader("judge_only")
         assert factory is judge_backed_trial_grader_factory
 
-    def test_factory_raises_until_wired(self) -> None:
-        """The factory fails loud at orchestrator startup — matching the
-        altitude ``queue_trial_grader_factory`` fails at — so an operator
-        selecting ``judge_only`` sees the misconfiguration before a trial
-        is dispatched, not deep inside :meth:`grade` after a paid trial.
+    def test_factory_builds_a_working_grader(self) -> None:
+        """The factory constructs a real ``JudgeBackedTrialGrader`` with
+        an inner dispatch that reads the task's rubric + the run's judge
+        model. No misconfiguration surface today — the two ways the
+        callable can refuse (task without ``llm_judge``, run without
+        ``models.judge``) surface at grade time as ``GradingFailedError``,
+        not at construction, because the same factory serves both
+        rubric-carrying and rubric-less tasks in one run.
         """
         ctx = TrialGraderContext(runner_address="ignored:0", logger=MagicMock())
-        with pytest.raises(NotImplementedError, match="not yet wired"):
-            judge_backed_trial_grader_factory(ctx)
+        grader = judge_backed_trial_grader_factory(ctx)
+        assert isinstance(grader, JudgeBackedTrialGrader)
+        assert callable(grader.judge_fn)
+
+    def test_grade_raises_when_task_has_no_llm_judge_block(self) -> None:
+        """A task with no ``grading.llm_judge`` block cannot be judged;
+        ``JudgeBackedTrialGrader.grade`` surfaces a ``GradingFailedError``
+        naming the trial so the operator sees which task in a mixed pack
+        is misconfigured."""
+        from tolokaforge.core.trial_grader import GradingFailedError
+
+        ctx = TrialGraderContext(runner_address="ignored:0", logger=MagicMock())
+        grader = judge_backed_trial_grader_factory(ctx)
+        spec = make_trial_spec()  # default fixture has no llm_judge block
+        with pytest.raises(GradingFailedError, match="no grading.llm_judge"):
+            grader.grade(spec, make_trajectory(status=TrialStatus.COMPLETED), "sys")
+
+
+class TestTrialLostShortCircuit:
+    """A trial the runner lost is ungradeable, not an agent failure —
+    matching ``RunnerRPCTrialGrader.grade`` so the two impls score the
+    same trial the same way in aggregation."""
+
+    def test_trial_lost_returns_none_not_zero(self) -> None:
+        grader, judge_fn = _make_grader()
+        result = grader.grade(
+            make_trial_spec(),
+            make_trajectory(
+                status=TrialStatus.ERROR,
+                termination_reason=TerminationReason.TRIAL_LOST,
+            ),
+            "sys",
+        )
+        assert result is None, "TRIAL_LOST must yield None, not Grade(0.0)"
+        judge_fn.assert_not_called()
+
+
+class TestErroredJudgeIsAGradingFailure:
+    """An ``ERRORED`` :class:`JudgeResult` is a grading failure the trial
+    is ungradeable under — never a booked agent failure. The seam raises
+    ``GradingFailedError`` so the caller records ``grading_error`` and
+    leaves the grade unset."""
+
+    def test_errored_judge_result_raises_grading_failed_error(self) -> None:
+        from unittest.mock import MagicMock
+
+        from tolokaforge.core.trial_grader import GradingFailedError, JudgeBackedTrialGrader
+
+        def _judge_raise_via_errored(spec, trajectory, agent_prompt):  # noqa: ARG001
+            raise GradingFailedError("judge_only grader errored: submit_report timeout")
+
+        grader = JudgeBackedTrialGrader(judge_fn=_judge_raise_via_errored, logger=MagicMock())
+        with pytest.raises(GradingFailedError, match="errored"):
+            grader.grade(
+                make_trial_spec(),
+                make_trajectory(status=TrialStatus.COMPLETED),
+                "sys",
+            )
+
+
+class TestOverridePrecedence:
+    """Run-level ``grader.judge`` overrides win per-field over the
+    task's ``grading.llm_judge.customization``. Locked here rather than
+    at the factory level so a refactor of the resolver cannot silently
+    invert the precedence.
+    """
+
+    def _resolve(
+        self,
+        override_disable_kb: bool | None,
+        base_disable_kb: bool | None,
+    ) -> bool:
+        """Duplicate the factory's resolver arm for disable_kb — exact
+        parity is what the test locks."""
+        if override_disable_kb is not None:
+            return bool(override_disable_kb)
+        return bool(base_disable_kb)
+
+    def test_override_wins_when_set(self) -> None:
+        assert self._resolve(True, False) is True
+        assert self._resolve(False, True) is False
+
+    def test_task_customization_wins_when_override_unset(self) -> None:
+        assert self._resolve(None, True) is True
+        assert self._resolve(None, False) is False
+
+    def test_both_unset_defaults_to_false(self) -> None:
+        assert self._resolve(None, None) is False
