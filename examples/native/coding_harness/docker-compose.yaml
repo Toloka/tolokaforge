@@ -1,0 +1,9 @@
+services:
+  main:
+    build:
+      context: ./environment
+    container_name: "tfnative_${TOLOKAFORGE_TRIAL_SLUG}_main"
+    command:
+      - sh
+      - -c
+      - sleep infinity

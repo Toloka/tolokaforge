@@ -1,0 +1,27 @@
+task_id: "fix_factorial"
+name: "Fix the Factorial Bug"
+category: "coding_harness"
+description: >
+  A Python module implementing `factorial(n)` is buggy — it returns the wrong
+  result for most inputs. Fix the module so its accompanying pytest suite
+  passes. The pack ships an `environment/` Dockerfile that stages the buggy
+  code and the tests into a Python 3.11 image; the pack's `tests/test.sh`
+  runs pytest inside the trial container and writes the pass fraction to
+  `/logs/verifier/reward.txt` for `test_execution` grading.
+adapter_type: "native"
+initial_user_message: |
+  The Python module at /work/factorial.py has a bug — its `factorial`
+  function does not return the correct value for most inputs. Fix the bug
+  so the test suite in /work/tests/ passes. You can run the tests with
+  `pytest /work/tests`.
+system_prompt: null
+initial_state: {}
+tools:
+  agent:
+    enabled: []
+  user:
+    enabled: []
+environment_manifest:
+  stack:
+    compose_file: "./docker-compose.yaml"
+    runner_service: "main"
