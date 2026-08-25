@@ -596,8 +596,9 @@ on the judge packs, since the container lane has no scripted-client seat.
 
 The pack loader reads the SAME `tests/canonical/grader_parity_baselines/`
 directory the canonical parity test reads — no corpus fork, so a baseline
-regeneration on one lane surfaces on the other automatically.
-`test_rc_smoke_reads_the_same_corpus_as_canonical` hard-locks the invariant.
+regeneration on one lane surfaces on the other automatically. An
+import-time `assert _BASELINES_ROOT.is_dir()` in the integration module
+fails collection if the shared corpus goes missing.
 
 Follow-up scoped for after this gate stabilises: an in-image scripted
 judge provider (`ScriptedJudgeModelProvider` under

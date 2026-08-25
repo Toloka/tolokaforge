@@ -604,8 +604,12 @@ def assert_grader_rpc_refuses(
         composite = GraderCompositeDispatch(
             logger=StructuredLogger(name="parity-gate-grader-rpc")  # type: ignore[arg-type]
         )
-        with pytest.raises(GradingFailedError, match=expected_error_fragment):
+        with pytest.raises(GradingFailedError) as excinfo:
             composite.grade(dispatch)
+        assert expected_error_fragment in str(excinfo.value), (
+            f"grader refused but the message does not carry the declared fragment "
+            f"{expected_error_fragment!r}: {str(excinfo.value)!r}"
+        )
 
 
 def serialise_grade(grade: runner_pb2.Grade | grader_pb2.Grade) -> str:

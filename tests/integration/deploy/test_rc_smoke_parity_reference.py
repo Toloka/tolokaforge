@@ -101,7 +101,7 @@ _HASH_REFUSAL_PACK_ID = "hash_and_all_four"
 _DB_PROBES_PACK_ID = "state_checks_db_probes_only"
 
 # The runner-side substrate service lives on the runner container's gRPC
-# listen port (RUNNER_EXPOSE_SUBSTRATE=true wired in Phase 3). The grader
+# listen port (`RUNNER_EXPOSE_SUBSTRATE=true` on the runner container). The grader
 # opens its substrate channel from inside its own container, so the address
 # is docker service-name DNS rather than a host-published port.
 _RUNNER_SUBSTRATE_INTERNAL_ADDR = "runner:50051"

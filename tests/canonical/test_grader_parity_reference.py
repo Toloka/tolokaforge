@@ -48,8 +48,8 @@ pytestmark = pytest.mark.canonical
 
 _BASELINES_ROOT = Path(__file__).parent / "grader_parity_baselines"
 
-# One row per plug-in seam Phase 2 introduced. Each pack's grading.yaml
-# declares exactly one non-trivial grading block — the isolation invariant
+# One row per plug-in seam. Each pack's grading.yaml declares exactly
+# one non-trivial grading block — the isolation invariant
 # ``test_isolation_pack_config_is_single_seam`` locks — so a divergence at
 # that seam surfaces at that pack alone.
 _ISOLATION_PACKS: list[tuple[str, str]] = [
