@@ -2122,6 +2122,101 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # GLM-5.3 (Zhipu / Z.AI via OpenRouter) — landed via auto-resolve (PR
+    # #1277). Routes through the model-specific ``z_ai_glm_5_3`` preset (see
+    # model_presets.yaml), declared BEFORE the shared
+    # ``openrouter_dict_stringify_recovery`` preset whose ``z-ai/glm-5*`` glob
+    # already claimed this route. The overlay is a FULL COPY of that shared
+    # preset PLUS a ``reasoning_codec`` swap to ``openai_summary_replay``
+    # (``OpenAISummaryReplayReasoningCodec``). The copy is load-bearing:
+    # ``_match_preset`` returns the first match with NO fallback merge, so the
+    # ``passthrough`` / ``json_coerce`` / ``dict_map_hints`` fields on the
+    # overlay cannot be pruned as duplicates — see the preset's own comment in
+    # model_presets.yaml and tests/unit/llm/test_z_ai_glm_5_3_preset.py.
+    #
+    # The observe baseline (2026-08-25, measured ON the shared preset since its
+    # glob already matched) is a clean tool-caller: all 25 tool-call / shape
+    # probes 15/15 (dict_map, discriminated-union two-turn, recursive $ref,
+    # heterogeneous array, allOf merge, decimal), all 6 shape variants 15/15,
+    # and 0 tool-arg rejections over 688 tool calls / 199 wire trials. Exactly
+    # ONE preset-fixable failure: ``unsigned_thinking_replay`` 0/15 — the plain
+    # ``openai`` codec's ``encode_for_replay`` is a no-op, so the outgoing
+    # assistant dict carried no ``reasoning_details``. The replay subclass
+    # inherits the OpenAI ``extract`` verbatim (THINKING_EMITS_BLOCKS keeps its
+    # 15/15 summary surface; the route reports 38–64 reasoning_tokens per call)
+    # and re-emits that summary as an unsigned OpenRouter ``reasoning.text``
+    # detail. Reprobe went 5/5 on the fix-target, so UNSIGNED_THINKING_REPLAY is
+    # ``required`` here — UNLIKE the glm-5.1 / glm-5.2 siblings, whose shared
+    # ``openai`` codec has no replay path and declare it known_unsupported.
+    #
+    # SCOPE of that ``required``. It is a PAYLOAD-level contract:
+    # ``test_unsigned_thinking_replay`` fires turn 1 live and MOCKS turn 2,
+    # asserting only that the outgoing request body carries the turn-1 text.
+    # Read it as contract conformance plus trajectory observability, not as
+    # proof of cross-turn reasoning continuity — the deepseek-v4-flash-0731
+    # sibling's controlled A/B measured the route accepting and then ignoring
+    # the field (turn-2 prompt_tokens delta 0).
+    #
+    # The two ``known_unsupported`` ceilings are the observe-run ceilings
+    # (decision.json), neither preset-fixable: signed-block replay has no source
+    # ("no signed blocks on turn 1", 15/15 → THINKING_REPLAY_ROUNDTRIP; the
+    # replay codec synthesises no signature), and no Anthropic-style ephemeral
+    # cache is wired on this z-ai route (0 cache_creation_input_tokens on an
+    # 8.2 k-token first call, 15/15 → PROMPT_CACHING; ``anthropic_ephemeral``
+    # would only inject cache_control markers the route ignores). Same posture as
+    # the glm-5.1 / glm-5.2 siblings. IMPLICIT_PROMPT_CACHING passed the observe
+    # baseline 15/15 and is ``required``.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__z-ai_glm-5.3",
+        provider="openrouter",
+        name="z-ai/glm-5.3",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.THINKING_EMITS_BLOCKS,
+                # Fixed by the ``openai_summary_replay`` codec (re-emits the
+                # turn-1 summary as an unsigned OpenRouter reasoning.text detail
+                # on replay); observe was 0/15, reprobe 5/5.
+                C.UNSIGNED_THINKING_REPLAY,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # No Anthropic-style ephemeral cache on this z-ai route: call 1
+                # created 0 cache_creation_input_tokens on an 8.2 k-token prompt
+                # (15/15 identical). The auto-cache surface
+                # (IMPLICIT_PROMPT_CACHING) passed 15/15 and is required above.
+                C.PROMPT_CACHING,
+                # Signed-block replay has no source: the route emits no
+                # per-block signature ("no signed blocks on turn 1"), and
+                # ``openai_summary_replay`` synthesises none — so the signed
+                # round-trip contract cannot be exercised. The unsigned replay
+                # path IS wired (UNSIGNED_THINKING_REPLAY, required above).
+                C.THINKING_REPLAY_ROUNDTRIP,
+            }
+        ),
+    ),
     # Mistral-Medium-3.5 (Mistral AI via OpenRouter). Clean tool-caller on
     # the default route — dict-map, discriminated-union, decimal all
     # round-trip natively, so no preset is needed. It is a NON-reasoning
