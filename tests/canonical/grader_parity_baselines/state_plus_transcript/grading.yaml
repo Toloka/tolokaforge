@@ -1,0 +1,11 @@
+weights:
+  state_checks: 1.0
+  transcript_rules: 1.0
+state_checks:
+  jsonpath_checks:
+    - path: "$.db.orders[0].status"
+      equals: shipped
+      description: order O1 is shipped
+transcript_rules:
+  must_contain:
+    - "Refund issued"

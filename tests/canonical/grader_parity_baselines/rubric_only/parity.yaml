@@ -1,0 +1,10 @@
+accepted_divergences: []
+refusal_mode: false
+judge_script:
+  - - name: submit_report
+      arguments:
+        reasons: the agent completed the task
+        ok: true
+        ok_justification: |
+          because ok
+          VERDICT: MET

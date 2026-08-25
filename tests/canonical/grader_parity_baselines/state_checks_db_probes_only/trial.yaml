@@ -1,0 +1,10 @@
+trial_id: state_checks_db_probes_only:0
+termination_reason: agent_done
+agent_system_prompt: You are a test assistant.
+llm_messages:
+  - role: system
+    content: You are a test assistant.
+  - role: user
+    content: Please open the corrective action for lot 7.
+  - role: assistant
+    content: Corrective action CAPA-01 has been recorded for lot 7.

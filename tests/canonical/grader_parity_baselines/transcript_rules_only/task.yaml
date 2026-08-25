@@ -1,0 +1,13 @@
+task_id: transcript_rules_only
+name: Transcript-rules parity isolation
+category: test
+description: |
+  Isolates the ``transcript_rule_matchers`` seam: the grading config declares
+  a single ``must_contain`` rule, no state / trace / judge / custom-check
+  blocks. The trial's assistant turn carries the required text, so the
+  matcher fires deterministically without a live LLM.
+adapter_type: tau
+schema_version: 1.0.0
+system_prompt: You are a test assistant.
+agent_tools: []
+user_tools: []

@@ -57,6 +57,7 @@ Tolokaforge needs the grader to work under (1), (2), and (3) *this milestone* â€
 - Component evaluators become individually pluggable; operators can extend judges / rules / trace ops without touching the framework.
 - Extract-refactor of runner-side grading code onto the Protocol path unifies the codebase and locks behaviour parity by construction.
 - **Phase 3 landing (issue #1263).** `GraderCompositeDispatch` (`tolokaforge/grader/composite_dispatch.py`) is mounted by `python -m tolokaforge.grader`: it deserialises the wire v2 fields, builds `LiveRunnerCallbackGradingSubstrate` per trial, runs the composite grading pipeline, and returns a real `Grade` on the `grader_rpc` path.
+- **Phase 4 parity gate (issue #1264).** `tests/canonical/test_grader_parity_reference.py` operationalizes the multi-substrate parity claim across the six sub-component seams; hash grading refusal and KB passthrough divergence are recorded per-pack on `parity.yaml`.
 
 **Negative**
 

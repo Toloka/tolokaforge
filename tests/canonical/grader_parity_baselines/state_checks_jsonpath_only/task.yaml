@@ -1,0 +1,19 @@
+task_id: state_checks_jsonpath_only
+name: State-checks jsonpath parity isolation
+category: test
+description: |
+  Isolates the ``state_check_backends[jsonpath]`` seam: the grading config
+  declares one jsonpath assertion against ``$.db.orders[0].status``, no
+  transcript / trace / judge / custom-check blocks. The initial state seeds
+  a single ``orders`` row so the read-only substrate can answer the
+  assertion without a live database round-trip.
+adapter_type: tau
+schema_version: 1.0.0
+system_prompt: You are a test assistant.
+agent_tools: []
+user_tools: []
+initial_state:
+  tables:
+    orders:
+      - id: O1
+        status: shipped

@@ -444,6 +444,169 @@ serve; hash grading stays runner-integrated on
 `RunnerServiceImpl._execute_hash_grading`, called by `_grade_trial_async`
 above the composite dispatch.
 
+## Parity gate
+
+The `runner_rpc` and `grader_rpc` legs must produce byte-identical
+`Grade` output for every combination of grading components a task
+declares — except the two accepted, documented divergences (KB
+passthrough for the judge; hash grading refused). A canonical parity
+gate at `tests/canonical/test_grader_parity_reference.py` locks that
+invariant against a growing corpus of reference packs.
+
+**Harness.** `tests/utils/grader_parity_harness.py` boots an in-process
+`RunnerServiceImpl` + `SubstrateServicer` and drives each leg against
+the same trial context:
+
+- `run_via_runner_rpc(pack, monkeypatch=...)` — calls
+  `RunnerServiceImpl.GradeTrial`; returns a `runner_pb2.Grade`.
+- `run_via_grader_rpc(pack, monkeypatch=...)` — constructs
+  `GraderCompositeDispatch`, builds a `GradeDispatch` from the pack's
+  wire fields, calls `.grade(...)`, and translates the resulting Python
+  `Grade` back to `grader_pb2.Grade` via the service's own
+  `_grade_to_wire` helper.
+- `assert_grader_rpc_refuses(pack, expected_error_fragment, monkeypatch=...)`
+  — asserts the grader leg raises `GradingFailedError` with the
+  expected message fragment (the refusal-contract branch a
+  hash-enabled pack lands on).
+- `serialise_grade(g)` — canonical JSON via
+  `MessageToDict(preserving_proto_field_name=True,
+  always_print_fields_with_no_presence=True)` followed by a `%.6g`
+  float normaliser. Both proto types (`runner_pb2.Grade`,
+  `grader_pb2.Grade`) project to the same dict shape; the two legs
+  converge at the canonical-dict layer, not at the proto-type layer.
+  The `trace_checks` optional-presence field materialises as `-1.0`
+  when the wire carries no presence — the runner leg's sentinel and
+  the grader leg's absent both mean "not evaluated" per the
+  `runner.proto` semantics.
+
+**Baselines.** Each pack under
+`tests/canonical/grader_parity_baselines/<name>/` ships a committed
+`expected_grade.json` captured via the harness on green
+`feat/standalone-grader`. The reference test asserts every leg
+matches the baseline byte-for-byte.
+
+**Pack shape.** One directory per pack, with:
+
+- `task.yaml` — `TaskDescription` fields (task_id, name, category,
+  description, adapter_type, system_prompt, initial_state, agent/user
+  tools). The harness folds `grading.yaml` onto its `grading`
+  attribute at load time.
+- `grading.yaml` — `RunnerGradingConfig` (weights, state_checks,
+  transcript_rules, trace_checks, llm_judge, custom_checks).
+- `trial.yaml` — wire dispatch fields: `trial_id`,
+  `termination_reason`, `agent_system_prompt`, `llm_messages`,
+  optional `judge_model_config`.
+- `parity.yaml` — declared `accepted_divergences: [...]`, optional
+  `judge_script: [...]` for packs exercising `llm_judge` (a
+  deterministic scripted-client stand-in that keeps the canonical
+  lane keyless), optional `db_probe_rows: {probe_name: [row, ...]}`
+  for packs exercising `state_checks.db_probes` (scripted rows the
+  harness serves from `_fetch_probe_rows` so neither leg dials a
+  live postgres), and optional `refusal_mode` /
+  `expected_error_fragment` for the hash-refusal contract.
+- `expected_grade.json` — the committed baseline.
+
+**Refresh.** `uv run pytest tests/canonical/test_grader_parity_reference.py
+--refresh-baselines` rewrites every pack's baseline from the runner
+leg's output and skips the equality assertions. The refresh is
+idempotent — a second run against the freshly-written baseline shows
+no diff. The resulting change belongs in the same commit as the code
+change that motivated it; `git diff` catches accidents during review.
+
+**Isolation packs.** Six packs each populate exactly one non-trivial
+grading block so a scoring divergence at one plug-in seam surfaces at
+that pack alone. The state-check subseams (`jsonpath_checks`,
+`db_probes`) collapse into one wire slot (`GradeComponents.state_checks`)
+per `runner.proto`, so they ship as two packs whose `grading.yaml` shape
+distinguishes them at the config surface. The
+`test_isolation_pack_config_is_single_seam` parametrisation locks the
+invariant.
+
+| Pack directory | Seam isolated | Config invariant |
+|---|---|---|
+| `state_checks_jsonpath_only/` | `state_check_backends[jsonpath]` | `state_checks.jsonpath_checks` non-empty, `db_probes` empty |
+| `state_checks_db_probes_only/` | `state_check_backends[db_probes]` | `state_checks.db_probes` non-empty, `jsonpath_checks` empty |
+| `transcript_rules_only/` | `transcript_rule_matchers` | `transcript_rules` populated |
+| `trace_checks_heavy/` | `trace_check_operators` (bind + before + within) | `trace_checks.constraints` non-empty |
+| `custom_checks_only/` | `custom_check_executors` | `custom_checks.enabled: true` |
+| `rubric_only/` | `rubric_evaluators` + `judge_model_providers` | `llm_judge.rubric` populated |
+
+The `state_checks_db_probes_only/` pack ships scripted probe rows on
+`parity.yaml`'s `db_probe_rows` field (keyed by probe name); the
+harness monkeypatches `_fetch_probe_rows` symmetrically on both legs so
+neither dials a live postgres. The `custom_checks_only/` pack ships
+`checks.py` alongside its YAML — the loader base64-encodes it onto
+`TaskDescription.tool_artifacts` for the grader leg and seeds
+`runner._artifact_dirs[trial_id]` at the pack directory for the runner
+leg, so both legs load the same source under the same relative path.
+
+**Composite packs.** Four packs compose two or more seams so a
+divergence in cross-seam folding — the combined `state_checks` slot, the
+`weighted` combine method, or the ``reasons`` composition across
+components — surfaces where seams meet. `hash_and_all_four/` is the one
+pack whose grader leg refuses rather than grades: `state_checks.hash_enabled`
+reaches the grader-side `GraderCompositeDispatch.grade` refusal branch
+(`grader_rpc cannot execute hash-based grading`) — its `parity.yaml`
+declares `refusal_mode: true` and its committed `expected_grade.json`
+records the runner leg's Grade only. The refusal fragment is the entire
+grader-side contract.
+
+| Pack directory | Composition | Divergence handling |
+|---|---|---|
+| `state_plus_transcript/` | `state_checks.jsonpath_checks` + `transcript_rules` | pure parity; `accepted_divergences: []` |
+| `state_plus_judge/` | `state_checks.jsonpath_checks` + scripted `llm_judge` | pure parity; `accepted_divergences: []` |
+| `all_four_no_hash/` | jsonpath + transcript + trace + scripted judge + `custom_checks` | pure parity; `hash_enabled` off |
+| `hash_and_all_four/` | hash + jsonpath + transcript + trace + scripted judge + `custom_checks` | refusal: grader raises `GradingFailedError` matching `cannot execute hash-based grading`; only the runner leg produces a Grade |
+
+`test_composite_pack_parity` runs both legs for the first three; the
+refusal case is covered by `test_composite_pack_parity_hash_refusal`,
+which asserts the runner leg matches the committed baseline and
+`assert_grader_rpc_refuses` accepts the declared fragment.
+
+**Regression-detection lock.** Two canonical tests prove the parity
+gate would name the seam that regressed rather than only "the baseline
+diverged":
+
+- `test_regression_sim_baseline_flip_names_the_component` mutates one
+  `components[<name>]` entry in a temp-copy baseline. The failure
+  message emitted by `refresh_or_assert_baseline` names the mutated
+  component and no other — the committed baseline is never touched.
+- `test_regression_sim_leg_divergence_names_the_component` runs the
+  runner leg with production `grade_trace_checks`, then monkeypatches
+  the composite module's binding and runs the grader leg against the
+  divergent scoring. The two serialised Grades differ only on the
+  `components.trace_checks` slot per `components_diff` — proving the
+  parity gate would surface a real between-legs code divergence at
+  that seam.
+
+**RC-smoke guarantees.** The publish-images workflow's `smoke:` job runs
+the same corpus against the freshly-pulled RC runner + grader images over
+the real gRPC wire — one step alongside the image-level rc-smoke, no new
+job (`tests/integration/deploy/test_rc_smoke_parity_reference.py`). Two
+assertion tiers, honestly split by whether the pack exercises `llm_judge`
+— canonical parity through the harness is what backs the tighter guarantee
+on the judge packs, since the container lane has no scripted-client seat.
+
+| Tier | Packs | RC-smoke assertion |
+|---|---|---|
+| Deterministic | `state_checks_jsonpath_only`, `transcript_rules_only`, `trace_checks_heavy`, `custom_checks_only`, `state_plus_transcript` | Byte-identical `Grade` against the committed baseline via the same `serialise_grade` canonical projection. This is the shipped byte-parity guarantee. |
+| Deterministic (excluded) | `state_checks_db_probes_only` | Skipped in RC-smoke: the pack's `db_probes.dsn` points at an `app-db` postgres absent from the standalone compose stack. Canonical parity via the monkeypatched `_fetch_probe_rows` covers it. |
+| Wire-shape | `rubric_only`, `state_plus_judge`, `all_four_no_hash` | Grader dispatched keylessly; the missing LLM key surfaces as `judge_status=JUDGE_STATUS_ERRORED` with a `JUDGE ERRORED` segment in `reasons`. Non-judge components (state / transcript / trace / custom) still byte-match the baseline's non-judge components. A `success=false` outcome on a judge-using pack is refused as a regression. |
+| Refusal | `hash_and_all_four` | Grader returns `GradeResponse(success=false)` whose `error` carries the ADR-0039 "cannot execute hash-based grading" fragment. Refusal precedes any judge dial, so the assertion is keyless regardless of tier. |
+
+The pack loader reads the SAME `tests/canonical/grader_parity_baselines/`
+directory the canonical parity test reads — no corpus fork, so a baseline
+regeneration on one lane surfaces on the other automatically. An
+import-time `assert _BASELINES_ROOT.is_dir()` in the integration module
+fails collection if the shared corpus goes missing.
+
+Follow-up scoped for after this gate stabilises: an in-image scripted
+judge provider (`ScriptedJudgeModelProvider` under
+`tolokaforge.judge_model_providers`, driven by a JSON script mount) would
+promote the wire-shape tier to deterministic — the four judge packs would
+byte-check their full baseline in RC-smoke without an LLM key. Deliberately
+out of scope here to keep the parity gate landable now.
+
 ## See also
 
 - [ADR-0014 — TrialGrader Protocol](adr/0014-trial-grader-protocol.md)

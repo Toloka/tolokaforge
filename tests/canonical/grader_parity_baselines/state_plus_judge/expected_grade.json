@@ -1,0 +1,50 @@
+{
+  "binary_pass": true,
+  "components": {
+    "custom_checks": -1.0,
+    "llm_judge": 1.0,
+    "state_checks": 1.0,
+    "trace_checks": -1.0,
+    "transcript_rules": -1.0
+  },
+  "criterion_results": [
+    {
+      "id": "ok",
+      "justification": "state matches expected shipped status\nVERDICT: MET\n",
+      "met": true,
+      "score": 1.0
+    }
+  ],
+  "custom_checks": [],
+  "judge_report": {
+    "calls": 1,
+    "completion_tokens": 5,
+    "consistency_rejections": 0,
+    "cost_usd": 0.001,
+    "custom_system_prompt": false,
+    "include_agent_system_prompt": true,
+    "kb_tools_offered": [],
+    "kb_tools_withheld": [],
+    "knowledge_search_disabled": false,
+    "prompt_tokens": 10,
+    "read_tools_offered": [
+      "get_db_state",
+      "query_db"
+    ],
+    "reasoning_tokens": 0,
+    "state_diff_text": "===== STATE CHANGES (what the agent changed: initial \u2192 final) =====\nNo changes detected in any table (agent left the state untouched).\n===== END STATE CHANGES =====",
+    "tool_calls": 0,
+    "transcript_json": "[{\"role\": \"user\", \"content\": \"The agent under evaluation operated under this policy / system prompt:\\n---\\nYou are a test assistant.\\n---\\n\\nHere is the full transcript of the agent's interaction:\\n===== TRANSCRIPT =====\\nUSER: Please confirm order O1 shipped.\\nASSISTANT: Order O1 has been shipped.\\n===== END TRANSCRIPT =====\\n\\nBelow is a diff of the database state the agent changed (initial \\u2192 final): the rows it added, removed, or modified, plus which tables it left untouched. Use it as your starting point for what the agent did.\\n===== STATE CHANGES (what the agent changed: initial \\u2192 final) =====\\nNo changes detected in any table (agent left the state untouched).\\n===== END STATE CHANGES =====\\n\\nThe diff shows changes, not the complete final state. For criteria about what must NOT change, invariants, absence, or the quality of a full final value, inspect the relevant state directly with query_db (or get_db_state as a last resort). Then grade each criterion and call submit_report.\"}, {\"role\": \"assistant\", \"content\": \"\", \"tool_calls\": [{\"id\": \"call_1_0\", \"name\": \"submit_report\", \"arguments\": {\"reasons\": \"order O1 shipped as declared\", \"ok\": true, \"ok_justification\": \"state matches expected shipped status\\nVERDICT: MET\\n\"}}]}, {\"role\": \"system\", \"content\": \"submit_report received; judge terminating.\"}]"
+  },
+  "judge_status": "JUDGE_STATUS_COMPLETED",
+  "reasons": "JSONPath: State: PASS: order O1 is shipped | Judge: score=1.00 (order O1 shipped as declared | Judge KB: none offered)",
+  "score": 1.0,
+  "state_diff_json": "",
+  "trace_checks": [],
+  "trace_checks_summary": {
+    "failed_gate_ids": [],
+    "gate_failed": false,
+    "paths": [],
+    "winning_path": ""
+  }
+}

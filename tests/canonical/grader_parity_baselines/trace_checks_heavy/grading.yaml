@@ -1,0 +1,29 @@
+weights:
+  trace_checks: 1.0
+trace_checks:
+  constraints:
+    - id: every_report_written_was_read_first
+      description: "the agent reads a report before it overwrites it, within the opening turns"
+      within:
+        first_turn: 0
+        last_turn: 3
+      bind:
+        match:
+          kind: tool_call
+          tool: { equals: write_file }
+        values:
+          written: { field: args.path }
+      require:
+        before:
+          left:
+            quantifier: any
+            match:
+              kind: tool_call
+              tool: { equals: read_file }
+              args: { path: { equals_binding: written } }
+          right:
+            quantifier: any
+            match:
+              kind: tool_call
+              tool: { equals: write_file }
+              args: { path: { equals_binding: written } }
