@@ -16,6 +16,7 @@ All notable changes to this project are documented in this file.
 ### Changed
 
 - **schema**: legacy `evaluation.harness_adapter.params.agent_harness` / `agent_model` are lifted at parse time into `models.agent.harness` / `models.agent.name` with a `DeprecationWarning` per key naming the canonical home. Equal-value collisions warn once; differing values raise. Removal target: the next scheduled major-version bump.
+- **packaging**: `tolokaforge-coding-harnesses>=0.1.0,<1.0.0` is a runtime dependency of the `tolokaforge` wheel. The engine's `tolokaforge.adapters.native` imports the registry, spec models and adapter-support mixin unconditionally, so a headless `pip install tolokaforge` needs the sibling wheel on `sys.path` too. Users installing via the workspace `uv sync` or `pip install 'tolokaforge[all]'` see no change.
 
 ## v0.19.1 (2026-08-19)
 
