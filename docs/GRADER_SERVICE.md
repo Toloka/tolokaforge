@@ -237,7 +237,7 @@ models, opens no gRPC channel, and never touches the filesystem. Both
 graders take `runner_substrate_address` on `__init__` (threaded by
 `grader_rpc_trial_grader_factory` and `queue_trial_grader_factory` from
 `ctx.runner_address`, since `SubstrateService` shares the runner's listen
-port per Phase 1). Empty here fails loud at first `.grade()` with a
+port). Empty here fails loud at first `.grade()` with a
 `GradingFailedError` naming `runner_substrate_address` — a silent empty
 string would land at the grader as a 30 s gRPC connect hang.
 
