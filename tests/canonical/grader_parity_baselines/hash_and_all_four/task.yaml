@@ -7,7 +7,7 @@ description: |
   grading resolve to ``hash_match=True`` — while the grader leg refuses the
   whole dispatch on the ``hash_enabled`` branch (``grader_rpc cannot execute
   hash-based grading``). Documents the one accepted refusal divergence per
-  ADR-0039.
+  ADR-0040.
 adapter_type: tau
 schema_version: 1.0.0
 system_prompt: You are a test assistant.

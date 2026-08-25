@@ -15,7 +15,7 @@ unary RPC and translates:
 Layering — this module lives at ``tolokaforge/core/grading/`` and imports one
 symbol (:class:`~tolokaforge.runner.db_client.TrialNotFoundError`) from the
 runner package. Composite/substrate → runner is the same one-way exception
-already accepted for the composite (see ADR-0039); the runner is the sole
+already accepted for the composite (see ADR-0040); the runner is the sole
 owner of the DB-service error hierarchy the substrate mirrors on the wire.
 """
 

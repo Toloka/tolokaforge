@@ -174,7 +174,7 @@ against `runner_substrate_address`, and runs the composite grading
 functions (state checks / transcript rules / trace checks / llm judge /
 custom checks) mirroring the runner's `_grade_trial_async`. Hash grading
 is refused server-side too — the substrate is read-only. See
-[`docs/adr/0039-standalone-grader.md`](adr/0039-standalone-grader.md).
+[`docs/adr/0040-standalone-grader.md`](adr/0040-standalone-grader.md).
 
 The factory reads `ctx.grader_address` when the operator has split the
 runner and grader onto distinct hosts, and falls back to
@@ -381,7 +381,7 @@ client from it.
 `SubstrateService` is a read-only gRPC surface the runner exposes when
 `RunConfig.grader.expose_substrate: true` is set. An independent grader
 container dials it to answer every read the substrate seam
-([ADR-0039](adr/0039-standalone-grader.md)) makes — initial state, RAW
+([ADR-0040](adr/0040-standalone-grader.md)) makes — initial state, RAW
 and STABLE final DB state, agent-visible filesystem, and the trial's
 per-trial knowledge-base search — without ever asking the runner to
 mutate state on the grader's behalf.
@@ -556,7 +556,7 @@ wire.
 **Reserved future: shared-mount cheap substrate.** The single-host
 topology where an independent grader container reads the substrate off
 a shared filesystem/DB mount is the reserved `SharedMountGradingSubstrate`
-recipe — see [ADR-0039](adr/0039-standalone-grader.md), reserved-future
+recipe — see [ADR-0040](adr/0040-standalone-grader.md), reserved-future
 substrate SWE-bench pattern. Not shipped today; the two shipping
 substrates are `InProcess` and `LiveCallback`.
 
@@ -755,7 +755,7 @@ on the judge packs, since the container lane has no scripted-client seat.
 | Deterministic | `state_checks_jsonpath_only`, `transcript_rules_only`, `trace_checks_heavy`, `custom_checks_only`, `state_plus_transcript` | Byte-identical `Grade` against the committed baseline via the same `serialise_grade` canonical projection. This is the shipped byte-parity guarantee. |
 | Deterministic (excluded) | `state_checks_db_probes_only` | Skipped in RC-smoke: the pack's `db_probes.dsn` points at an `app-db` postgres absent from the standalone compose stack. Canonical parity via the monkeypatched `_fetch_probe_rows` covers it. |
 | Wire-shape | `rubric_only`, `state_plus_judge`, `all_four_no_hash` | Grader dispatched keylessly; the missing LLM key surfaces as `judge_status=JUDGE_STATUS_ERRORED` with a `JUDGE ERRORED` segment in `reasons`. Non-judge components (state / transcript / trace / custom) still byte-match the baseline's non-judge components. A `success=false` outcome on a judge-using pack is refused as a regression. |
-| Refusal | `hash_and_all_four` | Grader returns `GradeResponse(success=false)` whose `error` carries the ADR-0039 "cannot execute hash-based grading" fragment. Refusal precedes any judge dial, so the assertion is keyless regardless of tier. |
+| Refusal | `hash_and_all_four` | Grader returns `GradeResponse(success=false)` whose `error` carries the ADR-0040 "cannot execute hash-based grading" fragment. Refusal precedes any judge dial, so the assertion is keyless regardless of tier. |
 
 The pack loader reads the SAME `tests/canonical/grader_parity_baselines/`
 directory the canonical parity test reads — no corpus fork, so a baseline
@@ -775,6 +775,6 @@ out of scope here to keep the parity gate landable now.
 - [ADR-0014 — TrialGrader Protocol](adr/0014-trial-grader-protocol.md)
 - [ADR-0022 — Runtime Independence](adr/0022-runtime-independence.md)
 - [ADR-0038 — Grader Detachment](adr/0038-grader-detachment.md)
-- [ADR-0039 — Standalone Grader Substrate](adr/0039-standalone-grader.md)
+- [ADR-0040 — Standalone Grader Substrate](adr/0040-standalone-grader.md)
 - [STANDALONE_RUNNER.md](STANDALONE_RUNNER.md) — the sibling doc for the
   runner-as-component surface

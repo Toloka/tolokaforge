@@ -1,6 +1,6 @@
 """``GradingSubstrate`` — Protocol shape + shipped-impl contract locks.
 
-Locks the seam ADR-0039 introduces: one Protocol, two implementations
+Locks the seam ADR-0040 introduces: one Protocol, two implementations
 shipped today (``in_process``, ``live_callback``), three reserved future
 implementations raising ``NotImplementedError`` with a pointer to the ADR
 recipe.
@@ -560,7 +560,7 @@ class TestLiveCallbackSubstrateReads:
 class TestReservedFutureSubstratesRaiseWithAdrPointer:
     """The three reserved future substrates (``TrajectoryStorage``,
     ``Snapshot``, ``SharedMount``) each raise ``NotImplementedError`` with
-    a pointer to ADR-0039. A contributor reaching for them sees the recipe
+    a pointer to ADR-0040. A contributor reaching for them sees the recipe
     rather than a mystery stub."""
 
     @pytest.mark.parametrize(
@@ -568,7 +568,7 @@ class TestReservedFutureSubstratesRaiseWithAdrPointer:
         [TrajectoryStorageGradingSubstrate, SnapshotGradingSubstrate, SharedMountGradingSubstrate],
     )
     def test_construction_raises_with_adr_pointer(self, cls: type) -> None:
-        with pytest.raises(NotImplementedError, match="ADR-0039|0039-standalone-grader"):
+        with pytest.raises(NotImplementedError, match="ADR-0040|0040-standalone-grader"):
             cls()
 
 

@@ -42,7 +42,7 @@ forbidden_modules =
 allow_indirect_imports = true
 
 
-# Sub-component seam invariants (ADR-0039).
+# Sub-component seam invariants (ADR-0040).
 #
 # composite.py is the topology-neutral dispatch above the substrate. It
 # must reach every sub-component through its Protocol via a resolved

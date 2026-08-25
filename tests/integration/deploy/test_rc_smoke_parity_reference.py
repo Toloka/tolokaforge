@@ -352,7 +352,7 @@ def test_hash_refusal_end_to_end(
     Refusal precedes any judge dial, so no LLM key is needed: the grader's
     :class:`GraderCompositeDispatch` refuses ``state_checks.hash_enabled``
     up front and the wire returns ``GradeResponse(success=false)`` whose
-    ``error`` carries the ADR-0039 refusal fragment. This gate locks that
+    ``error`` carries the ADR-0040 refusal fragment. This gate locks that
     contract over the real gRPC wire.
     """
     pack = load_parity_pack(_BASELINES_ROOT / _HASH_REFUSAL_PACK_ID)
@@ -366,7 +366,7 @@ def test_hash_refusal_end_to_end(
     response = _call_grade_over_wire(pack)
 
     assert not response.success, (
-        f"grader accepted a hash-enabled pack — the ADR-0039 refusal branch "
+        f"grader accepted a hash-enabled pack — the ADR-0040 refusal branch "
         f"is bypassed. grade={response.grade!r}"
     )
     assert pack.expected_error_fragment in (response.error or ""), (

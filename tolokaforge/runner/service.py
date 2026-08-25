@@ -2129,7 +2129,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     def _grade_trace_checks(
         self, trial_id: str, config: TraceChecksConfig, timeline: TrialTimeline
     ) -> TraceChecksResult:
-        """Runner-side wrapper for :func:`tolokaforge.core.grading.composite.grade_trace_checks` (ADR-0039)."""
+        """Runner-side wrapper for :func:`tolokaforge.core.grading.composite.grade_trace_checks` (ADR-0040)."""
         from tolokaforge.core.grading.composite import grade_trace_checks
 
         return grade_trace_checks(

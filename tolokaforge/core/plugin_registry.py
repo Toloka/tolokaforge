@@ -25,7 +25,7 @@ factories are arg-less (``Callable[[], <Impl>]``).
 The grading-substrate loader resolves directly to the ``GradingSubstrate``
 implementation *class* — the substrate seam is constructed per-trial with
 topology-specific arguments the plug-in group cannot generically supply,
-so callers instantiate the returned class themselves (see ADR-0039).
+so callers instantiate the returned class themselves (see ADR-0040).
 The trace-check-operator loader resolves directly to the operator callable
 — one operator per entry point, no factory wrapper, since the callable
 itself IS the seam contract.
@@ -425,7 +425,7 @@ def load_trace_check_operator(name: str) -> TraceCheckOperator:
 
     The seam is per-operator, and the callable itself IS the contract: no
     factory wrapper. A binding operator is identified by the ``_binding``
-    suffix on its registered name (ADR-0039); the callable's shape does
+    suffix on its registered name (ADR-0040); the callable's shape does
     not change.
     """
     return cast(TraceCheckOperator, _load(TRACE_CHECK_OPERATORS_GROUP, name))

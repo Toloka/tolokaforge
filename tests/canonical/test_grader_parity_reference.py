@@ -337,7 +337,7 @@ def test_composite_pack_parity_hash_refusal(
 def test_composite_pack_judge_does_not_enable_kb_passthrough(pack_dir: Path) -> None:
     """No composite pack turns on KB passthrough on its judge.
 
-    ADR-0039 records KB passthrough as an accepted grader-vs-runner
+    ADR-0040 records KB passthrough as an accepted grader-vs-runner
     divergence (the grader image cannot reconstruct the runner's KB
     corpus). A composite pack that enabled it would drift the two legs
     on a component that isn't the seam under test, so the isolation
@@ -356,7 +356,7 @@ def test_composite_pack_judge_does_not_enable_kb_passthrough(pack_dir: Path) -> 
     assert customization.disable_knowledge_search is not False, (
         f"pack {pack_dir.name!r} enables KB passthrough on its judge "
         f"(disable_knowledge_search=False) — composite parity packs must not "
-        "exercise the ADR-0039 KB-passthrough divergence."
+        "exercise the ADR-0040 KB-passthrough divergence."
     )
 
 

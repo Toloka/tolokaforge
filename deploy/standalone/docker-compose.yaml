@@ -106,7 +106,7 @@ services:
       # Register the read-only SubstrateService on the runner's gRPC server
       # (same listen port as RunnerService) so the standalone grader can dial
       # it per trial for initial-state / final-state / filesystem / KB reads.
-      # ADR-0039 covers the substrate contract.
+      # ADR-0040 covers the substrate contract.
       RUNNER_EXPOSE_SUBSTRATE: "true"
       # LLM provider credentials — optional for a keyless bring-up, required for
       # real (paid) trials. Set them in a sibling `.env` (see `.env.example`),

@@ -9,7 +9,7 @@ the latter — its only inputs are the wire fields — so
 with an empty records list.
 
 This suite locks the preflight-probe outcome documented in
-``docs/adr/0039-standalone-grader.md``: for a wire that carries no
+``docs/adr/0040-standalone-grader.md``: for a wire that carries no
 assistant tool_calls, the records-empty call reconciles without raising
 and yields the same event count the same fixture reaches through the
 runner-side codepath. If a future change to :func:`build_trial_timeline`

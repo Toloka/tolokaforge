@@ -1,4 +1,4 @@
-# 0039. Standalone-Grader Substrate — Multi-Topology Grading Behind One Protocol
+# 0040. Standalone-Grader Substrate — Multi-Topology Grading Behind One Protocol
 
 - **Status:** Accepted
 - **Date:** 2026-08-24
@@ -62,7 +62,7 @@ The deployed grader image dials back to the runner over `SubstrateService` gRPC 
 **Two other deliberate non-goals of this milestone:**
 
 - **Hash grading on `grader_rpc`.** State-mutation semantics (snapshot → reset → replay golden actions → snapshot → restore) cannot ride a read-only substrate. `grader_rpc` refuses hash-enabled tasks with an actionable branch pointing at `runner_rpc`. Fixing this would require a write surface on the substrate — outside the scope of the read-only contract this milestone ships.
-- **`search_policy` KB passthrough on `grader_rpc`.** The judge's KB-search tool is coupled to `mcp_core` / TypeSense infrastructure. Reconstructing that grader-side would mean pulling `mcp_core` into the grader image. Documented divergence; filed as ADR-0039 follow-up #1274.
+- **`search_policy` KB passthrough on `grader_rpc`.** The judge's KB-search tool is coupled to `mcp_core` / TypeSense infrastructure. Reconstructing that grader-side would mean pulling `mcp_core` into the grader image. Documented divergence; filed as ADR-0040 follow-up #1274.
 
 ## Consequences
 

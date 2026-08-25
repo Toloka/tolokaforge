@@ -255,7 +255,7 @@ Compare output against committed golden snapshots in `snapshots/`.
   and both wire `Grade` messages must byte-match the committed
   `expected_grade.json` under the shared `serialise_grade` projection. A failure
   means the two grader shapes have drifted; the `hash_and_all_four` pack additionally
-  pins the composite dispatch's refusal message against the ADR-0039 fragment. The
+  pins the composite dispatch's refusal message against the ADR-0040 fragment. The
   isolation invariant — one non-trivial grading block per isolation pack — is locked
   by `test_isolation_pack_config_is_single_seam`, so a divergence at one seam
   surfaces at exactly one pack. The RC-smoke sibling
@@ -264,7 +264,7 @@ Compare output against committed golden snapshots in `snapshots/`.
   `assert _BASELINES_ROOT.is_dir()` in each module fails collection if the corpus
   goes missing, so a corpus fork is refused rather than silently skipped. Regenerate
   the baselines with `--refresh-baselines` (see `docs/GRADER_SERVICE.md § Parity
-  gate` for the ADR-0039 substrate contract the packs pin).
+  gate` for the ADR-0040 substrate contract the packs pin).
 - Schema version stamps documented (`test_schema_version_stamps_documented.py`) — the
   stamps `docs/OUTPUT_FORMAT.md` § Schema Version Stamps publishes, both the table's
   rows and the bare `schema_version: N` literals the prose repeats, must equal the
@@ -422,7 +422,7 @@ gate: it rewrites the committed `expected_grade.json` under each
 and stops before asserting equality. `--update-canon` does not reach these
 baselines — they sit outside `snapshots/` because the RC-smoke sibling reads them
 too, so they are the shared corpus rather than one lane's golden. See
-`docs/GRADER_SERVICE.md § Parity gate` for the ADR-0039 substrate contract the
+`docs/GRADER_SERVICE.md § Parity gate` for the ADR-0040 substrate contract the
 packs pin; the resulting diff belongs in the same commit as the code change that
 motivated it.
 

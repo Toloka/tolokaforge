@@ -44,7 +44,7 @@ def _resolve_port(cli_port: int | None) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="tolokaforge grader-service",
-        description="Standalone tolokaforge grader service (ADR-0038, ADR-0039).",
+        description="Standalone tolokaforge grader service (ADR-0038, ADR-0040).",
     )
     parser.add_argument(
         "--port",

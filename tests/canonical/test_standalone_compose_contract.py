@@ -93,7 +93,7 @@ def test_runner_env_and_port() -> None:
 def test_runner_env_expose_substrate_is_true() -> None:
     """The runner opens its read-only SubstrateService on the shared gRPC port.
 
-    Registered on the same listen port as ``RunnerService`` per ADR-0039,
+    Registered on the same listen port as ``RunnerService`` per ADR-0040,
     gated on ``RUNNER_EXPOSE_SUBSTRATE=true`` (a truthy string, matching the
     env parse at ``tolokaforge/runner/__main__.py``). The standalone grader
     dials this surface per trial via ``LiveRunnerCallbackGradingSubstrate`` for

@@ -1,6 +1,6 @@
 """``load_grading_substrate`` discovery + composite-level parity gate.
 
-Locks the two seams the substrate design commits to (per ADR-0039):
+Locks the two seams the substrate design commits to (per ADR-0040):
 
 1. ``plugin_registry.load_grading_substrate`` resolves substrates registered
    via ``importlib.metadata`` entry-points. The dispatch case injects a
@@ -661,7 +661,7 @@ class _NullGrpcContext:
 def _assert_grade_parity(a: pb2.Grade, b: pb2.Grade) -> None:
     """Every wire field an operator reads is byte-equal on the two grades.
 
-    The eleven fields called out in ADR-0039's parity gate; a scalar mismatch
+    The eleven fields called out in ADR-0040's parity gate; a scalar mismatch
     surfaces with the raw values, a nested-message mismatch surfaces with the
     field name so a divergence is diagnosable without printing the whole
     grade.

@@ -1,6 +1,6 @@
 """``plugin_registry.load_grading_substrate`` — fail-loud resolution.
 
-Locks the loader ADR-0039 introduces for the ``tolokaforge.grading_substrates``
+Locks the loader ADR-0040 introduces for the ``tolokaforge.grading_substrates``
 entry-point group:
 
 * the two shipped substrates (``in_process``, ``live_callback``) resolve to
@@ -42,7 +42,7 @@ def test_available_lists_both_shipped_names() -> None:
     Sorted, so their order is deterministic; a third-party substrate landing
     an entry-point extends the list without changing this test — the shipped
     two are what tolokaforge itself carries, and their presence is what the
-    ADR-0039 default depends on.
+    ADR-0040 default depends on.
     """
     names = available_grading_substrates()
     assert "in_process" in names

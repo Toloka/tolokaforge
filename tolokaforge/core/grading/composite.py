@@ -27,7 +27,7 @@ config models and the ``pb2`` proto types from :mod:`tolokaforge.runner`,
 and ``transcript_rules_author_keys`` from
 :mod:`tolokaforge.runner.grading_ledger`. The runner is the sole owner of
 the wire shapes; a composite → runner import for those is the accepted
-one-way exception documented in ADR-0039.
+one-way exception documented in ADR-0040.
 """
 
 from __future__ import annotations

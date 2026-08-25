@@ -475,7 +475,7 @@ def _binding_operator_names() -> list[str]:
     """Registered operator names whose semantics substitute a bound value.
 
     Materialised from the entry-point registry, filtered by the ``_binding``
-    suffix — the sole marker for binding operators (ADR-0039). The discovery
+    suffix — the sole marker for binding operators (ADR-0040). The discovery
     scan is cached in ``plugin_registry``, so a per-call filter is O(N) over
     the registry size (17 shipped + downstream) and does not fire the loader.
     """

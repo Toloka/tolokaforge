@@ -6,7 +6,7 @@ component evaluators above the substrate (rubric, judge, transcript rules,
 trace-check operators, state-check backends, custom-check executors) never
 change when the topology changes.
 
-See ADR-0039 for the design rationale + the recipes carried for the three
+See ADR-0040 for the design rationale + the recipes carried for the three
 reserved future substrates.
 
 The runtime picture
@@ -19,11 +19,11 @@ The runtime picture
 | Independent grader (shipping)       | :class:`LiveRunnerCallbackGradingSub-  |
 |                                     | strate`                                |
 | Trajectory-storage service (future) | :class:`TrajectoryStorageGradingSub-   |
-|                                     | strate` (recipe in ADR-0039)           |
+|                                     | strate` (recipe in ADR-0040)           |
 | Snapshot-on-wire (future)           | :class:`SnapshotGradingSubstrate`      |
-|                                     | (recipe in ADR-0039)                   |
+|                                     | (recipe in ADR-0040)                   |
 | Shared-mount (future)               | :class:`SharedMountGradingSubstrate`   |
-|                                     | (recipe in ADR-0039)                   |
+|                                     | (recipe in ADR-0040)                   |
 +-------------------------------------+----------------------------------------+
 
 Two impls ship today. :class:`InProcessGradingSubstrate` is the aggregate-image
@@ -37,7 +37,7 @@ translates that into ``GradingFailedError`` at the composite dispatch. It lives
 in the sibling :mod:`~tolokaforge.core.grading.substrate_live` module because
 the runner subset does not ship the gRPC client. The remaining three
 implementations are declared but not implemented — each raises
-``NotImplementedError`` with a pointer to ADR-0039 so a downstream contributor
+``NotImplementedError`` with a pointer to ADR-0040 so a downstream contributor
 who reaches for them sees the recipe rather than a mystery stub.
 
 Two views of the trial's final DB state ride the Protocol side by side:
@@ -303,7 +303,7 @@ class InProcessGradingSubstrate:
 
 
 # ---------------------------------------------------------------------------
-# Reserved future substrates — declared here so ADR-0039's design is
+# Reserved future substrates — declared here so ADR-0040's design is
 # discoverable in one module. All three raise NotImplementedError with a
 # pointer to the ADR recipe.
 # ---------------------------------------------------------------------------
@@ -313,7 +313,7 @@ class TrajectoryStorageGradingSubstrate:
     """Reserved: dials the Toloka trajectory-storage service (in development
     inside Toloka) that holds traces, environments, and per-trial state.
 
-    Recipe in ADR-0039 § "Reserved future substrate — TrajectoryStorageGrading
+    Recipe in ADR-0040 § "Reserved future substrate — TrajectoryStorageGrading
     Substrate". Ships as a separate PR once the storage service is stable,
     coordinated with the trajectory-storage team. Registers under
     ``tolokaforge.grading_substrates`` as a one-line entry point — no
@@ -323,7 +323,7 @@ class TrajectoryStorageGradingSubstrate:
     def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ARG002
         raise NotImplementedError(
             "TrajectoryStorageGradingSubstrate is a reserved future substrate. "
-            "The recipe for wiring it is in docs/adr/0039-standalone-grader.md — "
+            "The recipe for wiring it is in docs/adr/0040-standalone-grader.md — "
             "the substrate ships as a separate PR once the trajectory-storage "
             "service is stable."
         )
@@ -333,7 +333,7 @@ class SnapshotGradingSubstrate:
     """Reserved: Harbor-pattern snapshot-on-wire. State travels inside
     ``GradeRequest``.
 
-    Recipe in ADR-0039 § "Reserved future substrate — SnapshotGradingSubstrate
+    Recipe in ADR-0040 § "Reserved future substrate — SnapshotGradingSubstrate
     (Harbor pattern)". Ship when offline replay / cross-region grading is a
     hard requirement (grader outlives the runner, or lives in a different
     network region). Filesystem cap policy + auto-fallback to live-callback
@@ -346,14 +346,14 @@ class SnapshotGradingSubstrate:
         raise NotImplementedError(
             "SnapshotGradingSubstrate is a reserved future substrate. The recipe "
             "for wiring it (GradeRequest v3, filesystem cap, auto-fallback to "
-            "LiveRunnerCallback) is in docs/adr/0039-standalone-grader.md."
+            "LiveRunnerCallback) is in docs/adr/0040-standalone-grader.md."
         )
 
 
 class SharedMountGradingSubstrate:
     """Reserved: SWE-bench / METR-pattern shared filesystem/DB mount.
 
-    Recipe in ADR-0039 § "Reserved future substrate — SharedMountGradingSubstrate
+    Recipe in ADR-0040 § "Reserved future substrate — SharedMountGradingSubstrate
     (SWE-bench pattern)". Grader and runner run in sibling containers with
     a shared volume; grader reads what the runner wrote. Single-host
     constraint. Ship if a high-throughput single-host deployment wants a
@@ -364,5 +364,5 @@ class SharedMountGradingSubstrate:
         raise NotImplementedError(
             "SharedMountGradingSubstrate is a reserved future substrate. The "
             "recipe for wiring it (docker-compose mount, single-host constraint) "
-            "is in docs/adr/0039-standalone-grader.md."
+            "is in docs/adr/0040-standalone-grader.md."
         )
