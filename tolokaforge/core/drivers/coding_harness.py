@@ -160,13 +160,6 @@ class CodingHarnessDriver:
             declared=dict(selection.provider_env_declared),
             agent_harness=selection.agent_harness,
         )
-        self._command: str = harness_command(
-            selection.agent_harness,
-            instruction="${TOLOKAFORGE_HARNESS_INSTRUCTION}",
-            model=selection.agent_model,
-            registry={selection.agent_harness: self.spec},
-            provider_env=self.provider_env,
-        )
 
     # -- driver protocol ----------------------------------------------------
 
@@ -241,13 +234,21 @@ class CodingHarnessDriver:
             pass_threshold=0.5,
             grading_method="test_execution",
         )
+        instruction = base.metadata.get("initial_user_message") or base.description or ""
+        command = harness_command(
+            self.selection.agent_harness,
+            instruction=instruction,
+            model=self.selection.agent_model,
+            registry={self.selection.agent_harness: self.spec},
+            provider_env=self.provider_env,
+        )
         metadata: dict[str, Any] = dict(base.metadata)
         metadata.update(
             {
                 "agent_harness": self.selection.agent_harness,
                 "agent_harness_version": self.spec.version,
                 "agent_harness_model": self.selection.agent_model,
-                "agent_harness_command": self._command,
+                "agent_harness_command": command,
                 "agent_visible_dir": metadata.get("agent_visible_dir", "/work"),
             }
         )

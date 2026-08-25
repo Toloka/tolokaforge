@@ -925,6 +925,7 @@ class NativeAdapter(BaseAdapter):
             generated_at=datetime.now(timezone.utc),
             metadata={
                 "mcp_server_ref": mcp_server_ref,
+                "initial_user_message": task.initial_user_message or task.description or "",
             },
             tool_artifacts=tool_artifacts,
             environment_manifest=environment_manifest,

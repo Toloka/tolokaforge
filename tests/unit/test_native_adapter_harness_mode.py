@@ -164,6 +164,16 @@ class TestDriverDecoratesStagedTaskDescription:
         assert isinstance(cmd, str) and len(cmd) > 0
         assert "claude" in cmd  # the CLI's binary name
 
+    def test_command_embeds_the_real_per_task_instruction(self, staged) -> None:
+        """The driver substitutes the task's own instruction into the
+        command it builds — not a literal, never-expanded placeholder."""
+        adapter = _pack_adapter()
+        base = adapter.to_task_description("fix_factorial")
+        td = _driver().decorate_task_description(base, staged=staged)
+        cmd = td.metadata["agent_harness_command"]
+        assert "TOLOKAFORGE_HARNESS_INSTRUCTION" not in cmd
+        assert "factorial" in cmd
+
 
 class TestDriverContainerLayers:
     def test_two_builds_base_then_layered(self) -> None:
