@@ -56,6 +56,7 @@ from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
+from tolokaforge.core.grading.state_check_backend import StateCheckBackend
 from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.grading.substrate import (
     GradingSubstrate,
@@ -82,6 +83,7 @@ from tolokaforge.core.plugin_registry import (
     load_custom_check_executor,
     load_judge_model_provider,
     load_rubric_evaluator,
+    load_state_check_backend,
     load_transcript_rule_matcher,
 )
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
@@ -655,6 +657,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         self._transcript_rule_matcher: TranscriptRuleMatcher = load_transcript_rule_matcher(
             "default"
         )()
+        self._state_check_backends: dict[str, StateCheckBackend] = {
+            "jsonpath": load_state_check_backend("jsonpath")(),
+            "db_probes": load_state_check_backend("db_probes")(),
+        }
         self.trials: dict[str, TrialContextRuntime] = {}
         self._available_adapters = list(BUILTIN_ADAPTERS)
         self._artifact_dirs: dict[str, Path] = {}  # trial_id -> temp dir for cleanup
@@ -1852,6 +1858,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     trial_id=trial_id,
                     config=state_checks_config,
                     substrate=substrate,
+                    state_check_backends=self._state_check_backends,
                     logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
                 ),
             )

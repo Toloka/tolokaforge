@@ -1,12 +1,14 @@
 """``composite.grade_state_checks_reads`` — end-to-end shape parity lock.
 
-The composite owns jsonpath + probes scoring. This suite constructs an
-:class:`InProcessGradingSubstrate` over a hand-built ``{tables: [rows],
-filesystem: {rel: text}}`` fixture, drives the composite, and asserts the
+The composite dispatches jsonpath + probes scoring through the resolved
+``state_check_backends`` mapping the runner supplies. This suite constructs
+an :class:`InProcessGradingSubstrate` over a hand-built ``{tables: [rows],
+filesystem: {rel: text}}`` fixture, drives the composite through the
+shipping ``jsonpath`` + ``db_probes`` backends, and asserts the
 ``(jsonpath_score, jsonpath_reasons)`` pair matches what
 :func:`evaluate_jsonpath_checks` produces over the same reshaped state
-(``{db, tables, filesystem}``). A drift in the composite's reshaping /
-gating / STABLE routing surfaces here.
+(``{db, tables, filesystem}``). A drift in the ``jsonpath`` backend's
+reshaping / gating / STABLE routing surfaces here.
 
 The three semantic contracts under test:
 - STABLE routing: ``substrate.final_state_stable()`` feeds ``$.db.*`` /
@@ -29,6 +31,7 @@ import pytest
 from tolokaforge.core.grading.composite import grade_state_checks_reads
 from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
 from tolokaforge.core.logging import StructuredLogger
+from tolokaforge.core.plugin_registry import load_state_check_backend
 from tolokaforge.runner.grading import evaluate_jsonpath_checks
 from tolokaforge.runner.grading_ledger import DB_PROBES_KEY, JSONPATHS_KEY
 from tolokaforge.runner.models import RunnerStateChecksConfig
@@ -69,6 +72,14 @@ def _logger() -> StructuredLogger:
     return StructuredLogger(name="test-composite-state-checks")
 
 
+def _shipped_backends() -> dict[str, Any]:
+    """Resolved backends the runner supplies to every composite call."""
+    return {
+        "jsonpath": load_state_check_backend("jsonpath")(),
+        "db_probes": load_state_check_backend("db_probes")(),
+    }
+
+
 def _runner_shipped_shape(
     stable: dict[str, Any] | None, filesystem: dict[str, str] | None
 ) -> dict[str, Any]:
@@ -80,8 +91,10 @@ def _runner_shipped_shape(
 
 
 class TestJsonpathCompositeParity:
-    """The composite is a reshape + call over ``evaluate_jsonpath_checks``;
-    every jsonpath scoring is byte-equal to the runner's direct call."""
+    """The composite dispatches through the ``jsonpath`` state-check backend;
+    every jsonpath scoring is byte-equal to a direct call over the same
+    reshaped state — the backend owns the reshape, the composite owns the
+    dispatch."""
 
     def test_db_addressing_pack_matches_the_runner_path(self) -> None:
         checks = [
@@ -94,6 +107,7 @@ class TestJsonpathCompositeParity:
             trial_id="task:0",
             config=config,
             substrate=_substrate(stable_tables=_STABLE_TABLES),
+            state_check_backends=_shipped_backends(),
             logger=_logger(),
         )
         expected_score, expected_reasons = evaluate_jsonpath_checks(
@@ -123,6 +137,7 @@ class TestJsonpathCompositeParity:
             trial_id="task:0",
             config=config,
             substrate=_substrate(filesystem=_FILESYSTEM),
+            state_check_backends=_shipped_backends(),
             logger=_logger(),
         )
         expected_score, expected_reasons = evaluate_jsonpath_checks(
@@ -146,6 +161,7 @@ class TestJsonpathCompositeParity:
             trial_id="task:0",
             config=config,
             substrate=_substrate(stable_tables=_STABLE_TABLES, filesystem=_FILESYSTEM),
+            state_check_backends=_shipped_backends(),
             logger=_logger(),
         )
         expected_score, expected_reasons = evaluate_jsonpath_checks(
@@ -175,6 +191,7 @@ class TestJsonpathCompositeParity:
             trial_id="task:0",
             config=config,
             substrate=_substrate(),
+            state_check_backends=_shipped_backends(),
             logger=_logger(),
         )
         expected_score, expected_reasons = evaluate_jsonpath_checks(checks, state=None)
@@ -193,6 +210,7 @@ class TestEmptyPacksLeaveTheComponentsUntouched:
             trial_id="task:0",
             config=config,
             substrate=_substrate(),
+            state_check_backends=_shipped_backends(),
             logger=_logger(),
         )
         assert result.jsonpath_score is None

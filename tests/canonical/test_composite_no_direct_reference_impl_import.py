@@ -7,20 +7,23 @@ one implementation into the dispatch surface.
 
 Reads the composite module's source and asserts, via ``ast``, that none of
 the shipping reference-impl names appear on any ``import`` statement's
-imported symbol list. Every seam that lands adds one assertion: the
-rubric-evaluator seam forbids importing
-:class:`~tolokaforge.core.grading.judge.LLMJudge`, and the
-transcript-rule-matcher seam forbids importing
-:func:`~tolokaforge.core.grading.transcript.evaluate_transcript_rules`.
-Later stages extend this list as each seam lands (per-operator trace
-impls, ``JsonpathStateCheckBackend``, …). Utility symbols the composite
-legitimately reuses — ``scored_transcript_rules`` (events-less-trial
-gate), ``transcript_rules_author_keys`` (accounting) — are NOT forbidden.
+imported symbol list. Six sub-component seams cover the six reference-impl
+holdings the composite is fenced from: :class:`LLMJudge`, :class:`LLMClient`,
+:class:`LLMJudgeRubricEvaluator`, :class:`LiteLLMJudgeModelProvider`,
+:class:`DefaultTranscriptRuleMatcher`, and the two state-check backends
+:class:`JsonpathStateCheckBackend` + :class:`DbProbesStateCheckBackend`.
+The underlying utility functions those reference impls wrap
+(:func:`evaluate_transcript_rules`, :func:`evaluate_jsonpath_checks`,
+:func:`evaluate_db_probes`) are forbidden by name for the same reason;
+so is :func:`render_state_diff` — its construction lives runner-side per
+Phase 2 Stage 2. Utility symbols the composite legitimately reuses —
+:func:`scored_transcript_rules` (events-less-trial gate),
+:func:`transcript_rules_author_keys` (accounting) — are NOT forbidden.
 
-Complements the ``.importlinter`` contract Stage 5 adds — the linter
-enforces module-level forbid rules across the codebase; this test locks
-the composite specifically, at unit-tier cost, so a regression trips
-even when the linter is not yet run.
+Complements the ``.importlinter`` ``composite-sub-component-seams``
+contract — the linter enforces module-level forbid rules across the
+codebase; this test locks the composite specifically, at unit-tier cost,
+so a regression trips even when the linter is not yet run.
 """
 
 from __future__ import annotations
@@ -89,4 +92,38 @@ def test_composite_does_not_import_evaluate_transcript_rules() -> None:
     ) in imports, (
         "composite.py must keep scored_transcript_rules — it is the "
         "events-less-trial gate that runs above the matcher."
+    )
+
+
+def test_composite_does_not_import_any_reference_impl_symbol() -> None:
+    """Every seam's reference-impl symbol is fenced by name.
+
+    Six seams, six reference-impl holdings; three underlying utility
+    functions those impls wrap; and :func:`render_state_diff` — construction
+    of ``state_diff_text`` lives runner-side. A direct import of any of
+    these would silently re-collapse the seam it belongs to.
+    """
+    imports = _imported_names(_COMPOSITE_PATH.read_text())
+    imported_symbol_names = {name for _module, name in imports}
+    forbidden = {
+        # Reference impls the four `default_*.py` + two `judge.py`/`llm.client` modules hold
+        "LLMJudge",
+        "LLMClient",
+        "LLMJudgeRubricEvaluator",
+        "LiteLLMJudgeModelProvider",
+        "DefaultTranscriptRuleMatcher",
+        "JsonpathStateCheckBackend",
+        "DbProbesStateCheckBackend",
+        # Underlying utility functions each reference impl wraps
+        "evaluate_transcript_rules",
+        "evaluate_jsonpath_checks",
+        "evaluate_db_probes",
+        # State-diff construction moved runner-side in Phase 2 Stage 2
+        "render_state_diff",
+    }
+    leaked = forbidden & imported_symbol_names
+    assert not leaked, (
+        f"composite.py imports forbidden reference-impl symbols {sorted(leaked)!r}. "
+        "Every sub-component seam requires the reference impl reach only through "
+        "its resolved-instance kwarg, never through a direct import."
     )

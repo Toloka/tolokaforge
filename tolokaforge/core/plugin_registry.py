@@ -11,6 +11,7 @@ External code discovers and loads alternative implementations of the
 :class:`~tolokaforge.core.grading.judge_model_provider.JudgeModelProvider`,
 :class:`~tolokaforge.core.grading.rubric_evaluator.RubricEvaluator`,
 :class:`~tolokaforge.core.grading.transcript_rule_matcher.TranscriptRuleMatcher`,
+:class:`~tolokaforge.core.grading.state_check_backend.StateCheckBackend`,
 and
 :data:`~tolokaforge.core.grading.trace_check_operator.TraceCheckOperator`
 Protocols through ``importlib.metadata`` entry-point groups — no in-tree
@@ -18,9 +19,9 @@ edit, no monkey-patch. Each holistic seam resolves to a *factory callable*,
 mirroring the existing :data:`~tolokaforge.core.conductor.ConductorFactory`
 idiom. Five of the seams adapt divergent impl constructors to a per-group
 frozen-dataclass context (``Callable[[<Context>], <Impl>]``); the readiness
-probes, custom-check executors, judge model providers, and transcript-rule
-matchers need no build dependencies, so their factories are arg-less
-(``Callable[[], <Impl>]``).
+probes, custom-check executors, judge model providers, transcript-rule
+matchers, and state-check backends need no build dependencies, so their
+factories are arg-less (``Callable[[], <Impl>]``).
 The grading-substrate loader resolves directly to the ``GradingSubstrate``
 implementation *class* — the substrate seam is constructed per-trial with
 topology-specific arguments the plug-in group cannot generically supply,
@@ -41,6 +42,7 @@ The groups:
 * ``tolokaforge.judge_model_providers`` → :data:`JudgeModelProviderFactory`
 * ``tolokaforge.rubric_evaluators`` → :data:`RubricEvaluatorFactory`
 * ``tolokaforge.transcript_rule_matchers`` → :data:`TranscriptRuleMatcherFactory`
+* ``tolokaforge.state_check_backends`` → :data:`StateCheckBackendFactory`
 * ``tolokaforge.trace_check_operators`` → :data:`TraceCheckOperator`
 
 Discovery is lazy and cached per group; it enumerates ``ep.name`` /
@@ -70,6 +72,7 @@ from tolokaforge.core.conductor import ConductorFactory
 from tolokaforge.core.grading.check_runner import CheckExecutor
 from tolokaforge.core.grading.judge_model_provider import JudgeModelProviderFactory
 from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorFactory
+from tolokaforge.core.grading.state_check_backend import StateCheckBackendFactory
 from tolokaforge.core.grading.substrate import GradingSubstrate
 from tolokaforge.core.grading.trace_check_operator import TraceCheckOperator
 from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcherFactory
@@ -98,6 +101,7 @@ __all__ = [
     "RubricEvaluatorFactory",
     "RuntimeBackendBuildContext",
     "RuntimeBackendFactory",
+    "StateCheckBackendFactory",
     "TraceCheckOperator",
     "TranscriptRuleMatcherFactory",
     "TrialGraderContext",
@@ -112,6 +116,7 @@ __all__ = [
     "available_readiness_probes",
     "available_rubric_evaluators",
     "available_runtime_backends",
+    "available_state_check_backends",
     "available_trace_check_operators",
     "available_transcript_rule_matchers",
     "available_trial_graders",
@@ -124,6 +129,7 @@ __all__ = [
     "load_readiness_probe",
     "load_rubric_evaluator",
     "load_runtime_backend",
+    "load_state_check_backend",
     "load_trace_check_operator",
     "load_transcript_rule_matcher",
     "load_trial_grader",
@@ -140,6 +146,7 @@ CUSTOM_CHECK_EXECUTORS_GROUP = "tolokaforge.custom_check_executors"
 JUDGE_MODEL_PROVIDERS_GROUP = "tolokaforge.judge_model_providers"
 RUBRIC_EVALUATORS_GROUP = "tolokaforge.rubric_evaluators"
 TRANSCRIPT_RULE_MATCHERS_GROUP = "tolokaforge.transcript_rule_matchers"
+STATE_CHECK_BACKENDS_GROUP = "tolokaforge.state_check_backends"
 TRACE_CHECK_OPERATORS_GROUP = "tolokaforge.trace_check_operators"
 
 
@@ -392,6 +399,17 @@ def load_transcript_rule_matcher(name: str) -> TranscriptRuleMatcherFactory:
     return cast(TranscriptRuleMatcherFactory, _load(TRANSCRIPT_RULE_MATCHERS_GROUP, name))
 
 
+def load_state_check_backend(name: str) -> StateCheckBackendFactory:
+    """Resolve a registered state-check-backend name to its factory callable.
+
+    The seam covers substrate-consuming backends; hash grading is
+    deliberately not registered here — its snapshot-and-replay semantics
+    need write access to the trial's DB and stay runner-integrated on
+    :meth:`RunnerServiceImpl._execute_hash_grading`.
+    """
+    return cast(StateCheckBackendFactory, _load(STATE_CHECK_BACKENDS_GROUP, name))
+
+
 def load_trace_check_operator(name: str) -> TraceCheckOperator:
     """Resolve a registered trace-check operator name to its callable.
 
@@ -468,6 +486,11 @@ def available_rubric_evaluators() -> list[str]:
 def available_transcript_rule_matchers() -> list[str]:
     """Sorted names registered in the ``tolokaforge.transcript_rule_matchers`` group."""
     return sorted(discover_entry_points(TRANSCRIPT_RULE_MATCHERS_GROUP))
+
+
+def available_state_check_backends() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.state_check_backends`` group."""
+    return sorted(discover_entry_points(STATE_CHECK_BACKENDS_GROUP))
 
 
 def available_trace_check_operators() -> list[str]:

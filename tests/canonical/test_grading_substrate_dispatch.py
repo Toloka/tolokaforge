@@ -69,6 +69,7 @@ from tolokaforge.core.plugin_registry import (
     _clear_discovery_cache,
     load_grading_substrate,
     load_rubric_evaluator,
+    load_state_check_backend,
     load_transcript_rule_matcher,
 )
 from tolokaforge.runner import (
@@ -405,6 +406,10 @@ def _reassemble_grade_from_composite(
             trial_id=_TRIAL_ID,
             config=grading_config.state_checks,
             substrate=substrate,
+            state_check_backends={
+                "jsonpath": load_state_check_backend("jsonpath")(),
+                "db_probes": load_state_check_backend("db_probes")(),
+            },
             logger=logger,  # type: ignore[arg-type]
         )
         if state_reads.jsonpath_score is not None:

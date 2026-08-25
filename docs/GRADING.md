@@ -1247,6 +1247,19 @@ operator is therefore a runner-side pass that asserts nothing, and a core-side
 verdict that can disagree with it
 ([#466](https://github.com/toloka/tolokaforge/issues/466)).
 
+**The two source-scoring bodies resolve through the `tolokaforge.state_check_backends`
+entry-point group.** `jsonpath` scores `jsonpath_checks` against the substrate's
+STABLE DB view + agent-visible filesystem; `db_probes` opens each probe's declared
+postgres connection and applies its `expect` block. The composite
+`grade_state_checks_reads` dispatches through resolved `StateCheckBackend` instances
+the runner supplies at startup; a downstream package registering an alternative
+source (e.g. an `s3_diff` backend) alongside these two extends the state-check
+vocabulary without a framework PR — see `docs/GRADER_SERVICE.md` § "Sub-component
+plug-in seams". Hash grading is NOT part of the seam: its snapshot-and-replay
+semantics need write access to the trial's DB, so hash grading stays runner-
+integrated on `RunnerServiceImpl._execute_hash_grading` above the composite
+dispatch.
+
 ### Folding the hash verdict with `jsonpaths`
 
 `state_checks` has two possible sources — the state hash and the JSONPath

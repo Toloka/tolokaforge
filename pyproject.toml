@@ -240,6 +240,19 @@ llm_judge = "tolokaforge.core.grading.default_rubric_evaluator:_llm_judge_rubric
 [project.entry-points."tolokaforge.transcript_rule_matchers"]
 default = "tolokaforge.core.grading.default_transcript_rule_matcher:_default_transcript_rule_matcher_factory"
 
+# State-check backend Protocol
+# (``tolokaforge/core/grading/state_check_backend.py``). ``jsonpath`` scores
+# jsonpath assertions against the substrate's STABLE DB view + filesystem;
+# ``db_probes`` opens task-declared postgres connections and applies each
+# probe's ``expect`` block. Hash grading is deliberately NOT registered
+# here — its snapshot-and-replay semantics need write access to the trial's
+# DB, so hash grading stays runner-integrated on
+# ``RunnerServiceImpl._execute_hash_grading`` (see the seam module docstring
+# and ``docs/GRADER_SERVICE.md`` § "Sub-component plug-in seams").
+[project.entry-points."tolokaforge.state_check_backends"]
+jsonpath = "tolokaforge.core.grading.default_state_check_backends:_jsonpath_state_check_backend_factory"
+db_probes = "tolokaforge.core.grading.default_state_check_backends:_db_probes_state_check_backend_factory"
+
 # Trace-check operator seam
 # (``tolokaforge/core/grading/trace_check_operator.py``). Per-operator
 # granularity: every operator a ``ValuePredicate`` may declare is one

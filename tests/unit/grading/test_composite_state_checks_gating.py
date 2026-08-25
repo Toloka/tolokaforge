@@ -40,6 +40,7 @@ import pytest
 
 from tolokaforge.core.grading.composite import grade_state_checks_reads
 from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
+from tolokaforge.core.plugin_registry import load_state_check_backend
 from tolokaforge.runner.db_client import TrialNotFoundError as DBTrialNotFoundError
 from tolokaforge.runner.models import RunnerStateChecksConfig
 
@@ -67,6 +68,13 @@ def _logger() -> logging.Logger:
     return logging.getLogger("test-composite-gating")
 
 
+def _shipped_backends() -> dict[str, Any]:
+    return {
+        "jsonpath": load_state_check_backend("jsonpath")(),
+        "db_probes": load_state_check_backend("db_probes")(),
+    }
+
+
 def _run(
     *,
     config: RunnerStateChecksConfig,
@@ -76,6 +84,7 @@ def _run(
         trial_id="task:0",
         config=config,
         substrate=substrate,
+        state_check_backends=_shipped_backends(),
         logger=_logger(),  # type: ignore[arg-type]  # StructuredLogger satisfied at runtime
     )
 
