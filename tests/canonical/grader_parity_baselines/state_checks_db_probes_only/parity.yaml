@@ -1,0 +1,6 @@
+accepted_divergences: []
+refusal_mode: false
+db_probe_rows:
+  corrective_action_recorded:
+    - reason_code: CAPA-01
+      status: open

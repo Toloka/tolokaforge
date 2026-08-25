@@ -16,7 +16,10 @@ Pack layout on disk (per pack directory):
   ``termination_reason``, ``agent_system_prompt``, ``llm_messages``,
   ``judge_model_config``.
 * ``parity.yaml`` — accepted divergences declaration, optional ``judge_script``
-  (scripted GenerationResult sequence), optional refusal-mode contract.
+  (scripted GenerationResult sequence for packs exercising ``llm_judge``),
+  optional ``db_probe_rows`` mapping (deterministic rows the harness serves
+  from :func:`tolokaforge.runner.grading._fetch_probe_rows` for packs
+  exercising ``state_checks.db_probes``), optional refusal-mode contract.
 * ``expected_grade.json`` — the committed baseline; rewritten in place by
   the canonical test when it runs under ``--refresh-baselines``.
 
@@ -29,11 +32,13 @@ not at the proto-type layer.
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Iterator
 from concurrent import futures
 from contextlib import contextmanager
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +60,7 @@ from tolokaforge.runner import (
     add_SubstrateServiceServicer_to_server,
     runner_pb2,
 )
+from tolokaforge.runner import grading as runner_grading
 from tolokaforge.runner.models import (
     RunnerGradingConfig,
     StableStateResponse,
@@ -63,6 +69,15 @@ from tolokaforge.runner.models import (
 )
 from tolokaforge.runner.service import RunnerServiceImpl, TrialContextRuntime
 from tolokaforge.runner.substrate_service import SubstrateServicer
+
+_CUSTOM_CHECKS_FILE = "checks.py"
+"""Well-known name for a pack's custom-checks module.
+
+A pack shipping this file wires it into both legs: base64-encoded onto
+:attr:`TaskDescription.tool_artifacts` for the grader leg (extracted to a
+temp dir at grade time) and served through :attr:`RunnerServiceImpl._artifact_dirs`
+directly out of the pack directory for the runner leg. Both legs then load
+the same source under the same relative path."""
 
 
 @dataclass(frozen=True)
@@ -97,6 +112,16 @@ class ParityPack:
       message rather than produce a Grade.
     * ``expected_error_fragment`` — substring the raised error must contain
       under ``refusal_mode``; empty otherwise.
+    * ``db_probe_rows`` — deterministic rows served to a pack's
+      ``state_checks.db_probes`` seam, keyed by probe name. Each list is
+      the rows :func:`tolokaforge.runner.grading._fetch_probe_rows` returns
+      when the probe of that name runs; both legs draw from the same
+      mapping. Empty for packs that declare no ``db_probes`` block, which
+      is every non-``db_probes`` pack.
+    * ``has_custom_checks_file`` — whether the pack ships a top-level
+      :file:`checks.py`. The loader mirrors it onto both legs (base64 into
+      ``task_description.tool_artifacts`` for the grader; a pack-directory
+      seed of ``runner._artifact_dirs[trial_id]`` for the runner).
     """
 
     directory: Path
@@ -111,6 +136,8 @@ class ParityPack:
     accepted_divergences: tuple[str, ...]
     refusal_mode: bool
     expected_error_fragment: str
+    db_probe_rows: dict[str, list[dict[str, Any]]] = dataclass_field(default_factory=dict)
+    has_custom_checks_file: bool = False
 
 
 def load_parity_pack(pack_dir: Path) -> ParityPack:
@@ -118,6 +145,11 @@ def load_parity_pack(pack_dir: Path) -> ParityPack:
     :class:`ParityPack`. Validation is Pydantic ``extra=forbid`` on
     :class:`TaskDescription` / :class:`RunnerGradingConfig`, so a field
     the pack authored but nothing reads fails at load time.
+
+    A pack shipping a top-level :file:`checks.py` gets it base64-encoded
+    onto :attr:`TaskDescription.tool_artifacts` so the grader leg's
+    :func:`extract_tool_artifacts` materialises the same source the
+    runner leg reads out of ``pack_dir``.
     """
     task_data = yaml.safe_load((pack_dir / "task.yaml").read_text())
     grading_data = yaml.safe_load((pack_dir / "grading.yaml").read_text())
@@ -127,6 +159,14 @@ def load_parity_pack(pack_dir: Path) -> ParityPack:
     grading_config = RunnerGradingConfig.model_validate(grading_data)
     task_payload = dict(task_data)
     task_payload["grading"] = grading_config.model_dump()
+
+    checks_path = pack_dir / _CUSTOM_CHECKS_FILE
+    has_custom_checks_file = checks_path.is_file()
+    if has_custom_checks_file:
+        artifacts = dict(task_payload.get("tool_artifacts") or {})
+        artifacts[_CUSTOM_CHECKS_FILE] = base64.b64encode(checks_path.read_bytes()).decode("ascii")
+        task_payload["tool_artifacts"] = artifacts
+
     task_description = TaskDescription.model_validate(task_payload)
 
     judge_model_config_data = trial_data.get("judge_model_config")
@@ -143,6 +183,7 @@ def load_parity_pack(pack_dir: Path) -> ParityPack:
     accepted = tuple(parity_data.get("accepted_divergences", []))
     refusal_mode = bool(parity_data.get("refusal_mode", False))
     expected_error_fragment = str(parity_data.get("expected_error_fragment", ""))
+    db_probe_rows = _normalise_db_probe_rows(parity_data.get("db_probe_rows", {}))
 
     return ParityPack(
         directory=pack_dir,
@@ -157,7 +198,32 @@ def load_parity_pack(pack_dir: Path) -> ParityPack:
         accepted_divergences=accepted,
         refusal_mode=refusal_mode,
         expected_error_fragment=expected_error_fragment,
+        db_probe_rows=db_probe_rows,
+        has_custom_checks_file=has_custom_checks_file,
     )
+
+
+def _normalise_db_probe_rows(raw: Any) -> dict[str, list[dict[str, Any]]]:
+    """Coerce the authored mapping into ``{probe_name: [row_dict, ...]}``.
+
+    A pack that declares no db_probes at all writes no entry and lands on
+    an empty dict here; a pack declaring the seam but no scripted rows
+    for a given probe surfaces a KeyError at monkeypatch time, which is
+    the loud shape a missing script should have — the two legs would
+    otherwise diverge on real network errors between runs.
+    """
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"parity.yaml db_probe_rows must be a mapping, got {type(raw).__name__}")
+    normalised: dict[str, list[dict[str, Any]]] = {}
+    for probe_name, rows in raw.items():
+        if not isinstance(rows, list):
+            raise ValueError(
+                f"parity.yaml db_probe_rows[{probe_name!r}] must be a list of row dicts"
+            )
+        normalised[str(probe_name)] = [dict(row) for row in rows]
+    return normalised
 
 
 def _normalise_judge_script(raw: list[Any]) -> list[Any]:
@@ -311,6 +377,13 @@ def _running_runner(pack: ParityPack) -> Iterator[_RunningRunner]:
         judge_model_config=pack.judge_model_config,
     )
     runner.trials[pack.trial_id] = trial_context
+    if pack.has_custom_checks_file:
+        # Runner-side ``_grade_custom_checks`` reads ``checks.py`` out of
+        # ``self._artifact_dirs.get(trial_id)``; the grader leg extracts
+        # ``task_description.tool_artifacts`` to its own temp dir at grade
+        # time. Both legs land on the same source under the same relative
+        # path.
+        runner._artifact_dirs[pack.trial_id] = pack.directory
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     add_RunnerServiceServicer_to_server(runner, server)
@@ -340,6 +413,53 @@ def _install_scripted_client(monkeypatch: pytest.MonkeyPatch, script: list[Any])
         "tolokaforge.core.grading.default_judge_model_provider.LLMClient",
         lambda *args, **kwargs: _ScriptedClient(script),
     )
+
+
+def _install_db_probe_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    pack: ParityPack,
+) -> None:
+    """Route :func:`tolokaforge.runner.grading._fetch_probe_rows` to
+    pack-declared row sets instead of opening a live postgres connection.
+
+    Both legs' ``state_check_backends["db_probes"]`` is
+    :class:`~tolokaforge.core.grading.default_state_check_backends.DbProbesStateCheckBackend`,
+    whose :meth:`query` wraps :func:`evaluate_db_probes` — the sole caller
+    of :func:`_fetch_probe_rows`. Monkeypatching that seam keeps the
+    surrounding backend logic (per-probe ``expect`` JSONPath evaluation,
+    pass/fail accounting, reasons composition) under test symmetrically
+    on both legs.
+
+    Rows are keyed by SQL ``query`` string: :func:`_fetch_probe_rows`
+    receives ``(dsn, query)`` and cannot see the probe name, so the
+    pack authors the same ``query`` verbatim in both ``grading.yaml``
+    and ``parity.yaml`` and the loader translates ``db_probe_rows`` from
+    probe-name keys into query-string keys here.
+    """
+    query_to_rows: dict[str, list[dict[str, Any]]] = {}
+    state_checks = pack.grading_config.state_checks
+    declared_probes = state_checks.db_probes if state_checks else []
+    for probe in declared_probes:
+        rows = pack.db_probe_rows.get(probe.name)
+        if rows is None:
+            raise KeyError(
+                f"pack {pack.directory.name!r} declares db_probe {probe.name!r} but "
+                f"parity.yaml carries no db_probe_rows[{probe.name!r}] script — the "
+                "canonical lane cannot resolve the probe deterministically without one"
+            )
+        query_to_rows[probe.query] = rows
+
+    async def fake_fetch(dsn: str, query: str) -> list[dict[str, Any]]:  # noqa: ARG001
+        try:
+            return list(query_to_rows[query])
+        except KeyError as exc:
+            raise AssertionError(
+                f"parity harness has no scripted rows for query {query!r} — "
+                "either grading.yaml drifted from parity.yaml or the seam "
+                "issued a query the pack did not declare"
+            ) from exc
+
+    monkeypatch.setattr(runner_grading, "_fetch_probe_rows", fake_fetch)
 
 
 def _build_grade_dispatch(pack: ParityPack, *, substrate_address: str) -> GradeDispatch:
@@ -378,6 +498,8 @@ def run_via_runner_rpc(
     real regression the harness must surface rather than smooth over.
     """
     _install_scripted_client(monkeypatch, pack.judge_script)
+    if pack.db_probe_rows:
+        _install_db_probe_rows(monkeypatch, pack)
     with _running_runner(pack) as ctx:
         response = ctx.runner.GradeTrial(
             runner_pb2.GradeTrialRequest(
@@ -406,6 +528,8 @@ def run_via_grader_rpc(
     would trigger.
     """
     _install_scripted_client(monkeypatch, pack.judge_script)
+    if pack.db_probe_rows:
+        _install_db_probe_rows(monkeypatch, pack)
     with _running_runner(pack) as ctx:
         dispatch = _build_grade_dispatch(pack, substrate_address=ctx.substrate_address)
         composite = GraderCompositeDispatch(
@@ -432,6 +556,8 @@ def assert_grader_rpc_refuses(
     pack lands on.
     """
     _install_scripted_client(monkeypatch, pack.judge_script)
+    if pack.db_probe_rows:
+        _install_db_probe_rows(monkeypatch, pack)
     with _running_runner(pack) as ctx:
         dispatch = _build_grade_dispatch(pack, substrate_address=ctx.substrate_address)
         composite = GraderCompositeDispatch(

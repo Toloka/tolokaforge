@@ -1,4 +1,4 @@
-trial_id: rubric_only_smoke:0
+trial_id: rubric_only:0
 termination_reason: agent_done
 agent_system_prompt: You are a test assistant.
 judge_model_config:

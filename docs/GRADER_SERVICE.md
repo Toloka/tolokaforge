@@ -499,8 +499,11 @@ matches the baseline byte-for-byte.
 - `parity.yaml` — declared `accepted_divergences: [...]`, optional
   `judge_script: [...]` for packs exercising `llm_judge` (a
   deterministic scripted-client stand-in that keeps the canonical
-  lane keyless), and optional `refusal_mode` / `expected_error_fragment`
-  for the hash-refusal contract.
+  lane keyless), optional `db_probe_rows: {probe_name: [row, ...]}`
+  for packs exercising `state_checks.db_probes` (scripted rows the
+  harness serves from `_fetch_probe_rows` so neither leg dials a
+  live postgres), and optional `refusal_mode` /
+  `expected_error_fragment` for the hash-refusal contract.
 - `expected_grade.json` — the committed baseline.
 
 **Refresh.** `uv run pytest tests/canonical/test_grader_parity_reference.py
@@ -509,6 +512,33 @@ leg's output and skips the equality assertions. The refresh is
 idempotent — a second run against the freshly-written baseline shows
 no diff. The resulting change belongs in the same commit as the code
 change that motivated it; `git diff` catches accidents during review.
+
+**Isolation packs.** Six packs each populate exactly one non-trivial
+grading block so a scoring divergence at one plug-in seam surfaces at
+that pack alone. The state-check subseams (`jsonpath_checks`,
+`db_probes`) collapse into one wire slot (`GradeComponents.state_checks`)
+per `runner.proto`, so they ship as two packs whose `grading.yaml` shape
+distinguishes them at the config surface. The
+`test_isolation_pack_config_is_single_seam` parametrisation locks the
+invariant.
+
+| Pack directory | Seam isolated | Config invariant |
+|---|---|---|
+| `state_checks_jsonpath_only/` | `state_check_backends[jsonpath]` | `state_checks.jsonpath_checks` non-empty, `db_probes` empty |
+| `state_checks_db_probes_only/` | `state_check_backends[db_probes]` | `state_checks.db_probes` non-empty, `jsonpath_checks` empty |
+| `transcript_rules_only/` | `transcript_rule_matchers` | `transcript_rules` populated |
+| `trace_checks_heavy/` | `trace_check_operators` (bind + before + within) | `trace_checks.constraints` non-empty |
+| `custom_checks_only/` | `custom_check_executors` | `custom_checks.enabled: true` |
+| `rubric_only/` | `rubric_evaluators` + `judge_model_providers` | `llm_judge.rubric` populated |
+
+The `state_checks_db_probes_only/` pack ships scripted probe rows on
+`parity.yaml`'s `db_probe_rows` field (keyed by probe name); the
+harness monkeypatches `_fetch_probe_rows` symmetrically on both legs so
+neither dials a live postgres. The `custom_checks_only/` pack ships
+`checks.py` alongside its YAML — the loader base64-encodes it onto
+`TaskDescription.tool_artifacts` for the grader leg and seeds
+`runner._artifact_dirs[trial_id]` at the pack directory for the runner
+leg, so both legs load the same source under the same relative path.
 
 ## See also
 

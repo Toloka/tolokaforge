@@ -1,0 +1,18 @@
+task_id: custom_checks_only
+name: Custom-checks parity isolation
+category: test
+description: |
+  Isolates the ``custom_check_executors`` seam: the grading config enables
+  ``checks.py`` and declares no other grading blocks. The pack's check reads
+  ``ctx.final_state.data["orders"]`` (which both legs derive from the same
+  substrate read) so a scoring divergence at the executor surfaces here alone.
+adapter_type: tau
+schema_version: 1.0.0
+system_prompt: You are a test assistant.
+agent_tools: []
+user_tools: []
+initial_state:
+  tables:
+    orders:
+      - id: O1
+        status: shipped

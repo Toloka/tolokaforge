@@ -6,8 +6,10 @@ Parameterised over the parity packs under
 and asserts every leg produces the baseline byte-for-byte.
 
 Test tier: canonical. No live LLM key ever reaches the harness (the judge
-provider's :class:`LLMClient` is monkeypatched to a scripted stand-in), so
-the lane stays keyless.
+provider's :class:`LLMClient` is monkeypatched to a scripted stand-in), and
+no live postgres is ever dialled (the ``_fetch_probe_rows`` seam is
+monkeypatched to serve pack-declared rows), so the lane stays keyless and
+network-free.
 
 Refresh workflow: ``pytest --refresh-baselines
 tests/canonical/test_grader_parity_reference.py`` rewrites every pack's
@@ -40,16 +42,33 @@ pytestmark = pytest.mark.canonical
 
 
 _BASELINES_ROOT = Path(__file__).parent / "grader_parity_baselines"
-_PLACEHOLDER_PACK_DIR = _BASELINES_ROOT / "rubric_only_smoke"
+
+# One row per plug-in seam Phase 2 introduced. Each pack's grading.yaml
+# declares exactly one non-trivial grading block — the isolation invariant
+# ``test_isolation_pack_config_is_single_seam`` locks — so a divergence at
+# that seam surfaces at that pack alone.
+_ISOLATION_PACKS: list[tuple[str, str]] = [
+    ("state_checks_jsonpath_only", "state_checks"),
+    ("state_checks_db_probes_only", "state_checks"),
+    ("transcript_rules_only", "transcript_rules"),
+    ("trace_checks_heavy", "trace_checks"),
+    ("custom_checks_only", "custom_checks"),
+    ("rubric_only", "llm_judge"),
+]
+_ISOLATION_PACK_DIRS = [_BASELINES_ROOT / name for name, _ in _ISOLATION_PACKS]
+_ISOLATION_PACK_IDS = [name for name, _ in _ISOLATION_PACKS]
+_ISOLATION_PACK_EXPECTED_BLOCK = dict(_ISOLATION_PACKS)
+
+_RUBRIC_ONLY_PACK_DIR = _BASELINES_ROOT / "rubric_only"
 
 
-@pytest.mark.parametrize("pack_dir", [_PLACEHOLDER_PACK_DIR], ids=["rubric_only_smoke"])
-def test_placeholder_parity_pack_matches_baseline(
+@pytest.mark.parametrize("pack_dir", _ISOLATION_PACK_DIRS, ids=_ISOLATION_PACK_IDS)
+def test_isolation_pack_parity(
     pack_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
 ) -> None:
-    """Each parity pack's committed baseline matches the runner and grader legs.
+    """Each isolation pack's committed baseline matches both grading legs.
 
     Runs the two legs, serialises each to the canonical dict projection,
     and asserts both equal the committed baseline byte-for-byte. Under
@@ -69,24 +88,53 @@ def test_placeholder_parity_pack_matches_baseline(
     )
 
 
+@pytest.mark.parametrize("pack_dir", _ISOLATION_PACK_DIRS, ids=_ISOLATION_PACK_IDS)
+def test_isolation_pack_config_is_single_seam(pack_dir: Path) -> None:
+    """Each isolation pack's grading.yaml populates exactly one seam.
+
+    Every ``state_checks`` / ``transcript_rules`` / ``trace_checks`` /
+    ``llm_judge`` / ``custom_checks`` block is either the pack's declared
+    seam (populated with a non-empty payload) or absent — no block outside
+    the declared seam may carry data. The state-check subseams collapse
+    into one wire slot (:class:`~tolokaforge.runner.models.RunnerStateChecksConfig`
+    admits jsonpath and db_probes as siblings), so ``state_checks_jsonpath_only``
+    and ``state_checks_db_probes_only`` both declare ``state_checks`` here and
+    the jsonpath-vs-probes cross-check runs inside this same helper.
+    """
+    pack = load_parity_pack(pack_dir)
+    expected_block = _ISOLATION_PACK_EXPECTED_BLOCK[pack_dir.name]
+    populated = _populated_grading_blocks(pack)
+    assert populated == {expected_block}, (
+        f"pack {pack_dir.name!r} declares expected seam {expected_block!r} but "
+        f"grading.yaml populates {sorted(populated)}"
+    )
+    if expected_block == "state_checks":
+        state_checks = pack.grading_config.state_checks
+        assert state_checks is not None
+        if pack_dir.name == "state_checks_jsonpath_only":
+            assert state_checks.jsonpath_checks and not state_checks.db_probes
+        elif pack_dir.name == "state_checks_db_probes_only":
+            assert state_checks.db_probes and not state_checks.jsonpath_checks
+
+
 def test_refresh_baselines_flag_rewrites_and_stops(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``--refresh-baselines`` rewrites the pack's baseline and stops.
 
-    Copies the placeholder pack into a temp directory so the committed
-    baseline stays untouched, corrupts the copy's baseline to an empty
-    object, then invokes ``refresh_or_assert_baseline`` against a
-    :class:`pytest.Config` stub that reports the refresh flag. The
+    Copies the rubric-only isolation pack into a temp directory so the
+    committed baseline stays untouched, corrupts the copy's baseline to
+    an empty object, then invokes ``refresh_or_assert_baseline`` against
+    a :class:`pytest.Config` stub that reports the refresh flag. The
     :class:`pytest.skip.Exception` proves the equality assertions did
     not run; the rewritten file must equal the runner leg's serialisation.
     """
-    scratch_pack_dir = tmp_path / "rubric_only_smoke"
+    scratch_pack_dir = tmp_path / "rubric_only"
     scratch_pack_dir.mkdir()
     for name in ("task.yaml", "grading.yaml", "trial.yaml", "parity.yaml"):
         (scratch_pack_dir / name).write_text(
-            (_PLACEHOLDER_PACK_DIR / name).read_text(encoding="utf-8"),
+            (_RUBRIC_ONLY_PACK_DIR / name).read_text(encoding="utf-8"),
             encoding="utf-8",
         )
     (scratch_pack_dir / "expected_grade.json").write_text("{}\n", encoding="utf-8")
@@ -203,6 +251,36 @@ def test_assert_grader_rpc_refuses_matches_message(
         )
 
 
+def _populated_grading_blocks(pack: ParityPack) -> set[str]:
+    """Return the top-level grading blocks whose payload is non-empty.
+
+    ``state_checks`` counts as populated when the block declares any
+    source (jsonpath, db_probes, or hash-enabled); the four sibling
+    blocks count when their model is non-None. A block declared but
+    empty (e.g. ``state_checks: {}``) still populates the field on the
+    parsed :class:`RunnerGradingConfig`, so the check reads through to
+    the source lists — a block that scores nothing is not the isolation
+    invariant that pack asserts.
+    """
+    grading = pack.grading_config
+    populated: set[str] = set()
+    if grading.state_checks and (
+        grading.state_checks.jsonpath_checks
+        or grading.state_checks.db_probes
+        or grading.state_checks.hash_enabled
+    ):
+        populated.add("state_checks")
+    if grading.transcript_rules is not None:
+        populated.add("transcript_rules")
+    if grading.trace_checks is not None:
+        populated.add("trace_checks")
+    if grading.llm_judge is not None:
+        populated.add("llm_judge")
+    if grading.custom_checks and grading.custom_checks.get("enabled"):
+        populated.add("custom_checks")
+    return populated
+
+
 def _build_hash_enabled_scratch_pack(tmp_path: Path) -> ParityPack:
     """Materialise a temp pack whose ``grading.yaml`` enables ``state_checks.hash``.
 
@@ -213,7 +291,7 @@ def _build_hash_enabled_scratch_pack(tmp_path: Path) -> ParityPack:
     scratch_pack_dir.mkdir()
     for name in ("task.yaml", "trial.yaml", "parity.yaml"):
         (scratch_pack_dir / name).write_text(
-            (_PLACEHOLDER_PACK_DIR / name).read_text(encoding="utf-8"),
+            (_RUBRIC_ONLY_PACK_DIR / name).read_text(encoding="utf-8"),
             encoding="utf-8",
         )
     (scratch_pack_dir / "grading.yaml").write_text(
