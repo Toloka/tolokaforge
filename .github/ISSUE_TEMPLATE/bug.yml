@@ -1,0 +1,86 @@
+name: Bug report
+description: Something isn't working — a defect, regression, crash, or incorrect result.
+title: "bug: <short description>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in every required field —
+        `priority` in particular is required so the backlog stays triaged.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What went wrong?
+      description: One or two sentences describing the defect.
+      placeholder: e.g. "Grader returns success for a failing test when jsonpath assertion is nested."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps someone else can follow. Include the exact command, config, or task if relevant.
+      placeholder: |
+        1. Run `uv run tolokaforge run examples/native/tool_use ...`
+        2. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+      description: What should have happened, and what actually happened. Paste error output verbatim.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Version / branch / commit, Python, OS, Docker version if applicable.
+      value: |
+        - tolokaforge commit / version:
+        - Python:
+        - OS:
+        - Docker (if relevant):
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: |
+        - **P0** — production down or blocks core user flow, no workaround.
+        - **P1** — important UX/stability/correctness gap.
+        - **P2** — improvement or hardening, not user-blocking.
+        - **P3** — cleanup, nitpick, deferred.
+      options:
+        - P0
+        - P1
+        - P2
+        - P3
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area (optional)
+      description: Which subsystem does this touch? Leave blank if unsure.
+      options:
+        - grading
+        - runtime / runner
+        - orchestrator
+        - cli
+        - harness
+        - testing
+        - docs
+        - ci
+        - other
+    validations:
+      required: false

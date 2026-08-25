@@ -1,0 +1,69 @@
+name: Enhancement / feature request
+description: Propose a new feature, improvement, or capability.
+title: "feat: <short description>"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an enhancement. Please fill in every required field —
+        `priority` in particular is required so the backlog stays triaged.
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem does this solve? Who is affected? What's the current pain?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What you'd like to see. API sketch, screenshot, or user-visible behaviour is ideal.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Approaches you evaluated and why you didn't pick them. Also list workarounds you're using today, if any.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: |
+        - **P0** — blocks a shipped commitment or core user flow.
+        - **P1** — high-value, requested by users, or needed for a near-term milestone.
+        - **P2** — improvement, nice-to-have with a real user case.
+        - **P3** — cleanup, speculative, or deferred.
+      options:
+        - P0
+        - P1
+        - P2
+        - P3
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area (optional)
+      description: Which subsystem does this touch? Leave blank if unsure.
+      options:
+        - grading
+        - runtime / runner
+        - orchestrator
+        - cli
+        - harness
+        - testing
+        - docs
+        - ci
+        - other
+    validations:
+      required: false
