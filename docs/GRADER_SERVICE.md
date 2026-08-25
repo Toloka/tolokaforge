@@ -579,6 +579,33 @@ diverged":
   parity gate would surface a real between-legs code divergence at
   that seam.
 
+**RC-smoke guarantees.** The publish-images workflow's `smoke:` job runs
+the same corpus against the freshly-pulled RC runner + grader images over
+the real gRPC wire — one step alongside the image-level rc-smoke, no new
+job (`tests/integration/deploy/test_rc_smoke_parity_reference.py`). Two
+assertion tiers, honestly split by whether the pack exercises `llm_judge`
+— canonical parity through the harness is what backs the tighter guarantee
+on the judge packs, since the container lane has no scripted-client seat.
+
+| Tier | Packs | RC-smoke assertion |
+|---|---|---|
+| Deterministic | `state_checks_jsonpath_only`, `transcript_rules_only`, `trace_checks_heavy`, `custom_checks_only`, `state_plus_transcript` | Byte-identical `Grade` against the committed baseline via the same `serialise_grade` canonical projection. This is the shipped byte-parity guarantee. |
+| Deterministic (excluded) | `state_checks_db_probes_only` | Skipped in RC-smoke: the pack's `db_probes.dsn` points at an `app-db` postgres absent from the standalone compose stack. Canonical parity via the monkeypatched `_fetch_probe_rows` covers it. |
+| Wire-shape | `rubric_only`, `state_plus_judge`, `all_four_no_hash` | Grader dispatched keylessly; the missing LLM key surfaces as `judge_status=JUDGE_STATUS_ERRORED` with a `JUDGE ERRORED` segment in `reasons`. Non-judge components (state / transcript / trace / custom) still byte-match the baseline's non-judge components. A `success=false` outcome on a judge-using pack is refused as a regression. |
+| Refusal | `hash_and_all_four` | Grader returns `GradeResponse(success=false)` whose `error` carries the ADR-0039 "cannot execute hash-based grading" fragment. Refusal precedes any judge dial, so the assertion is keyless regardless of tier. |
+
+The pack loader reads the SAME `tests/canonical/grader_parity_baselines/`
+directory the canonical parity test reads — no corpus fork, so a baseline
+regeneration on one lane surfaces on the other automatically.
+`test_rc_smoke_reads_the_same_corpus_as_canonical` hard-locks the invariant.
+
+Follow-up scoped for after this gate stabilises: an in-image scripted
+judge provider (`ScriptedJudgeModelProvider` under
+`tolokaforge.judge_model_providers`, driven by a JSON script mount) would
+promote the wire-shape tier to deterministic — the four judge packs would
+byte-check their full baseline in RC-smoke without an LLM key. Deliberately
+out of scope here to keep the parity gate landable now.
+
 ## See also
 
 - [ADR-0014 — TrialGrader Protocol](adr/0014-trial-grader-protocol.md)
