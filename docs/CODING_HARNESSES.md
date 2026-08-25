@@ -19,7 +19,7 @@ Pick by what you are measuring.
 |---|---|---|
 | A model's raw capability on a task | **Engine-loop mode** | The engine's [`ModelCapabilities`](LLM_LAYER.md) policies apply — schema sanitizers, cache markers, reasoning replay, response coercion. Cost and tokens are honestly reported via `litellm`. |
 | A coding CLI's scaffolding on top of a model | **Harness mode** | The CLI's own prompt shape, tool ontology and step logic dominate the outcome — you're evaluating the whole vendor product, not the bare model. |
-| Head-to-head between two CLIs on the same task pack | **Harness mode** | Change one field (`models.agent.harness`); everything else stays constant. |
+| Head-to-head between two CLIs on the same task pack | **Harness mode** | Change one field (`models.agent.coding_harness`); everything else stays constant. |
 | A model in a way another team can independently reproduce end-to-end | **Harness mode** with a shipped CLI | The CLI version is pinned in the registry; the artifact records the pin. |
 
 ## Declaring a harness
@@ -39,7 +39,7 @@ evaluation:
     type: "native"
 ```
 
-`models.agent.harness = null` (the default) keeps the engine's turn loop.
+`models.agent.coding_harness = null` (the default) keeps the engine's turn loop.
 A non-empty string is a coding-harness name resolved against the effective
 registry ([ADR-0033](adr/0033-external-harness-registry.md)) and the CLI
 consumes `models.agent.name` verbatim (with per-harness vendor-prefix
@@ -84,7 +84,7 @@ inheriting
 alongside `BaseAdapter`; the mixin sets
 `supports_coding_harness: ClassVar[bool] = True`. The orchestrator's
 `load_tasks` reads that flag on the resolved adapter; a run declaring
-`models.agent.harness` against an adapter whose flag reads `False`
+`models.agent.coding_harness` against an adapter whose flag reads `False`
 refuses before any container work, naming both sides of the mismatch
 and the currently-opted-in set. Two adapters ship the opt-in today:
 `native` and `terminal_bench`. See
@@ -92,7 +92,7 @@ and the currently-opted-in set. Two adapters ship the opt-in today:
 
 ## What each shipped adopter provides
 
-Two adapters ship the mixin today. Both accept `models.agent.harness`;
+Two adapters ship the mixin today. Both accept `models.agent.coding_harness`;
 they differ in how they materialise the trial container around the CLI.
 
 ### The native adapter
@@ -153,7 +153,7 @@ Six vendor coding-agent CLIs ship in-tree. The catalog lives in
 the package's [`README.md`](../tolokaforge_coding_harnesses/README.md#shipped-harnesses)
 carries the version-pin table.
 
-| `models.agent.harness` | Vendor CLI | Install |
+| `models.agent.coding_harness` | Vendor CLI | Install |
 |---|---|---|
 | `claude-code` | `@anthropic-ai/claude-code` | npm |
 | `codex` | `@openai/codex` | npm |
@@ -181,7 +181,7 @@ Or on the terminal-bench `fix-billing-holds` pack:
 scripts/with_env.sh uv run tolokaforge run --config examples/terminal_bench/run_harness.yaml
 ```
 
-Swap `models.agent.harness` or `models.agent.name` to matrix over CLIs
+Swap `models.agent.coding_harness` or `models.agent.name` to matrix over CLIs
 or models. Per-trial artifacts land under the run's `evaluation.output_dir`.
 
 Prerequisites (Docker daemon, `uv`, `.env` with a provider key), the

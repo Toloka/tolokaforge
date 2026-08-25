@@ -1,7 +1,7 @@
 """Compose synthesis for the native adapter's coding-harness mode.
 
 The native adapter runs a per-trial compose stack when it opts into
-``models.agent.harness``: the trial container is the CLI's workspace, the
+``models.agent.coding_harness``: the trial container is the CLI's workspace, the
 tolokaforge runner sidecar carries the gRPC surface the conductor drives
 through, and the db-service sidecar backs the runner's state RPCs.
 

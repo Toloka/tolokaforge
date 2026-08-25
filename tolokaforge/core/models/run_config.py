@@ -998,7 +998,7 @@ pairs. Legacy names carry the ``queue_`` prefix; canonical names
 don't (the ``queue`` sub-block is the namespace)."""
 
 _HARNESS_ADAPTER_PARAMS_ALIASES: tuple[tuple[str, str], ...] = (
-    ("agent_harness", "harness"),
+    ("agent_harness", "coding_harness"),
     ("agent_model", "name"),
 )
 """``evaluation.harness_adapter.params.<legacy>`` → ``models.agent.<canonical>``
@@ -1096,14 +1096,14 @@ class RunConfig(BaseModel):
         parse time.
 
         The coding-harness surface's first shipped shape carried the
-        harness selector inside a ``terminal_bench``-adapter-specific
-        params bag. That coupling is retired: the harness rides
-        ``models.agent.harness`` (adapter-agnostic; any adapter whose
+        selector inside a ``terminal_bench``-adapter-specific params bag.
+        That coupling is retired: the coding-harness selector rides
+        ``models.agent.coding_harness`` (adapter-agnostic; any adapter whose
         ``supports_coding_harness`` capability flag is ``True`` accepts
         it), and the model the CLI receives is ``models.agent.name`` —
         the same field the engine loop reads. Two lifts:
 
-        * ``harness_adapter.params.agent_harness`` → ``models.agent.harness``
+        * ``harness_adapter.params.agent_harness`` → ``models.agent.coding_harness``
         * ``harness_adapter.params.agent_model`` → ``models.agent.name``
 
         Collision policy matches the orchestrator dual-home lift below:

@@ -1,7 +1,7 @@
 """Unit tests for the native adapter's coding-harness opt-in.
 
 The native adapter inherits :class:`CodingHarnessAdapterMixin` so a run
-declaring ``models.agent.harness`` reaches it. When ``params["agent_harness"]``
+declaring ``models.agent.coding_harness`` reaches it. When ``params["agent_harness"]``
 is set, ``to_task_description`` emits the four-key harness metadata handshake
 the conductor branches on, one ``bash`` :class:`ToolSchema` targeting the
 per-trial compose container the CLI execs into, and the ``test_execution``
@@ -38,7 +38,7 @@ def _params(**overrides: object) -> dict[str, object]:
 class TestCapabilityFlag:
     def test_adapter_class_declares_supports_coding_harness(self) -> None:
         # The orchestrator's config-validation gate reads this attribute to
-        # decide whether ``models.agent.harness`` can route to the adapter.
+        # decide whether ``models.agent.coding_harness`` can route to the adapter.
         assert NativeAdapter.supports_coding_harness is True
 
 

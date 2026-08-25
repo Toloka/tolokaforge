@@ -178,14 +178,14 @@ class MyAdapter(CodingHarnessAdapterMixin, BaseAdapter):
 The mixin sets `supports_coding_harness: ClassVar[bool] = True` — the
 capability flag the engine's config-validation gate reads. Adapters
 that do not inherit the mixin (or override the flag to `False`) refuse
-a run declaring `models.agent.harness` before any container work.
+a run declaring `models.agent.coding_harness` before any container work.
 
 Six helpers ship on the mixin. Contracts (parameters live in the
 mixin's own docstrings — read those, not this table):
 
 | Helper | Contract |
 |---|---|
-| `resolve_harness_spec(agent_harness, agent_model, provider_env=None, presets_file=None, plugin_discovery=True, version_override=None)` | Resolves against the shipped catalog + operator overlay + installed plug-ins, then validates. Refuses unknown harness names and empty models. `version_override` (from `models.agent.harness_version` or the `name@version` slug on `models.agent.harness`) replaces the shipped pin on the returned spec's `version` — every downstream consumer (Dockerfile install line, artefact metadata, fingerprint) sees the override. |
+| `resolve_harness_spec(agent_harness, agent_model, provider_env=None, presets_file=None, plugin_discovery=True, version_override=None)` | Resolves against the shipped catalog + operator overlay + installed plug-ins, then validates. Refuses unknown harness names and empty models. `version_override` (from `models.agent.coding_harness_version` or the `name@version` slug on `models.agent.coding_harness`) replaces the shipped pin on the returned spec's `version` — every downstream consumer (Dockerfile install line, artefact metadata, fingerprint) sees the override. |
 | `build_harness_command(agent_harness, spec, instruction, model, provider_env=None, *, path_resolver=None)` | Assembles the `bash -c`-shaped command the trial exec runs. Threads argv, model routing, provider-env, and (when the spec declares it) the middleware-proxy preamble. |
 | `emit_harness_metadata(agent_harness, spec, command, model)` | Four-key handshake the conductor branches on: `agent_harness`, `agent_harness_version`, `agent_harness_model`, `agent_harness_command`. |
 | `emit_harness_tool_schema(*, service, compose_project_prefix, timeout_s, toolset="coding_harness")` | Payload for the runner's `bash` tool routed through `DockerComposeExecToolWrapper`. `timeout_s` must cover the whole trial. |
@@ -202,7 +202,7 @@ engine module.
 
 **Reference adopters.** The bundled
 [`NativeAdapter`](../tolokaforge/adapters/native.py) drives a native
-task pack via harness mode when `models.agent.harness` is set; the
+task pack via harness mode when `models.agent.coding_harness` is set; the
 out-of-tree
 [`TerminalBenchAdapter`](../external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py)
 adopts the mixin with compose synthesis wrapped around

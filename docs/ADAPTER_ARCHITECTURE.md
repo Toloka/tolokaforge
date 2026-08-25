@@ -183,14 +183,14 @@ defaults:
 | Declaration | Default | Description |
 |--------|--------|-------------|
 | `trial_grader_name` (class attr) | `"runner_rpc"` | Name of the `TrialGrader` the orchestrator loads for this adapter's runs (from the `tolokaforge.trial_graders` entry-point group). Override to ship a custom grader. |
-| `supports_coding_harness` (class attr) | `False` | Whether the adapter accepts `models.agent.harness` (see § Adapter capabilities). |
+| `supports_coding_harness` (class attr) | `False` | Whether the adapter accepts `models.agent.coding_harness` (see § Adapter capabilities). |
 
 ## Adapter capabilities
 
 `CodingHarnessAdapterMixin` is a shipped capability adapters compose with
 alongside `BaseAdapter`. Inheriting it confers `supports_coding_harness = True`
 (the flag the orchestrator's config-validation gate reads before it will route
-a `models.agent.harness` run to the adapter) plus six helpers that produce
+a `models.agent.coding_harness` run to the adapter) plus six helpers that produce
 the wire artefacts a harness trial needs — spec resolution, command
 assembly, the metadata handshake, the bash tool schema payload, the
 `test_execution` grading payload, and the standalone install-script

@@ -1,4 +1,4 @@
-# Native-adapter run config exercising `models.agent.harness` end-to-end.
+# Native-adapter run config exercising `models.agent.coding_harness` end-to-end.
 #
 # This is the exemplar of the adapter-agnostic shape the coding-harness lift
 # introduces: any task on any adapter that opts into `supports_coding_harness`
@@ -6,14 +6,14 @@
 # replaced by one invocation of that CLI inside the trial container.
 #
 # The native adapter (this run's harness_adapter) inherits
-# `CodingHarnessAdapterMixin`, so the run config's `models.agent.harness`
+# `CodingHarnessAdapterMixin`, so the run config's `models.agent.coding_harness`
 # survives the orchestrator's config-validation gate.
 
 models:
   agent:
     provider: "openrouter"
     name: "openrouter/anthropic/claude-sonnet-4-6"
-    harness: "claude-code"
+    coding_harness: "claude-code"
     temperature: 0.0
     max_tokens: 4096
 

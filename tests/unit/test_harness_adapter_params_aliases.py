@@ -6,8 +6,8 @@ Two config fields once lived inside the ``terminal_bench``-adapter-specific
 - ``agent_harness`` (which coding-agent CLI drives the trial)
 - ``agent_model`` (the model the CLI receives)
 
-The coding-harness lift makes ``models.agent.harness`` the canonical home for
-the first and ``models.agent.name`` the canonical home for the second. This
+The coding-harness lift makes ``models.agent.coding_harness`` the canonical
+home for the first and ``models.agent.name`` the canonical home for the second. This
 suite pins the alias behaviour: legacy-only lifts + warns, canonical-only
 passes through, both-agree warns once, both-disagree fails loud. Same shape
 as ``test_dual_home_aliases.py``.
@@ -56,7 +56,7 @@ class TestHarnessSelectorAlias:
                     },
                 )
             )
-        assert cfg.models["agent"].harness == "claude-code"
+        assert cfg.models["agent"].coding_harness == "claude-code"
         # Legacy key is dropped from params after lift.
         assert "agent_harness" not in cfg.evaluation.harness_adapter.params
         assert any(
@@ -75,7 +75,7 @@ class TestHarnessSelectorAlias:
                         "agent": {
                             "provider": "openrouter",
                             "name": "openrouter/anthropic/claude-sonnet-4-6",
-                            "harness": "claude-code",
+                            "coding_harness": "claude-code",
                         },
                     },
                     evaluation={
@@ -84,7 +84,7 @@ class TestHarnessSelectorAlias:
                     },
                 )
             )
-        assert cfg.models["agent"].harness == "claude-code"
+        assert cfg.models["agent"].coding_harness == "claude-code"
         assert not any(
             issubclass(w.category, DeprecationWarning) and "agent_harness" in str(w.message)
             for w in caught
@@ -100,7 +100,7 @@ class TestHarnessSelectorAlias:
                         "agent": {
                             "provider": "openrouter",
                             "name": "openrouter/anthropic/claude-sonnet-4-6",
-                            "harness": "claude-code",
+                            "coding_harness": "claude-code",
                         },
                     },
                     evaluation={
@@ -112,7 +112,7 @@ class TestHarnessSelectorAlias:
                     },
                 )
             )
-        assert cfg.models["agent"].harness == "claude-code"
+        assert cfg.models["agent"].coding_harness == "claude-code"
         matches = [
             w
             for w in caught
@@ -130,7 +130,7 @@ class TestHarnessSelectorAlias:
                         "agent": {
                             "provider": "openrouter",
                             "name": "openrouter/anthropic/claude-sonnet-4-6",
-                            "harness": "claude-code",
+                            "coding_harness": "claude-code",
                         },
                     },
                     evaluation={
@@ -144,7 +144,7 @@ class TestHarnessSelectorAlias:
             )
         msg = str(excinfo.value)
         assert "evaluation.harness_adapter.params.agent_harness" in msg
-        assert "models.agent.harness" in msg
+        assert "models.agent.coding_harness" in msg
 
 
 class TestAgentModelAlias:
@@ -213,12 +213,12 @@ class TestModelConfigHarnessField:
                     "agent": {
                         "provider": "openrouter",
                         "name": "openrouter/anthropic/claude-sonnet-4-6",
-                        "harness": "claude-code",
+                        "coding_harness": "claude-code",
                     },
                 },
             )
         )
-        assert cfg.models["agent"].harness == "claude-code"
+        assert cfg.models["agent"].coding_harness == "claude-code"
 
     def test_harness_field_defaults_to_none(self) -> None:
         cfg = RunConfig(
@@ -232,4 +232,4 @@ class TestModelConfigHarnessField:
                 },
             )
         )
-        assert cfg.models["agent"].harness is None
+        assert cfg.models["agent"].coding_harness is None

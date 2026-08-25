@@ -147,7 +147,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     from YAML files.
 
     Inheriting :class:`CodingHarnessAdapterMixin` opts this adapter into the
-    orchestrator's ``models.agent.harness`` config gate (via the mixin's
+    orchestrator's ``models.agent.coding_harness`` config gate (via the mixin's
     ``supports_coding_harness = True`` flag) and gives it the shared helpers
     for command assembly, metadata emission, tool-schema payload, and
     ``test_execution`` grading — leaving only the native-side compose
@@ -172,7 +172,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 - task_packs: Optional list of pack root directories to search
                 - agent_harness: coding-harness slug to route trials through
                   a vendor CLI (injected by the orchestrator from
-                  ``models.agent.harness``); omit for the engine loop
+                  ``models.agent.coding_harness``); omit for the engine loop
                 - agent_model: model string the CLI receives (injected from
                   ``models.agent.name`` when ``agent_harness`` is set)
         """
@@ -212,8 +212,8 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 "run config's model would not be the one measured. Set "
                 "`models.agent.name` in the run config."
             )
-        # Optional CLI version override from ``models.agent.harness_version``
-        # (or from the ``name@version`` slug on ``models.agent.harness`` — the
+        # Optional CLI version override from ``models.agent.coding_harness_version``
+        # (or from the ``name@version`` slug on ``models.agent.coding_harness`` — the
         # ``RunConfig`` pre-validator splits and populates both fields, and the
         # orchestrator threads the version through here as its own param).
         # ``None`` means "use the shipped registry pin".
@@ -615,7 +615,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         - Grading config from grading.yaml
         - System prompt from system_prompt file
 
-        A run declaring ``models.agent.harness`` takes the harness-mode
+        A run declaring ``models.agent.coding_harness`` takes the harness-mode
         branch instead — the description carries a single ``bash`` tool that
         execs into the per-trial container, ``test_execution`` grading, and
         the four-key harness metadata handshake the conductor reads on

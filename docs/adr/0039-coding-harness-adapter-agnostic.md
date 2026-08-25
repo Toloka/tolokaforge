@@ -71,7 +71,7 @@ Three forces made the address wrong:
   under `evaluation.harness_adapter.params.{agent_harness,agent_model}`
   keep working; the lift happens at parse time with a
   `DeprecationWarning` per key naming the canonical location.
-- **Fail-loud gate.** A run declaring `models.agent.harness` against an
+- **Fail-loud gate.** A run declaring `models.agent.coding_harness` against an
   adapter that has not opted in refuses before any container work,
   naming both sides of the mismatch and the accepted set — the
   operator's next action is a one-line config edit.
@@ -130,7 +130,7 @@ Six helpers, plus the capability flag:
 
 | Helper | Contract |
 |---|---|
-| `supports_coding_harness: ClassVar[bool] = True` | Adapter capability flag. The orchestrator's config gate refuses `models.agent.harness` against any adapter whose flag reads `False` (the `BaseAdapter` default). |
+| `supports_coding_harness: ClassVar[bool] = True` | Adapter capability flag. The orchestrator's config gate refuses `models.agent.coding_harness` against any adapter whose flag reads `False` (the `BaseAdapter` default). |
 | `resolve_harness_spec(agent_harness, agent_model, provider_env=None, presets_file=None, plugin_discovery=True) -> HarnessSpec` | Composes the shipped catalog + operator overlay + installed plug-in bundles ([ADR-0033](0033-external-harness-registry.md) § "Registry composition"), then validates. Refuses unknown harness names and empty models. |
 | `build_harness_command(agent_harness, spec, instruction, model, provider_env=None, *, path_resolver=None) -> str` | Wraps `harness_command()`. Assembles the argv, model routing, provider-env, and (if declared) middleware-proxy preamble into one `bash -c`-shaped string. |
 | `emit_harness_metadata(agent_harness, spec, command, model) -> dict` | The four-key handshake the conductor branches on: `agent_harness`, `agent_harness_version`, `agent_harness_model`, `agent_harness_command`. |
@@ -205,8 +205,8 @@ is the removal record when it lands.
 ### Positive
 
 - **One address per decision.** A task pack switching harnesses (or
-  matrixing across them) edits `models.agent.harness` in one file. A
-  task pack switching adapters keeps `models.agent.harness` untouched.
+  matrixing across them) edits `models.agent.coding_harness` in one file. A
+  task pack switching adapters keeps `models.agent.coding_harness` untouched.
 - **Adapter opt-in is one inheritance line.** Any adapter that inherits
   `CodingHarnessAdapterMixin` alongside `BaseAdapter` gets the six
   helpers and the capability flag; no engine edit is required to

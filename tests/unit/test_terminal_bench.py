@@ -2127,7 +2127,7 @@ class TestHarnessTaskDescriptionMetadata:
 
 
 class TestTerminalBenchAdapterCodingHarnessOptIn:
-    """The adapter opts into the orchestrator's ``models.agent.harness`` gate.
+    """The adapter opts into the orchestrator's ``models.agent.coding_harness`` gate.
 
     The gate is the class-level ``supports_coding_harness`` flag the
     orchestrator's ``load_tasks`` reads (``tolokaforge/core/orchestrator.py``)

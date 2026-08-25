@@ -1,6 +1,6 @@
 """The shipped ``examples/native/coding_harness/`` pack is a whole document
 of its own kind: a native-adapter run config declaring
-``models.agent.harness`` end-to-end, proving the "any adapter" claim of the
+``models.agent.coding_harness`` end-to-end, proving the "any adapter" claim of the
 coding-harness lift with something executable.
 
 The run config surviving :class:`RunConfig` validation is the first contract
@@ -33,7 +33,7 @@ def test_run_harness_yaml_loads_as_run_config() -> None:
     cfg = RunConfig(**payload)
     agent = cfg.models.get("agent")
     assert agent is not None
-    assert agent.harness == "claude-code"
+    assert agent.coding_harness == "claude-code"
     assert cfg.evaluation.harness_adapter is not None
     assert cfg.evaluation.harness_adapter.type == "native"
     assert cfg.orchestrator.strict_task_load is True
