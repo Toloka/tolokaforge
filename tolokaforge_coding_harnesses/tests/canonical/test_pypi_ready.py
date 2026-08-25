@@ -39,6 +39,7 @@ PACKAGE_DIR = Path(__file__).resolve().parents[2]
 REQUIRED_SHIPPED_PATHS = (
     "src/tolokaforge_coding_harnesses/__init__.py",
     "src/tolokaforge_coding_harnesses/_registry.py",
+    "src/tolokaforge_coding_harnesses/adapter_support.py",
     "src/tolokaforge_coding_harnesses/container_injection.py",
     "src/tolokaforge_coding_harnesses/fingerprint.py",
     "src/tolokaforge_coding_harnesses/install-harness.sh",

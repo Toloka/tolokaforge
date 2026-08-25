@@ -52,6 +52,9 @@ from tolokaforge_coding_harnesses import (
     RuntimeGateway,              # gateway_route consumer surface (ADR-0037)
     ContainerFileInjector,       # deliver config_files into a running container
     SkillDelivery,               # per-task skill bundle delivery
+    CodingHarnessAdapterMixin,   # adapter-side pattern: registry resolve, command,
+                                 # metadata, tool schema, test_execution grading,
+                                 # standalone install-script Dockerfile layer
 )
 ```
 
