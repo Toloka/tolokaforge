@@ -1,6 +1,6 @@
 {
-  "bucket_a_count": 1,
-  "bucket_b_count": 12,
+  "bucket_a_count": 2,
+  "bucket_b_count": 11,
   "commits": [
     {
       "adapter_paths": [
@@ -1693,112 +1693,114 @@
     {
       "adapter_paths": [
         "CHANGELOG.md",
-        "tests/README.md",
-        "tests/integration/coding_harnesses/__init__.py",
-        "tests/integration/coding_harnesses/test_container_injection_docker.py",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/__init__.py",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/container_injection.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_container_injection.py"
-      ],
-      "bucket": "B",
-      "date": "2026-08-19",
-      "pr": null,
-      "reason": "7 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "3a1bc0725d1b0d8b68e856296d313fd1081a1ff9",
-      "subject": "feat(coding-harnesses): ContainerFileInjector + DockerExecInjector \u2014 files into a running container",
-      "touched_files": [
-        "CHANGELOG.md",
-        "docs/adr/0037-runtime-gateway-as-harness-data.md",
-        "tests/README.md",
-        "tests/integration/coding_harnesses/__init__.py",
-        "tests/integration/coding_harnesses/test_container_injection_docker.py",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/__init__.py",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/container_injection.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_container_injection.py"
-      ]
-    },
-    {
-      "adapter_paths": [
-        "CHANGELOG.md",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/container_injection.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_container_injection.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_path_resolvers.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_registry.py"
-      ],
-      "bucket": "B",
-      "date": "2026-08-19",
-      "pr": null,
-      "reason": "6 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "7815ab4be4871b2c942a7e2a0b1a1d4ec175df3a",
-      "subject": "fix(coding-harnesses): reviewer corrections \u2014 alias-pattern rule, injector timeout, closed catalog, ADR hygiene",
-      "touched_files": [
-        "CHANGELOG.md",
-        "docs/adr/0037-runtime-gateway-as-harness-data.md",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/container_injection.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_container_injection.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_path_resolvers.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_registry.py"
-      ]
-    },
-    {
-      "adapter_paths": [
-        "CHANGELOG.md",
         "docs/RUNNING_TERMINAL_BENCH.md",
-        "tests/canonical/snapshots/gateway_route_recipes/rendered_recipes.json",
-        "tests/canonical/test_gateway_route_recipes.py",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_harness_command.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_path_resolvers.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_registry.py"
-      ],
-      "bucket": "B",
-      "date": "2026-08-19",
-      "pr": null,
-      "reason": "8 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "a8a89e0f10d7a5a4ac7d797f9855f6f9b54cf3b1",
-      "subject": "feat(coding-harnesses): gateway_route recipes for gemini-cli and kimi-code",
-      "touched_files": [
-        "CHANGELOG.md",
-        "docs/RUNNING_TERMINAL_BENCH.md",
-        "examples/terminal_bench/gemini_litellm_overlay.yaml",
-        "tests/canonical/snapshots/gateway_route_recipes/rendered_recipes.json",
-        "tests/canonical/test_gateway_route_recipes.py",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml",
-        "tolokaforge_coding_harnesses/tests/unit/test_harness_command.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_path_resolvers.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_registry.py"
-      ]
-    },
-    {
-      "adapter_paths": [
-        "CHANGELOG.md",
         "docs/adr/README.md",
+        "tests/README.md",
+        "tests/canonical/_harness_registry_replay/git_walk.py",
+        "tests/canonical/snapshots/gateway_route_recipes/rendered_recipes.json",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/test_gateway_route_recipes.py",
+        "tests/integration/coding_harnesses/__init__.py",
+        "tests/integration/coding_harnesses/test_container_injection_docker.py",
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/__init__.py",
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/container_injection.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_container_injection.py",
         "tolokaforge_coding_harnesses/tests/unit/test_harness_command.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_registry.py"
+        "tolokaforge_coding_harnesses/tests/unit/test_path_resolvers.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_registry.py",
+        "tools/automation/src/automation/harness_bucket_classifier.py",
+        "tools/automation/tests/test_harness_bucket_classifier.py"
       ],
       "bucket": "B",
       "date": "2026-08-19",
-      "pr": null,
-      "reason": "6 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "f189700dbc872f2be81fd505898ea1c4e703d884",
-      "subject": "feat(coding-harnesses): RuntimeGateway catalog + HarnessSpec.gateway_route (ADR-0037)",
+      "pr": 1241,
+      "reason": "19 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "8fa9f48a5e910376f10814929312f709e8f0d58f",
+      "subject": "feat(coding-harnesses): RuntimeGateway + ContainerFileInjector + gateway_route (ADR-0037) (#1241)",
       "touched_files": [
         "CHANGELOG.md",
+        "docs/RUNNING_TERMINAL_BENCH.md",
         "docs/adr/0033-external-harness-registry.md",
         "docs/adr/0037-runtime-gateway-as-harness-data.md",
         "docs/adr/README.md",
+        "examples/terminal_bench/gemini_litellm_overlay.yaml",
         "external_adapters/tolokaforge-adapter-terminal-bench/README.md",
+        "tests/README.md",
+        "tests/canonical/_harness_registry_replay/git_walk.py",
+        "tests/canonical/snapshots/gateway_route_recipes/rendered_recipes.json",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
         "tests/canonical/snapshots/tbench_echo_hello_harness/harness_spec.json",
+        "tests/canonical/test_gateway_route_recipes.py",
+        "tests/integration/coding_harnesses/__init__.py",
+        "tests/integration/coding_harnesses/test_container_injection_docker.py",
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/__init__.py",
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/container_injection.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml",
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/registry_meta.yaml",
+        "tolokaforge_coding_harnesses/tests/unit/test_container_injection.py",
         "tolokaforge_coding_harnesses/tests/unit/test_harness_command.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_registry.py"
+        "tolokaforge_coding_harnesses/tests/unit/test_path_resolvers.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_registry.py",
+        "tools/automation/src/automation/harness_bucket_classifier.py",
+        "tools/automation/tests/test_harness_bucket_classifier.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "AGENTS.md",
+        "README.md",
+        "docs/CODING_HARNESSES.md",
+        "docs/ROADMAP.md",
+        "tolokaforge_coding_harnesses/README.md"
+      ],
+      "bucket": "B",
+      "date": "2026-08-24",
+      "pr": null,
+      "reason": "5 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "3d591a96142a18f20bd064e02b64cd089edb1000",
+      "subject": "docs(coding-harnesses): make the harness surface discoverable",
+      "touched_files": [
+        "AGENTS.md",
+        "README.md",
+        "docs/CODING_HARNESSES.md",
+        "docs/ROADMAP.md",
+        "examples/terminal_bench/README.md",
+        "tolokaforge_coding_harnesses/README.md"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "AGENTS.md",
+        "docs/CODING_HARNESSES.md",
+        "docs/ROADMAP.md",
+        "tolokaforge_coding_harnesses/README.md"
+      ],
+      "bucket": "B",
+      "date": "2026-08-24",
+      "pr": null,
+      "reason": "4 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "5580dd86071d62d57a240e54ce0e6db825088bb9",
+      "subject": "docs(coding-harnesses): review fixes \u2014 canonical replay path, run_harness.yaml alignment, signature honesty",
+      "touched_files": [
+        "AGENTS.md",
+        "docs/CODING_HARNESSES.md",
+        "docs/ROADMAP.md",
+        "examples/terminal_bench/README.md",
+        "tolokaforge_coding_harnesses/README.md"
+      ]
+    },
+    {
+      "adapter_paths": [],
+      "bucket": "A",
+      "date": "2026-08-25",
+      "pr": null,
+      "reason": "all touched paths in Bucket-A allow-list",
+      "sha": "d1772ab0c2bc240209e1d9aa26e30875342edc0b",
+      "subject": "docs(harnesses.yaml): correct the opencode routing story on 1.18.18",
+      "touched_files": [
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml"
       ]
     }
   ]
