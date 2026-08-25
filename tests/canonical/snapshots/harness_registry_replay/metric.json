@@ -1,6 +1,6 @@
 {
-  "bucket_a_count": 2,
-  "bucket_b_count": 11,
+  "bucket_a_count": 1,
+  "bucket_b_count": 12,
   "commits": [
     {
       "adapter_paths": [
@@ -1792,14 +1792,17 @@
       ]
     },
     {
-      "adapter_paths": [],
-      "bucket": "A",
+      "adapter_paths": [
+        "tests/canonical/snapshots/harness_registry_replay/metric.json"
+      ],
+      "bucket": "B",
       "date": "2026-08-25",
       "pr": null,
-      "reason": "all touched paths in Bucket-A allow-list",
-      "sha": "d1772ab0c2bc240209e1d9aa26e30875342edc0b",
+      "reason": "1 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "80722fb55b365a29e52ccc23b868c373213fd05b",
       "subject": "docs(harnesses.yaml): correct the opencode routing story on 1.18.18",
       "touched_files": [
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml"
       ]
     }
