@@ -83,11 +83,9 @@ from tolokaforge.core.models import (
     TurnWindow,
     ValuePredicate,
 )
-from tolokaforge.core.plugin_registry import (
-    TRACE_CHECK_OPERATORS_GROUP,
-    discover_entry_points,
-    load_trace_check_operator,
-)
+
+# ``plugin_registry`` is imported lazily inside the two functions below that
+# use it (``_operator_holds`` + ``_binding_operator_names``) — see their bodies.
 
 __all__ = ["MatcherOutcome", "evaluate_trace_checks", "select_events"]
 
@@ -467,6 +465,8 @@ def _operator_holds(name: str, value: Any, expected: Any, bindings: Mapping[str,
     """
     if value is None and name != "exists":
         return False
+    from tolokaforge.core.plugin_registry import load_trace_check_operator
+
     op = load_trace_check_operator(name)
     return op(value, expected, bindings)
 
@@ -475,11 +475,15 @@ def _binding_operator_names() -> list[str]:
     """Registered operator names whose semantics substitute a bound value.
 
     Materialised from the entry-point registry, filtered by the ``_binding``
-    suffix — the sole marker for binding operators (Approved Decision #2 on
-    ADR-0039). The discovery scan is cached in ``plugin_registry``, so a per-call
-    filter is O(N) over the registry size (17 shipped + downstream) and does not
-    fire the loader.
+    suffix — the sole marker for binding operators (ADR-0039). The discovery
+    scan is cached in ``plugin_registry``, so a per-call filter is O(N) over
+    the registry size (17 shipped + downstream) and does not fire the loader.
     """
+    from tolokaforge.core.plugin_registry import (
+        TRACE_CHECK_OPERATORS_GROUP,
+        discover_entry_points,
+    )
+
     return sorted(
         n for n in discover_entry_points(TRACE_CHECK_OPERATORS_GROUP) if n.endswith("_binding")
     )

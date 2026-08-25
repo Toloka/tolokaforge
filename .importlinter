@@ -42,14 +42,13 @@ forbidden_modules =
 allow_indirect_imports = true
 
 
-# Sub-component seam invariants (ADR-0039, milestone #36 Phase 2).
+# Sub-component seam invariants (ADR-0039).
 #
 # composite.py is the topology-neutral dispatch above the substrate. It
 # must reach every sub-component through its Protocol via a resolved
 # instance, never through a direct import of the reference-impl module.
-# A direct import would silently re-collapse the seam this milestone
-# builds and force every future substrate + evaluator to co-locate with
-# the composite.
+# A direct import would silently re-collapse the seam and force every
+# substrate + evaluator to co-locate with the composite.
 #
 # Six sub-component seams; six forbidden targets. The four ``default_*.py``
 # modules were carved out explicitly so this contract can fence them at

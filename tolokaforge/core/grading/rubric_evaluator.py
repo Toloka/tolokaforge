@@ -77,11 +77,14 @@ class RubricEvaluatorContext:
 
     The reference impl reads :attr:`judge_model_provider` plus the three
     policy flags; a downstream evaluator is free to ignore fields it does
-    not use.
+    not use. :attr:`logger` is optional so a caller can defer to the
+    evaluator's own :func:`~tolokaforge.core.logging.get_logger` fallback
+    — the shipping reference impl does that when ``None`` reaches
+    :class:`~tolokaforge.core.grading.judge.LLMJudge`.
     """
 
     judge_model_provider: JudgeModelProvider
-    logger: StructuredLogger
+    logger: StructuredLogger | None = None
     disable_knowledge_search: bool = False
     custom_system_prompt: str | None = None
     include_agent_system_prompt: bool = True

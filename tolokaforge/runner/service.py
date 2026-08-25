@@ -2240,7 +2240,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         rubric_evaluator = load_rubric_evaluator("llm_judge")(
             RubricEvaluatorContext(
                 judge_model_provider=self._judge_model_provider,
-                logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
                 disable_knowledge_search=disable_knowledge_search,
                 custom_system_prompt=custom_system_prompt,
                 include_agent_system_prompt=include_agent_system_prompt,

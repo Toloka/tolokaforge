@@ -15,8 +15,8 @@ holdings the composite is fenced from: :class:`LLMJudge`, :class:`LLMClient`,
 The underlying utility functions those reference impls wrap
 (:func:`evaluate_transcript_rules`, :func:`evaluate_jsonpath_checks`,
 :func:`evaluate_db_probes`) are forbidden by name for the same reason;
-so is :func:`render_state_diff` — its construction lives runner-side per
-Phase 2 Stage 2. Utility symbols the composite legitimately reuses —
+so is :func:`render_state_diff` — its construction lives runner-side.
+Utility symbols the composite legitimately reuses —
 :func:`scored_transcript_rules` (events-less-trial gate),
 :func:`transcript_rules_author_keys` (accounting) — are NOT forbidden.
 
@@ -118,7 +118,7 @@ def test_composite_does_not_import_any_reference_impl_symbol() -> None:
         "evaluate_transcript_rules",
         "evaluate_jsonpath_checks",
         "evaluate_db_probes",
-        # State-diff construction moved runner-side in Phase 2 Stage 2
+        # State-diff construction lives runner-side.
         "render_state_diff",
     }
     leaked = forbidden & imported_symbol_names

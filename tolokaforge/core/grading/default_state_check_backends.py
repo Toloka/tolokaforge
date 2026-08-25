@@ -67,6 +67,7 @@ class JsonpathStateCheckBackend:
         *,
         expression: list[dict[str, Any]],
         substrate: GradingSubstrate,
+        trial_id: str | None = None,
     ) -> tuple[float | None, str | None]:
         if not expression:
             return None, None
@@ -87,7 +88,9 @@ class JsonpathStateCheckBackend:
                     # ``$.db.*`` assertions surface as "Path not found" — log
                     # at warn so ops see the real cause rather than debugging
                     # per-assertion failures.
-                    _logger.warning("DB trial not found; grading with empty DB state")
+                    _logger.warning(
+                        f"GradeTrial: {trial_id} - DB trial not found; grading with empty DB state"
+                    )
             fs_state = substrate.filesystem_state() if fs_state_needed else None
             jsonpath_state = {
                 "db": db_state,
@@ -114,6 +117,7 @@ class DbProbesStateCheckBackend:
         *,
         expression: list[dict[str, Any]],
         substrate: GradingSubstrate,
+        trial_id: str | None = None,
     ) -> tuple[float | None, str | None]:
         if not expression:
             return None, None

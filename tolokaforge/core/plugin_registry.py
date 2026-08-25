@@ -67,8 +67,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
-from tolokaforge.core.actors.turn_policy import TurnPolicy
-from tolokaforge.core.conductor import ConductorFactory
 from tolokaforge.core.grading.check_runner import CheckExecutor
 from tolokaforge.core.grading.judge_model_provider import JudgeModelProviderFactory
 from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorFactory
@@ -78,18 +76,29 @@ from tolokaforge.core.grading.trace_check_operator import TraceCheckOperator
 from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcherFactory
 from tolokaforge.core.models.run_config import GraderConfig
 from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
-from tolokaforge.core.runtime import RuntimeBackend
-from tolokaforge.core.service_readiness import ServiceReadinessProbe
-from tolokaforge.core.trial_grader import TrialGrader
 
 if TYPE_CHECKING:
     from importlib.metadata import EntryPoint
 
     from tolokaforge.core.actors.actor import Actor
+    from tolokaforge.core.actors.turn_policy import TurnPolicy
     from tolokaforge.core.compose_materialisation import LogCaptureConfig
+    from tolokaforge.core.conductor import Conductor, ConductorContext
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import SeedRef
+    from tolokaforge.core.runtime import RuntimeBackend
+    from tolokaforge.core.service_readiness import ServiceReadinessProbe
     from tolokaforge.core.trial import EnvironmentManifest
+    from tolokaforge.core.trial_grader import TrialGrader
+
+# Orchestrator-side Protocol modules (``conductor``, ``runtime``, ``service_readiness``,
+# ``trial_grader``, ``actors.turn_policy``) are TYPE_CHECKING imports above. Their
+# module-level closures reach ``adapters``, ``LLMClient``, ``LLMJudge``, and other
+# orchestrator-only surface that the runner subset does not ship. The Factory
+# aliases below carry the Protocol names as string forward references so
+# ``typing.Callable[...]`` can subscript them at runtime without triggering the
+# heavy import — ``cast()`` erases the alias, so the runtime object never needs
+# the concrete class.
 
 __all__ = [
     "ConductorFactory",
@@ -270,10 +279,11 @@ class TurnPolicyContext:
     user_simulator: Actor | None = None
 
 
-RuntimeBackendFactory = Callable[[RuntimeBackendBuildContext], RuntimeBackend]
-TrialGraderFactory = Callable[[TrialGraderContext], TrialGrader]
-ReadinessProbeFactory = Callable[[], ServiceReadinessProbe]
-TurnPolicyFactory = Callable[[TurnPolicyContext], TurnPolicy]
+RuntimeBackendFactory = Callable[[RuntimeBackendBuildContext], "RuntimeBackend"]
+TrialGraderFactory = Callable[[TrialGraderContext], "TrialGrader"]
+ReadinessProbeFactory = Callable[[], "ServiceReadinessProbe"]
+TurnPolicyFactory = Callable[[TurnPolicyContext], "TurnPolicy"]
+ConductorFactory = Callable[["ConductorContext"], "Conductor"]
 CustomCheckExecutorFactory = Callable[[], CheckExecutor]
 
 
@@ -415,8 +425,8 @@ def load_trace_check_operator(name: str) -> TraceCheckOperator:
 
     The seam is per-operator, and the callable itself IS the contract: no
     factory wrapper. A binding operator is identified by the ``_binding``
-    suffix on its registered name (Approved Decision #2 on ADR-0039); the
-    callable's shape does not change.
+    suffix on its registered name (ADR-0039); the callable's shape does
+    not change.
     """
     return cast(TraceCheckOperator, _load(TRACE_CHECK_OPERATORS_GROUP, name))
 

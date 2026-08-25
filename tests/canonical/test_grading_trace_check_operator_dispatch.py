@@ -106,8 +106,8 @@ def test_operator_holds_preserves_the_none_dispatch_gate(
 
     Every operator but ``exists`` is false on ``None``; the gate is a dispatch
     invariant declared once in ``_operator_holds`` rather than repeated inside
-    every operator. Locks that the extraction moved the operators without
-    duplicating the gate.
+    every operator. Locks that the ``None`` gate is declared once in
+    ``_operator_holds``, not duplicated inside every registered operator.
     """
     _inject_demo_operator(monkeypatch)
     try:

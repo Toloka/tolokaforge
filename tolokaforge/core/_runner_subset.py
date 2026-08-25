@@ -65,10 +65,19 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     # compose materialisation, engine run state, backend capabilities,
     # runtime / conductor / trial-grader protocol definitions, the
     # ``run_trial`` library entry, run queue, resume, project loader,
-    # plugin registry, metrics, budgets, ``model_data_fingerprint``, and
-    # the remaining utility modules — is orchestrator-only. ``model_data``
-    # is included; its orchestrator-only compute sibling
-    # ``model_data_fingerprint`` is not.
+    # metrics, budgets, ``model_data_fingerprint``, and the remaining
+    # utility modules — is orchestrator-only. ``model_data`` is included;
+    # its orchestrator-only compute sibling ``model_data_fingerprint`` is
+    # not. ``plugin_registry`` is included: the runner reaches it through
+    # ``load_custom_check_executor`` / ``load_judge_model_provider`` /
+    # ``load_rubric_evaluator`` / ``load_state_check_backend`` /
+    # ``load_transcript_rule_matcher`` at ``RunnerServiceImpl.__init__``
+    # and again through ``trace_checks``'s ``load_trace_check_operator``,
+    # so the module must ship with the subset. Its orchestrator-side
+    # Protocol imports (``Conductor``, ``RuntimeBackend``,
+    # ``ServiceReadinessProbe``, ``TrialGrader``, ``TurnPolicy``) are
+    # TYPE_CHECKING only; the runtime closure of ``plugin_registry`` is
+    # grader-side.
     "tolokaforge/core/__init__.py",
     "tolokaforge/core/_runner_subset.py",
     "tolokaforge/core/deprecations.py",
@@ -77,6 +86,7 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     "tolokaforge/core/loop.py",
     "tolokaforge/core/model_data.py",
     "tolokaforge/core/netpolicy_constants.py",
+    "tolokaforge/core/plugin_registry.py",
     "tolokaforge/core/pricing.py",
     "tolokaforge/core/redaction.py",
     "tolokaforge/core/run_display_events.py",

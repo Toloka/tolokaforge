@@ -130,7 +130,7 @@ def test_binding_operator_names_filters_the_registry_by_suffix(
     """Site B — the walk projects the ``_binding`` suffix over the registry.
 
     A registered ``<name>_binding`` appears in the walk; a non-suffixed
-    sibling does not. Locks Approved Decision #2's convention against a
+    sibling does not. Locks the ``_binding``-suffix convention against a
     hand-written binding-operator list drifting from the entry-point set.
     """
     try:

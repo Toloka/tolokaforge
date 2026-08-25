@@ -54,6 +54,11 @@ class StateCheckBackend(Protocol):
     is a first-class "no evidence to score" signal — an empty expression
     list, or a source-specific gate — that leaves the corresponding
     component slot untouched.
+
+    ``trial_id`` is optional context a backend may weave into audit
+    warnings so a multi-trial log stream stays attributable — the
+    reference ``jsonpath`` backend prefixes its DB-absent warning with
+    it. Backends that emit no per-trial warning ignore the field.
     """
 
     def query(
@@ -61,6 +66,7 @@ class StateCheckBackend(Protocol):
         *,
         expression: list[dict[str, Any]],
         substrate: GradingSubstrate,
+        trial_id: str | None = None,
     ) -> tuple[float | None, str | None]: ...
 
 

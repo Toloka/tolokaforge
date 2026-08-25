@@ -212,6 +212,7 @@ def grade_state_checks_reads(
         jsonpath_score, jsonpath_reasons = state_check_backends["jsonpath"].query(
             expression=jsonpath_checks,
             substrate=substrate,
+            trial_id=trial_id,
         )
         accounted[JSONPATHS_KEY] = EVALUATED
         if jsonpath_score is not None:
@@ -225,6 +226,7 @@ def grade_state_checks_reads(
         db_probe_score, db_probe_reasons = state_check_backends["db_probes"].query(
             expression=probes,
             substrate=substrate,
+            trial_id=trial_id,
         )
         accounted[DB_PROBES_KEY] = EVALUATED
         if db_probe_score is not None:

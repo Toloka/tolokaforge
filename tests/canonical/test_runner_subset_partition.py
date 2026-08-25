@@ -91,6 +91,22 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         # Shipped in the subset because pip's ``[project.scripts]`` binds
         # ``tolokaforge = tolokaforge.runner._cli:main`` at install time.
         "tolokaforge/runner/_cli.py",
+        # Sub-component seam reference impls resolved through
+        # ``importlib.metadata`` entry-points at ``RunnerServiceImpl.__init__``
+        # (``load_judge_model_provider('litellm')`` /
+        # ``load_rubric_evaluator('llm_judge')`` /
+        # ``load_transcript_rule_matcher('default')`` /
+        # ``load_state_check_backend('jsonpath'|'db_probes')``), not by a
+        # module-level import. ``judge.py`` is reached at grade time from
+        # ``default_rubric_evaluator``; ``rubric.py`` is reached at grade
+        # time from ``judge.py``. Shipped in the subset because the runner
+        # container calls each one on the grading path.
+        "tolokaforge/core/grading/default_judge_model_provider.py",
+        "tolokaforge/core/grading/default_rubric_evaluator.py",
+        "tolokaforge/core/grading/default_state_check_backends.py",
+        "tolokaforge/core/grading/default_transcript_rule_matcher.py",
+        "tolokaforge/core/grading/judge.py",
+        "tolokaforge/core/grading/rubric.py",
     }
 )
 
