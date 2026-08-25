@@ -311,11 +311,14 @@ presets:
   # routing picks it up for this one model; every other z-ai/glm-5 sibling keeps
   # the shared axes untouched.
   #
-  # It is a SUPERSET of that shared preset: ``passthrough`` schema +
-  # ``json_coerce`` response + ``dict_map_hints`` prompt are re-declared
-  # VERBATIM (the overlay entry SHADOWS the shared one rather than merging with
-  # it, so dropping them here would silently regress the dict-stringify recovery
-  # the whole baseline was measured under). Exactly ONE axis changes:
+  # It is a FULL COPY of that shared preset PLUS a ``reasoning_codec`` swap:
+  # ``passthrough`` schema + ``json_coerce`` response + ``dict_map_hints`` prompt
+  # are re-declared VERBATIM. The copy is LOAD-BEARING -- ``_match_preset``
+  # returns the first matching entry with NO fallback merge to the shared
+  # preset, so these three lines are not "duplicates" and must not be pruned:
+  # dropping them would silently regress the dict-stringify recovery the whole
+  # baseline was measured under (pinned by tests/unit/llm/test_z_ai_glm_5_3_preset.py).
+  # Exactly ONE axis changes:
   #
   #   reasoning_codec: openai -> openai_summary_replay
   #
@@ -346,14 +349,15 @@ presets:
   # stays required. See registry.py.
   z_ai_glm_5_3:
     match:
-      # Exact vendor-anchored globs only. A bare "*glm-5.3*" would also claim
-      # foreign routes whose name merely contains it; the gateway-prefixed forms
-      # (openrouter/…, litellm_proxy/…) reach the same model through a transport
-      # prefix, so the vendor segment is anchored rather than matched anywhere
-      # in the string.
+      # Exact shapes only -- the bare route and the gateway-prefixed form
+      # (openrouter/..., litellm_proxy/...) that reaches the same model through
+      # a transport prefix. No trailing "*": fnmatch's "*" also matches "." and
+      # "-", so "z-ai/glm-5.3*" would claim an unmeasured z-ai/glm-5.3.1,
+      # glm-5.30, glm-5.3-fast or glm-5.3:variant and hand it this codec
+      # without a reprobe. Those fall through to the shared preset below; a new
+      # point release gets its own explicit entry with reprobe evidence.
       - "z-ai/glm-5.3"
-      - "z-ai/glm-5.3*"
-      - "*/z-ai/glm-5.3*"
+      - "*/z-ai/glm-5.3"
     schema_sanitizer: passthrough
     response_policy: json_coerce
     prompt_policy: dict_map_hints

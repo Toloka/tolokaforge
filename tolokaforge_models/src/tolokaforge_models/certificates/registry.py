@@ -2127,10 +2127,13 @@ _ALL: list[MC] = [
     # #1277). Routes through the model-specific ``z_ai_glm_5_3`` preset (see
     # model_presets.yaml), declared BEFORE the shared
     # ``openrouter_dict_stringify_recovery`` preset whose ``z-ai/glm-5*`` glob
-    # already claimed this route. That overlay is a SUPERSET of the shared
-    # preset — same ``passthrough`` schema + ``json_coerce`` response +
-    # ``dict_map_hints`` prompt — swapping ONLY the reasoning codec to
-    # ``openai_summary_replay`` (``OpenAISummaryReplayReasoningCodec``).
+    # already claimed this route. The overlay is a FULL COPY of that shared
+    # preset PLUS a ``reasoning_codec`` swap to ``openai_summary_replay``
+    # (``OpenAISummaryReplayReasoningCodec``). The copy is load-bearing:
+    # ``_match_preset`` returns the first match with NO fallback merge, so the
+    # ``passthrough`` / ``json_coerce`` / ``dict_map_hints`` fields on the
+    # overlay cannot be pruned as duplicates — see the preset's own comment in
+    # model_presets.yaml and tests/unit/llm/test_z_ai_glm_5_3_preset.py.
     #
     # The observe baseline (2026-08-25, measured ON the shared preset since its
     # glob already matched) is a clean tool-caller: all 25 tool-call / shape
