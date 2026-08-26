@@ -79,17 +79,22 @@ _EXPECTED_CONTEXT_ENTRIES: tuple[str, ...] = (
 
 @pytest.fixture(scope="module")
 def built_wheels_dist(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Build the base tolokaforge wheel + the tolokaforge-models sibling wheel
-    into one directory (returned).
+    """Build the base tolokaforge wheel + every workspace-sibling wheel it
+    depends on (tolokaforge-models, tolokaforge-coding-harnesses) into one
+    directory (returned).
 
     Uses ``python -m hatchling`` rather than ``hatch build`` to avoid the
     ``hatch`` CLI dep — matches ``test_runner_subset_install_smoke.py``'s
     invocation for the same reason (compat with the ``uv`` version pin).
-    ``uv pip install --find-links <dist_dir>`` resolves the engine's dep on
-    ``tolokaforge-models`` against the sibling wheel in this dir.
+    ``uv pip install --find-links <dist_dir>`` resolves the engine's deps
+    on the sibling wheels against this dir.
     """
     dist_dir = tmp_path_factory.mktemp("dist")
-    for project_dir, label in ((REPO_ROOT, "engine"), (REPO_ROOT / "tolokaforge_models", "models")):
+    for project_dir, label in (
+        (REPO_ROOT, "engine"),
+        (REPO_ROOT / "tolokaforge_models", "models"),
+        (REPO_ROOT / "tolokaforge_coding_harnesses", "coding-harnesses"),
+    ):
         result = subprocess.run(
             [sys.executable, "-m", "hatchling", "build", "-t", "wheel", "-d", str(dist_dir)],
             cwd=project_dir,
