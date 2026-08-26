@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.21.0 (2026-08-26)
+
+### Fix
+
+- **publish**: grader/rag build sibling coding-harnesses; runner subset ships seam entry-points (#1285)
+
 ## v0.20.0 (2026-08-25)
 
 ### Feat
