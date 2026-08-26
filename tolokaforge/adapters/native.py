@@ -241,7 +241,7 @@ class NativeAdapter(BaseAdapter):
         # under every task.yaml at load time so shared task-level defaults
         # don't have to be repeated in each task file. Empty when the
         # caller (typically the Orchestrator) has no project context.
-        self._project_task_defaults: dict[str, Any] = params.get("project_task_defaults", {})
+        self._project_task_defaults: dict[str, Any] = params.get("project_task_defaults") or {}
         # project.default_environment patch from the enclosing project.
         # Bound to each task's own environment patch by
         # :func:`resolve_environment` in :meth:`to_task_description`.

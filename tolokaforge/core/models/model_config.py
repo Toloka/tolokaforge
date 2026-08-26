@@ -42,14 +42,16 @@ class ModelConfig(BaseModel):
     temperature: float = 0.0
     max_tokens: int | None = None
     seed: int | None = None
-    # Coding-harness selector. When set, the trial's LLM loop is replaced by a
-    # single invocation of the named vendor CLI (``claude-code``, ``codex``,
-    # ``gemini-cli``, ``kimi-code``, ``opencode``, ``grok-build`` — see the
-    # ``tolokaforge_coding_harnesses`` package for the shipped registry) inside
-    # the trial container. Adapter-agnostic: any adapter whose
-    # ``supports_coding_harness`` capability flag is ``True`` accepts this
-    # field. Adapter identity is not checked here; the orchestrator's config
-    # gate refuses the combination when the resolved adapter does not opt in.
+    # Coding-harness selector. When set, the orchestrator selects a
+    # CodingHarnessDriver (see tolokaforge.core.drivers.coding_harness)
+    # that replaces the trial's LLM loop with a single invocation of the
+    # named vendor CLI (``claude-code``, ``codex``, ``gemini-cli``,
+    # ``kimi-code``, ``opencode``, ``grok-build`` — see the
+    # ``tolokaforge_coding_harnesses`` package for the shipped registry)
+    # inside the trial container. Adapter-agnostic: the driver applies
+    # around whichever adapter's output, and its ``attach()`` call refuses
+    # the combination when the resolved adapter does not stage a per-task
+    # container the driver can layer onto.
     #
     # Named ``coding_harness`` (not just ``harness``) because tolokaforge is
     # itself a benchmarking harness — the qualifier disambiguates the CLI

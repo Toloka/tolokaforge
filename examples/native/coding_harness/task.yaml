@@ -25,7 +25,7 @@ environment_manifest:
   stack:
     compose_file: "./docker-compose.yaml"
     runner_service: "main"
-# The native adapter's harness-mode branch overrides grading with
-# ``test_execution`` at dispatch; this pointer exists to satisfy the pre-run
-# "task must declare grading" gate.
+# The coding-harness driver overrides grading with ``test_execution`` when
+# applied to this task's description; this pointer exists to satisfy the
+# pre-run "task must declare grading" gate.
 grading: "grading.yaml"
