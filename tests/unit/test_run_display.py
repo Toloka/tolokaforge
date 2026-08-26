@@ -3848,10 +3848,11 @@ def _spawn_pipe_listener(
     exercises the userspace-buffering stranding bug. Returns
     ``(listener, thread, write_fd)``.
 
-    Yields the GIL briefly after ``thread.start()`` so the daemon reaches
-    its first ``select()`` before the test writes bytes. Under Linux CI
-    scheduling this closes the "wrote bytes into a pipe whose reader
-    hasn't been scheduled yet" race that made the arrow-key tests flaky."""
+    Instrumented barrier: a :class:`threading.Event` set from inside the
+    daemon just before its first ``select`` guarantees the reader is
+    parked in the kernel before the test writes bytes. Bypasses Linux
+    CI's GIL-contention race where a naked ``thread.start()`` returned
+    before the daemon had reached ``select()``, dropping the write."""
     from tolokaforge.dx.live_panel import _KeyboardListener
 
     read_fd, write_fd = os.pipe()
@@ -3859,8 +3860,22 @@ def _spawn_pipe_listener(
     listener = _KeyboardListener(display, stdin=stdin)
     listener._fd = read_fd
     listener._enabled = True
-    thread = threading.Thread(target=listener._run, name="test-panel-input", daemon=True)
+
+    ready_event = threading.Event()
+    original_run = listener._run
+
+    def _instrumented_run() -> None:
+        ready_event.set()
+        original_run()
+
+    thread = threading.Thread(target=_instrumented_run, name="test-panel-input", daemon=True)
     thread.start()
+    if not ready_event.wait(timeout=5.0):
+        raise RuntimeError("keyboard listener daemon failed to enter its read loop")
+    # One more yield after the event fires so the daemon is inside its
+    # first select() when the test writes — the event fires just before
+    # the call, and returning immediately would still race the kernel
+    # entry.
     time.sleep(0.05)
     return listener, thread, write_fd
 
