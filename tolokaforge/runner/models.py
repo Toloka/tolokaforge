@@ -1323,10 +1323,18 @@ class TraceConstraintExpr(BaseModel):
 
 
 class OnMissing(str, Enum):
-    """What an anchor that matched nothing decides."""
+    """What an anchor that matched nothing decides.
+
+    ``withhold`` excludes the constraint from the block's score entirely — its
+    weight enters neither the numerator nor the denominator, and a ``severity:
+    gate`` withheld constraint does not shut the block. The record is on
+    :attr:`TraceConstraintResult.withheld` so a reader classifies a withheld
+    verdict from the grade alone, without matching on message prose.
+    """
 
     FAIL = "fail"
     PASS = "pass"
+    WITHHOLD = "withhold"
 
 
 class TraceConstraintSeverity(str, Enum):
@@ -3251,11 +3259,16 @@ class TraceConstraintResult(BaseModel):
     stays readable and serialisable; an event is looked up by position against
     ``trajectory.yaml``.
 
-    ``undecided`` separates the two ways ``passed`` is ``False``: the trial did not
-    satisfy the constraint, or its evidence could not say. It changes no score —
-    an undecided constraint forfeits its weight and shuts a gate it carries,
-    exactly as a failure does — and it is the only field a reader can classify a
-    constraint's discriminating power from without matching on ``message`` prose.
+    Three flags separate the ways ``passed`` is ``False``. ``undecided`` names an
+    evidence gap: no completion of the trial's missing record settles the verdict,
+    so the constraint forfeits its weight and shuts a gate it carries. ``withheld``
+    names an author opt-out: the anchor matched nothing and the constraint declared
+    ``on_missing: withhold``, so its weight enters neither the numerator nor the
+    denominator and a withheld gate does not shut the block. Neither flag set with
+    ``passed=False`` is a definite failure — the trial did not satisfy the
+    constraint on evidence it did carry. The three flags are the fields a reader
+    classifies a constraint's discriminating power from without matching on
+    ``message`` prose.
     """
 
     id: str = Field(min_length=1)
@@ -3266,6 +3279,7 @@ class TraceConstraintResult(BaseModel):
     message: str = ""
     matched_positions: list[int] = Field(default_factory=list)
     undecided: bool = False
+    withheld: bool = False
 
     model_config = {"extra": "forbid"}
 
@@ -3277,6 +3291,29 @@ class TraceConstraintResult(BaseModel):
                 "means no completion of the trial's missing evidence settles the verdict, "
                 "which is never a pass — a verdict reaching the host this way has lost "
                 "which of the two it is"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_a_withheld_pass(self) -> TraceConstraintResult:
+        if self.withheld and self.passed:
+            raise ValueError(
+                f"trace constraint {self.id!r} passed and is withheld at once. Withheld "
+                "means the author opted the constraint out of scoring for an anchor that "
+                "matched nothing, which is not a pass — a verdict reaching the host this "
+                "way has lost which of the two it is"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_a_withheld_undecided(self) -> TraceConstraintResult:
+        if self.withheld and self.undecided:
+            raise ValueError(
+                f"trace constraint {self.id!r} is withheld and undecided at once. Withheld "
+                "names an author opt-out on an unmatched anchor; undecided names an evidence "
+                "gap no completion of the record settles. The two are different verdicts on "
+                "different subjects and a result reaching the host this way has lost which "
+                "of the two it is"
             )
         return self
 

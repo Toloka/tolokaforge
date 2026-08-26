@@ -201,11 +201,20 @@ def _missing_evidence(fields: Iterable[str], positions: Iterable[int]) -> str:
 
 
 class _Truth(str, Enum):
-    """Whether an event matches, given evidence that may be missing."""
+    """Whether an event matches, given evidence that may be missing.
+
+    ``WITHHELD`` names the author-opted-out verdict :class:`OnMissing.WITHHOLD`
+    yields on an unmatched anchor. It is contagious under composites — an
+    ``all_of`` or ``any_of`` a withheld branch enters withholds too, unless a
+    definite verdict beats it (``FALSE`` under conjunction, ``TRUE`` under
+    disjunction), so an author writing ``all_of: [genuinely_failing,
+    withheld_thing]`` still learns which branch failed.
+    """
 
     TRUE = "true"
     FALSE = "false"
     UNKNOWN = "unknown"
+    WITHHELD = "withheld"
 
 
 def select_events(
@@ -580,7 +589,7 @@ def _precedence(route: _DecisionSet) -> tuple[float, bool]:
 
 
 def _decision_set(results: list[TraceConstraintResult]) -> _DecisionSet:
-    """``results`` scored over its non-gate members, or collapsed to the gate verdict.
+    """``results`` scored over its non-gate, non-withheld members, or collapsed to the gate verdict.
 
     A gate enters neither the numerator nor the denominator, so a decision set whose
     every member is a gate has no weighted average to take — and an author who wrote
@@ -590,19 +599,30 @@ def _decision_set(results: list[TraceConstraintResult]) -> _DecisionSet:
     :func:`_weighted_fraction`, whose denominator its callers keep positive, and it
     is not conditional on ``alternatives``: a flat block of nothing but gates
     reaches it too.
+
+    A withheld constraint is out of the decision on both sides: excluded from the
+    numerator and denominator of the weighted fraction, from the all-gates collapse,
+    and from ``failed_gate_ids`` — a withheld gate is neither passing nor failing.
     """
-    scored = [item for item in results if item.severity is not TraceConstraintSeverity.GATE]
+    scored = [
+        item
+        for item in results
+        if item.severity is not TraceConstraintSeverity.GATE and not item.withheld
+    ]
+    decided = [item for item in results if not item.withheld]
     return _DecisionSet(
         results=results,
         score=(
             _weighted_fraction(scored)
             if scored
-            else (1.0 if all(item.passed for item in results) else 0.0)
+            else (1.0 if all(item.passed for item in decided) else 0.0)
         ),
         failed_gate_ids=[
             item.id
             for item in results
-            if item.severity is TraceConstraintSeverity.GATE and not item.passed
+            if item.severity is TraceConstraintSeverity.GATE
+            and not item.passed
+            and not item.withheld
         ],
     )
 
@@ -624,7 +644,7 @@ def _component(
     judge's aggregate when a required criterion fails, done once here for both.
     """
     return TraceChecksResult(
-        passed=all(item.passed for item in winner.results),
+        passed=all(item.passed for item in winner.results if not item.withheld),
         score=0.0 if winner.failed_gate_ids else winner.score,
         constraints=winner.results,
         winning_path=winner_id,
@@ -729,11 +749,13 @@ def _evaluate_constraint(
             _unbound_truth(constraint.bind),
         )
     )
+    withheld = truth is _Truth.WITHHELD
     return TraceConstraintResult(
         id=constraint.id,
         kind=kind,
         passed=truth is _Truth.TRUE,
         undecided=truth is _Truth.UNKNOWN,
+        withheld=withheld,
         weight=constraint.weight,
         severity=constraint.severity,
         message=(
@@ -741,7 +763,9 @@ def _evaluate_constraint(
             if unmakeable
             else _folded_message(readings, truth, kind, candidates.undetermined)
         ),
-        matched_positions=sorted({item for reading in readings for item in reading.positions}),
+        matched_positions=(
+            [] if withheld else sorted({item for reading in readings for item in reading.positions})
+        ),
     )
 
 
@@ -855,6 +879,7 @@ def _assignment_text(environment: Mapping[str, Any]) -> str:
 _FOLD_PHRASE: Mapping[_Truth, str] = {
     _Truth.FALSE: "failed under",
     _Truth.UNKNOWN: "undecided under",
+    _Truth.WITHHELD: "withheld under",
 }
 
 
@@ -1378,6 +1403,8 @@ def _conjunction(verdicts: Iterable[_Truth]) -> _Truth:
     seen = set(verdicts)
     if _Truth.FALSE in seen:
         return _Truth.FALSE
+    if _Truth.WITHHELD in seen:
+        return _Truth.WITHHELD
     return _Truth.UNKNOWN if _Truth.UNKNOWN in seen else _Truth.TRUE
 
 
@@ -1385,6 +1412,8 @@ def _disjunction(verdicts: Iterable[_Truth]) -> _Truth:
     seen = set(verdicts)
     if _Truth.TRUE in seen:
         return _Truth.TRUE
+    if _Truth.WITHHELD in seen:
+        return _Truth.WITHHELD
     return _Truth.UNKNOWN if _Truth.UNKNOWN in seen else _Truth.FALSE
 
 
@@ -1392,6 +1421,7 @@ _NEGATED: Mapping[_Truth, _Truth] = {
     _Truth.TRUE: _Truth.FALSE,
     _Truth.FALSE: _Truth.TRUE,
     _Truth.UNKNOWN: _Truth.UNKNOWN,
+    _Truth.WITHHELD: _Truth.WITHHELD,
 }
 
 _HANDLERS: Mapping[TraceConstraintKind, Callable[[Any, _Resolver, OnMissing], _Truth]] = {
@@ -1472,10 +1502,16 @@ def _decide(values: Iterable[bool | None], on_missing: OnMissing) -> _Truth:
 
     ``None`` is an unmatched anchor — a question the trial answered by not
     containing the anchor at all, not one the missing record left open — so
-    ``on_missing`` resolves it before the readings are compared.
+    ``on_missing`` resolves it before the readings are compared. Under
+    ``OnMissing.WITHHOLD`` a single unmatched anchor withholds the whole reading;
+    with no unmatched anchor at all, ``WITHHOLD`` reads as ``FAIL`` — the
+    ordering or adjacency was decidable.
     """
+    readings = list(values)
+    if on_missing is OnMissing.WITHHOLD and any(value is None for value in readings):
+        return _Truth.WITHHELD
     unmatched_verdict = on_missing is OnMissing.PASS
-    agreed = {unmatched_verdict if value is None else value for value in values}
+    agreed = {unmatched_verdict if value is None else value for value in readings}
     if agreed == {True}:
         return _Truth.TRUE
     if agreed == {False}:
@@ -1542,6 +1578,9 @@ def _message(
         return ""
     if truth is _Truth.UNKNOWN:
         return f"{kind.value} cannot be decided — " + "; ".join(resolver.undecided())
+    if truth is _Truth.WITHHELD:
+        unmatched = resolver.unmatched_anchors()
+        return f"{kind.value} withheld: {' and '.join(unmatched)} selected no event"
     unmatched = resolver.unmatched_anchors() if on_missing is OnMissing.FAIL else []
     if unmatched:
         return f"{kind.value} is unmatched: {' and '.join(unmatched)} selected no event"
