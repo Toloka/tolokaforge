@@ -1,13 +1,13 @@
 """Locks the wire-layer refusal of ``expected_hash`` on ``RunnerStateChecksConfig``.
 
-The retired key ``expected_hash`` used to carry a stored digest; the current wire
-schema replaces it with ``expect_initial_state: bool`` (a comparison-basis
-selector), a different concept on the same name. A caller that even declares the
-key is speaking the retired schema, so ``RunnerStateChecksConfig`` refuses it at
-the wire layer with a message that names the retirement, the two current sources
-(``golden_actions``, ``expect_initial_state``), and the retirement tracker
-(#1304). The generic Pydantic ``extra_forbidden`` message it replaces does not
-appear.
+``expected_hash`` and ``expect_initial_state`` name different concepts on similar
+names — a stored digest vs. a comparison-basis selector — so
+``RunnerStateChecksConfig`` refuses ``expected_hash`` rather than mapping it
+through: a digest silently absorbed into the selector would grade the trial by a
+rule the emitting engine never asked for. The refusal fires at the wire layer
+with an actionable message naming the two current sources (``golden_actions``,
+``expect_initial_state``) and the retirement tracker (#1304); the generic
+Pydantic ``extra_forbidden`` output does not appear.
 
 Locks:
 
@@ -16,10 +16,9 @@ Locks:
   ``value_error`` naming the retirement, the two migration targets and #1304.
 - The refusal message does not carry Pydantic's generic ``Extra inputs are not
   permitted`` / ``extra_forbidden`` string — the specific migration message wins.
-- ``expect_initial_state=True`` and default construction validate and round-trip
-  — the field the retirement points at is unchanged.
-- An unrelated unknown key still raises the pre-existing generic
-  ``extra_forbidden`` (the migration path is scoped, not leaking).
+- ``expect_initial_state=True`` and default construction validate and round-trip.
+- An unrelated unknown key still raises the generic ``extra_forbidden`` (the
+  migration path is scoped, not leaking).
 """
 
 from __future__ import annotations

@@ -423,22 +423,18 @@ _RETIRED_EXPECTED_HASH_MESSAGE: str = (
     "`golden_actions: [...]` for a task that changes state. Retirement tracked in "
     "#1304."
 )
-"""The migration a caller that declares the retired ``expected_hash`` key reads.
-
-Named at module scope so the behaviour-locking test asserts against its substrings
-rather than restating the wording — a reviewer wordsmithing the sentence that
-preserves the substrings stays green.
-"""
+"""The migration message a caller that declares the retired ``expected_hash`` key reads."""
 
 
 class RunnerStateChecksConfig(BaseModel):
     """State-based grading configuration on the runner wire.
 
-    Presence of the retired key ``expected_hash`` raises a ``ValidationError``
-    naming the two current sources (``golden_actions``, ``expect_initial_state``)
-    and the retirement tracker (#1304); the wire schema itself is unchanged. The
-    ``state_checks.hash.expected_state_hash`` author-surface retirement is
-    separately handled in :mod:`tolokaforge.core.grading.state_composition`.
+    Declares no ``expected_hash`` field; a ``mode="before"`` validator refuses the
+    retired key with a ``ValidationError`` naming the two current sources
+    (``golden_actions``, ``expect_initial_state``) and the retirement tracker
+    (#1304). The ``state_checks.hash.expected_state_hash`` author-surface
+    retirement is separately handled in
+    :mod:`tolokaforge.core.grading.state_composition`.
     """
 
     # Hash comparison
