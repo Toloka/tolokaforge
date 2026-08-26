@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.21.1 (2026-08-26)
+
+### Fix
+
+- **llm**: route moonshotai/kimi-k3 to empty-assistant filler-on + rename NovaMessageAssembly (#1284) (#1288)
+- **tests**: sync pipe-listener from inside select() to stop Linux CI flake (#1289)
+
 ## v0.21.0 (2026-08-26)
 
 ### Fix
