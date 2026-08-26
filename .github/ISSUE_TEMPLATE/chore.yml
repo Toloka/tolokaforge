@@ -1,0 +1,58 @@
+name: Chore / tech-debt / documentation
+description: Refactor, cleanup, docs update, tech-debt paydown, or maintenance work with no user-visible behaviour change.
+title: "chore: <short description>"
+labels: ["chore"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for work that isn't a bug or a user-facing feature — cleanup, refactors,
+        docs, dependency bumps, tech-debt paydown, or maintenance. `priority` is required.
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What needs to change, and what's the boundary? Include file paths, subsystems, or PRs it follows on from.
+    validations:
+      required: true
+
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Why now?
+      description: What triggered this — a recent PR, an incident, an audit finding, a doc drift check, a dependency EOL? Keep it short.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      description: Which flavour of chore is this? Captured in the issue body for triage; does not change labels.
+      options:
+        - refactor / tech-debt
+        - documentation
+        - testing
+        - dependencies
+        - ci
+        - other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: |
+        - **P0** — blocks a release or a user-facing commitment.
+        - **P1** — meaningful debt or gap; schedule soon.
+        - **P2** — worth doing; not urgent.
+        - **P3** — nice-to-have, opportunistic.
+      options:
+        - P0
+        - P1
+        - P2
+        - P3
+    validations:
+      required: true
