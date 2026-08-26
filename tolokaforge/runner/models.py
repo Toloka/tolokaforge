@@ -413,8 +413,33 @@ class HashComparisonBasis(str, Enum):
     """No source at all: the same initial state, reached by falling through."""
 
 
+_RETIRED_EXPECTED_HASH_MESSAGE: str = (
+    "state_checks.expected_hash has been retired — the key carried a stored digest, "
+    "and the current wire schema replaces it with expect_initial_state: bool, a "
+    "comparison-basis selector (a different concept on the same name, so a digest "
+    "silently mapped through would grade the trial by a rule the emitting engine "
+    "never asked for). Declare a source instead: `expect_initial_state: true` for a "
+    "refusal task whose expected final state is the initial state, or "
+    "`golden_actions: [...]` for a task that changes state. Retirement tracked in "
+    "#1304."
+)
+"""The migration a caller that declares the retired ``expected_hash`` key reads.
+
+Named at module scope so the behaviour-locking test asserts against its substrings
+rather than restating the wording — a reviewer wordsmithing the sentence that
+preserves the substrings stays green.
+"""
+
+
 class RunnerStateChecksConfig(BaseModel):
-    """State-based grading configuration."""
+    """State-based grading configuration on the runner wire.
+
+    Presence of the retired key ``expected_hash`` raises a ``ValidationError``
+    naming the two current sources (``golden_actions``, ``expect_initial_state``)
+    and the retirement tracker (#1304); the wire schema itself is unchanged. The
+    ``state_checks.hash.expected_state_hash`` author-surface retirement is
+    separately handled in :mod:`tolokaforge.core.grading.state_composition`.
+    """
 
     # Hash comparison
     hash_enabled: bool = False
@@ -444,6 +469,20 @@ class RunnerStateChecksConfig(BaseModel):
 
     # Substrate SQL assertions against a task-declared postgres DSN
     db_probes: list[DbProbe] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_retired_expected_hash(cls, data: Any) -> Any:
+        """Raise the migration a caller that declares ``expected_hash`` reads.
+
+        Fires before Pydantic's ``extra_forbidden`` sweep, so the actionable
+        migration message wins over the generic "Extra inputs are not permitted".
+        Presence of the key at all — populated, falsy, or ``None`` — is enough:
+        a caller that even declares it is speaking the retired schema.
+        """
+        if isinstance(data, Mapping) and "expected_hash" in data:
+            raise ValueError(_RETIRED_EXPECTED_HASH_MESSAGE)
+        return data
 
     @field_validator("id_fields")
     @classmethod
