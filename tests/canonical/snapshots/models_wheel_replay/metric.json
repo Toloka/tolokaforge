@@ -1,6 +1,6 @@
 {
-  "bucket_a_count": 5,
-  "bucket_b_count": 4,
+  "bucket_a_count": 3,
+  "bucket_b_count": 7,
   "integrations": [
     {
       "bucket": "B",
@@ -129,28 +129,48 @@
       ]
     },
     {
-      "bucket": "A",
-      "date": "2026-08-14",
-      "engine_paths": [],
+      "bucket": "B",
+      "date": "2026-08-17",
+      "engine_paths": [
+        "tests/canonical/snapshots/certify_suite_collection/collection.json",
+        "tests/canonical/snapshots/models_wheel_replay/metric.json",
+        "tests/canonical/test_certificate_registry_flip_byte_identity.py",
+        "tests/canonical/test_certify_excluded_capabilities.py",
+        "tests/unit/testing_certify/test_public_api.py"
+      ],
       "model": "google/gemini-3.7-flash",
-      "pr": null,
-      "reason": "all touched paths in Bucket-A allow-list",
-      "sha": "0328653fa43106e887d03b1a5f9acb34dbcb7662",
+      "pr": 1160,
+      "reason": "5 engine-side path(s) outside Bucket-A allow-list",
+      "sha": "4c06d79670377d66ef8f696243dbed256a0ad4e6",
       "touched_files": [
+        "tests/canonical/snapshots/certify_suite_collection/collection.json",
+        "tests/canonical/snapshots/models_wheel_replay/metric.json",
+        "tests/canonical/test_certificate_registry_flip_byte_identity.py",
+        "tests/canonical/test_certify_excluded_capabilities.py",
+        "tests/unit/testing_certify/test_public_api.py",
         "tolokaforge_models/src/tolokaforge_models/certificates/registry.py",
         "tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml",
         "tolokaforge_models/src/tolokaforge_models/data/pricing.json"
       ]
     },
     {
-      "bucket": "A",
-      "date": "2026-08-14",
-      "engine_paths": [],
+      "bucket": "B",
+      "date": "2026-08-17",
+      "engine_paths": [
+        "tests/canonical/snapshots/certify_suite_collection/collection.json",
+        "tests/canonical/snapshots/models_wheel_replay/metric.json",
+        "tests/canonical/test_certify_excluded_capabilities.py",
+        "tests/canonical/test_policy_registry_merge.py"
+      ],
       "model": "x-ai/grok-4.6",
-      "pr": null,
-      "reason": "all touched paths in Bucket-A allow-list",
-      "sha": "fa679608fa4c6baf93e429bc6b17f637a56a60a2",
+      "pr": 1161,
+      "reason": "4 engine-side path(s) outside Bucket-A allow-list",
+      "sha": "87578bdd42ab55312bb6eecb08fe793c50e7edc5",
       "touched_files": [
+        "tests/canonical/snapshots/certify_suite_collection/collection.json",
+        "tests/canonical/snapshots/models_wheel_replay/metric.json",
+        "tests/canonical/test_certify_excluded_capabilities.py",
+        "tests/canonical/test_policy_registry_merge.py",
         "tolokaforge_models/pyproject.toml",
         "tolokaforge_models/src/tolokaforge_models/certificates/registry.py",
         "tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml",
@@ -158,6 +178,27 @@
         "tolokaforge_models/src/tolokaforge_models/policies/__init__.py",
         "tolokaforge_models/src/tolokaforge_models/policies/xai.py",
         "tolokaforge_models/tests/unit/test_policies_reachable.py"
+      ]
+    },
+    {
+      "bucket": "B",
+      "date": "2026-08-25",
+      "engine_paths": [
+        "tests/canonical/snapshots/certify_suite_collection/collection.json",
+        "tests/unit/llm/test_z_ai_glm_5_3_preset.py"
+      ],
+      "model": "z-ai/glm-5.3",
+      "pr": 1277,
+      "reason": "2 engine-side path(s) outside Bucket-A allow-list",
+      "sha": "300bb1c153693cb1352f627db12851dcf1d162f9",
+      "touched_files": [
+        "tests/canonical/snapshots/certify_suite_collection/collection.json",
+        "tests/unit/llm/test_z_ai_glm_5_3_preset.py",
+        "tolokaforge_models/src/tolokaforge_models/certificates/registry.py",
+        "tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml",
+        "tolokaforge_models/src/tolokaforge_models/data/pricing.json",
+        "tolokaforge_models/tests/unit/fixtures/openrouter_z_ai_glm_5_3_reasoning_response.json",
+        "tolokaforge_models/tests/unit/test_reasoning_codec_openai_summary_replay.py"
       ]
     }
   ]

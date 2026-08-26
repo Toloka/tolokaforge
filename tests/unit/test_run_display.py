@@ -3823,9 +3823,14 @@ class _PipeStdin:
         return self._fd
 
 
-def _wait_until(predicate: Callable[[], bool], *, timeout: float = 2.0) -> bool:
+def _wait_until(predicate: Callable[[], bool], *, timeout: float = 5.0) -> bool:
     """Poll ``predicate`` until True or ``timeout`` elapses — deterministic
-    substitute for sleeping on the listener thread's read timing."""
+    substitute for sleeping on the listener thread's read timing.
+
+    Timeout defaults to 5s so shared CI runners under GIL contention still
+    have room for the listener thread's ``select(0.1)`` loop to catch bytes;
+    local runs never hit the ceiling because the predicate flips within a
+    few polls."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -3841,7 +3846,12 @@ def _spawn_pipe_listener(
     the termios setup (a pipe is not a tty). ``_stdin`` is a real buffered
     file object so the falsification revert (``self._stdin.read(1)``) still
     exercises the userspace-buffering stranding bug. Returns
-    ``(listener, thread, write_fd)``."""
+    ``(listener, thread, write_fd)``.
+
+    Yields the GIL briefly after ``thread.start()`` so the daemon reaches
+    its first ``select()`` before the test writes bytes. Under Linux CI
+    scheduling this closes the "wrote bytes into a pipe whose reader
+    hasn't been scheduled yet" race that made the arrow-key tests flaky."""
     from tolokaforge.dx.live_panel import _KeyboardListener
 
     read_fd, write_fd = os.pipe()
@@ -3851,6 +3861,7 @@ def _spawn_pipe_listener(
     listener._enabled = True
     thread = threading.Thread(target=listener._run, name="test-panel-input", daemon=True)
     thread.start()
+    time.sleep(0.05)
     return listener, thread, write_fd
 
 

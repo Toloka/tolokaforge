@@ -306,7 +306,7 @@ class TestPreflightConsultsTheOverlay:
     `set_overlay_path` itself, which is exactly the step the CLI was missing.
     """
 
-    def _tree(self, tmp_path, *, declared: bool, provider: str = "meta"):
+    def _tree(self, tmp_path, *, declared: bool, provider: str = "fake-vendor-xyz"):
         import yaml
 
         overlay = tmp_path / "overlay.yaml"
@@ -315,7 +315,9 @@ class TestPreflightConsultsTheOverlay:
             entry["supports_function_calling"] = True
         else:
             entry["supports_reasoning"] = True
-        overlay.write_text(yaml.safe_dump({"litellm_models": {"meta/muse-spark-1.2": entry}}))
+        overlay.write_text(
+            yaml.safe_dump({"litellm_models": {"fake-vendor-xyz/muse-spark-1.2": entry}})
+        )
 
         config = tmp_path / "run.yaml"
         config.write_text(
@@ -366,7 +368,7 @@ class TestPreflightConsultsTheOverlay:
             yaml.safe_dump(
                 {
                     "litellm_models": {
-                        "meta/muse-spark-1.2": {
+                        f"{provider.lower()}/muse-spark-1.2": {
                             "supports_function_calling": True,
                             "evidence": "2026-08-10, litellm 1.96.0: measured",
                         }
