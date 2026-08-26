@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.21.2 (2026-08-26)
+
+### Fix
+
+- **deps**: bump grpcio floor to 1.83.0 to match generated runner stubs (#1310)
+
 ## v0.21.1 (2026-08-26)
 
 ### Fix
