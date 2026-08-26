@@ -164,8 +164,14 @@ SUBSET_DEPENDENCIES: tuple[str, ...] = (
     "starlette>=0.52.1",
     "typesense>=2.0.0",
     "structlog>=24.0.0",
-    "grpcio>=1.60.0",
-    "grpcio-health-checking>=1.60.0",
+    # See the pyproject.toml comment: the generated runner_pb2_grpc module
+    # the subset wheel ships enforces ``grpcio>=1.83.0`` at import time,
+    # so the subset wheel's declared floor must track the grpcio-tools
+    # version used to regenerate the stubs — mirror the base wheel here
+    # so a fresh ``pip install tolokaforge-runner-subset`` (or the runner
+    # Docker image install step) never resolves the pre-1.83 line.
+    "grpcio>=1.83.0",
+    "grpcio-health-checking>=1.83.0",
     # See the pyproject.toml comment: the generated runner_pb2 module the
     # subset wheel ships requires the 7.x protobuf runtime, so mirror the
     # base wheel's explicit floor here so a fresh ``pip install
