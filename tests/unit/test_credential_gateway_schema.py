@@ -18,13 +18,39 @@ from tolokaforge_coding_harnesses import HARNESSES, CredentialGateway
 pytestmark = pytest.mark.unit
 
 
-class TestEveryShippedHarnessHasACredentialGateway:
+UNSHIELDED_HARNESSES: frozenset[str] = frozenset({"gemini-cli"})
+"""Shipped harnesses that intentionally carry no ``credential_gateway`` yet.
+
+Each entry needs a tracking issue and a comment in ``data/harnesses.yaml``
+explaining the gap — this set exists so a *silent* regression (a harness
+losing its shield with no comment, no issue, no test change) still fails
+here, while a *documented* one does not. gemini-cli: real REST auth header
+(``x-goog-api-key``, not Bearer) plus a base-URL override that also flips
+its auth mode, needing a config-file pin ``LLMGatewayEndpoint`` cannot yet
+express, and a per-model dynamic path shape the gateway's exact-match
+allowlist cannot enumerate — see
+https://github.com/Toloka/tolokaforge/issues/1311.
+"""
+
+
+class TestEveryShippedHarnessHasACredentialGatewayOrIsDocumentedUnshielded:
     @pytest.mark.parametrize("harness_name", sorted(HARNESSES))
-    def test_credential_gateway_is_populated(self, harness_name: str) -> None:
+    def test_credential_gateway_is_populated_or_harness_is_on_the_unshielded_list(
+        self, harness_name: str
+    ) -> None:
         spec = HARNESSES[harness_name]
+        if harness_name in UNSHIELDED_HARNESSES:
+            assert spec.credential_gateway is None, (
+                f"{harness_name!r} is on UNSHIELDED_HARNESSES but now ships a "
+                "credential_gateway — drop it from UNSHIELDED_HARNESSES, its tracking "
+                "issue can close."
+            )
+            return
         assert spec.credential_gateway is not None, (
-            f"{harness_name!r} ships no credential_gateway — every shipped harness "
-            "must shield its real provider credential from the trial container."
+            f"{harness_name!r} ships no credential_gateway and is not on "
+            "UNSHIELDED_HARNESSES — every shipped harness must either shield its real "
+            "provider credential from the trial container, or be added to that set "
+            "with a tracking issue and a data/harnesses.yaml comment explaining why."
         )
 
 

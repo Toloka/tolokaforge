@@ -180,6 +180,16 @@ class AgentDriver(Protocol):
         """
         ...
 
+    def close(self) -> None:
+        """Release whatever ``attach()`` started. Idempotent, and safe to
+        call without a prior ``attach()``.
+
+        Engine-loop drivers hold nothing to release. Coding-harness
+        drivers stop the credential-shielding gateway they may have
+        launched at ``attach()`` time.
+        """
+        ...
+
 
 class EngineLoopDriver:
     """Default driver: the engine's own LLM turn loop.
@@ -213,6 +223,9 @@ class EngineLoopDriver:
     def apply_container_layers(self, *, staged: StagedTask) -> StagedTaskLayers:
         del staged
         return StagedTaskLayers()
+
+    def close(self) -> None:
+        return None
 
 
 __all__ = [

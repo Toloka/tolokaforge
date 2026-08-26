@@ -214,30 +214,24 @@ harnesses:
       provider_env:
         GOOGLE_GEMINI_BASE_URL: "${gateway.base_url}${gateway.passthrough_path}"
         GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"
-    # gemini-cli's default (non-gateway_route) path talks directly to
-    # Google's Generative Language API with no base-URL override — there is
-    # no `*_BASE_URL` entry in provider_env above to read as ground truth, so
-    # upstream_url names Google's real default REST base instead.
-    # `base_url_env_var` reuses GOOGLE_GEMINI_BASE_URL (the same var
-    # gateway_route above uses to flip auth mode) — KNOWN GAP for whoever
-    # wires the driver: setting that var alone switches gemini-cli into its
-    # "GATEWAY" auth type, which 400s without the `${HOME}/.gemini/settings.json`
-    # selectedType pin the gateway_route config_files block carries; the
-    # credential-gateway driver wiring needs the same pin. Google's REST auth
-    # is `x-goog-api-key: <key>`, not a Bearer Authorization header — hence
-    # the header override below. path_allowlist is ALSO a known gap: Google's
-    # real paths embed the model name (`/v1beta/models/<model>:generateContent`),
-    # which the gateway's exact-match allowlist cannot enumerate ahead of a
-    # trial's model. See ADR-0041 and the Stage 2 report's Discovered Issues.
-    credential_gateway:
-      upstream_url: "https://generativelanguage.googleapis.com"
-      upstream_token_env_var: "GEMINI_API_KEY"
-      upstream_auth_header: "x-goog-api-key"
-      upstream_auth_template: "{token}"
-      dummy_token_env_var: "GEMINI_API_KEY"
-      dummy_token_value: "tolokaforge-shielded-dummy-not-a-real-key"
-      base_url_env_var: "GOOGLE_GEMINI_BASE_URL"
-      path_allowlist: ["/v1beta/models"]
+    # gemini-cli ships WITHOUT a credential_gateway this PR — unlike the
+    # other five shipped harnesses, its shield needs two things
+    # LLMGatewayEndpoint does not yet provide:
+    #   1. Its only base-URL override hook, GOOGLE_GEMINI_BASE_URL, ALSO
+    #      flips gemini-cli into "GATEWAY" auth mode, which 400s
+    #      ("Invalid auth method selected") without the
+    #      `${HOME}/.gemini/settings.json` selectedType pin the gateway_route
+    #      block above already carries for its own (LiteLLM) path — nothing
+    #      generates that pin for this path yet.
+    #   2. Google's real REST paths embed the model name
+    #      (`/v1beta/models/<model>:generateContent`), which the gateway's
+    #      exact-match path_allowlist cannot enumerate ahead of a trial's
+    #      model selection.
+    # Real behavior is unchanged for this harness: CodingHarnessDriver falls
+    # back to resolving GEMINI_API_KEY unshielded, same as before this PR.
+    # Tracked in https://github.com/Toloka/tolokaforge/issues/1311; see
+    # ADR-0041.
+    credential_gateway: null
 
   kimi-code:
     install_method: "npm"

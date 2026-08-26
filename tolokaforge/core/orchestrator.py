@@ -2715,6 +2715,20 @@ class Orchestrator:
             return resolved_output_dir
         finally:
             self._close_trial_graders()
+            self._close_driver()
+
+    def _close_driver(self) -> None:
+        """Release whatever the run's :class:`AgentDriver` holds open.
+
+        A coding-harness driver may have launched a credential-shielding
+        gateway (a background HTTP server thread + port) at ``attach()``;
+        ``close()`` is a no-op for every other driver and idempotent
+        everywhere, so it is safe to call unconditionally at teardown.
+        """
+        try:
+            self._get_driver().close()
+        except Exception as exc:  # noqa: BLE001 — teardown must survive
+            self.logger.warning("Driver close() raised", error=str(exc))
 
     def _close_trial_graders(self) -> None:
         """Release every ``TrialGrader`` built during this orchestrator's
@@ -2975,6 +2989,7 @@ class Orchestrator:
             # teardown; each failure is logged rather than raised so the
             # outer flow still surfaces the original exception.
             self._close_trial_graders()
+            self._close_driver()
 
         self._publish_grading_completeness()
         summary = {

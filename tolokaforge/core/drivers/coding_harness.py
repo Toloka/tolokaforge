@@ -31,6 +31,7 @@ still holds.
 from __future__ import annotations
 
 import hashlib
+import logging
 import shlex
 import shutil
 from collections.abc import Mapping
@@ -43,6 +44,11 @@ import yaml
 
 from tolokaforge.adapters.base import ComposeImageBuild
 from tolokaforge.core.agent_driver import StagedTask, StagedTaskLayers
+from tolokaforge.core.drivers.llm_gateway import (
+    GatewayHandle,
+    LLMGatewayEndpoint,
+    LocalHostGatewayLauncher,
+)
 from tolokaforge.secrets import expand_secret_refs
 from tolokaforge.secrets import get_default as _get_default_secrets
 from tolokaforge_coding_harnesses import (
@@ -59,6 +65,8 @@ from tolokaforge_coding_harnesses import (
 
 if TYPE_CHECKING:
     from tolokaforge.runner.models import TaskDescription
+
+logger = logging.getLogger(__name__)
 
 
 _HARNESS_INSTALL_CONTAINER_PATH = "/opt/tolokaforge/install-harness.sh"
@@ -159,11 +167,43 @@ class CodingHarnessDriver:
                 )
             base_spec = base_spec.model_copy(update={"version": selection.version_override})
         self.spec: HarnessSpec = base_spec
-        self.provider_env: dict[str, str] = _resolve_provider_env(
-            shipped=dict(self.spec.provider_env),
-            declared=dict(selection.provider_env_declared),
-            agent_harness=selection.agent_harness,
-        )
+        self._gateway_launcher: LocalHostGatewayLauncher | None = None
+        self._gateway_handle: GatewayHandle | None = None
+        self._gateway_container_url: str | None = None
+        if self.spec.credential_gateway is None:
+            # Pre-shield path: the real credential is resolved straight into
+            # container_env, same as every harness did before this driver
+            # grew a gateway. Only reachable for a harness that intentionally
+            # ships no credential_gateway (see UNSHIELDED_HARNESSES in
+            # tests/unit/test_credential_gateway_schema.py) — every other
+            # shipped harness takes the `else` branch below.
+            self.container_env: dict[str, str] = _resolve_provider_env(
+                shipped=dict(self.spec.provider_env),
+                declared=dict(selection.provider_env_declared),
+                agent_harness=selection.agent_harness,
+            )
+            logger.warning(
+                "coding_harness driver: harness %r ships no credential_gateway; its "
+                "real provider credential reaches the trial container's environment "
+                "unshielded. See https://github.com/Toloka/tolokaforge/issues/1311.",
+                selection.agent_harness,
+            )
+        else:
+            # Shielded path: never resolve the upstream token here — that is
+            # the gateway's job, done from its own SecretManager call at
+            # attach() below. container_env carries only the dummy value the
+            # CLI is allowed to see; the gateway's own container-reachable
+            # URL is added once attach() has actually launched it.
+            gateway_spec = self.spec.credential_gateway
+            extra_env = _resolve_provider_env(
+                shipped={},
+                declared=dict(selection.provider_env_declared),
+                agent_harness=selection.agent_harness,
+            )
+            self.container_env = {
+                **extra_env,
+                gateway_spec.dummy_token_env_var: gateway_spec.dummy_token_value,
+            }
 
     # -- driver protocol ----------------------------------------------------
 
@@ -182,6 +222,26 @@ class CodingHarnessDriver:
                 "run without a container cannot host this driver. Compatible "
                 "adapters today: 'native', 'terminal_bench'."
             )
+        gateway_spec = self.spec.credential_gateway
+        if gateway_spec is not None:
+            endpoint = LLMGatewayEndpoint(self.spec, _get_default_secrets())
+            self._gateway_launcher = LocalHostGatewayLauncher()
+            self._gateway_handle = self._gateway_launcher.launch(endpoint)
+            self._gateway_container_url = (
+                f"http://{self._gateway_handle.hostname}:{self._gateway_handle.port}"
+            )
+            self.container_env[gateway_spec.base_url_env_var] = self._gateway_container_url
+
+    def close(self) -> None:
+        """Stop the credential-shielding gateway, if one was launched.
+
+        Idempotent, and safe without a prior ``attach()`` — both leave
+        ``self._gateway_handle`` unset, so there is nothing to tear down.
+        """
+        if self._gateway_handle is None or self._gateway_launcher is None:
+            return
+        self._gateway_launcher.teardown(self._gateway_handle)
+        self._gateway_handle = None
 
     def decorate_task_description(
         self,
@@ -244,7 +304,7 @@ class CodingHarnessDriver:
             instruction=instruction,
             model=self.selection.agent_model,
             registry={self.selection.agent_harness: self.spec},
-            provider_env=self.provider_env,
+            provider_env=self.container_env,
         )
         metadata: dict[str, Any] = dict(base.metadata)
         metadata.update(
@@ -310,7 +370,7 @@ class CodingHarnessDriver:
                 ),
                 ComposeImageBuild(compose_file=staged.compose_file, service=staged.agent_service),
             ],
-            provider_env_snapshot=dict(self.provider_env),
+            provider_env_snapshot=dict(self.container_env),
         )
 
     # -- internals ----------------------------------------------------------
@@ -353,9 +413,14 @@ class CodingHarnessDriver:
         agent_env = _set_env(agent_body.get("environment"), "TEST_DIR", "/tests")
         for key, value in sorted(self.spec.container_env.items()):
             agent_env = _set_env(agent_env, key, value)
-        for key, value in sorted(self.provider_env.items()):
+        for key, value in sorted(self.container_env.items()):
             agent_env = _set_env(agent_env, key, value)
         agent_body["environment"] = agent_env
+        if self._gateway_handle is not None:
+            agent_body["extra_hosts"] = _add_extra_host(
+                agent_body.get("extra_hosts"),
+                f"{self._gateway_handle.hostname}:host-gateway",
+            )
         services[agent_service] = agent_body
 
         # The base build service tags the pack's own build with the exact
@@ -427,6 +492,21 @@ def _set_env(existing: Any, key: str, value: str) -> Any:
         filtered.append(f"{key}={value}")
         return filtered
     return {key: value}
+
+
+def _add_extra_host(existing: Any, entry: str) -> list[str]:
+    """Add ``entry`` (``"hostname:target"``) to a compose service's
+    ``extra_hosts:`` list, replacing any prior entry for the same hostname
+    rather than duplicating it. Mirrors :func:`_set_env`'s replace-not-append
+    behaviour for the analogous ``environment:`` key."""
+    hostname = entry.split(":", 1)[0]
+    hosts = [
+        host
+        for host in (existing if isinstance(existing, list) else [])
+        if not (isinstance(host, str) and host.split(":", 1)[0] == hostname)
+    ]
+    hosts.append(entry)
+    return hosts
 
 
 def _runner_service_body(runner_image: str) -> dict[str, Any]:
