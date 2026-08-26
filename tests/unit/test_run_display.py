@@ -3843,16 +3843,13 @@ def _spawn_pipe_listener(
     display: LiveRunDisplay,
 ) -> tuple[object, threading.Thread, int]:
     """Start a listener's read loop on an ``os.pipe()`` read-end, bypassing
-    the termios setup (a pipe is not a tty). ``_stdin`` is a real buffered
-    file object so the falsification revert (``self._stdin.read(1)``) still
-    exercises the userspace-buffering stranding bug. Returns
-    ``(listener, thread, write_fd)``.
-
-    Instrumented barrier: a :class:`threading.Event` set from inside the
-    daemon just before its first ``select`` guarantees the reader is
-    parked in the kernel before the test writes bytes. Bypasses Linux
-    CI's GIL-contention race where a naked ``thread.start()`` returned
-    before the daemon had reached ``select()``, dropping the write."""
+    the termios setup (a pipe is not a tty). Retained ONLY for the
+    lifecycle tests (:func:`test_pipe_eof_stops_listener_thread`) that
+    exercise the daemon's exit path on ``os.read() → b""``; the dispatch
+    semantics are now exercised via :func:`_make_direct_listener` +
+    :meth:`_KeyboardListener._consume_bytes`, which have no daemon /
+    scheduler race by construction. Returns ``(listener, thread, write_fd)``.
+    """
     from tolokaforge.dx.live_panel import _KeyboardListener
 
     read_fd, write_fd = os.pipe()
@@ -3861,22 +3858,8 @@ def _spawn_pipe_listener(
     listener._fd = read_fd
     listener._enabled = True
 
-    ready_event = threading.Event()
-    original_run = listener._run
-
-    def _instrumented_run() -> None:
-        ready_event.set()
-        original_run()
-
-    thread = threading.Thread(target=_instrumented_run, name="test-panel-input", daemon=True)
+    thread = threading.Thread(target=listener._run, name="test-panel-input", daemon=True)
     thread.start()
-    if not ready_event.wait(timeout=5.0):
-        raise RuntimeError("keyboard listener daemon failed to enter its read loop")
-    # One more yield after the event fires so the daemon is inside its
-    # first select() when the test writes — the event fires just before
-    # the call, and returning immediately would still race the kernel
-    # entry.
-    time.sleep(0.05)
     return listener, thread, write_fd
 
 
@@ -3891,19 +3874,39 @@ def _stop_pipe_listener(listener: object, thread: threading.Thread, write_fd: in
     listener._stdin.close()  # type: ignore[attr-defined]
 
 
+def _make_direct_listener(display: LiveRunDisplay) -> object:
+    """Construct a ``_KeyboardListener`` wired to ``display`` without a
+    daemon, pipe, or tty. Every dispatch test drives it by calling
+    :meth:`_KeyboardListener._consume_bytes` directly — the same
+    entry point the real ``_run`` calls after ``os.read``. This tests the
+    ESC-sequence state machine + dispatch routing without a scheduler in
+    the loop, which is what the previous pipe-based fixture kept racing
+    against on Linux CI under coverage instrumentation."""
+    from tolokaforge.dx.live_panel import _KeyboardListener
+
+    return _KeyboardListener(display, stdin=_FakeStdin(isatty=False))
+
+
+def _flush_pending_esc(listener: object) -> None:
+    """Model the ``_run`` loop's behaviour when ``select`` times out with
+    no bytes: the partial ESC buffer is cleared so a lone ESC keypress
+    can't merge with the next keypress into a phantom arrow key. See
+    ``_KeyboardListener._run`` — the assignment inside the ``if not
+    ready`` branch."""
+    listener._pending_esc = ""  # type: ignore[attr-defined]
+
+
 def test_burst_input_dispatches_every_key(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_incrementing_now(monkeypatch)
     display = LiveRunDisplay(refresh_per_second=1000)
     _seed_three_started_trials(display)
     # Visible [c, b, a]; focus starts on c:0.
-    listener, thread, write_fd = _spawn_pipe_listener(display)
-    try:
-        # j j k j from c → b → a → b → a in one syscall's worth of bytes.
-        os.write(write_fd, b"jjkj")
-        moved = _wait_until(lambda: display._focused_trial_id == "a:0")
-        assert moved, f"expected focus a:0 after burst, got {display._focused_trial_id}"
-    finally:
-        _stop_pipe_listener(listener, thread, write_fd)
+    listener = _make_direct_listener(display)
+    # j j k j from c → b → a → b → a in one call, as one ``os.read`` chunk.
+    listener._consume_bytes("jjkj")  # type: ignore[attr-defined]
+    assert (
+        display._focused_trial_id == "a:0"
+    ), f"expected focus a:0 after burst, got {display._focused_trial_id}"
 
 
 def test_arrow_up_maps_to_prev_arrow_down_to_next(
@@ -3912,60 +3915,48 @@ def test_arrow_up_maps_to_prev_arrow_down_to_next(
     _install_incrementing_now(monkeypatch)
     display = LiveRunDisplay(refresh_per_second=1000)
     _seed_three_started_trials(display)
-    listener, thread, write_fd = _spawn_pipe_listener(display)
-    try:
-        os.write(write_fd, b"\x1b[B")  # down → next
-        assert _wait_until(lambda: display._focused_trial_id == "b:0")
-        os.write(write_fd, b"\x1b[A")  # up → prev
-        assert _wait_until(lambda: display._focused_trial_id == "c:0")
-    finally:
-        _stop_pipe_listener(listener, thread, write_fd)
+    listener = _make_direct_listener(display)
+    listener._consume_bytes("\x1b[B")  # type: ignore[attr-defined]  # down → next
+    assert display._focused_trial_id == "b:0"
+    listener._consume_bytes("\x1b[A")  # type: ignore[attr-defined]  # up → prev
+    assert display._focused_trial_id == "c:0"
 
 
 def test_arrow_left_right_map_to_prev_next(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_incrementing_now(monkeypatch)
     display = LiveRunDisplay(refresh_per_second=1000)
     _seed_three_started_trials(display)
-    listener, thread, write_fd = _spawn_pipe_listener(display)
-    try:
-        os.write(write_fd, b"\x1b[C")  # right → next
-        assert _wait_until(lambda: display._focused_trial_id == "b:0")
-        os.write(write_fd, b"\x1b[D")  # left → prev
-        assert _wait_until(lambda: display._focused_trial_id == "c:0")
-    finally:
-        _stop_pipe_listener(listener, thread, write_fd)
+    listener = _make_direct_listener(display)
+    listener._consume_bytes("\x1b[C")  # type: ignore[attr-defined]  # right → next
+    assert display._focused_trial_id == "b:0"
+    listener._consume_bytes("\x1b[D")  # type: ignore[attr-defined]  # left → prev
+    assert display._focused_trial_id == "c:0"
 
 
-@pytest.mark.parametrize("home_bytes", [b"\x1b[H", b"\x1bOH"])
+@pytest.mark.parametrize("home_bytes", ["\x1b[H", "\x1bOH"])
 def test_home_key_csi_and_ss3_variants_focus_first(
-    monkeypatch: pytest.MonkeyPatch, home_bytes: bytes
+    monkeypatch: pytest.MonkeyPatch, home_bytes: str
 ) -> None:
     _install_incrementing_now(monkeypatch)
     display = LiveRunDisplay(refresh_per_second=1000)
     _seed_three_started_trials(display)
-    listener, thread, write_fd = _spawn_pipe_listener(display)
-    try:
-        os.write(write_fd, b"\x1b[B")  # move off first (c → b)
-        assert _wait_until(lambda: display._focused_trial_id == "b:0")
-        os.write(write_fd, home_bytes)  # Home → first visible (c)
-        assert _wait_until(lambda: display._focused_trial_id == "c:0")
-    finally:
-        _stop_pipe_listener(listener, thread, write_fd)
+    listener = _make_direct_listener(display)
+    listener._consume_bytes("\x1b[B")  # type: ignore[attr-defined]  # move off first (c → b)
+    assert display._focused_trial_id == "b:0"
+    listener._consume_bytes(home_bytes)  # type: ignore[attr-defined]  # Home → first (c)
+    assert display._focused_trial_id == "c:0"
 
 
-@pytest.mark.parametrize("end_bytes", [b"\x1b[F", b"\x1bOF"])
+@pytest.mark.parametrize("end_bytes", ["\x1b[F", "\x1bOF"])
 def test_end_key_csi_and_ss3_variants_focus_last(
-    monkeypatch: pytest.MonkeyPatch, end_bytes: bytes
+    monkeypatch: pytest.MonkeyPatch, end_bytes: str
 ) -> None:
     _install_incrementing_now(monkeypatch)
     display = LiveRunDisplay(refresh_per_second=1000)
     _seed_three_started_trials(display)
-    listener, thread, write_fd = _spawn_pipe_listener(display)
-    try:
-        os.write(write_fd, end_bytes)  # End → last visible (a)
-        assert _wait_until(lambda: display._focused_trial_id == "a:0")
-    finally:
-        _stop_pipe_listener(listener, thread, write_fd)
+    listener = _make_direct_listener(display)
+    listener._consume_bytes(end_bytes)  # type: ignore[attr-defined]  # End → last (a)
+    assert display._focused_trial_id == "a:0"
 
 
 def test_unknown_esc_sequence_is_dropped_silently(
@@ -3974,34 +3965,26 @@ def test_unknown_esc_sequence_is_dropped_silently(
     _install_incrementing_now(monkeypatch)
     display = LiveRunDisplay(refresh_per_second=1000)
     _seed_three_started_trials(display)
-    listener, thread, write_fd = _spawn_pipe_listener(display)
-    try:
-        # Shift-Tab (\x1b[Z) is unknown; the trailing j must still dispatch
-        # exactly one move, proving the unknown run was dropped, not queued.
-        os.write(write_fd, b"\x1b[Zj")
-        assert _wait_until(lambda: display._focused_trial_id == "b:0")
-        assert display._focused_trial_id == "b:0"
-        assert thread.is_alive()
-    finally:
-        _stop_pipe_listener(listener, thread, write_fd)
+    listener = _make_direct_listener(display)
+    # Shift-Tab (\x1b[Z) is unknown; the trailing j must still dispatch
+    # exactly one move, proving the unknown run was dropped, not queued.
+    listener._consume_bytes("\x1b[Zj")  # type: ignore[attr-defined]
+    assert display._focused_trial_id == "b:0"
 
 
 def test_bare_esc_press_is_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_incrementing_now(monkeypatch)
     display = LiveRunDisplay(refresh_per_second=1000)
     _seed_three_started_trials(display)
-    listener, thread, write_fd = _spawn_pipe_listener(display)
-    try:
-        os.write(write_fd, b"\x1b")
-        # Let the read-loop's select timeout fire so the lone ESC is flushed.
-        time.sleep(0.25)
-        assert display._focused_trial_id == "c:0"
-        assert display._auto_follow is True
-        # A later keypress is unaffected by the dropped ESC — j moves once.
-        os.write(write_fd, b"j")
-        assert _wait_until(lambda: display._focused_trial_id == "b:0")
-    finally:
-        _stop_pipe_listener(listener, thread, write_fd)
+    listener = _make_direct_listener(display)
+    listener._consume_bytes("\x1b")  # type: ignore[attr-defined]
+    # Model the ``_run`` loop's select-timeout drop of the lone ESC.
+    _flush_pending_esc(listener)
+    assert display._focused_trial_id == "c:0"
+    assert display._auto_follow is True
+    # A later keypress is unaffected by the dropped ESC — j moves once.
+    listener._consume_bytes("j")  # type: ignore[attr-defined]
+    assert display._focused_trial_id == "b:0"
 
 
 def test_pipe_eof_stops_listener_thread() -> None:
