@@ -1327,12 +1327,17 @@ class Orchestrator:
         A container-staging driver (coding-harness mode) needs one
         ``apply_container_layers`` call per task — writing the harness
         install Dockerfile and rewriting the staged compose file in place
-        — before any declared image build runs. The returned per-task
-        image builds are appended to ``stack_requirements.image_builds``
-        so the orchestrator's declarative pre-build seam
-        (:meth:`_perform_declared_compose_image_builds`) picks them up
-        alongside the adapter's own. No-op for the engine loop, or when
-        the adapter declared no requirements object at all.
+        — before any declared image build runs. The driver's per-task
+        image builds *replace* the adapter's own builds on the same
+        ``(compose_file, agent_service)`` because the driver's rewrite
+        turned that service into a layered build ``FROM`` a companion
+        ``<agent>_base`` service; building it first would fail with a
+        pull-not-found on the base tag. The adapter's own build entries
+        that the driver superseded are dropped in place; ones the driver
+        did not touch stay.
+
+        No-op for the engine loop, or when the adapter declared no
+        requirements object at all.
 
         Raises:
             RuntimeError: A task fails to stage under a driver that needs
@@ -1343,6 +1348,8 @@ class Orchestrator:
         driver = self._get_driver()
         if stack_requirements is None or not driver.needs_container_stage():
             return
+        superseded: set[tuple[Any, str]] = set()
+        driver_builds: list[Any] = []
         for task in self.tasks:
             staged = self._staged_for(task.task_id)
             if staged is None:
@@ -1352,7 +1359,19 @@ class Orchestrator:
                     "this driver."
                 )
             layers = driver.apply_container_layers(staged=staged)
-            stack_requirements.image_builds.extend(layers.stack_requirements)
+            driver_builds.extend(layers.stack_requirements)
+            # The driver rewrote ``agent_service`` on the staged compose
+            # to be a layered build; the adapter's engine-loop-shaped
+            # build on the same tuple no longer resolves and must not
+            # run before the base.
+            superseded.add((staged.compose_file, staged.agent_service))
+        adapter_builds = [
+            build
+            for build in stack_requirements.image_builds
+            if (getattr(build, "compose_file", None), getattr(build, "service", None))
+            not in superseded
+        ]
+        stack_requirements.image_builds = adapter_builds + driver_builds
 
     def _perform_declared_compose_image_builds(self, stack_requirements: Any) -> None:
         """Build adapter-declared compose images once per run, before any
