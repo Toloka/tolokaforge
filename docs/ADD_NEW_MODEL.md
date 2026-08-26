@@ -133,7 +133,7 @@ Available policy slots (see
 | `reasoning_codec` | `none` | `anthropic`, `openai`, `openai_summary_replay`, `gemini` |
 | `cache_policy` | `none` | `anthropic_ephemeral` |
 | `params_policy` | `generation_params` | arbitrary `{name, params}` — see `GenerationParams.KNOWN_KEYS` |
-| `message_assembly_policy` | `null` | `nova` (only `aws_nova*` presets opt in — the filler string is data on the policy instance) |
+| `message_assembly_policy` | `null` | `nova` (only `aws_nova*` and `moonshot_kimi_k3` presets opt in — the filler string is data on the policy instance, so different providers pick different fillers) |
 | `assistant_text_policy` | `passthrough` | out-of-tree via subclass (e.g. Cohere `<|START_TEXT|>…<|END_TEXT|>` marker stripper) |
 
 If a new provider needs a lifecycle stage not covered by the nine slots,

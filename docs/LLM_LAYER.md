@@ -78,7 +78,7 @@ upgrading past v0.17.x.
 | [`prompt_policy.py`](../tolokaforge/core/llm/prompt_policy.py) | System-prompt enrichment (`DictMapHints`) |
 | [`params_policy.py`](../tolokaforge/core/llm/params_policy.py) | Generation parameter adaptation |
 | [`content_policy.py`](../tolokaforge/core/llm/content_policy.py) | Tool-result content format (OpenAI / Anthropic) |
-| [`message_assembly_policy.py`](../tolokaforge/core/llm/message_assembly_policy.py) | Empty-assistant-content filler injection (Nova-only) |
+| [`message_assembly_policy.py`](../tolokaforge/core/llm/message_assembly_policy.py) | Empty-assistant-content filler injection (Bedrock/Nova + Moonshot direct) |
 | [`response_policy.py`](../tolokaforge/core/llm/response_policy.py) | Tool-call argument post-processing |
 | [`assistant_text_policy.py`](../tolokaforge/core/llm/assistant_text_policy.py) | Assistant-text reshaping between litellm parse and `GenerationResult.text` |
 | [`capabilities.py`](../tolokaforge/core/llm/capabilities.py) | `ModelCapabilities` frozen dataclass |
@@ -1599,29 +1599,43 @@ class MessageAssemblyPolicy(Protocol):
 
 Decides whether empty / whitespace-only assistant `content` on tool-call
 turns is substituted with a non-empty filler string, and what that string
-is. Wired into `LLMClient._convert_messages`: when
-`inject_empty_assistant_filler` is `True`, the assistant dict's `content`
-becomes `empty_assistant_filler`; otherwise it stays `""`.
+is. The seam exists because two provider families reject empty assistant
+content alongside `tool_calls` — Bedrock/Nova ("The text field in the
+ContentBlock ... is blank") and Moonshot direct (HTTP 400 "the message at
+position N with role 'assistant' must not be empty"). Every other
+provider accepts the empty shape natively. Wired into
+`LLMClient._convert_messages`: when `inject_empty_assistant_filler` is
+`True`, the assistant dict's `content` becomes `empty_assistant_filler`;
+otherwise it stays `""`.
 
 Two implementations ship:
 
 * `NullMessageAssembly` (default) — `inject_empty_assistant_filler=False`,
-  `empty_assistant_filler=""`. Every non-Nova preset carries this. The
-  provider APIs accept empty assistant content alongside `tool_calls`.
-* `NovaMessageAssembly(empty_assistant_filler="I'll help you with that.")`
-  — `inject_empty_assistant_filler=True`; the filler string is data on the
-  instance. Used by `aws_nova` and `aws_nova_openrouter`. Bedrock/Nova
-  rejects empty assistant content on tool-call turns ("The text field in
-  the ContentBlock ... is blank").
+  `empty_assistant_filler=""`. Every preset outside the opt-in list below
+  carries this. The provider APIs accept empty assistant content
+  alongside `tool_calls`.
+* `FillEmptyAssistantAssembly(empty_assistant_filler=...)` —
+  `inject_empty_assistant_filler=True`; the filler string is data on the
+  instance. Two presets opt in:
+    * `aws_nova` and `aws_nova_openrouter` — filler defaults to
+      `"I'll help you with that."` (Bedrock's rejection is silent on the
+      filler shape, so a human-readable phrase is fine).
+    * `moonshot_kimi_k3` — filler is a single space `" "` (Moonshot
+      direct's rejection is likewise silent on shape, and Kimi K3 shares
+      family lineage with the echo-back-prone Gemini line — a bare space
+      is the minimum content that clears the check without introducing a
+      phrase Kimi could echo back).
 
 The filler string is per-instance data rather than an engine constant
 because a universal filler caused the 2026-04-30 Gemini regression: Gemini
 Pro pattern-matched the substituted string in past assistant turns and
 echoed `"I'll help you with that."` back as its own response content
-(~26-38 % of trials on ots_19_airlines). A future provider that needs a
-different filler declares it at the preset overlay layer via
+(~26-38 % of trials on ots_19_airlines). A future provider that needs
+the filler declares its own string at the preset overlay layer via
 `message_assembly_policy: {name: nova, params: {empty_assistant_filler: "..."}}`,
-without touching engine code. Routing pinned by
+without touching engine code (registry key `"nova"` is preserved verbatim
+as a compatibility surface — user overlay syntax and the
+`resolve_policy_names` fingerprint). Routing pinned by
 [`tests/canonical/test_message_assembly_filler_routing.py`](../tests/canonical/test_message_assembly_filler_routing.py).
 
 ## `response_policy`
@@ -1761,6 +1775,7 @@ the same three policies. Keep this table in sync with
 | `xai_grok`              | `x-ai/*`, `xai/*`, `grok*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
 | `qwen`                  | `qwen/*`, `qwen3*`                                               | `strict`           | `array_dict_map`    | `dict_map_hints`  | `openai`         | `openai`          | `null`                    | `passthrough`           |
 | `aws_nova`              | `nova*` (+ provider `nova`)                                      | `passthrough`      | `unwrap_input`      | `none`            | `nova`           | `none`            | `nova`                    | `passthrough`           |
+| `moonshot_kimi_k3`      | `moonshotai/kimi-k3*`, `*kimi-k3*`                               | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `nova` (filler `" "`)     | `passthrough`           |
 
 Order matters — first match wins. `anthropic_claude_4_7` is declared
 *before* the generic `anthropic` preset so Claude 4.7 picks up its

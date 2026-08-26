@@ -1,9 +1,12 @@
 """Narrow message-assembly slot — empty-assistant-content filler injection.
 
-The engine's on-wire message assembly is otherwise uniform across providers,
-but AWS Bedrock/Nova rejects assistant turns whose ``content`` is an empty
-string when ``tool_calls`` is present. This slot decides — per model — whether
-to substitute a non-empty filler string and, if so, which string.
+Two provider families reject assistant turns whose ``content`` is an empty
+string when ``tool_calls`` is present: AWS Bedrock/Nova ("The text field
+in the ContentBlock ... is blank") and Moonshot direct (HTTP 400 "the
+message at position N with role 'assistant' must not be empty"). Every
+other provider accepts the empty shape natively. This slot decides — per
+model — whether to substitute a non-empty filler string and, if so, which
+string.
 
 Extension contract
 ------------------
@@ -24,8 +27,12 @@ Two implementations ship:
   provider's API accepts empty assistant content alongside ``tool_calls``
   (OpenAI, Anthropic, Gemini-via-OpenRouter, xAI, Qwen, DeepSeek, Cohere,
   MiniMax).
-* :class:`NovaMessageAssembly` — declares the injection ``True`` with the
-  filler string configurable per instance. The Nova preset opts in.
+* :class:`FillEmptyAssistantAssembly` — declares the injection ``True`` with
+  the filler string configurable per instance. Two presets opt in today:
+  ``aws_nova`` / ``aws_nova_openrouter`` (default filler
+  ``"I'll help you with that."``) and ``moonshot_kimi_k3`` (filler
+  ``" "`` — a bare space is the minimum content that clears Moonshot's
+  check without introducing a phrase Kimi could echo back).
 
 The filler string is data on the policy instance, not a hard-coded engine
 constant. Universal injection was proven harmful on 2026-04-30 — Gemini
@@ -43,11 +50,11 @@ from typing import Protocol, runtime_checkable
 __all__ = [
     "MessageAssemblyPolicy",
     "NullMessageAssembly",
-    "NovaMessageAssembly",
+    "FillEmptyAssistantAssembly",
 ]
 
 
-_NOVA_DEFAULT_FILLER: str = "I'll help you with that."
+_DEFAULT_FILLER: str = "I'll help you with that."
 
 
 @runtime_checkable
@@ -87,17 +94,32 @@ class NullMessageAssembly:
         return ""
 
 
-class NovaMessageAssembly:
-    """AWS Bedrock / Nova policy — substitutes empty assistant content.
+class FillEmptyAssistantAssembly:
+    """Filler-on policy — substitutes a non-empty string for empty assistant
+    content on tool-call turns.
 
-    Bedrock's converse API rejects assistant messages whose ``content`` is
-    empty when ``tool_calls`` are present ("The text field in the
-    ContentBlock ... is blank"). This policy declares the filler injection
-    ``True`` and carries the string as instance data so a preset overlay can
-    override it via ``{name: nova, params: {empty_assistant_filler: "..."}}``.
+    Two provider families opt in via this class:
+
+    * AWS Bedrock/Nova (``aws_nova`` / ``aws_nova_openrouter`` presets) —
+      Bedrock's Converse API rejects assistant messages whose ``content``
+      is empty when ``tool_calls`` are present ("The text field in the
+      ContentBlock ... is blank"). The default filler
+      ``"I'll help you with that."`` clears the check.
+    * Moonshot AI direct (``moonshot_kimi_k3`` preset) — Moonshot's
+      first-party endpoint rejects the same shape with HTTP 400 "the
+      message at position N with role 'assistant' must not be empty".
+      Kimi K3 shares family lineage with the echo-back-prone Gemini line,
+      so the preset overlays the default with a single space ``" "``: the
+      minimum content that clears the check while carrying no imitable
+      pattern.
+
+    The filler string is per-instance data (constructor kwarg
+    ``empty_assistant_filler``) so a preset overlay can override it via
+    ``{name: nova, params: {empty_assistant_filler: "..."}}`` without an
+    engine release.
     """
 
-    def __init__(self, *, empty_assistant_filler: str = _NOVA_DEFAULT_FILLER) -> None:
+    def __init__(self, *, empty_assistant_filler: str = _DEFAULT_FILLER) -> None:
         self._filler = empty_assistant_filler
 
     @property

@@ -26,7 +26,7 @@ not checked in).
 | Quirk | Affects | Status |
 |---|---|---|
 | `reasoning_details` `id`/`format`/`index` must round-trip | All Gemini via OpenRouter | **Fixed** in [`GeminiReasoningCodec`](../tolokaforge/core/llm/reasoning_codec.py) |
-| Empty assistant content with tool_calls gets echoed by Gemini | All Gemini | **Fixed** via [`NullMessageAssembly`](../tolokaforge/core/llm/message_assembly_policy.py) (only `aws_nova*` opts into the filler) |
+| Empty assistant content with tool_calls gets echoed by Gemini | All Gemini | **Fixed** via [`NullMessageAssembly`](../tolokaforge/core/llm/message_assembly_policy.py) (only `aws_nova*` and `moonshot_kimi_k3` opt into the filler; the filler string is data on the policy, chosen so nothing echoable survives on Kimi's side) |
 | `oneOf`+`discriminator` Pydantic unions → invented arg names | All Gemini | **Fixed** in [`GeminiSchema`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) |
 | OpenRouter's 48-char placeholder UUID on no-thinking turns | All Gemini | **Fixed** — codec drops it on replay (togglable) |
 | `litellm` direct `gemini/*` + `reasoning_effort=medium` → empty response | All Gemini, direct provider only | **Guarded** via `param_value_rules` in [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) |
@@ -54,13 +54,17 @@ the symmetric fix made it provider-scoped.
 `"I'll help you with that."` verbatim despite the system prompt asking
 for substantive content.
 
-**Harness mitigation**: the Gemini preset (like every non-Nova preset)
-carries [`NullMessageAssembly`](../tolokaforge/core/llm/message_assembly_policy.py),
-which declares `inject_empty_assistant_filler = False`. Only the `aws_nova`
-and `aws_nova_openrouter` presets opt in via `NovaMessageAssembly`
-(`empty_assistant_filler = "I'll help you with that."`); the filler string
-is data on the policy instance so a future preset overlay can override it
-without engine changes ([`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)).
+**Harness mitigation**: the Gemini preset (like every non-opted-in
+preset) carries [`NullMessageAssembly`](../tolokaforge/core/llm/message_assembly_policy.py),
+which declares `inject_empty_assistant_filler = False`. Two provider
+families opt in via `FillEmptyAssistantAssembly`: the `aws_nova` /
+`aws_nova_openrouter` presets keep the default filler
+`"I'll help you with that."` (Bedrock rejects empty assistant content
+on tool-call turns), and the `moonshot_kimi_k3` preset uses a single
+space `" "` (Moonshot direct rejects the same shape; a bare space
+carries no imitable pattern for Kimi to echo back). The filler string
+is data on the policy instance so a future preset overlay can pick its
+own without engine changes ([`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)).
 
 ### 1.2 `reasoning_details` `id`/`format`/`index` must round-trip
 
