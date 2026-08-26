@@ -1,0 +1,35 @@
+# Same native pack + task — engine-loop mode.
+#
+# No `coding_harness` on `models.agent`, so the orchestrator selects the
+# EngineLoopDriver: the engine's LLM turn loop replaces the vendor CLI.
+# The `NativeAdapter` is the same object it was under `run_harness.yaml`;
+# only the driver differs. Nothing about the pack changes.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "openrouter/anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+
+compute:
+  workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
+  repeats: 1
+  strict_task_load: true
+  timeouts:
+    episode_s: 900
+    turn_s: 240
+
+evaluation:
+  projects:
+    - "examples/native/coding_harness"
+  tasks_glob: "task.yaml"
+  output_dir: "results/native-engine-loop"
+  harness_adapter:
+    type: "native"
