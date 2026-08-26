@@ -1,4 +1,8 @@
-"""Back-compat aliases for the two runner wire types un-prefixed by PR #906.
+"""Locks the module-level back-compat aliases ``RunnerTranscriptRulesConfig`` and
+``RunnerRequiredAction`` on ``tolokaforge.runner.models``: they resolve to the
+canonical ``TranscriptRulesConfig`` / ``RequiredAction``, emit exactly one
+``DeprecationWarning`` per (message, caller-module) citing the retirement
+tracker (#1304), and stay invisible to ``vars()`` / ``dir()``.
 
 Locks:
 
@@ -71,9 +75,9 @@ def test_aliases_do_not_leak_into_module_vars_or_dir() -> None:
 
     If the resolver ever writes into ``globals()``, the alias would appear
     in ``vars(module)`` and be picked up by the reconcile canonical's
-    ``_basemodel_names`` walker, re-introducing the collision PR #906
-    removed. Resolves both aliases first so a caching implementation would
-    have taken effect before the assertions.
+    ``_basemodel_names`` walker, re-creating a duplicate-name collision the
+    reconcile check bans. Resolves both aliases first so a caching
+    implementation would have taken effect before the assertions.
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)

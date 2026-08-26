@@ -30,8 +30,9 @@ All models use Pydantic v2 ``BaseModel`` for validation and serialization.
 **Back-compat import aliases.** ``RunnerTranscriptRulesConfig`` and
 ``RunnerRequiredAction`` remain importable as aliases for the canonical
 ``TranscriptRulesConfig`` and ``RequiredAction``; access emits a
-``DeprecationWarning`` (tracked for removal in #1304). No other pre-PR-#906
-name is aliased.
+``DeprecationWarning`` (tracked for removal in #1304). The alias set is
+closed to these two names; no other ``Runner``-prefixed variant of a wire
+type is aliased.
 """
 
 from __future__ import annotations
