@@ -21,11 +21,15 @@
 #   params_policy:            generation_params (default; ``params:`` on the
 #                             preset are the ``GenerationParams`` kwargs)
 #   message_assembly_policy:  null (default) | nova
-#     ``nova`` substitutes ``empty_assistant_filler`` (default
-#     ``"I'll help you with that."``) for empty assistant content on
-#     tool-call turns — Bedrock rejects the empty shape. Every other
-#     preset stays on ``null``: injecting the filler elsewhere creates
-#     a few-shot pattern that Gemini echoes back as its own response
+#     ``nova`` substitutes ``empty_assistant_filler`` for empty assistant
+#     content on tool-call turns — Bedrock and Moonshot direct both
+#     reject the empty shape. The filler string is data on the policy
+#     instance, picked per preset: ``aws_nova*`` uses the default
+#     ``"I'll help you with that."``; ``moonshot_kimi_k3`` uses a
+#     single space ``" "`` (a bare space clears the check without
+#     introducing a phrase Kimi could echo back). Every other preset
+#     stays on ``null``: injecting the filler elsewhere creates a
+#     few-shot pattern that Gemini echoes back as its own response
 #     (2026-04-30 OTS regression).
 #   assistant_text_policy:    passthrough (default; every shipped preset)
 #     A subclass reshapes ``message.content`` before it lands in
@@ -407,6 +411,49 @@ presets:
     response_policy: json_coerce
     prompt_policy: dict_map_hints
     reasoning_codec: openai
+
+  # moonshotai/kimi-k3 — Moonshot direct rejects assistant turns whose
+  # ``content`` is empty when ``tool_calls`` is present:
+  #
+  #   HTTP 400 "the message at position N with role 'assistant' must not
+  #   be empty"
+  #
+  # Kimi K3 legitimately returns ``content: null`` when the reasoning
+  # stage consumes its token budget; the engine stores that turn and
+  # re-sends it on the next request as ``content: ""``. Moonshot AI's
+  # first-party endpoint (reachable via OpenRouter with
+  # ``provider.only:["moonshotai"]`` or ``provider.order:["Moonshot AI"]``)
+  # 400s the reissued turn — same class of strict-API failure Amazon
+  # Bedrock's Converse API produces. A 2026-08-25 live probe recorded 6/6
+  # rejections; issue #1284 carries the trace.
+  #
+  # The filler policy substitutes ``" "`` for the empty ``content``. A
+  # single space is the minimum content that satisfies Moonshot's
+  # must-not-be-empty check and carries no semantic pattern Kimi could
+  # echo back on a later turn (the 2026-04-30 Gemini echo-back regression
+  # matched the phrase ``"I'll help you with that."``; a bare space has
+  # nothing to imitate). Harbor's ``probe_callback.py`` proxy uses the
+  # same single-space rewrite for the equivalent Bedrock symptom, so this
+  # is precedent, not novelty.
+  #
+  # K2.x is DELIBERATELY NOT in this preset. The
+  # ``openrouter_dict_stringify_recovery`` preset above covers K2.6 and
+  # K2.7-code but ships ``message_assembly_policy`` unset (→ ``null``);
+  # we have no live 400 repro for the K2 line on Moonshot direct yet.
+  # Issue #1286 tracks the K2 filler-on decision, gated on a repro.
+  #
+  # Placed AFTER ``openrouter_dict_stringify_recovery`` (Moonshot
+  # siblings clustered). No glob overlap: ``moonshotai/kimi-k3`` does
+  # not match ``*kimi-k2*`` (K2 slugs carry a dot before the version:
+  # ``kimi-k2.6``, ``kimi-k2.7-code``).
+  moonshot_kimi_k3:
+    match:
+      - "moonshotai/kimi-k3*"
+      - "*kimi-k3*"
+    message_assembly_policy:
+      name: nova
+      params:
+        empty_assistant_filler: " "
 
   # thinkingmachines/inkling — model-specific overlay landed via auto-resolve
   # (Slack-requested integration, PR #719). Exact-match globs only; no generic
