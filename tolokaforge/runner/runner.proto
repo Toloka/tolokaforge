@@ -433,8 +433,8 @@ message TraceConstraintResult {
   // Excluded from Σweight and from ``failed_gate_ids``, so a withheld
   // constraint neither passes nor fails the block and a withheld gate does not
   // shut it. Never true beside passed or undecided. False from a runner
-  // predating the field, matching the pre-fix behaviour for any pack that
-  // never declared ``on_missing: withhold``.
+  // predating the field, which is the same value the runner emits for any pack
+  // that does not declare ``on_missing: withhold``.
   bool withheld = 9;
 }
 

@@ -136,13 +136,12 @@ def test_a_before_anchor_matched_nothing_and_the_author_opted_to_withhold_is_out
 
 
 def test_a_withheld_gate_does_not_shut_the_block():
-    """The KB-search reproduction: a 10.0-weight scored sibling beside a withheld gate.
+    """A ``severity: gate`` withheld constraint scores its sibling alone.
 
-    Before this semantic, the gate would fail on the unmatched anchor and zero
-    the whole block regardless of the sibling's 10.0-weight pass. The scenario
-    is the ``feat/engine-repin-unblock`` reproduction the plan documents:
-    ``search_kb`` errored, the anchor's ``status: success`` matched nothing,
-    and the author opted the gate out.
+    The 10.0-weight ``present`` sibling passes; the ``before`` gate's left
+    anchor's ``status: success`` predicate matches nothing on an errored
+    ``search_kb``; under ``on_missing: withhold`` the gate is out of the
+    decision and the block resolves to 1.0.
     """
     timeline = _kb_timeline(ToolExecutionStatus.ERROR)
     config = TraceChecksConfig(
@@ -231,6 +230,55 @@ def test_a_withheld_composite_branch_withholds_the_whole_all_of_when_no_branch_d
     assert withheld_beside_failure.undecided is False
 
 
+def test_a_withheld_branch_withholds_an_any_of_unless_a_definite_true_beats_it():
+    """Composite contagion under ``any_of``: WITHHELD is inherited unless a TRUE branch decides.
+
+    ``any_of: [withheld, satisfied]`` — the satisfied branch is a definite
+    disjunct that decides the composite ``TRUE``; the disjunction rule (TRUE
+    beats WITHHELD) surfaces the pass. ``any_of: [withheld, failing]`` — no
+    definite ``TRUE`` is present, so the withhold survives over the failing
+    branch and the whole composite is withheld.
+    """
+    timeline = _kb_timeline(ToolExecutionStatus.ERROR)
+    withheld_beside_true = evaluate_constraint(
+        timeline,
+        {"any_of": [_kb_before_reply()["require"], _USER_BEFORE_ASSISTANT]},
+        on_missing="withhold",
+    )
+    withheld_beside_false = evaluate_constraint(
+        timeline,
+        {"any_of": [_kb_before_reply()["require"], _ASSISTANT_BEFORE_USER]},
+        on_missing="withhold",
+    )
+
+    assert withheld_beside_true.passed is True
+    assert withheld_beside_true.withheld is False
+    assert withheld_beside_true.undecided is False
+    assert withheld_beside_false.withheld is True
+    assert withheld_beside_false.passed is False
+    assert withheld_beside_false.undecided is False
+
+
+def test_a_withheld_branch_under_negate_is_still_withheld():
+    """``_NEGATED[WITHHELD] = WITHHELD``: the fixed point under negation.
+
+    A ``negate`` inverts ``TRUE`` and ``FALSE`` but leaves ``WITHHELD`` (and
+    ``UNKNOWN``) alone. An author who wrote ``negate: withheld_thing`` is
+    still opting the whole constraint out of scoring — the negation cannot
+    surface a verdict the underlying branch withheld.
+    """
+    timeline = _kb_timeline(ToolExecutionStatus.ERROR)
+    negated = evaluate_constraint(
+        timeline,
+        {"negate": _kb_before_reply()["require"]},
+        on_missing="withhold",
+    )
+
+    assert negated.withheld is True
+    assert negated.passed is False
+    assert negated.undecided is False
+
+
 def test_withhold_and_passed_and_withhold_and_undecided_are_pair_the_model_refuses():
     """The two model-validator refusals on ``TraceConstraintResult.withheld``.
 
@@ -264,10 +312,14 @@ def test_an_alternatives_route_with_a_withheld_gate_beside_a_scored_sibling_beat
     fraction ``0.5``, no gates. Route B carries one scored constraint that
     holds and one ``severity: gate`` withheld constraint — the withheld gate
     is out of both ``scored`` and ``failed_gate_ids``, so the weighted
-    fraction is ``1.0/1.0 = 1.0`` and no gate shuts. Precedence orders routes
-    by ``(score, not gate_failed)``: Route B's ``(1.0, True)`` beats Route
-    A's ``(0.5, True)``. A future refactor of ``_precedence`` that silently
-    reshuffled the ordering would fail this assertion.
+    fraction is ``1.0/1.0 = 1.0`` and no gate shuts. ``_precedence`` orders
+    routes by ``(route.score, bool(route.failed_gate_ids))``, so both routes'
+    tuples read as ``(score, False)`` — no gate shut on either. What this
+    locks: the withheld gate keeps Route B's tuple at ``(1.0, False)`` rather
+    than promoting it to ``(1.0, True)`` (where the withheld gate would count
+    as failed), and the score axis picks Route B. A future refactor that let
+    a withheld gate slip into ``failed_gate_ids`` would fail this assertion
+    on ``route_b``'s ``gate_failed``.
     """
     timeline = _kb_timeline(ToolExecutionStatus.ERROR)
     config = TraceChecksConfig(
@@ -364,12 +416,12 @@ def _kb_count(**fields: Any) -> dict[str, Any]:
 
 
 def test_a_present_that_matched_nothing_is_withheld_when_the_author_opted_out():
-    """The Stage 2 semantic on ``present``: withhold on empty match.
+    """The withhold verdict on an empty ``present`` match.
 
-    The KB-search error case reshaped as a ``present`` constraint: matcher
-    reads ``status: success`` on a call that returned ``error``. Under
-    ``on_missing: withhold``, the empty match yields ``withheld=True`` and
-    the block scores the scored sibling alone.
+    A ``present`` constraint anchored on ``search_kb`` with ``status:
+    success`` matches nothing on an errored call. Under ``on_missing:
+    withhold``, the empty match yields ``withheld=True`` and the block
+    scores the scored sibling alone.
     """
     timeline = _kb_timeline(ToolExecutionStatus.ERROR)
     config = TraceChecksConfig(
@@ -388,7 +440,7 @@ def test_a_present_that_matched_nothing_is_withheld_when_the_author_opted_out():
 
 
 def test_a_count_whose_matcher_yielded_nothing_is_withheld_when_the_author_opted_out():
-    """The Stage 2 semantic on ``count``: withhold on empty match.
+    """The withhold verdict on an empty ``count`` match.
 
     ``count.match`` selects no event and the author opted to withhold. The
     ``min`` / ``max`` bounds do not enter the decision — the withhold is on
@@ -452,11 +504,11 @@ def test_on_missing_withhold_on_absent_is_refused_at_load():
 
 
 def test_on_missing_pass_on_present_stays_refused_at_load():
-    """Regression guard: the pre-existing ``pass`` refusal is unchanged.
+    """``on_missing: pass`` on a ``present`` is refused at load.
 
-    ``on_missing: pass`` on a ``present`` is an always-pass hazard —
-    unmatched would pass by the policy and matched by the constraint — so it
-    stays refused whatever ``withhold`` admits alongside it.
+    Unmatched would pass by the policy and matched by the constraint — the
+    pair cannot fail — so the load error is what stops a declaration that
+    cannot fail from being written.
     """
     with pytest.raises(ValidationError, match="on_missing has nothing to decide"):
         TraceChecksConfig(
@@ -474,11 +526,11 @@ def test_on_missing_pass_on_present_stays_refused_at_load():
 
 
 def test_the_reproduction_snippet_produces_withheld_true_and_block_score_one():
-    """The exact scenario from the plan's ``feat/engine-repin-unblock`` reproduction.
+    """The KB-search flaky-anchor scenario resolves to ``withheld=True`` + ``block_score=1.0``.
 
-    Under ``on_missing: withhold`` on the KB-before-reply gate, the withhold
-    lands on the constraint result, the block gate does not fail, and the
-    scored 10.0-weight sibling drives the block score to ``1.0`` on its own.
+    Under ``on_missing: withhold`` on the gate anchoring on ``search_kb``
+    ``status: success``, the gate is out of the decision, the 10.0-weight
+    sibling holds, and the block scores 1.0.
     """
     timeline = _kb_timeline(ToolExecutionStatus.ERROR)
     config = TraceChecksConfig(

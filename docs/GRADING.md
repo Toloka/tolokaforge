@@ -1198,8 +1198,9 @@ value crosses in `trial_spec_json` and the runner's Pydantic model refuses it at
 `RegisterTrial`-time with an enum-value error naming `on_missing`. The response
 direction defaults silently: an old runner's `TraceConstraintResult` proto message
 lacks field `9`, a new decoder reads the proto3 scalar default `withheld == False`,
-and any pack that never declared `on_missing: withhold` sees the pre-fix behaviour.
-So the row's direction is `new engine → old image` only.
+which is the value the runner writes on every result whose constraint did not
+declare `on_missing: withhold`. So the row's direction is `new engine → old
+image` only.
 
 A new engine therefore requires a runner image presenting every key above, and
 `make docker-build-core` is part of every engine upgrade. `db_hash_check` is **not**

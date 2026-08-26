@@ -11,8 +11,9 @@ Three claims, over two independent proto shapes:
 3. A byte stream missing the ``withheld`` field decodes with ``withheld ==
    False`` on both shapes. This is the silent-default response-direction the
    docs/GRADING.md version-lock row describes — an old runner emits no field,
-   a new decoder reads the proto3 scalar default, and a pack that never
-   declared ``on_missing: withhold`` sees the pre-fix behaviour.
+   a new decoder reads the proto3 scalar default, which is the same value the
+   runner writes on every result whose constraint did not declare
+   ``on_missing: withhold``.
 """
 
 from __future__ import annotations
@@ -61,10 +62,10 @@ def test_a_message_lacking_the_field_reads_back_withheld_false_on_both_shapes():
     """The silent-default the version-lock row locks.
 
     A new decoder reading a message an old runner emitted — one that never
-    wrote the field — reads ``withheld == False`` (the proto3 scalar default).
-    This is the correct pre-fix behaviour for any pack that never declared
-    ``on_missing: withhold`` and is what the docs version-lock row names as
-    the silent response-direction skew.
+    wrote the field — reads ``withheld == False`` (the proto3 scalar default),
+    which is the same value the runner writes on every result whose constraint
+    did not declare ``on_missing: withhold``. The docs version-lock row names
+    this as the silent response-direction skew.
     """
     for shape in (runner_pb2, grader_pb2):
         old = shape.TraceConstraintResult(

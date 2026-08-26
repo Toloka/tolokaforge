@@ -110,7 +110,7 @@ def test_a_config_spanning_the_vocabulary_survives_the_wire():
 
 
 def test_a_config_declaring_on_missing_withhold_survives_the_wire():
-    """The Stage 3 opt-out crosses inside the trial spec byte-identical and equal.
+    """An ``on_missing: withhold`` config crosses the trial-spec JSON byte-identical and equal.
 
     The runner rehydrates ``TraceChecksConfig`` from the JSON that rides the
     trial spec, so the withhold declaration reaches the runner as the same
