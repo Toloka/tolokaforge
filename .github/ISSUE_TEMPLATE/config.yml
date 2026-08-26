@@ -1,5 +1,1 @@
 blank_issues_enabled: false
-contact_links:
-  - name: Question / help
-    url: https://github.com/Toloka/tolokaforge/discussions
-    about: Please open a discussion for open-ended questions, feedback, or design chat — issues are for concrete bugs, enhancements, and chores.
