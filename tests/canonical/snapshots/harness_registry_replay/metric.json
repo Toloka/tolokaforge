@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 14,
+  "bucket_b_count": 15,
   "commits": [
     {
       "adapter_paths": [
@@ -1972,6 +1972,26 @@
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py",
         "tolokaforge_coding_harnesses/tests/canonical/test_pypi_ready.py",
         "tolokaforge_coding_harnesses/tests/unit/test_adapter_support.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "tests/unit/test_credential_gateway_schema.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/__init__.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-26",
+      "pr": null,
+      "reason": "3 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "d0bdd517e0b4b1d0235df97a39877c0f43115203",
+      "subject": "feat(coding-harness): CredentialGateway on HarnessSpec + all shipped harnesses populated",
+      "touched_files": [
+        "tests/canonical/snapshots/tbench_echo_hello_harness/harness_spec.json",
+        "tests/unit/test_credential_gateway_schema.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/__init__.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml"
       ]
     }
   ]
