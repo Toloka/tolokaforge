@@ -233,6 +233,20 @@ class _DocLock:
 
     direction: _Direction
 
+    since: str | None = None
+    """The release whose image first presents this lock's shape. ``None`` reads the
+    census row's own ``since`` — the primary lock on any row shares its key's ``since``
+    — and a non-``None`` value carries the release the lock names when the row hosts a
+    value-domain sub-lock the key's own ``since`` does not fit. That is the case only
+    where a leaf container walks a value the census has no path below to date."""
+
+    breadth: str | None = None
+    """The doc's ``emitted for`` cell rendered against this lock. ``None`` reads the
+    census row's :func:`_doc_breadth`, and a non-``None`` value carries the wording a
+    sub-lock the row is not the primary carrier of names. Same reason ``since`` opts
+    out — a value-domain sub-lock inside a leaf container does not share the
+    container's own gate."""
+
 
 @dataclass(frozen=True)
 class _WireKey:
@@ -265,6 +279,12 @@ class _WireKey:
 
     lock: _DocLock | None = None
     """This key's row on the version-lock table, or ``None`` when it carries none."""
+
+    additional_locks: tuple[_DocLock, ...] = ()
+    """Value-domain sub-locks the census would host below this row if the walk did not
+    stop here. Every entry carries its own ``since`` and ``breadth`` on the :class:`_DocLock`,
+    because a walk-stop leaf's own ``since`` reads the container's arrival — not the day
+    an inner enum value was added. Empty on every row that carries only its own key lock."""
 
 
 @dataclass(frozen=True)
@@ -574,6 +594,14 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         lock=_DocLock(
             doc_key="trace_checks",
             direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
+        additional_locks=(
+            _DocLock(
+                doc_key='trace_checks.constraints.<kind>.on_missing == "withhold"',
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack declaring `on_missing: withhold` on a trace constraint",
+            ),
         ),
     ),
     _WireKey(
@@ -997,10 +1025,30 @@ def _changelog_releases() -> frozenset[str]:
 
 
 def _locked_rows() -> tuple[tuple[_WireKey | _RetiredWireKey, _DocLock], ...]:
-    """Every census row carrying a version lock, paired with that lock."""
-    return tuple(
-        (row, row.lock) for row in (*_WIRE_KEYS, *_RETIRED_WIRE_KEYS) if row.lock is not None
-    )
+    """Every census row carrying a version lock, paired with each lock it carries.
+
+    A row hosts one primary ``lock`` and, on a walk-stop leaf, any number of
+    :attr:`_WireKey.additional_locks` — each yielded here alongside the row it lives
+    on, so a value-domain sub-lock is compared to its doc row the same way the primary
+    key lock is.
+    """
+    rows: list[tuple[_WireKey | _RetiredWireKey, _DocLock]] = []
+    for row in (*_WIRE_KEYS, *_RETIRED_WIRE_KEYS):
+        if row.lock is not None:
+            rows.append((row, row.lock))
+        for extra in getattr(row, "additional_locks", ()):
+            rows.append((row, extra))
+    return tuple(rows)
+
+
+def _lock_since(row: _WireKey | _RetiredWireKey, lock: _DocLock) -> str | None:
+    """The release this row's lock names — ``lock.since`` overrides ``row.since``."""
+    return lock.since if lock.since is not None else row.since
+
+
+def _lock_breadth(row: _WireKey | _RetiredWireKey, lock: _DocLock) -> str:
+    """The doc breadth this row's lock names — ``lock.breadth`` overrides the row's."""
+    return lock.breadth if lock.breadth is not None else _doc_breadth(row)
 
 
 def test_the_census_names_every_grading_wire_key_the_engine_emits() -> None:
@@ -1149,7 +1197,7 @@ def test_the_version_lock_table_names_exactly_the_keys_the_census_locks() -> Non
 
 
 def test_the_table_states_the_breadth_the_models_actually_emit() -> None:
-    measured = {lock.doc_key: _doc_breadth(row) for row, lock in _locked_rows()}
+    measured = {lock.doc_key: _lock_breadth(row, lock) for row, lock in _locked_rows()}
     breadths = set(measured.values())
     assert len(breadths) > 1, "every locked key renders the same breadth"
     drift = {
@@ -1165,7 +1213,7 @@ def test_the_doc_and_the_census_name_the_same_releases_and_the_changelog_records
     floor_is_released = _SUPPORTED_IMAGE_FLOOR in releases
     assert floor_is_released, "the support floor names no release CHANGELOG.md records"
 
-    declared = {lock.doc_key: row.since for row, lock in _locked_rows()}
+    declared = {lock.doc_key: _lock_since(row, lock) for row, lock in _locked_rows()}
     unrecorded = sorted(
         f"{key}={since}"
         for key, since in declared.items()

@@ -427,6 +427,15 @@ message TraceConstraintResult {
   // engine skew gate covers the opposite direction only, so a new host reading
   // an old runner sees such a verdict as decidably false.
   bool undecided = 8;
+
+  // Whether the constraint was withheld from scoring — its author declared
+  // ``on_missing: withhold`` and its anchor matcher yielded no candidate.
+  // Excluded from Σweight and from ``failed_gate_ids``, so a withheld
+  // constraint neither passes nor fails the block and a withheld gate does not
+  // shut it. Never true beside passed or undecided. False from a runner
+  // predating the field, matching the pre-fix behaviour for any pack that
+  // never declared ``on_missing: withhold``.
+  bool withheld = 9;
 }
 
 // One alternative route's own outcome, whether or not it won. score is the

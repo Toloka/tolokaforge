@@ -1152,6 +1152,7 @@ reject it.
 | `custom_checks` | every pack | `v0.13.1` | new engine → old image |
 | `transcript_rules.min_assistant_turns` | a pack declaring `transcript_rules` | `v0.15.0` | new engine → old image |
 | `trace_checks` | every pack | `v0.15.0` | new engine → old image |
+| `trace_checks.constraints.<kind>.on_missing == "withhold"` | a pack declaring `on_missing: withhold` on a trace constraint | `unreleased` | new engine → old image |
 | `state_checks.id_fields` | a pack declaring `state_checks` | `v0.16.1` | new engine → old image |
 | `state_checks.expect_initial_state` | a pack declaring `state_checks` | `unreleased` | both directions |
 | `transcript_rules.required_actions[*].name` | a pack declaring `transcript_rules.required_actions` | `unreleased` | both directions |
@@ -1189,6 +1190,16 @@ value one side's set does not hold is rejected at the value rather than at the k
 `transcript_rules.required_actions[*].name` reached the wire as `tool_name` before one
 model served both the authored block and the trial spec; the authored `grading.yaml`
 key is `name:` and is unchanged, so nothing in a task pack migrates.
+
+`trace_checks.constraints.<kind>.on_missing == "withhold"` is a value-domain lock: the
+`OnMissing` enum on the runner side is a closed set `{fail, pass, withhold}`, and an
+image predating `withhold` declares only `{fail, pass}` — so a pack declaring the new
+value crosses in `trial_spec_json` and the runner's Pydantic model refuses it at
+`RegisterTrial`-time with an enum-value error naming `on_missing`. The response
+direction defaults silently: an old runner's `TraceConstraintResult` proto message
+lacks field `9`, a new decoder reads the proto3 scalar default `withheld == False`,
+and any pack that never declared `on_missing: withhold` sees the pre-fix behaviour.
+So the row's direction is `new engine → old image` only.
 
 A new engine therefore requires a runner image presenting every key above, and
 `make docker-build-core` is part of every engine upgrade. `db_hash_check` is **not**

@@ -593,6 +593,7 @@ def _reassemble_grade_from_composite(
                     matched_positions=item.matched_positions,
                     severity=item.severity,
                     undecided=item.undecided,
+                    withheld=item.withheld,
                 )
                 for item in trace_result.constraints
             ],
