@@ -190,6 +190,11 @@ Over a recorded corpus the usual cause is a bundle carrying no `tool_log.yaml`: 
 `status` and `executor` predicate is unreadable there, every `result` on an unanswered
 call with it, and so is any binder reading one.
 
+Replay respects [`on_missing: withhold`](GRADING.md#on_missing--what-an-unmatched-anchor-decides):
+a re-graded bundle whose anchor selects nothing produces a withheld verdict on the
+constraint the author opted out, so a corpus re-checked with the new engine records
+the same withheld verdicts a live run under the same pack would.
+
 So a discrimination verdict is only as good as the corpus behind it, and the report
 carries a run-level `evidence` block saying what the corpus was: how many bundles were
 read, how many carried a tool-call record, how many were skipped, how many carried no

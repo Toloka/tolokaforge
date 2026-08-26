@@ -1096,6 +1096,7 @@ trace_check_results:            # one entry per declared trace constraint; [] wh
     message: "before: no match is ordered before the other side under the declared quantifiers"
     matched_positions: [2, 4]
     undecided: false            # true where the trial's evidence could not settle the verdict
+    withheld: false             # true where on_missing: withhold opted an unmatched anchor out of scoring
 trace_checks_summary:           # which route was scored and whether a gate shut
   winning_path: served_vs_source  # "" when the pack declared no alternatives
   gate_failed: false
@@ -1177,6 +1178,13 @@ which.
   it adds is that a reader can tell an agent that did not do something from a
   trial that did not record whether it did. See
   [`docs/GRADING.md`](GRADING.md#when-a-constraint-cannot-be-decided).
+* `withheld` — `true` where `on_missing: withhold` opted the unmatched anchor
+  out of scoring: the constraint's weight enters neither the numerator nor the
+  denominator of the block's weighted average, and a `severity: gate` withheld
+  constraint does not enter `failed_gate_ids`. Never true beside `passed: true`
+  or `undecided: true` — the three flags are three different `passed: false`
+  axes and a result carrying two would have lost which of the three it is. See
+  [`docs/GRADING.md`](GRADING.md#on_missing--what-an-unmatched-anchor-decides).
 
 `trace_checks_summary` is the same evaluation seen from above: which route the
 component score came from, and whether a gate shut the trial. `binary_pass` is
