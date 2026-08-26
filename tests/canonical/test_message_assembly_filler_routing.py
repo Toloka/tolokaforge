@@ -37,7 +37,7 @@ import pytest
 
 from tolokaforge.core.llm import build_capabilities
 from tolokaforge.core.llm.message_assembly_policy import (
-    NovaMessageAssembly,
+    FillEmptyAssistantAssembly,
     NullMessageAssembly,
 )
 
@@ -94,8 +94,8 @@ _NO_FILLER_MODELS = [
 @pytest.mark.parametrize(("model", "provider"), _FILLER_INJECTION_MODELS)
 def test_nova_family_keeps_empty_assistant_filler(model: str, provider: str) -> None:
     caps = build_capabilities(model, provider)
-    assert isinstance(caps.message_assembly_policy, NovaMessageAssembly), (
-        f"{model!r} (Nova preset) must resolve to NovaMessageAssembly — "
+    assert isinstance(caps.message_assembly_policy, FillEmptyAssistantAssembly), (
+        f"{model!r} (Nova preset) must resolve to FillEmptyAssistantAssembly — "
         "Bedrock/Nova rejects empty ``content`` on assistant-with-tool_calls. "
         f"Got: {type(caps.message_assembly_policy).__name__}."
     )
@@ -112,7 +112,7 @@ def test_custom_filler_preset_overlays_reach_message_assembly_slot(
     model: str, provider: str, expected_filler: str
 ) -> None:
     caps = build_capabilities(model, provider)
-    assert isinstance(caps.message_assembly_policy, NovaMessageAssembly), (
+    assert isinstance(caps.message_assembly_policy, FillEmptyAssistantAssembly), (
         f"{model!r} must resolve to a filler-on message-assembly policy — its "
         "preset opts in via ``message_assembly_policy: {name: nova, params: "
         "{empty_assistant_filler: ...}}``. Got: "

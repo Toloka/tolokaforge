@@ -66,9 +66,10 @@ class ModelCapabilities:
     message_assembly_policy: MessageAssemblyPolicy = field(default_factory=NullMessageAssembly)
     """Empty-assistant-content substitution on tool-call turns.
 
-    ``NullMessageAssembly`` leaves empty content empty (every preset except
-    Nova). ``NovaMessageAssembly`` substitutes a filler string for
-    Bedrock/Nova, which rejects empty ``content`` alongside ``tool_calls``.
+    ``NullMessageAssembly`` leaves empty content empty (every preset
+    outside the opt-in list). ``FillEmptyAssistantAssembly`` substitutes a
+    filler string for the two provider families that reject the empty
+    shape alongside ``tool_calls`` — AWS Bedrock/Nova and Moonshot direct.
     """
 
     assistant_text_policy: AssistantTextPolicy = field(default_factory=PassthroughAssistantText)
