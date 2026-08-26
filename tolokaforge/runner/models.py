@@ -26,6 +26,12 @@ The types in this module fall into three tiers:
   travel only on the runner service surface.
 
 All models use Pydantic v2 ``BaseModel`` for validation and serialization.
+
+**Back-compat import aliases.** ``RunnerTranscriptRulesConfig`` and
+``RunnerRequiredAction`` remain importable as aliases for the canonical
+``TranscriptRulesConfig`` and ``RequiredAction``; access emits a
+``DeprecationWarning`` (tracked for removal in #1304). No other pre-PR-#906
+name is aliased.
 """
 
 from __future__ import annotations
@@ -47,6 +53,7 @@ from tolokaforge.core.deprecations import (
     coerce_flat_stack_fields,
     coerce_network_policy_case,
     coerce_security_context_aliases,
+    warn_deprecated,
 )
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
@@ -3345,3 +3352,20 @@ class HashGradingResult(BaseModel):
     def hash_score(self) -> float:
         """Derived from ``hash_match``, so a non-binary or contradictory verdict cannot exist."""
         return 1.0 if self.hash_match else 0.0
+
+
+_DEPRECATED_MODEL_ALIASES: dict[str, str] = {
+    "RunnerTranscriptRulesConfig": "TranscriptRulesConfig",
+    "RunnerRequiredAction": "RequiredAction",
+}
+
+
+def __getattr__(name: str) -> Any:
+    canonical = _DEPRECATED_MODEL_ALIASES.get(name)
+    if canonical is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    warn_deprecated(legacy=name, canonical=canonical, follow_up_issue="1304")
+    # Resolve without caching in ``globals()``: caching would leak the alias
+    # into ``vars(module)`` / ``dir(module)`` and re-collide with the
+    # reconcile canonical's ``_basemodel_names`` walker.
+    return globals()[canonical]
