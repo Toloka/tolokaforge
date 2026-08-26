@@ -68,12 +68,16 @@ _HARNESS_DOCKERFILE_NAME = "harness.Dockerfile"
 """Filename the driver writes under the staging dir; compose's
 ``build.dockerfile:`` reads this."""
 
-_DEFAULT_BASH_TIMEOUT_S = 3600.0
+_DEFAULT_BASH_TIMEOUT_S = 900.0
 """Bash-tool timeout the driver installs on the ``bash`` schema.
 
 The CLI runs to completion inside a single ``exec`` — one bash-tool call
 covers the whole trial's agent budget, so the timeout is measured in
-minutes, not seconds."""
+minutes, not seconds. Matches the engine's default ``episode_s`` so runs
+that keep the default do not surface the "harness needs Xs but the run
+allows Ys" refusal. A pack that needs more raises both
+``orchestrator.timeouts.episode_s`` and the driver's default (or the
+task's own ``trial_seconds``) together."""
 
 _DEFAULT_RUNNER_IMAGE = "tolokaforge-runner:local"
 _DEFAULT_DB_SERVICE_IMAGE = "tolokaforge-db-service:local"
@@ -252,11 +256,26 @@ class CodingHarnessDriver:
                 "agent_visible_dir": metadata.get("agent_visible_dir", "/work"),
             }
         )
+        # Redirect the wire environment_manifest at the *staged* compose
+        # file (with the harness layer + runner/db-service sidecars) and
+        # at the injected ``runner`` sidecar as the trial's runner service
+        # — the pack's own compose file has neither the sidecars nor the
+        # layered image, and its runner_service is the pack's agent
+        # container which does not expose the grader RPC port.
+        env_manifest = base.environment_manifest
+        if env_manifest is not None:
+            env_manifest = env_manifest.model_copy(
+                update={
+                    "compose_file": staged.compose_file,
+                    "runner_service": RUNNER_SERVICE,
+                }
+            )
         return base.model_copy(
             update={
                 "agent_tools": [bash_schema],
                 "grading": grading,
                 "metadata": metadata,
+                "environment_manifest": env_manifest,
             }
         )
 
@@ -280,6 +299,7 @@ class CodingHarnessDriver:
             doc=doc,
             agent_service=staged.agent_service,
             base_build_service=staged.base_build_service,
+            base_image=staged.base_image,
             layered_image=layered_image,
         )
         staged.compose_file.write_text(yaml.safe_dump(doc, sort_keys=False))
@@ -316,6 +336,7 @@ class CodingHarnessDriver:
         doc: dict[str, Any],
         agent_service: str,
         base_build_service: str,
+        base_image: str,
         layered_image: str,
     ) -> dict[str, Any]:
         doc = deepcopy(doc)
@@ -337,8 +358,13 @@ class CodingHarnessDriver:
         agent_body["environment"] = agent_env
         services[agent_service] = agent_body
 
+        # The base build service tags the pack's own build with the exact
+        # image the harness Dockerfile ``FROM``s (``staged.base_image``,
+        # baked into the Dockerfile by ``_write_install_dockerfile``). The
+        # adapter picks the tag; the driver honours it — the two sides must
+        # not derive it independently or the harness layer refuses to pull.
         services[base_build_service] = {
-            "image": _base_image_tag_from_layered(layered_image),
+            "image": base_image,
             "build": deepcopy(task_build),
             "profiles": [_HARNESS_BUILD_PROFILE],
         }
@@ -437,13 +463,6 @@ def _layered_image_tag(task_id: str, agent_harness: str, harness_version: str) -
     safe_task = _slugify(task_id)
     safe_version = _slugify(harness_version)
     return f"tolokaforge-{safe_task}-{agent_harness}-{safe_version}:local"
-
-
-def _base_image_tag_from_layered(layered_image: str) -> str:
-    # The base build-only image sits alongside the layered one; sharing the
-    # first two dashed segments lets ``docker image ls`` show them together.
-    root, _, _ = layered_image.rpartition(":")
-    return f"{root}-base:local"
 
 
 def _slugify(value: str) -> str:
