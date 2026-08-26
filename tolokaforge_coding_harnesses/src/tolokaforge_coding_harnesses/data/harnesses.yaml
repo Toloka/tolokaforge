@@ -68,6 +68,16 @@ harnesses:
     provider_env:
       ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
       ANTHROPIC_BASE_URL: "https://openrouter.ai/api"
+    # Shields the resolved OPENROUTER_API_KEY from ever landing in the
+    # container: the driver bakes ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL
+    # above with the dummy value and the gateway's own URL instead. See
+    # ADR-0041.
+    credential_gateway:
+      upstream_url: "https://openrouter.ai/api"
+      upstream_token_env_var: "OPENROUTER_API_KEY"
+      dummy_token_env_var: "ANTHROPIC_API_KEY"
+      dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
+      base_url_env_var: "ANTHROPIC_BASE_URL"
 
   codex:
     install_method: "npm"
@@ -119,6 +129,17 @@ harnesses:
     provider_env:
       OPENAI_API_KEY: "${secret:OPENROUTER_API_KEY}"
       OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
+    # Same shield as claude-code, over codex's OpenAI-compat OpenRouter
+    # surface (note the /v1 suffix codex's base URL carries but claude-code's
+    # doesn't). Stage 3 wires the auth.json config_files write (above) to
+    # carry the dummy token + gateway URL too — today it still writes the
+    # real one. See ADR-0041.
+    credential_gateway:
+      upstream_url: "https://openrouter.ai/api/v1"
+      upstream_token_env_var: "OPENROUTER_API_KEY"
+      dummy_token_env_var: "OPENAI_API_KEY"
+      dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
+      base_url_env_var: "OPENAI_BASE_URL"
 
   gemini-cli:
     install_method: "npm"
@@ -193,6 +214,30 @@ harnesses:
       provider_env:
         GOOGLE_GEMINI_BASE_URL: "${gateway.base_url}${gateway.passthrough_path}"
         GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"
+    # gemini-cli's default (non-gateway_route) path talks directly to
+    # Google's Generative Language API with no base-URL override — there is
+    # no `*_BASE_URL` entry in provider_env above to read as ground truth, so
+    # upstream_url names Google's real default REST base instead.
+    # `base_url_env_var` reuses GOOGLE_GEMINI_BASE_URL (the same var
+    # gateway_route above uses to flip auth mode) — KNOWN GAP for whoever
+    # wires the driver: setting that var alone switches gemini-cli into its
+    # "GATEWAY" auth type, which 400s without the `${HOME}/.gemini/settings.json`
+    # selectedType pin the gateway_route config_files block carries; the
+    # credential-gateway driver wiring needs the same pin. Google's REST auth
+    # is `x-goog-api-key: <key>`, not a Bearer Authorization header — hence
+    # the header override below. path_allowlist is ALSO a known gap: Google's
+    # real paths embed the model name (`/v1beta/models/<model>:generateContent`),
+    # which the gateway's exact-match allowlist cannot enumerate ahead of a
+    # trial's model. See ADR-0041 and the Stage 2 report's Discovered Issues.
+    credential_gateway:
+      upstream_url: "https://generativelanguage.googleapis.com"
+      upstream_token_env_var: "GEMINI_API_KEY"
+      upstream_auth_header: "x-goog-api-key"
+      upstream_auth_template: "{token}"
+      dummy_token_env_var: "GEMINI_API_KEY"
+      dummy_token_value: "tolokaforge-shielded-dummy-not-a-real-key"
+      base_url_env_var: "GOOGLE_GEMINI_BASE_URL"
+      path_allowlist: ["/v1beta/models"]
 
   kimi-code:
     install_method: "npm"
@@ -302,6 +347,19 @@ harnesses:
       provider_env:
         KIMI_MODEL_BASE_URL: "${gateway.base_url}"
         KIMI_MODEL_API_KEY: "${secret:LITELLM_API_KEY}"
+    # Same shield shape as claude-code/codex, over kimi-code's OpenRouter
+    # envelope. Coexists with request_middleware above: that preamble step
+    # runs first and rewrites KIMI_MODEL_BASE_URL to its own local proxy,
+    # capturing whatever value the var holds at boot — once the driver wires
+    # this gateway in, that becomes the gateway's own URL, so the chain
+    # becomes CLI -> middleware (provider pinning) -> gateway (real
+    # credential) -> OpenRouter. See ADR-0041.
+    credential_gateway:
+      upstream_url: "https://openrouter.ai/api/v1"
+      upstream_token_env_var: "OPENROUTER_API_KEY"
+      dummy_token_env_var: "KIMI_MODEL_API_KEY"
+      dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
+      base_url_env_var: "KIMI_MODEL_BASE_URL"
 
   opencode:
     install_method: "npm"
@@ -445,6 +503,17 @@ harnesses:
     provider_env:
       ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
       ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1"
+    # Same shield shape, over opencode's OpenRouter envelope (note the /v1
+    # suffix, same reason as codex). Stage 3 rewrites the opencode.json
+    # config_files write above to carry the dummy token + gateway URL too —
+    # today it still writes the real one via `$ANTHROPIC_API_KEY` expansion.
+    # See ADR-0041.
+    credential_gateway:
+      upstream_url: "https://openrouter.ai/api/v1"
+      upstream_token_env_var: "OPENROUTER_API_KEY"
+      dummy_token_env_var: "ANTHROPIC_API_KEY"
+      dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
+      base_url_env_var: "ANTHROPIC_BASE_URL"
 
   grok-build:
     # Grok Build's installer is a curl-piped shell script from x.ai — the
@@ -527,3 +596,15 @@ harnesses:
         base_url = "{{ base_url }}"
         env_key = "{{ api_key_env }}"
         api_backend = "chat_completions"
+    # Same shield shape, over Grok's own OpenRouter envelope — its dummy and
+    # upstream token env vars are the SAME name (OPENROUTER_API_KEY) since
+    # Grok's own convention already names the secret directly, unlike the
+    # vendor-namespaced *_API_KEY names the other harnesses use. Stage 3
+    # rewrites the config.toml write above to carry the dummy token +
+    # gateway URL too — today it still writes the real one. See ADR-0041.
+    credential_gateway:
+      upstream_url: "https://openrouter.ai/api/v1"
+      upstream_token_env_var: "OPENROUTER_API_KEY"
+      dummy_token_env_var: "OPENROUTER_API_KEY"
+      dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
+      base_url_env_var: "OPENROUTER_BASE_URL"

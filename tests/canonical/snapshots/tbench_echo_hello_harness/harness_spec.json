@@ -12,6 +12,21 @@
     "CLAUDE_CONFIG_DIR": "/root/.claude",
     "IS_SANDBOX": "1"
   },
+  "credential_gateway": {
+    "base_url_env_var": "ANTHROPIC_BASE_URL",
+    "dummy_token_env_var": "ANTHROPIC_API_KEY",
+    "dummy_token_value": "sk-tolokaforge-shielded-dummy-not-a-real-key",
+    "path_allowlist": [
+      "/v1/messages",
+      "/v1/chat/completions",
+      "/v1/responses",
+      "/v1/models"
+    ],
+    "upstream_auth_header": "Authorization",
+    "upstream_auth_template": "Bearer {token}",
+    "upstream_token_env_var": "OPENROUTER_API_KEY",
+    "upstream_url": "https://openrouter.ai/api"
+  },
   "env_model_vars": [
     "ANTHROPIC_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
