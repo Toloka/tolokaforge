@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 13,
+  "bucket_b_count": 14,
   "commits": [
     {
       "adapter_paths": [
@@ -1930,6 +1930,48 @@
         "tolokaforge/core/orchestrator.py",
         "tolokaforge_coding_harnesses/README.md",
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "examples/native/coding_harness/environment/Dockerfile",
+        "examples/native/coding_harness/environment/tests/test.sh",
+        "examples/native/coding_harness/project.yaml",
+        "examples/native/coding_harness/run_harness.yaml",
+        "examples/native/coding_harness/task.yaml",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/test_example_pack_grading_corpus.py",
+        "tests/canonical/test_grading_wire_lock.py",
+        "tolokaforge/adapters/native.py",
+        "tolokaforge/core/models/model_config.py",
+        "tolokaforge/core/models/run_config.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/__init__.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py",
+        "tolokaforge_coding_harnesses/tests/canonical/test_pypi_ready.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_adapter_support.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-26",
+      "pr": null,
+      "reason": "15 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "928bb6e6070010938a554f9e0ba7efc8bbf5c39a",
+      "subject": "refactor(coding-harness): retire adapter_support mixin + align example pack /tests convention",
+      "touched_files": [
+        "examples/native/coding_harness/environment/Dockerfile",
+        "examples/native/coding_harness/environment/tests/test.sh",
+        "examples/native/coding_harness/project.yaml",
+        "examples/native/coding_harness/run_harness.yaml",
+        "examples/native/coding_harness/task.yaml",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/test_example_pack_grading_corpus.py",
+        "tests/canonical/test_grading_wire_lock.py",
+        "tolokaforge/adapters/native.py",
+        "tolokaforge/core/models/model_config.py",
+        "tolokaforge/core/models/run_config.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/__init__.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py",
+        "tolokaforge_coding_harnesses/tests/canonical/test_pypi_ready.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_adapter_support.py"
       ]
     }
   ]
