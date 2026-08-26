@@ -29,7 +29,7 @@ body:
     id: kind
     attributes:
       label: Kind
-      description: Which flavour of chore is this? (Applies a secondary label on submit — see title prefix.)
+      description: Which flavour of chore is this? Captured in the issue body for triage; does not change labels.
       options:
         - refactor / tech-debt
         - documentation
