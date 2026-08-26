@@ -3848,11 +3848,17 @@ def _spawn_pipe_listener(
     exercises the userspace-buffering stranding bug. Returns
     ``(listener, thread, write_fd)``.
 
-    Instrumented barrier: a :class:`threading.Event` set from inside the
-    daemon just before its first ``select`` guarantees the reader is
-    parked in the kernel before the test writes bytes. Bypasses Linux
-    CI's GIL-contention race where a naked ``thread.start()`` returned
-    before the daemon had reached ``select()``, dropping the write."""
+    Barrier: wrap ``select.select`` in the ``live_panel`` module so the
+    event fires from INSIDE the syscall, not before it. The daemon is
+    provably parked in the kernel by the time this function returns, so
+    the very next ``os.write`` on ``write_fd`` cannot lose bytes to a
+    scheduler gap. The wrapper is scoped by the paired
+    :func:`_stop_pipe_listener` (which restores the original), so
+    concurrent test files see the unwrapped ``select`` immediately after
+    teardown. Replaces the prior barrier-then-sleep, which under coverage
+    instrumentation on Linux CI could still return before the daemon
+    reached its first ``select``."""
+    from tolokaforge.dx import live_panel
     from tolokaforge.dx.live_panel import _KeyboardListener
 
     read_fd, write_fd = os.pipe()
@@ -3861,22 +3867,23 @@ def _spawn_pipe_listener(
     listener._fd = read_fd
     listener._enabled = True
 
-    ready_event = threading.Event()
-    original_run = listener._run
+    in_select = threading.Event()
+    original_select = live_panel.select.select
 
-    def _instrumented_run() -> None:
-        ready_event.set()
-        original_run()
+    def _wrapped_select(*args: object, **kwargs: object) -> object:
+        in_select.set()
+        return original_select(*args, **kwargs)  # type: ignore[arg-type]
 
-    thread = threading.Thread(target=_instrumented_run, name="test-panel-input", daemon=True)
+    live_panel.select.select = _wrapped_select  # type: ignore[assignment]
+    listener._restore_select = lambda: setattr(  # type: ignore[attr-defined]
+        live_panel.select, "select", original_select
+    )
+
+    thread = threading.Thread(target=listener._run, name="test-panel-input", daemon=True)
     thread.start()
-    if not ready_event.wait(timeout=5.0):
-        raise RuntimeError("keyboard listener daemon failed to enter its read loop")
-    # One more yield after the event fires so the daemon is inside its
-    # first select() when the test writes — the event fires just before
-    # the call, and returning immediately would still race the kernel
-    # entry.
-    time.sleep(0.05)
+    if not in_select.wait(timeout=5.0):
+        listener._restore_select()  # type: ignore[attr-defined]
+        raise RuntimeError("keyboard listener daemon failed to enter its first select()")
     return listener, thread, write_fd
 
 
@@ -3889,6 +3896,9 @@ def _stop_pipe_listener(listener: object, thread: threading.Thread, write_fd: in
     listener._stop_event.set()  # type: ignore[attr-defined]
     thread.join(timeout=1.0)
     listener._stdin.close()  # type: ignore[attr-defined]
+    restore = getattr(listener, "_restore_select", None)
+    if restore is not None:
+        restore()
 
 
 def test_burst_input_dispatches_every_key(monkeypatch: pytest.MonkeyPatch) -> None:
