@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 15,
+  "bucket_b_count": 16,
   "commits": [
     {
       "adapter_paths": [
@@ -1930,6 +1930,29 @@
         "tolokaforge/core/orchestrator.py",
         "tolokaforge_coding_harnesses/README.md",
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "tests/unit/test_coding_harness_gateway.py",
+        "tests/unit/test_credential_gateway_schema.py",
+        "tolokaforge/core/agent_driver.py",
+        "tolokaforge/core/drivers/coding_harness.py",
+        "tolokaforge/core/orchestrator.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-26",
+      "pr": null,
+      "reason": "5 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "82a5263a09e3b9fa564a5e2bde195db8dcc2233b",
+      "subject": "feat(coding-harness-driver): container_env vs gateway_upstream_env, extra_hosts, close()",
+      "touched_files": [
+        "tests/unit/test_coding_harness_gateway.py",
+        "tests/unit/test_credential_gateway_schema.py",
+        "tolokaforge/core/agent_driver.py",
+        "tolokaforge/core/drivers/coding_harness.py",
+        "tolokaforge/core/orchestrator.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml"
       ]
     },
     {
