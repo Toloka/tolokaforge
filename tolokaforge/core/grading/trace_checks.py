@@ -1190,6 +1190,19 @@ class _Resolver:
             if item.anchor and not item.outcome.matched and not item.outcome.undecidable
         ]
 
+    def empty_sides(self) -> list[str]:
+        """Every resolved matcher whose outcome carried no event, anchor or not.
+
+        Reads the withheld verdict on ``count`` — whose matcher is not an
+        anchor (its empty count is a defined verdict) but whose ``WITHHELD``
+        under ``on_missing: withhold`` still names the same side.
+        """
+        return [
+            item.label
+            for item in self._resolved
+            if not item.outcome.matched and not item.outcome.undecidable
+        ]
+
 
 def _restricted(outcome: MatcherOutcome, within: TurnWindow | None) -> MatcherOutcome:
     """``outcome`` with every event outside the constraint's turn window dropped.
@@ -1225,14 +1238,20 @@ def _evaluate(expr: TraceConstraintExpr, resolver: _Resolver, on_missing: OnMiss
 
 
 def _present(payload: PresentConstraint, resolver: _Resolver, on_missing: OnMissing) -> _Truth:
-    """No match is this constraint's own ``False``, never a question ``on_missing`` answers.
+    """No match is this constraint's own ``False``, unless the author opted to withhold.
 
-    The matcher is still resolved as an anchor so the grade names which side
-    selected nothing, but the verdict is decided here: the load tier refuses
-    ``on_missing`` anywhere above a ``present``, and this is the same answer read
-    off the kind rather than off a policy that never legally arrives.
+    The matcher is resolved as an anchor so the grade names which side selected
+    nothing. A matcher that yielded no candidate at all — no definite match and
+    no undecidable one — is what ``on_missing: withhold`` opts out of: the
+    verdict is ``WITHHELD`` and the check leaves numerator and denominator
+    alone. With a match or an undecidable candidate the reading falls through
+    to the count-based decision, where ``PASS`` and ``FAIL`` are refused at
+    load and ``WITHHOLD`` behaves as ``FAIL`` on any completion that reads
+    zero.
     """
     counts = _reachable_counts(resolver.resolve("match", payload.match, anchor=True))
+    if on_missing is OnMissing.WITHHOLD and counts == range(0, 1):
+        return _Truth.WITHHELD
     return _decide((count > 0 for count in counts), on_missing)
 
 
@@ -1242,7 +1261,17 @@ def _absent(payload: AbsentConstraint, resolver: _Resolver, on_missing: OnMissin
 
 
 def _count(payload: CountConstraint, resolver: _Resolver, on_missing: OnMissing) -> _Truth:
+    """The count-based verdict, unless the matcher yielded nothing and the author withheld.
+
+    An empty outcome — no definite match, no undecidable one — is what
+    ``on_missing: withhold`` opts out of, and the ``min`` / ``max`` bounds are
+    irrelevant there: the withhold is on the absence of the anchor, not on
+    whether the count falls in bounds. With any candidate the reading falls
+    through to the bounds check.
+    """
     counts = _reachable_counts(resolver.resolve("match", payload.match, anchor=False))
+    if on_missing is OnMissing.WITHHOLD and counts == range(0, 1):
+        return _Truth.WITHHELD
     return _decide(
         (_within_bounds(count, payload.min, payload.max) for count in counts), on_missing
     )
@@ -1579,8 +1608,8 @@ def _message(
     if truth is _Truth.UNKNOWN:
         return f"{kind.value} cannot be decided — " + "; ".join(resolver.undecided())
     if truth is _Truth.WITHHELD:
-        unmatched = resolver.unmatched_anchors()
-        return f"{kind.value} withheld: {' and '.join(unmatched)} selected no event"
+        empty = resolver.empty_sides()
+        return f"{kind.value} withheld: {' and '.join(empty)} selected no event"
     unmatched = resolver.unmatched_anchors() if on_missing is OnMissing.FAIL else []
     if unmatched:
         return f"{kind.value} is unmatched: {' and '.join(unmatched)} selected no event"

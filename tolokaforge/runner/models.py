@@ -1590,17 +1590,35 @@ class TraceConstraint(BaseModel):
         policy no anchor it did not have at the top — it still answers the question
         the nested kind asks, and the vacuous pass the top-level rule refuses is
         written one line lower.
+
+        ``on_missing: withhold`` is admissible on ``present`` and ``count``: the
+        matcher yielding no candidate is a distinct case from ``present``'s zero
+        (a definite failure) and ``count``'s out-of-bounds (also a failure), and
+        withholding it is not the vacuous pass ``on_missing: pass`` would be.
+        ``absent`` still refuses ``withhold``: the empty match IS its positive
+        verdict, so withholding there would withhold the very check the
+        constraint asks.
         """
-        anchorless = sorted(
-            kind.value for kind in self.require.kinds_in_tree() & _KINDS_WITHOUT_AN_ANCHOR
-        )
-        if self.on_missing is None or not anchorless:
+        if self.on_missing is None:
             return self
+        anchorless = self.require.kinds_in_tree() & _KINDS_WITHOUT_AN_ANCHOR
+        if not anchorless:
+            return self
+        if self.on_missing is OnMissing.WITHHOLD:
+            if TraceConstraintKind.ABSENT not in anchorless:
+                return self
+            raise ValueError(
+                f"{self.id}: on_missing: withhold has nothing to decide over ['absent'], "
+                "whose empty match IS its positive verdict — withholding there would "
+                "withhold the very check the constraint asks. Drop the on_missing, or "
+                "write a present with the complement matcher"
+            )
         raise ValueError(
-            f"{self.id}: on_missing has nothing to decide over {anchorless}, whose verdict "
-            "is the match itself — a composite passes the policy down to every expression "
-            "it holds, so nesting one of them does not anchor it. Setting it would answer "
-            "the very question the constraint asks"
+            f"{self.id}: on_missing has nothing to decide over "
+            f"{sorted(kind.value for kind in anchorless)}, whose verdict is the match "
+            "itself — a composite passes the policy down to every expression it holds, "
+            "so nesting one of them does not anchor it. Setting it would answer the "
+            "very question the constraint asks"
         )
 
 

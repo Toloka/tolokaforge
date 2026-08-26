@@ -319,6 +319,160 @@ def test_an_alternatives_route_with_a_withheld_gate_beside_a_scored_sibling_beat
     assert result.failed_gate_ids == []
 
 
+def _kb_present(**fields: Any) -> dict[str, Any]:
+    """A ``present`` constraint anchored on a successful ``search_kb`` call.
+
+    Same matcher shape as the KB-search flaky-anchor pattern, expressed as a
+    ``present`` check rather than an ``ordering`` one: the author asserts the
+    call succeeded at least once, and opts to withhold when the tool errored
+    at runtime so its errors do not fail the block.
+    """
+    return {
+        "id": "kb_succeeded",
+        "description": "search_kb was called and succeeded",
+        "require": {
+            "present": {
+                "match": {
+                    "kind": "tool_call",
+                    "tool": {"equals": _KB},
+                    "status": {"equals": "success"},
+                }
+            }
+        },
+        **fields,
+    }
+
+
+def _kb_count(**fields: Any) -> dict[str, Any]:
+    """A ``count`` constraint bounding successful ``search_kb`` calls at 1..1."""
+    return {
+        "id": "kb_called_exactly_once",
+        "description": "search_kb was called exactly once and succeeded",
+        "require": {
+            "count": {
+                "match": {
+                    "kind": "tool_call",
+                    "tool": {"equals": _KB},
+                    "status": {"equals": "success"},
+                },
+                "min": 1,
+                "max": 1,
+            }
+        },
+        **fields,
+    }
+
+
+def test_a_present_that_matched_nothing_is_withheld_when_the_author_opted_out():
+    """The Stage 2 semantic on ``present``: withhold on empty match.
+
+    The KB-search error case reshaped as a ``present`` constraint: matcher
+    reads ``status: success`` on a call that returned ``error``. Under
+    ``on_missing: withhold``, the empty match yields ``withheld=True`` and
+    the block scores the scored sibling alone.
+    """
+    timeline = _kb_timeline(ToolExecutionStatus.ERROR)
+    config = TraceChecksConfig(
+        constraints=[_said_it(), _kb_present(on_missing="withhold", weight=1.0)]
+    )
+
+    result = evaluate_trace_checks(timeline, config)
+    withheld = next(item for item in result.constraints if item.id == "kb_succeeded")
+
+    assert withheld.passed is False
+    assert withheld.undecided is False
+    assert withheld.withheld is True
+    assert "withheld" in withheld.message
+    assert withheld.matched_positions == []
+    assert result.score == 1.0
+
+
+def test_a_count_whose_matcher_yielded_nothing_is_withheld_when_the_author_opted_out():
+    """The Stage 2 semantic on ``count``: withhold on empty match.
+
+    ``count.match`` selects no event and the author opted to withhold. The
+    ``min`` / ``max`` bounds do not enter the decision — the withhold is on
+    the absence of the anchor, not on whether the count falls in bounds.
+    """
+    timeline = _kb_timeline(ToolExecutionStatus.ERROR)
+    config = TraceChecksConfig(
+        constraints=[_said_it(), _kb_count(on_missing="withhold", weight=1.0)]
+    )
+
+    result = evaluate_trace_checks(timeline, config)
+    withheld = next(item for item in result.constraints if item.id == "kb_called_exactly_once")
+
+    assert withheld.passed is False
+    assert withheld.undecided is False
+    assert withheld.withheld is True
+    assert "withheld" in withheld.message
+    assert withheld.matched_positions == []
+    assert result.score == 1.0
+
+
+def test_on_missing_withhold_on_absent_is_refused_at_load():
+    """``absent``'s empty match IS its positive verdict — withholding it withholds the check.
+
+    The load tier keeps refusing ``on_missing: withhold`` where the require
+    tree carries an ``absent`` kind, at every nesting depth. The message
+    names the kind and points at the positive-empty semantic.
+    """
+    with pytest.raises(ValidationError, match="absent"):
+        TraceChecksConfig(
+            constraints=[
+                {
+                    "id": "no_leak",
+                    "description": "no audit_log_write occurred",
+                    "on_missing": "withhold",
+                    "require": {
+                        "absent": {"match": {"kind": "tool_call", "tool": {"equals": "audit"}}}
+                    },
+                }
+            ]
+        )
+    with pytest.raises(ValidationError, match="absent"):
+        TraceChecksConfig(
+            constraints=[
+                {
+                    "id": "no_leak_nested",
+                    "description": "no audit_log_write occurred, wrapped in a composite",
+                    "on_missing": "withhold",
+                    "require": {
+                        "all_of": [
+                            {
+                                "absent": {
+                                    "match": {"kind": "tool_call", "tool": {"equals": "audit"}}
+                                }
+                            }
+                        ]
+                    },
+                }
+            ]
+        )
+
+
+def test_on_missing_pass_on_present_stays_refused_at_load():
+    """Regression guard: the pre-existing ``pass`` refusal is unchanged.
+
+    ``on_missing: pass`` on a ``present`` is an always-pass hazard —
+    unmatched would pass by the policy and matched by the constraint — so it
+    stays refused whatever ``withhold`` admits alongside it.
+    """
+    with pytest.raises(ValidationError, match="on_missing has nothing to decide"):
+        TraceChecksConfig(
+            constraints=[
+                {
+                    "id": "the_call_happened",
+                    "description": "search_kb was called",
+                    "on_missing": "pass",
+                    "require": {
+                        "present": {"match": {"kind": "tool_call", "tool": {"equals": _KB}}}
+                    },
+                }
+            ]
+        )
+
+
 def test_the_reproduction_snippet_produces_withheld_true_and_block_score_one():
     """The exact scenario from the plan's ``feat/engine-repin-unblock`` reproduction.
 
