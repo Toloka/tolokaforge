@@ -1153,6 +1153,9 @@ reject it.
 | `transcript_rules.min_assistant_turns` | a pack declaring `transcript_rules` | `v0.15.0` | new engine → old image |
 | `trace_checks` | every pack | `v0.15.0` | new engine → old image |
 | `trace_checks.constraints.<kind>.on_missing == "withhold"` | a pack declaring `on_missing: withhold` on a trace constraint | `unreleased` | new engine → old image |
+| `trace_checks` negative-text operators (`not_contains`, `not_regex`) | a pack declaring one under a matcher predicate | `unreleased` | new engine → old image |
+| `trace_checks` nullness operators (`is_null`, `omitted`) | a pack declaring one under a matcher's `args` or `text` predicate | `unreleased` | new engine → old image |
+| `trace_checks` date operators (`date_gt`, `date_gte`, `date_lt`, `date_lte`) | a pack declaring one under a matcher predicate | `unreleased` | new engine → old image |
 | `state_checks.id_fields` | a pack declaring `state_checks` | `v0.16.1` | new engine → old image |
 | `state_checks.expect_initial_state` | a pack declaring `state_checks` | `unreleased` | both directions |
 | `transcript_rules.required_actions[*].name` | a pack declaring `transcript_rules.required_actions` | `unreleased` | both directions |
@@ -1236,7 +1239,7 @@ database** — and **exactly one** comparison from a closed set of four:
 | `contains` / `contains_ci` | the value contains it — recursively, per [`contains`](#operators) |
 
 The same four are the vocabulary of `db_probes[*].expect`. They are deliberately
-narrower than the seventeen [`trace_checks` operators](#operators): a second comparison
+narrower than the [`trace_checks` operators](#operators): a second comparison
 at one path has no conjunctive reading and is almost always a typo, so **two
 operators on one assertion is a failed check**, not a conjunction. So is **no**
 operator: a bare `path:`, or a misspelled `op:` / `expected:` key, fails rather than
@@ -1831,19 +1834,35 @@ grading must not depend on it.
 ### Operators
 
 A predicate is the **conjunction of its operators**: every one it declares must
-hold, so `{ gt: 0, lt: 100 }` is a range. Seventeen operators:
+hold, so `{ gt: 0, lt: 100 }` is a range. The vocabulary:
 
 | operator | holds when |
 |---|---|
 | `equals` / `not_equals` | the value is (is not) equal |
 | `equals_ci` | a string equal to it, case-insensitively |
 | `contains` / `contains_ci` | the value contains it, case-sensitively or not |
+| `not_contains` | the value does not contain it — over a value the event carries |
 | `regex` | the pattern **searches** the value — unanchored, and only a string matches |
+| `not_regex` | the pattern finds nothing in the value — the complement of `regex` within declared events |
 | `gt` / `gte` / `lt` / `lte` | the value is a real number and the comparison holds |
+| `date_gt` / `date_gte` / `date_lt` / `date_lte` | the value is an ISO-8601 date or datetime and the comparison holds chronologically |
 | `in_` / `not_in` | the value is (is not) a member of the list |
 | `len_gt` / `len_gte` | the value has a length, above (at or above) the bound |
-| `exists` | the field is present (`exists: false` is the absence primitive) |
+| `exists` | the field is present — a missing key and an explicit `null` both read as absent |
+| `is_null` / `omitted` | the value is explicit JSON `null` / the key was never sent — the two conditions `exists: false` reads as one |
 | `equals_binding` / `contains_binding` | the same, against a value the constraint's `bind` extracted under that name |
+
+**The date comparisons read ISO-8601 and one normalization policy.** A date-only
+string is midnight UTC of that day, a datetime carrying an offset (trailing `Z`
+included) converts to UTC, and a datetime carrying no offset is read as UTC —
+never the grader host's clock, which would make one trajectory grade differently
+per grader host. A non-string is `None` from the helper — not-a-date, not-an-error
+— so a numeric argument is false under every date comparison the same way it is
+under `regex`. So `args: { departure_date: { date_gte: "2026-03-01", date_lt:
+"2026-04-01" } }` reads "a March 2026 departure" without enumerating the days by
+regex, and one bound that no calendar holds — `date_gte: "next week"`,
+`date_gt: "March 2026"` — is refused at load naming the field and both accepted
+shapes rather than silently holding for no trial.
 
 **The two binding operators name a value rather than writing one.** Their argument
 is a name declared under the constraint's own `bind.values`, and the comparison
@@ -1866,18 +1885,24 @@ string, not a range. `len_gt` / `len_gte` are the same shape one level up: they 
 only where the value has a length (a string, list, dict), so `{ len_gt: 0 }` reads
 "non-empty" and is false against a number.
 
-Two limits worth meeting here rather than in a silently ignored predicate:
+Two rules worth meeting here rather than in a silently ignored predicate:
 
-- **`equals: null` is not expressible.** An operator counts as declared when its
-  value is not `null`, which is what keeps a predicate meaning the same thing after
-  the gRPC round trip that writes every unset field as `null`. So "this argument is
-  JSON `null`" cannot be written; `exists: false` covers the far commoner "the
-  argument is absent".
-- **There is no `not_contains` / `not_regex`.** A predicate cannot negate a
-  substring or pattern match — `negate` operates on a whole constraint, not on one
-  predicate — so "select the calls whose url does *not* contain `/admin`" is not a
-  *selection*. "Never another customer's record" is `not_equals` on the argument,
-  which does ship.
+- **`is_null` / `omitted` subdivide what `exists: false` reads as one condition,**
+  and both are argument material — on `status` / `executor` / `result` a missing
+  value is missing evidence, so a nullness probe there is a load error naming the
+  offending field and pointing the author at `args` (or `text`) or `exists: false`.
+  An operator counts as declared when its value is not `null`, which is what keeps
+  a predicate meaning the same thing after the gRPC round trip that writes every
+  unset field as `null`, so a nullness probe is spelled `is_null: true` (or
+  `false`) rather than `equals: null`.
+- **`not_contains` / `not_regex` negate the match, never the evidence** — they
+  hold only over a value the event carries, so an absent or `None` argument
+  satisfies neither, the same way every operator but `exists` reads a `None`.
+  "Select the calls whose url does *not* contain `/admin`" is a selection over
+  calls that carry a `url`; a call that carried none is unmatched, not a match.
+  "Never another customer's record" over an argument that may be absent stays
+  `not_equals`, which does hold over the absent case the way negative-text
+  operators do not.
 
 There is no `absent` operator — it is `exists: false`, and an operator named
 `absent` beside a *constraint* named `absent` is an ambiguity the vocabulary does
@@ -1888,11 +1913,13 @@ not need. A predicate declaring **no** operator is rejected at load.
 Resolving a matcher yields two sets — the events that **definitely** match, and the
 events **nobody can decide**. Three rules govern them.
 
-**A predicate over a `None` field is unmatched, never vacuously true.** Only
-`exists` reads a `None`; every other operator is false there. So
-`args: { refund_id: { not_equals: R-1 } }` does **not** hold for a call that carried
-no `refund_id` at all — an absent argument satisfies no negative predicate. Write
-`exists: false` for "the argument is absent".
+**A predicate over a `None` field is unmatched, never vacuously true.** `exists`,
+`is_null`, and `omitted` read the shape of the absence itself; every other
+operator is false there. So `args: { refund_id: { not_equals: R-1 } }` does
+**not** hold for a call that carried no `refund_id` at all — an absent argument
+satisfies no negative predicate. Write `exists: false` for "the argument is
+absent", `is_null: true` for "the value is explicit JSON `null`", or
+`omitted: true` for "the key was never sent".
 
 **A `tool_call` matcher reads `status` and `result` through the result paired to it
 by `call_id`.** The call event carries neither of its own — a `tool_call` event
