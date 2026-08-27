@@ -215,7 +215,13 @@ class _GatewayRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        content_length = int(self.headers.get("Content-Length") or 0)
+        try:
+            content_length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self.send_response(HTTPStatus.BAD_REQUEST)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         body = self.rfile.read(content_length) if content_length else b""
         outgoing_headers = {
             name: value

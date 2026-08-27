@@ -228,9 +228,21 @@ def _merge_service_env(existing: Any, values: Mapping[str, str]) -> Any:
     same object, so an anchored ``environment:`` mapping shared between
     services would carry an in-place update into every service aliasing it.
     Callers assign the return value onto the one service they mean.
+
+    List-shape handling drops any prior ``KEY=…`` entry whose ``KEY`` is in
+    ``values`` before appending the new entries. Docker's last-wins semantics
+    for env lists would otherwise leave a duplicate leftover that reads as a
+    bug to a compose-file auditor, and the mapping branch's ``{**a, **b}``
+    already has the clean-overwrite semantics we want here.
     """
     if isinstance(existing, list):
-        return [*existing, *(f"{key}={value}" for key, value in values.items())]
+        override_keys = set(values.keys())
+        filtered = [
+            entry
+            for entry in existing
+            if not (isinstance(entry, str) and entry.split("=", 1)[0] in override_keys)
+        ]
+        return [*filtered, *(f"{key}={value}" for key, value in values.items())]
     if isinstance(existing, Mapping):
         return {**existing, **values}
     return dict(values)

@@ -131,9 +131,11 @@ harnesses:
       OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
     # Same shield as claude-code, over codex's OpenAI-compat OpenRouter
     # surface (note the /v1 suffix codex's base URL carries but claude-code's
-    # doesn't). Stage 3 wires the auth.json config_files write (above) to
-    # carry the dummy token + gateway URL too — today it still writes the
-    # real one. See ADR-0041.
+    # doesn't). The auth.json config_files write above renders through the
+    # generic `${VAR}` expansion machinery in _registry.py, which reads
+    # `container_env` at container-runtime — under the shield, `container_env`
+    # carries the dummy value, so the auth.json on disk carries the dummy
+    # too. See ADR-0041.
     credential_gateway:
       upstream_url: "https://openrouter.ai/api/v1"
       upstream_token_env_var: "OPENROUTER_API_KEY"
@@ -498,10 +500,11 @@ harnesses:
       ANTHROPIC_API_KEY: "${secret:OPENROUTER_API_KEY}"
       ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1"
     # Same shield shape, over opencode's OpenRouter envelope (note the /v1
-    # suffix, same reason as codex). Stage 3 rewrites the opencode.json
-    # config_files write above to carry the dummy token + gateway URL too —
-    # today it still writes the real one via `$ANTHROPIC_API_KEY` expansion.
-    # See ADR-0041.
+    # suffix, same reason as codex). The opencode.json config_files write
+    # above references `$ANTHROPIC_API_KEY` and `{{ base_url }}` — both
+    # resolve at container-runtime from `container_env`, which under the
+    # shield carries the dummy value + gateway URL, so opencode.json on
+    # disk carries the dummy too. See ADR-0041.
     credential_gateway:
       upstream_url: "https://openrouter.ai/api/v1"
       upstream_token_env_var: "OPENROUTER_API_KEY"
@@ -593,9 +596,11 @@ harnesses:
     # Same shield shape, over Grok's own OpenRouter envelope — its dummy and
     # upstream token env vars are the SAME name (OPENROUTER_API_KEY) since
     # Grok's own convention already names the secret directly, unlike the
-    # vendor-namespaced *_API_KEY names the other harnesses use. Stage 3
-    # rewrites the config.toml write above to carry the dummy token +
-    # gateway URL too — today it still writes the real one. See ADR-0041.
+    # vendor-namespaced *_API_KEY names the other harnesses use. The
+    # config.toml write above uses `{{ api_key_env }}` + `{{ base_url }}`,
+    # both resolved at container-runtime from `container_env` — under the
+    # shield, that dict carries the dummy value + gateway URL, so
+    # config.toml on disk carries the dummy too. See ADR-0041.
     credential_gateway:
       upstream_url: "https://openrouter.ai/api/v1"
       upstream_token_env_var: "OPENROUTER_API_KEY"

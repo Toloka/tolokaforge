@@ -127,10 +127,9 @@ harness.
 (`/v1beta/models/<model>:generateContent`). Tracked by
 [#1311](https://github.com/Toloka/tolokaforge/issues/1311).
 
-## What each shipped adopter provides
+## What each shipped adapter provides
 
-Two adapters ship the mixin today. Both accept `models.agent.coding_harness`;
-they differ in how they materialise the trial container around the CLI.
+Two adapters stage per-trial containers the `CodingHarnessDriver` layers onto today. Both accept `models.agent.coding_harness`; they differ in how they materialise the trial container around the CLI.
 
 ### The native adapter
 
@@ -153,9 +152,11 @@ Ships out-of-tree as
 Materialises the task's own compose stack, injects `runner` /
 `db-service` sidecars, and layers the harness image via the
 adapter-local
-[`compose_synthesis._write_harness_build_context`](../external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py)
-(which bridges to the mixin's `write_install_script_layer` from the
-compose context root rather than a nested build dir). Example packs live
+[`compose_synthesis`](../external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py)
+staging: `stage_task` produces a `StagedTask` pointing at a
+task-local `docker-compose.tolokaforge.yaml` with the pack's own
+service + a synthesised base build target, and the
+`CodingHarnessDriver` writes the harness image layer on top. Example packs live
 under [`examples/terminal_bench/`](../examples/terminal_bench/)
 (`fix-billing-holds`, `fix-airline-segmentation`) with the shipped
 driver [`examples/terminal_bench/run_harness.yaml`](../examples/terminal_bench/run_harness.yaml).
@@ -165,7 +166,7 @@ The trial's agent-visible dir is `/app`.
 
 Harness mode composes with **any** grading method. Two paths:
 
-- **`test_execution`** — the mixin's default. The runner reads a reward
+- **`test_execution`** — the driver's default. The runner reads a reward
   float from `/logs/verifier/reward.txt` and returns before assembling
   jsonpath state. Both shipped example packs use this shape (`tests/test.sh`
   writes the file). Byte-identical wire output between adapter versions is
@@ -264,19 +265,25 @@ and any new install method in
 out-of-tree — ship a Python entry-point plug-in under
 `HARNESS_REGISTRY_ENTRY_POINT_GROUP` ([ADR-0034](adr/0034-external-harness-plugin-discovery.md)).
 Both are documented in
-[`tolokaforge_coding_harnesses/README.md § Adding a harness`](../tolokaforge_coding_harnesses/README.md#adding-a-harness).
+[`tolokaforge_coding_harnesses/README.md`](../tolokaforge_coding_harnesses/README.md).
 
-## Adopting the mixin in an adapter
+## Hosting harness runs on a new adapter
 
-An adapter opts into harness mode by inheriting
-`CodingHarnessAdapterMixin` alongside `BaseAdapter`. The mixin sets
-`supports_coding_harness = True` (which the orchestrator's gate reads)
-and provides six helpers: registry resolution, command assembly, the
-metadata handshake, the bash tool schema payload, the `test_execution`
-grading payload, and the standalone install-script Dockerfile layer.
-The shape and the payload-dict return convention live in
-[`tolokaforge_coding_harnesses/README.md § Adopting the mixin`](../tolokaforge_coding_harnesses/README.md#adopting-the-mixin);
-the design record is [ADR-0039](adr/0039-coding-harness-adapter-agnostic.md).
+An adapter opts into hosting harness runs by overriding
+[`BaseAdapter.stage_task(task_id) -> StagedTask | None`](../tolokaforge/adapters/base.py)
+to materialise a per-trial staging directory with a synthesised compose
+file the driver can layer the CLI install onto. The `StagedTask` frozen
+dataclass names the compose file, agent service, base image, and
+compose project prefix — everything `CodingHarnessDriver` needs to
+write the harness `Dockerfile`, add sidecars, and rewrite the
+compose `environment:`. The orchestrator refuses
+`models.agent.coding_harness` against an adapter whose `stage_task`
+returns `None`, naming the currently opted-in set. Adapters carry no
+coding-harness state and never import driver code. Design records:
+[ADR-0039](adr/0039-coding-harness-adapter-agnostic.md) (driver
+protocol) and
+[ADR-0041](adr/0041-coding-harness-credential-gateway.md) (credential
+shield).
 
 ## Gateway routing (external runtimes only)
 
@@ -314,11 +321,13 @@ shape.
 
 ## Related docs
 
-- [tolokaforge_coding_harnesses/README.md](../tolokaforge_coding_harnesses/README.md) — the package landing page: how the registry resolves, the middleware proxy, adopting the mixin, adding a harness.
+- [tolokaforge_coding_harnesses/README.md](../tolokaforge_coding_harnesses/README.md) — the package landing page: how the registry resolves, the middleware proxy, credential shielding, adding a harness.
 - [docs/RUNNING_TERMINAL_BENCH.md](RUNNING_TERMINAL_BENCH.md) — the end-to-end how-to. Run configs, per-harness recipes, result-bundle layout, common pitfalls.
 - [external_adapters/tolokaforge-adapter-terminal-bench/README.md](../external_adapters/tolokaforge-adapter-terminal-bench/README.md) — the terminal-bench adopter. Routing options (OpenRouter / LiteLLM / per-harness split), synthesis details, per-trial materialisation.
+- [docs/SECURITY.md](SECURITY.md) — the credential trust boundary in one place.
 - [ADR-0033](adr/0033-external-harness-registry.md) — YAML-driven registry design.
 - [ADR-0034](adr/0034-external-harness-plugin-discovery.md) — entry-point plug-in discovery.
 - [ADR-0036](adr/0036-tolokaforge-coding-harnesses-split.md) — the package hoist and boundary invariant.
 - [ADR-0037](adr/0037-runtime-gateway-as-harness-data.md) — gateway routing as harness data.
-- [ADR-0039](adr/0039-coding-harness-adapter-agnostic.md) — the adapter-agnostic lift and the mixin contract.
+- [ADR-0039](adr/0039-coding-harness-adapter-agnostic.md) — the `AgentDriver` Strategy that hosts coding-harness mode.
+- [ADR-0041](adr/0041-coding-harness-credential-gateway.md) — the credential-shielded LLM gateway.

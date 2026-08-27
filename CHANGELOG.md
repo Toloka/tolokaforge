@@ -10,17 +10,45 @@ All notable changes to this project are documented in this file.
 
 ### Feat
 
-- **schema**: `models.agent.coding_harness` is the canonical home for the coding-harness selector, alongside `models.agent.name` for the model the CLI receives. A run declares "run this trial under `claude-code` on `openrouter/anthropic/claude-sonnet-4-6`" in one place, not two. See [ADR-0039](docs/adr/0039-coding-harness-adapter-agnostic.md).
-- **coding-harnesses**: the `AgentDriver` Strategy — `EngineLoopDriver` (default, no-op) and `CodingHarnessDriver` (vendor CLI) — owns "how a trial runs". The orchestrator selects one per run from `models.agent.coding_harness`; the adapter carries no mode state. Adding a new mode (Harbor as an embedded library, a custom agent loop) is a new driver class with no adapter edit. See [ADR-0039](docs/adr/0039-coding-harness-adapter-agnostic.md).
-- **native**: the bundled `NativeAdapter` opts into coding-harness mode. A native run declaring `models.agent.coding_harness` mints a `TaskDescription` with a single `bash` tool routed through `DockerComposeExecToolWrapper` (`service: "main"`, `compose_project_prefix: "tfnative_"`, `agent_visible_dir: "/work"`), `test_execution` grading, and the four-key harness metadata handshake — no MCP wiring required.
-- **examples**: `examples/native/coding_harness/` (fix-factorial) is the first shipped native harness pack — a single-service Python 3.11 compose stack, one small bug the agent fixes, `tests/test.sh` verifier writing `/logs/verifier/reward.txt`. Oracle preflight: buggy 0.667, fixed 1.000.
-- **runner**: harness-mode trials compose with `state_checks` / `transcript` / `rubric` grading, not only `test_execution`. When a trial's metadata carries both `agent_harness_command` and `agent_visible_dir` and a `DockerComposeExecToolWrapper` is registered for it, `_read_filesystem_for_state` snapshots the container's agent-visible directory into `state["filesystem"]` via the new `tolokaforge/runner/harness_state.py`. A JSONPath assertion against `$.filesystem['/work/factorial.py']` resolves against what the CLI actually left behind. `test_execution` still short-circuits at grading time, so terminal-bench's byte-identical replay is preserved naturally.
-- **grader**: standalone service dispatches through the composite (six plug-in seams over `LiveRunnerCallbackGradingSubstrate`). `GraderCompositeDispatch` deserialises the wire v2 fields per request, builds the substrate against `runner_substrate_address`, runs the five grading components mirroring the runner's `_grade_trial_async`, and returns a real `Grade`. Hash-based grading is refused server-side (the substrate is read-only). `_build_judge_state_diff` + the tool-artifact extraction body are hoisted to `tolokaforge.core.grading.composite.build_judge_state_diff` + `tolokaforge.core.grading.tool_artifacts.extract_tool_artifacts` so runner and grader dispatch call the same helpers.
-- **schema**: `models.agent.coding_harness` accepts a `"<name>@<version>"` slug that overrides the shipped registry pin at trial-image build time (or the equivalent explicit `models.agent.coding_harness_version` field). Meant for ad-hoc "try claude-code 2.2 today" runs without editing the registry. The override lands on `HarnessSpec.version`, passes through to `install-harness.sh`, and is recorded on the trial artefact so replay can see it. Reproducibility caveat documented in [docs/CODING_HARNESSES.md § Overriding the CLI version](docs/CODING_HARNESSES.md#overriding-the-cli-version).
+- **coding-harnesses**: the `AgentDriver` Strategy — `EngineLoopDriver` (default, no-op) and `CodingHarnessDriver` (vendor CLI) — owns "how a trial runs". The orchestrator selects one per run from `models.agent.coding_harness`; the adapter carries no mode state, opting in solely by overriding `BaseAdapter.stage_task(task_id) -> StagedTask | None` to materialise a per-trial staging directory the driver layers onto. Adding a new mode (Harbor as an embedded library, a custom agent loop) is a new driver class with no adapter edit. See [ADR-0039](docs/adr/0039-coding-harness-adapter-agnostic.md).
 
-### Changed
+### Refactor
 
-- **schema**: legacy `evaluation.harness_adapter.params.agent_harness` / `agent_model` are lifted at parse time into `models.agent.coding_harness` / `models.agent.name` with a `DeprecationWarning` per key naming the canonical home. Equal-value collisions warn once; differing values raise. Removal target: the next scheduled major-version bump.
+- **coding-harnesses**: `CodingHarnessAdapterMixin` (in `tolokaforge_coding_harnesses/adapter_support.py`) and `tolokaforge/adapters/native_harness_synthesis.py` retire. `NativeAdapter` and `TerminalBenchAdapter` drop their coding-harness mode fields (`agent_harness`, `agent_model`, `agent_harness_version`, `agent_provider_env`, `_resolved_registry`, `_harness_environments`) and their `ENGINE_LOOP` branches; all mode logic lives on the driver. Adapters expose `stage_task` and nothing else about coding harness.
+
+## v0.21.2 (2026-08-26)
+
+### Fix
+
+- **deps**: bump grpcio floor to 1.83.0 to match generated runner stubs (#1310)
+
+## v0.21.1 (2026-08-26)
+
+### Fix
+
+- **llm**: route moonshotai/kimi-k3 to empty-assistant filler-on + rename NovaMessageAssembly (#1284) (#1288)
+- **tests**: sync pipe-listener from inside select() to stop Linux CI flake (#1289)
+
+## v0.21.0 (2026-08-26)
+
+### Fix
+
+- **publish**: grader/rag build sibling coding-harnesses; runner subset ships seam entry-points (#1285)
+
+## v0.20.0 (2026-08-25)
+
+### Feat
+
+- **grader**: standalone-extensible-grader — the deployed grader image grades the full surface (#1259) (#1276)
+- **coding-harness**: lift agent_harness to a top-level, adapter-agnostic capability (#1279)
+- **grader**: wire the queue trial grader end-to-end (#1254) (#1256)
+- **grader**: Milestone 32 — grader-detachment seam foundation (#1202)
+- **llm**: persist the OpenRouter generation id per request (#1242)
+
+### Fix
+
+- **tests**: main test-smoke regressions from milestone-36 + coding-harness lift (#1283)
+- **orchestrator**: fail loud when a docker-CLI-needing run resolves to pull (#1267)
 
 ## v0.19.1 (2026-08-19)
 

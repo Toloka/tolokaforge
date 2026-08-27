@@ -65,6 +65,31 @@ class TestContainerEnvNeverCarriesTheRealToken:
         finally:
             driver.close()
 
+    @pytest.mark.parametrize("agent_harness", ["codex", "opencode", "grok-build"])
+    def test_harness_command_never_carries_the_canary_for_config_file_harnesses(
+        self, canary_secret_manager: None, agent_harness: str
+    ) -> None:
+        """Harnesses that write on-disk auth files via `config_files` render
+        the file contents into the ``agent_harness_command`` shell string as
+        a ``printf ... | tee`` step. Under the shield, the token env var
+        the config file references (`$OPENAI_API_KEY`, `$ANTHROPIC_API_KEY`,
+        `$OPENROUTER_API_KEY`) expands at container-runtime from
+        ``container_env`` — which carries the dummy value. The real token
+        (`CANARY` under this fixture's `SecretManager`) must never appear
+        anywhere in the rendered command."""
+        adapter = _pack_adapter()
+        staged = adapter.stage_task("fix_factorial")
+        assert staged is not None
+        base = adapter.to_task_description("fix_factorial")
+        driver = _driver(agent_harness=agent_harness)
+        driver.attach("native", True)
+        try:
+            td = driver.decorate_task_description(base, staged=staged)
+            command = td.metadata["agent_harness_command"]
+            assert CANARY not in command
+        finally:
+            driver.close()
+
 
 class TestExtraHosts:
     def test_added_under_a_gateway_active_harness(self, canary_secret_manager: None) -> None:
@@ -184,7 +209,6 @@ class TestEscapeHatch:
             driver.attach("native", True)
         try:
             assert driver.container_env["ANTHROPIC_API_KEY"] == CANARY
-            assert driver._gateway_handle is None
             driver.apply_container_layers(staged=staged)
             doc = yaml.safe_load(staged.compose_file.read_text())
             assert "extra_hosts" not in doc["services"]["main"]

@@ -1,6 +1,6 @@
 # 0039. Coding-harness as an adapter-agnostic run-config concept
 
-- **Status:** Accepted
+- **Status:** Accepted (with amendment 2026-08-27, see below)
 - **Date:** 2026-08-25
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
@@ -9,15 +9,47 @@
   - [ADR-0033](0033-external-harness-registry.md) — the `HarnessSpec` field
     list and the operator overlay. Unchanged here; this ADR consumes it.
   - [ADR-0034](0034-external-harness-plugin-discovery.md) — the entry-point
-    plug-in discovery contract. Unchanged; the mixin threads
+    plug-in discovery contract. Unchanged; the mode adopter threads
     `plugin_discovery` through so opt-in adapters compose the same three
     layers.
-  - [ADR-0036](0036-tolokaforge-coding-harnesses-split.md) — why the mixin
-    lives in `tolokaforge_coding_harnesses/` rather than in the engine.
+  - [ADR-0036](0036-tolokaforge-coding-harnesses-split.md) — why the
+    coding-harness surface lives in `tolokaforge_coding_harnesses/` rather
+    than in the engine.
   - [ADR-0037](0037-runtime-gateway-as-harness-data.md) — the two paths
     (`gateway_route` on the spec, `harness_presets_file` overlay) both
     survive the lift because they live on the spec, not on the entry
     point.
+  - [ADR-0041](0041-coding-harness-credential-gateway.md) — the
+    credential-shielded LLM gateway that the driver form of this design
+    hosts.
+
+## Amendment — 2026-08-27: `AgentDriver` Strategy replaces the mixin
+
+The initial shipped implementation of this ADR used a
+`CodingHarnessAdapterMixin` that adapters inherited alongside
+`BaseAdapter` to opt into harness mode, with a
+`supports_coding_harness = True` class-attr gate. The mixin approach
+proved to leak mode-specific state and mode branches into every adapter
+that opted in — the exact "adapter-agnostic" property this ADR's
+Consequences section named as the win. In the same milestone, the shape
+was refactored into a first-class `AgentDriver` Strategy
+([`tolokaforge/core/agent_driver.py`](../../tolokaforge/core/agent_driver.py)):
+`EngineLoopDriver` and `CodingHarnessDriver` own "how a trial runs";
+adapters expose `BaseAdapter.stage_task(task_id) -> StagedTask | None`
+and nothing else about harness mode. `CodingHarnessAdapterMixin` and
+its class-attr gate are retired.
+
+**Everywhere the Decision + Consequences sections below say "mixin":
+read "`AgentDriver` (specifically `CodingHarnessDriver`)".**
+Everywhere they say "`supports_coding_harness = True`": read
+"`BaseAdapter.stage_task` returns a real `StagedTask`". Everywhere they
+say "adapter inherits the mixin": read "adapter overrides
+`stage_task`". The problem statement, the analysis of the seams already
+in place, the six wire-artefact contracts, and the two shipped adopters
+are unchanged — the pluggability layer moved from a mixin inherited by
+each adapter into a Strategy the orchestrator holds. Design record for
+the shipped shape: same file, plus
+[ADR-0041 § "Three-layer split"](0041-coding-harness-credential-gateway.md).
 
 ## Context and Problem Statement
 
