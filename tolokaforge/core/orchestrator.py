@@ -797,11 +797,14 @@ class Orchestrator:
                 "Conductor cannot be built before the adapter is loaded. "
                 "Ensure load_tasks() has run successfully."
             )
-        # ``None`` when the backend has no runner surface (in-memory / test);
-        # the built-in address-needing factories (``runner_rpc``, ``grader_rpc``)
-        # raise loudly when they observe it. Downstream graders that do not need
-        # a network address (a stub, a callable-injected grader) receive the
-        # ``None`` verbatim and ignore it.
+        # ``None`` when the backend has no runner surface (in-memory / test,
+        # or ``PerTrialRuntimeBackend`` — each trial owns its own runner
+        # endpoint so no single address applies); the built-in
+        # address-needing factories (``grader_rpc``, ``queue``) raise loudly
+        # when they observe it. Downstream graders that do not need a
+        # network address receive the ``None`` verbatim and ignore it, and
+        # ``runner_rpc`` picks the ``runtime_backend`` dispatch path below
+        # instead of dialling.
         runner_address = getattr(runtime_backend, "runner_address", None)
         # ``config.grader.name`` overrides the adapter's default for this
         # run; the queue subblock rides the same context so
@@ -817,6 +820,10 @@ class Orchestrator:
                 runner_address=runner_address,
                 logger=self.logger,
                 grader_config=grader_config,
+                # In-process routing shim for per-trial runtime backends;
+                # out-of-process graders MUST ignore it (see ADR-0038 and
+                # ``tests/canonical/test_trial_grader_context_hygiene.py``).
+                runtime_backend=runtime_backend,
             )
         )
         # Drain any leftover from a prior aborted run on this orchestrator

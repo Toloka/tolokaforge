@@ -259,12 +259,25 @@ class TrialGraderContext:
     ``None`` when the operator declared none). Transport-specific factories
     read their own subblock — ``queue`` reads ``grader_config.queue`` for
     worker-pool sizing and the downstream ``worker_grader`` name.
+
+    :attr:`runtime_backend` is an in-process routing shim populated only by
+    ``orchestrator._build_conductor``. When a runtime backend routes grades
+    per-trial (``PerTrialRuntimeBackend``), it exposes no static
+    ``runner_address`` because each trial owns its own runner endpoint;
+    passing the backend directly lets ``RunnerRPCTrialGrader`` delegate to
+    ``backend.grade_trial(trial_id, ...)`` and reach the right per-trial
+    client. Every out-of-process factory (``grader_rpc``, ``queue``,
+    ``judge_backed``) MUST ignore this field: the whole point of ADR-0038 is
+    that a grader running on a different machine cannot hold a live
+    orchestrator-side backend, so this attribute is NOT serialisable and
+    MUST be ``None`` on any grader that crosses an address boundary.
     """
 
     runner_address: str | None
     logger: StructuredLogger
     grader_address: str | None = None
     grader_config: GraderConfig | None = None
+    runtime_backend: RuntimeBackend | None = None
 
 
 @dataclass(frozen=True)

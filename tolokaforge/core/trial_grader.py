@@ -72,6 +72,7 @@ if TYPE_CHECKING:
     from tolokaforge.core.llm.client import LLMClient
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.plugin_registry import TrialGraderContext
+    from tolokaforge.core.runtime import RuntimeBackend
     from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
     from tolokaforge.grader.client import GrpcGraderClient
     from tolokaforge.grader.queue import GradeBroker
@@ -169,16 +170,41 @@ class RunnerRPCTrialGrader:
     raises :class:`GradingFailedError` when the RPC could not produce a
     verdict.
 
-    Built per-run from a :class:`TrialGraderContext` — a *serialisable*
-    configuration (``runner_address`` + logger). The grader owns its own
-    :class:`~tolokaforge.core.shared_stack_runtime.GrpcRunnerClient` bound
-    to that address, so it stays independent of the orchestrator's runtime
-    backend — the seam that lets a future grader run on a different machine.
+    Built per-run from a :class:`TrialGraderContext` — serialisable
+    configuration (``runner_address`` + logger) for the out-of-process
+    shape, plus one optional in-process routing shim (``runtime_backend``).
+
+    Two dispatch shapes, one class:
+
+    * **Out-of-process (P2/P3):** ``ctx.runtime_backend`` is ``None`` on the
+      wire. The grader owns its own
+      :class:`~tolokaforge.core.shared_stack_runtime.GrpcRunnerClient` bound
+      to ``runner_address``, so it stays independent of the orchestrator's
+      runtime backend — the ADR-0038 seam that lets a grader run on a
+      different machine.
+    * **In-process (per-trial runtimes):** ``ctx.runtime_backend`` is set to
+      the live backend. ``:meth:`grade`` delegates to
+      ``runtime_backend.grade_trial(...)``, which for
+      :class:`PerTrialRuntimeBackend` routes the RPC to the trial's own
+      runner endpoint (each trial owns its endpoint, so no single
+      ``runner_address`` can reach them all). No gRPC client is built for
+      this shape — the ``runner_address`` on the context is unused here.
+
+    Preference at grade time: ``runtime_backend`` wins when both are set;
+    ``runner_client`` is the fallback path. That preserves the P2/P3
+    "grader on another machine" story on the wire — a ``TrialGraderContext``
+    whose ``runtime_backend`` is ``None`` sees exactly the pre-existing
+    address-only dispatch.
 
     Tests may pass a ``runner_client`` directly to bypass real gRPC; the
     stub must expose a ``grade_trial(trial_id, llm_messages_json, ...)``
     method returning the same dict shape as
     :meth:`GrpcRunnerClient.grade_trial`.
+
+    Note on ``run_trial.py``: the container-shim entry point at
+    ``run_trial.py:157`` constructs its own ``TrialGraderContext`` with a
+    stable ``EXECUTOR_ADDRESS`` and no ``runtime_backend``; the fallback
+    client path is the correct behaviour for that call site.
     """
 
     def __init__(
@@ -187,10 +213,15 @@ class RunnerRPCTrialGrader:
         logger: StructuredLogger,
         *,
         runner_client: GrpcRunnerClient | None = None,
+        runtime_backend: RuntimeBackend | None = None,
     ) -> None:
         self.runner_address = runner_address
         self.logger = logger
-        if runner_client is None:
+        self.runtime_backend = runtime_backend
+        # Skip the gRPC channel entirely when a live backend is the target;
+        # the ``runner_address`` on the context is unused for
+        # ``PerTrialRuntimeBackend`` (each trial has its own endpoint).
+        if runner_client is None and runtime_backend is None:
             from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient as _Client
 
             runner_client = _Client(runner_address=runner_address)
@@ -254,7 +285,15 @@ class RunnerRPCTrialGrader:
             )
 
         llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
-        grade_result = self.runner_client.grade_trial(
+        # Prefer the in-process backend when set (per-trial runtimes need it
+        # to route to the trial's own runner endpoint); the address-built
+        # client is the wire-safe fallback for the P2/P3 shape. See ADR-0038
+        # § "Grader plug-in receives serialisable configuration only" — the
+        # wire never carries a live backend, so ``target`` here is always
+        # ``self.runner_client`` in that case.
+        target = self.runtime_backend if self.runtime_backend is not None else self.runner_client
+        assert target is not None, "RunnerRPCTrialGrader has no dispatch target"
+        grade_result = target.grade_trial(
             trial_id=spec.trial_id,
             llm_messages_json=llm_messages_json,
             termination_reason=(
@@ -473,15 +512,31 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
 def runner_rpc_trial_grader_factory(ctx: TrialGraderContext) -> RunnerRPCTrialGrader:
     """Build a :class:`RunnerRPCTrialGrader` from a grader context.
 
+    Dispatch preference at grade time:
+
+    * When ``ctx.runtime_backend`` is set, ``RunnerRPCTrialGrader.grade``
+      delegates to ``runtime_backend.grade_trial(...)`` and no gRPC channel
+      is built. This is the in-process path for per-trial runtime backends
+      (each trial owns its own runner endpoint, so no single
+      ``runner_address`` can reach them all).
+    * Otherwise, the grader owns its own :class:`GrpcRunnerClient` bound to
+      ``ctx.runner_address``. This is the P2/P3 shape ADR-0038 pins — the
+      wire carries no live backend, so out-of-process construction sees
+      exactly this branch.
+
     Accepts ``ctx.runner_address is None`` at construction so orchestrator
     fixtures paired with an in-memory backend can still build the grader
-    without touching the network. The misconfiguration surfaces at the
-    first :meth:`grade` call as a :class:`ConnectionError` from
-    :class:`GrpcRunnerClient.connect`'s health-check retry loop (~30 s
-    timeout) rather than a synchronous ``ValueError`` — the address is
-    only dialled when it is needed.
+    without touching the network. When ``ctx.runtime_backend`` is also
+    ``None`` the misconfiguration surfaces at the first :meth:`grade` call
+    as a :class:`ConnectionError` from :class:`GrpcRunnerClient.connect`'s
+    health-check retry loop (~30 s timeout) rather than a synchronous
+    ``ValueError`` — the address is only dialled when it is needed.
     """
-    return RunnerRPCTrialGrader(runner_address=ctx.runner_address or "", logger=ctx.logger)
+    return RunnerRPCTrialGrader(
+        runner_address=ctx.runner_address or "",
+        logger=ctx.logger,
+        runtime_backend=ctx.runtime_backend,
+    )
 
 
 JudgeGradeFn = Callable[[TrialSpec, Trajectory, str], "Grade | None"]
