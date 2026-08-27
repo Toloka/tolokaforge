@@ -382,7 +382,115 @@ class TestPreflightConsultsTheOverlay:
         finally:
             set_overlay_path(None)
 
-    def test_and_one_the_overlay_does_not_declare_still_is(self, tmp_path):
-        """The check still fails closed - the overlay is not a blanket pass."""
+    def test_an_unmapped_agent_model_without_overlay_declaration_reports_info(self, tmp_path):
+        """`fake-vendor-xyz/muse-spark-1.2` is absent from litellm's map by
+        construction, so the check cannot answer either way. The command emits
+        an INFO nudge with the exact overlay entry to declare, and does not
+        surface the "does not appear to support function calling" line — that
+        message is reserved for models litellm's map carries with the flag
+        explicitly False.
+
+        Load-bearing invariant: `fake-vendor-xyz/muse-spark-1.2` stays absent
+        from litellm's map. Vendor name is a fabrication; a future map
+        cleanup that adds it would flip this assertion.
+        """
         result = self._validate(self._tree(tmp_path, declared=False))
-        assert "does not appear to support function calling" in result.output
+        assert "does not appear to support function calling" not in result.output
+        assert result.exit_code == 0
+        assert "cannot confirm function-calling support" in result.output
+
+
+class TestUnmappedAgentModelReportsInfoNotError:
+    """`litellm.supports_function_calling` returns False for two distinct
+    states — "map has an entry that says False" and "map has no entry at all".
+    The preflight distinguishes them via `get_model_info`: an unmapped key
+    becomes an INFO with the overlay-declaration hint; a mapped-and-false key
+    stays an ERROR.
+    """
+
+    def test_unmapped_agent_model_is_not_reported_unable(self):
+        """`provider: google, name: gemini-3.6-flash` sits outside litellm's
+        map — the Gemini entries live under the `gemini/` prefix, not
+        `google/`. The preflight emits an INFO nudge with the overlay entry
+        to declare and exits zero; the "does not appear to support function
+        calling" line is reserved for keys the map carries with the flag
+        explicitly False.
+
+        Load-bearing invariant: `google/gemini-3.6-flash` stays absent from
+        litellm's map. If a future litellm bump adds it under the `google/`
+        key, the map answer becomes authoritative and this INFO flips to
+        whatever the map declares — desirable, but the assertion will need
+        to move to a different unmapped key to keep locking the regression.
+        """
+        from tolokaforge.core.config_validator import Severity, validate_run_config
+
+        cfg = _make_config(agent_provider="google", agent_name="gemini-3.6-flash")
+        result = validate_run_config(cfg)
+
+        assert result.ok, [str(i) for i in result.errors]
+        assert not any(
+            "does not appear to support function calling" in i.message for i in result.issues
+        )
+        infos = [
+            i
+            for i in result.issues
+            if i.severity == Severity.INFO
+            and i.path == "models.agent.name"
+            and "cannot confirm function-calling support" in i.message
+        ]
+        assert len(infos) == 1, [str(i) for i in result.issues]
+
+    def test_mapped_and_unsupported_agent_model_still_errors(self, monkeypatch):
+        """Locks the branch, not a specific litellm entry: monkeypatch the
+        seam so it returns False (mapped-and-unsupported) and assert the
+        ERROR fires end-to-end from `_validate_model`. Binding to a concrete
+        model id would flip with a litellm bump.
+        """
+        from tolokaforge.core import config_validator as cv
+
+        monkeypatch.setattr(cv, "_model_supports_function_calling", lambda name: False)
+        # Also short-circuit the overlay lookup so we exercise the pure
+        # False-from-litellm path, not the overlay-declared shortcut.
+        monkeypatch.setattr(cv, "_declared_function_calling", lambda name, provider: False)
+
+        cfg = _make_config(agent_provider="openai", agent_name="whisper-1")
+        result = cv.validate_run_config(cfg)
+
+        fc_errors = [
+            i
+            for i in result.errors
+            if i.path == "models.agent.name"
+            and "does not appear to support function calling" in i.message
+        ]
+        assert len(fc_errors) == 1, [str(i) for i in result.issues]
+
+    def test_openrouter_unmapped_agent_model_is_info_not_warning(self):
+        """An unmapped OpenRouter agent-model is treated as unknown, not
+        known-not-supported: INFO, same severity as any other unmapped
+        provider. The `openrouter/` prefix downgrades a *mapped-and-False*
+        answer to WARNING (niche upstream models), but that branch requires
+        a positive False from the map — silence on unmapped keys is uniform.
+
+        Load-bearing invariant: `openrouter/fake-vendor-xyz/muse-spark-9.9`
+        stays absent from litellm's map.
+        """
+        from tolokaforge.core.config_validator import Severity, validate_run_config
+
+        cfg = _make_config(
+            agent_provider="openrouter",
+            agent_name="fake-vendor-xyz/muse-spark-9.9",
+        )
+        result = validate_run_config(cfg)
+
+        fc_issues = [
+            i
+            for i in result.issues
+            if i.path == "models.agent.name"
+            and (
+                "does not appear to support function calling" in i.message
+                or "cannot confirm function-calling support" in i.message
+            )
+        ]
+        assert len(fc_issues) == 1, [str(i) for i in result.issues]
+        assert fc_issues[0].severity == Severity.INFO
+        assert "cannot confirm function-calling support" in fc_issues[0].message
