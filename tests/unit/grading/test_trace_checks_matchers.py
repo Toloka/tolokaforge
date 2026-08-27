@@ -19,16 +19,23 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import build_timeline
-from tolokaforge.core.grading.trace_checks import _binding_operator_names, select_events
+from tests.utils.trace_constraints import evaluate_constraint
+from tolokaforge.core.grading.trace_checks import (
+    _binding_operator_names,
+    _extracted,
+    select_events,
+)
 from tolokaforge.core.grading.trace_timeline import (
     TraceEvent,
     TraceEventKind,
     TrialTimeline,
 )
 from tolokaforge.core.models import (
+    BoundValue,
     RecordedToolCall,
     ToolCall,
     ToolExecutionStatus,
@@ -286,6 +293,8 @@ _OPERATOR_ANSWERS: dict[str, _OperatorAnswer] = {
     "not_equals": _OperatorAnswer({"not_equals": "PAY-1"}, {"probe": "PAY-2"}, {"probe": "PAY-1"}),
     "regex": _OperatorAnswer({"regex": "^PAY-[0-9]+$"}, {"probe": "PAY-1"}, {"probe": "REF-1"}),
     "not_regex": _OperatorAnswer({"not_regex": "^PAY-"}, {"probe": "REF-1"}, {"probe": "PAY-1"}),
+    "is_null": _OperatorAnswer({"is_null": True}, {"probe": None}, {"probe": "value"}),
+    "omitted": _OperatorAnswer({"omitted": True}, {}, {"probe": "value"}),
     "gt": _OperatorAnswer({"gt": 10.0}, {"probe": 11}, {"probe": 10}),
     "gte": _OperatorAnswer({"gte": 10.0}, {"probe": 10}, {"probe": 9.5}),
     "lt": _OperatorAnswer({"lt": 10.0}, {"probe": 9.5}, {"probe": 10}),
@@ -377,3 +386,175 @@ def test_a_status_literal_that_is_a_real_enum_member_is_admitted() -> None:
             kind=TraceEventKind.TOOL_RESULT,
             status=ValuePredicate(equals=admitted),
         )
+
+
+# --------------------------------------------------------------------------
+# The nullness pair: ``is_null`` and ``omitted``
+# --------------------------------------------------------------------------
+
+_THREE_STATE_MATRIX: tuple[tuple[str, bool, dict[str, Any], bool], ...] = (
+    ("is_null", True, {"key": None}, True),
+    ("is_null", True, {}, False),
+    ("is_null", True, {"key": "value"}, False),
+    ("is_null", False, {"key": None}, False),
+    ("is_null", False, {}, True),
+    ("is_null", False, {"key": "value"}, True),
+    ("omitted", True, {"key": None}, False),
+    ("omitted", True, {}, True),
+    ("omitted", True, {"key": "value"}, False),
+)
+
+
+@pytest.mark.parametrize(("operator", "expected", "arguments", "holds"), _THREE_STATE_MATRIX)
+def test_the_three_state_matrix_holds_per_operator(
+    operator: str, expected: bool, arguments: dict[str, Any], holds: bool
+) -> None:
+    """The whole is_null / omitted semantic in one table.
+
+    Three argument-state axes cross both operators: an explicit JSON ``null`` at
+    the key, a key that was never sent, and an ordinary value. The rules the
+    matrix locks — ``is_null`` and ``omitted`` are not synonyms, ``omitted`` is
+    false on ``{key: None}``, and ``is_null: False`` reads a key that was never
+    sent as a hold (no null there) — are all a future refactor could get subtly
+    wrong.
+    """
+    timeline = _timeline(recorded=[recorded_call("probe", arguments=arguments)])
+    matcher = TraceMatcher(
+        kind=TraceEventKind.TOOL_CALL,
+        args={"key": ValuePredicate(**{operator: expected})},
+    )
+
+    outcome = select_events(timeline, matcher, {})
+
+    assert bool(outcome.matched) is holds
+
+
+def test_a_missing_intermediate_key_reads_as_omitted() -> None:
+    """A path whose ancestor is absent or is not a mapping reads as omitted.
+
+    ``args.body.query`` on a call whose ``body`` is ``{}`` — the ``query``
+    segment cannot be resolved because its parent carries no such key. The same
+    reading holds when ``body`` is not a mapping at all, so the two shapes of
+    unresolvability collapse under ``omitted``.
+    """
+    matcher = TraceMatcher(
+        kind=TraceEventKind.TOOL_CALL,
+        args={"body.query": ValuePredicate(omitted=True)},
+    )
+
+    missing_intermediate = select_events(
+        _timeline(recorded=[recorded_call("probe", arguments={"body": {}})]), matcher, {}
+    )
+    non_mapping_intermediate = select_events(
+        _timeline(recorded=[recorded_call("probe", arguments={"body": None})]), matcher, {}
+    )
+
+    assert len(missing_intermediate.matched) == 1
+    assert len(non_mapping_intermediate.matched) == 1
+
+
+@pytest.mark.parametrize("field", ["status", "executor", "result"])
+@pytest.mark.parametrize("operator", ["is_null", "omitted"])
+def test_a_nullness_probe_on_recorded_evidence_is_rejected_at_load(
+    field: str, operator: str
+) -> None:
+    """``None`` on those three fields is missing evidence, not authored null.
+
+    A bundle re-graded without its tool-call record has all three read as
+    ``None``; a matcher that could not tell that gap apart from an author's
+    explicit assertion would surface the gap as agent failure. The gate reports
+    the offending field so the fix reads directly.
+    """
+    kind = TraceEventKind.TOOL_RESULT if field in ("status", "result") else TraceEventKind.TOOL_CALL
+    with pytest.raises(ValidationError) as raised:
+        TraceMatcher(kind=kind, **{field: ValuePredicate(**{operator: True})})
+
+    message = str(raised.value)
+    assert field in message
+    assert "is_null" in message and "omitted" in message
+    assert "exists" in message
+
+
+def test_a_nullness_probe_on_an_args_predicate_is_admitted() -> None:
+    """``args`` and ``text`` carry no missing-evidence ambiguity, so nullness there loads.
+
+    The gate refuses ``status`` / ``executor`` / ``result`` and no field beyond
+    them; a matcher probing arguments loads cleanly under both operators.
+    """
+    on_args = TraceMatcher(
+        kind=TraceEventKind.TOOL_CALL,
+        args={"note": ValuePredicate(is_null=True), "trace_id": ValuePredicate(omitted=True)},
+    )
+    on_text = TraceMatcher(kind=TraceEventKind.ASSISTANT_MESSAGE, text=ValuePredicate(is_null=True))
+
+    assert on_args.args is not None
+    assert on_text.text is not None
+
+
+def test_a_binder_extraction_reads_absent_and_null_as_one_condition() -> None:
+    """The ``_MISSING`` sentinel does not leak into a bound value.
+
+    A binding reading ``args.body.query`` off a call that carries no ``body``,
+    a call that carries ``body: None``, or a call that carries ``body: {}``
+    (missing the ``query`` key) extracts nothing in every case. If the sentinel
+    leaked, ``_extracted`` would return ``[_MISSING]`` and every reference in
+    the constraint would resolve against an in-band object no operator answers
+    for.
+    """
+    bound = BoundValue(field="args.body.query")
+
+    for arguments in ({}, {"body": None}, {"body": {}}):
+        event = _only(
+            _timeline(recorded=[recorded_call("probe", arguments=arguments)]),
+            TraceEventKind.TOOL_CALL,
+        )
+        assert _extracted(bound, event, None) == []
+
+
+def test_omitted_composes_with_withhold() -> None:
+    """The canonical boundary between #1292 and #1293.
+
+    A constraint whose anchor selects on ``omitted: true`` looks for a call
+    that never sent ``body.query``. Against a timeline where the call did send
+    it, the anchor yields no candidate; ``on_missing: withhold`` opts the
+    constraint out of scoring rather than surfacing an agent failure.
+    """
+    timeline = _timeline(recorded=[recorded_call("probe", arguments={"body": {"query": "found"}})])
+    require = {
+        "present": {
+            "match": {
+                "kind": "tool_call",
+                "args": {"body.query": {"omitted": True}},
+            }
+        }
+    }
+
+    verdict = evaluate_constraint(timeline, require, on_missing="withhold")
+
+    assert verdict.withheld is True
+    assert verdict.passed is False
+    assert verdict.undecided is False
+
+
+def test_omitted_composes_with_withhold_fails_without_the_opt_out() -> None:
+    """The default ``on_missing: fail`` reads an omitted anchor as an agent failure.
+
+    Same timeline, same anchor, but no ``on_missing`` on the constraint. The
+    withhold verdict is the opt-in behaviour, not the default: an author who
+    did not name it sees the constraint fail definitively.
+    """
+    timeline = _timeline(recorded=[recorded_call("probe", arguments={"body": {"query": "found"}})])
+    require = {
+        "present": {
+            "match": {
+                "kind": "tool_call",
+                "args": {"body.query": {"omitted": True}},
+            }
+        }
+    }
+
+    verdict = evaluate_constraint(timeline, require)
+
+    assert verdict.withheld is False
+    assert verdict.passed is False
+    assert verdict.undecided is False

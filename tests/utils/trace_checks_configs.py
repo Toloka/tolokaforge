@@ -25,6 +25,8 @@ EVERY_OPERATOR_MATCHER: dict[str, Any] = {
         "currency": {"in_": ["USD", "EUR"], "not_in": ["JPY"]},
         "note": {"contains_ci": "REFUND", "len_gt": 3, "len_gte": 4},
         "reason": {"not_contains": "duplicate", "not_regex": "^REFUND-"},
+        "void_flag": {"is_null": True},
+        "absent_flag": {"omitted": True},
         "body.resolution_path": {"exists": True},
         "case_id": {"equals_binding": "denied_case"},
     },

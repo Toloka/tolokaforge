@@ -662,6 +662,8 @@ TRACE_PREDICATE_OPERATORS: frozenset[str] = frozenset(
         "not_equals",
         "regex",
         "not_regex",
+        "is_null",
+        "omitted",
         "gt",
         "gte",
         "lt",
@@ -713,6 +715,8 @@ class ValuePredicate(BaseModel):
     not_equals: Any = None
     regex: str | None = None
     not_regex: str | None = None
+    is_null: bool | None = None
+    omitted: bool | None = None
     gt: float | None = None
     gte: float | None = None
     lt: float | None = None
@@ -773,6 +777,17 @@ _MATCHER_PREDICATE_FIELDS: tuple[str, ...] = (
     "text",
 )
 
+# The fields whose ``None`` reads as missing evidence rather than as an authored
+# JSON ``null`` — a matcher that could not tell the two apart would surface a
+# re-grading gap as an author's assertion.
+_NULLNESS_UNPROBEABLE_FIELDS: frozenset[str] = frozenset({"status", "executor", "result"})
+
+
+def _declares_nullness_probe(predicate: ValuePredicate | None) -> bool:
+    return predicate is not None and (
+        predicate.is_null is not None or predicate.omitted is not None
+    )
+
 
 class TraceMatcher(BaseModel):
     """Which timeline events a constraint is about.
@@ -796,6 +811,33 @@ class TraceMatcher(BaseModel):
     text: ValuePredicate | None = None
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _reject_a_nullness_probe_on_recorded_evidence(self) -> TraceMatcher:
+        """A nullness probe on ``status`` / ``executor`` / ``result`` is refused.
+
+        ``None`` on those three fields is "no evidence recorded", not "explicit
+        JSON null" — a bundle re-graded without its tool-call record has all
+        three read as ``None``, and a matcher that could not tell the two apart
+        would surface a re-grading gap as an author's assertion. ``args`` and
+        ``text`` carry no such ambiguity, so nullness probes there are
+        admissible.
+        """
+        offenders = sorted(
+            field
+            for field in _NULLNESS_UNPROBEABLE_FIELDS
+            if _declares_nullness_probe(getattr(self, field))
+        )
+        if offenders:
+            raise ValueError(
+                f"{offenders}: is_null / omitted are refused on "
+                f"{sorted(_NULLNESS_UNPROBEABLE_FIELDS)} — a None there is 'no evidence "
+                "recorded', not 'explicit JSON null', so a probe cannot tell a re-grading "
+                "gap from an author's assertion. Reach the same reading through an args "
+                "predicate over the field that would carry the value, or through "
+                "exists: false"
+            )
+        return self
 
     @model_validator(mode="after")
     def _reject_fields_the_kind_never_carries(self) -> TraceMatcher:

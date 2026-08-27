@@ -149,6 +149,8 @@ _OPERATOR_SAMPLES: dict[str, Any] = {
     "not_equals": "deleted",
     "regex": "^writ",
     "not_regex": "^deleted",
+    "is_null": True,
+    "omitted": True,
     "gt": 0.0,
     "gte": 1.5,
     "lt": 10.0,
@@ -288,6 +290,16 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         ),
         message="no tool executor produces",
         validator="_reject_a_status_literal_no_execution_produces",
+    ),
+    _Rejection(
+        label="nullness_probe_on_recorded_evidence",
+        block=_block(
+            _constraint(
+                {"present": {"match": {"kind": "tool_result", "status": {"is_null": True}}}}
+            )
+        ),
+        message="'no evidence recorded'",
+        validator="_reject_a_nullness_probe_on_recorded_evidence",
     ),
     _Rejection(
         label="immediately_before_without_among",

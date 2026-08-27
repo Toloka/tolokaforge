@@ -40,6 +40,7 @@ __all__ = [
     "gt",
     "gte",
     "in_op",
+    "is_null_stub",
     "len_gt",
     "len_gte",
     "lt",
@@ -48,6 +49,7 @@ __all__ = [
     "not_equals",
     "not_in_op",
     "not_regex_matches",
+    "omitted_stub",
     "regex_matches",
 ]
 
@@ -120,6 +122,40 @@ def len_gte(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
 
 def exists(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
     return (value is not None) is expected
+
+
+def is_null_stub(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
+    """Never invoked; ``_operator_holds`` special-cases ``is_null`` ahead of dispatch.
+
+    The registry inventory reads its second source from the entry-point group, so
+    every declared operator must resolve to a callable. Reading whether a field
+    held an explicit JSON ``null`` turns on the difference between that null and
+    an argument the trial never sent, and the sentinel that carries the
+    difference is private to :mod:`tolokaforge.core.grading.trace_checks`, so the
+    seam cannot answer for it — reaching this callable means the special-case
+    gate at the top of ``_operator_holds`` was bypassed.
+    """
+    raise NotImplementedError(
+        "is_null is short-circuited at trace_checks._operator_holds before the "
+        "entry-point dispatch. This stub keeps the registered vocabulary in "
+        "lockstep with TRACE_PREDICATE_OPERATORS; if execution reached it, the "
+        "gate was bypassed"
+    )
+
+
+def omitted_stub(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
+    """Never invoked; ``_operator_holds`` special-cases ``omitted`` ahead of dispatch.
+
+    Reading whether the key was never sent turns on the same private sentinel
+    ``is_null`` reads; the same registry-inventory rule applies. See
+    :func:`is_null_stub`.
+    """
+    raise NotImplementedError(
+        "omitted is short-circuited at trace_checks._operator_holds before the "
+        "entry-point dispatch. This stub keeps the registered vocabulary in "
+        "lockstep with TRACE_PREDICATE_OPERATORS; if execution reached it, the "
+        "gate was bypassed"
+    )
 
 
 def equals_binding(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:

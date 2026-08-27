@@ -40,6 +40,8 @@ _SHIPPED_NAME_TO_SYMBOL = {
     "not_equals": trace_check_operator.not_equals,
     "regex": trace_check_operator.regex_matches,
     "not_regex": trace_check_operator.not_regex_matches,
+    "is_null": trace_check_operator.is_null_stub,
+    "omitted": trace_check_operator.omitted_stub,
     "gt": trace_check_operator.gt,
     "gte": trace_check_operator.gte,
     "lt": trace_check_operator.lt,
