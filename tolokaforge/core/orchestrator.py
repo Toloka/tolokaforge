@@ -485,11 +485,19 @@ class Orchestrator:
         strict: bool = False,
         deps: OrchestratorDeps | None = None,
         project: ProjectConfig | None = None,
+        *,
+        config_path: Path | None = None,
     ):
         self.config = config
         self.resume = resume
         self.verbose = verbose
         self.strict = strict
+        # Path to the run-config YAML the operator invoked with, threaded from
+        # the CLI (``tolokaforge run`` / ``prepare`` / ``worker``) and stamped
+        # verbatim into ``run_state.json`` at initialize time. ``None`` marks a
+        # programmatic caller that supplied no path — the fresh-run branch
+        # writes ``""`` to keep :class:`RunState.config_path` a plain ``str``.
+        self._config_path: Path | None = config_path
         # Enclosing project (loaded from ``project.yaml``). Adapter
         # instantiation reads ``project.task_defaults`` from here so every
         # task inherits the project-level defaults declared alongside
@@ -1928,7 +1936,7 @@ class Orchestrator:
             task_ids = [task.task_id for task in self.tasks]
             run_state = self.state_manager.initialize_run(
                 run_id=run_id,
-                config_path=str(self.config.evaluation.output_dir),
+                config_path=str(self._config_path) if self._config_path is not None else "",
                 task_ids=task_ids,
                 repeats=self.config.orchestrator.repeats,
             )
