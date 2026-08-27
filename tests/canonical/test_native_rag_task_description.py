@@ -49,7 +49,7 @@ def _write_rag_pack(tmp_path: Path) -> NativeAdapter:
             "description": "rag shape lock",
             "initial_state": {"json_db": "initial_state.json", "rag": {"corpus_dir": "rag/corpus"}},
             "tools": {
-                "agent": {"enabled": ["search_kb", "submit_report"]},
+                "agent": {"enabled": ["search_kb", "bash"]},
                 "user": {"enabled": []},
             },
             "actors": {"user": {"mode": "llm", "persona": "cooperative"}},

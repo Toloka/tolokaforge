@@ -65,6 +65,90 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+class NativeAdapterMisconfigurationError(ValueError):
+    """A source-less non-builtin tool reached NativeAdapter's emit path.
+
+    Subclasses :class:`ValueError` so callers already catching ``ValueError``
+    from ``NativeAdapter.to_task_description`` (the orchestrator surfaces those
+    as configuration errors before docker resources are spent) treat this
+    identically. Raised at emit time by :func:`_actor_tool_schemas`; the
+    runner-side raise in ``tool_factory`` remains the fallback for adapters
+    that also emit source-less non-builtin schemas.
+    """
+
+
+def _detect_converted_pack_signature(task_dir: Path) -> str | None:
+    """Relative path of a `_domain/tools/**` directory near *task_dir*, or ``None``.
+
+    Walks upward from ``task_dir`` at most 3 levels, matching the generic
+    filesystem shape a converted MCP task pack carries. The signature is a
+    filesystem pattern only — never a hardcoded pack-name list or an
+    adapter-name string match.
+
+    Returns the matched path relative to the anchor whose ``_domain/tools/``
+    was found (e.g. ``"_domain/tools/mcp_tools_library"``). ``None`` when
+    nothing matches — the emit-time raise still fires with the generic hint.
+    """
+    anchor = task_dir if task_dir.is_dir() else task_dir.parent
+    for depth in range(4):
+        candidate = anchor
+        for _ in range(depth):
+            candidate = candidate.parent
+        tools_root = candidate / "_domain" / "tools"
+        if not tools_root.is_dir():
+            continue
+        try:
+            entries = sorted(p for p in tools_root.iterdir() if p.is_dir())
+        except OSError as exc:
+            logger.debug(
+                "iterdir failed while detecting converted-pack signature",
+                tools_root=str(tools_root),
+                error=str(exc),
+            )
+            return "_domain/tools"
+        if not entries:
+            return "_domain/tools"
+        return f"_domain/tools/{entries[0].name}"
+    return None
+
+
+def _hint_native_adapter_misconfiguration(tool_name: str, task_dir: Path) -> str:
+    """Actionable hint for a source-less non-builtin tool at NativeAdapter emit time.
+
+    The lazy import keeps ``native.py`` cheap for callers that never reach
+    adapter discovery. If ``available_adapters()`` blows up (broken entry-point
+    plugin), broad-catch and fall back to an empty non-native list at DEBUG so
+    the primary raise stays visible.
+    """
+    try:
+        from tolokaforge.adapters import available_adapters
+
+        non_native = [name for name in available_adapters() if name != "native"]
+    except Exception as exc:  # noqa: BLE001 -- primary raise must not be masked
+        logger.debug(
+            "available_adapters() failed while formatting NativeAdapter hint",
+            error=str(exc),
+        )
+        non_native = []
+
+    non_native_csv = ", ".join(non_native) if non_native else "(none installed)"
+    lines = [
+        f"Tool '{tool_name}' has no source configuration and is not in the "
+        "builtin registry. NativeAdapter refuses this pack at emit time.",
+        f"Pack root: {task_dir}",
+        (
+            "Set evaluation.harness_adapter.type to a non-native adapter that "
+            f"emits source metadata for this tool (registered non-native "
+            f"adapters: {non_native_csv}), or declare tools.<actor>.mcp_server "
+            "in task.yaml."
+        ),
+    ]
+    shape = _detect_converted_pack_signature(task_dir)
+    if shape is not None:
+        lines.append(f"detected shape: {shape}")
+    return "\n".join(lines)
+
+
 def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> list["ToolSchema"]:
     """The wire tool set ``tools.<actor>`` declares, with every schema resolved.
 
@@ -75,11 +159,15 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
     extracted artifacts dir.
 
     Raises:
+        NativeAdapterMisconfigurationError: An enabled tool is not a builtin and
+            the block declares no ``mcp_server``, so the emitted schema would
+            carry ``source=None`` and reach the runner as an unresolvable name.
         RuntimeError: If the block names an ``mcp_server`` script that is absent.
         ValueError: If a ``tools.<actor>.<name>`` block is not a mapping.
     """
     from tolokaforge.runner.models import InvocationStyle, ToolSchema, ToolSource
     from tolokaforge.runner.tool_factory import create_search_kb_schema
+    from tolokaforge.tools.builtin import registry as builtin_registry
 
     block = actor_tool_block(task, actor)
     mcp_server_ref: str | None = block.get("mcp_server")
@@ -110,6 +198,10 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
             # the LLM sees the real {query, top_k, alpha} parameters.
             schemas.append(create_search_kb_schema())
             continue
+        if mcp_server_ref is None and not builtin_registry.is_builtin(tool_name):
+            raise NativeAdapterMisconfigurationError(
+                _hint_native_adapter_misconfiguration(tool_name, task_dir)
+            )
         rich = rich_schemas.get(tool_name, {})
         source = (
             ToolSource(

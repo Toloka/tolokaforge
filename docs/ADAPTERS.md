@@ -12,9 +12,11 @@ For adapter architecture and interface contracts, see
 
 ## `frozen_mcp_core` — FrozenMcpCoreAdapter
 
-Built-in adapter for converted/frozen `tlk_mcp_core` task packs.  Loads tools
-from a bundled `_domain/` directory and handles DB creation, tool wrapping, and
-stable hash grading.
+Entry-point plugin registered by the `tolokaforge-tools` distribution (not
+present in this repository); selected via
+`evaluation.harness_adapter.type: frozen_mcp_core`. Serves converted/frozen
+`tlk_mcp_core` task packs: loads tools from a bundled `_domain/` directory
+and handles DB creation, tool wrapping, and stable hash grading.
 
 ### Fixed Issues
 
@@ -72,7 +74,33 @@ stable hash grading.
 
 ## `native` — NativeAdapter
 
-Built-in adapter for file-based YAML tasks (`task.yaml` + `grading.yaml`).
+Built-in adapter for file-based YAML tasks (`task.yaml` + `grading.yaml`);
+the harness's default when the run config selects no other adapter.
+
+### Source-less non-builtin tool guard
+
+NativeAdapter emits `ToolSchema` objects with `source=None` for every enabled
+tool name unless the actor block declares `tools.<actor>.mcp_server`. A
+source-less schema is only resolvable at the runner when the tool name is in
+the builtin registry, so the harness raises in two layers:
+
+- **Emit time** (`NativeAdapter._actor_tool_schemas`) raises
+  `NativeAdapterMisconfigurationError` (a `ValueError` subclass) before the
+  schema leaves the harness. The message names the offending tool and the
+  pack root, points at `evaluation.harness_adapter.type` as the run-config
+  key to override, and enumerates the registered non-native adapters.
+- **Runner-side fallback** (`ToolFactory._create_wrapper`) raises
+  `ToolConfigurationError` for any schema that still reaches the runner with
+  `source=None` and a non-builtin name — e.g. from a plugin adapter that
+  also emits source-less schemas. The message points at
+  `tools.<actor>.mcp_server` and enumerates the registered adapter names.
+
+When the pack root or an ancestor within three directory levels contains a
+`_domain/tools/<name>` directory, the emit-time message appends a
+`detected shape: _domain/tools/<name>` clause. That layout is the common
+shape of a converted MCP task pack whose run config forgot to override the
+harness adapter; the clause is a generic filesystem-pattern hint, never a
+hardcoded pack-name check.
 
 ### Open Issues
 
