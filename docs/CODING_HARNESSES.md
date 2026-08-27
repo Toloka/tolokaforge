@@ -31,7 +31,7 @@ models:
   agent:
     provider: "openrouter"
     name: "openrouter/anthropic/claude-sonnet-4-6"
-    harness: "claude-code"          # any shipped harness name; omit for engine loop
+    coding_harness: "claude-code"   # any shipped harness name; omit for engine loop
     temperature: 0.0
 evaluation:
   projects: ["examples/native/coding_harness"]
@@ -55,7 +55,7 @@ registry, name it inline on the slug:
 ```yaml
 models:
   agent:
-    harness: "claude-code@2.2.0"    # overrides the shipped pin
+    coding_harness: "claude-code@2.2.0"   # overrides the shipped pin
 ```
 
 Equivalently, use the struct form (identical after parse — visible in a
@@ -64,8 +64,8 @@ config diff):
 ```yaml
 models:
   agent:
-    harness: "claude-code"
-    harness_version: "2.2.0"
+    coding_harness: "claude-code"
+    coding_harness_version: "2.2.0"
 ```
 
 The version segment passes to `install-harness.sh` at trial-image build
@@ -73,22 +73,59 @@ time and lands on the recorded artefact's `HarnessSpec.version`, so
 replay can see the override. Trade-off: reproducibility. Two operators
 running the "same" run config with different overrides get different
 scores. Use for ad-hoc research; leave the field off for scored runs.
-Setting both the slug's `@version` and `harness_version` to different
-values is a hard error naming both.
+Setting both the slug's `@version` and `coding_harness_version` to
+different values is a hard error naming both.
 
-### The capability-flag gate
+### How the mode gets selected
 
-Not every adapter runs a coding-harness trial. An adapter opts in by
-inheriting
-[`CodingHarnessAdapterMixin`](../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py)
-alongside `BaseAdapter`; the mixin sets
-`supports_coding_harness: ClassVar[bool] = True`. The orchestrator's
-`load_tasks` reads that flag on the resolved adapter; a run declaring
-`models.agent.coding_harness` against an adapter whose flag reads `False`
-refuses before any container work, naming both sides of the mismatch
-and the currently-opted-in set. Two adapters ship the opt-in today:
-`native` and `terminal_bench`. See
-[ADR-0039](adr/0039-coding-harness-adapter-agnostic.md).
+The orchestrator selects an `AgentDriver`
+([ADR-0039](adr/0039-coding-harness-adapter-agnostic.md)) per run from
+`models.agent.coding_harness`: absent → `EngineLoopDriver` (a
+no-op passthrough); non-empty → `CodingHarnessDriver`. The driver
+attaches to an adapter that stages a per-trial container (`native`,
+`terminal_bench` today) and refuses to attach otherwise, naming the
+compatible adapter set. The adapter itself carries no coding-harness
+state.
+
+### Credentials — how the shield works
+
+**Coding-harness runs never receive the real LLM provider credential
+in the trial container.** The vendor CLI runs inside the container and
+is the LLM client that originates requests to OpenRouter / Anthropic /
+OpenAI; if the real key sat in the container's `environment:`, the
+model would read it in one `printenv` call. Instead:
+
+- Every shipped harness in
+  [`data/harnesses.yaml`](../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml)
+  carries a `credential_gateway` block declaring the upstream URL,
+  the real-token env var (read via `SecretManager`), the auth header
+  format, and a **dummy** value the CLI is allowed to see.
+- At `attach()` the `CodingHarnessDriver` starts an
+  `LLMGatewayEndpoint` — a small HTTP proxy in the orchestrator
+  process — that holds the real credential and forwards to upstream
+  after injecting the correct auth header.
+- The trial container's compose `environment:` carries only the
+  dummy token + a base URL pointing at the gateway (reached via
+  compose `extra_hosts` to the docker bridge gateway).
+- For CLIs that write an on-disk auth file (`codex`, `opencode`),
+  the file carries the dummy too.
+
+See [ADR-0041](adr/0041-coding-harness-credential-gateway.md) and
+[`docs/SECURITY.md`](SECURITY.md) for the full threat model, the
+three-layer split (agent loop / gateway endpoint / launcher), and the
+reserved cluster-mode extension (`SidecarGatewayLauncher`).
+
+**Escape hatch**: `models.agent.disable_credential_gateway: true`
+reverts to the pre-shield behavior — real token in the container env.
+Intended for the rare CLI a proxied backend cannot drive; none of the
+shipped harnesses need it today. The driver logs a warning naming the
+harness.
+
+**Unshielded harness**: `gemini-cli` currently ships
+`credential_gateway: null` — its REST auth uses `x-goog-api-key`
+(not `Bearer`) and its request paths are model-dynamic
+(`/v1beta/models/<model>:generateContent`). Tracked by
+[#1311](https://github.com/Toloka/tolokaforge/issues/1311).
 
 ## What each shipped adopter provides
 

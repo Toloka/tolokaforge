@@ -27,6 +27,24 @@ When a task declares its own `environment_manifest.compose_file`, the runtime ba
 
 See [ADR-0018](adr/0018-multi-container-under-shared-runtime.md) for the full case matrix, [RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md) for backend mechanics, and [PROJECTS.md](PROJECTS.md) for the `network_policy` and per-service isolation authoring surface.
 
+## Credential Shielding in Coding-Harness Mode
+
+Coding-harness mode ([ADR-0039](adr/0039-coding-harness-adapter-agnostic.md)) hands the LLM turn loop to a vendor CLI (`claude-code`, `codex`, `kimi-code`, `opencode`, `grok-build`) running inside the trial container. Unlike engine-loop mode — where the `LLMClient` runs on the host and no credential ever enters the container — the CLI IS the LLM client and originates HTTPS requests to the provider from inside the container the model has code-execution control over.
+
+**The invariant:** the trial container's compose `environment:`, the on-disk auth files the CLI writes (`$CODEX_HOME/auth.json`, `$CONFIG_HOME/opencode/opencode.json`), and every artifact the run emits carry only *dummy* tokens. A model that reads `printenv`, `cat /proc/self/environ`, or the on-disk config sees dummies. The real provider credential never lands where the model can read it.
+
+**Mechanism** (full design in [ADR-0041](adr/0041-coding-harness-credential-gateway.md)):
+
+- Every shipped harness in [`data/harnesses.yaml`](../tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml) carries a `credential_gateway` block declaring the upstream URL, the real-token env var (read via `SecretManager`), the auth header format, and a dummy value the CLI is allowed to see.
+- The `CodingHarnessDriver` starts an `LLMGatewayEndpoint` at `attach()` — a small HTTP proxy in the orchestrator process — that holds the real credential and forwards to upstream after injecting the correct auth header.
+- The trial container's compose `environment:` carries only the dummy token + a base URL pointing at the gateway (reached via compose `extra_hosts` to the docker bridge gateway).
+
+**Escape hatch:** `models.agent.disable_credential_gateway: true` reverts to the pre-shield behavior (real token in the container env). Intended for the rare CLI a proxied backend cannot drive; none of the shipped harnesses need it today. The driver logs a warning naming the harness when the escape hatch fires.
+
+**Deferred:** Egress restriction — preventing a malicious model from exfiltrating task data to an attacker-controlled URL via arbitrary outbound HTTP — is not applied by the credential shield today (the host-side gateway is incompatible with docker `internal: true` networks; the CLI has no route to the gateway from an isolated network). It ships in the `SidecarGatewayLauncher` follow-up called out in ADR-0041, where the gateway itself lives inside the compose stack on the same internal network as the CLI.
+
+**Unshielded harness:** `gemini-cli` ships `credential_gateway: null` — its REST auth uses `x-goog-api-key` (not `Bearer`) and its request paths are model-dynamic. Tracked as [#1311](https://github.com/Toloka/tolokaforge/issues/1311). The set of unshielded harnesses is documented at [`tests/unit/test_credential_gateway_schema.py`](../tests/unit/test_credential_gateway_schema.py) via an `UNSHIELDED_HARNESSES` set; the tests refuse silent regressions in both directions.
+
 ## Tool-Level Security
 
 ### Tool Allowlisting

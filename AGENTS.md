@@ -61,6 +61,8 @@ Tolokaforge is an LLM tool-use benchmarking harness.
 
 `tolokaforge run` calls `init_default()` once at startup. Inside the runner container, `init_default_from(...)` is reconstructed from `TOLOKAFORGE_SECRETS_JSON`. There is no other initialization path. The CI test [`tests/unit/secrets/test_no_raw_secret_access.py`](tests/unit/secrets/test_no_raw_secret_access.py) static-greps for these patterns; adding a new violation will fail CI.
 
+**Coding-harness trial containers never receive real provider credentials.** The `CodingHarnessDriver` ([ADR-0041](docs/adr/0041-coding-harness-credential-gateway.md)) plumbs the real credential onto a host-side `LLMGatewayEndpoint` and bakes only a dummy token + a gateway URL into the trial container's compose `environment:`. Any harness added to [`data/harnesses.yaml`](tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml) MUST populate its `credential_gateway` block OR appear on the `UNSHIELDED_HARNESSES` set in [`tests/unit/test_credential_gateway_schema.py`](tests/unit/test_credential_gateway_schema.py) with a tracked issue — there is no silent third path. See [`docs/SECURITY.md`](docs/SECURITY.md) for the full trust boundary.
+
 ## Setup and Commands
 
 ### Package Manager (uv)
