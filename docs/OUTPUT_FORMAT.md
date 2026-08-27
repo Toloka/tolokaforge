@@ -1021,8 +1021,8 @@ contains — on this path it is stamped and most of them are absent.
   on this path.
 * `grade.yaml` — **not written**. The trial body never ran, so there is no
   performance to score; a `0.0` would be indistinguishable from a task the model
-  failed. The stage and reason live in `metrics.yaml`'s `error` / `error_reason`
-  above, and the trial is excluded from every rate in
+  failed. The failure class and reason live in `metrics.yaml`'s `error` /
+  `error_reason` above, and the trial is excluded from every rate in
   `per_task_metrics.json` (see § Run-level metric denominators).
 
 Writing this bundle is best-effort: an I/O failure while writing it is logged

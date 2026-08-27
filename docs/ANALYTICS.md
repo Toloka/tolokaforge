@@ -240,7 +240,7 @@ record can see whether the attempt counted, and the summary carries
 Evidence payloads include tool name/index, error strings, state-diff keys, and termination reasons when available.
 
 Every attribution record also carries `provision_stage` as a top-level field, taking one of `provision` / `await_ready` / `reset_recipe` / `register_trial` (the closed
-[`ProvisionStage`](../tolokaforge/core/models/trajectory.py:1) vocabulary) when the trial's `termination_reason` is `provision_error`, and `null` otherwise. It is a first-class attribution field, not an entry inside `evidence`, because it answers "which point of the provisioning lifecycle failed" — the operator's question — rather than describing the evidence for the classification. Present-but-null off the provision path so a reader can access `record["provision_stage"]` unconditionally.
+`tolokaforge.core.models.trajectory.ProvisionStage` vocabulary) when the trial's `termination_reason` is `provision_error`, and `null` otherwise. It is a first-class attribution field, not an entry inside `evidence`, because it answers "which point of the provisioning lifecycle failed" — the operator's question — rather than describing the evidence for the classification. Present-but-null off the provision path so a reader can access `record["provision_stage"]` unconditionally.
 
 ## Programmatic Analysis Example
 
