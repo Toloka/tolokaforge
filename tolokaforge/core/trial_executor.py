@@ -245,9 +245,10 @@ class ProvisioningTrialExecutor:
         The conductor never ran, so nothing else writes this trial's directory.
         Reuses the run's ``artifact_writer`` (no schema duplication), then amends
         ``metrics.yaml`` with the top-level failure signal (``error`` /
-        ``error_reason``) via the shared ``_amend_trial_metrics`` path. Any write
-        failure is logged and swallowed — mirrors ``_safe_teardown``; it never
-        masks the synthesized ``ProvisionError`` result the caller returns.
+        ``error_reason`` / ``error_stage``) via the shared ``_amend_trial_metrics``
+        path. Any write failure is logged and swallowed — mirrors
+        ``_safe_teardown``; it never masks the synthesized ``ProvisionError``
+        result the caller returns.
         """
         task_id = trajectory.task_id
         trial_idx = trajectory.trial_index
@@ -271,6 +272,7 @@ class ProvisioningTrialExecutor:
             {
                 "error": TerminationReason.PROVISION_ERROR.value,
                 "error_reason": error.reason,
+                "error_stage": error.stage,
             },
         )
 
@@ -370,6 +372,7 @@ def _synthesize_provision_failure_result(spec: TrialSpec, error: ProvisionError)
         end_ts=now,
         status=TrialStatus.ERROR,
         termination_reason=TerminationReason.PROVISION_ERROR,
+        provision_stage=error.stage,
         messages=[],
         metrics=Metrics(),
     )

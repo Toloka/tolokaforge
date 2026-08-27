@@ -5,6 +5,7 @@ start_ts: '2026-01-01T12:00:00+00:00'
 end_ts: '2026-01-01T12:00:00+00:00'
 status: completed
 termination_reason: null
+provision_stage: null
 grading_error: null
 first_user_message_source: null
 messages:

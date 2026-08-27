@@ -12,7 +12,7 @@ census (:class:`RateLimitProbeRoleMetrics`,
 import dataclasses
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Self, get_args
+from typing import Any, Literal, Self, get_args
 
 from pydantic import (
     BaseModel,
@@ -33,6 +33,7 @@ __all__ = [
     "Message",
     "MessageRole",
     "Metrics",
+    "ProvisionStage",
     "RateLimitProbeBucketMetrics",
     "RateLimitProbeRoleMetrics",
     "ReplyDefect",
@@ -44,6 +45,21 @@ __all__ = [
     "UserReplyGuardEvent",
     "UserReplyOutcome",
 ]
+
+
+ProvisionStage = Literal["provision", "await_ready", "reset_recipe", "register_trial"]
+"""The four points a :class:`~tolokaforge.core.runtime.ProvisionError` can
+be raised at, as a closed vocabulary. The provisioner declares which lifecycle
+step failed — compose-up (``provision``), the readiness gate (``await_ready``),
+the per-trial reset hook (``reset_recipe``), or the runner-side registration
+that arms the trial (``register_trial``) — and the value survives verbatim onto
+:attr:`Trajectory.provision_stage` and the per-trial ``metrics.yaml``
+``error_stage`` key.
+
+Defined here because :class:`Trajectory` carries it as a field; re-exported from
+:mod:`tolokaforge.core.runtime` because :class:`ProvisionError` is the raise
+site and the two names read as one contract there.
+"""
 
 
 class MessageRole(str, Enum):
@@ -585,6 +601,13 @@ class Trajectory(BaseModel):
     # reason it gave. ``None`` means grading either succeeded or was correctly
     # not attempted — it does not distinguish those two, ``grade`` does.
     grading_error: str | None = None
+    # Which point of the provisioning lifecycle raised ``ProvisionError``.
+    # Non-``None`` iff ``termination_reason == PROVISION_ERROR``; ``None`` on
+    # every other trial including bundles the executor writes for a failure
+    # whose stage the raise site did not name (the closed set at
+    # ``ProvisionStage`` is exhaustive today, so this is a defensive default,
+    # not a documented gap).
+    provision_stage: ProvisionStage | None = None
     # Monotonic integer stamped on every trajectory; bumped whenever the
     # simulator prompt shape or the conversation context the simulator sees
     # is revised so that downstream analytics can gate comparisons across
