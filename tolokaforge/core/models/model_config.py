@@ -163,6 +163,24 @@ class ModelConfig(BaseModel):
                 stacklevel=4,
             )
 
+        # ---- Reject an empty struct-form coding_harness_version ----
+        # The slug form (`claude-code@`) refuses this at line 178 below,
+        # and the mixin path in the coding-harness driver refuses it at
+        # construction. Without this check the direct struct form
+        # (`coding_harness_version: ""`) would slip past the schema, get
+        # threaded into the driver's HarnessSelection, and coerce to
+        # None at the ``params.get("agent_harness_version") or None``
+        # step — silently using the shipped pin instead of failing loud.
+        # Fail-fast in the schema so all three shapes reject empty
+        # identically.
+        struct_version = values.get("coding_harness_version")
+        if isinstance(struct_version, str) and not struct_version:
+            raise ValueError(
+                "models.agent.coding_harness_version='': empty. Write a "
+                "concrete version (e.g. '2.2.0') or drop the field to use "
+                "the shipped registry pin."
+            )
+
         # ---- Slug split on the canonical field ----
         coding_harness = values.get("coding_harness")
         if not isinstance(coding_harness, str) or "@" not in coding_harness:

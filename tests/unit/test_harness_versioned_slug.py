@@ -86,6 +86,18 @@ class TestEmptySegments:
         with pytest.raises(ValueError):
             ModelConfig(**_agent(coding_harness="@"))
 
+    def test_empty_struct_form_version_raises(self) -> None:
+        """The three empty-version paths must all fail identically: slug
+        empty version (test_empty_version_after_at_raises above), mixin
+        empty version_override (covered in the mixin's own tests), and
+        the struct form (`coding_harness_version: ""`) here. Without this
+        check the struct form silently coerces to `None` downstream and
+        the shipped pin is used — the exact fail-fast violation the
+        review flagged."""
+        with pytest.raises(ValueError) as excinfo:
+            ModelConfig(**_agent(coding_harness="claude-code", coding_harness_version=""))
+        assert "empty" in str(excinfo.value).lower()
+
 
 class TestVersionThreadedThroughRunConfig:
     def test_slug_survives_run_config_parse(self) -> None:
