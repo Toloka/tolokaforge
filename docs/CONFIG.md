@@ -460,6 +460,11 @@ behind it, and admits exactly the parameters its flags name for that model's
 calls. Nothing else changes, and nothing is written into litellm's global
 map. See [`docs/LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
 
+`config validate` treats a model absent from litellm's map as an *unknown*,
+not a refusal — it emits an INFO with the exact `litellm_models:` entry to
+declare, and does not exit non-zero. A `False` from a *mapped* entry stays an
+ERROR (WARNING for `openrouter/` providers).
+
 Overlay
 presets are prepended to the iteration order so first-match-wins lets you
 shadow a bundled preset. Same-named overlay presets *replace* the bundled

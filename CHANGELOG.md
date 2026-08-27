@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Fix
+
+- **config validate**: no longer reports `"does not appear to support function calling"` for models absent from litellm's map (e.g. `google/gemini-3.6-flash` and OpenRouter unmapped variants); an INFO now nudges the operator to declare the overlay entry if they intend to use tools. (#1300)
+
 ## v0.21.2 (2026-08-26)
 
 ### Fix

@@ -141,10 +141,21 @@ def _declared_function_calling(name: str, provider: str) -> bool:
 
 
 def _model_supports_function_calling(model_name: str) -> bool | None:
-    """Best-effort check via LiteLLM, returns None on failure."""
+    """Answer function-calling support for *model_name* from litellm's map.
+
+    Returns ``True``/``False`` when litellm carries an entry for the key, and
+    ``None`` when the key is absent from the map. ``litellm.get_model_info``
+    is the seam that distinguishes the two: it raises for unmapped keys where
+    ``litellm.supports_function_calling`` alone would return ``False`` for
+    both "map has an entry that says False" and "map has no entry".
+    """
     try:
         import litellm
 
+        litellm.get_model_info(model=model_name)
+    except Exception:
+        return None
+    try:
         return litellm.supports_function_calling(model=model_name)
     except Exception:
         return None
@@ -288,9 +299,6 @@ def _validate_model(
             # `None` would quietly stop consulting the declaration.
             fc_support = True
         if fc_support is False:
-            # For OpenRouter, LiteLLM may not recognise the model (future /
-            # niche models).  Downgrade to WARNING so we don't block runs for
-            # models that LiteLLM simply hasn't catalogued yet.
             severity = (
                 Severity.WARNING if provider.lower().startswith("openrouter") else Severity.ERROR
             )
@@ -300,6 +308,24 @@ def _validate_model(
                     path=f"{base}.name",
                     message=f"Model {name!r} does not appear to support function calling (required for agent)",
                     hint="Verify with your provider that the model supports tool use / function calling",
+                )
+            )
+        elif fc_support is None:
+            # Unmapped in litellm and undeclared in the overlay: the check
+            # cannot answer either way. Surface an INFO with the exact overlay
+            # entry to declare — silence would look like approval.
+            issues.append(
+                ValidationIssue(
+                    severity=Severity.INFO,
+                    path=f"{base}.name",
+                    message=(
+                        f"Model {name!r} is not in litellm's model map; "
+                        "cannot confirm function-calling support"
+                    ),
+                    hint=(
+                        "If the run needs tools, declare it in the presets overlay: "
+                        f"litellm_models.{provider}/{name} with supports_function_calling: true"
+                    ),
                 )
             )
 
