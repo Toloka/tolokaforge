@@ -289,6 +289,12 @@ def test_timeout_classification():
     traj.status = TrialStatus.TIMEOUT
     traj.termination_reason = TerminationReason.TIMEOUT
 
+    # A non-provision trajectory carries no provisioning-lifecycle stage; the
+    # field is populated only when the executor synthesizes a
+    # ``PROVISION_ERROR`` result. Locks the reverse direction of the invariant
+    # ``provision_stage non-None iff termination_reason == PROVISION_ERROR``.
+    assert traj.provision_stage is None
+
     assert is_failed_trajectory(traj) is True
     attribution = attribute_failure(traj)
     assert attribution["failure_class"] == "timeout_or_resource"

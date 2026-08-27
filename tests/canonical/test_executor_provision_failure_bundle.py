@@ -16,6 +16,7 @@ and an :class:`InMemoryConductor` stands in for the (never-invoked) trial body.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -23,12 +24,22 @@ import yaml
 
 from tests.canonical._factories import make_task_config, make_trial_spec
 from tests.utils.provision_failure import FailProvisionBackend, provisioning_executor
+from tolokaforge.core.conductor import InMemoryConductor
 from tolokaforge.core.logging import StructuredLogger
-from tolokaforge.core.models import Trajectory, TrialStatus
+from tolokaforge.core.models import (
+    Message,
+    MessageRole,
+    Metrics,
+    TerminationReason,
+    Trajectory,
+    TrialStatus,
+)
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.output.artifacts import FileArtifactWriter, InMemoryArtifactWriter
 from tolokaforge.core.output_writer import TRIAL_BUNDLE_SCHEMA_VERSION
-from tolokaforge.core.trial import TrialResult
+from tolokaforge.core.runtime import InMemoryRuntimeBackend, ProvisionError
+from tolokaforge.core.trial import TrialResult, TrialSpec
+from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 
 pytestmark = pytest.mark.canonical
 
@@ -68,6 +79,7 @@ class TestBundleWrittenOnProvisionFailure:
         trajectory = yaml.safe_load((trial_dir / "trajectory.yaml").read_text())
         assert trajectory["status"] == "error"
         assert trajectory["termination_reason"] == "provision_error"
+        assert trajectory["provision_stage"] == "provision"
 
         metrics = yaml.safe_load((trial_dir / "metrics.yaml").read_text())
         # Default-``Metrics`` shape: ``cost_usd`` is ``None`` until an API call
@@ -76,6 +88,7 @@ class TestBundleWrittenOnProvisionFailure:
         assert metrics["schema_version"] == TRIAL_BUNDLE_SCHEMA_VERSION
         assert metrics["error"] == "provision_error"
         assert metrics["error_reason"] == "no capacity in region"
+        assert metrics["error_stage"] == "provision"
 
         # No ``grade.yaml``: the trial body never ran, so there is no verdict.
         # The failure is recorded where it happened — the trajectory's
@@ -141,3 +154,81 @@ class TestBundleWriteFailureDoesNotMask:
         ]
         assert len(warnings) == 1
         assert warnings[0]["level"] == "WARNING"
+
+
+class _RegisterTrialRefusingConductor(InMemoryConductor):
+    """Conductor whose ``run`` raises ``ProvisionError(stage='register_trial')``.
+
+    The register-trial refusal reaches the trial executor through
+    ``conductor.run``: registration is a per-trial RPC arming step the runner
+    performs inside the trial body, so a stage-``register_trial`` raise is
+    always downstream of a successful ``provision`` + ``await_ready``. This
+    stand-in reproduces that shape without a runner service.
+    """
+
+    def run(self, spec: TrialSpec, task_config):
+        raise ProvisionError(
+            trial_id=spec.trial_id,
+            stage="register_trial",
+            reason="runner refused registration: search plane unavailable",
+        )
+
+
+class TestStageSurvivesToMetricsAndTrajectory:
+    def test_register_trial_stage_survives_from_conductor_raise(self, tmp_path: Path) -> None:
+        """A ``ProvisionError`` raised inside ``conductor.run`` carries its stage
+        onto both durable surfaces — the trajectory field and the metrics key —
+        even though the failure lands after ``provision`` + ``await_ready``
+        succeeded."""
+        executor = ProvisioningTrialExecutor(
+            runtime_backend=InMemoryRuntimeBackend(),
+            conductor=_RegisterTrialRefusingConductor(),
+            logger=StructuredLogger("test-provision-failure-bundle"),
+            output_dir=tmp_path,
+            artifact_writer=FileArtifactWriter(),
+        )
+
+        result = executor.execute(
+            make_trial_spec(trial_id="task-7:0"), make_task_config(task_id="task-7")
+        )
+
+        assert isinstance(result, TrialResult)
+        assert result.trajectory.status is TrialStatus.ERROR
+        assert result.trajectory.termination_reason is TerminationReason.PROVISION_ERROR
+        assert result.trajectory.provision_stage == "register_trial"
+
+        trial_dir = _trial_dir(tmp_path, "task-7", 0)
+        trajectory = yaml.safe_load((trial_dir / "trajectory.yaml").read_text())
+        assert trajectory["provision_stage"] == "register_trial"
+
+        metrics = yaml.safe_load((trial_dir / "metrics.yaml").read_text())
+        assert metrics["error"] == "provision_error"
+        assert metrics["error_stage"] == "register_trial"
+        assert metrics["error_reason"] == "runner refused registration: search plane unavailable"
+
+
+class TestErrorStageIsAbsentOffTheProvisionFailurePath:
+    def test_completed_trial_metrics_yaml_carries_no_error_stage(self, tmp_path: Path) -> None:
+        """The ``error_stage`` key is written only when
+        :meth:`_write_provision_failure_bundle` runs. A ``metrics.yaml`` from a
+        completed trial — the artifact writer's own output, unamended — has no
+        ``error_stage`` key at all, so the invariant "error_stage iff
+        error == provision_error" reads one direction from the file."""
+        trial_dir = _trial_dir(tmp_path, "task-completed", 0)
+        trial_dir.mkdir(parents=True)
+        trajectory = Trajectory(
+            task_id="task-completed",
+            trial_index=0,
+            start_ts=datetime.now(tz=timezone.utc),
+            end_ts=datetime.now(tz=timezone.utc),
+            status=TrialStatus.COMPLETED,
+            termination_reason=TerminationReason.AGENT_DONE,
+            messages=[Message(role=MessageRole.USER, content="hello")],
+            metrics=Metrics(),
+        )
+        FileArtifactWriter().write_metrics(trial_dir, trajectory)
+
+        metrics = yaml.safe_load((trial_dir / "metrics.yaml").read_text())
+        assert "error" not in metrics
+        assert "error_reason" not in metrics
+        assert "error_stage" not in metrics
