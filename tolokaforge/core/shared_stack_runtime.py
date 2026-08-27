@@ -634,6 +634,7 @@ class GrpcRunnerClient:
                             # at RegisterTrial, so its verdicts are all scored.
                             "severity": tc.severity or TraceConstraintSeverity.SCORED.value,
                             "undecided": tc.undecided,
+                            "withheld": tc.withheld,
                         }
                         for tc in grade.trace_checks
                     ],

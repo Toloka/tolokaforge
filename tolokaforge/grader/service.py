@@ -183,6 +183,7 @@ def _trace_constraint_to_wire(r: TraceConstraintResult) -> grader_pb2.TraceConst
         matched_positions=list(r.matched_positions),
         severity=r.severity,
         undecided=r.undecided,
+        withheld=r.withheld,
     )
 
 

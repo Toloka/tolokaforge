@@ -150,6 +150,7 @@ def _grade_from_wire(grade: grader_pb2.Grade) -> dict:
                 "matched_positions": list(r.matched_positions),
                 "severity": r.severity,
                 "undecided": r.undecided,
+                "withheld": r.withheld,
             }
             for r in grade.trace_checks
         ],

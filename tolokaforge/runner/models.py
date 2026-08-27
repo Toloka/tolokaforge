@@ -26,6 +26,13 @@ The types in this module fall into three tiers:
   travel only on the runner service surface.
 
 All models use Pydantic v2 ``BaseModel`` for validation and serialization.
+
+**Back-compat import aliases.** ``RunnerTranscriptRulesConfig`` and
+``RunnerRequiredAction`` remain importable as aliases for the canonical
+``TranscriptRulesConfig`` and ``RequiredAction``; access emits a
+``DeprecationWarning`` (tracked for removal in #1304). The alias set is
+closed to these two names; no other ``Runner``-prefixed variant of a wire
+type is aliased.
 """
 
 from __future__ import annotations
@@ -47,6 +54,7 @@ from tolokaforge.core.deprecations import (
     coerce_flat_stack_fields,
     coerce_network_policy_case,
     coerce_security_context_aliases,
+    warn_deprecated,
 )
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
@@ -405,8 +413,29 @@ class HashComparisonBasis(str, Enum):
     """No source at all: the same initial state, reached by falling through."""
 
 
+_RETIRED_EXPECTED_HASH_MESSAGE: str = (
+    "state_checks.expected_hash has been retired — the key carried a stored digest, "
+    "and the current wire schema replaces it with expect_initial_state: bool, a "
+    "comparison-basis selector (a different concept on the same name, so a digest "
+    "silently mapped through would grade the trial by a rule the emitting engine "
+    "never asked for). Declare a source instead: `expect_initial_state: true` for a "
+    "refusal task whose expected final state is the initial state, or "
+    "`golden_actions: [...]` for a task that changes state. Retirement tracked in "
+    "#1304."
+)
+"""The migration message a caller that declares the retired ``expected_hash`` key reads."""
+
+
 class RunnerStateChecksConfig(BaseModel):
-    """State-based grading configuration."""
+    """State-based grading configuration on the runner wire.
+
+    Declares no ``expected_hash`` field; a ``mode="before"`` validator refuses the
+    retired key with a ``ValidationError`` naming the two current sources
+    (``golden_actions``, ``expect_initial_state``) and the retirement tracker
+    (#1304). The ``state_checks.hash.expected_state_hash`` author-surface
+    retirement is separately handled in
+    :mod:`tolokaforge.core.grading.state_composition`.
+    """
 
     # Hash comparison
     hash_enabled: bool = False
@@ -436,6 +465,20 @@ class RunnerStateChecksConfig(BaseModel):
 
     # Substrate SQL assertions against a task-declared postgres DSN
     db_probes: list[DbProbe] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_retired_expected_hash(cls, data: Any) -> Any:
+        """Raise the migration a caller that declares ``expected_hash`` reads.
+
+        Fires before Pydantic's ``extra_forbidden`` sweep, so the actionable
+        migration message wins over the generic "Extra inputs are not permitted".
+        Presence of the key at all — populated, falsy, or ``None`` — is enough:
+        a caller that even declares it is speaking the retired schema.
+        """
+        if isinstance(data, Mapping) and "expected_hash" in data:
+            raise ValueError(_RETIRED_EXPECTED_HASH_MESSAGE)
+        return data
 
     @field_validator("id_fields")
     @classmethod
@@ -1280,10 +1323,18 @@ class TraceConstraintExpr(BaseModel):
 
 
 class OnMissing(str, Enum):
-    """What an anchor that matched nothing decides."""
+    """What an anchor that matched nothing decides.
+
+    ``withhold`` excludes the constraint from the block's score entirely — its
+    weight enters neither the numerator nor the denominator, and a ``severity:
+    gate`` withheld constraint does not shut the block. The record is on
+    :attr:`TraceConstraintResult.withheld` so a reader classifies a withheld
+    verdict from the grade alone, without matching on message prose.
+    """
 
     FAIL = "fail"
     PASS = "pass"
+    WITHHOLD = "withhold"
 
 
 class TraceConstraintSeverity(str, Enum):
@@ -1539,17 +1590,35 @@ class TraceConstraint(BaseModel):
         policy no anchor it did not have at the top — it still answers the question
         the nested kind asks, and the vacuous pass the top-level rule refuses is
         written one line lower.
+
+        ``on_missing: withhold`` is admissible on ``present`` and ``count``: the
+        matcher yielding no candidate is a distinct case from ``present``'s zero
+        (a definite failure) and ``count``'s out-of-bounds (also a failure), and
+        withholding it is not the vacuous pass ``on_missing: pass`` would be.
+        ``absent`` still refuses ``withhold``: the empty match IS its positive
+        verdict, so withholding there would withhold the very check the
+        constraint asks.
         """
-        anchorless = sorted(
-            kind.value for kind in self.require.kinds_in_tree() & _KINDS_WITHOUT_AN_ANCHOR
-        )
-        if self.on_missing is None or not anchorless:
+        if self.on_missing is None:
             return self
+        anchorless = self.require.kinds_in_tree() & _KINDS_WITHOUT_AN_ANCHOR
+        if not anchorless:
+            return self
+        if self.on_missing is OnMissing.WITHHOLD:
+            if TraceConstraintKind.ABSENT not in anchorless:
+                return self
+            raise ValueError(
+                f"{self.id}: on_missing: withhold has nothing to decide over ['absent'], "
+                "whose empty match IS its positive verdict — withholding there would "
+                "withhold the very check the constraint asks. Drop the on_missing, or "
+                "write a present with the complement matcher"
+            )
         raise ValueError(
-            f"{self.id}: on_missing has nothing to decide over {anchorless}, whose verdict "
-            "is the match itself — a composite passes the policy down to every expression "
-            "it holds, so nesting one of them does not anchor it. Setting it would answer "
-            "the very question the constraint asks"
+            f"{self.id}: on_missing has nothing to decide over "
+            f"{sorted(kind.value for kind in anchorless)}, whose verdict is the match "
+            "itself — a composite passes the policy down to every expression it holds, "
+            "so nesting one of them does not anchor it. Setting it would answer the "
+            "very question the constraint asks"
         )
 
 
@@ -3208,11 +3277,16 @@ class TraceConstraintResult(BaseModel):
     stays readable and serialisable; an event is looked up by position against
     ``trajectory.yaml``.
 
-    ``undecided`` separates the two ways ``passed`` is ``False``: the trial did not
-    satisfy the constraint, or its evidence could not say. It changes no score —
-    an undecided constraint forfeits its weight and shuts a gate it carries,
-    exactly as a failure does — and it is the only field a reader can classify a
-    constraint's discriminating power from without matching on ``message`` prose.
+    Three flags separate the ways ``passed`` is ``False``. ``undecided`` names an
+    evidence gap: no completion of the trial's missing record settles the verdict,
+    so the constraint forfeits its weight and shuts a gate it carries. ``withheld``
+    names an author opt-out: the anchor matched nothing and the constraint declared
+    ``on_missing: withhold``, so its weight enters neither the numerator nor the
+    denominator and a withheld gate does not shut the block. Neither flag set with
+    ``passed=False`` is a definite failure — the trial did not satisfy the
+    constraint on evidence it did carry. The three flags are the fields a reader
+    classifies a constraint's discriminating power from without matching on
+    ``message`` prose.
     """
 
     id: str = Field(min_length=1)
@@ -3223,6 +3297,7 @@ class TraceConstraintResult(BaseModel):
     message: str = ""
     matched_positions: list[int] = Field(default_factory=list)
     undecided: bool = False
+    withheld: bool = False
 
     model_config = {"extra": "forbid"}
 
@@ -3234,6 +3309,29 @@ class TraceConstraintResult(BaseModel):
                 "means no completion of the trial's missing evidence settles the verdict, "
                 "which is never a pass — a verdict reaching the host this way has lost "
                 "which of the two it is"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_a_withheld_pass(self) -> TraceConstraintResult:
+        if self.withheld and self.passed:
+            raise ValueError(
+                f"trace constraint {self.id!r} passed and is withheld at once. Withheld "
+                "means the author opted the constraint out of scoring for an anchor that "
+                "matched nothing, which is not a pass — a verdict reaching the host this "
+                "way has lost which of the two it is"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_a_withheld_undecided(self) -> TraceConstraintResult:
+        if self.withheld and self.undecided:
+            raise ValueError(
+                f"trace constraint {self.id!r} is withheld and undecided at once. Withheld "
+                "names an author opt-out on an unmatched anchor; undecided names an evidence "
+                "gap no completion of the record settles. The two are different verdicts on "
+                "different subjects and a result reaching the host this way has lost which "
+                "of the two it is"
             )
         return self
 
@@ -3345,3 +3443,20 @@ class HashGradingResult(BaseModel):
     def hash_score(self) -> float:
         """Derived from ``hash_match``, so a non-binary or contradictory verdict cannot exist."""
         return 1.0 if self.hash_match else 0.0
+
+
+_DEPRECATED_MODEL_ALIASES: dict[str, str] = {
+    "RunnerTranscriptRulesConfig": "TranscriptRulesConfig",
+    "RunnerRequiredAction": "RequiredAction",
+}
+
+
+def __getattr__(name: str) -> Any:
+    canonical = _DEPRECATED_MODEL_ALIASES.get(name)
+    if canonical is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    warn_deprecated(legacy=name, canonical=canonical, follow_up_issue="1304")
+    # Resolve without caching in ``globals()``: caching would leak the alias
+    # into ``vars(module)`` / ``dir(module)`` and re-collide with the
+    # reconcile canonical's ``_basemodel_names`` walker.
+    return globals()[canonical]

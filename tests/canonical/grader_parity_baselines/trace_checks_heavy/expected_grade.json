@@ -25,7 +25,8 @@
       "passed": true,
       "severity": "scored",
       "undecided": false,
-      "weight": 1.0
+      "weight": 1.0,
+      "withheld": false
     }
   ],
   "trace_checks_summary": {

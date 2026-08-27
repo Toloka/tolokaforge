@@ -182,7 +182,16 @@ def test_full_grade_payload_round_trips_through_the_wire() -> None:
                 matched_positions=[3, 7],
                 severity="gate",
                 undecided=False,
-            )
+            ),
+            TraceConstraintResult(
+                id="t2_kb_withheld",
+                kind="before",
+                passed=False,
+                weight=1.0,
+                message="before withheld: left selected no event",
+                severity="gate",
+                withheld=True,
+            ),
         ],
         trace_checks_summary=TraceChecksSummary(
             winning_path="alt-A",
@@ -224,9 +233,13 @@ def test_full_grade_payload_round_trips_through_the_wire() -> None:
     assert report["include_agent_system_prompt"] is False
     assert "transcript_json" in report
 
-    # Trace-check round-trip — the sub-messages the earlier encoder dropped.
+    # Trace-check round-trip — every sub-message field the encoder writes.
     assert grade_dict["trace_checks"][0]["severity"] == "gate"
     assert grade_dict["trace_checks"][0]["undecided"] is False
+    assert grade_dict["trace_checks"][0]["withheld"] is False
+    assert grade_dict["trace_checks"][1]["id"] == "t2_kb_withheld"
+    assert grade_dict["trace_checks"][1]["withheld"] is True
+    assert grade_dict["trace_checks"][1]["passed"] is False
     assert grade_dict["trace_checks_summary"]["winning_path"] == "alt-A"
     assert grade_dict["trace_checks_summary"]["failed_gate_ids"] == ["g1"]
     assert grade_dict["trace_checks_summary"]["paths"][0]["id"] == "alt-A"
