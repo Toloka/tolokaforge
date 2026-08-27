@@ -27,6 +27,12 @@ EVERY_OPERATOR_MATCHER: dict[str, Any] = {
         "reason": {"not_contains": "duplicate", "not_regex": "^REFUND-"},
         "void_flag": {"is_null": True},
         "absent_flag": {"omitted": True},
+        "issued_at": {
+            "date_gt": "2026-03-01",
+            "date_gte": "2026-03-01",
+            "date_lt": "2026-04-01",
+            "date_lte": "2026-04-01",
+        },
         "body.resolution_path": {"exists": True},
         "case_id": {"equals_binding": "denied_case"},
     },

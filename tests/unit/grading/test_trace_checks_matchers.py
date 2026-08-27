@@ -299,6 +299,26 @@ _OPERATOR_ANSWERS: dict[str, _OperatorAnswer] = {
     "gte": _OperatorAnswer({"gte": 10.0}, {"probe": 10}, {"probe": 9.5}),
     "lt": _OperatorAnswer({"lt": 10.0}, {"probe": 9.5}, {"probe": 10}),
     "lte": _OperatorAnswer({"lte": 10.0}, {"probe": 10}, {"probe": 10.5}),
+    "date_gt": _OperatorAnswer(
+        {"date_gt": "2026-03-01"},
+        {"probe": "2026-04-01"},
+        {"probe": "2026-02-01"},
+    ),
+    "date_gte": _OperatorAnswer(
+        {"date_gte": "2026-03-01"},
+        {"probe": "2026-03-01"},
+        {"probe": "2026-02-01"},
+    ),
+    "date_lt": _OperatorAnswer(
+        {"date_lt": "2026-03-01"},
+        {"probe": "2026-02-01"},
+        {"probe": "2026-04-01"},
+    ),
+    "date_lte": _OperatorAnswer(
+        {"date_lte": "2026-03-01"},
+        {"probe": "2026-03-01"},
+        {"probe": "2026-04-01"},
+    ),
     "in_": _OperatorAnswer({"in_": ["USD", "EUR"]}, {"probe": "EUR"}, {"probe": "JPY"}),
     "not_in": _OperatorAnswer({"not_in": ["USD", "EUR"]}, {"probe": "JPY"}, {"probe": "EUR"}),
     "len_gt": _OperatorAnswer({"len_gt": 2}, {"probe": "abc"}, {"probe": "ab"}),
@@ -558,3 +578,145 @@ def test_omitted_composes_with_withhold_fails_without_the_opt_out() -> None:
     assert verdict.withheld is False
     assert verdict.passed is False
     assert verdict.undecided is False
+
+
+# --------------------------------------------------------------------------
+# The chronological pair: ``date_gt`` / ``date_gte`` / ``date_lt`` / ``date_lte``
+# --------------------------------------------------------------------------
+
+
+def _date_matcher(**predicate: Any) -> TraceMatcher:
+    return TraceMatcher(
+        kind=TraceEventKind.TOOL_CALL,
+        args={"issued_at": ValuePredicate(**predicate)},
+    )
+
+
+def _at(issued_at: Any) -> TrialTimeline:
+    return _timeline(recorded=[recorded_call("probe", arguments={"issued_at": issued_at})])
+
+
+def test_a_date_only_value_reads_as_midnight_utc() -> None:
+    """The one anti-flake behind the shared normalization.
+
+    ``date_gt: "2026-03-01"`` names a bound at midnight UTC of March 1. A
+    value one millisecond into that day holds; the day's own midnight does
+    not — the strict comparison the operator name promises reads the two
+    equal.
+    """
+    matcher = _date_matcher(date_gt="2026-03-01")
+
+    just_after = select_events(_at("2026-03-01T00:00:00.001Z"), matcher, {})
+    at_midnight = select_events(_at("2026-03-01"), matcher, {})
+
+    assert len(just_after.matched) == 1
+    assert at_midnight.matched == ()
+
+
+def test_a_naive_datetime_reads_as_utc_on_both_sides() -> None:
+    """The load-time policy the anti-flake the whole shape gate exists for turns on.
+
+    A datetime carrying no offset — ``2026-03-01T12:00:00`` — reads as UTC on
+    both sides of the comparison. Reading it as the grader's wall clock
+    would make one trajectory grade differently per host, so the three cells
+    below span the boundary the operator promises to hold: the naive bound
+    equal to a ``+00:00``-tagged value (no hold, they are the same
+    instant); one hour earlier (no hold); one hour later (hold).
+    """
+    matcher = _date_matcher(date_gt="2026-03-01T12:00:00")
+
+    equal = select_events(_at("2026-03-01T12:00:00+00:00"), matcher, {})
+    earlier = select_events(_at("2026-03-01T11:00:00Z"), matcher, {})
+    later = select_events(_at("2026-03-01T13:00:00Z"), matcher, {})
+
+    assert equal.matched == ()
+    assert earlier.matched == ()
+    assert len(later.matched) == 1
+
+
+@pytest.mark.parametrize("operator", ["date_gt", "date_gte", "date_lt", "date_lte"])
+def test_an_absent_or_null_argument_satisfies_no_date_comparison(operator: str) -> None:
+    """The timeline contract: a predicate on a missing or null field is unmatched.
+
+    ``exists`` is the one operator that reads presence, and the four date
+    operators are not it. A call that never sent ``issued_at`` and a call
+    that sent it as JSON ``null`` both drop the matcher.
+    """
+    matcher = _date_matcher(**{operator: "2026-03-01"})
+
+    missing = select_events(_timeline(recorded=[recorded_call("probe", arguments={})]), matcher, {})
+    null = select_events(_at(None), matcher, {})
+
+    assert missing.matched == ()
+    assert null.matched == ()
+
+
+def test_a_numeric_comparison_still_refuses_a_date_string() -> None:
+    """The four date operators do not widen the numeric ones.
+
+    A ``gt: 0`` predicate over a value ``"2026-03-01"`` remains False — a
+    date string is not a number, and vice versa. The two comparison
+    vocabularies stay disjoint at the value tier.
+    """
+    numeric_matcher = _date_matcher(gt=0.0)
+    date_matcher = _date_matcher(date_gt="2026-03-01")
+
+    numeric_over_date = select_events(_at("2026-03-01"), numeric_matcher, {})
+    date_over_number = select_events(_at(5), date_matcher, {})
+
+    assert numeric_over_date.matched == ()
+    assert date_over_number.matched == ()
+
+
+def test_a_range_predicate_composes_the_two_ends() -> None:
+    """One matcher, both bounds. Ranges are expressible without a ``date_between``.
+
+    ``{date_gte: "2026-03-01", date_lt: "2026-04-01"}`` selects March 2026,
+    exclusive of April 1 midnight UTC — the conventional half-open reading
+    of a month, spelled by the operators the codebase already ships.
+    """
+    matcher = _date_matcher(date_gte="2026-03-01", date_lt="2026-04-01")
+
+    mid_march = select_events(_at("2026-03-15"), matcher, {})
+    april_first_midnight = select_events(_at("2026-04-01T00:00:00Z"), matcher, {})
+    late_february = select_events(_at("2026-02-28"), matcher, {})
+
+    assert len(mid_march.matched) == 1
+    assert april_first_midnight.matched == ()
+    assert late_february.matched == ()
+
+
+def test_a_valid_date_literal_is_admitted_at_load() -> None:
+    """The accepted-shape surface, spelled by every author-writable literal.
+
+    An ISO-8601 date, a Z-suffixed datetime, an offset-tagged datetime, and
+    a fractional-second variant all construct cleanly — the shape gate
+    admits every author who wrote what the docstring names.
+    """
+    for literal in (
+        "2026-03-01",
+        "2026-03-01T12:00:00Z",
+        "2026-03-01T12:00:00+02:00",
+        "2026-03-01T12:00:00.123456Z",
+    ):
+        loaded = ValuePredicate(date_gte=literal)
+        assert loaded.date_gte == literal
+
+
+def test_a_Z_suffix_datetime_parses_on_python_3_10() -> None:
+    """The one behaviour ``date_comparison_key``'s normalization exists for.
+
+    ``datetime.fromisoformat("2026-03-01T12:00:00Z")`` raises on Python 3.10 —
+    Z-suffix support landed in 3.11 — so the helper must rewrite the trailing
+    ``Z`` before it hands the literal off. On 3.11+ this is a correctness
+    assertion rather than a portability one; the test runs the same on both.
+    """
+    from datetime import datetime, timezone
+
+    from tolokaforge.core.grading.predicates import date_comparison_key
+
+    plain = date_comparison_key("2026-03-01T12:00:00Z")
+    assert plain == datetime(2026, 3, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    fractional = date_comparison_key("2026-03-01T12:00:00.123456Z")
+    assert fractional == datetime(2026, 3, 1, 12, 0, 0, 123456, tzinfo=timezone.utc)

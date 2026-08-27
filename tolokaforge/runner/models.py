@@ -668,6 +668,10 @@ TRACE_PREDICATE_OPERATORS: frozenset[str] = frozenset(
         "gte",
         "lt",
         "lte",
+        "date_gt",
+        "date_gte",
+        "date_lt",
+        "date_lte",
         "in_",
         "not_in",
         "len_gt",
@@ -686,6 +690,13 @@ TRACE_PREDICATE_BINDING_OPERATORS: frozenset[str] = frozenset(
 )
 """The operators whose value is a name in the constraint's binding environment
 rather than a value to compare against."""
+
+TRACE_PREDICATE_DATE_OPERATORS: frozenset[str] = frozenset(
+    {"date_gt", "date_gte", "date_lt", "date_lte"}
+)
+"""The operators whose literal is an ISO-8601 date or datetime. Read by the
+load-tier validator that refuses a bound value no calendar reading holds — the
+same second-source symmetry ``TRACE_PREDICATE_BINDING_OPERATORS`` carries."""
 
 
 class ValuePredicate(BaseModel):
@@ -721,6 +732,10 @@ class ValuePredicate(BaseModel):
     gte: float | None = None
     lt: float | None = None
     lte: float | None = None
+    date_gt: str | None = None
+    date_gte: str | None = None
+    date_lt: str | None = None
+    date_lte: str | None = None
     in_: list[Any] | None = None
     not_in: list[Any] | None = None
     len_gt: int | None = Field(default=None, ge=0)
@@ -753,6 +768,28 @@ class ValuePredicate(BaseModel):
                 f"matches every value. Write one of {sorted(TRACE_PREDICATE_OPERATORS)}, "
                 "or drop the field"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _require_a_date_literal_some_calendar_holds(self) -> ValuePredicate:
+        """A ``date_*`` bound must be an ISO-8601 date or datetime.
+
+        Read through :func:`~tolokaforge.core.grading.predicates.date_comparison_key`
+        — the one normalization every date comparison also reads — so an author
+        who wrote ``next week`` is refused at load rather than seeing a predicate
+        that holds for no trial and reports as an agent failure.
+        """
+        from tolokaforge.core.grading.predicates import date_comparison_key
+
+        for name in TRACE_PREDICATE_DATE_OPERATORS:
+            literal = getattr(self, name)
+            if literal is not None and date_comparison_key(literal) is None:
+                raise ValueError(
+                    f"a date comparison's bound must be an ISO-8601 date "
+                    f"(2026-03-01) or datetime (2026-03-01T12:00:00Z), but "
+                    f"{name}={literal!r} parses as neither, so the predicate "
+                    "would hold for no trial. Fix the bound"
+                )
         return self
 
 

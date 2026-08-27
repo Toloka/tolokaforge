@@ -24,15 +24,20 @@ from __future__ import annotations
 import operator as _operator
 import re
 from collections.abc import Callable, Mapping, Sized
+from datetime import datetime
 from typing import Any, TypeAlias
 
-from tolokaforge.core.grading.predicates import contains
+from tolokaforge.core.grading.predicates import contains, date_comparison_key
 
 __all__ = [
     "TraceCheckOperator",
     "contains_binding",
     "contains_ci",
     "contains_op",
+    "date_gt",
+    "date_gte",
+    "date_lt",
+    "date_lte",
     "equals",
     "equals_binding",
     "equals_ci",
@@ -102,6 +107,22 @@ def lt(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
 
 def lte(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
     return _numeric(value, expected, _operator.le)
+
+
+def date_gt(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
+    return _date_compare(value, expected, _operator.gt)
+
+
+def date_gte(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
+    return _date_compare(value, expected, _operator.ge)
+
+
+def date_lt(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
+    return _date_compare(value, expected, _operator.lt)
+
+
+def date_lte(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
+    return _date_compare(value, expected, _operator.le)
 
 
 def in_op(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
@@ -175,3 +196,17 @@ def _as_number(value: Any) -> float | None:
 def _numeric(value: Any, expected: Any, compare: Callable[[float, float], bool]) -> bool:
     number = _as_number(value)
     return number is not None and compare(number, expected)
+
+
+def _date_compare(value: Any, expected: Any, compare: Callable[[datetime, datetime], bool]) -> bool:
+    """Two ISO-8601 strings through the shared normalization, or ``False``.
+
+    The bound key check is defensive: :class:`~tolokaforge.runner.models.ValuePredicate`
+    already refuses an unparseable bound at load, so a value that reads as
+    ``None`` here is what the ``_operator_holds`` gate has already covered for
+    every other operator. The check keeps this operator answerable in isolation
+    when its bound is called from outside that gate.
+    """
+    key = date_comparison_key(value)
+    bound_key = date_comparison_key(expected)
+    return key is not None and bound_key is not None and compare(key, bound_key)
