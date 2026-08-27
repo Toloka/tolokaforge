@@ -1392,29 +1392,20 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
 def _hint_source_configuration_missing(tool_name: str) -> str:
     """Actionable hint for a source-less non-builtin tool at runner emit time.
 
-    The lazy import keeps ``tool_factory`` cheap for callers that never reach
-    adapter discovery. If ``available_adapters()`` itself blows up (a broken
-    entry-point plugin, for example), broad-catch and fall back to
-    ``["native"]`` at DEBUG so the primary raise stays visible.
+    The runner subset ships as a separate wheel and cannot import
+    ``tolokaforge.adapters`` (runner-subset partition, canonically enforced
+    in :mod:`tests.canonical.test_runner_subset_partition`), so the hint
+    lists the two config keys and the fallback path without enumerating the
+    adapter registry. The emit-time raise on :class:`NativeAdapter`
+    (:mod:`tolokaforge.adapters.native`) carries the fuller hint with the
+    registry enumeration and the detected-shape clause.
     """
-    try:
-        from tolokaforge.adapters import available_adapters
-
-        adapters = available_adapters()
-    except Exception as exc:  # noqa: BLE001 -- primary raise must not be masked
-        logger.debug(
-            "available_adapters() failed while formatting source-configuration hint: %s",
-            exc,
-        )
-        adapters = ["native"]
-
-    adapters_csv = ", ".join(adapters)
     return (
         f"Tool '{tool_name}' has no source configuration and is not in the "
-        "builtin registry. Set evaluation.harness_adapter.type to an adapter "
-        f"that emits source metadata for this tool (registered adapters: "
-        f"{adapters_csv}), or declare the tool under tools.<actor>.mcp_server "
-        "(or a per-tool source) in task.yaml."
+        "builtin registry. Set evaluation.harness_adapter.type in the run "
+        "config to an adapter that emits source metadata for this tool, or "
+        "declare the tool under tools.<actor>.mcp_server (or a per-tool "
+        "source) in task.yaml."
     )
 
 
