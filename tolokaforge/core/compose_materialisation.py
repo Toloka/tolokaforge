@@ -237,10 +237,51 @@ def _merge_service_env(existing: Any, values: Mapping[str, str]) -> Any:
 
 
 def _merge_proxy_env(existing: Any, proxy_url: str, no_proxy: str) -> Any:
-    """Add the proxy env vars to a service-level ``environment:`` value."""
+    """Add the proxy env vars to a service-level ``environment:`` value.
+
+    Any ``NO_PROXY`` / ``no_proxy`` value already carried by ``existing`` is
+    unioned into the merged value (comma-separated, order-preserving with
+    dedup) rather than overwritten. A caller upstream — the coding-harness
+    driver's credential shield, for example — can pre-declare a hostname it
+    needs to bypass the squid forward proxy for (its host-side gateway,
+    reachable via ``extra_hosts`` but not resolvable inside squid's own
+    container), and the netpolicy enforcement respects it here.
+    """
+    caller_no_proxy = _extract_no_proxy(existing)
+    merged_no_proxy = _union_no_proxy(caller_no_proxy, no_proxy)
     values = dict.fromkeys(_PROXY_ENV_KEYS, proxy_url)
-    values.update(dict.fromkeys(_NO_PROXY_KEYS, no_proxy))
+    values.update(dict.fromkeys(_NO_PROXY_KEYS, merged_no_proxy))
     return _merge_service_env(existing, values)
+
+
+def _extract_no_proxy(existing: Any) -> str:
+    """Read whatever NO_PROXY value ``existing`` already carries (mapping or
+    ``KEY=value`` list shape). Returns an empty string when absent."""
+    if isinstance(existing, Mapping):
+        for key in _NO_PROXY_KEYS:
+            value = existing.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return ""
+    if isinstance(existing, list):
+        for entry in existing:
+            if not isinstance(entry, str) or "=" not in entry:
+                continue
+            key, _, value = entry.partition("=")
+            if key in _NO_PROXY_KEYS and value:
+                return value
+    return ""
+
+
+def _union_no_proxy(caller: str, netpolicy: str) -> str:
+    """Order-preserving union of two comma-separated no_proxy strings."""
+    seen: dict[str, None] = {}
+    for source in (caller, netpolicy):
+        for token in source.split(","):
+            trimmed = token.strip()
+            if trimmed and trimmed not in seen:
+                seen[trimmed] = None
+    return ",".join(seen)
 
 
 def render_squid_config(allowlist: list[str], service_names: list[str]) -> str:

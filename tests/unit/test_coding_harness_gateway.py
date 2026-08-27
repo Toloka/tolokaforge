@@ -17,8 +17,6 @@ import yaml
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.agent_driver import AgentDriver, EngineLoopDriver
 from tolokaforge.core.drivers.coding_harness import CodingHarnessDriver, HarnessSelection
-from tolokaforge.core.drivers.llm_gateway import GATEWAY_HOSTNAME
-from tolokaforge.runner.models import NetworkPolicy
 from tolokaforge.secrets import DictProvider, SecretManager, init_default_from
 
 pytestmark = pytest.mark.unit
@@ -116,30 +114,40 @@ class TestAgentDriverProtocolClose:
 
 
 class TestNetworkPolicy:
-    def test_shielded_harness_gets_limited_internet_with_host_gateway_allowlist(
+    """Local-mode host-side gateway is incompatible with docker
+    ``internal: true`` networks (the CLI's container would have no route to
+    the orchestrator host, defeating the whole shield). Egress restriction is
+    a follow-up that requires the ``SidecarGatewayLauncher`` variant tracked
+    by ADR-0041. Until then, the driver preserves the pack's own declared
+    ``network_policy`` unchanged whether the harness is shielded or not."""
+
+    def test_shielded_harness_preserves_pack_declared_network_policy(
         self, canary_secret_manager: None
     ) -> None:
         adapter = _pack_adapter()
         staged = adapter.stage_task("fix_factorial")
         assert staged is not None
         base = adapter.to_task_description("fix_factorial")
+        base_policy = (
+            base.environment_manifest.network_policy if base.environment_manifest else None
+        )
+        base_allowlist = list(
+            base.environment_manifest.limited_internet_allowlist
+            if base.environment_manifest
+            else []
+        )
         driver = _driver(agent_harness="claude-code")
         driver.attach("native", True)
         try:
             td = driver.decorate_task_description(base, staged=staged)
             manifest = td.environment_manifest
             assert manifest is not None
-            assert manifest.network_policy == NetworkPolicy.LIMITED_INTERNET
-            # The allowlist entry must be the hostname the trial container
-            # actually requests through the squid proxy (GATEWAY_HOSTNAME,
-            # "tolokaforge-llm-gateway") — NOT Docker's "host-gateway"
-            # extra_hosts *target* token, which is never a request
-            # destination and would never match squid's dstdomain ACL.
-            assert manifest.limited_internet_allowlist == [GATEWAY_HOSTNAME]
+            assert manifest.network_policy == base_policy
+            assert list(manifest.limited_internet_allowlist) == base_allowlist
         finally:
             driver.close()
 
-    def test_unshielded_harness_leaves_the_base_network_policy_untouched(
+    def test_unshielded_harness_preserves_pack_declared_network_policy(
         self, canary_secret_manager: None
     ) -> None:
         adapter = _pack_adapter()
@@ -156,7 +164,6 @@ class TestNetworkPolicy:
             manifest = td.environment_manifest
             assert manifest is not None
             assert manifest.network_policy == base_policy
-            assert manifest.limited_internet_allowlist == []
         finally:
             driver.close()
 

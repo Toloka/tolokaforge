@@ -227,6 +227,20 @@ class CodingHarnessDriver:
             self.container_env = {
                 **extra_env,
                 gateway_spec.dummy_token_env_var: gateway_spec.dummy_token_value,
+                # Bypass the LIMITED_INTERNET squid forward proxy for the
+                # gateway hop: the gateway is a host-side service reached via
+                # compose ``extra_hosts`` (see ``_rewrite_compose``), which is
+                # only visible to the CLI's own container — squid, running in
+                # its own container, cannot resolve the hostname and would
+                # 403 every request. ``NO_PROXY`` on the CLI's environment
+                # tells the CLI to hit the gateway directly instead of routing
+                # through squid. ``enforce_network_policy._merge_proxy_env``
+                # unions this with squid's own no-proxy list, so both entries
+                # survive: the gateway hop bypasses squid, everything else
+                # still transits it (and squid's allowlist denies everything
+                # else in the shielded-run scenario).
+                "NO_PROXY": GATEWAY_HOSTNAME,
+                "no_proxy": GATEWAY_HOSTNAME,
             }
 
     # -- driver protocol ----------------------------------------------------
@@ -285,7 +299,6 @@ class CodingHarnessDriver:
             )
         from tolokaforge.runner.models import (
             InvocationStyle,
-            NetworkPolicy,
             RunnerGradingConfig,
             ToolSchema,
             ToolSource,
@@ -353,12 +366,20 @@ class CodingHarnessDriver:
                 "compose_file": staged.compose_file,
                 "runner_service": RUNNER_SERVICE,
             }
-            if self.spec.credential_gateway is not None:
-                # Trial container's only legitimate egress target once the
-                # shield is active is the gateway itself — everything else
-                # (including the real upstream) is squid-denied by default.
-                manifest_update["network_policy"] = NetworkPolicy.LIMITED_INTERNET
-                manifest_update["limited_internet_allowlist"] = [GATEWAY_HOSTNAME]
+            # NOTE: egress restriction (``NetworkPolicy.LIMITED_INTERNET``) is
+            # NOT applied here even under a shielded harness. The driver's
+            # gateway lives as a process on the orchestrator HOST — reached
+            # via compose ``extra_hosts`` mapping to the docker bridge
+            # gateway — and ``LIMITED_INTERNET`` sits the CLI's container on
+            # a docker ``internal: true`` network with no route to the host.
+            # A restricted CLI simply cannot reach the shield. The credential
+            # shield still holds (dummy in env, real on host, no leak); what
+            # is deferred is *defense-in-depth egress control*. That requires
+            # moving the gateway itself into a compose sidecar so the
+            # ``internal: true`` network can carry the CLI-to-gateway hop —
+            # tracked as follow-up work in ADR-0041 alongside the
+            # ``SidecarGatewayLauncher`` seam. For now, the pack's declared
+            # network policy is preserved unchanged.
             env_manifest = env_manifest.model_copy(update=manifest_update)
         return base.model_copy(
             update={
