@@ -143,3 +143,23 @@ class TestNativeAdapterSourceHint:
 
         names = {t.name for t in td.agent_tools}
         assert "frozen_domain_tool_x" in names
+
+    def test_hint_falls_back_when_adapter_discovery_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken ``available_adapters()`` never masks the emit-time raise."""
+        task_dir = tmp_path / "tasks" / "src_less_pack"
+        task_dir.mkdir(parents=True)
+        _write_task_yaml(task_dir, agent_tools={"enabled": ["frozen_domain_tool_x"]})
+
+        def _boom() -> list[str]:
+            raise RuntimeError("discovery blew up")
+
+        monkeypatch.setattr("tolokaforge.adapters.available_adapters", _boom)
+
+        with pytest.raises(NativeAdapterMisconfigurationError) as exc_info:
+            _adapter(tmp_path).to_task_description("src_less_pack")
+
+        message = str(exc_info.value)
+        assert "frozen_domain_tool_x" in message
+        assert "(none installed)" in message

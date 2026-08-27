@@ -141,7 +141,7 @@ class TestRagSearchFailFast:
     def test_corpus_without_search_kb_raises(self, tmp_path: Path) -> None:
         adapter = _build_adapter(
             tmp_path,
-            enabled_agent_tools=["submit_report"],
+            enabled_agent_tools=["bash"],
             rag={"corpus_dir": "rag/corpus"},
         )
         with pytest.raises(ValueError, match="search_kb"):

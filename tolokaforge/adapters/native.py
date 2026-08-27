@@ -83,7 +83,7 @@ def _detect_converted_pack_signature(task_dir: Path) -> str | None:
     Walks upward from ``task_dir`` at most 3 levels, matching the generic
     filesystem shape a converted MCP task pack carries. The signature is a
     filesystem pattern only — never a hardcoded pack-name list or an
-    adapter-name string match, per AGENTS.md Blocker rule 2.
+    adapter-name string match.
 
     Returns the matched path relative to the anchor whose ``_domain/tools/``
     was found (e.g. ``"_domain/tools/mcp_tools_library"``). ``None`` when
@@ -97,7 +97,15 @@ def _detect_converted_pack_signature(task_dir: Path) -> str | None:
         tools_root = candidate / "_domain" / "tools"
         if not tools_root.is_dir():
             continue
-        entries = sorted(p for p in tools_root.iterdir() if p.is_dir())
+        try:
+            entries = sorted(p for p in tools_root.iterdir() if p.is_dir())
+        except OSError as exc:
+            logger.debug(
+                "iterdir failed while detecting converted-pack signature",
+                tools_root=str(tools_root),
+                error=str(exc),
+            )
+            return "_domain/tools"
         if not entries:
             return "_domain/tools"
         return f"_domain/tools/{entries[0].name}"
