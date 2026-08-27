@@ -73,6 +73,15 @@ class ModelConfig(BaseModel):
     # non-None value passes through to ``install-harness.sh`` as the version
     # arg and lands verbatim on ``HarnessSpec.version`` for the resolved spec.
     coding_harness_version: str | None = None
+    # Escape hatch for CodingHarnessDriver's credential shield (see
+    # LLMGatewayEndpoint / ADR-0041). Default False: a harness with a
+    # HarnessSpec.credential_gateway runs behind the shielded local
+    # gateway — the trial container never sees the real provider
+    # credential. True restores the pre-shield behaviour (the resolved
+    # secret baked straight into the container's environment) for that
+    # one run; the orchestrator logs a warning naming the harness when
+    # this fires. No effect on a harness with no credential_gateway.
+    disable_credential_gateway: bool = False
     # Reasoning / thinking configuration. Must be a struct form —
     # bare strings (``reasoning: medium``) are rejected with a migration
     # pointer. See docs/CONFIG.md § reasoning for the schema.

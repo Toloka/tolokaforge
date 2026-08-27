@@ -45,6 +45,7 @@ import yaml
 from tolokaforge.adapters.base import ComposeImageBuild
 from tolokaforge.core.agent_driver import StagedTask, StagedTaskLayers
 from tolokaforge.core.drivers.llm_gateway import (
+    GATEWAY_HOSTNAME,
     GatewayHandle,
     LLMGatewayEndpoint,
     LocalHostGatewayLauncher,
@@ -121,6 +122,14 @@ class HarnessSelection:
             :func:`resolve_effective_registry`.
         plugin_discovery: Whether to discover installed plug-in
             registries. Default ``True`` matches the current behaviour.
+        disable_credential_gateway: Escape hatch from
+            ``models.agent.disable_credential_gateway``. ``True`` strips
+            the resolved spec's ``credential_gateway`` before any other
+            constructor logic runs, so the driver takes the pre-shield
+            path throughout — same as a harness that ships no
+            ``credential_gateway`` at all. Logs a warning naming the
+            harness. No effect when the harness has no
+            ``credential_gateway`` to begin with.
     """
 
     agent_harness: str
@@ -129,6 +138,7 @@ class HarnessSelection:
     provider_env_declared: Mapping[str, str] = field(default_factory=dict)
     presets_file: str | None = None
     plugin_discovery: bool = True
+    disable_credential_gateway: bool = False
 
 
 class CodingHarnessDriver:
@@ -166,6 +176,17 @@ class CodingHarnessDriver:
                     "use the shipped pin."
                 )
             base_spec = base_spec.model_copy(update={"version": selection.version_override})
+        escape_hatch_active = (
+            selection.disable_credential_gateway and base_spec.credential_gateway is not None
+        )
+        if escape_hatch_active:
+            logger.warning(
+                "coding_harness driver: harness %r credential gateway disabled — "
+                "provider credentials will be baked into the trial container's "
+                "environment; the model can read them via printenv.",
+                selection.agent_harness,
+            )
+            base_spec = base_spec.model_copy(update={"credential_gateway": None})
         self.spec: HarnessSpec = base_spec
         self._gateway_launcher: LocalHostGatewayLauncher | None = None
         self._gateway_handle: GatewayHandle | None = None
@@ -173,21 +194,24 @@ class CodingHarnessDriver:
         if self.spec.credential_gateway is None:
             # Pre-shield path: the real credential is resolved straight into
             # container_env, same as every harness did before this driver
-            # grew a gateway. Only reachable for a harness that intentionally
-            # ships no credential_gateway (see UNSHIELDED_HARNESSES in
-            # tests/unit/test_credential_gateway_schema.py) — every other
+            # grew a gateway. Reachable either because the harness
+            # intentionally ships no credential_gateway (see
+            # UNSHIELDED_HARNESSES in tests/unit/test_credential_gateway_schema.py)
+            # or because escape_hatch_active just stripped one — every other
             # shipped harness takes the `else` branch below.
             self.container_env: dict[str, str] = _resolve_provider_env(
                 shipped=dict(self.spec.provider_env),
                 declared=dict(selection.provider_env_declared),
                 agent_harness=selection.agent_harness,
             )
-            logger.warning(
-                "coding_harness driver: harness %r ships no credential_gateway; its "
-                "real provider credential reaches the trial container's environment "
-                "unshielded. See https://github.com/Toloka/tolokaforge/issues/1311.",
-                selection.agent_harness,
-            )
+            if not escape_hatch_active:
+                logger.warning(
+                    "coding_harness driver: harness %r ships no credential_gateway; "
+                    "its real provider credential reaches the trial container's "
+                    "environment unshielded. See "
+                    "https://github.com/Toloka/tolokaforge/issues/1311.",
+                    selection.agent_harness,
+                )
         else:
             # Shielded path: never resolve the upstream token here — that is
             # the gateway's job, done from its own SecretManager call at
@@ -261,6 +285,7 @@ class CodingHarnessDriver:
             )
         from tolokaforge.runner.models import (
             InvocationStyle,
+            NetworkPolicy,
             RunnerGradingConfig,
             ToolSchema,
             ToolSource,
@@ -324,12 +349,17 @@ class CodingHarnessDriver:
         # container which does not expose the grader RPC port.
         env_manifest = base.environment_manifest
         if env_manifest is not None:
-            env_manifest = env_manifest.model_copy(
-                update={
-                    "compose_file": staged.compose_file,
-                    "runner_service": RUNNER_SERVICE,
-                }
-            )
+            manifest_update: dict[str, Any] = {
+                "compose_file": staged.compose_file,
+                "runner_service": RUNNER_SERVICE,
+            }
+            if self.spec.credential_gateway is not None:
+                # Trial container's only legitimate egress target once the
+                # shield is active is the gateway itself — everything else
+                # (including the real upstream) is squid-denied by default.
+                manifest_update["network_policy"] = NetworkPolicy.LIMITED_INTERNET
+                manifest_update["limited_internet_allowlist"] = [GATEWAY_HOSTNAME]
+            env_manifest = env_manifest.model_copy(update=manifest_update)
         return base.model_copy(
             update={
                 "agent_tools": [bash_schema],

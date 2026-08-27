@@ -641,6 +641,7 @@ class Orchestrator:
                 provider_env_declared=params.get("agent_provider_env") or {},
                 presets_file=params.get("harness_presets_file"),
                 plugin_discovery=not params.get("disable_harness_plugins", False),
+                disable_credential_gateway=agent_model_config.disable_credential_gateway,
             )
         )
 

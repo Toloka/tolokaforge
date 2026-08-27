@@ -17,6 +17,8 @@ import yaml
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.agent_driver import AgentDriver, EngineLoopDriver
 from tolokaforge.core.drivers.coding_harness import CodingHarnessDriver, HarnessSelection
+from tolokaforge.core.drivers.llm_gateway import GATEWAY_HOSTNAME
+from tolokaforge.runner.models import NetworkPolicy
 from tolokaforge.secrets import DictProvider, SecretManager, init_default_from
 
 pytestmark = pytest.mark.unit
@@ -111,3 +113,78 @@ class TestAgentDriverProtocolClose:
     def test_engine_loop_driver_implements_close(self) -> None:
         assert isinstance(EngineLoopDriver(), AgentDriver)
         EngineLoopDriver().close()  # must not raise
+
+
+class TestNetworkPolicy:
+    def test_shielded_harness_gets_limited_internet_with_host_gateway_allowlist(
+        self, canary_secret_manager: None
+    ) -> None:
+        adapter = _pack_adapter()
+        staged = adapter.stage_task("fix_factorial")
+        assert staged is not None
+        base = adapter.to_task_description("fix_factorial")
+        driver = _driver(agent_harness="claude-code")
+        driver.attach("native", True)
+        try:
+            td = driver.decorate_task_description(base, staged=staged)
+            manifest = td.environment_manifest
+            assert manifest is not None
+            assert manifest.network_policy == NetworkPolicy.LIMITED_INTERNET
+            # The allowlist entry must be the hostname the trial container
+            # actually requests through the squid proxy (GATEWAY_HOSTNAME,
+            # "tolokaforge-llm-gateway") — NOT Docker's "host-gateway"
+            # extra_hosts *target* token, which is never a request
+            # destination and would never match squid's dstdomain ACL.
+            assert manifest.limited_internet_allowlist == [GATEWAY_HOSTNAME]
+        finally:
+            driver.close()
+
+    def test_unshielded_harness_leaves_the_base_network_policy_untouched(
+        self, canary_secret_manager: None
+    ) -> None:
+        adapter = _pack_adapter()
+        staged = adapter.stage_task("fix_factorial")
+        assert staged is not None
+        base = adapter.to_task_description("fix_factorial")
+        base_policy = (
+            base.environment_manifest.network_policy if base.environment_manifest else None
+        )
+        driver = _driver(agent_harness="gemini-cli")
+        driver.attach("native", True)
+        try:
+            td = driver.decorate_task_description(base, staged=staged)
+            manifest = td.environment_manifest
+            assert manifest is not None
+            assert manifest.network_policy == base_policy
+            assert manifest.limited_internet_allowlist == []
+        finally:
+            driver.close()
+
+
+class TestEscapeHatch:
+    def test_restores_pre_shield_behavior(
+        self, canary_secret_manager: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        adapter = _pack_adapter()
+        staged = adapter.stage_task("fix_factorial")
+        assert staged is not None
+        base = adapter.to_task_description("fix_factorial")
+        base_policy = (
+            base.environment_manifest.network_policy if base.environment_manifest else None
+        )
+        with caplog.at_level("WARNING"):
+            driver = _driver(agent_harness="claude-code", disable_credential_gateway=True)
+            driver.attach("native", True)
+        try:
+            assert driver.container_env["ANTHROPIC_API_KEY"] == CANARY
+            assert driver._gateway_handle is None
+            driver.apply_container_layers(staged=staged)
+            doc = yaml.safe_load(staged.compose_file.read_text())
+            assert "extra_hosts" not in doc["services"]["main"]
+            td = driver.decorate_task_description(base, staged=staged)
+            manifest = td.environment_manifest
+            assert manifest is not None
+            assert manifest.network_policy == base_policy
+        finally:
+            driver.close()
+        assert any("credential gateway disabled" in record.message for record in caplog.records)
