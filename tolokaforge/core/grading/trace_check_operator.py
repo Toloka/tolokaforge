@@ -8,8 +8,8 @@ starts scoring every trace-check config in the wild that writes
 ``equals_semver`` in a :class:`~tolokaforge.core.models.ValuePredicate`,
 with no framework PR.
 
-Two arities collapse to one Protocol. The 15 non-binding operators ignore
-``bindings``; the two binding operators (identified by the ``_binding``
+Two arities collapse to one Protocol. Non-binding operators ignore
+``bindings``; the binding operators (identified by the ``_binding``
 suffix on their registered name) read ``bindings[expected]`` — the name
 their author wrote in the constraint's ``bind`` block. The suffix is the
 sole marker: no attribute on the callable, no parallel registry.
@@ -44,8 +44,10 @@ __all__ = [
     "len_gte",
     "lt",
     "lte",
+    "not_contains_op",
     "not_equals",
     "not_in_op",
+    "not_regex_matches",
     "regex_matches",
 ]
 
@@ -72,8 +74,16 @@ def contains_ci(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
     return contains(value, expected, ci=True)
 
 
+def not_contains_op(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
+    return not contains(value, expected)
+
+
 def regex_matches(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
     return isinstance(value, str) and re.search(expected, value) is not None
+
+
+def not_regex_matches(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
+    return isinstance(value, str) and re.search(expected, value) is None
 
 
 def gt(value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:

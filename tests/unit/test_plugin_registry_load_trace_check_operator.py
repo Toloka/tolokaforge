@@ -3,9 +3,9 @@
 Locks the loader for the ``tolokaforge.trace_check_operators`` entry-point
 group:
 
-* every shipped operator (15 non-binding + 2 binding = 17) resolves to the
-  module-level callable ``pyproject.toml`` registers it against, so a
-  future refactor renaming any symbol trips this test before it lands;
+* every shipped operator resolves to the module-level callable
+  ``pyproject.toml`` registers it against, so a future refactor renaming
+  any symbol trips this test before it lands;
 * an unknown name raises :class:`UnknownImplementationError` listing every
   known name in the group — the same fail-loud shape ``load_grading_substrate``
   and the other loaders use.
@@ -36,8 +36,10 @@ _SHIPPED_NAME_TO_SYMBOL = {
     "equals_ci": trace_check_operator.equals_ci,
     "contains": trace_check_operator.contains_op,
     "contains_ci": trace_check_operator.contains_ci,
+    "not_contains": trace_check_operator.not_contains_op,
     "not_equals": trace_check_operator.not_equals,
     "regex": trace_check_operator.regex_matches,
+    "not_regex": trace_check_operator.not_regex_matches,
     "gt": trace_check_operator.gt,
     "gte": trace_check_operator.gte,
     "lt": trace_check_operator.lt,

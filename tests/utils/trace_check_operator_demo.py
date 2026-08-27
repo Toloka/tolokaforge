@@ -2,7 +2,7 @@
 
 ``is_positive_number`` — returns True iff value is a numeric > 0. Not present
 in the shipped operator set. Proves the seam's registry-lookup path resolves
-custom names alongside the 17 defaults.
+custom names alongside the shipped defaults.
 
 The file name avoids the ``test_`` prefix so pyproject's ``python_files``
 collection does not pick this module up as a test — it is a fixture the

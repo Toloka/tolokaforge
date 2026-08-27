@@ -658,8 +658,10 @@ TRACE_PREDICATE_OPERATORS: frozenset[str] = frozenset(
         "equals_ci",
         "contains",
         "contains_ci",
+        "not_contains",
         "not_equals",
         "regex",
+        "not_regex",
         "gt",
         "gte",
         "lt",
@@ -707,8 +709,10 @@ class ValuePredicate(BaseModel):
     equals_ci: str | None = None
     contains: Any = None
     contains_ci: str | None = None
+    not_contains: Any = None
     not_equals: Any = None
     regex: str | None = None
+    not_regex: str | None = None
     gt: float | None = None
     gte: float | None = None
     lt: float | None = None

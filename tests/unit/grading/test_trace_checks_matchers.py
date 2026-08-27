@@ -280,8 +280,12 @@ _OPERATOR_ANSWERS: dict[str, _OperatorAnswer] = {
     "contains_ci": _OperatorAnswer(
         {"contains_ci": "w1"}, {"probe": "item W1"}, {"probe": "item W2"}
     ),
+    "not_contains": _OperatorAnswer(
+        {"not_contains": "REFUND"}, {"probe": "PAY-1"}, {"probe": "REFUND-1"}
+    ),
     "not_equals": _OperatorAnswer({"not_equals": "PAY-1"}, {"probe": "PAY-2"}, {"probe": "PAY-1"}),
     "regex": _OperatorAnswer({"regex": "^PAY-[0-9]+$"}, {"probe": "PAY-1"}, {"probe": "REF-1"}),
+    "not_regex": _OperatorAnswer({"not_regex": "^PAY-"}, {"probe": "REF-1"}, {"probe": "PAY-1"}),
     "gt": _OperatorAnswer({"gt": 10.0}, {"probe": 11}, {"probe": 10}),
     "gte": _OperatorAnswer({"gte": 10.0}, {"probe": 10}, {"probe": 9.5}),
     "lt": _OperatorAnswer({"lt": 10.0}, {"probe": 9.5}, {"probe": 10}),

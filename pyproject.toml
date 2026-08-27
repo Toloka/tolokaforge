@@ -268,7 +268,7 @@ db_probes = "tolokaforge.core.grading.default_state_check_backends:_db_probes_st
 # (``tolokaforge/core/grading/trace_check_operator.py``). Per-operator
 # granularity: every operator a ``ValuePredicate`` may declare is one
 # entry-point. A downstream package registering ``equals_semver`` alongside
-# these 17 defaults extends the trace-check vocabulary without a framework
+# these defaults extends the trace-check vocabulary without a framework
 # PR. The two binding operators are identified by the ``_binding`` suffix
 # on the registered name (see ADR-0040); no marker
 # attribute, no parallel registry.
@@ -277,8 +277,10 @@ equals = "tolokaforge.core.grading.trace_check_operator:equals"
 equals_ci = "tolokaforge.core.grading.trace_check_operator:equals_ci"
 contains = "tolokaforge.core.grading.trace_check_operator:contains_op"
 contains_ci = "tolokaforge.core.grading.trace_check_operator:contains_ci"
+not_contains = "tolokaforge.core.grading.trace_check_operator:not_contains_op"
 not_equals = "tolokaforge.core.grading.trace_check_operator:not_equals"
 regex = "tolokaforge.core.grading.trace_check_operator:regex_matches"
+not_regex = "tolokaforge.core.grading.trace_check_operator:not_regex_matches"
 gt = "tolokaforge.core.grading.trace_check_operator:gt"
 gte = "tolokaforge.core.grading.trace_check_operator:gte"
 lt = "tolokaforge.core.grading.trace_check_operator:lt"
