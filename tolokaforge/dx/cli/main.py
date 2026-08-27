@@ -894,6 +894,7 @@ def run(
                     budget=budget,
                     agent_client_factory=agent_client_factory,
                 ),
+                config_path=Path(config),
             )
 
             # NB: no `console.print` calls between LiveRunDisplay.__enter__ and
@@ -1523,7 +1524,12 @@ def prepare(
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
 
     orchestrator = Orchestrator(
-        run_config, resume=False, verbose=verbose, strict=strict, project=project
+        run_config,
+        resume=False,
+        verbose=verbose,
+        strict=strict,
+        project=project,
+        config_path=Path(config),
     )
     orchestrator.load_tasks()
     summary = orchestrator.prepare_run(Path(run_dir), reset_queue=reset_queue)
@@ -1588,7 +1594,12 @@ def worker(
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
 
     orchestrator = Orchestrator(
-        run_config, resume=False, verbose=verbose, strict=strict, project=project
+        run_config,
+        resume=False,
+        verbose=verbose,
+        strict=strict,
+        project=project,
+        config_path=Path(config),
     )
     orchestrator.load_tasks()
     summary = orchestrator.run_worker(Path(run_dir), max_attempts=max_attempts)

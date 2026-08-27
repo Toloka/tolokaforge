@@ -104,6 +104,22 @@ Written via [`tolokaforge.core.engine_run_state.write_engine_run_state`](../tolo
 
 `adapter_fingerprints` is populated from [`BaseAdapter.fingerprint()`](../tolokaforge/adapters/base.py) — see [`docs/ADAPTER_INTERFACE.md`](ADAPTER_INTERFACE.md) § Optional Methods for the seam an adapter overrides to report one. For the `terminal_bench` namespace, that adapter's [README](../external_adapters/tolokaforge-adapter-terminal-bench/README.md) § "What a run records about its registry" documents its payload.
 
+## `run_state.json`
+
+Written under `{output_dir}/` at run start by `tolokaforge run` and updated as each trial completes. Carries the per-trial ledger `--resume` reads to decide which trials still need to execute (see [`docs/CLI.md`](CLI.md) § Resume). Fields consumed by the resume path are `run_id`, `status`, and the per-trial entries under `trials`; the remaining fields are provenance for post-run inspection.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `run_id` | string | Canonical run identifier — the `{output_dir}` basename. Matches the `run_id` in `engine_run_state.json` and every `TrialSpec.run_id`. |
+| `config_path` | string | Path to the run-config YAML `tolokaforge run` / `prepare` / `worker` was invoked with (relative to CWD when possible; absolute otherwise; `""` when a programmatic caller constructed the orchestrator without one). |
+| `output_dir` | string | The run's output directory (relative to CWD when under it; absolute otherwise). |
+| `start_ts` / `last_updated` | ISO 8601 timestamp | Run start and most-recent update. |
+| `status` | `"running"` \| `"paused"` \| `"completed"` \| `"failed"` | Run-level state. `--resume` short-circuits when every trial is already `completed`. |
+| `total_trials` / `completed_trials` / `failed_trials` | integer | Counters across the `trials` map. |
+| `trials` | object | Per-trial ledger keyed by `"{task_id}:{trial_index}"`, each value carrying `task_id`, `trial_index`, `status` (`pending` / `running` / `completed` / `failed`), timestamps, optional `binary_pass`, `score`, and `error`. |
+
+Written via [`tolokaforge.core.resume.RunStateManager`](../tolokaforge/core/resume.py); the on-disk shape is locked by the `RunState` and `TrialState` Pydantic models. CWD-relative shaping applies to `config_path` and `output_dir` via `RunStateManager._normalize_to_relative`.
+
 ## `LIMIT_HIT.json`
 
 Written under `{output_dir}/` on the first budget crossing during a
