@@ -1389,6 +1389,35 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
 # =============================================================================
 
 
+def _hint_source_configuration_missing(tool_name: str) -> str:
+    """Actionable hint for a source-less non-builtin tool at runner emit time.
+
+    The lazy import keeps ``tool_factory`` cheap for callers that never reach
+    adapter discovery. If ``available_adapters()`` itself blows up (a broken
+    entry-point plugin, for example), broad-catch and fall back to
+    ``["native"]`` at DEBUG so the primary raise stays visible.
+    """
+    try:
+        from tolokaforge.adapters import available_adapters
+
+        adapters = available_adapters()
+    except Exception as exc:  # noqa: BLE001 -- primary raise must not be masked
+        logger.debug(
+            "available_adapters() failed while formatting source-configuration hint: %s",
+            exc,
+        )
+        adapters = ["native"]
+
+    adapters_csv = ", ".join(adapters)
+    return (
+        f"Tool '{tool_name}' has no source configuration and is not in the "
+        "builtin registry. Set evaluation.harness_adapter.type to an adapter "
+        f"that emits source metadata for this tool (registered adapters: "
+        f"{adapters_csv}), or declare the tool under tools.<actor>.mcp_server "
+        "(or a per-tool source) in task.yaml."
+    )
+
+
 class ToolFactory:
     """
     Factory for reconstructing tools from ToolSource definitions.
@@ -1512,7 +1541,7 @@ class ToolFactory:
 
             if not builtin_registry.is_builtin(schema.name):
                 raise ToolConfigurationError(
-                    schema.name, "Tool has no source configuration, cannot reconstruct"
+                    schema.name, _hint_source_configuration_missing(schema.name)
                 )
             dispatch = builtin_registry.get_dispatch(schema.name)
             if dispatch is builtin_registry.Dispatch.RAG:
