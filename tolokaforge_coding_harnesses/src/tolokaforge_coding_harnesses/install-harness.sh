@@ -84,6 +84,20 @@ ensure_command() {
     command -v "$1" >/dev/null 2>&1 || fail "'$1' is still missing after installing '$2'"
 }
 
+ensure_network_prereqs() {
+    # Every install method eventually needs the same two things — a TLS
+    # trust store and curl — either at build time (fetching the installer
+    # itself, or fetching Node from NodeSource, or fetching a binary
+    # archive) or at runtime (a CLI making outbound HTTPS after install).
+    # Installing them as a top-level prerequisite, once, gives every
+    # method the same baseline regardless of the pack image's minimalism.
+    # ``ensure_command curl`` also transitively installs ca-certificates
+    # on both apt and apk. A container that ships neither package manager
+    # is a task-authoring choice that this script cannot recover from —
+    # ``ensure_command`` fails loud with a message naming the missing tool.
+    ensure_command curl "ca-certificates curl" "ca-certificates curl"
+}
+
 ensure_node() {
     # Modern coding-harness CLIs (claude-code, codex, gemini-cli) use optional
     # chaining and other ES2020+ syntax in their install scripts. Ubuntu
@@ -197,6 +211,8 @@ reject_floating_version() {
     [ "$VERSION" != "latest" ] ||
         fail "install method '${METHOD}' cannot report what 'latest' resolved to; pin a version"
 }
+
+ensure_network_prereqs
 
 case "$METHOD" in
     npm) install_npm ;;
