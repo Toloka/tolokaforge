@@ -2552,10 +2552,10 @@ class Orchestrator:
                 # Mark run as completed
                 self.state_manager.mark_run_completed()
 
-            # Cleanup Docker runtime if used
+            # Cleanup runtime backend if used; SharedStackRuntimeBackend
+            # logs its own "Shared-stack runtime closed" line, no dup needed.
             if runtime_backend:
                 runtime_backend.close()
-                self.logger.info("Docker runtime closed")
 
             # Stop TypeSense BEFORE destroying the EngineStack.
             # TypeSense is connected to runner-net (via _connect_typesense_to_runner_network),
