@@ -187,23 +187,30 @@ class TestDockerComposeExecWrapperExec:
         with pytest.raises(ToolExecutionError, match="container name unresolved"):
             wrapper._exec_sync("echo hi", 30.0)
 
-    def test_exec_sync_timeout_preserves_partial_stdout(self, wrapper):
+    def test_exec_sync_timeout_preserves_partial_stdout_bytes_payload(self, wrapper):
         """A slow agent that runs past the tool's own budget must still have
         its already-emitted stdout surface in the returned string. The prior
         ``subprocess.run(capture_output=True, timeout=…)`` shape discarded
         stdout on TimeoutExpired, turning a legitimately-running-but-slow CLI
         into an opaque "nothing happened" that made native-pack coding-harness
-        smokes unobservable."""
+        smokes unobservable.
+
+        The payload is explicitly ``bytes`` here — ``TimeoutExpired.stdout``
+        carries the raw child buffer even when ``Popen`` was opened with
+        ``text=True``. A prior version of this path did ``str + bytes`` and
+        raised ``TypeError: can't concat str to bytes``, which the runner
+        then logged as the CLI's output. The decode step is what this test
+        pins."""
         wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
         fake = MagicMock()
         fake.communicate.side_effect = [
             subprocess.TimeoutExpired(
                 cmd=["docker", "exec"],
                 timeout=1.0,
-                output="partial cli stdout\n",
-                stderr="partial cli stderr\n",
+                output=b"partial cli stdout\n",
+                stderr=b"partial cli stderr\n",
             ),
-            ("", ""),
+            (b"", b""),
         ]
         fake.returncode = -9  # after .kill()
         with patch("subprocess.Popen", return_value=fake):
@@ -211,6 +218,7 @@ class TestDockerComposeExecWrapperExec:
         assert "partial cli stdout" in result
         assert "timed out after 1.0s" in result
         assert "partial cli stderr" in result
+        assert "can't concat str to bytes" not in result
         fake.kill.assert_called_once()
 
     @pytest.mark.asyncio

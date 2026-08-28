@@ -1178,13 +1178,26 @@ class DockerComposeExecToolWrapper(ToolWrapper):
             timed_out = False
         except subprocess.TimeoutExpired as exc:
             proc.kill()
-            stdout = exc.stdout or ""
-            stderr = exc.stderr or ""
+
+            # subprocess.TimeoutExpired.stdout/stderr carry the raw bytes the
+            # child had buffered when the deadline hit, even under text=True —
+            # Popen only decodes at the point of a clean communicate() return.
+            # Decode explicitly so the footer concatenation below is a str+str
+            # operation, not a str+bytes TypeError that hides the CLI output.
+            def _decode(buf: bytes | str | None) -> str:
+                if buf is None:
+                    return ""
+                if isinstance(buf, bytes):
+                    return buf.decode("utf-8", errors="replace")
+                return buf
+
+            stdout = _decode(exc.stdout)
+            stderr = _decode(exc.stderr)
             # communicate() after kill drains whatever else the child buffered.
             try:
                 more_out, more_err = proc.communicate(timeout=5)
-                stdout += more_out or ""
-                stderr += more_err or ""
+                stdout += _decode(more_out)
+                stderr += _decode(more_err)
             except subprocess.TimeoutExpired:
                 pass
             timed_out = True
