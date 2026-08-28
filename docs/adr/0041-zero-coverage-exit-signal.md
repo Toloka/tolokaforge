@@ -23,12 +23,13 @@
 A run whose trials all die before the agent is measured — every trial
 hits `PROVISION_ERROR`, `API_TIMEOUT`, or `RATE_LIMIT` — writes
 `aggregate.json {measured_trials: 0}`, prints `✓ Run complete`, and
-exits `0`. The chain is deliberate:
+exits `0` when neither opt-in completion gate fires. The chain is deliberate:
 [`tolokaforge/core/failure_attribution.py:60-66`](../../tolokaforge/core/failure_attribution.py)'s
 `EXCLUDED_TYPED_REASONS` classifies those trials as
 `INFRASTRUCTURE_ABORT` rather than `UNGRADEABLE`, so
-[`tolokaforge/dx/cli/main.py:474-482`](../../tolokaforge/dx/cli/main.py)'s
-`_fail_on_ungradeable_trials` gate never fires. The design intent
+[`tolokaforge/dx/cli/main.py`](../../tolokaforge/dx/cli/main.py)'s
+`_fail_on_completeness_gates` ungradeable branch does not fire
+without the `--fail-on-zero-coverage` opt-in. The design intent
 this preserves is documented at
 [`docs/CLI.md`](../CLI.md) § "Run and worker exit codes":
 "a trial the provider or the substrate killed … does not trigger the
@@ -269,11 +270,10 @@ more specific exit-`2` signal outranks exit-`1` in the overlap
 - [`docs/CLI.md`](../CLI.md) § "Run and worker exit codes" — the
   contract that "a trial the provider or the substrate killed … does
   not trigger the gate" this ADR preserves via the flag defaults.
-- [`_fail_on_ungradeable_trials`](../../tolokaforge/dx/cli/main.py)
-  ("the exit code plus this line are its only channel") — the
-  emission pattern this ADR extends; a widened gate function replaces
-  the single-condition version and the console error line names which
-  flag fired.
+- [`_fail_on_completeness_gates`](../../tolokaforge/dx/cli/main.py)
+  — the widened gate function whose three branches (zero-coverage,
+  zero-judge-graded, ungradeable) implement the precedence documented
+  here; the console error line names which channel fired.
 
 ## Links
 

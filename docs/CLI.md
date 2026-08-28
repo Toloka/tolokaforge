@@ -460,23 +460,27 @@ A `candidate` entry converts nothing, so its verdict is reported and gates nothi
 
 ## Run and worker exit codes
 
-`tolokaforge run` and `tolokaforge worker` are usable as gates on whether the run measured everything it attempted:
+`tolokaforge run` and `tolokaforge worker` are usable as gates on whether the run measured everything it attempted and — opt-in — whether the run measured anything at all:
 
 | Outcome | Exit code |
 |---|---|
-| every attempt reached a verdict | `0` |
-| the run completed and any trial is **`ungradeable`** | `1`, after every artifact is written, the end banner is printed and the run directory is on stdout |
+| every attempt reached a verdict, and no opted-in gate fires | `0` |
+| `--fail-on-zero-coverage` set and the run measured nothing | `2`, after every artifact is written, the end banner is printed and the run directory is on stdout |
+| `--fail-on-zero-judge-graded` set and every produced grade has `judge_status == ERRORED` | `2`, same emission order |
+| the run completed and any trial is **`ungradeable`** (and no exit-2 gate fires) | `1`, after every artifact is written, the end banner is printed and the run directory is on stdout |
 | the run never happened — bad config, orchestrator raise, zero tasks | non-zero with **empty** stdout; see [§ stdout / stderr contract](#stdout--stderr-contract) |
 
 An **ungradeable** trial is one the run attempted and measured and then could not grade: `trajectory.yaml` carries a `grading_error` and no `grade`. A run that reports success while an arbitrary, model-correlated subset of its grades is missing is the failure mode this gate exists to remove.
 
-A trial the provider or the substrate killed — an `api_timeout`, `rate_limit` or `provision_error`, counted under `infrastructure_aborts` — produces no verdict either and **does not** trigger the gate. Those trials were never measured, they sit outside the measured denominator by design, and failing a several-hour run for one rate limit is how an exit code becomes something operators route around instead of reading.
+A trial the provider or the substrate killed — an `api_timeout`, `rate_limit` or `provision_error`, counted under `infrastructure_aborts` — produces no verdict either and **does not** trigger the ungradeable gate. Those trials were never measured, they sit outside the measured denominator by design, and failing a several-hour run for one rate limit is how an exit code becomes something operators route around instead of reading.
 
 There is no tolerance threshold. A threshold is a way to re-silence the signal, and the number an operator would tune is already `ungradeable` in `aggregate.json`.
 
-On exit `1` the console carries one error line naming the count, the first few trial ids and the total. The run directory is complete, so the response is to read it: `ungradeable` in `aggregate.json` says how many, `per_task_metrics.json` says where, and each named trial's `trajectory.yaml` `grading_error` says why. Then rerun those trials, or accept the loss deliberately.
+Two opt-in flags distinguish two degenerate completions from a clean run and from the ungradeable gate. `--fail-on-zero-coverage` (mirrored as `orchestrator.fail_on_zero_coverage` in the run config) exits `2` when the run finished with no measured trials — every attempt classified as an infrastructure abort. `--fail-on-zero-judge-graded` (mirrored as `orchestrator.fail_on_zero_judge_graded`) exits `2` when at least one trial produced a `Grade` record and every such record has `judge_status == ERRORED`. Both flags default off, so the shipped "infrastructure aborts do not fail the run" contract is preserved for callers that ignore them; a run whose measured trials produced no grade at all (`scored_trials == 0`) does not fire the judge-graded gate. When any exit-2 gate fires it takes precedence over the ungradeable exit-1: an operator's explicit opt-in outranks the generic completion check. The full precedence — zero-coverage flag > zero-judge-graded flag > ungradeable > `0` — is captured in [`docs/adr/0041-zero-coverage-exit-signal.md`](adr/0041-zero-coverage-exit-signal.md).
 
-`tolokaforge worker` applies the same rule to the attempts that worker completed, which is the surface a sharded CI actually gates on. Its `--run-dir` summary line is printed either way — the gate is a verdict on top of a completed shard, not a replacement for what the shard did.
+On any non-zero exit the console carries one error line naming which gate fired and where to read the detail. The run directory is complete, so the response is to read it: `ungradeable` and `infrastructure_aborts` in `aggregate.json` say how many, `per_task_metrics.json` says where, and each named trial's `trajectory.yaml` `grading_error` (or `grade.judge_status`) says why. Then rerun those trials, or accept the loss deliberately.
+
+`tolokaforge worker` applies the same rules to the attempts that worker completed, which is the surface a sharded CI actually gates on. Its `--run-dir` summary line is printed either way — the gate is a verdict on top of a completed shard, not a replacement for what the shard did.
 
 ## Run banner
 

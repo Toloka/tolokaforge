@@ -332,6 +332,340 @@ class TestRunStdoutContract:
         assert "task[v2]:0" in result.stderr
 
 
+class TestRunCompletenessGates:
+    """The opt-in exit-2 gates on ``tolokaforge run`` and their precedence.
+
+    Two Click flags (``--fail-on-zero-coverage`` / ``--fail-on-zero-judge-graded``)
+    turn two conditions on ``GradingCompleteness`` into a distinct exit code.
+    The flags default off, so a caller that ignores them sees the shipped
+    exit-0 / exit-1 semantics unchanged; when set, exit 2 dominates exit 1
+    in any overlap. See ``docs/adr/0041-zero-coverage-exit-signal.md``.
+    """
+
+    def test_fail_on_zero_coverage_flag_exits_two_when_nothing_measured(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
+        expected_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                run_return=expected_dir,
+                completeness=GradingCompleteness(
+                    total_attempts=4,
+                    ungradeable_trial_ids=(),
+                    measured_trials=0,
+                    scored_trials=0,
+                    judge_errored_trials=0,
+                ),
+            ),
+        )
+
+        result = runner.invoke(
+            cli,
+            ["run", "--config", str(valid_config), "--fail-on-zero-coverage"],
+        )
+
+        assert result.exit_code == 2, result.stderr
+        assert "Run measured no trials on 4 attempted" in result.stderr
+        assert "See infrastructure_aborts in aggregate.json" in result.stderr
+
+    def test_fail_on_zero_judge_graded_flag_exits_two_when_every_grade_errored(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
+        expected_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                run_return=expected_dir,
+                completeness=GradingCompleteness(
+                    total_attempts=3,
+                    ungradeable_trial_ids=(),
+                    measured_trials=3,
+                    scored_trials=3,
+                    judge_errored_trials=3,
+                ),
+            ),
+        )
+
+        result = runner.invoke(
+            cli,
+            ["run", "--config", str(valid_config), "--fail-on-zero-judge-graded"],
+        )
+
+        assert result.exit_code == 2, result.stderr
+        assert "LLM judge errored on every scored trial" in result.stderr
+        assert "0 of 3 grades succeeded" in result.stderr
+        assert "See judge_status in trajectory.json" in result.stderr
+
+    def test_zero_coverage_without_flag_exits_zero(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Opt-in is opt-in: an unflagged run whose only trials were infra-aborts
+        still exits ``0``, preserving the shipped "infra aborts do not fail
+        the run" contract."""
+        expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
+        expected_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                run_return=expected_dir,
+                completeness=GradingCompleteness(
+                    total_attempts=2,
+                    ungradeable_trial_ids=(),
+                    measured_trials=0,
+                    scored_trials=0,
+                    judge_errored_trials=0,
+                ),
+            ),
+        )
+
+        result = runner.invoke(cli, ["run", "--config", str(valid_config)])
+
+        assert result.exit_code == 0, result.stderr
+
+    def test_flag_set_but_condition_unmet_exits_zero(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A mixed run where some grades errored but not all does not fire the gate."""
+        expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
+        expected_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                run_return=expected_dir,
+                completeness=GradingCompleteness(
+                    total_attempts=4,
+                    ungradeable_trial_ids=(),
+                    measured_trials=4,
+                    scored_trials=4,
+                    judge_errored_trials=2,
+                ),
+            ),
+        )
+
+        result = runner.invoke(
+            cli,
+            ["run", "--config", str(valid_config), "--fail-on-zero-judge-graded"],
+        )
+
+        assert result.exit_code == 0, result.stderr
+
+    def test_measured_but_no_grade_fixture_does_not_fire_judge_gate(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A run whose measured trials never produced a grade (``scored_trials == 0``)
+        must not fire ``--fail-on-zero-judge-graded``: the failure mode is a judge
+        that errored on scoring attempts, not the absence of scoring."""
+        expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
+        expected_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                run_return=expected_dir,
+                completeness=GradingCompleteness(
+                    total_attempts=3,
+                    ungradeable_trial_ids=(),
+                    measured_trials=3,
+                    scored_trials=0,
+                    judge_errored_trials=0,
+                ),
+            ),
+        )
+
+        result = runner.invoke(
+            cli,
+            ["run", "--config", str(valid_config), "--fail-on-zero-judge-graded"],
+        )
+
+        assert result.exit_code == 0, result.stderr
+
+    def test_zero_coverage_dominates_when_both_flags_set(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With both flags set and ``measured_trials == 0``, only ``zero_coverage``
+        fires — ``zero_judge_graded`` cannot be true when nothing was scored."""
+        expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
+        expected_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                run_return=expected_dir,
+                completeness=GradingCompleteness(
+                    total_attempts=3,
+                    ungradeable_trial_ids=(),
+                    measured_trials=0,
+                    scored_trials=0,
+                    judge_errored_trials=0,
+                ),
+            ),
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "run",
+                "--config",
+                str(valid_config),
+                "--fail-on-zero-coverage",
+                "--fail-on-zero-judge-graded",
+            ],
+        )
+
+        assert result.exit_code == 2, result.stderr
+        assert "Run measured no trials" in result.stderr
+        assert "LLM judge errored" not in result.stderr
+
+    def test_zero_coverage_flag_dominates_ungradeable_when_flag_set(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Exit 2 dominates exit 1: with ``--fail-on-zero-coverage`` set and both
+        ``zero_coverage`` and ``ungradeable > 0``, the zero-coverage line fires."""
+        expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
+        expected_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                run_return=expected_dir,
+                completeness=GradingCompleteness(
+                    total_attempts=4,
+                    ungradeable_trial_ids=("TASK-A:0",),
+                    measured_trials=0,
+                    scored_trials=0,
+                    judge_errored_trials=0,
+                ),
+            ),
+        )
+
+        result = runner.invoke(
+            cli,
+            ["run", "--config", str(valid_config), "--fail-on-zero-coverage"],
+        )
+
+        assert result.exit_code == 2, result.stderr
+        assert "Run measured no trials" in result.stderr
+        assert "could not be graded" not in result.stderr
+
+    def test_judge_graded_flag_dominates_ungradeable_when_flag_set(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Exit 2 dominates exit 1: with ``--fail-on-zero-judge-graded`` set,
+        ``zero_judge_graded`` fires ahead of any ``ungradeable > 0`` state."""
+        expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
+        expected_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                run_return=expected_dir,
+                completeness=GradingCompleteness(
+                    total_attempts=4,
+                    ungradeable_trial_ids=("TASK-A:0",),
+                    measured_trials=3,
+                    scored_trials=3,
+                    judge_errored_trials=3,
+                ),
+            ),
+        )
+
+        result = runner.invoke(
+            cli,
+            ["run", "--config", str(valid_config), "--fail-on-zero-judge-graded"],
+        )
+
+        assert result.exit_code == 2, result.stderr
+        assert "LLM judge errored on every scored trial" in result.stderr
+        assert "could not be graded" not in result.stderr
+
+    def test_yaml_orchestrator_flag_fires_gate_without_cli_flag(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``orchestrator.fail_on_zero_coverage: true`` in the YAML fires the
+        gate without the CLI flag — mirroring is a two-way surface."""
+        config_path = tmp_path / "run.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "models": {"user": {"provider": "openai", "name": "gpt-4o"}},
+                    "evaluation": {
+                        "output_dir": str(tmp_path / "out"),
+                        "tasks_glob": str(tmp_path / "tasks" / "*"),
+                    },
+                    "orchestrator": {
+                        "repeats": 1,
+                        "auto_start_services": False,
+                        "fail_on_zero_coverage": True,
+                    },
+                    "compute": {"workers": 1},
+                }
+            )
+        )
+        expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
+        expected_dir.mkdir(parents=True)
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                run_return=expected_dir,
+                completeness=GradingCompleteness(
+                    total_attempts=2,
+                    ungradeable_trial_ids=(),
+                    measured_trials=0,
+                    scored_trials=0,
+                    judge_errored_trials=0,
+                ),
+            ),
+        )
+
+        result = runner.invoke(cli, ["run", "--config", str(config_path)])
+
+        assert result.exit_code == 2, result.stderr
+        assert "Run measured no trials on 2 attempted" in result.stderr
+
+
 class TestWorkerCompletenessGate:
     """``tolokaforge worker`` gates on the same attribute, over its own attempts.
 
@@ -389,6 +723,79 @@ class TestWorkerCompletenessGate:
 
         assert result.exit_code == 0, result.stderr
         assert "could not be graded" not in result.stderr
+
+    def test_worker_fail_on_zero_coverage_flag_exits_two(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The worker's opt-in zero-coverage gate mirrors ``tolokaforge run``."""
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                completeness=GradingCompleteness(
+                    total_attempts=2,
+                    ungradeable_trial_ids=(),
+                    measured_trials=0,
+                    scored_trials=0,
+                    judge_errored_trials=0,
+                ),
+            ),
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "worker",
+                "--config",
+                str(valid_config),
+                "--run-dir",
+                str(tmp_path / "run_dir"),
+                "--fail-on-zero-coverage",
+            ],
+        )
+
+        assert result.exit_code == 2, result.stderr
+        assert "Run measured no trials on 2 attempted" in result.stderr
+
+    def test_worker_fail_on_zero_judge_graded_flag_exits_two(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                completeness=GradingCompleteness(
+                    total_attempts=3,
+                    ungradeable_trial_ids=(),
+                    measured_trials=3,
+                    scored_trials=3,
+                    judge_errored_trials=3,
+                ),
+            ),
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "worker",
+                "--config",
+                str(valid_config),
+                "--run-dir",
+                str(tmp_path / "run_dir"),
+                "--fail-on-zero-judge-graded",
+            ],
+        )
+
+        assert result.exit_code == 2, result.stderr
+        assert "LLM judge errored on every scored trial" in result.stderr
 
 
 class TestPrepareStdoutContract:
