@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.21.3 (2026-08-28)
+
+### Feat
+
+- **grading**: engine-repin-unblock — runner wire-model aliases, expected_hash refusal, trace_checks on_missing: withhold (#1315)
+
+### Fix
+
+- **grader**: route RunnerRPCTrialGrader through runtime_backend for per-trial runtimes (#1328)
+
 ## v0.21.2 (2026-08-26)
 
 ### Fix
