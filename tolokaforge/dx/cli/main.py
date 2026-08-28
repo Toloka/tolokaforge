@@ -1860,7 +1860,17 @@ def _load_task_under_its_project(
 
 @cli.command()
 @click.option("--tasks", required=True, help="Glob pattern for task files")
-def validate(tasks: str):
+@click.option(
+    "--strict-authoring/--no-strict-authoring",
+    default=False,
+    help=(
+        "Promote ADAPTER_DECLARED skips — adapter hooks that returned unresolvable() — "
+        "to fatal. STRUCTURAL skips (adapter uninstalled, misspelled type) stay never "
+        "fatal, so a pack targeting an uninstalled adapter still validates. Reach for "
+        "it in a task-pack CI that owns the adapter it targets. See ADR-0042."
+    ),
+)
+def validate(tasks: str, strict_authoring: bool):
     """Validate task configurations"""
     console.print(f"[bold blue]Validating tasks matching: {tasks}[/bold blue]")
 
@@ -1875,7 +1885,12 @@ def validate(tasks: str):
         tool_inventory_under_adapter,
         validate_grading_yaml,
     )
-    from tolokaforge.core.grading.config_validation import AuthoringReport, CombineLayer, Skip
+    from tolokaforge.core.grading.config_validation import (
+        AuthoringReport,
+        CombineLayer,
+        Skip,
+        SkipKind,
+    )
     from tolokaforge.core.grading.migration_declaration import inspect_migration_declaration
 
     task_files = glob.glob(tasks, recursive=True)
@@ -1904,7 +1919,9 @@ def validate(tasks: str):
                     inventory=tool_inventory_under_adapter(
                         task_config, task_dir, task_config.adapter_type
                     ),
-                    replay_world=replay_world_under_adapter(task_config, task_config.adapter_type),
+                    replay_world=replay_world_under_adapter(
+                        task_config, task_dir, task_config.adapter_type
+                    ),
                     hash_sources=hash_source_layer_under_adapter(
                         task_config, task_dir, task_config.adapter_type
                     ),
@@ -1918,6 +1935,23 @@ def validate(tasks: str):
                 # The base each entry's corpus resolves against is this layer's to
                 # supply: the loader takes it as a parameter and reads no ambient state.
                 inspect_migration_declaration(source.path, corpus_base=Path.cwd())
+            adapter_declared = tuple(
+                skip for skip in report.unchecked if skip.kind is SkipKind.ADAPTER_DECLARED
+            )
+            if strict_authoring and adapter_declared:
+                console.print(
+                    f"[red]✗ {task_file}: --strict-authoring refuses "
+                    f"{len(adapter_declared)} adapter-declared skip(s)[/red]"
+                )
+                for skip in adapter_declared:
+                    console.print(f"[red]  ✗ {skip.where}: {skip.reason}[/red]")
+                for skip in report.unchecked:
+                    if skip.kind is SkipKind.STRUCTURAL:
+                        console.print(
+                            f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]"
+                        )
+                invalid += 1
+                continue
             console.print(f"[green]✓ {task_file}[/green]")
             for skip in report.unchecked:
                 console.print(f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]")

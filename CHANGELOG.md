@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Feat
+
+- **validate**: new `tolokaforge validate --strict-authoring` flag promotes adapter-declared `unresolvable()` skips to fatal for authors targeting a specific adapter; `SkipKind.STRUCTURAL` (uninstalled or misspelled adapter) stays never-fatal, preserving the shipped default. See [ADR-0042](docs/adr/0042-adapter-blind-authoring-gate.md). (#1302)
+
 ### Fix
 
 - **config validate**: no longer reports `"does not appear to support function calling"` for models absent from litellm's map (e.g. `google/gemini-3.6-flash` and OpenRouter unmapped variants); an INFO now nudges the operator to declare the overlay entry if they intend to use tools. (#1300)

@@ -2993,10 +2993,10 @@ Findings come in three classes:
 | a task naming no grading source at all — no `grading:` field and no sibling `grading.yaml` — where its declared `adapter_type` is `native` | error | the task itself — this refusal carries no block address, because there is no block |
 | a task naming a grading file with nothing at the path it resolves to, where its declared `adapter_type` is `native` | error | as above |
 | either absence where the task declares any other `adapter_type` | unchecked | `grading` |
-| a tool set the loader cannot resolve for this task | unchecked | whole block |
-| what a task gives a golden replay, where no caller resolved it | unchecked | `state_checks.hash.golden_actions` |
-| a database-reading `state_checks` block where no caller resolved the seeded tables — the declared `adapter_type` is not `native`, or names an adapter this environment has not installed | unchecked | `state_checks` |
-| an `id_fields` declaration where no caller resolved the seeded tables — the declared `adapter_type` is not `native`, or names an adapter this environment has not installed | unchecked | `state_checks.id_fields` |
+| a tool set the adapter's `grading_tool_inventory` hook answers `unresolvable()` for | unchecked | whole block |
+| a golden-action world the adapter's `grading_replay_world` hook answers `unresolvable()` for | unchecked | `state_checks.hash.golden_actions` |
+| a database-reading `state_checks` block whose adapter's `grading_seeded_tables` hook answers `unresolvable()` — the adapter has not implemented the hook, or the environment has no class registered for the declared `adapter_type` | unchecked | `state_checks` |
+| an `id_fields` declaration whose adapter's `grading_seeded_tables` hook answers `unresolvable()` — the adapter has not implemented the hook, or the environment has no class registered for the declared `adapter_type` | unchecked | `state_checks.id_fields` |
 | an effective `combine` no caller could resolve | unchecked | `combine.weights` |
 | an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |
 | an `args` address below its first segment | unchecked | per path |
@@ -3019,6 +3019,25 @@ declaration whose seeded tables no caller resolved, a hash block whose flag and 
 disagree under an external adapter that may supply the source itself,
 and a task with no grading block on disk under an adapter that resolves its own all
 land here.
+
+Each `unchecked` entry carries a `SkipKind` that tags whose silence it is.
+`SkipKind.STRUCTURAL` covers the environment side: the loader cannot inspect the
+pack — the `adapter_type` names no class this environment holds, a tool schema does
+not resolve, an `args` path is malformed. `SkipKind.ADAPTER_DECLARED` covers the
+adapter side: the adapter's class *is* installed and its `grading_*` hook returned
+`unresolvable()`, which is the adapter saying "I cannot say" rather than the
+environment failing to ask. The distinction is what lets a task-pack CI author
+targeting a specific adapter promote its own adapter's `ADAPTER_DECLARED` skips to
+fatal — the pack is targeted; the adapter is present; a silence there is the
+pack's problem to fix. Every `Skip` reads its kind off the layer the rule read,
+so no producer names the kind twice.
+
+The promotion knob is [`tolokaforge validate --strict-authoring`](CLI.md#--strict-authoring),
+which reads `Skip.kind` at the CLI, after the gate returns, and refuses any task
+carrying an `ADAPTER_DECLARED` skip. STRUCTURAL skips stay never-fatal under the
+flag, so a pack whose target adapter is uninstalled still validates. The gate's
+own `report.fatal(fail_on)` shape is unchanged — enforcement is a caller decision.
+See [ADR-0042](adr/0042-adapter-blind-authoring-gate.md).
 
 **Having no grading block on disk is answered by the adapter the task declares.**
 `get_grading_config` is abstract and the implementations disagree: the native adapter
