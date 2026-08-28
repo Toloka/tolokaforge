@@ -1,0 +1,36 @@
+# Same native pack + task as run_harness.yaml — different vendor CLI.
+# gemini-cli is the ONE shipped harness without a credential_gateway shield
+# — its REST auth and dynamic path shape need work tracked in #1311. Under
+# the shield's default this run would refuse; the escape hatch keeps
+# gemini-cli usable meanwhile.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "openrouter/google/gemini-2.5-pro"
+    coding_harness: "gemini-cli"
+    temperature: 0.0
+    max_tokens: 4096
+    disable_credential_gateway: true
+
+compute:
+  workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
+  repeats: 1
+  strict_task_load: true
+  timeouts:
+    episode_s: 900
+    turn_s: 240
+
+evaluation:
+  projects:
+    - "examples/native/coding_harness"
+  tasks_glob: "task.yaml"
+  output_dir: "results/native-coding-harness-gemini"
+  harness_adapter:
+    type: "native"

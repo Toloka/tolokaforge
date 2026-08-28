@@ -1,0 +1,32 @@
+# Same native pack + task as run_harness.yaml — different vendor CLI.
+# opencode + anthropic/claude-sonnet-4-6 via the OpenRouter credential shield.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    coding_harness: "opencode"
+    temperature: 0.0
+    max_tokens: 4096
+
+compute:
+  workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
+  repeats: 1
+  strict_task_load: true
+  timeouts:
+    episode_s: 900
+    turn_s: 240
+
+evaluation:
+  projects:
+    - "examples/native/coding_harness"
+  tasks_glob: "task.yaml"
+  output_dir: "results/native-coding-harness-opencode"
+  harness_adapter:
+    type: "native"

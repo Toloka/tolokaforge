@@ -1,0 +1,32 @@
+# Same native pack + task as run_harness.yaml — different vendor CLI.
+# grok-build + x-ai/grok-code-fast-1 via the OpenRouter credential shield.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "openrouter/x-ai/grok-4.3"
+    coding_harness: "grok-build"
+    temperature: 0.0
+    max_tokens: 4096
+
+compute:
+  workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
+  repeats: 1
+  strict_task_load: true
+  timeouts:
+    episode_s: 900
+    turn_s: 240
+
+evaluation:
+  projects:
+    - "examples/native/coding_harness"
+  tasks_glob: "task.yaml"
+  output_dir: "results/native-coding-harness-grok"
+  harness_adapter:
+    type: "native"

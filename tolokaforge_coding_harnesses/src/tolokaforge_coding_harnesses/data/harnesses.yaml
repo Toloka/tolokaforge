@@ -142,6 +142,16 @@ harnesses:
       dummy_token_env_var: "OPENAI_API_KEY"
       dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
       base_url_env_var: "OPENAI_BASE_URL"
+      # OpenAI-flavored CLI: emits paths relative to a base ending in
+      # ``/v1``, so the outbound path shapes drop the ``/v1/`` prefix
+      # (``/chat/completions``, ``/responses``, ``/models``) — the
+      # gateway's default allowlist assumes the with-prefix shape and
+      # would 405 every request otherwise. codex reaches ``/responses``
+      # (Responses API) as well as ``/chat/completions``.
+      path_allowlist:
+        - "/chat/completions"
+        - "/responses"
+        - "/models"
 
   gemini-cli:
     install_method: "npm"
@@ -356,6 +366,11 @@ harnesses:
       dummy_token_env_var: "KIMI_MODEL_API_KEY"
       dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
       base_url_env_var: "KIMI_MODEL_BASE_URL"
+      # OpenAI-compat CLI: emits paths relative to a base ending in
+      # ``/v1``, so paths drop the ``/v1/`` prefix. Same shape as codex.
+      path_allowlist:
+        - "/chat/completions"
+        - "/models"
 
   opencode:
     install_method: "npm"
@@ -511,6 +526,14 @@ harnesses:
       dummy_token_env_var: "ANTHROPIC_API_KEY"
       dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
       base_url_env_var: "ANTHROPIC_BASE_URL"
+      # OpenAI-compat over an Anthropic-shaped base — opencode's provider
+      # routes through the ai-sdk's openai-compatible module against a
+      # base ending in ``/v1``, so paths drop the ``/v1/`` prefix. Same
+      # shape as codex.
+      path_allowlist:
+        - "/chat/completions"
+        - "/messages"
+        - "/models"
 
   grok-build:
     # Grok Build's installer is a curl-piped shell script from x.ai — the
@@ -607,3 +630,9 @@ harnesses:
       dummy_token_env_var: "OPENROUTER_API_KEY"
       dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
       base_url_env_var: "OPENROUTER_BASE_URL"
+      # ``api_backend = "chat_completions"`` in the config above pins
+      # Grok Build to OpenAI-compat over a base ending in ``/v1``, so
+      # paths drop the ``/v1/`` prefix. Same shape as codex.
+      path_allowlist:
+        - "/chat/completions"
+        - "/models"

@@ -1,0 +1,32 @@
+# Same native pack + task as run_harness.yaml — different vendor CLI.
+# kimi-code + moonshotai/kimi-k2 via the OpenRouter-backed credential shield.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "openrouter/moonshotai/kimi-k2-0905"
+    coding_harness: "kimi-code"
+    temperature: 0.0
+    max_tokens: 4096
+
+compute:
+  workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
+  repeats: 1
+  strict_task_load: true
+  timeouts:
+    episode_s: 900
+    turn_s: 240
+
+evaluation:
+  projects:
+    - "examples/native/coding_harness"
+  tasks_glob: "task.yaml"
+  output_dir: "results/native-coding-harness-kimi"
+  harness_adapter:
+    type: "native"
