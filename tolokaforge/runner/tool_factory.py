@@ -1163,15 +1163,36 @@ class DockerComposeExecToolWrapper(ToolWrapper):
                 self.name,
                 "docker_compose_exec tool executed before start() — container name unresolved",
             )
-        proc = subprocess.run(
+        # Popen + communicate(timeout=…) so a timeout kills the process AND
+        # surfaces whatever the CLI had already written. subprocess.run's
+        # capture_output path discards buffered stdout on TimeoutExpired,
+        # which turns a slow-agent run into an opaque "nothing happened".
+        proc = subprocess.Popen(
             ["docker", "exec", "-i", self._container, "bash", "-c", command],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
         )
-        output = proc.stdout
-        if proc.returncode != 0:
-            output += f"\n[exit code: {proc.returncode}]\n{proc.stderr}"
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            timed_out = False
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            stdout = exc.stdout or ""
+            stderr = exc.stderr or ""
+            # communicate() after kill drains whatever else the child buffered.
+            try:
+                more_out, more_err = proc.communicate(timeout=5)
+                stdout += more_out or ""
+                stderr += more_err or ""
+            except subprocess.TimeoutExpired:
+                pass
+            timed_out = True
+        output = stdout
+        if timed_out:
+            output += f"\n[timed out after {timeout}s; partial output preserved]\n{stderr}"
+        elif proc.returncode != 0:
+            output += f"\n[exit code: {proc.returncode}]\n{stderr}"
         return output
 
 

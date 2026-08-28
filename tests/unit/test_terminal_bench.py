@@ -155,13 +155,13 @@ class TestDockerComposeExecWrapperInit:
 class TestDockerComposeExecWrapperExec:
     def test_exec_sync_success(self, wrapper):
         wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="hello world\n", stderr=""
-            )
+        fake = MagicMock()
+        fake.communicate.return_value = ("hello world\n", "")
+        fake.returncode = 0
+        with patch("subprocess.Popen", return_value=fake) as mock_popen:
             result = wrapper._exec_sync("echo hello world", 30.0)
             assert result == "hello world\n"
-            argv = mock_run.call_args.args[0]
+            argv = mock_popen.call_args.args[0]
             assert argv == [
                 "docker",
                 "exec",
@@ -174,10 +174,10 @@ class TestDockerComposeExecWrapperExec:
 
     def test_exec_sync_nonzero_exit(self, wrapper):
         wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=1, stdout="partial", stderr="error msg"
-            )
+        fake = MagicMock()
+        fake.communicate.return_value = ("partial", "error msg")
+        fake.returncode = 1
+        with patch("subprocess.Popen", return_value=fake):
             result = wrapper._exec_sync("bad cmd", 30.0)
             assert "partial" in result
             assert "[exit code: 1]" in result
@@ -186,6 +186,32 @@ class TestDockerComposeExecWrapperExec:
     def test_exec_before_start_fails_loud(self, wrapper):
         with pytest.raises(ToolExecutionError, match="container name unresolved"):
             wrapper._exec_sync("echo hi", 30.0)
+
+    def test_exec_sync_timeout_preserves_partial_stdout(self, wrapper):
+        """A slow agent that runs past the tool's own budget must still have
+        its already-emitted stdout surface in the returned string. The prior
+        ``subprocess.run(capture_output=True, timeout=…)`` shape discarded
+        stdout on TimeoutExpired, turning a legitimately-running-but-slow CLI
+        into an opaque "nothing happened" that made native-pack coding-harness
+        smokes unobservable."""
+        wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
+        fake = MagicMock()
+        fake.communicate.side_effect = [
+            subprocess.TimeoutExpired(
+                cmd=["docker", "exec"],
+                timeout=1.0,
+                output="partial cli stdout\n",
+                stderr="partial cli stderr\n",
+            ),
+            ("", ""),
+        ]
+        fake.returncode = -9  # after .kill()
+        with patch("subprocess.Popen", return_value=fake):
+            result = wrapper._exec_sync("slow-cli --print", 1.0)
+        assert "partial cli stdout" in result
+        assert "timed out after 1.0s" in result
+        assert "partial cli stderr" in result
+        fake.kill.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_execute_async(self, wrapper):
