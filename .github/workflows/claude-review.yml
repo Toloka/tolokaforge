@@ -54,7 +54,7 @@ jobs:
           # ``track_progress: true`` posts tag-mode tracking comments so PR
           # readers see review progress in the timeline.
           track_progress: true
-          claude_args: --model claude-opus-4-8
+          claude_args: --model claude-opus-4-7
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
