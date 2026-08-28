@@ -471,6 +471,14 @@ _RULES: tuple[_Rule, ...] = (
         message="does not compile",
     ),
     _Rule(
+        label="matcher_not_regex_that_does_not_compile",
+        task=_HELPDESK,
+        grading=_trace_block({"kind": "tool_call", "tool": {"not_regex": "http_(request"}}),
+        checker="_check_regex_compiles",
+        channel="errors",
+        message="does not compile",
+    ),
+    _Rule(
         label="transcript_regex_that_does_not_compile",
         task=_HELPDESK,
         grading={"transcript_rules": {"disallow_regex": ["unterminated(["]}},

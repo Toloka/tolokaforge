@@ -602,6 +602,24 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
                 since=_UNRELEASED,
                 breadth="a pack declaring `on_missing: withhold` on a trace constraint",
             ),
+            _DocLock(
+                doc_key="`trace_checks` negative-text operators (`not_contains`, `not_regex`)",
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack declaring one under a matcher predicate",
+            ),
+            _DocLock(
+                doc_key="`trace_checks` nullness operators (`is_null`, `omitted`)",
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack declaring one under a matcher's `args` or `text` predicate",
+            ),
+            _DocLock(
+                doc_key="`trace_checks` date operators (`date_gt`, `date_gte`, `date_lt`, `date_lte`)",
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack declaring one under a matcher predicate",
+            ),
         ),
     ),
     _WireKey(

@@ -658,12 +658,20 @@ TRACE_PREDICATE_OPERATORS: frozenset[str] = frozenset(
         "equals_ci",
         "contains",
         "contains_ci",
+        "not_contains",
         "not_equals",
         "regex",
+        "not_regex",
+        "is_null",
+        "omitted",
         "gt",
         "gte",
         "lt",
         "lte",
+        "date_gt",
+        "date_gte",
+        "date_lt",
+        "date_lte",
         "in_",
         "not_in",
         "len_gt",
@@ -682,6 +690,13 @@ TRACE_PREDICATE_BINDING_OPERATORS: frozenset[str] = frozenset(
 )
 """The operators whose value is a name in the constraint's binding environment
 rather than a value to compare against."""
+
+TRACE_PREDICATE_DATE_OPERATORS: frozenset[str] = frozenset(
+    {"date_gt", "date_gte", "date_lt", "date_lte"}
+)
+"""The operators whose literal is an ISO-8601 date or datetime. Read by the
+load-tier validator that refuses a bound value no calendar reading holds — the
+same second-source symmetry ``TRACE_PREDICATE_BINDING_OPERATORS`` carries."""
 
 
 class ValuePredicate(BaseModel):
@@ -707,12 +722,20 @@ class ValuePredicate(BaseModel):
     equals_ci: str | None = None
     contains: Any = None
     contains_ci: str | None = None
+    not_contains: Any = None
     not_equals: Any = None
     regex: str | None = None
+    not_regex: str | None = None
+    is_null: bool | None = None
+    omitted: bool | None = None
     gt: float | None = None
     gte: float | None = None
     lt: float | None = None
     lte: float | None = None
+    date_gt: str | None = None
+    date_gte: str | None = None
+    date_lt: str | None = None
+    date_lte: str | None = None
     in_: list[Any] | None = None
     not_in: list[Any] | None = None
     len_gt: int | None = Field(default=None, ge=0)
@@ -747,6 +770,28 @@ class ValuePredicate(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _require_a_date_literal_some_calendar_holds(self) -> ValuePredicate:
+        """A ``date_*`` bound must be an ISO-8601 date or datetime.
+
+        Read through :func:`~tolokaforge.core.grading.predicates.date_comparison_key`
+        — the one normalization every date comparison also reads — so an author
+        who wrote ``next week`` is refused at load rather than seeing a predicate
+        that holds for no trial and reports as an agent failure.
+        """
+        from tolokaforge.core.grading.predicates import date_comparison_key
+
+        for name in TRACE_PREDICATE_DATE_OPERATORS:
+            literal = getattr(self, name)
+            if literal is not None and date_comparison_key(literal) is None:
+                raise ValueError(
+                    f"a date comparison's bound must be an ISO-8601 date "
+                    f"(2026-03-01) or datetime (2026-03-01T12:00:00Z), but "
+                    f"{name}={literal!r} parses as neither, so the predicate "
+                    "would hold for no trial. Fix the bound"
+                )
+        return self
+
 
 # Which fields a matcher may read, per event kind. A ``tool_call`` matcher reads
 # ``status`` and ``result`` from the result paired with the call, which is the only
@@ -768,6 +813,17 @@ _MATCHER_PREDICATE_FIELDS: tuple[str, ...] = (
     "result",
     "text",
 )
+
+# The fields whose ``None`` reads as missing evidence rather than as an authored
+# JSON ``null`` — a matcher that could not tell the two apart would surface a
+# re-grading gap as an author's assertion.
+_NULLNESS_UNPROBEABLE_FIELDS: frozenset[str] = frozenset({"status", "executor", "result"})
+
+
+def _declares_nullness_probe(predicate: ValuePredicate | None) -> bool:
+    return predicate is not None and (
+        predicate.is_null is not None or predicate.omitted is not None
+    )
 
 
 class TraceMatcher(BaseModel):
@@ -792,6 +848,33 @@ class TraceMatcher(BaseModel):
     text: ValuePredicate | None = None
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _reject_a_nullness_probe_on_recorded_evidence(self) -> TraceMatcher:
+        """A nullness probe on ``status`` / ``executor`` / ``result`` is refused.
+
+        ``None`` on those three fields is "no evidence recorded", not "explicit
+        JSON null" — a bundle re-graded without its tool-call record has all
+        three read as ``None``, and a matcher that could not tell the two apart
+        would surface a re-grading gap as an author's assertion. ``args`` and
+        ``text`` carry no such ambiguity, so nullness probes there are
+        admissible.
+        """
+        offenders = sorted(
+            field
+            for field in _NULLNESS_UNPROBEABLE_FIELDS
+            if _declares_nullness_probe(getattr(self, field))
+        )
+        if offenders:
+            raise ValueError(
+                f"{offenders}: is_null / omitted are refused on "
+                f"{sorted(_NULLNESS_UNPROBEABLE_FIELDS)} — a None there is 'no evidence "
+                "recorded', not 'explicit JSON null', so a probe cannot tell a re-grading "
+                "gap from an author's assertion. Reach the same reading through an args "
+                "predicate over the field that would carry the value, or through "
+                "exists: false"
+            )
+        return self
 
     @model_validator(mode="after")
     def _reject_fields_the_kind_never_carries(self) -> TraceMatcher:

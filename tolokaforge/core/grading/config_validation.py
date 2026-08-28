@@ -1290,6 +1290,12 @@ def _check_regex_compiles(
         if predicate_site.predicate.regex is not None
     ]
     authored += [
+        (f"{predicate_site.where}.not_regex", predicate_site.predicate.not_regex)
+        for site in sites
+        for predicate_site in _predicate_sites(site)
+        if predicate_site.predicate.not_regex is not None
+    ]
+    authored += [
         (f"{site.where}.values.{name}.pattern", value.pattern)
         for site in binders
         for name, value in site.binding.values.items()
