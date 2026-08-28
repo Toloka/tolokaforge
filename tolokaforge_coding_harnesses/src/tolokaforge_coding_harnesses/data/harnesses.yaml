@@ -98,6 +98,12 @@ harnesses:
     argv_suffix:
       - "--dangerously-bypass-approvals-and-sandbox"
       - "--skip-git-repo-check"
+      # --json prints every event to stdout as JSONL: reasoning frames,
+      # shell / apply_patch tool calls, and the final assistant message.
+      # Without it ``codex exec`` writes only the final message to stdout,
+      # so the runner's ``tool_log.output`` cannot count tool_uses or turns
+      # and a real multi-turn run looks indistinguishable from a fast-fail.
+      - "--json"
       - "-c"
       - "model_reasoning_effort=high"
     # Two on-disk files — codex reads both and honours neither the env var
