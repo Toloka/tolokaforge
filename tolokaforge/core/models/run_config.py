@@ -480,6 +480,20 @@ class OrchestratorConfig(BaseModel):
 
     auto_start_services: bool = True  # Auto-start Docker services via EngineStack
 
+    fail_on_zero_coverage: bool = False
+    """Exit ``2`` when the run measured no trials on a config that had trials
+    to measure (``total_attempts > 0``). Off by default preserves the shipped
+    "infrastructure aborts do not fail the run" contract; opt in from CI when
+    a zero-coverage run should fail the pipeline. See
+    ``docs/adr/0041-zero-coverage-exit-signal.md``."""
+
+    fail_on_zero_judge_graded: bool = False
+    """Exit ``2`` when every produced grade has ``judge_status == ERRORED``.
+    Guarded so a run that produced no grades at all does not fire — the
+    failure mode is a judge that errored on every scoring attempt, not the
+    absence of scoring. Off by default. See
+    ``docs/adr/0041-zero-coverage-exit-signal.md``."""
+
     strict_task_load: bool = False
     """Opt in to fail-loud task loading. When ``False`` (the default), an
     adapter exception raised from :meth:`BaseAdapter.get_task` during
