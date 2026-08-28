@@ -43,24 +43,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Pinned to the SHA of v1.0.173 (the moving @beta tag broke overnight
-      # on 2026-07-13 — a rolling update crashed the runner mid-review).
-      # Bumping is a one-line diff; commit SHAs are immutable so this is
-      # supply-chain safer than a floating tag.
-      - uses: anthropics/claude-code-action@1281377b9fdacad00368735a20d0d153fa1b82bd  # v1.0.173
+      # Pinned to the SHA of v1.0.209. Commit SHAs are immutable, so this is
+      # supply-chain safer than a floating tag; bumping is a one-line diff.
+      - uses: anthropics/claude-code-action@a130d017f515bcf0e1367bcd7c04572909b81332  # v1.0.209
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # v1.0 renamed several inputs — see the action's migration guide.
-          # ``direct_prompt`` → ``prompt`` (direct rename); ``model`` moves
-          # into ``claude_args`` as a CLI flag. Old input names silently
-          # no-op'd (workflow ran but the review didn't fire); this fix
-          # brings coverage back.
-          # ``track_progress: true`` restores the tag-mode tracking comments
-          # v0.x posted by default so future PR readers see the review
-          # progress the same way they did before the upgrade.
+          # ``prompt`` is the v1.0 input name (renamed from ``direct_prompt``);
+          # ``model`` moves into ``claude_args`` as a CLI flag.
+          # ``track_progress: true`` posts tag-mode tracking comments so PR
+          # readers see review progress in the timeline.
           track_progress: true
-          claude_args: --model claude-opus-4-8
+          claude_args: --model claude-opus-5
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
