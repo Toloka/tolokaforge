@@ -834,11 +834,14 @@ class Orchestrator:
                 "Conductor cannot be built before the adapter is loaded. "
                 "Ensure load_tasks() has run successfully."
             )
-        # ``None`` when the backend has no runner surface (in-memory / test);
-        # the built-in address-needing factories (``runner_rpc``, ``grader_rpc``)
-        # raise loudly when they observe it. Downstream graders that do not need
-        # a network address (a stub, a callable-injected grader) receive the
-        # ``None`` verbatim and ignore it.
+        # ``None`` when the backend has no runner surface (in-memory / test,
+        # or ``PerTrialRuntimeBackend`` — each trial owns its own runner
+        # endpoint so no single address applies); the built-in
+        # address-needing factories (``grader_rpc``, ``queue``) raise loudly
+        # when they observe it. Downstream graders that do not need a
+        # network address receive the ``None`` verbatim and ignore it, and
+        # ``runner_rpc`` picks the ``runtime_backend`` dispatch path below
+        # instead of dialling.
         runner_address = getattr(runtime_backend, "runner_address", None)
         # ``config.grader.name`` overrides the adapter's default for this
         # run; the queue subblock rides the same context so
@@ -849,11 +852,18 @@ class Orchestrator:
         grader_name = (
             grader_config.name if grader_config and grader_config.name else None
         ) or self.adapter.trial_grader_name
+        # In-process routing shim: only populated when the backend has no
+        # static runner endpoint (``PerTrialRuntimeBackend`` — each trial
+        # owns its own endpoint). Shared-stack keeps its address-only,
+        # orchestrator-independent grader client so ADR-0038's seam
+        # invariant is preserved for every case that can honour it.
+        in_process_backend_shim = runtime_backend if runner_address is None else None
         trial_grader = load_trial_grader(grader_name)(
             TrialGraderContext(
                 runner_address=runner_address,
                 logger=self.logger,
                 grader_config=grader_config,
+                runtime_backend=in_process_backend_shim,
             )
         )
         # Drain any leftover from a prior aborted run on this orchestrator

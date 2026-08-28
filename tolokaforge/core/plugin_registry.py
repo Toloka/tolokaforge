@@ -238,13 +238,17 @@ class RuntimeBackendBuildContext:
 
 @dataclass(frozen=True)
 class TrialGraderContext:
-    """Serialisable configuration a trial-grader factory receives from the orchestrator.
+    """Configuration a trial-grader factory receives from the orchestrator.
 
-    Carries only data, not live objects: two endpoint strings, the run-scoped
-    logger, and the optional ``grader`` config block. A live gRPC channel
-    would couple the grader to the orchestrator's chosen runner instance
-    and block a grader that runs on a different machine — precisely the
-    coupling the plug-in seam exists to break (see ADR-0038).
+    Carries serialisable data — two endpoint strings, the run-scoped logger,
+    and the optional ``grader`` config block — plus one optional in-process
+    escape hatch (``runtime_backend``) that MUST be ``None`` on any grader
+    that will cross an address boundary. A required live gRPC channel would
+    couple the grader to the orchestrator's chosen runner instance and block
+    a grader that runs on a different machine — precisely the coupling the
+    plug-in seam exists to break (see ADR-0038); the escape hatch is scoped
+    strictly to backends whose runner endpoints are only reachable per-trial
+    (see ``runtime_backend`` below).
 
     :attr:`runner_address` is the runner service's gRPC address; the
     ``runner_rpc`` grader dials it.
@@ -259,12 +263,25 @@ class TrialGraderContext:
     ``None`` when the operator declared none). Transport-specific factories
     read their own subblock — ``queue`` reads ``grader_config.queue`` for
     worker-pool sizing and the downstream ``worker_grader`` name.
+
+    :attr:`runtime_backend` is an in-process routing shim populated only by
+    ``orchestrator._build_conductor``. When a runtime backend routes grades
+    per-trial (``PerTrialRuntimeBackend``), it exposes no static
+    ``runner_address`` because each trial owns its own runner endpoint;
+    passing the backend directly lets ``RunnerRPCTrialGrader`` delegate to
+    ``backend.grade_trial(trial_id, ...)`` and reach the right per-trial
+    client. Every out-of-process factory (``grader_rpc``, ``queue``,
+    ``judge_backed``) MUST ignore this field: the whole point of ADR-0038 is
+    that a grader running on a different machine cannot hold a live
+    orchestrator-side backend, so this attribute is NOT serialisable and
+    MUST be ``None`` on any grader that crosses an address boundary.
     """
 
     runner_address: str | None
     logger: StructuredLogger
     grader_address: str | None = None
     grader_config: GraderConfig | None = None
+    runtime_backend: RuntimeBackend | None = None
 
 
 @dataclass(frozen=True)
