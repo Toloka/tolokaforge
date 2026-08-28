@@ -532,7 +532,7 @@ def test_a_binder_extraction_reads_absent_and_null_as_one_condition() -> None:
 
 
 def test_omitted_composes_with_withhold() -> None:
-    """The canonical boundary between #1292 and #1293.
+    """``on_missing: withhold`` composes with a nullness-anchor selection.
 
     A constraint whose anchor selects on ``omitted: true`` looks for a call
     that never sent ``body.query``. Against a timeline where the call did send

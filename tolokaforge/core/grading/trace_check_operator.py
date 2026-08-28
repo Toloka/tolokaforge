@@ -1,12 +1,19 @@
 """Per-operator seam under the trace-check evaluator.
 
 Every operator a ``ValuePredicate`` may declare is one entry-point in the
-``tolokaforge.trace_check_operators`` group. The registry is the sole
-dispatch table :func:`~tolokaforge.core.grading.trace_checks._operator_holds`
-reads: a downstream package registering ``equals_semver`` under that name
-starts scoring every trace-check config in the wild that writes
-``equals_semver`` in a :class:`~tolokaforge.core.models.ValuePredicate`,
-with no framework PR.
+``tolokaforge.trace_check_operators`` group. The registry is the dispatch
+table :func:`~tolokaforge.core.grading.trace_checks._operator_holds` reads
+for every operator but the nullness pair: a downstream package registering
+``equals_semver`` under that name starts scoring every trace-check config
+in the wild that writes ``equals_semver`` in a
+:class:`~tolokaforge.core.models.ValuePredicate`, with no framework PR.
+
+``is_null`` and ``omitted`` are the exceptions. Both are special-cased in
+``_operator_holds`` ahead of dispatch because their reading turns on a
+module-private sentinel that separates JSON ``null`` from key-absence, so
+the seam cannot answer for them; the registered callables are stubs kept
+only to keep the frozenset and the entry-point registry in lockstep, and a
+downstream registration under either name is not reached.
 
 Two arities collapse to one Protocol. Non-binding operators ignore
 ``bindings``; the binding operators (identified by the ``_binding``

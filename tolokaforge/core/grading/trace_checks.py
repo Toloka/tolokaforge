@@ -440,8 +440,7 @@ def _results_by_call_id(timeline: TrialTimeline) -> dict[str, TraceEvent]:
 
 # What an argument path resolves to where the key was never sent — distinct from
 # JSON ``null``, which resolves to ``None``. Only ``omitted`` reads the difference
-# between the two; every other operator receives ``None`` for both, exactly the
-# pre-v2 reading, so the sentinel cannot change a shipped verdict. The sentinel
+# between the two; every other operator receives ``None`` for both. The sentinel
 # never leaves this module: ``_operator_holds`` reads it directly for ``is_null`` /
 # ``omitted`` and collapses it to ``None`` for every other operator, ``_resolve``
 # collapses it at the tuple boundary before ``_comparison_records`` — the one
@@ -490,9 +489,8 @@ def _operator_holds(name: str, value: Any, expected: Any, bindings: Mapping[str,
     is private to this module, so the seam cannot answer for them; their
     registered callables are stubs kept only to keep the frozenset and the
     entry-point registry in lockstep. Every other operator reads a ``_MISSING``
-    as ``None`` — the pre-v2 reading a JSON ``null`` and an absent key already
-    collapsed to — so the sentinel never reaches a registered callable and
-    cannot change a shipped verdict.
+    as ``None`` — so a JSON ``null`` and an absent key collapse to one reading
+    at the seam and the sentinel never reaches a registered callable.
 
     Only ``exists`` reads a ``None``. Every other operator is false there rather
     than answering about a value the trial does not have — ``not_equals`` against

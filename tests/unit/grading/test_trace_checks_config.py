@@ -1109,9 +1109,9 @@ def test_an_operator_is_declared_by_its_value_and_survives_the_wire(operator: st
 
     The runner receives this config as JSON inside the trial spec, and dumping a
     model writes every unset field as ``null`` — so reading declaredness off
-    pydantic's ``model_fields_set`` would report all seventeen operators after the
-    round trip and grade a one-operator predicate as a seventeen-operator
-    conjunction. Reading it off the values is what makes the two sides agree.
+    pydantic's ``model_fields_set`` would report every operator after the round
+    trip and grade a one-operator predicate as a whole-vocabulary conjunction.
+    Reading it off the values is what makes the two sides agree.
     """
     predicate = ValuePredicate(**{operator: value})
     assert predicate.declared_operators() == {operator}
