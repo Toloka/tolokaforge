@@ -1011,6 +1011,39 @@ def test_an_unresolvable_layer_reads_structural_when_the_uninstalled_arm_names_i
     assert layer.skip_kind is SkipKind.STRUCTURAL
 
 
+def test_the_module_level_unresolved_signature_defaults_read_structural() -> None:
+    """The ``_UNRESOLVED_*`` sentinels are function-parameter defaults.
+
+    Reaching a default means the caller could not supply an answer — a
+    ``STRUCTURAL`` silence, never promotable to fatal under ``--strict-authoring``.
+    The factory default is ``ADAPTER_DECLARED`` (it speaks for a loaded adapter's
+    hook), so the sentinels have to override the default explicitly. A future
+    caller reaching for these constants gets a skip that stays never-fatal, and a
+    future refactor that flips the factory default cannot silently regress this.
+    """
+    from tolokaforge.adapters._task_loader import (
+        _UNRESOLVED_HASH_SOURCE_LAYER as _TASK_LOADER_HASH,
+    )
+    from tolokaforge.adapters._task_loader import (
+        _UNRESOLVED_REPLAY_WORLD as _TASK_LOADER_REPLAY,
+    )
+    from tolokaforge.adapters._task_loader import (
+        _UNRESOLVED_SEEDED_TABLES as _TASK_LOADER_SEEDED,
+    )
+    from tolokaforge.core.grading.config_validation import (
+        _UNRESOLVED_HASH_SOURCE_LAYER,
+        _UNRESOLVED_REPLAY_WORLD,
+        _UNRESOLVED_SEEDED_TABLES,
+    )
+
+    assert _UNRESOLVED_REPLAY_WORLD.skip_kind is SkipKind.STRUCTURAL
+    assert _UNRESOLVED_HASH_SOURCE_LAYER.skip_kind is SkipKind.STRUCTURAL
+    assert _UNRESOLVED_SEEDED_TABLES.skip_kind is SkipKind.STRUCTURAL
+    assert _TASK_LOADER_REPLAY.skip_kind is SkipKind.STRUCTURAL
+    assert _TASK_LOADER_HASH.skip_kind is SkipKind.STRUCTURAL
+    assert _TASK_LOADER_SEEDED.skip_kind is SkipKind.STRUCTURAL
+
+
 def test_a_hash_source_skip_carries_the_layers_kind_where_the_rule_could_not_check() -> None:
     """The propagation is what makes the enforcement decidable.
 
