@@ -201,10 +201,10 @@ class RunnerRPCTrialGrader:
     method returning the same dict shape as
     :meth:`GrpcRunnerClient.grade_trial`.
 
-    Note on ``run_trial.py``: the container-shim entry point at
-    ``run_trial.py:157`` constructs its own ``TrialGraderContext`` with a
-    stable ``EXECUTOR_ADDRESS`` and no ``runtime_backend``; the fallback
-    client path is the correct behaviour for that call site.
+    Note on ``run_trial.py``: the container-shim entry point constructs
+    its own ``TrialGraderContext`` with a stable ``EXECUTOR_ADDRESS`` and
+    no ``runtime_backend``; the fallback client path is the correct
+    behaviour for that call site.
     """
 
     def __init__(
@@ -285,14 +285,9 @@ class RunnerRPCTrialGrader:
             )
 
         llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
-        # Prefer the in-process backend when set (per-trial runtimes need it
-        # to route to the trial's own runner endpoint); the address-built
-        # client is the wire-safe fallback for the P2/P3 shape. See ADR-0038
-        # § "Grader plug-in receives serialisable configuration only" — the
-        # wire never carries a live backend, so ``target`` here is always
-        # ``self.runner_client`` in that case.
         target = self.runtime_backend if self.runtime_backend is not None else self.runner_client
-        assert target is not None, "RunnerRPCTrialGrader has no dispatch target"
+        if target is None:  # __init__ prevents this — defence in depth
+            raise RuntimeError("RunnerRPCTrialGrader has no dispatch target")
         grade_result = target.grade_trial(
             trial_id=spec.trial_id,
             llm_messages_json=llm_messages_json,

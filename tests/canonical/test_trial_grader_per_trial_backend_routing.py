@@ -15,8 +15,14 @@ completed trial, and no ``grade.yaml`` was ever written. On the
 This test pins the fix — ``ctx.runtime_backend`` is threaded through the
 context and the grader delegates to ``backend.grade_trial(trial_id, ...)``,
 which ``PerTrialRuntimeBackend._client_for(trial_id)`` routes to the
-correct per-trial runner client. The companion test locks that the
-out-of-process (P2/P3) shape ADR-0038 pins is not regressed by the change.
+correct per-trial runner client. The P2/P3 (out-of-process) dispatch shape
+is locked at unit level by
+``tests/unit/test_trial_grader.py::TestRuntimeBackendDispatchPreference::
+test_runner_client_used_when_runtime_backend_is_none``, and factory→client
+ownership is locked at canonical level by
+``TestRunnerRpcTrialGraderFactory::test_factory_returns_grader_with_owned_
+runner_client`` in ``test_trial_grader_context_hygiene.py`` — no duplicate
+canonical test for the P2/P3 path lives here.
 """
 
 from __future__ import annotations
@@ -135,43 +141,102 @@ class TestPerTrialBackendRoutesThroughRunnerRPCGrader:
         assert fake_client.calls[0]["trial_id"] == trial_id
         assert fake_client.calls[0]["termination_reason"] == TerminationReason.USER_STOP.value
 
-    def test_p2_p3_path_still_works_without_runtime_backend(self) -> None:
-        """The out-of-process shape ADR-0038 pins: no runtime_backend, only
-        an address-built client. Stage 2's routing change must not regress
-        this path — the grader still dispatches through the client target.
 
-        Monkey-patch ``GrpcRunnerClient`` construction so the factory can
-        build without touching the network, then confirm the client the
-        factory placed on the grader receives the ``grade_trial`` call."""
-        stub_client = _FakePerTrialRunnerClient()
+class TestBuildConductorGatesRuntimeBackendOnAddress:
+    """``orchestrator._build_conductor`` populates ``TrialGraderContext.
+    runtime_backend`` ONLY when the backend has no static ``runner_address``.
+    For shared-stack backends (which have one), the shim stays ``None`` so
+    ADR-0038's "grader owns its own client, independent of the orchestrator"
+    invariant is preserved for every case that can honour it. Only per-trial
+    backends (each trial owns its own endpoint) get the shim.
+    """
 
-        import tolokaforge.core.shared_stack_runtime as ssr
+    def _captured_context(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Any,
+        backend_runner_address: str | None,
+    ) -> TrialGraderContext:
+        """Build a conductor with a backend whose ``runner_address`` is
+        ``backend_runner_address`` (``None`` means the attribute is
+        missing entirely, mirroring ``PerTrialRuntimeBackend``); return
+        the ``TrialGraderContext`` the orchestrator passed to
+        ``load_trial_grader``. Real ``_build_conductor``; real
+        ``runner_rpc_trial_grader_factory`` swapped for a capturing shim."""
+        from tolokaforge.core.conductor import ConductorContext, InMemoryConductor
+        from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 
-        original = ssr.GrpcRunnerClient
-        # Every ``GrpcRunnerClient(runner_address=...)`` construction from
-        # this stub returns the same ``_FakePerTrialRunnerClient``, which
-        # implements the RunnerClient Protocol slice the grader touches.
-        ssr.GrpcRunnerClient = lambda runner_address: stub_client  # type: ignore[assignment]
-        try:
-            ctx = TrialGraderContext(
-                runner_address="test-runner:9999",
-                logger=MagicMock(),
-                # No runtime_backend — this is the wire shape.
-            )
-            grader = runner_rpc_trial_grader_factory(ctx)
-        finally:
-            ssr.GrpcRunnerClient = original  # type: ignore[assignment]
+        captured: dict[str, TrialGraderContext] = {}
 
-        assert grader.runtime_backend is None
-        assert grader.runner_client is stub_client
+        def _capturing_factory(ctx: TrialGraderContext) -> Any:
+            captured["ctx"] = ctx
 
-        spec = make_trial_spec()
-        traj = make_trajectory(
-            status=TrialStatus.COMPLETED,
-            termination_reason=TerminationReason.USER_STOP,
+            class _Stub:
+                def grade(self, *a: Any, **kw: Any) -> None:
+                    return None
+
+            return _Stub()
+
+        monkeypatch.setattr(
+            "tolokaforge.core.orchestrator.load_trial_grader",
+            lambda name: _capturing_factory,
         )
-        grade = grader.grade(spec, traj, "sysprompt")
 
-        assert isinstance(grade, Grade)
-        assert len(stub_client.calls) == 1
-        assert stub_client.calls[0]["trial_id"] == spec.trial_id
+        def _conductor_factory(_ctx: ConductorContext) -> InMemoryConductor:
+            return InMemoryConductor()
+
+        # Build a lightweight runtime_backend whose ``runner_address``
+        # attribute exists (shared-stack shape) or is absent (per-trial
+        # shape) — the orchestrator's ``getattr(..., None)`` reads it.
+        if backend_runner_address is None:
+            # No attribute at all — MagicMock synthesizes attrs by default,
+            # so use ``spec=[]`` to force ``getattr`` fallback to ``None``.
+            backend = MagicMock(spec=[])
+        else:
+            backend = MagicMock()
+            backend.runner_address = backend_runner_address
+
+        from tolokaforge.core.models.run_config import (
+            EvaluationConfig,
+            ModelConfig,
+            OrchestratorConfig,
+            RunConfig,
+        )
+
+        cfg = RunConfig(
+            models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+            orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+            evaluation=EvaluationConfig(output_dir="/tmp/test_output"),
+        )
+        orch = Orchestrator(cfg, deps=OrchestratorDeps(conductor_factory=_conductor_factory))
+        orch.adapter = MagicMock()
+        orch.adapter.trial_grader_name = "runner_rpc"
+
+        orch._build_conductor(
+            agent_client=MagicMock(),
+            runtime_backend=backend,
+            output_dir=tmp_path,
+            request_limiter=None,
+        )
+        return captured["ctx"]
+
+    def test_per_trial_backend_gets_the_shim(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """No ``runner_address`` on the backend (``PerTrialRuntimeBackend``
+        shape) → the shim is populated so the grader can route per-trial."""
+        ctx = self._captured_context(monkeypatch, tmp_path, backend_runner_address=None)
+        assert ctx.runner_address is None
+        assert ctx.runtime_backend is not None
+
+    def test_shared_stack_backend_does_not_get_the_shim(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """A backend with ``runner_address`` set (shared-stack shape) → the
+        shim stays ``None``; the grader owns its own client bound to the
+        address, preserving ADR-0038's independence invariant for every
+        case that can honour it. Regression lock for the reviewer's Major
+        finding on PR #1328."""
+        ctx = self._captured_context(monkeypatch, tmp_path, backend_runner_address="runner:50051")
+        assert ctx.runner_address == "runner:50051"
+        assert ctx.runtime_backend is None

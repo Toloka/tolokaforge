@@ -132,7 +132,17 @@ class TestOutOfProcessFactoriesIgnoreRuntimeBackend:
     every out-of-process factory. A leak of the field into ``grader_rpc``,
     ``queue``, or ``judge_backed`` is a Blocker — a live backend at
     deployment time it cannot marshal. Both static (``ast.walk``) and runtime
-    (sentinel-backend) checks are enforced here."""
+    (sentinel-backend) checks are enforced here.
+
+    Static AST checks cover all three factories via
+    ``test_factory_source_does_not_reference_runtime_backend``. Runtime
+    sentinel-backend checks cover ``grader_rpc`` and ``judge_backed`` — the
+    queue factory spawns worker threads and constructs real
+    ``GrpcGraderClient`` instances mid-body, so a runtime sentinel would
+    either need broad monkey-patching (opaque) or skip the second half of
+    the factory body (weak); the AST check is strictly stronger for that
+    factory anyway.
+    """
 
     _OUT_OF_PROCESS_FACTORIES = (
         grader_rpc_trial_grader_factory,
@@ -191,17 +201,6 @@ class TestOutOfProcessFactoriesIgnoreRuntimeBackend:
         grader = judge_backed_trial_grader_factory(ctx, llm_client=MagicMock())
         assert isinstance(grader, JudgeBackedTrialGrader)
 
-    def test_queue_factory_source_check_is_authoritative(self) -> None:
-        """The queue factory spawns worker threads and constructs real
-        ``GrpcGraderClient`` instances mid-body, so a sentinel-backend
-        runtime check would either need broad monkey-patching (opaque) or
-        skip the second half of the factory body (weak). The parametrised
-        ``test_factory_source_does_not_reference_runtime_backend`` above
-        already covers ``queue_trial_grader_factory`` at the strictly
-        stronger static level, and this method's presence documents why
-        no separate runtime test exists here."""
-        assert queue_trial_grader_factory in self._OUT_OF_PROCESS_FACTORIES
-
 
 class TestRunnerRpcTrialGraderFactory:
     """The built-in factory builds a grader that owns its own runner client — no
@@ -230,3 +229,8 @@ class TestRunnerRpcTrialGraderFactory:
         assert grader.runner_address == "test-runner:9999"
         assert isinstance(grader.runner_client, _StubClient)
         assert grader.runner_client.runner_address == "test-runner:9999"
+        # Shared-stack + P2/P3 shape: when the context carries an address,
+        # the in-process routing shim MUST stay ``None`` so ADR-0038's
+        # "grader owns its own client, independent of the orchestrator"
+        # invariant holds for every backend that can honour it.
+        assert grader.runtime_backend is None
