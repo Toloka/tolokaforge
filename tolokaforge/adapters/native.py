@@ -12,6 +12,7 @@ from tolokaforge.adapters._task_loader import (
     ToolActor,
     _detect_task_root,
     actor_tool_block,
+    build_tool_inventory,
     declared_tool_names,
     load_task_yaml,
     refuse_malformed_grading_shapes,
@@ -36,9 +37,15 @@ from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.grading.config_validation import (
     CombineLayer,
     HashSourceLayer,
+    ReplayWorld,
+    SeededTablesLayer,
+    ToolInventory,
     authored_hash_block,
 )
-from tolokaforge.core.grading.golden_replay import require_replayable_golden_actions
+from tolokaforge.core.grading.golden_replay import (
+    classify_initial_state,
+    require_replayable_golden_actions,
+)
 from tolokaforge.core.grading.state_composition import StateHashConfig, refuse_retired_hash_keys
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
@@ -586,6 +593,42 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         hash declaring no source the authoring defect the gates refuse.
         """
         return HashSourceLayer()
+
+    @classmethod
+    def grading_tool_inventory(cls, task: TaskConfig, task_dir: Path) -> ToolInventory:
+        """The task's own ``tools.agent`` / ``tools.user`` blocks are the whole inventory.
+
+        A native pack ships its tools alongside its ``task.yaml``, so what the
+        authoring gate reads against ``present`` / ``absent`` matchers and the trace
+        checkers' tool references is exactly what :func:`build_tool_inventory`
+        resolves — the pre-run reading of the run-time tool set.
+        """
+        return build_tool_inventory(task, task_dir)
+
+    @classmethod
+    def grading_replay_world(cls, task: TaskConfig, task_dir: Path) -> ReplayWorld:
+        """The world a native pack gives a golden-action replay, read off ``task.yaml``.
+
+        ``initial_state.json_db`` gives the shape of the state the replay loads and
+        ``tools.agent.mcp_server`` gives whether the pack ships the module those
+        actions call — the two facts :func:`require_replayable_golden_actions` reads
+        at grade time, read here at authoring.
+        """
+        return ReplayWorld(
+            initial_state=classify_initial_state(task.initial_state.json_db),
+            mcp_server=bool(task.tools.agent.get("mcp_server")) if task.tools.agent else False,
+        )
+
+    @classmethod
+    def grading_seeded_tables(cls, task: TaskConfig, task_dir: Path) -> SeededTablesLayer:
+        """The tables ``initial_state.json_db`` seeds, keyed by collection name.
+
+        The reading a declared ``id_fields`` primary key is held against — the same
+        one the run path builds when it turns the task description into the trial's
+        starting state — so a key naming a table the task does not seed is caught
+        before the trial is paid for rather than raising during grading.
+        """
+        return SeededTablesLayer(tables=seeded_tables_from_task(task, task_dir))
 
     def _project_combine_defaults(self) -> dict[str, Any] | None:
         return project_grading_combine(self._project_task_defaults)
