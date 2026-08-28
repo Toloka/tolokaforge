@@ -920,9 +920,14 @@ _NO_OPERATOR_AT_ALL = "no comparison operator"
 _JSONPATH_COMPARISONS: tuple[str, ...] = ("equals", "equals_ci", "contains", "contains_ci")
 
 # Bound once so the signature's default is the value, not a call in the annotation.
-_UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable()
-_UNRESOLVED_HASH_SOURCE_LAYER = HashSourceLayer.unresolvable()
-_UNRESOLVED_SEEDED_TABLES = SeededTablesLayer.unresolvable()
+# Function-signature defaults: bound explicitly to STRUCTURAL because reaching
+# a default means the caller could not supply an answer (environment couldn't
+# inspect). The layer factories default to ADAPTER_DECLARED because their only
+# hook-dispatch caller is speaking for an adapter that returned unresolvable.
+# See ADR-0042.
+_UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable(kind=SkipKind.STRUCTURAL)
+_UNRESOLVED_HASH_SOURCE_LAYER = HashSourceLayer.unresolvable(kind=SkipKind.STRUCTURAL)
+_UNRESOLVED_SEEDED_TABLES = SeededTablesLayer.unresolvable(kind=SkipKind.STRUCTURAL)
 
 
 def inspect_grading_authoring(

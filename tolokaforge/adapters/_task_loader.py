@@ -114,11 +114,15 @@ _PROJECT_SCOPED_DEFAULT_KEYS = frozenset(TaskDefaults.model_fields) - frozenset(
     TaskConfig.model_fields
 )
 
-# Bound once so each signature's default is the value, not a call in the annotation.
+# Function-signature defaults: bound explicitly to STRUCTURAL because reaching
+# a default means the caller could not supply an answer (environment couldn't
+# inspect). The layer factories default to ADAPTER_DECLARED because their only
+# hook-dispatch caller is speaking for an adapter that returned unresolvable.
+# See ADR-0042.
 _UNRESOLVED_COMBINE_LAYER = CombineLayer.unresolvable()
-_UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable()
-_UNRESOLVED_HASH_SOURCE_LAYER = HashSourceLayer.unresolvable()
-_UNRESOLVED_SEEDED_TABLES = SeededTablesLayer.unresolvable()
+_UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable(kind=SkipKind.STRUCTURAL)
+_UNRESOLVED_HASH_SOURCE_LAYER = HashSourceLayer.unresolvable(kind=SkipKind.STRUCTURAL)
+_UNRESOLVED_SEEDED_TABLES = SeededTablesLayer.unresolvable(kind=SkipKind.STRUCTURAL)
 
 
 _GRADING_BLOCK_SHAPES: dict[str, str] = {
