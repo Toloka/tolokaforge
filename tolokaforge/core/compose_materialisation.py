@@ -268,9 +268,9 @@ def _merge_proxy_env(existing: Any, proxy_url: str, no_proxy: str) -> Any:
     unioned into the merged value (comma-separated, order-preserving with
     dedup) rather than overwritten. A caller upstream — the coding-harness
     driver's credential shield, for example — can pre-declare a hostname it
-    needs to bypass the squid forward proxy for (its host-side gateway,
-    reachable via ``extra_hosts`` but not resolvable inside squid's own
-    container), and the netpolicy enforcement respects it here.
+    needs to bypass the squid forward proxy for (its gateway sidecar,
+    reachable direct over the shared netpolicy internal network), and the
+    netpolicy enforcement respects it here.
     """
     caller_no_proxy = _extract_no_proxy(existing)
     merged_no_proxy = _union_no_proxy(caller_no_proxy, no_proxy)

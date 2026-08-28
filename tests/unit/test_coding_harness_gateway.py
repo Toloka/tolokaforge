@@ -1,9 +1,11 @@
 """Behaviour-locking tests for the coding-harness driver's credential shield.
 
-Exercises :class:`CodingHarnessDriver` end to end (real staged compose, real
-:class:`LLMGatewayEndpoint` bound to a loopback ephemeral port) rather than
-mocking the launcher — a real bind is fast and is stronger evidence than a
-stub that the real credential never reaches the compose file.
+Exercises :class:`CodingHarnessDriver` end to end against a real staged
+compose file — the driver adds the ``tolokaforge-llm-gateway`` sidecar
+service, marks it bridged onto both netpolicy networks, and strips the
+shielded upstream token from the runner container's payload. Reading
+the compose file back is stronger evidence than a mock that the real
+credential never reaches the CLI's own service.
 """
 
 from __future__ import annotations

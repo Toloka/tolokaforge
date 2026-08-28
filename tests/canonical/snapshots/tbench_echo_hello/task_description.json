@@ -35,6 +35,7 @@
   "category": "terminal",
   "description": "Create a file /tmp/hello.txt containing the text \"Hello, World!\".\n",
   "environment_manifest": {
+    "bridged_services": [],
     "compose_file": "<STAGING>/echo-hello/docker-compose.tolokaforge.yaml",
     "db_port": null,
     "db_service": null,
@@ -66,7 +67,8 @@
         "reset": null
       }
     },
-    "stack_inputs": {}
+    "stack_inputs": {},
+    "stripped_container_secrets": []
   },
   "generated_at": null,
   "grading": {

@@ -1,23 +1,24 @@
-"""Credential-shielding LLM gateway — Layer 2 of the three-layer split.
+"""Credential-shielding LLM gateway — reverse-proxy HTTP server.
 
-Layer 1 (Launcher, varies by deployment) starts and stops this endpoint;
-Layer 2 (this module) is a portable reverse proxy that resolves the real
-provider credential via :class:`~tolokaforge.secrets.manager.SecretManager`
-and forwards only allow-listed paths to the upstream, rewriting the
-inbound (dummy) auth header to the real one. Layer 3 (the vendor CLI in
-the trial container) never sees a real credential.
+Shields a real provider credential from the trial container. The CLI's
+container receives a dummy token + a base URL pointing at the gateway
+sidecar (compose service ``tolokaforge-llm-gateway``, port 8080). The
+sidecar rewrites the inbound ``Authorization`` header to the real
+credential and forwards only allow-listed request paths to the
+upstream — the CLI never sees the real token.
 
-:class:`LLMGatewayEndpoint` never imports the harness registry package —
-it depends on :class:`HarnessSpecLike`, the structural subset of
-``tolokaforge_coding_harnesses.HarnessSpec`` it actually needs, so this
-module stays usable from a future cluster-mode sidecar entrypoint that has
-no reason to import the local-mode launcher or the harness registry.
+:class:`_GatewayHTTPServer` is the whole runtime surface. The
+sidecar's ``python -m`` entrypoint
+(:mod:`tolokaforge.runner.llm_gateway_serve`) constructs it directly
+from environment variables the driver bakes into the sidecar's compose
+service. This module ships in the runner subset wheel so the
+``tolokaforge-runner:local`` image the driver picks as the sidecar's
+image has it importable.
 """
 
 from __future__ import annotations
 
 import logging
-import threading
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,15 +27,13 @@ from urllib.parse import urlparse
 
 import httpx
 
-from tolokaforge.secrets import install_global_redactor, register_runtime_secret
-from tolokaforge.secrets.manager import SecretManager
-
 logger = logging.getLogger(__name__)
 
 GATEWAY_HOSTNAME = "tolokaforge-llm-gateway"
-"""Docker ``extra_hosts`` alias a local-mode launcher binds the gateway
-under. Trial containers resolve it via a ``host-gateway`` entry pointing
-back at the orchestrator host."""
+"""Compose service name the coding-harness driver adds the gateway
+sidecar under. Trial containers reach the sidecar over docker's own
+DNS at ``http://tolokaforge-llm-gateway:8080`` — same network, no
+``extra_hosts`` mapping, no dependence on host-network topology."""
 
 _REQUEST_TIMEOUT = httpx.Timeout(60.0)
 
@@ -58,7 +57,12 @@ _HOP_BY_HOP_HEADERS = frozenset(
 
 
 class CredentialGatewayConfig(Protocol):
-    """Structural shape of ``HarnessSpec.credential_gateway`` this endpoint reads."""
+    """Structural shape of ``HarnessSpec.credential_gateway`` this proxy reads.
+
+    Both the shipped ``HarnessSpec.credential_gateway`` (Pydantic model) and
+    the sidecar entrypoint's frozen-dataclass stub satisfy it — the proxy
+    only ever reads these five fields, so it stays usable from either
+    caller without importing the harness registry package."""
 
     upstream_url: str
     upstream_token_env_var: str
@@ -67,103 +71,29 @@ class CredentialGatewayConfig(Protocol):
     path_allowlist: tuple[str, ...]
 
 
-class HarnessSpecLike(Protocol):
-    """Structural subset of ``HarnessSpec`` the gateway needs.
-
-    Any object exposing a ``credential_gateway`` attribute of this shape
-    satisfies this protocol — the real ``HarnessSpec`` does so once its
-    ``credential_gateway`` field lands.
-    """
-
-    credential_gateway: CredentialGatewayConfig | None
-
-
 @dataclass(frozen=True)
 class GatewayHandle:
-    """Where a running gateway can be reached, and by what container-facing name."""
+    """Where a running gateway can be reached, and by what container-facing name.
+
+    The driver constructs one at ``attach()`` time — port + hostname the
+    trial container will address the sidecar by — and consults it when
+    rewriting compose (``depends_on``, ``ANTHROPIC_BASE_URL``, etc).
+    """
 
     port: int
     hostname: str = GATEWAY_HOSTNAME
 
 
-class LLMGatewayEndpoint:
-    """Reverse proxy that shields a real provider credential from a trial container.
-
-    Resolves the upstream token via ``secret_manager`` at construction time
-    — never via ``os.environ`` — and, once started, forwards only
-    :attr:`CredentialGatewayConfig.path_allowlist` paths to
-    :attr:`CredentialGatewayConfig.upstream_url`, replacing whatever
-    ``Authorization`` header the caller sent with the real one.
-    """
-
-    def __init__(self, spec: HarnessSpecLike, secret_manager: SecretManager) -> None:
-        gateway = spec.credential_gateway
-        if gateway is None:
-            raise ValueError(f"{spec!r} has no credential_gateway configured")
-        self._gateway = gateway
-        self._upstream_token = secret_manager.get_secret_or_raise(gateway.upstream_token_env_var)
-        self._server: _GatewayHTTPServer | None = None
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> GatewayHandle:
-        """Bind an ephemeral port and start serving on a background thread."""
-        if self._server is not None:
-            raise RuntimeError("LLMGatewayEndpoint.start() called while already running")
-        register_runtime_secret(self._gateway.upstream_token_env_var, self._upstream_token)
-        install_global_redactor()
-        self._server = _GatewayHTTPServer(("0.0.0.0", 0), self._gateway, self._upstream_token)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-        self._thread.start()
-        return GatewayHandle(port=self._server.server_address[1])
-
-    def stop(self) -> None:
-        """Stop serving and release the port. Safe to call without a prior ``start()``."""
-        if self._server is None:
-            return
-        self._server.shutdown()
-        self._server.server_close()
-        if self._thread is not None:
-            self._thread.join(timeout=5)
-        self._server = None
-        self._thread = None
-
-
-class HostGatewayLauncher(Protocol):
-    """Layer 1 contract: starts and stops an :class:`LLMGatewayEndpoint`.
-
-    :class:`LocalHostGatewayLauncher` is the local-mode implementation. A
-    future ``SidecarGatewayLauncher`` implements the cluster-mode adapter
-    against the same contract.
-    """
-
-    def launch(self, endpoint: LLMGatewayEndpoint) -> GatewayHandle:
-        """Start ``endpoint`` and return where it can be reached."""
-        ...
-
-    def teardown(self, handle: GatewayHandle) -> None:
-        """Stop the endpoint previously started as ``handle``."""
-        ...
-
-
-class LocalHostGatewayLauncher:
-    """Local-mode :class:`HostGatewayLauncher`: runs the gateway as a thread
-    in the orchestrator process."""
-
-    def __init__(self) -> None:
-        self._endpoints: dict[int, LLMGatewayEndpoint] = {}
-
-    def launch(self, endpoint: LLMGatewayEndpoint) -> GatewayHandle:
-        handle = endpoint.start()
-        self._endpoints[handle.port] = endpoint
-        return handle
-
-    def teardown(self, handle: GatewayHandle) -> None:
-        endpoint = self._endpoints.pop(handle.port, None)
-        if endpoint is not None:
-            endpoint.stop()
-
-
 class _GatewayHTTPServer(ThreadingHTTPServer):
+    """Reverse proxy: swaps the caller's ``Authorization`` header for the
+    real upstream token, forwards only allow-listed paths, streams the
+    upstream body back to the caller.
+
+    ``_`` prefix marks this as a runtime surface — its sole caller is
+    :mod:`tolokaforge.runner.llm_gateway_serve` (the sidecar entrypoint);
+    unit tests exercise the same shape by instantiating it directly.
+    """
+
     daemon_threads = True
     allow_reuse_address = True
 
@@ -203,7 +133,7 @@ class _GatewayRequestHandler(BaseHTTPRequestHandler):
         self._proxy()
 
     def log_message(self, format: str, *args: object) -> None:
-        logger.debug("LLMGatewayEndpoint: " + format, *args)
+        logger.debug("llm_gateway: " + format, *args)
 
     def _proxy(self) -> None:
         self.close_connection = True
@@ -239,7 +169,7 @@ class _GatewayRequestHandler(BaseHTTPRequestHandler):
         try:
             upstream_response = self.server.upstream_client.send(request, stream=True)
         except httpx.HTTPError:
-            logger.exception("LLMGatewayEndpoint: upstream request failed for %s", self.path)
+            logger.exception("llm_gateway: upstream request failed for %s", self.path)
             self.send_response(HTTPStatus.BAD_GATEWAY)
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -260,10 +190,6 @@ class _GatewayRequestHandler(BaseHTTPRequestHandler):
 
 __all__ = [
     "CredentialGatewayConfig",
-    "HarnessSpecLike",
     "GatewayHandle",
-    "LLMGatewayEndpoint",
-    "HostGatewayLauncher",
-    "LocalHostGatewayLauncher",
     "GATEWAY_HOSTNAME",
 ]

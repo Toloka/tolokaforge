@@ -324,10 +324,12 @@ class GatewayRoute(BaseModel):
 class CredentialGateway(BaseModel):
     """How a harness's real provider credential is kept out of the trial container.
 
-    Consumed by ``tolokaforge.core.drivers.llm_gateway.LLMGatewayEndpoint``
-    through ``CredentialGatewayConfig`` — a structural ``Protocol`` in that
-    module, not an import of this class, so this package stays free of an
-    engine-side dependency. Field names ``upstream_url``,
+    Consumed by ``tolokaforge.runner.llm_gateway`` (the reverse-proxy
+    HTTP server the coding-harness driver adds as a sidecar service to
+    each shielded trial's compose stack) through
+    ``CredentialGatewayConfig`` — a structural ``Protocol`` in that
+    module, not an import of this class, so this package stays free of
+    an engine-side dependency. Field names ``upstream_url``,
     ``upstream_token_env_var``, ``upstream_auth_header``,
     ``upstream_auth_template`` and ``path_allowlist`` must keep matching that
     Protocol exactly for the structural fit to hold — a rename here without a
@@ -628,10 +630,11 @@ class HarnessSpec(BaseModel):
     trial container, or ``None`` for a harness carrying no such recipe.
 
     Unlike :attr:`gateway_route`, this field IS read in-repo:
-    ``CodingHarnessDriver`` instantiates ``LLMGatewayEndpoint`` from it when
-    present, and every shipped harness in :data:`HARNESSES` declares one —
-    the trial container never sees a real provider credential. See
-    ADR-0041."""
+    ``CodingHarnessDriver`` uses it to configure the
+    ``tolokaforge-llm-gateway`` sidecar service it adds to every
+    shielded trial's compose stack, and every shipped harness in
+    :data:`HARNESSES` declares one — the trial container never sees a
+    real provider credential. See ADR-0041."""
 
     @model_validator(mode="after")
     def _gateway_route_names_a_declared_gateway(self) -> HarnessSpec:

@@ -100,20 +100,28 @@ model would read it in one `printenv` call. Instead:
   carries a `credential_gateway` block declaring the upstream URL,
   the real-token env var (read via `SecretManager`), the auth header
   format, and a **dummy** value the CLI is allowed to see.
-- At `attach()` the `CodingHarnessDriver` starts an
-  `LLMGatewayEndpoint` — a small HTTP proxy in the orchestrator
-  process — that holds the real credential and forwards to upstream
-  after injecting the correct auth header.
-- The trial container's compose `environment:` carries only the
-  dummy token + a base URL pointing at the gateway (reached via
-  compose `extra_hosts` to the docker bridge gateway).
+- The `CodingHarnessDriver` adds a `tolokaforge-llm-gateway` sidecar
+  service to the trial's compose stack — the shipped
+  `tolokaforge-runner:local` image running `python -m
+  tolokaforge.runner.llm_gateway_serve` on port 8080. The sidecar
+  reads the real credential once at bootstrap through `SecretManager`
+  and swaps in the correct auth header on every forwarded request.
+- The CLI's own compose service receives only the dummy token + a
+  base URL pointing at `http://tolokaforge-llm-gateway:8080`. Docker
+  compose's DNS resolves the hostname over the shared internal
+  network — no `extra_hosts`, no host-network hop.
 - For CLIs that write an on-disk auth file (`codex`, `opencode`),
   the file carries the dummy too.
+- The sidecar's service is registered as `bridged_services` so
+  netpolicy attaches it to both the internal (CLI-reachable) and
+  edge (has-egress) networks under any pack policy including
+  `no_internet`. The shielded token is also `stripped_container_secrets`,
+  so `inject_runner_credentials` omits it from the runner container's
+  payload — the credential lives in exactly one service in the trial
+  stack.
 
 See [ADR-0041](adr/0041-coding-harness-credential-gateway.md) and
-[`docs/SECURITY.md`](SECURITY.md) for the full threat model, the
-three-layer split (agent loop / gateway endpoint / launcher), and the
-reserved cluster-mode extension (`SidecarGatewayLauncher`).
+[`docs/SECURITY.md`](SECURITY.md) for the full threat model.
 
 **Escape hatch**: `models.agent.disable_credential_gateway: true`
 reverts to the pre-shield behavior — real token in the container env.

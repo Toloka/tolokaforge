@@ -216,9 +216,9 @@ harnesses:
       provider_env:
         GOOGLE_GEMINI_BASE_URL: "${gateway.base_url}${gateway.passthrough_path}"
         GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"
-    # gemini-cli ships WITHOUT a credential_gateway this PR — unlike the
-    # other five shipped harnesses, its shield needs two things
-    # LLMGatewayEndpoint does not yet provide:
+    # gemini-cli ships WITHOUT a credential_gateway — unlike the other
+    # five shipped harnesses, its shield needs two things the gateway
+    # sidecar does not yet provide:
     #   1. Its only base-URL override hook, GOOGLE_GEMINI_BASE_URL, ALSO
     #      flips gemini-cli into "GATEWAY" auth mode, which 400s
     #      ("Invalid auth method selected") without the

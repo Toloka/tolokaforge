@@ -1109,6 +1109,20 @@ def create_search_kb_schema() -> ToolSchemaModel:
 _COMPOSE_EXEC_DEFAULT_TIMEOUT_S = 120.0
 
 
+def _decode_partial_output(buf: bytes | str | None) -> str:
+    """Return a ``str`` for a partial-output buffer that may be bytes,
+    str, or ``None``. Used by the exec wrapper's timeout path: even under
+    ``Popen(text=True)``, ``subprocess.TimeoutExpired.stdout`` carries
+    raw bytes (decode only runs on a clean ``communicate()`` return), and
+    ``''.join`` / ``+=`` on the resulting mix would raise a ``TypeError``
+    that hides the CLI output the timeout branch exists to preserve."""
+    if buf is None:
+        return ""
+    if isinstance(buf, bytes):
+        return buf.decode("utf-8", errors="replace")
+    return buf
+
+
 class DockerComposeExecToolWrapper(ToolWrapper):
     """Execute a command inside an already-running compose service via ``docker exec``.
 
@@ -1178,26 +1192,20 @@ class DockerComposeExecToolWrapper(ToolWrapper):
             timed_out = False
         except subprocess.TimeoutExpired as exc:
             proc.kill()
-
-            # subprocess.TimeoutExpired.stdout/stderr carry the raw bytes the
-            # child had buffered when the deadline hit, even under text=True —
-            # Popen only decodes at the point of a clean communicate() return.
-            # Decode explicitly so the footer concatenation below is a str+str
-            # operation, not a str+bytes TypeError that hides the CLI output.
-            def _decode(buf: bytes | str | None) -> str:
-                if buf is None:
-                    return ""
-                if isinstance(buf, bytes):
-                    return buf.decode("utf-8", errors="replace")
-                return buf
-
-            stdout = _decode(exc.stdout)
-            stderr = _decode(exc.stderr)
+            # subprocess.TimeoutExpired.stdout/stderr carry the raw bytes
+            # the child had buffered when the deadline hit, even under
+            # text=True — Popen only decodes at the point of a clean
+            # communicate() return. _decode_partial_output normalises to
+            # str so the footer concatenation below is str+str, not
+            # str+bytes (a TypeError there would hide the CLI output the
+            # whole rewrite exists to preserve).
+            stdout = _decode_partial_output(exc.stdout)
+            stderr = _decode_partial_output(exc.stderr)
             # communicate() after kill drains whatever else the child buffered.
             try:
                 more_out, more_err = proc.communicate(timeout=5)
-                stdout += _decode(more_out)
-                stderr += _decode(more_err)
+                stdout += _decode_partial_output(more_out)
+                stderr += _decode_partial_output(more_err)
             except subprocess.TimeoutExpired:
                 pass
             timed_out = True

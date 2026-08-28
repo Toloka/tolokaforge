@@ -188,15 +188,15 @@ defaults:
 
 Coding-harness mode is an [`AgentDriver`](../tolokaforge/core/agent_driver.py)
 Strategy — the orchestrator selects `CodingHarnessDriver` from
-`models.agent.coding_harness` and applies it around adapter output.
-`LLMGatewayEndpoint` is the fourth pluggable object in tolokaforge (after
-`Adapter`, `AgentDriver`, and `Conductor`); it holds the real LLM provider
-credential on the host and shields the trial container from ever seeing
-it. The three-layer split (agent loop / gateway endpoint / launcher)
-lets each layer vary independently — a new agent loop (Harbor as an
-embedded library, an ACP driver, a custom loop) is a new driver class,
-and a new deployment shape (cluster sidecar) is a new launcher class,
-with no adapter edit either way.
+`models.agent.coding_harness` and applies it around adapter output. The
+driver replaces the engine's LLM turn loop with one invocation of a
+vendor CLI (`claude-code`, `codex`, `kimi-code`, `opencode`,
+`grok-build`, `gemini-cli`) inside the trial container, and adds a
+`tolokaforge-llm-gateway` sidecar service alongside it to shield the
+real provider credential — the CLI's service sees only a dummy token
+and the sidecar's docker-DNS URL. New agent loops (Harbor as an
+embedded library, an ACP driver, a custom loop) plug in as a new
+`AgentDriver` implementation with no adapter edit.
 
 An adapter opts in by overriding
 `BaseAdapter.stage_task(task_id) -> StagedTask | None` to materialise

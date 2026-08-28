@@ -188,13 +188,15 @@ credential_gateway:
   path_allowlist: [...]                            # what upstream paths are proxied
 ```
 
-`CodingHarnessDriver` reads it at `attach()`, starts a host-side
-`LLMGatewayEndpoint` that holds the real credential, and bakes the
-dummy value + gateway URL into the trial container's env. The CLI
-never sees the real credential. See
+`CodingHarnessDriver` reads it at `attach()`, adds a
+`tolokaforge-llm-gateway` sidecar service to the trial's compose stack
+carrying the real credential, and bakes the dummy value + the
+sidecar's compose-DNS URL (`http://tolokaforge-llm-gateway:8080`)
+into the CLI's own container env. The CLI never sees the real
+credential; the sidecar swaps in the correct auth header on every
+allow-listed request. See
 [ADR-0041](../docs/adr/0041-coding-harness-credential-gateway.md) and
-[docs/SECURITY.md](../docs/SECURITY.md) for the threat model and the
-three-layer split.
+[docs/SECURITY.md](../docs/SECURITY.md) for the threat model.
 
 **Adding a new harness:** populate `credential_gateway` with the
 vendor's real endpoint + env-var conventions. If the vendor uses a

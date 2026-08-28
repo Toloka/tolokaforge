@@ -233,18 +233,19 @@ class CodingHarnessDriver:
             self.container_env = {
                 **extra_env,
                 gateway_spec.dummy_token_env_var: gateway_spec.dummy_token_value,
-                # Bypass the LIMITED_INTERNET squid forward proxy for the
-                # gateway hop: the gateway is a host-side service reached via
-                # compose ``extra_hosts`` (see ``_rewrite_compose``), which is
-                # only visible to the CLI's own container — squid, running in
-                # its own container, cannot resolve the hostname and would
-                # 403 every request. ``NO_PROXY`` on the CLI's environment
-                # tells the CLI to hit the gateway directly instead of routing
-                # through squid. ``enforce_network_policy._merge_proxy_env``
-                # unions this with squid's own no-proxy list, so both entries
-                # survive: the gateway hop bypasses squid, everything else
-                # still transits it (and squid's allowlist denies everything
-                # else in the shielded-run scenario).
+                # Under LIMITED_INTERNET, netpolicy points every service's
+                # HTTP(S)_PROXY at squid. Squid would then intercept the
+                # CLI's gateway hop too — and squid's allowlist (empty by
+                # default for a shielded run, since the CLI needs no
+                # external destinations) would 403 it. NO_PROXY on the
+                # CLI tells its HTTP client to skip squid for the sidecar
+                # hostname; the CLI reaches the sidecar directly over the
+                # netpolicy internal network the sidecar is bridged onto.
+                # ``enforce_network_policy._merge_proxy_env`` unions this
+                # with squid's own no-proxy list, so both survive: the
+                # sidecar hop is direct, everything else transits squid.
+                # Under NO_INTERNET and FULL_INTERNET there is no squid;
+                # the variable is inert then.
                 "NO_PROXY": GATEWAY_HOSTNAME,
                 "no_proxy": GATEWAY_HOSTNAME,
             }

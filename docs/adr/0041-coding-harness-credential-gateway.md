@@ -81,96 +81,97 @@ None ship in tolokaforge today.
 
 ## Decision
 
-**Introduce an `LLMGatewayEndpoint`** — a small `SecretManager`-consuming
-HTTP proxy that holds the real credential and forwards to upstream —
-and bind its lifecycle to a **launcher** whose choice varies by
-deployment. The CLI container sees only a dummy token and a base URL
-pointing at the gateway; the real credential never enters the compose
-`environment:`.
+**Ship the LLM gateway as a compose sidecar service inside every
+shielded trial's stack.** The `CodingHarnessDriver` adds a
+`tolokaforge-llm-gateway` service to the trial's compose file — the
+shipped `tolokaforge-runner:local` image running
+`python -m tolokaforge.runner.llm_gateway_serve` on port 8080. The
+sidecar holds the real provider credential (resolved once at
+bootstrap via `SecretManager`); the CLI's own container sees only a
+dummy token and a base URL pointing at the sidecar over docker's own
+compose DNS.
 
-**Three-layer split:**
+**Two-layer split** — the agent loop pluggability from earlier
+CodingHarnessDriver planning remains:
 
 ```
-Layer 3: THE AGENT LOOP        ← claude-code, codex, Harbor, custom driver
-                                  (varies per driver; pluggable)
-Layer 2: THE GATEWAY ENDPOINT  ← LLMGatewayEndpoint(spec, SecretManager)
-                                  (one class, portable across launchers)
-Layer 1: THE LAUNCHER          ← HostGatewayLauncher (this PR)
-                                  SidecarGatewayLauncher (follow-up)
-                                  (varies per deployment)
+Layer 2: THE AGENT LOOP     ← claude-code, codex, Harbor, custom driver
+                              (varies per driver; pluggable)
+Layer 1: THE GATEWAY        ← _GatewayHTTPServer (reverse proxy) +
+                              llm_gateway_serve (sidecar entrypoint)
+                              (one implementation, docker-networked)
 ```
 
-Each layer varies independently. Adding a new agent loop is a new
-driver class + new `HarnessSpec` entry (Layer 3). Adding a new
-deployment shape is a new launcher class (Layer 1). Adding a new
-credential protocol (OAuth, workload identity) is a new protocol
-adapter inside the gateway (Layer 2).
+Adding a new agent loop is a new `AgentDriver` implementation + new
+`HarnessSpec` entry (Layer 2). Adding a new credential protocol (OAuth,
+workload identity) is a new protocol adapter inside `_GatewayHTTPServer`
+(Layer 1). The docker compose network topology handles what an earlier
+plan tried to split into a separate "launcher" layer.
 
-### Ships this PR (local mode)
+### The shipping shape
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  Local lifecycle                                                        │
+│  Trial compose stack (host or K8s Job, same shape either way)           │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
 │  Orchestrator process (host)                                            │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
 │  │  SecretManager: DotEnvProvider + EnvProvider                     │   │
 │  │  CodingHarnessDriver                                             │   │
-│  │  ├─ container_env: dummy token, gateway URL                      │   │
-│  │  ├─ _gateway_upstream_env: real token (in memory, never on disk) │   │
-│  │  └─ LLMGatewayEndpoint (HTTP server on ephemeral port)           │   │
-│  │       launched by LocalHostGatewayLauncher at attach()           │   │
+│  │  └─ at attach(): resolves real token, stashes for compose write  │   │
+│  │  └─ at compose write: adds tolokaforge-llm-gateway service       │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
-│               ▲                                                         │
-│               │ extra_hosts:                                            │
-│               │   tolokaforge-llm-gateway:host-gateway                  │
-│               │                                                         │
-│  Trial container (docker default bridge)                                │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  ANTHROPIC_API_KEY = "sk-tolokaforge-shielded-dummy"             │   │
-│  │  ANTHROPIC_BASE_URL = "http://tolokaforge-llm-gateway:52621"     │   │
-│  │  NO_PROXY = "tolokaforge-llm-gateway"                            │   │
-│  │  claude-code CLI  ────────────────────────────────────────────┐  │   │
-│  └──────────────────────────────────────────────────────────────┼──┘   │
-│                                                                 │      │
-│                             LLMGatewayEndpoint forwards ────────┘      │
-│                             with real header:                          │
-│                             Authorization: Bearer <real key>           │
-│                                             │                          │
-│                                             ▼                          │
-│                                    https://openrouter.ai               │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### Reserved for a follow-up PR (cluster mode)
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Cluster lifecycle (K8s Job; orchestrator may die)                      │
-├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│  Runner pod                                                             │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  SecretManager: VaultProvider (Vault Agent Injector)             │   │
-│  │                 OR CSIProvider (mounted secret file)             │   │
-│  │                 OR CloudMetadataProvider (IRSA / GKE WI)         │   │
-│  │                                                                  │   │
-│  │  Sidecar: LLMGatewayEndpoint served by SidecarGatewayLauncher    │   │
-│  │           on the pod's internal network                          │   │
-│  │           ├─ reads real credentials from the pod's SecretManager │   │
-│  │           └─ orchestrator not needed once launched               │   │
-│  │                                                                  │   │
-│  │  Trial container (in the same pod)                               │   │
-│  │  ├─ Dummy env, gateway base URL, K8s NetworkPolicy               │   │
-│  │  └─ Reaches gateway sidecar over localhost — no host needed      │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                             │                                           │
-│                             │ egress                                    │
-│                             ▼                                           │
-│                    https://openrouter.ai                                │
+│  Compose stack (netpolicy_internal + netpolicy_edge networks)           │
+│                                                                         │
+│  ┌── main (CLI container) ─────────────────────────────────────────┐    │
+│  │  ANTHROPIC_API_KEY  = "sk-tolokaforge-shielded-dummy…"          │    │
+│  │  ANTHROPIC_BASE_URL = "http://tolokaforge-llm-gateway:8080"     │    │
+│  │  NO_PROXY           = "tolokaforge-llm-gateway"                 │    │
+│  │  depends_on: tolokaforge-llm-gateway (service_healthy)          │    │
+│  │  claude-code CLI ───────────────┐                               │    │
+│  └────────────────────────────────┬┴───────────────────────────────┘    │
+│                                   │                                     │
+│                       docker DNS  │  (netpolicy_internal, internal:true)│
+│                                   │                                     │
+│  ┌── tolokaforge-llm-gateway ──── ▼─────────────────────────────────┐   │
+│  │  image: tolokaforge-runner:local                                 │   │
+│  │  command: python -m tolokaforge.runner.llm_gateway_serve         │   │
+│  │  env: TF_GATEWAY_UPSTREAM_TOKEN=<real key> (bootstrap only —     │   │
+│  │       SecretManager takes over; register_runtime_secret +        │   │
+│  │       install_global_redactor put it on the scrub set)           │   │
+│  │  bridged onto BOTH netpolicy_internal + netpolicy_edge           │   │
+│  │  ────────────────────────────────┐                               │   │
+│  └───────────────────────────────── │ ──────────────────────────────┘   │
+│                                     │  (netpolicy_edge, has egress)     │
+│                                     ▼                                   │
+│                            https://openrouter.ai                        │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+Two `EnvironmentManifest` fields make this work under any pack policy:
+
+- **`bridged_services`** — the netpolicy enforcement attaches every
+  named service to BOTH `netpolicy_internal` (isolated, CLI-reachable)
+  and `netpolicy_edge` (has egress), same treatment as `runner_service`.
+  The driver sets it to `{"tolokaforge-llm-gateway"}` so the sidecar
+  reaches the upstream even when the pack declares `no_internet`.
+- **`stripped_container_secrets`** — `inject_runner_credentials` omits
+  these keys from the runner container's `TOLOKAFORGE_SECRETS_JSON`
+  payload. The driver sets it to `{spec.credential_gateway.upstream_token_env_var}`
+  so the credential lives in exactly one service in the trial stack
+  (the sidecar) rather than being duplicated into the runner too.
+
+### K8s / remote-runner (accommodated by construction)
+
+Nothing in the sidecar shape depends on the orchestrator being alive.
+A K8s Job that materialises this same compose stack as pods gets the
+same shield — the sidecar reads its bootstrap env once, then the trial
+runs to completion on the runner-pod side. Bootstrap-time credential
+provisioning is the extension seam: a new `SecretProvider` (Vault, CSI,
+workload identity) plugs into how `TF_GATEWAY_UPSTREAM_TOKEN` gets into
+the sidecar's env, without changing the sidecar itself.
 
 ### Alternate agent-loop shape (accommodated by construction)
 
@@ -179,10 +180,10 @@ Harbor as an embedded library in a custom driver:
 
   HarborDriver (peer of CodingHarnessDriver, implements AgentDriver)
   └─ decorate_task_description
-      ├─ container gets: dummy env, gateway URL, extra_hosts
+      ├─ container gets: dummy env, gateway URL
       └─ decorated wire schema
 
-  Same LLMGatewayEndpoint. Same host-side launcher. No adapter edit.
+  Same tolokaforge-llm-gateway sidecar. Same compose shape. No adapter edit.
 ```
 
 ## Consequences
@@ -191,20 +192,28 @@ Harbor as an embedded library in a custom driver:
 
 - Every `tolokaforge run` operator gets credential-shielded coding-harness
   runs by default. No config change required.
-- The trial container's compose `environment:` no longer contains any
-  real LLM provider credential. Verified against
-  `examples/terminal_bench/run_harness.yaml` + `examples/native/coding_harness/`:
-  the resolved-secret string does not appear anywhere in the per-trial
-  staging directory.
-- `LLMGatewayEndpoint` starts at driver `attach()` and stops at
-  `driver.close()` — a new `AgentDriver` protocol method the
-  orchestrator invokes at run teardown. `EngineLoopDriver.close()` is a
-  no-op.
+- The CLI's own compose service `environment:` never contains a real
+  LLM provider credential. Verified against
+  `examples/terminal_bench/run_harness.yaml` (score 0.833) and
+  `examples/native/coding_harness/` under `network_policy=no_internet`
+  (score 1.0, latency 16.4s, network policy preserved unchanged): the
+  resolved-secret string does not appear in the CLI service's env or
+  the trial artifacts.
+- The `CodingHarnessDriver` sets `bridged_services` and
+  `stripped_container_secrets` on the manifest; the netpolicy
+  enforcement attaches the sidecar to both internal and edge networks,
+  and `inject_runner_credentials` omits the shielded token from the
+  runner container's payload — the credential exists in exactly one
+  service (`tolokaforge-llm-gateway`) in the whole trial stack.
+- `AgentDriver.close()` is a no-op under sidecar mode — compose stack
+  teardown stops the sidecar along with every other trial container.
+  The method stays on the protocol so runtimes may call it
+  unconditionally.
 - Every shipped harness in `data/harnesses.yaml` carries a
   `credential_gateway` block except `gemini-cli` — Gemini's REST auth
   is `x-goog-api-key` and its request paths are model-dynamic, both of
   which need config-file pinning and prefix path-allow-list support
-  the initial gateway does not provide. Tracked in
+  the gateway does not provide. Tracked in
   [#1311](https://github.com/Toloka/tolokaforge/issues/1311). A
   well-typed `UNSHIELDED_HARNESSES` set at
   `tests/unit/test_credential_gateway_schema.py` makes silent
@@ -212,33 +221,22 @@ Harbor as an embedded library in a custom driver:
 
 **Operator escape hatch:** `models.agent.disable_credential_gateway: true`
 in the run config restores the pre-shield behavior — real key baked
-into the container env. Intended for the rare CLI that a proxied
-backend cannot drive; none of the six shipped harnesses need it today.
-The driver logs a warning naming the harness when the escape hatch
-fires.
+into the CLI's container env, no sidecar added. Intended for the rare
+CLI that a proxied backend cannot drive; none of the six shipped
+harnesses need it today. The driver logs a warning naming the harness
+when the escape hatch fires.
 
-**Egress restriction (defense-in-depth) is deferred.** The initial plan
-paired the credential shield with `NetworkPolicy.LIMITED_INTERNET` so
-squid would refuse any request from the CLI container except the
-gateway hop. Local-mode incompatibility: `LIMITED_INTERNET` puts the
-CLI on a docker `internal: true` network, and the host-side gateway
-lives on the docker default bridge — the CLI has no route to the
-gateway. A real smoke reproduced this: the CLI hung 900 seconds
-waiting on the gateway that was one docker network away.
+**Egress restriction:** the netpolicy's isolation still applies. Under
+`no_internet` the CLI's service has no direct route to the outside
+world; only the sidecar bridges the internal→edge boundary, and only
+for the paths in the harness's `credential_gateway.path_allowlist`.
+Under `limited_internet` a squid forward proxy is also injected for
+any pack-declared outbound HTTP; the CLI's `NO_PROXY` skips squid for
+the sidecar hop, which travels direct over the shared internal
+network. Under `full_internet` no netpolicy runs.
 
-The credential shield still holds without egress restriction: the
-container never sees the real key. What is deferred is preventing a
-malicious model from exfiltrating task data to an attacker-controlled
-URL. That protection requires moving the gateway to a sidecar
-container on the same internal network as the CLI —
-`SidecarGatewayLauncher`, called out as a follow-up.
+**Named follow-up work:**
 
-**What follow-up work is named for this ADR:**
-
-- `SidecarGatewayLauncher` — the cluster-mode adapter. Runs the
-  gateway as a sidecar container in the trial's compose stack /
-  pod. Makes `LIMITED_INTERNET` egress restriction viable again in the
-  local case, and is the only viable shape in K8s.
 - `VaultProvider`, `CSIProvider`, `CloudMetadataProvider` — new
   `SecretProvider` subclasses so a runner pod bootstraps its own
   credentials from Vault / CSI-mounted secrets / cloud workload
@@ -249,19 +247,22 @@ container on the same internal network as the CLI —
   `selectedType: gateway` invariant + prefix path-allow-list support
   in the gateway's HTTP handler.
 - Interaction with roadmap `0.12.0` "Remote runner: orchestrator and
-  runner on separate hosts" — the gateway pattern must land BEFORE
-  remote runner so cluster deployments don't re-invent it.
+  runner on separate hosts" — the sidecar shape already works cluster-side
+  (the compose stack becomes a K8s Job manifest); the remaining work
+  is credential bootstrap, tracked above.
 
 ## Alternatives considered and rejected
 
-- **Sidecar container in the compose stack for local mode.** Proper
-  airgap possible (compose internal network). Rejected because the
-  local-mode value is high on its own — every operator running
-  `tolokaforge run` today benefits — and the extra container has
-  measurable startup cost + operational complexity that hurts every
-  local run for a defense-in-depth win only some operators need.
-  Kept as `SidecarGatewayLauncher` for cluster mode, where the sidecar
-  is the only viable shape.
+- **Host-side proxy reached via `extra_hosts: host-gateway`.** Runs
+  the gateway as a thread in the orchestrator process; the trial
+  container reaches it through docker-desktop's `host-gateway` magic
+  IP. Rejected because it fails under any pack declaring
+  `network_policy=no_internet` — the CLI's service lives on a docker
+  `internal:true` network with no route to the host, so `curl
+  http://tolokaforge-llm-gateway:PORT` SYN-sends indefinitely
+  (reproduced: 900s hang, zero assistant turns). The sidecar shape
+  works under every network policy because it lives on the same
+  compose network the CLI is on.
 - **Extend the existing squid sidecar with credential injection.**
   Reuses one sidecar. Rejected because squid's auth mechanisms (ICAP,
   custom `auth_param`) are not designed for header rewriting on the
@@ -278,34 +279,50 @@ container on the same internal network as the CLI —
 
 1. `SecretManager` is the only reader of credentials — always.
    Enforced by `AGENTS.md` + `tests/unit/secrets/test_no_raw_secret_access.py`.
-2. The trial container ALWAYS receives a dummy `<dummy_token_env_var>`
-   value + a base URL pointing at a gateway (when the harness declares
-   a `credential_gateway`).
-3. The gateway ALWAYS reads its real credentials via `SecretManager`
-   — never directly from env.
-4. The gateway ALWAYS enforces path allow-list + header injection +
-   audit logging via `install_global_redactor`.
-5. Adding a new harness to `data/harnesses.yaml` MUST populate its
+2. The CLI's own compose service ALWAYS receives a dummy
+   `<dummy_token_env_var>` value + a base URL pointing at the sidecar
+   (when the harness declares a `credential_gateway`).
+3. The gateway sidecar ALWAYS routes its real credential through
+   `SecretManager`: `TF_GATEWAY_UPSTREAM_TOKEN` is read once at
+   bootstrap into a scoped `DictProvider`, registered via
+   `register_runtime_secret`, and the log redactor is installed —
+   after which every access goes through `get_default()`.
+4. The gateway ALWAYS enforces path allow-list + header injection.
+5. The shielded upstream token is ALWAYS in
+   `EnvironmentManifest.stripped_container_secrets`, so
+   `inject_runner_credentials` omits it from the runner container's
+   `TOLOKAFORGE_SECRETS_JSON` payload. The credential exists in
+   exactly one service in the trial stack.
+6. Adding a new harness to `data/harnesses.yaml` MUST populate its
    `credential_gateway` block OR appear on the `UNSHIELDED_HARNESSES`
    set at `tests/unit/test_credential_gateway_schema.py`. There is no
    silent third path.
 
 ## Verification
 
-- **Unit**: `LLMGatewayEndpoint` — path allow-list, header rewriting,
-  streaming pass-through byte-identity, constructor provably never
-  reads `os.environ`. `CodingHarnessDriver` — container_env provably
-  never contains a canary standing in for the real token
-  (`test_coding_harness_gateway.py`).
-- **Real-task smoke**: `examples/terminal_bench/run_harness.yaml` under
-  `claude-code` reaches grading with the shield active. The staging
-  directory contains no `sk-or-v1-` substring anywhere; only the
-  dummy value reaches the container `environment:`. The CLI makes
-  real tool calls (real database queries visible in the trajectory)
-  and returns a real reward.
+- **Unit**: `_GatewayHTTPServer` — path allow-list, header rewriting,
+  streaming pass-through byte-identity (`test_llm_gateway.py`).
+  Sidecar bootstrap — reads `TF_GATEWAY_UPSTREAM_TOKEN` once through
+  `SecretManager` + `register_runtime_secret` + `install_global_redactor`,
+  refuses empty/unset (`test_llm_gateway_serve.py`). Driver — the
+  CLI's compose service `environment:` provably never contains a
+  canary standing in for the real token; the sidecar service does;
+  `bridged_services` and `stripped_container_secrets` are set
+  correctly (`test_coding_harness_gateway.py`).
+- **Real-task smoke, terminal-bench**: `examples/terminal_bench/run_harness.yaml`
+  under `claude-code` — score 0.833, 493s, 55 real assistant turns.
+  Only dummy values reach the CLI container's `environment:`; the
+  real key does not appear in trial artifacts.
+- **Real-task smoke, native**: `examples/native/coding_harness/run_harness.yaml`
+  under `claude-code` with the pack's declared `network_policy=no_internet`
+  (preserved unchanged) — score 1.0, 16.4s, 1 tool call, 1 turn. The
+  gateway sidecar is bridged to both `netpolicy_internal` and
+  `netpolicy_edge`; the runner container's `TOLOKAFORGE_SECRETS_JSON`
+  payload does NOT contain the shielded upstream token; the real key
+  does not appear in trial artifacts.
 - **Escape hatch**: `disable_credential_gateway=True` restores the
-  pre-shield path — real token in container env, no gateway attach,
-  no `extra_hosts`. Warning logged.
+  pre-shield path — real token in the CLI's container env, no sidecar
+  service added. Warning logged.
 - **Package boundary**: `tolokaforge_coding_harnesses` still imports no
   engine modules — the driver depends on the harness package, never
   the reverse.

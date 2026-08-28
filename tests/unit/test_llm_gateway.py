@@ -1,13 +1,13 @@
 """Behaviour-locking tests for :mod:`tolokaforge.runner.llm_gateway`.
 
-Exercises the endpoint against a real loopback upstream so path-allowlist
-enforcement, header rewriting, and streaming pass-through are proven over
-an actual socket rather than mocked internals.
+Exercises the reverse-proxy HTTP server against a real loopback upstream
+so path-allowlist enforcement, header rewriting, and streaming
+pass-through are proven over an actual socket rather than mocked
+internals. Matches the shape the sidecar entrypoint constructs.
 """
 
 from __future__ import annotations
 
-import os
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -17,8 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pytest
 
-from tolokaforge.runner.llm_gateway import GatewayHandle, LLMGatewayEndpoint
-from tolokaforge.secrets import DictProvider, SecretManager
+from tolokaforge.runner.llm_gateway import _GatewayHTTPServer
 
 pytestmark = pytest.mark.unit
 
@@ -28,20 +27,14 @@ DUMMY_TOKEN = "sk-tolokaforge-shielded-dummy"
 
 @dataclass(frozen=True)
 class FakeGatewayConfig:
-    """Structural double for the not-yet-shipped ``CredentialGateway`` model."""
+    """Structural double for ``HarnessSpec.credential_gateway`` — matches
+    the :class:`CredentialGatewayConfig` Protocol the server reads."""
 
     upstream_url: str
     upstream_token_env_var: str = "OPENROUTER_API_KEY"
     upstream_auth_header: str = "Authorization"
     upstream_auth_template: str = "Bearer {token}"
     path_allowlist: tuple[str, ...] = ("/v1/models",)
-
-
-@dataclass(frozen=True)
-class FakeSpec:
-    """Structural double for ``HarnessSpec`` — only ``credential_gateway`` matters."""
-
-    credential_gateway: FakeGatewayConfig | None
 
 
 class _RecordingUpstreamHandler(BaseHTTPRequestHandler):
@@ -104,49 +97,55 @@ def upstream() -> Iterator[tuple[str, type[_RecordingUpstreamHandler]]]:
         thread.join(timeout=5)
 
 
-def _secret_manager(token: str = REAL_TOKEN) -> SecretManager:
-    return SecretManager([DictProvider({"OPENROUTER_API_KEY": token})])
+def _serve(
+    gateway_config: FakeGatewayConfig, upstream_token: str = REAL_TOKEN
+) -> tuple[_GatewayHTTPServer, threading.Thread, int]:
+    server = _GatewayHTTPServer(("127.0.0.1", 0), gateway_config, upstream_token)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread, server.server_address[1]
 
 
 @pytest.fixture
 def running_gateway(
-    upstream: tuple[str, type[_RecordingUpstreamHandler]], isolated_secret_manager: None
-) -> Iterator[tuple[GatewayHandle, type[_RecordingUpstreamHandler]]]:
+    upstream: tuple[str, type[_RecordingUpstreamHandler]],
+) -> Iterator[tuple[int, type[_RecordingUpstreamHandler]]]:
     upstream_url, handler_cls = upstream
-    spec = FakeSpec(credential_gateway=FakeGatewayConfig(upstream_url=upstream_url))
-    endpoint = LLMGatewayEndpoint(spec, _secret_manager())
-    handle = endpoint.start()
+    config = FakeGatewayConfig(upstream_url=upstream_url)
+    server, thread, port = _serve(config)
     try:
-        yield handle, handler_cls
+        yield port, handler_cls
     finally:
-        endpoint.stop()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 class TestPathAllowlist:
     def test_allowed_path_returns_200(
-        self, running_gateway: tuple[GatewayHandle, type[_RecordingUpstreamHandler]]
+        self, running_gateway: tuple[int, type[_RecordingUpstreamHandler]]
     ) -> None:
-        handle, _ = running_gateway
-        response = httpx.get(f"http://127.0.0.1:{handle.port}/v1/models")
+        port, _ = running_gateway
+        response = httpx.get(f"http://127.0.0.1:{port}/v1/models")
         assert response.status_code == HTTPStatus.OK
         assert response.content == b'{"data": "ok"}'
 
     def test_denied_path_returns_405(
-        self, running_gateway: tuple[GatewayHandle, type[_RecordingUpstreamHandler]]
+        self, running_gateway: tuple[int, type[_RecordingUpstreamHandler]]
     ) -> None:
-        handle, handler_cls = running_gateway
-        response = httpx.get(f"http://127.0.0.1:{handle.port}/v1/not-allowlisted")
+        port, handler_cls = running_gateway
+        response = httpx.get(f"http://127.0.0.1:{port}/v1/not-allowlisted")
         assert response.status_code == HTTPStatus.METHOD_NOT_ALLOWED
         assert handler_cls.received == []
 
 
 class TestHeaderRewriting:
     def test_dummy_incoming_authorization_is_replaced_with_real_upstream_token(
-        self, running_gateway: tuple[GatewayHandle, type[_RecordingUpstreamHandler]]
+        self, running_gateway: tuple[int, type[_RecordingUpstreamHandler]]
     ) -> None:
-        handle, handler_cls = running_gateway
+        port, handler_cls = running_gateway
         httpx.get(
-            f"http://127.0.0.1:{handle.port}/v1/models",
+            f"http://127.0.0.1:{port}/v1/models",
             headers={"Authorization": f"Bearer {DUMMY_TOKEN}"},
         )
         assert len(handler_cls.received) == 1
@@ -159,7 +158,6 @@ class TestStreamingPassthrough:
     def test_chunked_upstream_body_passes_through_byte_identical(
         self,
         upstream: tuple[str, type[_RecordingUpstreamHandler]],
-        isolated_secret_manager: None,
     ) -> None:
         upstream_url, handler_cls = upstream
         sse_chunks = [
@@ -171,32 +169,14 @@ class TestStreamingPassthrough:
         handler_cls.response_chunks = sse_chunks
         handler_cls.chunked = True
 
-        spec = FakeSpec(
-            credential_gateway=FakeGatewayConfig(
-                upstream_url=upstream_url, path_allowlist=("/v1/messages",)
-            )
-        )
-        endpoint = LLMGatewayEndpoint(spec, _secret_manager())
-        handle = endpoint.start()
+        config = FakeGatewayConfig(upstream_url=upstream_url, path_allowlist=("/v1/messages",))
+        server, thread, port = _serve(config)
         try:
-            response = httpx.get(f"http://127.0.0.1:{handle.port}/v1/messages")
+            response = httpx.get(f"http://127.0.0.1:{port}/v1/messages")
         finally:
-            endpoint.stop()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
         assert response.status_code == HTTPStatus.OK
         assert response.content == b"".join(sse_chunks)
-
-
-class TestNoDirectEnvironAccess:
-    def test_constructor_never_reads_os_environ(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def _forbidden(*args: object, **kwargs: object) -> None:
-            raise AssertionError("LLMGatewayEndpoint touched os.environ directly")
-
-        monkeypatch.setattr(os.environ, "get", _forbidden)
-        monkeypatch.setattr(os, "getenv", _forbidden)
-
-        spec = FakeSpec(
-            credential_gateway=FakeGatewayConfig(upstream_url="http://upstream.invalid")
-        )
-        endpoint = LLMGatewayEndpoint(spec, _secret_manager())
-        assert endpoint is not None

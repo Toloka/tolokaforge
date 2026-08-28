@@ -1,10 +1,10 @@
 """Behaviour-locking tests for ``HarnessSpec.credential_gateway``.
 
 Locks two things: every shipped harness declares a valid
-``CredentialGateway`` block, and that block's field names stay structurally
-compatible with ``LLMGatewayEndpoint``'s ``CredentialGatewayConfig``
-Protocol (``tolokaforge/runner/llm_gateway.py``) — the seam Stage 1
-shipped ahead of this model existing.
+``CredentialGateway`` block, and that block's field names stay
+structurally compatible with the ``CredentialGatewayConfig`` Protocol at
+``tolokaforge/runner/llm_gateway.py`` that the credential-shield gateway
+sidecar reads.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ explaining the gap — this set exists so a *silent* regression (a harness
 losing its shield with no comment, no issue, no test change) still fails
 here, while a *documented* one does not. gemini-cli: real REST auth header
 (``x-goog-api-key``, not Bearer) plus a base-URL override that also flips
-its auth mode, needing a config-file pin ``LLMGatewayEndpoint`` cannot yet
+its auth mode, needing a config-file pin the gateway sidecar cannot yet
 express, and a per-model dynamic path shape the gateway's exact-match
 allowlist cannot enumerate — see
 https://github.com/Toloka/tolokaforge/issues/1311.
@@ -64,25 +64,25 @@ class TestCredentialGatewayRejectsUnknownFields:
             CredentialGateway.model_validate(payload)
 
 
-class TestStructuralFitWithLLMGatewayEndpoint:
+class TestStructuralFitWithGatewaySidecar:
     def test_protocol_fields_are_a_subset_of_the_model_fields(self) -> None:
-        """Every field ``LLMGatewayEndpoint`` reads off ``spec.credential_gateway``
+        """Every field the gateway sidecar reads off ``spec.credential_gateway``
         exists on ``CredentialGateway`` with the same name.
 
         Not full set equality: ``CredentialGateway`` legitimately carries
-        fields the gateway endpoint itself never reads
-        (``dummy_token_env_var``, ``dummy_token_value``, ``base_url_env_var``
-        — consumed by the driver's compose wiring instead). The invariant
-        this test locks is that a real ``CredentialGateway`` instance always
-        satisfies ``CredentialGatewayConfig`` structurally, which only
-        requires the protocol's names to be present, not exclusive.
+        fields the sidecar itself never reads (``dummy_token_env_var``,
+        ``dummy_token_value``, ``base_url_env_var`` — consumed by the
+        driver's compose wiring instead). The invariant this test locks
+        is that a real ``CredentialGateway`` instance always satisfies
+        ``CredentialGatewayConfig`` structurally, which only requires
+        the protocol's names to be present, not exclusive.
         """
         protocol_fields = set(CredentialGatewayConfig.__annotations__)
         model_fields = set(CredentialGateway.model_fields)
         missing = protocol_fields - model_fields
         assert not missing, (
             f"CredentialGateway is missing field(s) {sorted(missing)!r} that "
-            "CredentialGatewayConfig requires; LLMGatewayEndpoint's structural "
+            "CredentialGatewayConfig requires; the gateway sidecar's structural "
             "typing depends on every protocol field existing under the same name."
         )
 
