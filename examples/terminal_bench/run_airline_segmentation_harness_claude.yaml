@@ -1,0 +1,36 @@
+# fix-airline-segmentation under claude-code + claude-sonnet-4-6.
+# 15 pytest tests over a real RFM/K-means pipeline bug — an untouched pack
+# scores 0/15 (the bug manifests in segment quality, all invariant checks
+# fail). Any real score confirms end-to-end work through the shield.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "openrouter/anthropic/claude-sonnet-4-6"
+    coding_harness: "claude-code"
+    temperature: 0.0
+    max_tokens: 4096
+
+compute:
+  workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
+  repeats: 1
+  strict_task_load: true
+  timeouts:
+    episode_s: 1800
+
+evaluation:
+  projects:
+    - "examples/terminal_bench"
+  tasks_glob: "fix-airline-segmentation/task.yaml"
+  output_dir: "results/terminal_bench/fix-airline-segmentation-claude-code-harness"
+  harness_adapter:
+    type: "terminal_bench"
+    params:
+      terminal_bench_dir: "examples/terminal_bench"
+      task_ids: ["fix-airline-segmentation"]
