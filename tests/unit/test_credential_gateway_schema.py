@@ -3,7 +3,7 @@
 Locks two things: every shipped harness declares a valid
 ``CredentialGateway`` block, and that block's field names stay structurally
 compatible with ``LLMGatewayEndpoint``'s ``CredentialGatewayConfig``
-Protocol (``tolokaforge/core/drivers/llm_gateway.py``) — the seam Stage 1
+Protocol (``tolokaforge/runner/llm_gateway.py``) — the seam Stage 1
 shipped ahead of this model existing.
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from tolokaforge.core.drivers.llm_gateway import CredentialGatewayConfig
+from tolokaforge.runner.llm_gateway import CredentialGatewayConfig
 from tolokaforge_coding_harnesses import HARNESSES, CredentialGateway
 
 pytestmark = pytest.mark.unit

@@ -1,6 +1,6 @@
 """Sidecar-mode entrypoint for the coding-harness credential-shield gateway.
 
-Runs :class:`~tolokaforge.core.drivers.llm_gateway._GatewayHTTPServer` on a
+Runs :class:`~tolokaforge.runner.llm_gateway._GatewayHTTPServer` on a
 fixed port inside a compose sidecar. Config comes from environment
 variables the driver bakes into the sidecar's compose ``environment:``:
 
@@ -17,7 +17,7 @@ variables the driver bakes into the sidecar's compose ``environment:``:
 * ``TF_GATEWAY_PORT`` — TCP port the sidecar binds. Defaults to 8080.
 
 The trial container reaches this sidecar by its compose service name —
-:data:`~tolokaforge.core.drivers.llm_gateway.GATEWAY_HOSTNAME` — on the
+:data:`~tolokaforge.runner.llm_gateway.GATEWAY_HOSTNAME` — on the
 declared port. Unlike the host-mode launcher, the sidecar mode lives on
 the same compose network as the CLI's container, so no ``extra_hosts``
 mapping is needed and the shield works under every network policy the
@@ -33,7 +33,7 @@ import os
 import sys
 from dataclasses import dataclass
 
-from tolokaforge.core.drivers.llm_gateway import _GatewayHTTPServer
+from tolokaforge.runner.llm_gateway import _GatewayHTTPServer
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ _DEFAULT_PORT = 8080
 
 @dataclass(frozen=True)
 class _SidecarGatewayConfig:
-    """Stub :class:`~tolokaforge.core.drivers.llm_gateway.CredentialGatewayConfig`
+    """Stub :class:`~tolokaforge.runner.llm_gateway.CredentialGatewayConfig`
     structurally matched to the server's Protocol contract — populated
     from environment variables rather than from ``HarnessSpec`` since the
     sidecar has no reason to import the harness registry."""

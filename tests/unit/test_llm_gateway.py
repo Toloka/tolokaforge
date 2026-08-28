@@ -1,4 +1,4 @@
-"""Behaviour-locking tests for :mod:`tolokaforge.core.drivers.llm_gateway`.
+"""Behaviour-locking tests for :mod:`tolokaforge.runner.llm_gateway`.
 
 Exercises the endpoint against a real loopback upstream so path-allowlist
 enforcement, header rewriting, and streaming pass-through are proven over
@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pytest
 
-from tolokaforge.core.drivers.llm_gateway import GatewayHandle, LLMGatewayEndpoint
+from tolokaforge.runner.llm_gateway import GatewayHandle, LLMGatewayEndpoint
 from tolokaforge.secrets import DictProvider, SecretManager
 
 pytestmark = pytest.mark.unit

@@ -44,7 +44,7 @@ import yaml
 
 from tolokaforge.adapters.base import ComposeImageBuild
 from tolokaforge.core.agent_driver import StagedTask, StagedTaskLayers
-from tolokaforge.core.drivers.llm_gateway import (
+from tolokaforge.runner.llm_gateway import (
     GATEWAY_HOSTNAME,
     GatewayHandle,
 )
@@ -555,7 +555,7 @@ class CodingHarnessDriver:
             "command": [
                 "python",
                 "-m",
-                "tolokaforge.core.drivers.llm_gateway_serve",
+                "tolokaforge.runner.llm_gateway_serve",
             ],
             "environment": {
                 "TF_GATEWAY_UPSTREAM_URL": gateway.upstream_url,

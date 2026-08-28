@@ -142,7 +142,7 @@ class TestSidecarService:
             assert sidecar["command"] == [
                 "python",
                 "-m",
-                "tolokaforge.core.drivers.llm_gateway_serve",
+                "tolokaforge.runner.llm_gateway_serve",
             ]
             assert sidecar["environment"]["TF_GATEWAY_PORT"] == "8080"
             # CLI depends on the sidecar's healthcheck so it never races.
@@ -244,7 +244,7 @@ class TestNetworkPolicy:
     def test_shielded_no_internet_pack_is_preserved_and_gateway_bridged(
         self, canary_secret_manager: None
     ) -> None:
-        from tolokaforge.core.drivers.llm_gateway import GATEWAY_HOSTNAME
+        from tolokaforge.runner.llm_gateway import GATEWAY_HOSTNAME
         from tolokaforge.runner.models import NetworkPolicy
 
         adapter = _pack_adapter()
