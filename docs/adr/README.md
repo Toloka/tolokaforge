@@ -71,3 +71,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0038](0038-grader-detachment.md) | Grader detachment — grader as an independently deployable and scalable component | Proposed |
 | [0039](0039-coding-harness-adapter-agnostic.md) | Coding-harness as an adapter-agnostic run-config concept | Accepted |
 | [0040](0040-standalone-grader.md) | Standalone-grader substrate — multi-topology grading behind one Protocol | Accepted |
+| [0041](0041-zero-coverage-exit-signal.md) | Zero-coverage exit signal on `run_state.json` | Accepted |
