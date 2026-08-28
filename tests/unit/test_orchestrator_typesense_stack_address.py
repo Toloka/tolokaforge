@@ -104,16 +104,20 @@ def test_a_plane_this_process_did_not_start_is_injected_verbatim(tmp_path: Path)
     assert (address.host, address.port) == ("ts.example", 8108)
 
 
-@pytest.mark.parametrize("mode", ["local", "remote"])
-def test_an_unresolved_port_refuses_to_build_the_stack(tmp_path: Path, mode: str) -> None:
+def test_an_unresolved_port_refuses_to_build_the_stack(tmp_path: Path) -> None:
     """``auto`` is not an address, and it must not reach a container as one.
 
     Reached when ``run()`` is handed pre-loaded tasks: it then skips
     ``load_tasks()``, so ``_ensure_typesense_started`` never resolves a port
     and no server handle exists to derive an alias from.
+
+    Only the ``mode="local"`` case reaches this refusal: ``mode="remote" +
+    port="auto"`` is refused at ``TypeSenseConfig`` parse time
+    (see :mod:`tests.unit.test_typesense_config_port_auto_guard`), so the
+    stack-address path never sees that combination.
     """
     orchestrator = _orchestrator(
-        tmp_path, TypeSenseConfig(enabled=True, mode=mode, host="ts.example", port="auto")
+        tmp_path, TypeSenseConfig(enabled=True, mode="local", host="ts.example", port="auto")
     )
 
     with pytest.raises(RuntimeError) as raised:
@@ -122,7 +126,7 @@ def test_an_unresolved_port_refuses_to_build_the_stack(tmp_path: Path, mode: str
     message = str(raised.value)
     assert message.startswith("orchestrator.typesense:")
     assert "auto" in message
-    assert mode in message
+    assert "local" in message
 
 
 def test_a_pinned_local_config_that_skipped_the_start_refuses_its_loopback_address(

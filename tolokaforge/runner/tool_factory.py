@@ -1389,6 +1389,26 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
 # =============================================================================
 
 
+def _hint_source_configuration_missing(tool_name: str) -> str:
+    """Actionable hint for a source-less non-builtin tool at runner emit time.
+
+    The runner subset ships as a separate wheel and cannot import
+    ``tolokaforge.adapters`` (runner-subset partition, canonically enforced
+    in :mod:`tests.canonical.test_runner_subset_partition`), so the hint
+    lists the two config keys and the fallback path without enumerating the
+    adapter registry. The emit-time raise on :class:`NativeAdapter`
+    (:mod:`tolokaforge.adapters.native`) carries the fuller hint with the
+    registry enumeration and the detected-shape clause.
+    """
+    return (
+        f"Tool '{tool_name}' has no source configuration and is not in the "
+        "builtin registry. Set evaluation.harness_adapter.type in the run "
+        "config to an adapter that emits source metadata for this tool, or "
+        "declare the tool under tools.<actor>.mcp_server (or a per-tool "
+        "source) in task.yaml."
+    )
+
+
 class ToolFactory:
     """
     Factory for reconstructing tools from ToolSource definitions.
@@ -1512,7 +1532,7 @@ class ToolFactory:
 
             if not builtin_registry.is_builtin(schema.name):
                 raise ToolConfigurationError(
-                    schema.name, "Tool has no source configuration, cannot reconstruct"
+                    schema.name, _hint_source_configuration_missing(schema.name)
                 )
             dispatch = builtin_registry.get_dispatch(schema.name)
             if dispatch is builtin_registry.Dispatch.RAG:

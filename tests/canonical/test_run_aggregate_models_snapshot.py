@@ -492,6 +492,26 @@ def test_failure_record_round_trip_from_real_attribution() -> None:
     _round_trip(FailureRecord, payload)
 
 
+def test_failure_record_round_trip_carries_provision_stage() -> None:
+    """A ``PROVISION_ERROR`` attribution round-trips its stage verbatim.
+
+    Locks the real-value path of ``FailureRecord.provision_stage`` beyond the
+    ``None`` case the TIMEOUT test above covers: a bundle where the substrate
+    refused at ``register_trial`` must reach disk with that string intact.
+    """
+    trajectory = _make_trajectory(
+        binary_pass=False,
+        score=0.0,
+        status=TrialStatus.ERROR,
+        termination_reason=TerminationReason.PROVISION_ERROR,
+    )
+    trajectory.provision_stage = "register_trial"
+    payload = attribute_failure(trajectory)
+    assert payload["provision_stage"] == "register_trial"
+
+    _round_trip(FailureRecord, payload)
+
+
 def test_failure_summary_round_trip_zero_failures() -> None:
     """Zero-failure branch — ``deterministic_attribution_coverage`` is
     ``None`` (division-by-zero guarded in the source)."""

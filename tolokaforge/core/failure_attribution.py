@@ -264,6 +264,11 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         "termination_reason": (
             trajectory.termination_reason.value if trajectory.termination_reason else None
         ),
+        # Present-but-null off the provision path so downstream consumers can
+        # read ``record["provision_stage"]`` unconditionally: the first-class
+        # substage answer to "what failed" sits alongside the evidence list,
+        # not inside it.
+        "provision_stage": trajectory.provision_stage,
         "outcome_class": classify_trial_outcome(trajectory).value,
         "failure_class": failure_class,
         "deterministic": deterministic,

@@ -758,7 +758,7 @@ def test_no_shipped_pack_fails_the_authoring_gate() -> None:
             task_yaml,
             grading,
             inventory,
-            replay_world_under_adapter(task, task.adapter_type),
+            replay_world_under_adapter(task, task_dir, task.adapter_type),
             hash_source_layer_under_adapter(task, task_dir, task.adapter_type),
             seeded_tables_under_adapter(task, task_dir, task.adapter_type),
         )
@@ -834,7 +834,7 @@ def test_no_authored_grading_block_asserts_nothing() -> None:
         report = inspect_grading_authoring(
             grading,
             ToolInventory.unresolvable(),
-            replay_world=replay_world_under_adapter(task, task.adapter_type),
+            replay_world=replay_world_under_adapter(task, task_dir, task.adapter_type),
             hash_sources=hash_source_layer_under_adapter(task, task_dir, task.adapter_type),
             seeded_tables=seeded_tables_under_adapter(task, task_dir, task.adapter_type),
         )
@@ -1091,7 +1091,7 @@ def test_the_packs_outside_the_gate_walk_are_held_to_the_whole_gate() -> None:
         assert task.grading is not None
         grading = yaml.safe_load((task_dir / task.grading).read_text()) or {}
         inventory = build_tool_inventory(task, task_dir)
-        world = replay_world_under_adapter(task, task.adapter_type)
+        world = replay_world_under_adapter(task, task_dir, task.adapter_type)
         layer = hash_source_layer_under_adapter(task, task_dir, task.adapter_type)
         tables = seeded_tables_under_adapter(task, task_dir, task.adapter_type)
         pack = str(task_yaml.relative_to(_REPO))
@@ -1229,7 +1229,7 @@ def test_no_authored_pack_gives_its_golden_replay_no_world_to_be_built_in() -> N
         task, task_dir = load_task_yaml(task_yaml)
         assert task.grading is not None
         grading = yaml.safe_load((task_dir / task.grading).read_text()) or {}
-        world = replay_world_under_adapter(task, task.adapter_type)
+        world = replay_world_under_adapter(task, task_dir, task.adapter_type)
         pack = str(task_yaml.relative_to(_REPO))
         assert world.known, f"{pack} resolved no replay world, so it proves nothing here"
         report = inspect_grading_authoring(
@@ -1351,7 +1351,7 @@ def test_no_authored_pack_declares_a_probe_beside_another_state_source() -> None
         task, task_dir = load_task_yaml(task_yaml)
         assert task.grading is not None
         grading = yaml.safe_load((task_dir / task.grading).read_text()) or {}
-        world = replay_world_under_adapter(task, task.adapter_type)
+        world = replay_world_under_adapter(task, task_dir, task.adapter_type)
         pack = str(task_yaml.relative_to(_REPO))
         report = inspect_grading_authoring(
             grading, ToolInventory.unresolvable(), replay_world=world

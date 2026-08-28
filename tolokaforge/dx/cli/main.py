@@ -464,15 +464,46 @@ and states the total. A lossy run can lose hundreds; the ids are all in
 ``aggregate.json`` and the operator needs the shape, not the list."""
 
 
-def _fail_on_ungradeable_trials(completeness: GradingCompleteness) -> None:
-    """Exit 1 when the run finished without a verdict for something it measured.
+def _fail_on_completeness_gates(
+    completeness: GradingCompleteness,
+    *,
+    fail_on_zero_coverage: bool,
+    fail_on_zero_judge_graded: bool,
+) -> None:
+    """Emit the completion-gate exit for a run that finished normally.
 
-    Called after the run has completed normally — every artifact written, the end
-    banner printed, the run directory already emitted on stdout. The run
-    executed, so the banner's success axis stays true; this is the separate
-    question of whether it measured everything it attempted, and the exit code
-    plus this line are its only channel.
+    Called after the run wrote every artifact, printed the end banner, and
+    emitted the run directory on stdout. The run executed, so the banner's
+    success axis stays true; the gates are the separate statement about
+    *what* the run measured. Three exit channels, in precedence order (see
+    ``docs/adr/0041-zero-coverage-exit-signal.md``):
+
+    * ``fail_on_zero_coverage`` set and ``completeness.zero_coverage`` →
+      exit ``2`` with the "Run measured no trials" line.
+    * ``fail_on_zero_judge_graded`` set and ``completeness.zero_judge_graded``
+      → exit ``2`` with the "LLM judge errored on every scored trial" line.
+    * ``completeness.ungradeable > 0`` → exit ``1`` with the ungradeable
+      line naming the first few trial ids.
+
+    An opted-in exit-2 gate outranks the unflagged exit-1 in any overlap.
+    The exit code plus one console line are the two channels; the
+    ``aggregate.json`` / ``trajectory.json`` reads each line names carry the
+    detail.
     """
+    if fail_on_zero_coverage and completeness.zero_coverage:
+        console.print(
+            "[red]Run measured no trials[/red] on "
+            f"{completeness.total_attempts} attempted. "
+            "See infrastructure_aborts in aggregate.json."
+        )
+        raise SystemExit(2)
+    if fail_on_zero_judge_graded and completeness.zero_judge_graded:
+        console.print(
+            "[red]LLM judge errored on every scored trial:[/red] "
+            f"0 of {completeness.scored_trials} grades succeeded. "
+            "See judge_status in trajectory.json and judge_cost_usd in aggregate.json."
+        )
+        raise SystemExit(2)
     if completeness.is_complete:
         return
     named = completeness.ungradeable_trial_ids[:_UNGRADEABLE_TRIALS_NAMED]
@@ -648,6 +679,28 @@ def _run_dry_run(
         "Precedence: flag > env > config > default. See docs/RUNNER.md."
     ),
 )
+@click.option(
+    "--fail-on-zero-coverage",
+    "fail_on_zero_coverage",
+    is_flag=True,
+    default=False,
+    help=(
+        "Exit 2 when the run finished with no measured trials. Overrides "
+        "orchestrator.fail_on_zero_coverage in the run config when set. "
+        "See docs/CLI.md § Run and worker exit codes."
+    ),
+)
+@click.option(
+    "--fail-on-zero-judge-graded",
+    "fail_on_zero_judge_graded",
+    is_flag=True,
+    default=False,
+    help=(
+        "Exit 2 when every produced grade has judge_status == ERRORED. Overrides "
+        "orchestrator.fail_on_zero_judge_graded in the run config when set. "
+        "See docs/CLI.md § Run and worker exit codes."
+    ),
+)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -665,6 +718,8 @@ def run(
     time_limit: str | None,
     dry_run: bool,
     image_source: str | None,
+    fail_on_zero_coverage: bool,
+    fail_on_zero_judge_graded: bool,
 ):
     """Run benchmark with specified configuration"""
     if verbose:
@@ -894,6 +949,7 @@ def run(
                     budget=budget,
                     agent_client_factory=agent_client_factory,
                 ),
+                config_path=Path(config),
             )
 
             # NB: no `console.print` calls between LiveRunDisplay.__enter__ and
@@ -924,7 +980,15 @@ def run(
             stopped_reason=stopped_reason,
         )
     emit_artifact_path(output_dir)
-    _fail_on_ungradeable_trials(orchestrator.grading_completeness)
+    _fail_on_completeness_gates(
+        orchestrator.grading_completeness,
+        fail_on_zero_coverage=(
+            fail_on_zero_coverage or run_config.orchestrator.fail_on_zero_coverage
+        ),
+        fail_on_zero_judge_graded=(
+            fail_on_zero_judge_graded or run_config.orchestrator.fail_on_zero_judge_graded
+        ),
+    )
 
 
 def _relative_bundle(bundle: Path, source: Path) -> str:
@@ -1523,7 +1587,12 @@ def prepare(
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
 
     orchestrator = Orchestrator(
-        run_config, resume=False, verbose=verbose, strict=strict, project=project
+        run_config,
+        resume=False,
+        verbose=verbose,
+        strict=strict,
+        project=project,
+        config_path=Path(config),
     )
     orchestrator.load_tasks()
     summary = orchestrator.prepare_run(Path(run_dir), reset_queue=reset_queue)
@@ -1563,6 +1632,28 @@ def prepare(
         "falls back to engine.presets_file."
     ),
 )
+@click.option(
+    "--fail-on-zero-coverage",
+    "fail_on_zero_coverage",
+    is_flag=True,
+    default=False,
+    help=(
+        "Exit 2 when the worker finished with no measured attempts. Overrides "
+        "orchestrator.fail_on_zero_coverage in the run config when set. "
+        "See docs/CLI.md § Run and worker exit codes."
+    ),
+)
+@click.option(
+    "--fail-on-zero-judge-graded",
+    "fail_on_zero_judge_graded",
+    is_flag=True,
+    default=False,
+    help=(
+        "Exit 2 when every produced grade has judge_status == ERRORED. Overrides "
+        "orchestrator.fail_on_zero_judge_graded in the run config when set. "
+        "See docs/CLI.md § Run and worker exit codes."
+    ),
+)
 @click.pass_context
 def worker(
     ctx: click.Context,
@@ -1572,6 +1663,8 @@ def worker(
     verbose: bool,
     strict: bool,
     presets_file: str | None,
+    fail_on_zero_coverage: bool,
+    fail_on_zero_judge_graded: bool,
 ):
     """Run a queue worker process (distributed execution mode)."""
     if verbose:
@@ -1588,7 +1681,12 @@ def worker(
         console.print(f"[cyan]Preset overlay: {overlay_path}[/cyan]")
 
     orchestrator = Orchestrator(
-        run_config, resume=False, verbose=verbose, strict=strict, project=project
+        run_config,
+        resume=False,
+        verbose=verbose,
+        strict=strict,
+        project=project,
+        config_path=Path(config),
     )
     orchestrator.load_tasks()
     summary = orchestrator.run_worker(Path(run_dir), max_attempts=max_attempts)
@@ -1600,7 +1698,15 @@ def worker(
             **summary
         )
     )
-    _fail_on_ungradeable_trials(orchestrator.grading_completeness)
+    _fail_on_completeness_gates(
+        orchestrator.grading_completeness,
+        fail_on_zero_coverage=(
+            fail_on_zero_coverage or run_config.orchestrator.fail_on_zero_coverage
+        ),
+        fail_on_zero_judge_graded=(
+            fail_on_zero_judge_graded or run_config.orchestrator.fail_on_zero_judge_graded
+        ),
+    )
 
 
 @cli.command()
@@ -1754,7 +1860,17 @@ def _load_task_under_its_project(
 
 @cli.command()
 @click.option("--tasks", required=True, help="Glob pattern for task files")
-def validate(tasks: str):
+@click.option(
+    "--strict-authoring/--no-strict-authoring",
+    default=False,
+    help=(
+        "Promote ADAPTER_DECLARED skips — adapter hooks that returned unresolvable() — "
+        "to fatal. STRUCTURAL skips (adapter uninstalled, misspelled type) stay never "
+        "fatal, so a pack targeting an uninstalled adapter still validates. Reach for "
+        "it in a task-pack CI that owns the adapter it targets. See ADR-0042."
+    ),
+)
+def validate(tasks: str, strict_authoring: bool):
     """Validate task configurations"""
     console.print(f"[bold blue]Validating tasks matching: {tasks}[/bold blue]")
 
@@ -1769,7 +1885,12 @@ def validate(tasks: str):
         tool_inventory_under_adapter,
         validate_grading_yaml,
     )
-    from tolokaforge.core.grading.config_validation import AuthoringReport, CombineLayer, Skip
+    from tolokaforge.core.grading.config_validation import (
+        AuthoringReport,
+        CombineLayer,
+        Skip,
+        SkipKind,
+    )
     from tolokaforge.core.grading.migration_declaration import inspect_migration_declaration
 
     task_files = glob.glob(tasks, recursive=True)
@@ -1798,7 +1919,9 @@ def validate(tasks: str):
                     inventory=tool_inventory_under_adapter(
                         task_config, task_dir, task_config.adapter_type
                     ),
-                    replay_world=replay_world_under_adapter(task_config, task_config.adapter_type),
+                    replay_world=replay_world_under_adapter(
+                        task_config, task_dir, task_config.adapter_type
+                    ),
                     hash_sources=hash_source_layer_under_adapter(
                         task_config, task_dir, task_config.adapter_type
                     ),
@@ -1812,6 +1935,23 @@ def validate(tasks: str):
                 # The base each entry's corpus resolves against is this layer's to
                 # supply: the loader takes it as a parameter and reads no ambient state.
                 inspect_migration_declaration(source.path, corpus_base=Path.cwd())
+            adapter_declared = tuple(
+                skip for skip in report.unchecked if skip.kind is SkipKind.ADAPTER_DECLARED
+            )
+            if strict_authoring and adapter_declared:
+                console.print(
+                    f"[red]✗ {task_file}: --strict-authoring refuses "
+                    f"{len(adapter_declared)} adapter-declared skip(s)[/red]"
+                )
+                for skip in adapter_declared:
+                    console.print(f"[red]  ✗ {skip.where}: {skip.reason}[/red]")
+                for skip in report.unchecked:
+                    if skip.kind is SkipKind.STRUCTURAL:
+                        console.print(
+                            f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]"
+                        )
+                invalid += 1
+                continue
             console.print(f"[green]✓ {task_file}[/green]")
             for skip in report.unchecked:
                 console.print(f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]")

@@ -386,13 +386,43 @@ class TypeSenseConfig(BaseModel):
     enabled: bool = True  # Whether TypeSense is enabled
     mode: Literal["local", "remote", "disabled"] = "local"  # Server mode
     host: str = "127.0.0.1"  # TypeSense server host
-    port: int | Literal["auto"] = "auto"  # Port ("auto" finds available port)
+    port: int | Literal["auto"] = "auto"
+    """Port TypeSense answers on.
+
+    The ``"auto"`` sentinel is valid only for ``mode="local"`` (bind to
+    OS-assigned free port, then reuse it). ``mode="remote"`` requires a
+    concrete int — nothing resolves ``"auto"`` for the remote case, and the
+    downstream ``int(port)`` cast in the adapter surface crashes on the
+    string. Refused at parse time by
+    :meth:`TypeSenseConfig._refuse_auto_port_on_remote_mode`.
+    """
     api_key: str | None = None  # API key (auto-generated if None for local mode)
     data_dir: str = ".cache/typesense"  # Data directory for local mode
     image: str = "typesense/typesense:26.0"  # Docker image for local mode
     container_name: str = "tolokaforge-typesense"  # Container name for local mode
     timeout: float = 30.0  # Connection timeout
     cleanup_on_exit: bool = True  # Remove container on exit (local mode)
+
+    @model_validator(mode="after")
+    def _refuse_auto_port_on_remote_mode(self) -> "TypeSenseConfig":
+        """Reject the semantically-invalid ``mode="remote" + port="auto"`` combo.
+
+        The ``"auto"`` sentinel means "auto-allocate a local server port" and
+        only ``_start_local_typesense_server`` resolves it. Nothing resolves
+        it for remote mode: the orchestrator's stack-address path already
+        raises for this combination, and adapters reading the raw config via
+        ``model_dump()`` crash on ``int("auto")``. Fail-fast at parse time.
+        """
+        if self.enabled and self.mode == "remote" and self.port == "auto":
+            raise ValueError(
+                'orchestrator.typesense: mode="remote" requires a concrete '
+                'port, got port="auto". "auto" is a sentinel for mode="local" '
+                "(auto-allocate a local server); nothing resolves it for "
+                'mode="remote". Set orchestrator.typesense.port to the port '
+                'the remote server answers on, or use mode="local" if you '
+                "want a local auto-allocated server."
+            )
+        return self
 
 
 LEGACY_DOCKER_RUNTIME_ALIAS = "docker"
@@ -449,6 +479,20 @@ class OrchestratorConfig(BaseModel):
     tracked as a post-M9 follow-up."""
 
     auto_start_services: bool = True  # Auto-start Docker services via EngineStack
+
+    fail_on_zero_coverage: bool = False
+    """Exit ``2`` when the run measured no trials on a config that had trials
+    to measure (``total_attempts > 0``). Off by default preserves the shipped
+    "infrastructure aborts do not fail the run" contract; opt in from CI when
+    a zero-coverage run should fail the pipeline. See
+    ``docs/adr/0041-zero-coverage-exit-signal.md``."""
+
+    fail_on_zero_judge_graded: bool = False
+    """Exit ``2`` when every produced grade has ``judge_status == ERRORED``.
+    Guarded so a run that produced no grades at all does not fire — the
+    failure mode is a judge that errored on every scoring attempt, not the
+    absence of scoring. Off by default. See
+    ``docs/adr/0041-zero-coverage-exit-signal.md``."""
 
     strict_task_load: bool = False
     """Opt in to fail-loud task loading. When ``False`` (the default), an

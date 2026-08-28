@@ -26,7 +26,12 @@ from tolokaforge.adapters._task_loader import (
     replay_world_under_adapter,
     resolve_tool_schemas,
 )
-from tolokaforge.core.grading.config_validation import ArgumentSchema, ReplayWorld, ToolInventory
+from tolokaforge.core.grading.config_validation import (
+    ArgumentSchema,
+    ReplayWorld,
+    SkipKind,
+    ToolInventory,
+)
 from tolokaforge.core.grading.golden_replay import InitialStateSource
 from tolokaforge.core.models import TaskConfig
 from tolokaforge.runner import tool_factory
@@ -266,16 +271,20 @@ def test_a_replay_world_is_the_native_reading_of_a_task_and_no_other(
     cannot build and the gate refuses the pack for it — collapsing the two into one
     "declared / not declared" answer would let that pack through to the raise.
 
-    Under a foreign adapter the same task resolves nothing: ``initial_state.json_db`` and
-    ``tools.agent.mcp_server`` are the *native* reading of a replay world, and reporting
-    one the adapter does not use would refuse packs that run fine.
+    Under an adapter this environment has no class for — TAU is defined in the enum but
+    ships out-of-tree, so ``adapter_class("tau")`` is ``None`` — the helper answers
+    :meth:`ReplayWorld.unresolvable` with :attr:`SkipKind.STRUCTURAL`. A pack targeting
+    an adapter nothing here can interrogate is reported rather than refused.
     """
     task = _replayable_task(json_db)
+    task_dir = Path(".")
 
-    assert replay_world_under_adapter(task, AdapterType.NATIVE.value) == ReplayWorld(
+    assert replay_world_under_adapter(task, task_dir, AdapterType.NATIVE.value) == ReplayWorld(
         initial_state=source, mcp_server=True
     )
-    assert replay_world_under_adapter(task, AdapterType.TAU.value) == ReplayWorld.unresolvable()
+    assert replay_world_under_adapter(
+        task, task_dir, AdapterType.TAU.value
+    ) == ReplayWorld.unresolvable(kind=SkipKind.STRUCTURAL)
 
 
 @pytest.mark.parametrize(
@@ -295,7 +304,9 @@ def test_the_module_half_of_a_replay_world_reads_the_agent_block(
     write it empty, and a reading that indexed it would raise inside the gate instead of
     reporting the pack.
     """
-    world = replay_world_under_adapter(_replayable_task(agent=agent), AdapterType.NATIVE.value)
+    world = replay_world_under_adapter(
+        _replayable_task(agent=agent), Path("."), AdapterType.NATIVE.value
+    )
 
     assert world.mcp_server is declared
     assert world.initial_state is InitialStateSource.JSON_FILE

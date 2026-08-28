@@ -84,11 +84,68 @@ Each adapter must subclass `BaseAdapter` and implement:
       author.  A `USABLE` source makes the bare block a clean pass; `MISSING`
       or `EMPTY` is refused before any trial is paid for.
 
-    A classmethod, unlike `grading_combine_layer()`: `tolokaforge validate` is
-    a static gate that constructs no adapters and keeps validating packs whose
-    adapter package is not installed, so every fact reported here must be a
-    function of the task and its directory alone.
-14. `fingerprint() -> dict[str, Any] | None`
+    A classmethod, matching the family of hooks in items 14 - 16: `tolokaforge
+    validate` is a static gate that constructs no adapters and keeps validating
+    packs whose adapter package is not installed, so every fact reported here
+    must be a function of the task and its directory alone.  See
+    [ADR-0042](adr/0042-adapter-blind-authoring-gate.md).
+
+14. `grading_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory`
+    — a **classmethod**
+
+    The tool set this adapter presents at runtime, for the authoring gate to
+    hold `present` / `absent` matchers and trace-check tool references against.
+    An adapter whose runtime tool set is not the native reading of
+    `tools.agent.enabled` — one that resolves tools from its own registry or a
+    fixture the pack does not name — reports its own set here so the same rules
+    protect its packs.
+
+    Two answers, deciding two different things:
+
+    - `ToolInventory.unresolvable()` — you cannot say.  The default, and the
+      answer that leaves every tool-aware rule reported rather than refused for
+      adapters that cannot answer.  Reported as `SkipKind.ADAPTER_DECLARED`,
+      promotable to fatal by an author naming your adapter under
+      `tolokaforge validate --strict-authoring`.
+    - A concrete `ToolInventory` — the names your runtime resolves, plus
+      whichever JSON-schema parameters the pack's own fixture or registry
+      resolves for each.  See `NativeAdapter.grading_tool_inventory` for the
+      native reading — the shape any adapter's return here must satisfy.
+
+15. `grading_replay_world(task: TaskConfig, task_dir: Path) -> ReplayWorld`
+    — a **classmethod**
+
+    What this adapter gives a golden-action replay to be executed against.  Two
+    facts, neither of them readable from `grading.yaml`: what the state a
+    replay loads is (a JSON file, an inline mapping, or nothing), and whether
+    the pack ships the tool module those actions call.  The native reading is
+    `initial_state.json_db` and `tools.agent.mcp_server`; an adapter that
+    builds a world from its own fixtures reports through this hook instead.
+
+    Two answers:
+
+    - `ReplayWorld.unresolvable()` — you cannot say.  The default; reported as
+      `SkipKind.ADAPTER_DECLARED`.
+    - `ReplayWorld(initial_state=…, mcp_server=…)` — the two task-level facts
+      the golden-action rule reads.
+
+16. `grading_seeded_tables(task: TaskConfig, task_dir: Path) -> SeededTablesLayer`
+    — a **classmethod**
+
+    The tables this adapter seeds, which the pack's `state_checks.id_fields`
+    declaration keys.  Reports a view of the state a trial starts on so a
+    declared primary key held against a table the adapter does not seed is
+    caught before the trial is paid for rather than raising during grading.
+
+    Two answers:
+
+    - `SeededTablesLayer.unresolvable()` — you cannot say.  The default;
+      reported as `SkipKind.ADAPTER_DECLARED`.
+    - `SeededTablesLayer(tables=<name>: <records>)` — the tables and their
+      records the trial's starting state carries.  See
+      `NativeAdapter.grading_seeded_tables` for the native reading.
+
+17. `fingerprint() -> dict[str, Any] | None`
 
     Report what this adapter resolved for the run.  The engine writes the
     returned payload verbatim under `adapter_fingerprints[<adapter type>]` on

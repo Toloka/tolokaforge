@@ -1030,7 +1030,7 @@ class SharedStackRuntimeBackend:
                     "not both. env_manifest mode resolves endpoints from the "
                     "materialised compose stack at connect() time."
                 )
-        logger.info("Docker runtime initialized")
+        logger.info("Shared-stack runtime initialized")
 
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
         """Connect to Runner service with health check retry.
@@ -1052,7 +1052,7 @@ class SharedStackRuntimeBackend:
         if self._env_manifest is not None:
             self._materialise_manifest()
         self.runner_client.connect(timeout=timeout, retry_interval=retry_interval)
-        logger.info("Docker runtime connected")
+        logger.info("Shared-stack runtime connected")
 
     def close(self):
         """Close Runner connection and tear down the task-declared stack
@@ -1082,7 +1082,7 @@ class SharedStackRuntimeBackend:
             if self._temp_dir is not None:
                 shutil.rmtree(self._temp_dir, ignore_errors=True)
                 self._temp_dir = None
-        logger.info("Docker runtime closed")
+        logger.info("Shared-stack runtime closed")
 
     def _materialise_manifest(self) -> None:
         """Bring up the task-declared compose stack once for the run and

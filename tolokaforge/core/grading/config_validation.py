@@ -103,6 +103,28 @@ class ArgumentSchema(str, Enum):
     """No schema resolved — nothing about this tool's arguments is checkable."""
 
 
+class SkipKind(str, Enum):
+    """Why the gate could not check something, sorted by whose absence is speaking.
+
+    The two readings decide opposite things about enforcement: an environment that
+    cannot inspect a pack it does not host must not refuse it, but an adapter that
+    is loaded and answers ``unresolvable()`` for a layer is speaking on its own
+    account and can be held to it by an author who names the adapter in their CI.
+    """
+
+    STRUCTURAL = "structural"
+    """The environment cannot inspect this pack: the adapter is uninstalled, the
+    ``adapter_type`` is misspelled, or a schema this reading cannot resolve. Never
+    fatal — an environment without the adapter must not refuse a pack it cannot
+    see. This is what ``Skip`` reads by default, because every skip today is
+    produced when the environment could not inspect."""
+
+    ADAPTER_DECLARED = "adapter_declared"
+    """The adapter is loaded and its hook returned :meth:`unresolvable`, so the
+    silence is the adapter's own. Reported never-fatal by default; promotable to
+    fatal by a caller targeting the adapter."""
+
+
 @dataclass(frozen=True)
 class ToolInventory:
     """The tool set a task gives its actors, and what each tool's schema says."""
@@ -133,6 +155,14 @@ class ToolInventory:
     known: bool
     """``False`` only for :meth:`unresolvable`."""
 
+    skip_kind: SkipKind = SkipKind.STRUCTURAL
+    """The kind of skip a rule reading this inventory reports where it cannot check.
+
+    Read only by callers producing a :class:`Skip` because this layer answered
+    ``known=False``; unused on a resolved inventory, defaulted to
+    :attr:`SkipKind.STRUCTURAL` to keep the constructor uniform.
+    """
+
     def __post_init__(self) -> None:
         carried = sorted(self.declared | self.agent_declared | self.user_declared)
         if not self.known and (carried or self.parameters):
@@ -156,8 +186,14 @@ class ToolInventory:
             )
 
     @classmethod
-    def unresolvable(cls) -> ToolInventory:
-        """The inventory of an adapter that cannot report a tool set at all."""
+    def unresolvable(cls, kind: SkipKind = SkipKind.ADAPTER_DECLARED) -> ToolInventory:
+        """The inventory of an adapter that cannot report a tool set at all.
+
+        *kind* tags whose silence this is: the default,
+        :attr:`SkipKind.ADAPTER_DECLARED`, is for an adapter whose hook returned
+        this value; a caller reading an unresolvable inventory *because* it holds
+        no adapter passes :attr:`SkipKind.STRUCTURAL` instead.
+        """
         return cls(
             declared=frozenset(),
             agent_declared=frozenset(),
@@ -165,6 +201,7 @@ class ToolInventory:
             actor_split_known=False,
             parameters={},
             known=False,
+            skip_kind=kind,
         )
 
     def declared_by(self, executor: ToolExecutorIdentity) -> frozenset[str]:
@@ -297,6 +334,13 @@ class HashSourceLayer:
 
     known: bool = True
     supplied: AdapterHashSource | None = None
+    skip_kind: SkipKind = SkipKind.STRUCTURAL
+    """The kind of skip a rule reading this layer reports where it cannot check.
+
+    Read only by callers producing a :class:`Skip` because this layer answered
+    ``known=False``; unused on a resolved layer, defaulted to
+    :attr:`SkipKind.STRUCTURAL` to keep the constructor uniform.
+    """
 
     def __post_init__(self) -> None:
         if not self.known and self.supplied is not None:
@@ -308,9 +352,15 @@ class HashSourceLayer:
             )
 
     @classmethod
-    def unresolvable(cls) -> HashSourceLayer:
-        """The layer of a caller that cannot say what the grading adapter supplies."""
-        return cls(known=False)
+    def unresolvable(cls, kind: SkipKind = SkipKind.ADAPTER_DECLARED) -> HashSourceLayer:
+        """The layer of a caller that cannot say what the grading adapter supplies.
+
+        *kind* tags whose silence this is: the default,
+        :attr:`SkipKind.ADAPTER_DECLARED`, is for an adapter whose hook returned
+        this value; a caller reading an unresolvable layer *because* it holds no
+        adapter passes :attr:`SkipKind.STRUCTURAL` instead.
+        """
+        return cls(known=False, skip_kind=kind)
 
 
 @dataclass(frozen=True)
@@ -329,6 +379,13 @@ class ReplayWorld:
     initial_state: InitialStateSource
     mcp_server: bool
     known: bool = True
+    skip_kind: SkipKind = SkipKind.STRUCTURAL
+    """The kind of skip a rule reading this world reports where it cannot check.
+
+    Read only by callers producing a :class:`Skip` because this world answered
+    ``known=False``; unused on a resolved world, defaulted to
+    :attr:`SkipKind.STRUCTURAL` to keep the constructor uniform.
+    """
 
     def __post_init__(self) -> None:
         if not self.known and (
@@ -342,9 +399,20 @@ class ReplayWorld:
             )
 
     @classmethod
-    def unresolvable(cls) -> ReplayWorld:
-        """The world of a caller that cannot say what a task gives a golden replay."""
-        return cls(initial_state=InitialStateSource.ABSENT, mcp_server=False, known=False)
+    def unresolvable(cls, kind: SkipKind = SkipKind.ADAPTER_DECLARED) -> ReplayWorld:
+        """The world of a caller that cannot say what a task gives a golden replay.
+
+        *kind* tags whose silence this is: the default,
+        :attr:`SkipKind.ADAPTER_DECLARED`, is for an adapter whose hook returned
+        this value; a caller reading an unresolvable world *because* it holds no
+        adapter passes :attr:`SkipKind.STRUCTURAL` instead.
+        """
+        return cls(
+            initial_state=InitialStateSource.ABSENT,
+            mcp_server=False,
+            known=False,
+            skip_kind=kind,
+        )
 
 
 @dataclass(frozen=True)
@@ -359,6 +427,13 @@ class SeededTablesLayer:
 
     tables: Mapping[str, list[dict[str, Any]]] | None
     known: bool = True
+    skip_kind: SkipKind = SkipKind.STRUCTURAL
+    """The kind of skip a rule reading this layer reports where it cannot check.
+
+    Read only by callers producing a :class:`Skip` because this layer answered
+    ``known=False``; unused on a resolved layer, defaulted to
+    :attr:`SkipKind.STRUCTURAL` to keep the constructor uniform.
+    """
 
     def __post_init__(self) -> None:
         if self.known and self.tables is None:
@@ -375,9 +450,15 @@ class SeededTablesLayer:
             )
 
     @classmethod
-    def unresolvable(cls) -> SeededTablesLayer:
-        """The layer of a caller that cannot read what a task seeds."""
-        return cls(tables=None, known=False)
+    def unresolvable(cls, kind: SkipKind = SkipKind.ADAPTER_DECLARED) -> SeededTablesLayer:
+        """The layer of a caller that cannot read what a task seeds.
+
+        *kind* tags whose silence this is: the default,
+        :attr:`SkipKind.ADAPTER_DECLARED`, is for an adapter whose hook returned
+        this value; a caller reading an unresolvable layer *because* it holds no
+        adapter passes :attr:`SkipKind.STRUCTURAL` instead.
+        """
+        return cls(tables=None, known=False, skip_kind=kind)
 
 
 @dataclass(frozen=True)
@@ -390,20 +471,35 @@ class Finding:
 
 @dataclass(frozen=True)
 class Skip:
-    """One thing the gate could not check, and why it could not."""
+    """One thing the gate could not check, and why it could not.
+
+    *kind* tags whose silence the skip is: :attr:`SkipKind.STRUCTURAL` for the
+    environment that could not inspect (an uninstalled adapter, a resolved
+    inventory whose schema does not type an argument), :attr:`SkipKind.ADAPTER_DECLARED`
+    for an adapter that is loaded and answered :meth:`unresolvable`. The default
+    matches every producer today, which reports on the environment's own account;
+    a rule reading a layer that carries a kind propagates ``layer.skip_kind``
+    verbatim.
+    """
 
     where: str
     reason: str
+    kind: SkipKind = SkipKind.STRUCTURAL
 
 
 @dataclass(frozen=True)
 class AuthoringReport:
     """What checking one grading block against one tool inventory found.
 
-    ``unchecked`` is a channel, not a third severity: nothing reads it to decide
-    whether to raise, so a tool set the adapter cannot report can never fail a
-    pack. It is still reported — the CLI prints it beside the task — because a
-    gate that checked nothing must not read as a clean bill of health.
+    ``unchecked`` is a channel, not a third severity — the gate itself never
+    raises on a ``Skip``. Each ``Skip`` carries a :class:`SkipKind`
+    (``STRUCTURAL`` when the environment couldn't inspect the pack, e.g. the
+    declared adapter is not installed; ``ADAPTER_DECLARED`` when the adapter's
+    hook returned ``unresolvable()``). A caller may read ``Skip.kind`` after
+    :meth:`fatal` returns to promote ``ADAPTER_DECLARED`` rows to fatal —
+    ``tolokaforge validate --strict-authoring`` does exactly that. ``STRUCTURAL``
+    rows stay never-fatal so an environment missing an adapter cannot fail a
+    pack the environment cannot judge. See ADR-0042.
     """
 
     errors: tuple[Finding, ...] = ()
@@ -413,7 +509,9 @@ class AuthoringReport:
     """Fatal only where the caller enforces them."""
 
     unchecked: tuple[Skip, ...] = ()
-    """Never fatal anywhere."""
+    """Never fatal in the gate; promotable to fatal by a caller reading
+    :attr:`Skip.kind` (``ADAPTER_DECLARED`` promotes under
+    ``--strict-authoring``; ``STRUCTURAL`` stays never-fatal). See ADR-0042."""
 
     def fatal(self, fail_on: GradingFindingSeverity) -> tuple[Finding, ...]:
         """The findings a caller enforcing down to *fail_on* must refuse."""
@@ -822,9 +920,14 @@ _NO_OPERATOR_AT_ALL = "no comparison operator"
 _JSONPATH_COMPARISONS: tuple[str, ...] = ("equals", "equals_ci", "contains", "contains_ci")
 
 # Bound once so the signature's default is the value, not a call in the annotation.
-_UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable()
-_UNRESOLVED_HASH_SOURCE_LAYER = HashSourceLayer.unresolvable()
-_UNRESOLVED_SEEDED_TABLES = SeededTablesLayer.unresolvable()
+# Function-signature defaults: bound explicitly to STRUCTURAL because reaching
+# a default means the caller could not supply an answer (environment couldn't
+# inspect). The layer factories default to ADAPTER_DECLARED because their only
+# hook-dispatch caller is speaking for an adapter that returned unresolvable.
+# See ADR-0042.
+_UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable(kind=SkipKind.STRUCTURAL)
+_UNRESOLVED_HASH_SOURCE_LAYER = HashSourceLayer.unresolvable(kind=SkipKind.STRUCTURAL)
+_UNRESOLVED_SEEDED_TABLES = SeededTablesLayer.unresolvable(kind=SkipKind.STRUCTURAL)
 
 
 def inspect_grading_authoring(
@@ -903,7 +1006,11 @@ def inspect_grading_authoring(
             _check_bound_comparisons(binders, inventory),
         ]
     else:
-        reports.append(AuthoringReport(unchecked=(Skip("grading", _UNRESOLVABLE_REASON),)))
+        reports.append(
+            AuthoringReport(
+                unchecked=(Skip("grading", _UNRESOLVABLE_REASON, kind=inventory.skip_kind),)
+            )
+        )
     if effective_combine is not None:
         reports += [
             _check_requested_components_are_weighted(grading, effective_combine),
@@ -1290,6 +1397,12 @@ def _check_regex_compiles(
         if predicate_site.predicate.regex is not None
     ]
     authored += [
+        (f"{predicate_site.where}.not_regex", predicate_site.predicate.not_regex)
+        for site in sites
+        for predicate_site in _predicate_sites(site)
+        if predicate_site.predicate.not_regex is not None
+    ]
+    authored += [
         (f"{site.where}.values.{name}.pattern", value.pattern)
         for site in binders
         for name, value in site.binding.values.items()
@@ -1351,7 +1464,13 @@ def _check_hash_source_declared(
         return AuthoringReport()
     if not hash_sources.known:
         return AuthoringReport(
-            unchecked=(Skip(f"state_checks.hash.{declared}", _UNRESOLVED_HASH_SOURCE_REASON),)
+            unchecked=(
+                Skip(
+                    f"state_checks.hash.{declared}",
+                    _UNRESOLVED_HASH_SOURCE_REASON,
+                    kind=hash_sources.skip_kind,
+                ),
+            )
         )
     return AuthoringReport(
         errors=(
@@ -1377,7 +1496,13 @@ def _an_enabled_block_declaring_no_source(hash_sources: HashSourceLayer) -> Auth
     """
     if not hash_sources.known:
         return AuthoringReport(
-            unchecked=(Skip("state_checks.hash.enabled", _UNRESOLVED_HASH_SOURCE_REASON),)
+            unchecked=(
+                Skip(
+                    "state_checks.hash.enabled",
+                    _UNRESOLVED_HASH_SOURCE_REASON,
+                    kind=hash_sources.skip_kind,
+                ),
+            )
         )
     supplied = hash_sources.supplied
     if supplied is None:
@@ -1588,7 +1713,13 @@ def _check_id_fields_against_seeded_tables(
         return AuthoringReport()
     if not seeded_tables.known:
         return AuthoringReport(
-            unchecked=(Skip(_ID_FIELDS_ADDRESS, _UNRESOLVED_SEEDED_TABLES_REASON),)
+            unchecked=(
+                Skip(
+                    _ID_FIELDS_ADDRESS,
+                    _UNRESOLVED_SEEDED_TABLES_REASON,
+                    kind=seeded_tables.skip_kind,
+                ),
+            )
         )
     # __post_init__ makes a known layer with no view unconstructable; the assert
     # narrows ``tables`` for static analysis.
@@ -1657,7 +1788,13 @@ def _check_state_reads_a_database_the_task_seeds(
         return AuthoringReport()
     if not seeded_tables.known:
         return AuthoringReport(
-            unchecked=(Skip("state_checks", _UNRESOLVED_SEEDED_TABLES_FOR_A_STATE_READ),)
+            unchecked=(
+                Skip(
+                    "state_checks",
+                    _UNRESOLVED_SEEDED_TABLES_FOR_A_STATE_READ,
+                    kind=seeded_tables.skip_kind,
+                ),
+            )
         )
     if seeded_tables.tables:
         return AuthoringReport()
@@ -1777,7 +1914,13 @@ def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -
         return AuthoringReport()
     if not world.known:
         return AuthoringReport(
-            unchecked=(Skip(_GOLDEN_ACTIONS_ADDRESS, _UNRESOLVED_REPLAY_WORLD_REASON),)
+            unchecked=(
+                Skip(
+                    _GOLDEN_ACTIONS_ADDRESS,
+                    _UNRESOLVED_REPLAY_WORLD_REASON,
+                    kind=world.skip_kind,
+                ),
+            )
         )
     return AuthoringReport(
         errors=tuple(

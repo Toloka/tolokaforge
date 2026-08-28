@@ -235,6 +235,7 @@ class OutputWriter:
             "termination_reason": (
                 trajectory.termination_reason.value if trajectory.termination_reason else None
             ),
+            "provision_stage": trajectory.provision_stage,
             "grading_error": trajectory.grading_error,
             "first_user_message_source": (
                 trajectory.first_user_message_source.value

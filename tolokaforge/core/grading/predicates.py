@@ -12,10 +12,12 @@ satisfy the comparison at all. An authoring gate holding two schemas can then sa
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
-__all__ = ["JSON_TYPES", "contains", "ever_satisfiable", "json_type_of"]
+__all__ = ["JSON_TYPES", "contains", "date_comparison_key", "ever_satisfiable", "json_type_of"]
 
 JSON_TYPES: frozenset[str] = frozenset(
     {"string", "integer", "number", "boolean", "array", "object"}
@@ -107,6 +109,52 @@ def ever_satisfiable(operator: str, held: str | None, bound: str | None) -> bool
     if held not in satisfiable_bounds or bound not in JSON_TYPES:
         return True
     return bound in satisfiable_bounds[held]
+
+
+# One ISO-8601 shape gate before ``datetime.fromisoformat``. Python 3.10's
+# ``fromisoformat`` grammar is a subset of 3.11+'s (no ``Z`` suffix; fractional
+# seconds must be exactly 3 or 6 digits), and one regex read here is what keeps
+# the same config parsing identically across every interpreter this package
+# supports.
+_ISO_8601_SHAPE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}" r"(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?$"
+)
+
+
+def date_comparison_key(value: Any) -> datetime | None:
+    """The one normalized datetime every date comparison reads a value through.
+
+    A date-only string reads as **midnight UTC** of that day, so
+    ``2026-03-01`` and ``2026-03-01T00:00:00Z`` compare equal. A datetime
+    carrying an offset (``Z`` included) converts to UTC. A datetime carrying
+    **no** offset is read **as UTC** — never the grader host's clock, so one
+    trajectory does not grade differently on two graders.
+
+    JSON carries no date type, so a non-string value (a number, a boolean,
+    ``None``) reads as ``None`` from this helper — not-a-date, not-an-error,
+    which every caller must treat as unknown rather than as a mismatch.
+
+    A string that does not match the ISO-8601 shape gate — ``next week``,
+    ``March 2026`` — reads as ``None`` too, for the same reason. The gate
+    exists because ``datetime.fromisoformat``'s accepted grammar widened
+    across Python versions.
+    """
+    if not isinstance(value, str):
+        return None
+    if _ISO_8601_SHAPE.match(value) is None:
+        return None
+    literal = value[:-1] + "+00:00" if value.endswith("Z") else value
+    fraction = re.search(r"\.(\d+)", literal)
+    if fraction is not None and len(fraction.group(1)) not in (3, 6):
+        padded = fraction.group(1).ljust(6, "0")[:6]
+        literal = literal[: fraction.start(1)] + padded + literal[fraction.end(1) :]
+    try:
+        parsed = datetime.fromisoformat(literal)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def contains(haystack: Any, needle: Any, ci: bool = False) -> bool:

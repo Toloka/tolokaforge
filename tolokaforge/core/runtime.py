@@ -22,8 +22,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from tolokaforge.core.models.trajectory import ProvisionStage
 from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialSpec
 
@@ -86,9 +87,6 @@ class EnvHandle(Protocol):
 # ---------------------------------------------------------------------------
 # ProvisionError — typed failure for the provisioning lifecycle
 # ---------------------------------------------------------------------------
-
-
-ProvisionStage = Literal["provision", "await_ready", "reset_recipe", "register_trial"]
 
 
 class ProvisionError(Exception):

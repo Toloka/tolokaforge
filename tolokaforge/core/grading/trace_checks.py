@@ -305,7 +305,7 @@ def _resolve(
     unreadable_when_none = _unreadable_when_none(outcome)
     readings = _predicate_readings(matcher, event, outcome)
     records = [
-        _comparison_records(field, value, predicate, bindings, event)
+        _comparison_records(field, None if value is _MISSING else value, predicate, bindings, event)
         for field, value, predicate in readings
     ]
     unreadable = {
@@ -438,13 +438,32 @@ def _results_by_call_id(timeline: TrialTimeline) -> dict[str, TraceEvent]:
     }
 
 
+# What an argument path resolves to where the key was never sent — distinct from
+# JSON ``null``, which resolves to ``None``. Only ``omitted`` reads the difference
+# between the two; every other operator receives ``None`` for both. The sentinel
+# never leaves this module: ``_operator_holds`` reads it directly for ``is_null`` /
+# ``omitted`` and collapses it to ``None`` for every other operator, ``_resolve``
+# collapses it at the tuple boundary before ``_comparison_records`` — the one
+# transit path that would otherwise reach ``json_type_of`` — and
+# ``_binder_reading`` collapses it at the extraction boundary.
+_MISSING: Any = object()
+
+
 def _argument_at(arguments: Mapping[str, Any] | None, path: str) -> Any:
-    """The value a dotted argument path addresses, or ``None`` where it does not resolve."""
+    """The value a dotted argument path addresses.
+
+    Returns the :data:`_MISSING` sentinel where the path does not resolve — an
+    ancestor that is not a mapping, or a segment absent from the mapping that
+    carries it. Every operator but ``omitted`` reads the sentinel as ``None`` at
+    :func:`_operator_holds`'s dispatch gate, so the key-absent path becomes the
+    same reading a JSON ``null`` already had. ``omitted`` is what makes the two
+    tellable apart, and reads the sentinel directly.
+    """
     value: Any = arguments
     for segment in path.split("."):
-        if not isinstance(value, Mapping):
-            return None
-        value = value.get(segment)
+        if not isinstance(value, Mapping) or segment not in value:
+            return _MISSING
+        value = value[segment]
     return value
 
 
@@ -463,15 +482,31 @@ def _predicate_holds(predicate: ValuePredicate, value: Any, bindings: Mapping[st
 def _operator_holds(name: str, value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
     """One operator over one value.
 
-    Only ``exists`` reads a ``None``. Every other operator is false there rather
-    than answering about a value the trial does not have — ``not_equals`` against an
-    absent argument would otherwise hold, which is the vacuous truth the timeline
-    contract forbids. The gate is a dispatch invariant declared once here rather
-    than repeated inside every registered operator.
+    ``is_null`` reads whether the field held an explicit JSON ``null``, and
+    ``omitted`` whether the key was never sent — the pair whose meaning turns on
+    the argument's state before the reading. Both are special-cased ahead of the
+    entry-point dispatch: the :data:`_MISSING` sentinel that separates the two
+    is private to this module, so the seam cannot answer for them; their
+    registered callables are stubs kept only to keep the frozenset and the
+    entry-point registry in lockstep. Every other operator reads a ``_MISSING``
+    as ``None`` — so a JSON ``null`` and an absent key collapse to one reading
+    at the seam and the sentinel never reaches a registered callable.
 
-    ``name`` resolves through the ``tolokaforge.trace_check_operators`` entry-point
-    group — the only dispatch table this evaluator reads.
+    Only ``exists`` reads a ``None``. Every other operator is false there rather
+    than answering about a value the trial does not have — ``not_equals`` against
+    an absent argument would otherwise hold, which is the vacuous truth the
+    timeline contract forbids. The gate is a dispatch invariant declared once
+    here rather than repeated inside every registered operator.
+
+    ``name`` resolves through the ``tolokaforge.trace_check_operators``
+    entry-point group — the only dispatch table this evaluator reads.
     """
+    if name == "is_null":
+        return (value is None) is expected
+    if name == "omitted":
+        return (value is _MISSING) is expected
+    if value is _MISSING:
+        value = None
     if value is None and name != "exists":
         return False
     from tolokaforge.core.plugin_registry import load_trace_check_operator
@@ -486,7 +521,8 @@ def _binding_operator_names() -> list[str]:
     Materialised from the entry-point registry, filtered by the ``_binding``
     suffix — the sole marker for binding operators (ADR-0040). The discovery
     scan is cached in ``plugin_registry``, so a per-call filter is O(N) over
-    the registry size (17 shipped + downstream) and does not fire the loader.
+    the registry size (shipped defaults plus downstream) and does not fire
+    the loader.
     """
     from tolokaforge.core.plugin_registry import (
         TRACE_CHECK_OPERATORS_GROUP,
@@ -1104,12 +1140,19 @@ def _extracted(bound: BoundValue, event: TraceEvent, outcome: TraceEvent | None)
 
 
 def _binder_reading(bound: BoundValue, event: TraceEvent, outcome: TraceEvent | None) -> Any:
-    """The raw value the extraction addresses, before any capture narrows it."""
+    """The raw value the extraction addresses, before any capture narrows it.
+
+    An extraction reads a JSON ``null`` and an absent key as one condition — the
+    call that omitted the argument silences a report a sibling call earned, so
+    the :data:`_MISSING` sentinel :func:`_argument_at` returns is folded into
+    ``None`` at this boundary and never reaches a bound value.
+    """
     head = bound.head_segment()
     if head != "args":
         return _BINDER_FIELDS[head](event, outcome)
     _, _, path = bound.field.partition(".")
-    return _argument_at(event.arguments, path) if path else event.arguments
+    value = _argument_at(event.arguments, path) if path else event.arguments
+    return None if value is _MISSING else value
 
 
 # ``status`` and ``executor`` are on no row: a binding over a closed vocabulary of a

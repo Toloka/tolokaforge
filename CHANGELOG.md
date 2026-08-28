@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Feat
+
+- **cli**: new opt-in `--fail-on-zero-coverage` and `--fail-on-zero-judge-graded` flags on `tolokaforge run` and `tolokaforge worker`. Both default False (preserves the shipped "infrastructure aborts do not fail the run" contract). New process exit code `2` when a flag is set and its condition fires. `run_state.json` grows two derived booleans (`zero_coverage`, `zero_judge_graded`) so CI can gate without opening `aggregate.json`. See [ADR-0041](docs/adr/0041-zero-coverage-exit-signal.md). Closes #1063. (#1301)
+- **trace_checks**: eight new leaf operators for `ValuePredicate` — `not_contains`, `not_regex`, `is_null`, `omitted`, `date_gt`, `date_gte`, `date_lt`, `date_lte`. Nullness pair reads a module-private `_MISSING` sentinel that distinguishes JSON `null` from key-absence; `TraceMatcher` refuses nullness probes on `status` / `executor` / `result` at load. Date operators share one `date_comparison_key` helper (midnight-UTC for date-only, naive datetime read as UTC, Python-3.10-safe Z-suffix). (#1293)
+- **adapters**: three new `BaseAdapter` classmethods — `grading_tool_inventory`, `grading_replay_world`, `grading_seeded_tables` — all defaulting to `unresolvable()`, joining the existing `grading_combine_layer` / `grading_hash_source_layer` family. `Skip` grows a `SkipKind` field (`STRUCTURAL` vs `ADAPTER_DECLARED`); `AuthoringReport.unchecked` wire shape unchanged. Closes the adapter-blind authoring gate for the three hard-gated NATIVE layers. See [ADR-0042](docs/adr/0042-adapter-blind-authoring-gate.md). (#1302)
+- **validate**: new `tolokaforge validate --strict-authoring` flag promotes adapter-declared `unresolvable()` skips to fatal for authors targeting a specific adapter; `SkipKind.STRUCTURAL` (uninstalled or misspelled adapter) stays never-fatal, preserving the shipped default. See [ADR-0042](docs/adr/0042-adapter-blind-authoring-gate.md). (#1302)
+- **runtime**: `ProvisionError.stage` now persists on `metrics.yaml` (per-trial) and `failure_attribution.json` (aggregate), so a provision failure can be attributed to a stage without re-reading the trial log. (#1318)
+
+### Fix
+
+- **orchestrator**: `run_state.json.config_path` now records the config file path instead of the output directory. (#1317)
+- **runtime**: shared-stack runtime log lines renamed off "Docker" (substrate-agnostic); duplicated `close` line removed on the shared-stack path. (#1296)
+- **db-service**: `json_db_service` now documents its container-only deployment and raises a friendly `ImportError` naming the `tolokaforge[runner]` extra when `fastapi` is missing outside the container. (#1297)
+- **config**: `TypeSenseConfig(mode="remote", port="auto")` is refused at parse time rather than at adapter-cast; the `"auto"` sentinel is only meaningful for `mode="local"`. (#1298)
+- **config validate**: no longer reports `"does not appear to support function calling"` for models absent from litellm's map (e.g. `google/gemini-3.6-flash` and OpenRouter unmapped variants); an INFO now nudges the operator to declare the overlay entry if they intend to use tools. (#1300)
+- **native-adapter**: emits an actionable error when a task declares a non-builtin tool without a source configuration, pointing at `harness_adapter: frozen_mcp_core` when appropriate. (#1322)
+
 ## v0.21.3 (2026-08-28)
 
 ### Feat

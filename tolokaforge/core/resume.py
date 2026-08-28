@@ -97,6 +97,16 @@ class RunState(BaseModel):
 
     trials: dict[str, TrialState]  # key: "{task_id}:{trial_index}"
 
+    zero_coverage: bool = False
+    """Set at completion: ``measured_trials == 0`` on a run with
+    ``total_attempts > 0``. See ``docs/adr/0041-zero-coverage-exit-signal.md``.
+    Defaulted so state files written by earlier code load unchanged."""
+
+    zero_judge_graded: bool = False
+    """Set at completion: every produced grade has ``judge_status == ERRORED``.
+    See ``docs/adr/0041-zero-coverage-exit-signal.md``. Defaulted so state files
+    written by earlier code load unchanged."""
+
     def get_pending_trials(self) -> list[TrialState]:
         """Get list of trials not yet completed"""
         return [trial for trial in self.trials.values() if trial.status in ("pending", "failed")]
@@ -338,11 +348,18 @@ class RunStateManager:
             is_complete=to_retry == 0,
         )
 
-    def mark_run_completed(self):
-        """Mark entire run as completed"""
+    def mark_run_completed(self, *, zero_coverage: bool, zero_judge_graded: bool) -> None:
+        """Stamp ``status: "completed"`` and the two completion gates onto the state file.
+
+        The two booleans are keyword-only so the completion gates cannot be
+        swapped at the call site. See
+        ``docs/adr/0041-zero-coverage-exit-signal.md``.
+        """
         run_state = self.load_state()
         if run_state:
             run_state.status = "completed"
+            run_state.zero_coverage = zero_coverage
+            run_state.zero_judge_graded = zero_judge_graded
             self.save_state(run_state)
 
     def mark_run_paused(self):
