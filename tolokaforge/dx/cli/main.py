@@ -1904,7 +1904,9 @@ def validate(tasks: str):
                     inventory=tool_inventory_under_adapter(
                         task_config, task_dir, task_config.adapter_type
                     ),
-                    replay_world=replay_world_under_adapter(task_config, task_config.adapter_type),
+                    replay_world=replay_world_under_adapter(
+                        task_config, task_dir, task_config.adapter_type
+                    ),
                     hash_sources=hash_source_layer_under_adapter(
                         task_config, task_dir, task_config.adapter_type
                     ),

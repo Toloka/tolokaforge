@@ -109,8 +109,8 @@ Each adapter must subclass `BaseAdapter` and implement:
       `tolokaforge validate --strict-authoring`.
     - A concrete `ToolInventory` — the names your runtime resolves, plus
       whichever JSON-schema parameters the pack's own fixture or registry
-      resolves for each.  See `build_tool_inventory()` in `_task_loader.py` for
-      the native reading — the shape any adapter's return here must satisfy.
+      resolves for each.  See `NativeAdapter.grading_tool_inventory` for the
+      native reading — the shape any adapter's return here must satisfy.
 
 15. `grading_replay_world(task: TaskConfig, task_dir: Path) -> ReplayWorld`
     — a **classmethod**
@@ -143,7 +143,7 @@ Each adapter must subclass `BaseAdapter` and implement:
       reported as `SkipKind.ADAPTER_DECLARED`.
     - `SeededTablesLayer(tables=<name>: <records>)` — the tables and their
       records the trial's starting state carries.  See
-      `seeded_tables_from_task()` in `_task_loader.py` for the native reading.
+      `NativeAdapter.grading_seeded_tables` for the native reading.
 
 17. `fingerprint() -> dict[str, Any] | None`
 

@@ -3,14 +3,14 @@
 Three helpers in :mod:`tolokaforge.adapters._task_loader` report the pre-run
 authoring facts a grading block is held against:
 :func:`tool_inventory_under_adapter`, :func:`replay_world_under_adapter`, and
-:func:`seeded_tables_under_adapter`. All three answer ``unresolvable()`` for
-every ``adapter_type`` that is not ``native``, regardless of what the adapter
-would say — the helpers do not consult the adapter. Two adapters cover this:
-one that implements nothing so the fingerprint is symmetric across the three
-helpers, and one whose ``grading_tool_inventory`` classmethod answers a real
-inventory when asked directly, so the second half of the story — the helper
-discards the adapter's answer, not the adapter's silence — is not left to the
-reader's imagination.
+:func:`seeded_tables_under_adapter`. Each dispatches through the adapter's
+grading hook: a registered adapter answers for itself, and an ``adapter_type``
+this environment has no class for answers :meth:`unresolvable` with
+:attr:`SkipKind.STRUCTURAL`. Two adapters cover this: one that implements
+nothing so the fingerprint is symmetric across the three helpers and its
+inherited :meth:`BaseAdapter` defaults answer :attr:`SkipKind.ADAPTER_DECLARED`,
+and one whose ``grading_tool_inventory`` classmethod answers a concrete
+inventory so the seam through the adapter is exercised end-to-end.
 
 The registry is isolated with the same ``a_pristine_registry`` fixture
 :mod:`tests.unit.adapters.test_hash_source_hook` uses, for the same reason: a
@@ -32,9 +32,11 @@ from tolokaforge.adapters._task_loader import (
     tool_inventory_under_adapter,
 )
 from tolokaforge.adapters.base import BaseAdapter
+from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.config_validation import (
     ReplayWorld,
     SeededTablesLayer,
+    SkipKind,
     ToolInventory,
 )
 from tolokaforge.core.models import TaskConfig
@@ -103,34 +105,35 @@ def a_pristine_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(adapters_package, "_DISCOVERED", False)
 
 
-def test_the_tool_inventory_helper_answers_unresolvable_for_a_non_native_adapter_whose_hook_would_say_otherwise(
+def test_the_tool_inventory_helper_dispatches_through_the_hook_for_a_registered_non_native_adapter(
     a_task: tuple[TaskConfig, Path],
     a_pristine_registry: None,
 ) -> None:
-    """The helper does not consult the adapter — a registered override is ignored.
+    """The helper reads the adapter's own answer, not a native reading of the task.
 
-    The registered adapter answers a concrete :class:`ToolInventory` when asked
-    directly for its tool set, and the helper still returns
-    :meth:`ToolInventory.unresolvable`. Reading the helper's answer as the
-    adapter's answer for a non-native pack is what leaves every tool-aware rule
-    silently unchecked.
+    A registered adapter whose ``grading_tool_inventory`` classmethod answers a
+    concrete :class:`ToolInventory` gets that inventory back through the helper,
+    so every tool-aware rule the gate holds is held against the set the adapter
+    presents at runtime rather than the ``tools.agent`` native reading.
     """
     task, task_dir = a_task
     register_adapter("an_adapter_that_owns_its_tool_inventory", _AnAdapterThatOwnsItsToolInventory)
 
     layer = tool_inventory_under_adapter(task, task_dir, "an_adapter_that_owns_its_tool_inventory")
 
-    assert layer == ToolInventory.unresolvable()
+    assert layer != ToolInventory.unresolvable()
+    assert layer == _AN_ADAPTER_OWNED_INVENTORY
+    assert layer.known is True
 
 
 def test_the_mechanism_lock_adapter_answers_its_concrete_inventory_when_asked_directly(
     a_task: tuple[TaskConfig, Path],
 ) -> None:
-    """The adapter's classmethod does answer — the helper is what discards that answer.
+    """The adapter's classmethod answers a real inventory, off the class.
 
-    Names the second half of the reproducer explicitly: the non-unresolvable
-    reading is available off the class, so the helper's ``unresolvable()``
-    result is not the adapter's silence, it is the helper's blindness.
+    Locks the shape the helper dispatches into: the classmethod returns
+    :data:`_AN_ADAPTER_OWNED_INVENTORY` off the class alone, so the seam the
+    helper reaches through the adapter carries the same value the class does.
     """
     task, task_dir = a_task
 
@@ -140,39 +143,85 @@ def test_the_mechanism_lock_adapter_answers_its_concrete_inventory_when_asked_di
     assert layer.known is True
 
 
-def test_the_replay_world_helper_answers_unresolvable_for_a_non_native_adapter(
+def test_the_tool_inventory_helper_answers_structural_unresolvable_for_an_unregistered_adapter(
     a_task: tuple[TaskConfig, Path],
     a_pristine_registry: None,
 ) -> None:
-    """The world the golden actions would replay against is not read from the adapter.
+    """A name the registry does not know answers :attr:`SkipKind.STRUCTURAL`.
 
-    An adapter that implements nothing gives the helper the same answer as one
-    that does — the helper never asks either. The rule reading the world skips
-    on the world's own ``unresolvable()`` flag, so a task whose ``json_db`` and
-    ``mcp_server`` do resolve is not checked against them.
+    The helper's not-installed arm: ``adapter_class`` returns ``None`` for a
+    name no discovered entry-point and no manual registration knows, and the
+    helper answers :meth:`ToolInventory.unresolvable` with
+    :attr:`SkipKind.STRUCTURAL` — the never-fatal answer for a pack whose
+    adapter nothing here can interrogate.
     """
-    task, _ = a_task
+    task, task_dir = a_task
+
+    layer = tool_inventory_under_adapter(task, task_dir, "an_adapter_no_one_registered")
+
+    assert layer == ToolInventory.unresolvable(kind=SkipKind.STRUCTURAL)
+    assert layer.skip_kind is SkipKind.STRUCTURAL
+
+
+def test_the_replay_world_helper_dispatches_through_the_hook_for_a_registered_non_native_adapter(
+    a_task: tuple[TaskConfig, Path],
+    a_pristine_registry: None,
+) -> None:
+    """The helper reads the adapter's own answer for the world a replay executes in.
+
+    A registered adapter inheriting :meth:`BaseAdapter.grading_replay_world`
+    answers :meth:`ReplayWorld.unresolvable` with :attr:`SkipKind.ADAPTER_DECLARED`
+    off its default — the honest "I cannot say" every third-party adapter starts
+    with. The kind separates this from the STRUCTURAL arm the not-installed case
+    takes.
+    """
+    task, task_dir = a_task
     register_adapter("an_adapter_that_implements_nothing", _AnAdapterThatImplementsNothing)
 
-    world = replay_world_under_adapter(task, "an_adapter_that_implements_nothing")
+    world = replay_world_under_adapter(task, task_dir, "an_adapter_that_implements_nothing")
 
-    assert world == ReplayWorld.unresolvable()
+    assert world == ReplayWorld.unresolvable(kind=SkipKind.ADAPTER_DECLARED)
+    assert world.skip_kind is SkipKind.ADAPTER_DECLARED
 
 
-def test_the_seeded_tables_helper_answers_unresolvable_for_a_non_native_adapter(
+def test_the_seeded_tables_helper_dispatches_through_the_hook_for_a_registered_non_native_adapter(
     a_task: tuple[TaskConfig, Path],
     a_pristine_registry: None,
 ) -> None:
-    """The tables the ``id_fields`` declaration keys are not read from the adapter.
+    """The helper reads the adapter's own answer for the tables ``id_fields`` keys.
 
-    The helper returns :meth:`SeededTablesLayer.unresolvable` for the same
-    reason its neighbours do: the ``adapter_type != native`` branch short-circuits
-    before any adapter is consulted, so a declaration held against tables the
-    task actually seeds reads as unchecked.
+    A registered adapter inheriting :meth:`BaseAdapter.grading_seeded_tables`
+    answers :meth:`SeededTablesLayer.unresolvable` with :attr:`SkipKind.ADAPTER_DECLARED`
+    off its default; the STRUCTURAL arm remains reachable only for a name the
+    registry does not know.
     """
     task, task_dir = a_task
     register_adapter("an_adapter_that_implements_nothing", _AnAdapterThatImplementsNothing)
 
     tables = seeded_tables_under_adapter(task, task_dir, "an_adapter_that_implements_nothing")
 
-    assert tables == SeededTablesLayer.unresolvable()
+    assert tables == SeededTablesLayer.unresolvable(kind=SkipKind.ADAPTER_DECLARED)
+    assert tables.skip_kind is SkipKind.ADAPTER_DECLARED
+
+
+def test_the_three_helpers_route_native_through_native_adapters_own_hooks(
+    a_task: tuple[TaskConfig, Path],
+) -> None:
+    """The native path resolves through the same seam every other adapter uses.
+
+    Each helper's answer for ``adapter_type == "native"`` is exactly what
+    :class:`NativeAdapter`'s hook classmethod returns. The equality lock proves
+    the migration did not regress the native path — the helper is a dispatch,
+    not a duplicate of the hook.
+    """
+    task, task_dir = a_task
+
+    assert tool_inventory_under_adapter(
+        task, task_dir, "native"
+    ) == NativeAdapter.grading_tool_inventory(task, task_dir)
+    assert replay_world_under_adapter(
+        task, task_dir, "native"
+    ) == NativeAdapter.grading_replay_world(task, task_dir)
+    assert seeded_tables_under_adapter(
+        task, task_dir, "native"
+    ) == NativeAdapter.grading_seeded_tables(task, task_dir)

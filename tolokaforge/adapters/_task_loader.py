@@ -72,11 +72,11 @@ from tolokaforge.core.grading.config_validation import (
     ReplayWorld,
     SeededTablesLayer,
     Skip,
+    SkipKind,
     ToolInventory,
     authored_hash_block,
     inspect_grading_authoring,
 )
-from tolokaforge.core.grading.golden_replay import classify_initial_state
 from tolokaforge.core.grading.state_composition import (
     RETIRED_HASH_KEYS,
     StateHashConfig,
@@ -817,40 +817,43 @@ def tool_inventory_under_adapter(
 ) -> ToolInventory:
     """The inventory to check *task*'s grading against, under *adapter_type*.
 
-    ``tools.agent`` is the native reading of a task's tool set. For a task an
-    external adapter owns it is not necessarily the set the run builds, so
-    :meth:`ToolInventory.unresolvable` is the honest answer — checking names
-    against a reading the adapter does not use would reject packs that run fine.
+    The adapter answers for itself, through
+    :meth:`~tolokaforge.adapters.base.BaseAdapter.grading_tool_inventory`: native
+    reports the reading of ``tools.agent`` and ``tools.user`` :func:`build_tool_inventory`
+    builds, an adapter presenting a set from its own registry reports that set, and
+    the gate holds each tool-aware rule against the inventory the adapter names.
+    An adapter type this environment has no class for — not installed, or misspelled —
+    answers :meth:`ToolInventory.unresolvable` with :attr:`SkipKind.STRUCTURAL`,
+    because a pack whose adapter nothing here can interrogate must be reported
+    rather than refused.
     """
-    from tolokaforge.runner.models import AdapterType
+    from tolokaforge.adapters import adapter_class
 
-    if adapter_type != AdapterType.NATIVE.value:
-        return ToolInventory.unresolvable()
-    return build_tool_inventory(task, task_dir)
+    resolved = adapter_class(adapter_type)
+    if resolved is None:
+        return ToolInventory.unresolvable(kind=SkipKind.STRUCTURAL)
+    return resolved.grading_tool_inventory(task, task_dir)
 
 
-def replay_world_under_adapter(task: TaskConfig, adapter_type: str) -> ReplayWorld:
+def replay_world_under_adapter(task: TaskConfig, task_dir: Path, adapter_type: str) -> ReplayWorld:
     """What *task* gives a golden-action replay, under *adapter_type*.
 
-    ``initial_state.json_db`` and ``tools.agent.mcp_server`` are the native reading of
-    the world a replay executes in, so a task an external adapter owns gets
-    :meth:`ReplayWorld.unresolvable` for the reason
-    :func:`tool_inventory_under_adapter` gives: reporting a reading the adapter does not
-    use would reject packs that run fine.
-
-    ``mcp_server`` is read the way :meth:`BaseAdapter.grade` reads it into the grading
-    engine, and the ``json_db`` shape through :func:`classify_initial_state`, the reading
-    :func:`require_golden_replay_world` builds a world by at grade time — so an inline
-    mapping supplies no file here either.
+    The adapter answers for itself, through
+    :meth:`~tolokaforge.adapters.base.BaseAdapter.grading_replay_world`: native
+    classifies ``initial_state.json_db`` and reads ``tools.agent.mcp_server`` the way
+    :meth:`BaseAdapter.grade` reads them into the engine, an adapter that builds a
+    world from its own fixtures reports that world, and the gate holds each
+    golden-replay rule against the world the adapter names. An adapter type this
+    environment has no class for — not installed, or misspelled — answers
+    :meth:`ReplayWorld.unresolvable` with :attr:`SkipKind.STRUCTURAL`, because a pack
+    whose adapter nothing here can interrogate must be reported rather than refused.
     """
-    from tolokaforge.runner.models import AdapterType
+    from tolokaforge.adapters import adapter_class
 
-    if adapter_type != AdapterType.NATIVE.value:
-        return ReplayWorld.unresolvable()
-    return ReplayWorld(
-        initial_state=classify_initial_state(task.initial_state.json_db),
-        mcp_server=bool(task.tools.agent.get("mcp_server")) if task.tools.agent else False,
-    )
+    resolved = adapter_class(adapter_type)
+    if resolved is None:
+        return ReplayWorld.unresolvable(kind=SkipKind.STRUCTURAL)
+    return resolved.grading_replay_world(task, task_dir)
 
 
 def hash_source_layer_under_adapter(
@@ -863,15 +866,15 @@ def hash_source_layer_under_adapter(
     reports that the authored keys are the whole layer, an adapter computing the source
     from its own fixtures reports that source and the state it is in, and the gate
     decides which of those is fatal. An adapter type this environment has no class for
-    — not installed, or misspelled — answers :meth:`HashSourceLayer.unresolvable`,
-    because a pack whose grading nothing here can interrogate must be reported rather
-    than refused.
+    — not installed, or misspelled — answers :meth:`HashSourceLayer.unresolvable` with
+    :attr:`SkipKind.STRUCTURAL`, because a pack whose grading nothing here can
+    interrogate must be reported rather than refused.
     """
     from tolokaforge.adapters import adapter_class
 
     resolved = adapter_class(adapter_type)
     if resolved is None:
-        return HashSourceLayer.unresolvable()
+        return HashSourceLayer.unresolvable(kind=SkipKind.STRUCTURAL)
     return resolved.grading_hash_source_layer(task, task_dir)
 
 
@@ -904,21 +907,28 @@ def seeded_tables_under_adapter(
 ) -> SeededTablesLayer:
     """The tables to check *task*'s ``id_fields`` declaration against, under *adapter_type*.
 
-    ``initial_state.json_db`` is the *native* reading of what a task seeds, so a task an
-    external adapter owns gets :meth:`SeededTablesLayer.unresolvable` for the reason
-    :func:`tool_inventory_under_adapter` gives: holding a declaration against a state the
-    adapter does not seed would reject packs that run fine.
+    The adapter answers for itself, through
+    :meth:`~tolokaforge.adapters.base.BaseAdapter.grading_seeded_tables`: native
+    reads the tables :func:`seeded_tables_from_task` builds off
+    ``initial_state.json_db``, an adapter whose seeded state lives in a database
+    fixture or a compose service's own seed dump reports its tables, and the gate
+    holds each ``id_fields`` primary key against the layer the adapter names. An
+    adapter type this environment has no class for — not installed, or misspelled —
+    answers :meth:`SeededTablesLayer.unresolvable` with :attr:`SkipKind.STRUCTURAL`,
+    because a pack whose adapter nothing here can interrogate must be reported
+    rather than refused.
 
-    A native task whose ``json_db`` names a file that is not on disk raises out of here
-    rather than reporting an empty view, which is what makes the caller's per-task
-    failure accounting name the missing path — the same refusal the run path meets when
-    it builds the task description.
+    A native task whose ``json_db`` names a file that is not on disk raises out of
+    :meth:`NativeAdapter.grading_seeded_tables` rather than reporting an empty view,
+    which is what makes the caller's per-task failure accounting name the missing
+    path — the same refusal the run path meets when it builds the task description.
     """
-    from tolokaforge.runner.models import AdapterType
+    from tolokaforge.adapters import adapter_class
 
-    if adapter_type != AdapterType.NATIVE.value:
-        return SeededTablesLayer.unresolvable()
-    return SeededTablesLayer(tables=seeded_tables_from_task(task, task_dir))
+    resolved = adapter_class(adapter_type)
+    if resolved is None:
+        return SeededTablesLayer.unresolvable(kind=SkipKind.STRUCTURAL)
+    return resolved.grading_seeded_tables(task, task_dir)
 
 
 def _seeded_records(collection: Any) -> list[dict[str, Any]]:

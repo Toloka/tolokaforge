@@ -1852,7 +1852,7 @@ class Orchestrator:
             report = validate_grading_yaml(
                 source.path,
                 inventory=tool_inventory_under_adapter(task, task_dir, adapter_type),
-                replay_world=replay_world_under_adapter(task, adapter_type),
+                replay_world=replay_world_under_adapter(task, task_dir, adapter_type),
                 hash_sources=self.adapter.grading_hash_source_layer(task, task_dir),
                 seeded_tables=seeded_tables_under_adapter(task, task_dir, adapter_type),
                 combine_layer=self.adapter.grading_combine_layer(),
