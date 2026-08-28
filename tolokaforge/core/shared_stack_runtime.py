@@ -1115,9 +1115,12 @@ class SharedStackRuntimeBackend:
                 manifest.runner_service,
                 manifest.limited_internet_allowlist,
                 restricted_services=manifest.restricted_services,
+                bridged_services=manifest.bridged_services,
             )
             inject_runner_credentials(
-                temp_dir / manifest.compose_file.name, manifest.runner_service
+                temp_dir / manifest.compose_file.name,
+                manifest.runner_service,
+                stripped_keys=manifest.stripped_container_secrets,
             )
             if self._mount_docker_socket:
                 mount_docker_socket_into_runner(

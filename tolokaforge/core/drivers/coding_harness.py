@@ -47,8 +47,6 @@ from tolokaforge.core.agent_driver import StagedTask, StagedTaskLayers
 from tolokaforge.core.drivers.llm_gateway import (
     GATEWAY_HOSTNAME,
     GatewayHandle,
-    LLMGatewayEndpoint,
-    LocalHostGatewayLauncher,
 )
 from tolokaforge.secrets import expand_secret_refs
 from tolokaforge.secrets import get_default as _get_default_secrets
@@ -90,6 +88,14 @@ task's own ``trial_seconds``) together."""
 
 _DEFAULT_RUNNER_IMAGE = "tolokaforge-runner:local"
 _DEFAULT_DB_SERVICE_IMAGE = "tolokaforge-db-service:local"
+
+_SIDECAR_GATEWAY_PORT = 8080
+"""Fixed TCP port the credential-gateway sidecar binds inside its
+compose service. Trial containers reach it as
+``http://{GATEWAY_HOSTNAME}:{_SIDECAR_GATEWAY_PORT}``; docker's compose
+DNS resolves the hostname on the shared internal network, so no
+``extra_hosts`` alias is required and the shield works under every
+network policy the runtime enforces."""
 
 _HARNESS_BUILD_PROFILE = "_harness_build_only"
 """Compose profile that keeps ``<agent_service>_base`` out of
@@ -188,9 +194,9 @@ class CodingHarnessDriver:
             )
             base_spec = base_spec.model_copy(update={"credential_gateway": None})
         self.spec: HarnessSpec = base_spec
-        self._gateway_launcher: LocalHostGatewayLauncher | None = None
         self._gateway_handle: GatewayHandle | None = None
         self._gateway_container_url: str | None = None
+        self._gateway_upstream_token: str | None = None
         if self.spec.credential_gateway is None:
             # Pre-shield path: the real credential is resolved straight into
             # container_env, same as every harness did before this driver
@@ -262,24 +268,33 @@ class CodingHarnessDriver:
             )
         gateway_spec = self.spec.credential_gateway
         if gateway_spec is not None:
-            endpoint = LLMGatewayEndpoint(self.spec, _get_default_secrets())
-            self._gateway_launcher = LocalHostGatewayLauncher()
-            self._gateway_handle = self._gateway_launcher.launch(endpoint)
+            # Sidecar-mode credential shield. The gateway is a compose service
+            # in the trial stack (added in ``_rewrite_compose``), reachable
+            # from the CLI's container at a fixed name and port over docker's
+            # DNS — no host-gateway hop, no ``extra_hosts`` alias, no
+            # dependence on the pack's declared ``network_policy``. The real
+            # provider credential is resolved via :class:`SecretManager` here
+            # and stashed into the sidecar's compose env at ``_rewrite_compose``
+            # time; it never lands in the CLI's own ``environment:`` block.
+            secret_manager = _get_default_secrets()
+            self._gateway_upstream_token = secret_manager.get_secret_or_raise(
+                gateway_spec.upstream_token_env_var
+            )
+            self._gateway_handle = GatewayHandle(
+                port=_SIDECAR_GATEWAY_PORT, hostname=GATEWAY_HOSTNAME
+            )
             self._gateway_container_url = (
                 f"http://{self._gateway_handle.hostname}:{self._gateway_handle.port}"
             )
             self.container_env[gateway_spec.base_url_env_var] = self._gateway_container_url
 
     def close(self) -> None:
-        """Stop the credential-shielding gateway, if one was launched.
-
-        Idempotent, and safe without a prior ``attach()`` — both leave
-        ``self._gateway_handle`` unset, so there is nothing to tear down.
-        """
-        if self._gateway_handle is None or self._gateway_launcher is None:
-            return
-        self._gateway_launcher.teardown(self._gateway_handle)
+        """No-op under sidecar mode: the compose stack teardown stops the
+        gateway service alongside every other trial container. Method kept
+        on the :class:`AgentDriver` protocol so runtimes may call it
+        unconditionally. Idempotent — safe without a prior ``attach()``."""
         self._gateway_handle = None
+        self._gateway_upstream_token = None
 
     def decorate_task_description(
         self,
@@ -362,50 +377,41 @@ class CodingHarnessDriver:
         # container which does not expose the grader RPC port.
         env_manifest = base.environment_manifest
         if env_manifest is not None:
-            from tolokaforge.runner.models import NetworkPolicy
-
             manifest_update: dict[str, Any] = {
                 "compose_file": staged.compose_file,
                 "runner_service": RUNNER_SERVICE,
             }
-            # Egress topology under the shield. The driver's LLM gateway
-            # lives as a host process reached via compose ``extra_hosts``
-            # mapping to ``host-gateway`` — the docker-bridge magic that
-            # resolves to the docker host IP. A pack declaring
-            # ``NetworkPolicy.NO_INTERNET`` places the CLI's service on a
-            # ``internal: true`` docker network with no route to that host
-            # IP, so ``curl http://tolokaforge-llm-gateway:PORT/`` inside
-            # the container SYN-sends and never gets an ACK — the CLI
-            # then hangs until the bash-tool budget expires, having done
-            # no work (verified against fix_factorial:  0/30 tests
-            # passed, 900s wall-clock, zero assistant turns).
-            #
-            # The right long-term fix is a sidecar-mode gateway that
-            # lives on the internal network alongside the CLI (the
-            # ``SidecarGatewayLauncher`` seam reserved in ADR-0041). For
-            # this PR — the local-mode shield — we auto-elevate a
-            # ``NO_INTERNET`` pack to ``FULL_INTERNET`` when the shield
-            # is active, log a loud warning, and preserve the shield's
-            # credential trust boundary (dummy in container, real on
-            # host, no leak). The elevation only affects the CLI's
-            # service under the coding-harness driver; engine-loop-mode
-            # runs and packs that need strict no-internet grading can
-            # keep it by setting ``disable_credential_gateway: true``.
-            if (
-                self._gateway_handle is not None
-                and env_manifest.network_policy is NetworkPolicy.NO_INTERNET
-            ):
-                logger.warning(
-                    "coding_harness driver: pack declared network_policy=no_internet "
-                    "but the credential shield's local-mode gateway lives on the host "
-                    "and cannot be reached from a docker internal:true network. "
-                    "Elevating this trial's network_policy to full_internet so the "
-                    "CLI can reach the shielded gateway. To keep no_internet grading "
-                    "integrity, set models.agent.disable_credential_gateway=true; the "
-                    "reserved SidecarGatewayLauncher (ADR-0041) will make no_internet "
-                    "compatible with the shield in a follow-up."
-                )
-                manifest_update["network_policy"] = NetworkPolicy.FULL_INTERNET
+            # Shield sidecar bridge. The gateway sidecar the driver adds in
+            # ``_rewrite_compose`` must be reachable from the CLI's service
+            # (over the netpolicy internal network) AND able to reach the
+            # LLM provider on the internet (over the edge network). Marking
+            # its compose service name as ``bridged_services`` gives it
+            # both attachments under ``no_internet`` and
+            # ``limited_internet`` — the same treatment
+            # :attr:`~EnvironmentManifest.runner_service` gets. Under
+            # ``full_internet`` it has no effect (netpolicy is identity).
+            # The pack's own declared ``network_policy`` is left untouched;
+            # no elevation, no downgrade — the sidecar keeps working
+            # whichever posture the pack picked.
+            if self._gateway_handle is not None:
+                manifest_update["bridged_services"] = frozenset(env_manifest.bridged_services) | {
+                    GATEWAY_HOSTNAME
+                }
+                # The gateway sidecar already carries the real upstream
+                # token. Strip it from the runner container's
+                # ``TOLOKAFORGE_SECRETS_JSON`` payload so the trial's
+                # compose file holds only one copy of the credential —
+                # the sidecar's — instead of duplicating it into every
+                # container that shares the trial network. The rest of
+                # the runner's payload (judge keys, litellm endpoints,
+                # tokenizer cache paths) is untouched.
+                gateway_spec = self.spec.credential_gateway
+                assert (
+                    gateway_spec is not None
+                )  # attach() sets _gateway_handle iff spec is not None
+                manifest_update["stripped_container_secrets"] = frozenset(
+                    env_manifest.stripped_container_secrets
+                ) | {gateway_spec.upstream_token_env_var}
             env_manifest = env_manifest.model_copy(update=manifest_update)
         return base.model_copy(
             update={
@@ -494,10 +500,14 @@ class CodingHarnessDriver:
             agent_env = _set_env(agent_env, key, value)
         agent_body["environment"] = agent_env
         if self._gateway_handle is not None:
-            agent_body["extra_hosts"] = _add_extra_host(
-                agent_body.get("extra_hosts"),
-                f"{self._gateway_handle.hostname}:host-gateway",
-            )
+            # Gate the CLI's container on the gateway sidecar's healthcheck so
+            # the CLI never issues its first request against a
+            # not-yet-listening ``tolokaforge-llm-gateway:8080``.
+            depends_on = agent_body.get("depends_on")
+            if not isinstance(depends_on, dict):
+                depends_on = {}
+            depends_on[GATEWAY_HOSTNAME] = {"condition": "service_healthy"}
+            agent_body["depends_on"] = depends_on
         services[agent_service] = agent_body
 
         # The base build service tags the pack's own build with the exact
@@ -512,7 +522,62 @@ class CodingHarnessDriver:
         }
         services[RUNNER_SERVICE] = _runner_service_body(_DEFAULT_RUNNER_IMAGE)
         services[DB_SERVICE] = _db_service_body(_DEFAULT_DB_SERVICE_IMAGE)
+        if self._gateway_handle is not None:
+            services[GATEWAY_HOSTNAME] = self._gateway_service_body()
         return doc
+
+    def _gateway_service_body(self) -> dict[str, Any]:
+        """Compose service definition for the credential-shield gateway
+        sidecar. Runs the shipped :mod:`tolokaforge.core.drivers.\
+        llm_gateway_serve` entrypoint against the runner image (already
+        carries every tolokaforge dep). The real upstream token lives on
+        this service's ``environment:`` only — the CLI's own service sees
+        the ``dummy_token_value`` and the container-DNS URL.
+
+        Preconditions (guaranteed by ``attach()``):
+
+        * ``self.spec.credential_gateway`` is not ``None`` — a
+          precondition of adding this sidecar at all.
+        * ``self._gateway_upstream_token`` is set — resolved via
+          :class:`SecretManager` in ``attach()``.
+
+        The sidecar joins the netpolicy internal + edge networks via
+        :attr:`~tolokaforge.runner.models.EnvironmentManifest\
+        .bridged_services`, so the CLI reaches it over the internal
+        network and it reaches the upstream over the edge network,
+        regardless of the pack's declared ``network_policy``.
+        """
+        gateway = self.spec.credential_gateway
+        assert gateway is not None  # narrowed by attach() preconditions
+        assert self._gateway_upstream_token is not None  # attach() resolved it
+        return {
+            "image": _DEFAULT_RUNNER_IMAGE,
+            "command": [
+                "python",
+                "-m",
+                "tolokaforge.core.drivers.llm_gateway_serve",
+            ],
+            "environment": {
+                "TF_GATEWAY_UPSTREAM_URL": gateway.upstream_url,
+                "TF_GATEWAY_UPSTREAM_TOKEN": self._gateway_upstream_token,
+                "TF_GATEWAY_UPSTREAM_AUTH_HEADER": gateway.upstream_auth_header,
+                "TF_GATEWAY_UPSTREAM_AUTH_TEMPLATE": gateway.upstream_auth_template,
+                "TF_GATEWAY_PATH_ALLOWLIST": ",".join(gateway.path_allowlist),
+                "TF_GATEWAY_PORT": str(_SIDECAR_GATEWAY_PORT),
+            },
+            "healthcheck": {
+                "test": [
+                    "CMD",
+                    "bash",
+                    "-c",
+                    f"echo > /dev/tcp/127.0.0.1/{_SIDECAR_GATEWAY_PORT}",
+                ],
+                "interval": "2s",
+                "timeout": "3s",
+                "retries": 30,
+                "start_period": "3s",
+            },
+        }
 
 
 def _resolve_provider_env(
@@ -569,21 +634,6 @@ def _set_env(existing: Any, key: str, value: str) -> Any:
         filtered.append(f"{key}={value}")
         return filtered
     return {key: value}
-
-
-def _add_extra_host(existing: Any, entry: str) -> list[str]:
-    """Add ``entry`` (``"hostname:target"``) to a compose service's
-    ``extra_hosts:`` list, replacing any prior entry for the same hostname
-    rather than duplicating it. Mirrors :func:`_set_env`'s replace-not-append
-    behaviour for the analogous ``environment:`` key."""
-    hostname = entry.split(":", 1)[0]
-    hosts = [
-        host
-        for host in (existing if isinstance(existing, list) else [])
-        if not (isinstance(host, str) and host.split(":", 1)[0] == hostname)
-    ]
-    hosts.append(entry)
-    return hosts
 
 
 def _runner_service_body(runner_image: str) -> dict[str, Any]:
