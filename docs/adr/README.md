@@ -72,3 +72,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0039](0039-coding-harness-adapter-agnostic.md) | Coding-harness as an adapter-agnostic run-config concept | Accepted |
 | [0040](0040-standalone-grader.md) | Standalone-grader substrate — multi-topology grading behind one Protocol | Accepted |
 | [0041](0041-zero-coverage-exit-signal.md) | Zero-coverage exit signal on `run_state.json` | Accepted |
+| [0042](0042-adapter-blind-authoring-gate.md) | Adapter-blind authoring gate — three new `BaseAdapter` hooks + `SkipKind` split | Accepted |
