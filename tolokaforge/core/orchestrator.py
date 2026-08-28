@@ -453,10 +453,19 @@ class GradingCompleteness:
 
     ``ungradeable_trial_ids`` is the whole of the state; the count derives from
     it rather than being carried beside it, so the two cannot disagree.
+
+    ``measured_trials`` / ``scored_trials`` / ``judge_errored_trials`` carry
+    the three counts the two completion gates read (see
+    ``docs/adr/0041-zero-coverage-exit-signal.md``). ``scored_trials`` is the
+    same quantity :func:`tolokaforge.core.metrics._measured_averages` computes
+    from ``t.grade is not None`` — one derivation, referenced everywhere.
     """
 
     total_attempts: int
     ungradeable_trial_ids: tuple[str, ...]
+    measured_trials: int = 0
+    scored_trials: int = 0
+    judge_errored_trials: int = 0
 
     @property
     def ungradeable(self) -> int:
@@ -465,6 +474,26 @@ class GradingCompleteness:
     @property
     def is_complete(self) -> bool:
         return not self.ungradeable_trial_ids
+
+    @property
+    def zero_coverage(self) -> bool:
+        """No trial reached the agent measurement point on a run that had trials.
+
+        See ``docs/adr/0041-zero-coverage-exit-signal.md``.
+        """
+        return self.total_attempts > 0 and self.measured_trials == 0
+
+    @property
+    def zero_judge_graded(self) -> bool:
+        """Every produced grade has ``judge_status == ERRORED``.
+
+        The ``judge_errored_trials > 0`` guard keeps a run whose measured
+        trials never produced any grade (``scored_trials == 0``) from firing
+        this gate: the failure mode is a judge that errored on scoring
+        attempts, not the absence of scoring. See
+        ``docs/adr/0041-zero-coverage-exit-signal.md``.
+        """
+        return self.judge_errored_trials > 0 and self.judge_errored_trials == self.scored_trials
 
 
 class Orchestrator:
@@ -2548,9 +2577,6 @@ class Orchestrator:
                     threshold=last_hit.threshold if last_hit is not None else None,
                     total_cost_usd=round(total_cost_usd, 6),
                 )
-            else:
-                # Mark run as completed
-                self.state_manager.mark_run_completed()
 
             # Cleanup runtime backend if used; SharedStackRuntimeBackend
             # logs its own "Shared-stack runtime closed" line, no dup needed.
@@ -2575,9 +2601,11 @@ class Orchestrator:
                 except Exception as e:
                     self.logger.warning("Failed to destroy EngineStack", error=str(e))
 
-            # Generate reports
-            self._generate_reports(output_dir)
-            self._publish_grading_completeness()
+            # Publish completeness and generate reports before stamping the
+            # run as completed, so ``run_state.json``'s completion gates are
+            # derived from the published counts.
+            if not (budget_exhausted and remaining > 0):
+                self._finalize_run_reports_and_status(output_dir)
 
             resolved_output_dir = output_dir.resolve()
             self._events.run_finished(output_dir=resolved_output_dir)
@@ -2950,14 +2978,56 @@ class Orchestrator:
                 pass_at_k_without_coverage=lost_k,
             )
 
+    def _finalize_run_reports_and_status(self, output_dir: Path) -> None:
+        """Publish completeness, generate reports, and stamp completion status.
+
+        ``zc`` / ``zjg`` initialize to False before the try so a
+        ``BaseException`` raised inside (``KeyboardInterrupt``, ``SystemExit``,
+        anything ``except Exception`` would miss) still stamps a well-defined
+        state via ``finally``. The invariant is
+        ``status == "completed"`` on a non-paused run regardless of exception
+        class — resume-detection reads ``status`` alone. See ADR-0041.
+        """
+        zc = False
+        zjg = False
+        try:
+            self._generate_reports(output_dir)
+            self._publish_grading_completeness()
+            zc = self.grading_completeness.zero_coverage
+            zjg = self.grading_completeness.zero_judge_graded
+        finally:
+            self.state_manager.mark_run_completed(zero_coverage=zc, zero_judge_graded=zjg)
+
     def _publish_grading_completeness(self) -> None:
-        """Stamp :attr:`grading_completeness` from the attempts this process ran."""
+        """Stamp :attr:`grading_completeness` from the attempts this process ran.
+
+        ``measured_trials`` counts trials that reached the agent measurement
+        point; ``scored_trials`` follows the single derivation
+        :func:`tolokaforge.core.metrics._measured_averages` uses
+        (``t.grade is not None``); ``judge_errored_trials`` counts scored
+        trials whose judge component errored. The two completion-gate
+        booleans are derived properties on ``GradingCompleteness``.
+        """
+        from tolokaforge.core.models.grade import JudgeStatus
+
         self.grading_completeness = GradingCompleteness(
             total_attempts=len(self.results),
             ungradeable_trial_ids=tuple(
                 f"{trajectory.task_id}:{trajectory.trial_index}"
                 for trajectory in self.results
                 if classify_trial_outcome(trajectory) is TrialOutcomeClass.UNGRADEABLE
+            ),
+            measured_trials=sum(
+                1
+                for trajectory in self.results
+                if classify_trial_outcome(trajectory) is TrialOutcomeClass.MEASURED
+            ),
+            scored_trials=sum(1 for trajectory in self.results if trajectory.grade is not None),
+            judge_errored_trials=sum(
+                1
+                for trajectory in self.results
+                if trajectory.grade is not None
+                and trajectory.grade.judge_status is JudgeStatus.ERRORED
             ),
         )
 
