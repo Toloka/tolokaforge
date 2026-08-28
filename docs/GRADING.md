@@ -3030,8 +3030,14 @@ environment failing to ask. The distinction is what lets a task-pack CI author
 targeting a specific adapter promote its own adapter's `ADAPTER_DECLARED` skips to
 fatal — the pack is targeted; the adapter is present; a silence there is the
 pack's problem to fix. Every `Skip` reads its kind off the layer the rule read,
-so no producer names the kind twice. See
-[ADR-0042](adr/0042-adapter-blind-authoring-gate.md).
+so no producer names the kind twice.
+
+The promotion knob is [`tolokaforge validate --strict-authoring`](CLI.md#--strict-authoring),
+which reads `Skip.kind` at the CLI, after the gate returns, and refuses any task
+carrying an `ADAPTER_DECLARED` skip. STRUCTURAL skips stay never-fatal under the
+flag, so a pack whose target adapter is uninstalled still validates. The gate's
+own `report.fatal(fail_on)` shape is unchanged — enforcement is a caller decision.
+See [ADR-0042](adr/0042-adapter-blind-authoring-gate.md).
 
 **Having no grading block on disk is answered by the adapter the task declares.**
 `get_grading_config` is abstract and the implementations disagree: the native adapter

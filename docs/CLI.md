@@ -446,6 +446,10 @@ Each task loads under its enclosing project. `validate` walks up from the `task.
 
 `make validate` wraps the command over `TASKS_GLOB` (`$(TASKS_DIR)/**/task.yaml`, with `TASKS_DIR` defaulting to `tasks`). Task packs are cloned separately, so the target prints a skip reason and exits `0` when `TASKS_DIR` is absent and `TASKS_GLOB` is still the default derived from it, instead of failing on an empty glob. A `TASKS_GLOB` you name runs whatever `TASKS_DIR` holds — pointing the target at a pack elsewhere is never skipped. The dev MCP's `validate_tasks` guards its own default identically.
 
+### `--strict-authoring`
+
+`--strict-authoring` promotes the `?` lines whose skip is *adapter-declared* to `✗` lines and fails the command on any of them. A `Skip` records whose silence it is: `SkipKind.STRUCTURAL` for an environment the loader cannot even ask (the `adapter_type` names no installed class, a schema does not resolve) and `SkipKind.ADAPTER_DECLARED` for an adapter that *is* loaded and answered `unresolvable()` from one of its `grading_*` hooks. The default arm keeps every skip never-fatal, so a pack targeting an uninstalled adapter still validates as it does today; the flag reads the kind and refuses only the adapter-declared half. Reach for it in a task-pack CI that owns the adapter it targets — the pack is targeted, the adapter is present, and a silence there is the pack's problem to fix. STRUCTURAL skips continue to render as yellow `?` lines under the flag, so the engine's own CI (`make validate` over `examples/native/**/task.yaml`) is unaffected — every native pack answers concretely through `NativeAdapter`'s hook overrides. See [ADR-0042](adr/0042-adapter-blind-authoring-gate.md).
+
 ## Migration reconciliation
 
 `tolokaforge reconcile` checks a pack's declared rubric migration against recorded judge verdicts, spending nothing. With no `--source` it reconciles every migration declared under `--packs` (default `examples/`) over the corpus each declaration itself names — the invocation CI runs — and either way it is usable as a gate:

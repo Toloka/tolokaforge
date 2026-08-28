@@ -994,7 +994,11 @@ def inspect_grading_authoring(
             _check_bound_comparisons(binders, inventory),
         ]
     else:
-        reports.append(AuthoringReport(unchecked=(Skip("grading", _UNRESOLVABLE_REASON),)))
+        reports.append(
+            AuthoringReport(
+                unchecked=(Skip("grading", _UNRESOLVABLE_REASON, kind=inventory.skip_kind),)
+            )
+        )
     if effective_combine is not None:
         reports += [
             _check_requested_components_are_weighted(grading, effective_combine),
