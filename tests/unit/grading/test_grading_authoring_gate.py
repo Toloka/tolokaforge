@@ -67,6 +67,8 @@ from tolokaforge.core.grading.config_validation import (
     HashSourceLayer,
     ReplayWorld,
     SeededTablesLayer,
+    Skip,
+    SkipKind,
     SuppliedSourceState,
     ToolInventory,
     _authored_hash_is_a_state_source,
@@ -905,6 +907,190 @@ def test_an_anchorless_on_missing_is_refused_before_the_gate_at_any_depth(
     message = str(excinfo.value)
     assert "on_missing has nothing to decide over ['present']" in message, message
     assert "does not compile" not in message, message
+
+
+# ---------------------------------------------------------------------------
+# The skip kind: which silence a Skip speaks for
+# ---------------------------------------------------------------------------
+
+
+def test_the_skip_kind_enum_has_exactly_the_two_readings_the_unchecked_channel_splits_into() -> (
+    None
+):
+    """Two readings, and only two: the environment cannot inspect, or the adapter said so.
+
+    A third value would leave the enforcement axis undecided — ``--strict-authoring``
+    promotes exactly one of the two — so the enum is written out here rather than
+    derived from the class, and a member added or removed reds this row before the
+    downstream promotion table can drift out from under it.
+    """
+    assert issubclass(SkipKind, str)
+
+    assert {member.value for member in SkipKind} == {"structural", "adapter_declared"}
+    assert SkipKind.STRUCTURAL.value == "structural"
+    assert SkipKind.ADAPTER_DECLARED.value == "adapter_declared"
+
+
+def test_a_skip_defaults_to_structural_because_every_producer_today_speaks_for_the_environment() -> (
+    None
+):
+    """The default is the reading that names the environment's own blindness.
+
+    Every ``Skip(...)`` call site in this module today is produced because a layer
+    the environment could not inspect answered ``known=False``, or a resolved
+    inventory could not type a specific argument — never on the adapter's own
+    account. Callers that read a layer carrying a kind propagate it verbatim; the
+    default matches what those producers would say without it.
+    """
+    assert Skip("where", "reason").kind is SkipKind.STRUCTURAL
+
+
+def test_a_skips_where_and_reason_are_unchanged_by_the_kind_field() -> None:
+    """The wire shape existing consumers read is what a Skip is addressed and refused by.
+
+    ``AuthoringReport.unchecked`` is read at :mod:`tolokaforge.dx.cli.main`,
+    :mod:`tolokaforge.orchestrator`, :mod:`tolokaforge.dx.trace_replay_render` and
+    :mod:`tolokaforge.core.grading.trace_replay` — all four read ``skip.where`` and
+    ``skip.reason``, none read the kind. A default-constructed ``Skip`` reading the
+    same as one that names the default is what keeps that shape.
+    """
+    assert Skip("where", "reason") == Skip("where", "reason", kind=SkipKind.STRUCTURAL)
+    assert Skip("where", "reason").where == "where"
+    assert Skip("where", "reason").reason == "reason"
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        ToolInventory.unresolvable,
+        ReplayWorld.unresolvable,
+        HashSourceLayer.unresolvable,
+        SeededTablesLayer.unresolvable,
+    ],
+    ids=["tool_inventory", "replay_world", "hash_source", "seeded_tables"],
+)
+def test_an_unresolvable_layer_defaults_to_adapter_declared_because_no_other_producer_exists(
+    factory: Any,
+) -> None:
+    """The four layers' ``unresolvable()`` factories are the adapter-hook seam.
+
+    Nothing else in the module constructs one — the caller that could not inspect a
+    pack passes ``kind=STRUCTURAL`` at the call site — so the default reads for the
+    only remaining producer: an adapter whose hook returned ``unresolvable()``
+    speaks on its own account, and its skip is the promotable one under
+    ``--strict-authoring``.
+    """
+    layer = factory()
+    assert layer.known is False
+    assert layer.skip_kind is SkipKind.ADAPTER_DECLARED
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        ToolInventory.unresolvable,
+        ReplayWorld.unresolvable,
+        HashSourceLayer.unresolvable,
+        SeededTablesLayer.unresolvable,
+    ],
+    ids=["tool_inventory", "replay_world", "hash_source", "seeded_tables"],
+)
+def test_an_unresolvable_layer_reads_structural_when_the_uninstalled_arm_names_it(
+    factory: Any,
+) -> None:
+    """The uninstalled-adapter arm passes ``kind=STRUCTURAL`` at the helper.
+
+    The four ``*_under_adapter`` helpers construct an unresolvable layer where the
+    adapter class is not resolvable — a fact about the environment, not the
+    adapter — so its skip has to read as structural or ``--strict-authoring`` would
+    refuse a pack the local install cannot see. The factory has to accept that
+    reading through its argument, and this row is what keeps it acceptable.
+    """
+    layer = factory(kind=SkipKind.STRUCTURAL)
+    assert layer.known is False
+    assert layer.skip_kind is SkipKind.STRUCTURAL
+
+
+def test_a_hash_source_skip_carries_the_layers_kind_where_the_rule_could_not_check() -> None:
+    """The propagation is what makes the enforcement decidable.
+
+    An adapter whose ``grading_hash_source_layer`` hook answered ``unresolvable(kind=ADAPTER_DECLARED)``
+    puts the ADAPTER_DECLARED reading on the layer; the rule reading the layer
+    propagates it onto the ``Skip`` it produces, so the CLI has one field to filter
+    on when the flag is passed. A native pack whose adapter never says
+    ``unresolvable`` never reaches this branch.
+    """
+    grading = {
+        "state_checks": {"hash": {"enabled": False, "expect_initial_state": True}},
+    }
+
+    report = inspect_grading_authoring(
+        grading,
+        _inventory(_HELPDESK),
+        hash_sources=HashSourceLayer(known=False, skip_kind=SkipKind.ADAPTER_DECLARED),
+    )
+
+    hash_skips = [skip for skip in report.unchecked if skip.where.startswith("state_checks.hash")]
+    assert hash_skips, [skip.where for skip in report.unchecked]
+    assert all(skip.kind is SkipKind.ADAPTER_DECLARED for skip in hash_skips), hash_skips
+
+
+def test_a_replay_world_skip_carries_the_layers_kind_where_the_rule_could_not_check() -> None:
+    """A world an adapter's hook said ``unresolvable`` for keeps its adapter-declared reading.
+
+    The golden-actions rule is the one place the world enters the report; a native
+    pack does not carry an unresolvable world, so this is exercised through the
+    hook-answered path directly rather than through the shipped helpers.
+    """
+    grading = {
+        "state_checks": {
+            "hash": {"enabled": True, "golden_actions": [_tool_call("http_request")]},
+        }
+    }
+
+    report = inspect_grading_authoring(
+        grading,
+        _inventory(_HELPDESK),
+        replay_world=ReplayWorld(
+            initial_state=InitialStateSource.ABSENT,
+            mcp_server=False,
+            known=False,
+            skip_kind=SkipKind.ADAPTER_DECLARED,
+        ),
+    )
+
+    world_skips = [
+        skip
+        for skip in report.unchecked
+        if skip.where.startswith("state_checks.hash.golden_actions")
+    ]
+    assert world_skips, [skip.where for skip in report.unchecked]
+    assert all(skip.kind is SkipKind.ADAPTER_DECLARED for skip in world_skips), world_skips
+
+
+def test_a_seeded_tables_skip_carries_the_layers_kind_where_the_rule_could_not_check() -> None:
+    """The id-fields declaration rule skips into ADAPTER_DECLARED when the layer says so.
+
+    A task whose ``adapter_type`` names an adapter whose ``grading_seeded_tables``
+    hook returned ``unresolvable()`` has to leave its ``id_fields`` declaration
+    reading through the promotable channel — otherwise a misspelled key against an
+    adapter-known set is silent under both defaults.
+    """
+    grading = _keyed_state({"positions": ["account_id"]})
+
+    report = inspect_grading_authoring(
+        grading,
+        _inventory(_HELPDESK),
+        seeded_tables=SeededTablesLayer(
+            known=False, tables=None, skip_kind=SkipKind.ADAPTER_DECLARED
+        ),
+    )
+
+    tables_skips = [
+        skip for skip in report.unchecked if skip.where.startswith("state_checks.id_fields")
+    ]
+    assert tables_skips, [skip.where for skip in report.unchecked]
+    assert all(skip.kind is SkipKind.ADAPTER_DECLARED for skip in tables_skips), tables_skips
 
 
 # ---------------------------------------------------------------------------
