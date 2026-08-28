@@ -41,10 +41,10 @@ _A_REAL_TASK = (
 
 
 class _AnAdapterThatImplementsNothing(BaseAdapter):
-    """A plugin written against the interface before these hooks existed.
+    """A plugin written against the shipped interface, holding no grading overrides.
 
-    Deliberately abstract — every new hook is a classmethod precisely so the answer
-    needs no instance, and nothing here overrides anything.
+    Deliberately abstract — every grading hook is a classmethod precisely so the
+    answer needs no instance, and nothing here overrides anything.
     """
 
 

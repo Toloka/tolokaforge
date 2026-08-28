@@ -491,10 +491,15 @@ class Skip:
 class AuthoringReport:
     """What checking one grading block against one tool inventory found.
 
-    ``unchecked`` is a channel, not a third severity: nothing reads it to decide
-    whether to raise, so a tool set the adapter cannot report can never fail a
-    pack. It is still reported — the CLI prints it beside the task — because a
-    gate that checked nothing must not read as a clean bill of health.
+    ``unchecked`` is a channel, not a third severity — the gate itself never
+    raises on a ``Skip``. Each ``Skip`` carries a :class:`SkipKind`
+    (``STRUCTURAL`` when the environment couldn't inspect the pack, e.g. the
+    declared adapter is not installed; ``ADAPTER_DECLARED`` when the adapter's
+    hook returned ``unresolvable()``). A caller may read ``Skip.kind`` after
+    :meth:`fatal` returns to promote ``ADAPTER_DECLARED`` rows to fatal —
+    ``tolokaforge validate --strict-authoring`` does exactly that. ``STRUCTURAL``
+    rows stay never-fatal so an environment missing an adapter cannot fail a
+    pack the environment cannot judge. See ADR-0042.
     """
 
     errors: tuple[Finding, ...] = ()
@@ -504,7 +509,9 @@ class AuthoringReport:
     """Fatal only where the caller enforces them."""
 
     unchecked: tuple[Skip, ...] = ()
-    """Never fatal anywhere."""
+    """Never fatal in the gate; promotable to fatal by a caller reading
+    :attr:`Skip.kind` (``ADAPTER_DECLARED`` promotes under
+    ``--strict-authoring``; ``STRUCTURAL`` stays never-fatal). See ADR-0042."""
 
     def fatal(self, fail_on: GradingFindingSeverity) -> tuple[Finding, ...]:
         """The findings a caller enforcing down to *fail_on* must refuse."""
