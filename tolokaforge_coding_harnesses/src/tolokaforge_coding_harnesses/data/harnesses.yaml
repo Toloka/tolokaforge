@@ -126,6 +126,29 @@ harnesses:
     config_files:
       "${CODEX_HOME:-$HOME/.codex}/config.toml": |
         openai_base_url = "{{ base_url }}"
+
+        # Codex 0.147's built-in ``openai`` provider defaults to
+        # ``wire_api = "responses_websockets"`` for gpt-4o-mini and newer,
+        # which opens ``ws://<base>/responses`` to the gateway sidecar.
+        # The sidecar's ``_GatewayHTTPServer`` is a plain HTTP reverse
+        # proxy and answers 404 to every websocket upgrade; codex then
+        # retries the WS 5 times (~30 s of dead time) before falling
+        # back to HTTP. Codex refuses to override its built-in ``openai``
+        # provider directly, so declare a custom ``openai-openrouter``
+        # provider pinned to ``wire_api = "responses"`` (HTTP SSE) and
+        # elect it as the run's default via ``model_provider``. This
+        # matches how codex documents the ``model_providers`` schema:
+        # ``name``, ``base_url``, ``env_key``, and ``wire_api`` are the
+        # required fields; ``base_url`` inherits ``openai_base_url``
+        # above but codex still requires the explicit field on a custom
+        # entry.
+        model_provider = "openai-openrouter"
+
+        [model_providers.openai-openrouter]
+        name = "openai-openrouter"
+        base_url = "{{ base_url }}"
+        env_key = "{{ api_key_env }}"
+        wire_api = "responses"
       "${CODEX_HOME:-$HOME/.codex}/auth.json": |
         {"{{ api_key_env }}": "${{ api_key_env }}"}
     # codex 0.147's model catalog refuses the OpenRouter namespaced form.
