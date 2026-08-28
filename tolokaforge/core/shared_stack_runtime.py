@@ -1032,6 +1032,27 @@ class SharedStackRuntimeBackend:
                 )
         logger.info("Docker runtime initialized")
 
+    @property
+    def runner_address(self) -> str | None:
+        """The runner's gRPC address, exactly as the wired client dials it.
+
+        ADR-0038 hands a trial grader an *address*, not this live backend, so
+        the address has to be readable off the backend or the grader dials
+        nothing: the orchestrator builds its ``TrialGraderContext`` from
+        ``getattr(runtime_backend, "runner_address", None)``, and
+        ``runner_rpc_trial_grader_factory`` turns the miss into ``""`` — an
+        ``insecure_channel("")`` that fails 30 s later inside grading, after
+        the episode has already been paid for.
+
+        Delegates rather than storing a second copy: in task-declared-stack
+        mode the address does not exist until ``connect`` materialises the
+        compose stack and picks the host port, so a value captured at
+        construction would always be the stale one. ``None`` before
+        ``connect`` in that mode; the orchestrator connects before it builds
+        the conductor.
+        """
+        return self.runner_client.runner_address if self.runner_client else None
+
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
         """Connect to Runner service with health check retry.
 

@@ -532,3 +532,54 @@ class TestCaptureServiceLogsContract:
         handle = backend.provision(_make_trial_spec(trial_id="task-1:0"))
         assert backend.capture_service_logs(handle, capture_worthy=True) == {}
         assert backend.capture_service_logs(handle, capture_worthy=False) == {}
+
+
+class TestRunnerAddressPublication:
+    """A backend must publish the runner address the orchestrator reads off it.
+
+    The orchestrator builds the grader's context from
+    ``getattr(runtime_backend, "runner_address", None)`` and
+    ``runner_rpc_trial_grader_factory`` maps a miss to ``""``, i.e.
+    ``insecure_channel("")``. Nothing raises: the episode runs and is paid
+    for, and grading dies 30 s later on a health check against no address, so
+    the trial lands ``ungradeable``. That is invisible to every test that
+    checks grading with an *injected* client, which is why the hole survived
+    the move from passing the live backend to passing an address string.
+    """
+
+    def test_builtin_stack_mode_publishes_the_constructed_address(self) -> None:
+        backend = SharedStackRuntimeBackend(runner_address="localhost:50051")
+        assert backend.runner_address == "localhost:50051"
+
+    def test_task_declared_mode_publishes_none_before_connect(self) -> None:
+        # The address does not exist yet: the compose stack is materialised in
+        # connect(), and the host port is chosen there.
+        backend = SharedStackRuntimeBackend(env_manifest=_make_two_service_manifest())
+        assert backend.runner_address is None
+
+    def test_task_declared_mode_publishes_the_materialised_address(self) -> None:
+        from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
+
+        backend = SharedStackRuntimeBackend(env_manifest=_make_two_service_manifest())
+        # What _materialise_manifest does once the host port is known. No
+        # connection is opened by construction.
+        backend.runner_client = GrpcRunnerClient(runner_address="localhost:35719")
+        assert backend.runner_address == "localhost:35719"
+
+    def test_grader_context_wiring_reaches_the_runner_not_the_empty_string(self) -> None:
+        """The end-to-end shape of the defect, at the two seams that carry it."""
+        from tolokaforge.core.plugin_registry import TrialGraderContext
+        from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
+        from tolokaforge.core.trial_grader import runner_rpc_trial_grader_factory
+        from tolokaforge.core.logging import get_logger
+
+        backend = SharedStackRuntimeBackend(env_manifest=_make_two_service_manifest())
+        backend.runner_client = GrpcRunnerClient(runner_address="localhost:35719")
+
+        # Verbatim the orchestrator's read (_build_conductor).
+        address = getattr(backend, "runner_address", None)
+        grader = runner_rpc_trial_grader_factory(
+            TrialGraderContext(runner_address=address, logger=get_logger("run_contract_test"))
+        )
+        assert grader.runner_address == "localhost:35719"
+        assert grader.runner_address != ""
