@@ -139,36 +139,69 @@ class TestAgentDriverProtocolClose:
 
 
 class TestNetworkPolicy:
-    """Local-mode host-side gateway is incompatible with docker
-    ``internal: true`` networks (the CLI's container would have no route to
-    the orchestrator host, defeating the whole shield). Egress restriction is
-    a follow-up that requires the ``SidecarGatewayLauncher`` variant tracked
-    by ADR-0041. Until then, the driver preserves the pack's own declared
-    ``network_policy`` unchanged whether the harness is shielded or not."""
+    """Local-mode host-side gateway is unreachable from a docker
+    ``internal: true`` network — the CLI's container has no route to the
+    orchestrator host. When the shield is active AND the pack declares
+    ``NO_INTERNET``, the driver auto-elevates to ``FULL_INTERNET`` so the
+    gateway is reachable; a loud warning names the elevation and points at
+    the escape hatch (``disable_credential_gateway``). The reserved
+    ``SidecarGatewayLauncher`` (ADR-0041) will make ``NO_INTERNET``
+    compatible with the shield in a follow-up. Unshielded harnesses and
+    packs that already declare ``FULL_INTERNET`` or ``LIMITED_INTERNET``
+    are left untouched."""
 
-    def test_shielded_harness_preserves_pack_declared_network_policy(
-        self, canary_secret_manager: None
+    def test_shielded_no_internet_pack_is_elevated_to_full_internet(
+        self, canary_secret_manager: None, caplog: pytest.LogCaptureFixture
     ) -> None:
+        from tolokaforge.runner.models import NetworkPolicy
+
         adapter = _pack_adapter()
         staged = adapter.stage_task("fix_factorial")
         assert staged is not None
         base = adapter.to_task_description("fix_factorial")
-        base_policy = (
-            base.environment_manifest.network_policy if base.environment_manifest else None
-        )
-        base_allowlist = list(
-            base.environment_manifest.limited_internet_allowlist
-            if base.environment_manifest
-            else []
+        assert base.environment_manifest is not None
+        assert base.environment_manifest.network_policy is NetworkPolicy.NO_INTERNET
+        driver = _driver(agent_harness="claude-code")
+        driver.attach("native", True)
+        try:
+            with caplog.at_level("WARNING"):
+                td = driver.decorate_task_description(base, staged=staged)
+            manifest = td.environment_manifest
+            assert manifest is not None
+            assert manifest.network_policy is NetworkPolicy.FULL_INTERNET
+            assert any(
+                "network_policy=no_internet" in record.message
+                and "Elevating" in record.message
+                and "disable_credential_gateway" in record.message
+                for record in caplog.records
+            ), [r.message for r in caplog.records]
+        finally:
+            driver.close()
+
+    def test_shielded_full_internet_pack_is_preserved(self, canary_secret_manager: None) -> None:
+        from tolokaforge.runner.models import NetworkPolicy
+
+        adapter = _pack_adapter()
+        staged = adapter.stage_task("fix_factorial")
+        assert staged is not None
+        base = adapter.to_task_description("fix_factorial")
+        assert base.environment_manifest is not None
+        # Force the pack's manifest to FULL_INTERNET so the elevation branch
+        # is skipped — this pins that the elevation is targeted, not blanket.
+        base_with_full = base.model_copy(
+            update={
+                "environment_manifest": base.environment_manifest.model_copy(
+                    update={"network_policy": NetworkPolicy.FULL_INTERNET}
+                )
+            }
         )
         driver = _driver(agent_harness="claude-code")
         driver.attach("native", True)
         try:
-            td = driver.decorate_task_description(base, staged=staged)
+            td = driver.decorate_task_description(base_with_full, staged=staged)
             manifest = td.environment_manifest
             assert manifest is not None
-            assert manifest.network_policy == base_policy
-            assert list(manifest.limited_internet_allowlist) == base_allowlist
+            assert manifest.network_policy is NetworkPolicy.FULL_INTERNET
         finally:
             driver.close()
 

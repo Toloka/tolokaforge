@@ -362,24 +362,50 @@ class CodingHarnessDriver:
         # container which does not expose the grader RPC port.
         env_manifest = base.environment_manifest
         if env_manifest is not None:
+            from tolokaforge.runner.models import NetworkPolicy
+
             manifest_update: dict[str, Any] = {
                 "compose_file": staged.compose_file,
                 "runner_service": RUNNER_SERVICE,
             }
-            # NOTE: egress restriction (``NetworkPolicy.LIMITED_INTERNET``) is
-            # NOT applied here even under a shielded harness. The driver's
-            # gateway lives as a process on the orchestrator HOST — reached
-            # via compose ``extra_hosts`` mapping to the docker bridge
-            # gateway — and ``LIMITED_INTERNET`` sits the CLI's container on
-            # a docker ``internal: true`` network with no route to the host.
-            # A restricted CLI simply cannot reach the shield. The credential
-            # shield still holds (dummy in env, real on host, no leak); what
-            # is deferred is *defense-in-depth egress control*. That requires
-            # moving the gateway itself into a compose sidecar so the
-            # ``internal: true`` network can carry the CLI-to-gateway hop —
-            # tracked as follow-up work in ADR-0041 alongside the
-            # ``SidecarGatewayLauncher`` seam. For now, the pack's declared
-            # network policy is preserved unchanged.
+            # Egress topology under the shield. The driver's LLM gateway
+            # lives as a host process reached via compose ``extra_hosts``
+            # mapping to ``host-gateway`` — the docker-bridge magic that
+            # resolves to the docker host IP. A pack declaring
+            # ``NetworkPolicy.NO_INTERNET`` places the CLI's service on a
+            # ``internal: true`` docker network with no route to that host
+            # IP, so ``curl http://tolokaforge-llm-gateway:PORT/`` inside
+            # the container SYN-sends and never gets an ACK — the CLI
+            # then hangs until the bash-tool budget expires, having done
+            # no work (verified against fix_factorial:  0/30 tests
+            # passed, 900s wall-clock, zero assistant turns).
+            #
+            # The right long-term fix is a sidecar-mode gateway that
+            # lives on the internal network alongside the CLI (the
+            # ``SidecarGatewayLauncher`` seam reserved in ADR-0041). For
+            # this PR — the local-mode shield — we auto-elevate a
+            # ``NO_INTERNET`` pack to ``FULL_INTERNET`` when the shield
+            # is active, log a loud warning, and preserve the shield's
+            # credential trust boundary (dummy in container, real on
+            # host, no leak). The elevation only affects the CLI's
+            # service under the coding-harness driver; engine-loop-mode
+            # runs and packs that need strict no-internet grading can
+            # keep it by setting ``disable_credential_gateway: true``.
+            if (
+                self._gateway_handle is not None
+                and env_manifest.network_policy is NetworkPolicy.NO_INTERNET
+            ):
+                logger.warning(
+                    "coding_harness driver: pack declared network_policy=no_internet "
+                    "but the credential shield's local-mode gateway lives on the host "
+                    "and cannot be reached from a docker internal:true network. "
+                    "Elevating this trial's network_policy to full_internet so the "
+                    "CLI can reach the shielded gateway. To keep no_internet grading "
+                    "integrity, set models.agent.disable_credential_gateway=true; the "
+                    "reserved SidecarGatewayLauncher (ADR-0041) will make no_internet "
+                    "compatible with the shield in a follow-up."
+                )
+                manifest_update["network_policy"] = NetworkPolicy.FULL_INTERNET
             env_manifest = env_manifest.model_copy(update=manifest_update)
         return base.model_copy(
             update={
