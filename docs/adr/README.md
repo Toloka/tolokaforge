@@ -29,6 +29,8 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 
 ## Index
 
+Note: number 0043 is intentionally skipped — reserved for a draft that never landed on `main` (`HybridRuntimeBackend` as a distinct class). Superseded before merge by ADR-0044. See closed Milestone 40 (#1363) for the draft's history.
+
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions in ADRs | Accepted |

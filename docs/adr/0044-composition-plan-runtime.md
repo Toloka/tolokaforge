@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-08-31
 - **Deciders:** @CiroGamboa
-- **Supersedes:** ADR-0043 (unshipped — `HybridRuntimeBackend` as a distinct class)
+- **Supersedes:** — (replaces an unshipped ADR-0043 draft — `HybridRuntimeBackend` as a distinct class — that was never merged to `main`; number 0043 is intentionally skipped, see `docs/adr/README.md` index note)
 - **Superseded by:** —
 - **Extends:** [ADR-0018](0018-multi-container-under-shared-runtime.md), [ADR-0022](0022-runtime-independence.md), [ADR-0040](0040-standalone-grader.md)
 
@@ -28,7 +28,7 @@ The 2026-08-30 engine-loop `kimi_k3` sample on `eval/tbench-balanced-10-engine-l
 ## Decision Drivers
 
 - **The vocabulary is already close.** ADR-0018's amendment ships per-service `isolation: shared | reset | ephemeral`. The missing axis is *per-compose-file* scope, not another per-service value.
-- **The existing seams already generalise cleanly.** `RECIPE_REGISTRY` in `reset_recipes/__init__.py:41-47` is a strategy-dispatch registry keyed by a closed vocab (`SeedKind`). The same pattern applies to per-service between-trial lifecycle. `plugin_registry.py:319-352` (`discover_entry_points` / `_load`) already handles factory discovery for `RuntimeBackend`, `TrialGrader`, `Conductor`, etc. — reuse for the new seams.
+- **The existing seams already generalise cleanly.** `RECIPE_REGISTRY` in `tolokaforge/runtime/reset_recipes/__init__.py:41-47` is a strategy-dispatch registry keyed by a closed vocab (`SeedKind`). The same pattern applies to per-service between-trial lifecycle. `tolokaforge/core/plugin_registry.py:319-352` (`discover_entry_points` / `_load`) already handles factory discovery for `RuntimeBackend`, `TrialGrader`, `Conductor`, etc. — reuse for the new seams.
 - **Two backends are enough.** Once composition plan is a first-class field, "shared" and "per_trial" are just extreme points on the scope axis. `PerTrialRuntimeBackend` collapses to a thin preset factory. `HybridRuntimeBackend` does not exist as a class — it becomes a two-stack plan.
 - **State-contamination invariants are load-bearing.** Multi-compose-file support opens 9 new failure modes (container-name collision, volume collision, runner endpoint ambiguity, reset-recipe scope drift, network cross-reachability, fixed host-port collisions, `limited_internet_allowlist` merge ambiguity, credential-injection blast radius, log-router bookkeeping). The redesign preserves the 12 existing invariants and closes each new failure mode via named enforcement points.
 - **Backward compat is a HARD invariant.** Every existing task pack continues to work byte-identically. Scalar `compose_file` is a valid ergonomic single-stack representation, not a deprecated form.
@@ -58,7 +58,7 @@ Adopt Option D. Concrete concerns follow.
 
 ### 1. Manifest surface — `EnvironmentManifest.stacks: list[StackDecl]`
 
-New type `StackDecl` (in `runner/models.py`):
+New type `StackDecl` (in `tolokaforge/runner/models.py`):
 
 ```
 class StackDecl(BaseModel):
@@ -135,7 +135,7 @@ class SharedStackRuntimeBackend:
     composer: SubstrateComposer                                 # detachable (default = default_substrate_composer)
     materialiser_registry: dict[str, ComposeMaterialiser]       # keyed by name
     dispatcher_registry: dict[ServiceIsolation, ServiceLifecycleDispatcher]
-    # (dataclass fields with entry-point-loader defaults, following per_trial_runtime.py:182 readiness_probe_loader idiom)
+    # (dataclass fields with entry-point-loader defaults, following tolokaforge/core/per_trial_runtime.py:182 readiness_probe_loader idiom)
 ```
 
 At `connect()`: for each `stack_scope="run"` decl → `composer.materialise_run(...)`. At `provision(spec)`: for each `stack_scope="task"` decl whose task not yet materialised → `composer.materialise_task(...)`; for each `stack_scope="trial"` decl → `composer.materialise_trial(...)`. Between trials sharing a `run`/`task` scope stack → `composer.cycle_between_trials(...)` walks the stack's services and invokes the dispatcher registered for each isolation label.
@@ -162,6 +162,8 @@ Add `hybrid_stack`-analog capability entry `composed_stack` to `CAPABILITY_REGIS
 
 `Orchestrator._verify_isolation_compatibility` becomes a per-scope check: for each stack, verify every service's isolation label has a registered dispatcher for that stack's scope. Refusals name `(stack_id, service_name, isolation, scope)`.
 
+**Deprecated `orchestrator.runtime` override.** ADR-0018's amendment declared the operator-level `config.orchestrator.runtime` override deprecated but still-honoured with a `DeprecationWarning`. Under this ADR the override is honoured as follows: `orchestrator.runtime = "per_trial"` coerces the resolved manifest to a single-stack `trial`-scope plan (equivalent to today's behaviour); `orchestrator.runtime = "shared"` coerces to a single-stack `run`-scope plan and continues to raise the ADR-0018 refusal when the task set contains `reset|ephemeral` services with no dispatcher registered for the `run` scope (unchanged semantics — the built-in `reset` and `ephemeral` dispatchers make the previously-refused combinations legal by default, so a task pack that would have been rejected under the old override now succeeds; operators who need the strict refusal register a `None`/refusing dispatcher). A new value `orchestrator.runtime = "composed"` is not introduced — plan shape is inferred from the manifest, and the override remains a coercion knob for pinning a legacy shape.
+
 ### 7. Backward compat as a HARD invariant
 
 Every existing task pack continues to work byte-identically. Manifest with scalar `compose_file` and no `stacks` block → `project_loader.resolve` synthesises a single-entry composition plan with `stack_scope="run"` (if `requires_per_trial=False` under today's rules) or `stack_scope="trial"` (if `True`). Every downstream consumer sees identical `compose_file` / `services` / `stack_inputs` fields via legacy mirror. Canonical test locks this at load time.
@@ -172,14 +174,14 @@ Every existing task pack continues to work byte-identically. Manifest with scala
 
 | INV | Old enforcement | New enforcement point |
 |---|---|---|
-| INV-1 (one substrate per SharedStack run) | `orchestrator.py:1091-1097` refuses heterogeneous `compose_file` | `_extract_run_env_manifest` refuses cross-task divergence of the `run`-scope subset only. `task`/`trial` scope stacks may differ freely per task. |
-| INV-2 (SharedStack refuses `ephemeral`) | `orchestrator.py:1404-1411` | Enforced per-stack-scope in `_verify_isolation_compatibility`: `ephemeral` is legal iff the stack is `trial`-scope OR the stack has an `ephemeral` dispatcher registered (which the built-in dispatcher provides). |
+| INV-1 (one substrate per SharedStack run) | `tolokaforge/core/orchestrator.py:1091-1097` refuses heterogeneous `compose_file` | `_extract_run_env_manifest` refuses cross-task divergence of the `run`-scope subset only. `task`/`trial` scope stacks may differ freely per task. |
+| INV-2 (SharedStack refuses `ephemeral`) | `tolokaforge/core/orchestrator.py:1404-1411` | Enforced per-stack-scope in `_verify_isolation_compatibility`: `ephemeral` is legal iff the stack is `trial`-scope OR the stack has an `ephemeral` dispatcher registered (which the built-in dispatcher provides). |
 | INV-3 (SharedStack refuses `reset` via `requires_per_trial`) | INV-2's twin | Same as INV-2 for `reset`. All four built-in reset recipes work at any scope. |
-| INV-4 (closed `ServiceIsolation` vocab) | `runner/models.py:2222` | Unchanged. |
+| INV-4 (closed `ServiceIsolation` vocab) | `tolokaforge/runner/models.py:2222` | Unchanged. |
 | INV-5 (reset iff seed) | `ServiceSpec._check_reset_agrees_with_isolation` | Unchanged. |
 | INV-6 (empty services ⇒ per-trial) | `EnvironmentManifest.requires_per_trial` | Preserved via legacy coercion. |
-| INV-7 (`SHARED_STACK` = contamination structural) | `runtime.py:47-63` | `IsolationMode` becomes computed from `plan_shape`. Structural-contamination refusal fires only for `SHARED_STACK`. |
-| INV-8 (capability admission subset-only) | `backend_capabilities.py:87-115` | Unchanged mechanism. `advertised_capabilities` computed from plan × registry. |
+| INV-7 (`SHARED_STACK` = contamination structural) | `tolokaforge/core/runtime.py:47-63` | `IsolationMode` becomes computed from `plan_shape`. Structural-contamination refusal fires only for `SHARED_STACK`. |
+| INV-8 (capability admission subset-only) | `tolokaforge/core/backend_capabilities.py:87-115` | Unchanged mechanism. `advertised_capabilities` computed from plan × registry. |
 | INV-9 (endpoints XOR env_manifest) | shared_stack ctor guard | Endpoints resolved from the plan's materialised stacks; guard preserved as "operator-supplied endpoints OR composition plan, not both". |
 | INV-10 (unique compose project name) | `make_project_temp_dir` slug | **Extended**: `make_project_temp_dir(run_id, stack_id, scope_key)` where `scope_key = run_id` for `run`, `f"{run_id}-{task_id}"` for `task`, `trial_id` for `trial`. Closes container-name and volume collision. |
 | INV-11 (compose safety refusals) | per-file at manifest load | Iterated per `StackDecl`. |
@@ -234,6 +236,8 @@ Under composition plan (T-Bench adapter opts in at Ticket #1385):
 - **The refactor touches load-bearing code**. `SharedStackRuntimeBackend`, `PerTrialRuntimeBackend`, `Orchestrator._construct_runtime_backend`, `Orchestrator._extract_run_env_manifest`. Careful staged rollout via 8 tickets.
 - **Multi-compose debug story is more complex.** A composed run has a live shared runner + task compose projects per trial. Troubleshooting requires knowing which stack failed. Log-router bookkeeping per-stack helps.
 - **Composer becomes a load-bearing abstraction.** A bug in `DefaultSubstrateComposer` affects every task pack.
+- **`PerTrialRuntimeBackend` becomes a ~30-LOC shim** retained purely for import compatibility (§4). The class survives but no longer participates in backend selection (§6). This is a permanent code-path duplication with its own maintenance surface — worth it for the import-stability guarantee but not free.
+- **Three new Protocols + three new entry-point groups + five new built-in registrations** (§2). A real complexity increase for readers navigating `tolokaforge/core/plugin_registry.py` and the seam catalogue in `docs/ADAPTER_ARCHITECTURE.md`.
 
 ### Neutral
 
@@ -254,6 +258,6 @@ Under composition plan (T-Bench adapter opts in at Ticket #1385):
 - [ADR-0018](0018-multi-container-under-shared-runtime.md) — per-service isolation vocabulary + 2×2 this ADR redesigns as N-scope composition.
 - [ADR-0022](0022-runtime-independence.md) — task-driven backend selection.
 - [ADR-0040](0040-standalone-grader.md) — precedent for topology-agnostic multiple impls behind one Protocol.
-- ADR-0043 (superseded — kept for historical context).
 - Epic: https://github.com/Toloka/tolokaforge/issues/1336
 - Milestone: https://github.com/Toloka/tolokaforge/milestone/41
+- Prior attempt (unshipped): the `HybridRuntimeBackend`-as-distinct-class approach was drafted as ADR-0043 in a Milestone 40 integration branch that was closed as wrong-premise. Number 0043 is intentionally skipped in the ADR index; the historical draft is preserved in the closed Milestone 40 ticket #1363.
