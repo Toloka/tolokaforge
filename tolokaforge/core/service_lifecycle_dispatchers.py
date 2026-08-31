@@ -89,10 +89,9 @@ class ResetDispatcher:
         *,
         seeds: Mapping[str, SeedRef],
     ) -> None:
-        typed = _cast_handle(stack_handle)
         if service_spec.reset is None:
             raise ProvisionError(
-                trial_id=typed.stack_id,
+                trial_id=stack_handle.stack_id,
                 stage="cycle",
                 reason=(
                     f"service {service_name!r} labelled 'reset' has no "
@@ -104,7 +103,7 @@ class ResetDispatcher:
         seed = seeds.get(seed_name)
         if seed is None:
             raise ProvisionError(
-                trial_id=typed.stack_id,
+                trial_id=stack_handle.stack_id,
                 stage="cycle",
                 reason=(
                     f"service {service_name!r} names seed {seed_name!r} but "
@@ -112,6 +111,7 @@ class ResetDispatcher:
                     f"(available: {sorted(seeds)!r})."
                 ),
             )
+        typed = _cast_handle(stack_handle)
         try:
             recipe_dispatch(seed, service_name, typed.compose)
         except RuntimeError as exc:

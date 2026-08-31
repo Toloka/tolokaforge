@@ -396,6 +396,12 @@ def test_scenario_b_per_trial_backend_parity(monkeypatch: pytest.MonkeyPatch) ->
         assert driver_state(composer_stubs[0]) == driver_state(baseline_stubs[0])
         assert env_handle.trial_endpoints == baseline_endpoints
         assert _basename_slug_prefix(composer_temp_dir) == _basename_slug_prefix(baseline_temp_dir)
+        baseline_client = next(iter(backend._clients.values()))
+        composer_client = env_handle.trial_runner_client
+        assert composer_client is not None
+        assert isinstance(baseline_client, _RecordingRunnerClient)
+        assert isinstance(composer_client, _RecordingRunnerClient)
+        assert composer_client.runner_address == baseline_client.runner_address
         # Reset-recipe invocation parity — same seed kind and service
         # name in the same order. The ``compose`` third tuple entry is
         # each path's own stub instance and is not compared across

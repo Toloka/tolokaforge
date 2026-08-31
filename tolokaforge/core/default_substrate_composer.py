@@ -9,11 +9,9 @@ service's between-trial cycle to a
 plan invariants (INV-12) at :meth:`materialise_run`.
 
 The class stands beside :class:`SharedStackRuntimeBackend` and
-:class:`PerTrialRuntimeBackend`; #1381 wires it into the backend, at which
-point the inline ``_materialise_manifest`` / ``provision`` flows delete.
-The parity contract test at
-``tests/canonical/test_composition_parity_contract.py`` (Stage 5) locks
-the byte-for-byte equivalence the wiring will lean on.
+:class:`PerTrialRuntimeBackend` — the built-in triple against which
+``tests/canonical/test_composition_parity_contract.py`` locks byte-parity
+with the inline compose-mode flows for the single-stack shapes.
 """
 
 from __future__ import annotations
@@ -300,7 +298,7 @@ class DefaultSubstrateComposer:
         endpoints = _resolve_env_endpoints(
             self.materialiser, runner_handle, runner_host, runner_host_port, manifest
         )
-        client = GrpcRunnerClient(runner_address=f"{runner_host}:{runner_host_port}")
+        client = self.runner_client_factory(f"{runner_host}:{runner_host_port}", None)
         return ComposedEnvHandle(
             trial_id=spec.trial_id,
             trial_stack_handles=tuple(trial_handles),
@@ -333,13 +331,24 @@ class DefaultSubstrateComposer:
                             f"(scope={stack_handle.stack_scope}, service={service_name!r})"
                         ),
                     )
-                dispatcher.cycle(
-                    service_name,
-                    service_spec,
-                    stack_handle,
-                    self.materialiser,
-                    seeds=run_sub.seeds,
-                )
+                try:
+                    dispatcher.cycle(
+                        service_name,
+                        service_spec,
+                        stack_handle,
+                        self.materialiser,
+                        seeds=run_sub.seeds,
+                    )
+                except ProvisionError as exc:
+                    raise ProvisionError(
+                        trial_id=spec.trial_id,
+                        stage=exc.stage,
+                        reason=(
+                            f"stack {stack_handle.stack_id!r} "
+                            f"(scope={stack_handle.stack_scope}) "
+                            f"service {service_name!r}: {exc.reason}"
+                        ),
+                    ) from exc
 
     # ------------------------------------------------------------------
     # teardown
@@ -442,27 +451,6 @@ class DefaultSubstrateComposer:
         trial_id: str,
         reset_dispatcher: ServiceLifecycleDispatcher,
     ) -> None:
-        if service_spec.reset is None:
-            raise ProvisionError(
-                trial_id=trial_id,
-                stage="reset_recipe",
-                reason=(
-                    f"service {service_name!r} labelled 'reset' has no "
-                    "'reset.seed' pointer — schema validation should have "
-                    "rejected the manifest earlier."
-                ),
-            )
-        seed_name = service_spec.reset.seed
-        if seed_name not in seeds:
-            raise ProvisionError(
-                trial_id=trial_id,
-                stage="reset_recipe",
-                reason=(
-                    f"service {service_name!r} names seed {seed_name!r} but "
-                    f"the backend has no such seed in its registry "
-                    f"(available: {sorted(seeds)!r})."
-                ),
-            )
         try:
             reset_dispatcher.cycle(
                 service_name,
@@ -504,9 +492,9 @@ def _require_manifest(spec: TrialSpec) -> EnvironmentManifest:
 def _refuse_reserved_prefix(manifest: EnvironmentManifest, trial_id: str) -> None:
     """Refuse a ``TOLOKAFORGE_``-prefixed key in ``stack_inputs``.
 
-    Replicates the check :meth:`PerTrialRuntimeBackend.provision` performs
-    today — the backend keeps its own guard until #1381 wires the
-    composer in, so the two paths refuse the same manifest verbatim.
+    Refuses the same reserved-prefix ``stack_inputs`` keys
+    :meth:`PerTrialRuntimeBackend.provision` refuses, so both paths
+    reject an identical manifest with identical text.
     """
     reserved = sorted(
         key for key in manifest.stack_inputs if key.startswith(TOLOKAFORGE_ENV_PREFIX)
@@ -638,18 +626,18 @@ def _resolve_service_endpoint(
 ) -> ResolvedEndpoint | None:
     """Resolve a declared-readiness service's first published port.
 
-    Delegates to the compose-side ``first_published_port`` scan on the
-    materialiser's private handle: keeps the composer materialiser-
-    agnostic at the call site while sharing the existing port-scan on
-    the built-in docker-compose materialiser. Foreign handle families
-    (K8s, remote) get ``None`` — they will register their own readiness
-    surface when they land.
+    Discovers the service's container port through the compose-side
+    scan on the built-in docker-compose handle, then routes the
+    ``(container_port) -> (host, host_port)`` translation through
+    :meth:`ComposeMaterialiser.resolve_endpoint`. Foreign handle
+    families (K8s, remote) get ``None`` from the container-port scan
+    and are free to satisfy readiness through their own surface when
+    they register a materialiser.
     """
-    from tolokaforge.core.compose_materialisation import first_published_port, resolve_host_port
+    from tolokaforge.core.compose_materialisation import first_published_port
     from tolokaforge.core.docker_compose_materialiser import _DockerComposeStackHandle
 
     if not isinstance(stack_handle, _DockerComposeStackHandle):
-        del materialiser
         return None
     try:
         container = stack_handle.compose.get_container(service_name=service_name)
@@ -663,9 +651,10 @@ def _resolve_service_endpoint(
     container_port = first_published_port(container)
     if container_port is None:
         return None
-    host, host_port = resolve_host_port(stack_handle.compose, service_name, container_port)
-    if host is None or host_port is None:
+    endpoint = materialiser.resolve_endpoint(stack_handle, service_name, container_port)
+    if endpoint is None:
         return None
+    host, host_port = endpoint
     return ResolvedEndpoint(host=host, port=host_port)
 
 
