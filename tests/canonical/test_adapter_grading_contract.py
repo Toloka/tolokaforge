@@ -3,7 +3,7 @@
 Two locks. First, :class:`NativeAdapter` — the built-in shape — passes
 ``isinstance`` against :class:`AdapterGradingContract` at runtime, resolves
 every slot the Protocol declares on the class, and returns the shipped
-defaults from :class:`BaseAdapter` for the three new emit seams and three
+defaults from :class:`BaseAdapter` for the three emit seams and three
 capability flags. Second, a registry-wide name-presence sweep: every adapter
 class discoverable through :func:`available_adapters` carries each declared
 slot as an attribute, so a future refactor cannot silently drop a slot from
@@ -106,10 +106,9 @@ def test_the_three_capability_flags_read_false_on_a_bare_native_adapter(
 ) -> None:
     """The shipped defaults are ``False`` for every capability the flags name.
 
-    :class:`NativeAdapter` neither drives the host Docker CLI to grade, nor
-    grades from a task ``grading:`` file yet (the reader body still lives in
-    ``_task_loader``), nor syncs adapter env into runner state (that pattern
-    is Tau-family). The three defaults each read ``False``.
+    :class:`NativeAdapter` neither drives the host Docker CLI, nor grades
+    from a task ``grading:`` file through the class hook, nor syncs adapter
+    env into runner state — the three defaults each read ``False``.
     """
     assert a_native_adapter.requires_docker_cli_in_runner is False
     assert a_native_adapter.grades_from_task_grading_file is False
@@ -124,11 +123,7 @@ def test_the_grading_source_default_answers_uninterrogable_with_a_reason(
 
     The default is :attr:`~GradingSourceKind.UNINTERROGABLE` with a non-empty
     reason — the honest "the adapter has not declared its grading source"
-    every plugin starts with until it overrides. The reason is asserted
-    non-empty rather than pinned to an exact string, because a future
-    reader-body migration (issue #1340) will replace the default with a
-    concrete override, and locking the exact prose here would refuse the
-    migration for nothing.
+    every plugin starts with until it overrides.
     """
     task, task_dir = a_task_and_dir
 
@@ -137,7 +132,7 @@ def test_the_grading_source_default_answers_uninterrogable_with_a_reason(
     assert isinstance(source, GradingSource)
     assert source.kind is GradingSourceKind.UNINTERROGABLE
     assert source.path is None
-    assert source.reason
+    assert source.reason  # non-empty, not exact prose
 
 
 def test_the_emit_runner_grading_payload_default_is_empty(

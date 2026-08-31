@@ -10,8 +10,8 @@ The four readers and two emit seams answer the two questions grading asks: what
 the block a run reads is (and where it came from), and what the runner needs to
 build ``RunnerGradingConfig``. The three capability flags answer the runtime
 questions the surrounding stack asks — Docker CLI in the runner, task-file
-grading source, adapter-env sync — off data on the class, so callers stop
-name-branching on ``AdapterType.NATIVE.value``.
+grading source, adapter-env sync — off data on the class, so callers can read
+the flag instead of name-branching on ``AdapterType.NATIVE.value``.
 """
 
 from __future__ import annotations

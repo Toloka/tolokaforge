@@ -9,7 +9,7 @@ For adapter architecture and interface contracts, see
 [ADAPTER_INTERFACE.md](ADAPTER_INTERFACE.md). The grading-side contract every
 adapter satisfies — the four readers, two emit seams, and three capability
 flags — is `AdapterGradingContract` in
-[ADAPTER_INTERFACE.md § Optional Methods](ADAPTER_INTERFACE.md#optional-methods).
+[ADAPTER_INTERFACE.md § AdapterGradingContract](ADAPTER_INTERFACE.md#adaptergradingcontract).
 
 ---
 
