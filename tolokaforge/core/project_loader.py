@@ -891,9 +891,6 @@ def _synthesise_composition_plan(manifest: EnvironmentManifest, merged: dict[str
         return
     stacks_patch = merged.get("stacks")
     if stacks_patch:
-        # An explicit multi-stack patch was authored but did not survive
-        # the scalar merge path; a future ticket wires the multi-stack
-        # merge lifecycle. Refuse loudly rather than silently drop it.
         raise NotImplementedError(
             "EnvironmentPatch.stacks (multi-stack composition plan) is declared "
             "but the multi-stack merge path is not yet wired (see ADR-0044 § 3). "
@@ -937,6 +934,13 @@ def _merge_env_patches(
     stack_replacement = isinstance(task_stack, dict) and "compose_file" in task_stack
     if not stack_replacement:
         return deep_merge(project, task)
+
+    if project.get("stacks") or task.get("stacks"):
+        raise NotImplementedError(
+            "EnvironmentPatch.stacks (multi-stack composition plan) is declared "
+            "but the multi-stack merge path is not yet wired (see ADR-0044 § 3). "
+            "Use the scalar `stack` field until the composer lands."
+        )
 
     merged: dict[str, Any] = {"stack": dict(task_stack)}
     for field in _SERVICE_TREATMENT_FIELDS:

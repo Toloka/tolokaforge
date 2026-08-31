@@ -860,6 +860,11 @@ class TestManifestWireShape:
         reloaded = EnvironmentManifest.model_validate(wire)
         assert reloaded.model_dump(mode="json") == wire
 
+        wire_pre_adr = {k: v for k, v in wire.items() if k != "stacks"}
+        reloaded_legacy = EnvironmentManifest.model_validate(wire_pre_adr)
+        assert reloaded_legacy.stacks == []
+        assert reloaded_legacy.model_dump(mode="json") == wire
+
 
 # ---------------------------------------------------------------------------
 # TaskDescription embedding — optional, defaults to None

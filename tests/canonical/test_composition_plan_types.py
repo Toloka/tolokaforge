@@ -163,19 +163,20 @@ class TestBackwardCompatCoercion:
     """A manifest loaded from the pre-ADR-0044 scalar surface must resolve
     to a valid single-entry composition plan whose scope is inferred from
     the same `requires_per_trial` derivation today's backend selection uses.
-    Locked here so the coercion in `project_loader.resolve` cannot silently
-    regress."""
+    Exercises `project_loader.resolve()` — the seam every consumer takes —
+    so a future refactor cannot silently regress the coercion by removing
+    or reordering the internal helper."""
 
     def test_empty_services_infers_trial_scope(self) -> None:
         """No services declared → `requires_per_trial=True` per ADR-0009 →
         synthesised stack has `stack_scope="trial"`. Matches today's
         routing to `PerTrialRuntimeBackend`."""
-        from tolokaforge.core.project_loader import _synthesise_composition_plan
+        from tolokaforge.core.project_loader import resolve
 
-        m = EnvironmentManifest(compose_file=_fixture("safe_one_service.yaml"))
-        assert m.stacks == []
+        patch = EnvironmentPatch(stack=StackPatch(compose_file=_fixture("safe_one_service.yaml")))
+        m = resolve(project_env=patch, task_env=None)
+        assert m is not None
         assert m.requires_per_trial is True
-        _synthesise_composition_plan(m, {})
         assert len(m.stacks) == 1
         assert m.stacks[0].stack_scope == "trial"
         assert m.plan_shape is PlanShape.TRIAL_SCOPED_ONLY
@@ -184,14 +185,15 @@ class TestBackwardCompatCoercion:
         """All `shared` → `requires_per_trial=False` → synthesised stack
         has `stack_scope="run"`. Matches today's routing to
         `SharedStackRuntimeBackend`."""
-        from tolokaforge.core.project_loader import _synthesise_composition_plan
+        from tolokaforge.core.project_loader import resolve
 
-        m = EnvironmentManifest(
-            compose_file=_fixture("safe_one_service.yaml"),
+        patch = EnvironmentPatch(
+            stack=StackPatch(compose_file=_fixture("safe_one_service.yaml")),
             services={"default": ServiceSpec(isolation="shared")},
         )
+        m = resolve(project_env=patch, task_env=None)
+        assert m is not None
         assert m.requires_per_trial is False
-        _synthesise_composition_plan(m, {})
         assert m.stacks[0].stack_scope == "run"
         assert m.plan_shape is PlanShape.SINGLE_RUN
 
@@ -199,22 +201,25 @@ class TestBackwardCompatCoercion:
         """Mixed `shared` + `reset|ephemeral` → `requires_per_trial=True` →
         synthesised stack has `stack_scope="trial"`. Matches today's
         routing to per_trial when the pre-ADR-0044 surface was used."""
-        from tolokaforge.core.project_loader import _synthesise_composition_plan
+        from tolokaforge.core.project_loader import resolve
 
-        m = EnvironmentManifest(
-            compose_file=_fixture("safe_two_service.yaml"),
+        patch = EnvironmentPatch(
+            stack=StackPatch(compose_file=_fixture("safe_two_service.yaml")),
             services={
                 "default": ServiceSpec(isolation="shared"),
                 "db": ServiceSpec(isolation="ephemeral"),
             },
         )
+        m = resolve(project_env=patch, task_env=None)
+        assert m is not None
         assert m.requires_per_trial is True
-        _synthesise_composition_plan(m, {})
         assert m.stacks[0].stack_scope == "trial"
 
     def test_synthesis_is_idempotent(self) -> None:
         """A manifest whose `stacks` list is already populated MUST NOT
-        be overwritten by the coercion — an explicit plan wins."""
+        be overwritten by the coercion — an explicit plan wins. Locks the
+        internal invariant of the helper; end-to-end coverage is provided
+        by the other tests in this class going through `resolve()`."""
         from tolokaforge.core.project_loader import _synthesise_composition_plan
 
         explicit_stack = StackDecl(
@@ -233,18 +238,21 @@ class TestBackwardCompatCoercion:
         """The scalar-form fields (`compose_file`, `runner_service`,
         `stack_inputs`) mirror the sole synthetic stack — every existing
         consumer keeps working unchanged."""
-        from tolokaforge.core.project_loader import _synthesise_composition_plan
+        from tolokaforge.core.project_loader import resolve
 
-        m = EnvironmentManifest(
-            compose_file=_fixture("safe_two_service.yaml"),
-            runner_service="default",
-            stack_inputs={"FOO": "bar"},
+        patch = EnvironmentPatch(
+            stack=StackPatch(
+                compose_file=_fixture("safe_two_service.yaml"),
+                runner_service="default",
+                inputs={"FOO": "bar"},
+            ),
             services={
                 "default": ServiceSpec(isolation="shared"),
                 "db": ServiceSpec(isolation="shared"),
             },
         )
-        _synthesise_composition_plan(m, {})
+        m = resolve(project_env=patch, task_env=None)
+        assert m is not None
         assert m.stacks[0].compose_file == m.compose_file
         assert m.stacks[0].runner_service == m.runner_service
         assert m.stacks[0].inputs == m.stack_inputs
@@ -270,9 +278,10 @@ class TestEnvironmentPatchStacksBlockRefusal:
 
     def test_stacks_block_alone_is_accepted(self) -> None:
         """New composition-plan patch — no scalar `stack.compose_file`.
-        The multi-stack merge path is not wired in this ticket (raises
-        `NotImplementedError` on resolve); this test only pins that the
-        patch construction itself accepts the shape."""
+        The multi-stack merge path is not wired in this ticket; this test
+        only pins that the patch construction itself accepts the shape.
+        The end-to-end refusal on `resolve` is locked by
+        :meth:`test_stacks_block_is_refused_end_to_end`."""
         patch = EnvironmentPatch(
             stacks={
                 "engine": StackPatch(
@@ -283,6 +292,26 @@ class TestEnvironmentPatchStacksBlockRefusal:
         assert patch.stack is None
         assert patch.stacks is not None
         assert "engine" in patch.stacks
+
+    def test_stacks_block_is_refused_end_to_end(self) -> None:
+        """The whole point of accepting the `stacks` block at patch level
+        is that it must be caught at resolve time, not silently degenerate
+        into the scalar coercion path. Locks the guard in the synthesiser —
+        a follow-up refactor that removes it would land here."""
+        from tolokaforge.core.project_loader import resolve
+
+        project_patch = EnvironmentPatch(
+            stack=StackPatch(compose_file=_fixture("safe_one_service.yaml"))
+        )
+        task_patch = EnvironmentPatch(
+            stacks={
+                "engine": StackPatch(
+                    compose_file=_fixture("safe_one_service.yaml"), stack_scope="run"
+                )
+            }
+        )
+        with pytest.raises(NotImplementedError, match="multi-stack merge path is not yet wired"):
+            resolve(project_env=project_patch, task_env=task_patch)
 
     def test_stack_without_compose_file_and_stacks_together_accepted(self) -> None:
         """Edge case: `stack` set but ONLY carrying inputs/runner_service
