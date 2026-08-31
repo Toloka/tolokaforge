@@ -200,17 +200,25 @@ def _run_needs_docker_cli(adapter_type: str | None, tasks: list[Any]) -> bool:
 
     Two triggers today:
 
-    - Terminal-bench tasks exec the docker CLI + compose plugin in the runner
-      (against the host daemon via the mounted socket).
+    - The adapter declares ``requires_docker_cli_in_runner = True`` — the
+      class-level capability flag says its grading needs to shell out to
+      docker from the runner container (against the host daemon via the
+      mounted socket). Terminal-bench is the shipped example.
     - Any task that routes a shipped tool through the compose variant (see
       :func:`_tasks_use_compose_variant_tools`) — the runner ``docker exec``\\ s
       into the sibling service.
 
     Detected before build so the slim default image ships without the CLI for
-    every other run. Pure function for unit testing.
+    every other run. Pure function for unit testing — the adapter class is
+    resolved from ``adapter_type`` via the registry, no adapter instance
+    required.
     """
-    if adapter_type == AdapterType.TERMINAL_BENCH:
-        return True
+    if adapter_type is not None:
+        from tolokaforge.adapters import adapter_class
+
+        cls = adapter_class(adapter_type)
+        if cls is not None and cls.requires_docker_cli_in_runner:
+            return True
     return _tasks_use_compose_variant_tools(tasks)
 
 
