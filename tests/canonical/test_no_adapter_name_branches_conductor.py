@@ -53,7 +53,7 @@ def test_conductor_has_no_isinstance_self_adapter_branch() -> None:
 
 
 def test_conductor_has_no_native_adapter_import() -> None:
-    """The :class:`NativeAdapter` import was the sole call site's dependency; guard against re-import."""
+    """``conductor.py`` imports no :class:`NativeAdapter` — the adapter-env sync gate reads the ``syncs_adapter_env_to_state`` flag off the class."""
     hits = _matching_lines("from tolokaforge.adapters.native import NativeAdapter")
     assert not hits, (
         "tolokaforge/core/conductor.py must not import NativeAdapter — the "
