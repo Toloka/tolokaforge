@@ -4,7 +4,7 @@ import base64
 import glob as glob_module
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import yaml
 
@@ -261,6 +261,9 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         - task.yaml: Task configuration
         - grading.yaml: Grading configuration
     """
+
+    syncs_adapter_env_to_state: ClassVar[bool] = False
+    """Native's runner owns TrialState end-to-end; adapter env data is not synced back."""
 
     def __init__(self, params: dict[str, Any]):
         """

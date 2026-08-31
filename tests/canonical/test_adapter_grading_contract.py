@@ -172,6 +172,21 @@ def test_the_preferred_grader_kind_default_is_composite(
     assert a_native_adapter.preferred_grader_kind() == "composite"
 
 
+def test_the_terminal_bench_adapter_declares_the_docker_cli_and_sync_flags() -> None:
+    """:class:`TerminalBenchAdapter` opts into ``requires_docker_cli_in_runner`` and inherits ``syncs_adapter_env_to_state = False``.
+
+    The docker-CLI flag is the class-level source of truth the orchestrator
+    reads to bake the CLI into the runner image; leaving the sync flag at
+    ``False`` locks that terminal-bench does not push
+    :class:`AdapterEnvironment` data into runner ``TrialState`` — its
+    ``AdapterEnvironment.data`` is always empty.
+    """
+    from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+    assert TerminalBenchAdapter.requires_docker_cli_in_runner is True
+    assert TerminalBenchAdapter.syncs_adapter_env_to_state is False
+
+
 def test_every_registered_adapter_class_carries_every_declared_slot() -> None:
     """Registry-wide name-presence sweep across every discoverable adapter class.
 
