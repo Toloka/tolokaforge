@@ -170,11 +170,10 @@ Each adapter must subclass `BaseAdapter` and implement:
     configuration overrides. See `NativeAdapter.grading_source` for the
     native reading — the shape any adapter's override here can consult.
 
-    An instance method, unlike the four readers in items 13 - 16: `grading_source`
-    resolves the source an adapter *actually reads* against its instance state
-    (pack roots, project defaults), which a classmethod cannot see. The static
-    gate `tolokaforge validate` reaches the source through a dispatch helper
-    that handles the not-installed arm without needing an instance.
+    A classmethod, matching items 13 - 16: every fact reported here is a
+    function of the task and its directory alone, so the static gate
+    `tolokaforge validate` reaches the source through the same dispatch helper
+    the sibling readers use. See ADR-0042.
 
 19. `emit_runner_grading_payload(task_id: str) -> dict[str, Any]`
 

@@ -114,6 +114,26 @@ def test_the_three_capability_flags_read_false_on_a_bare_native_adapter(
     assert a_native_adapter.syncs_adapter_env_to_state is False
 
 
+def test_the_native_adapter_grading_source_is_callable_on_the_class(
+    a_native_adapter: NativeAdapter,
+    a_task_and_dir: tuple[TaskConfig, Path],
+) -> None:
+    """:class:`NativeAdapter.grading_source` dispatches from the class, not just an instance.
+
+    Called on the class (``NativeAdapter.grading_source(task, task_dir)``)
+    it returns the same :class:`GradingSource` the instance call returns —
+    the classmethod dispatch the free-function delegation helper relies on
+    to reach the source without instantiating :class:`NativeAdapter` (which
+    would demand a ``tasks_glob``).
+    """
+    task, task_dir = a_task_and_dir
+
+    from_class = NativeAdapter.grading_source(task, task_dir)
+    from_instance = a_native_adapter.grading_source(task, task_dir)
+
+    assert from_class == from_instance
+
+
 def test_the_native_adapter_grading_source_reports_the_pack_grading_yaml_when_present(
     a_native_adapter: NativeAdapter,
     a_task_and_dir: tuple[TaskConfig, Path],
