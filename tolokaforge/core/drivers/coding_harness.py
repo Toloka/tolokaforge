@@ -316,6 +316,21 @@ class CodingHarnessDriver:
                 update={
                     "credential_gateway": None,
                     "request_middleware": None,
+                    # The alias ``_resolve_gateway_route`` produced already
+                    # names the model the gateway serves it as — kimi's
+                    # ``{model}-moonshotai-pinned`` renders
+                    # ``moonshotai/kimi-k2.7-code-moonshotai-pinned``, the
+                    # exact ``model_name`` LiteLLM's proxy config
+                    # registers. Letting ``harness_command`` re-run
+                    # ``harness_model``'s vendor-namespace strip on top of
+                    # that would drop the ``moonshotai/`` prefix and turn
+                    # the request into ``kimi-k2.7-code-moonshotai-pinned``
+                    # — an unregistered alias, and the proxy answers
+                    # ``400 Invalid model name``. ``strip_vendor_namespace``
+                    # was for the default OpenRouter path where the CLI
+                    # wants the raw vendor slug; the alias path already
+                    # produced its final form and must land verbatim.
+                    "strip_vendor_namespace": False,
                 }
             )
             self.spec: HarnessSpec = base_spec

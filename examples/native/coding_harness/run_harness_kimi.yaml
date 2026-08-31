@@ -9,7 +9,7 @@
 models:
   agent:
     provider: "openrouter"
-    name: "moonshotai/kimi-k2"
+    name: "moonshotai/kimi-k3"
     coding_harness: "kimi-code"
     gateway_route: "toloka_litellm"
     temperature: 0.0
