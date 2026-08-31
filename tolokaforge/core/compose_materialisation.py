@@ -501,7 +501,7 @@ def inject_runner_credentials(compose_file: Path, runner_service: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def make_project_temp_dir(prefix_slug: str) -> Path:
+def make_project_temp_dir(prefix_slug: str, stack_id: str | None = None) -> Path:
     """Create a temp directory whose basename embeds ``prefix_slug``.
 
     Docker Compose auto-generates a project name from the context
@@ -510,8 +510,23 @@ def make_project_temp_dir(prefix_slug: str) -> Path:
     materialisation a unique compose project. Sanitisation delegates to
     :func:`compose_trial_slug` so the host-side project name and the
     runner-side compose-exec container resolver share one definition.
+
+    ``stack_id`` extends the basename with a second slug segment when a
+    plan carries more than one stack sharing a scope key — ADR-0044 § 5
+    INV-10, the unique-compose-project-name invariant. ``None`` and
+    ``"default"`` yield the single-segment basename that pre-composition
+    plans use, so the byte-identical basename shape survives for every
+    caller that has not opted into multi-stack plans.
     """
-    return Path(tempfile.mkdtemp(prefix=f"tolokaforge-{compose_trial_slug(prefix_slug)}-"))
+    if stack_id is None or stack_id == "default":
+        return Path(tempfile.mkdtemp(prefix=f"tolokaforge-{compose_trial_slug(prefix_slug)}-"))
+    return Path(
+        tempfile.mkdtemp(
+            prefix=(
+                f"tolokaforge-{compose_trial_slug(prefix_slug)}-{compose_trial_slug(stack_id)}-"
+            )
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
