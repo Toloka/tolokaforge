@@ -344,3 +344,107 @@ class TestEscapeHatch:
         finally:
             driver.close()
         assert any("credential gateway disabled" in record.message for record in caplog.records)
+
+
+class TestGatewayRoute:
+    """`selection.gateway_route` picks the harness's ``gateway_route`` block
+    (ADR-0037) instead of the ``credential_gateway`` sidecar path. Substitutes
+    ``${gateway.base_url}`` / ``${gateway.passthrough_path}`` and
+    ``${secret:NAME}`` tokens in the route's ``provider_env`` /
+    ``config_files``, applies ``model_alias_pattern`` to the effective model,
+    and bypasses both the shield sidecar and ``request_middleware``."""
+
+    def _litellm_secret_manager(self, isolated_secret_manager: None) -> None:
+        init_default_from(
+            SecretManager(
+                [
+                    DictProvider(
+                        {
+                            "OPENROUTER_API_KEY": CANARY,
+                            "GEMINI_API_KEY": CANARY,
+                            "LITELLM_API_KEY": "sk-litellm-canary-key",
+                            "LITELLM_BASE_URL": "https://litellm.internal/v1",
+                        }
+                    )
+                ]
+            )
+        )
+
+    def test_kimi_gateway_route_renders_alias_and_bypasses_middleware(
+        self, isolated_secret_manager: None
+    ) -> None:
+        """kimi-code + gateway_route=toloka_litellm: model_alias_pattern
+        renders `-moonshotai-pinned`, LITELLM env lands as provider_env, and
+        the request_middleware / credential_gateway are both stripped from
+        the effective spec."""
+        self._litellm_secret_manager(isolated_secret_manager)
+        driver = CodingHarnessDriver(
+            HarnessSelection(
+                agent_harness="kimi-code",
+                agent_model="moonshotai/kimi-k2",
+                gateway_route="toloka_litellm",
+            )
+        )
+        try:
+            assert driver.spec.credential_gateway is None
+            assert driver.spec.request_middleware is None
+            assert driver._effective_model == "moonshotai/kimi-k2-moonshotai-pinned"
+            assert driver.container_env["KIMI_MODEL_BASE_URL"] == "https://litellm.internal/v1"
+            assert driver.container_env["KIMI_MODEL_API_KEY"] == "sk-litellm-canary-key"
+        finally:
+            driver.close()
+
+    def test_gemini_gateway_route_writes_settings_json_verbatim(
+        self, isolated_secret_manager: None
+    ) -> None:
+        """gemini-cli + gateway_route=toloka_litellm: the shipped
+        ``settings.json`` config_files entry resolves ``${gateway.base_url}``
+        / ``${gateway.passthrough_path}`` and lands as literal container-side
+        config the driver hands to ``harness_command`` via
+        ``extra_config_files``. The ``selectedType: gateway`` pin the CLI's
+        headless mode requires travels verbatim."""
+        self._litellm_secret_manager(isolated_secret_manager)
+        driver = CodingHarnessDriver(
+            HarnessSelection(
+                agent_harness="gemini-cli",
+                agent_model="google/gemini-2.5-flash",
+                gateway_route="toloka_litellm",
+            )
+        )
+        try:
+            settings = driver._gateway_route_config_files.get("${HOME}/.gemini/settings.json")
+            assert settings is not None
+            assert '"selectedType":"gateway"' in settings
+            base_url = "https://litellm.internal/v1"
+            expected_env = f"{base_url}/gemini"
+            assert driver.container_env["GOOGLE_GEMINI_BASE_URL"] == expected_env
+            assert driver.container_env["GEMINI_API_KEY"] == "sk-litellm-canary-key"
+        finally:
+            driver.close()
+
+    def test_gateway_route_none_leaves_shielded_path_unchanged(
+        self, canary_secret_manager: None
+    ) -> None:
+        """A harness whose driver was constructed with ``gateway_route=None``
+        still runs the credential-shield sidecar path — the two paths are
+        mutually exclusive and the default is the shielded one."""
+        driver = _driver()  # claude-code, no gateway_route
+        try:
+            assert driver.spec.credential_gateway is not None
+        finally:
+            driver.close()
+
+    def test_route_name_mismatch_refuses_at_construction(
+        self, isolated_secret_manager: None
+    ) -> None:
+        """Selecting a gateway_route the harness's registry entry does not
+        name is refused loudly at driver construction, naming both sides."""
+        self._litellm_secret_manager(isolated_secret_manager)
+        with pytest.raises(ValueError, match="ships no gateway_route"):
+            CodingHarnessDriver(
+                HarnessSelection(
+                    agent_harness="claude-code",  # ships no gateway_route
+                    agent_model="anthropic/claude-sonnet-4-6",
+                    gateway_route="toloka_litellm",
+                )
+            )

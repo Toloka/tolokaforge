@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Protocol
@@ -69,6 +70,11 @@ class CredentialGatewayConfig(Protocol):
     upstream_auth_header: str
     upstream_auth_template: str
     path_allowlist: tuple[str, ...]
+    """Patterns the request path must match. Each entry is either a literal
+    path (``/v1/messages`` — the historic shape, still exact-match) or a
+    ``fnmatch`` glob (``/v1beta/models/*:generateContent`` for Google's
+    model-in-path REST shape). Backward-compatible: an entry with no
+    ``*`` / ``?`` / ``[…]`` behaves exactly like the prior ``in`` check."""
 
 
 @dataclass(frozen=True)
@@ -139,7 +145,14 @@ class _GatewayRequestHandler(BaseHTTPRequestHandler):
         self.close_connection = True
         gateway = self.server.gateway
         path = urlparse(self.path).path
-        if path not in gateway.path_allowlist:
+        # ``fnmatchcase`` supports both literal paths (``/v1/messages``, no
+        # metacharacters — behaves exactly like the prior ``in tuple``
+        # exact-match) and glob patterns (``/v1beta/models/*:generateContent``)
+        # for harnesses whose upstream embeds the model name or another
+        # dynamic segment in the path. Backward-compatible with every
+        # existing shipped allowlist because none of them contain ``*``,
+        # ``?``, or ``[…]``.
+        if not any(fnmatchcase(path, pattern) for pattern in gateway.path_allowlist):
             self.send_response(HTTPStatus.METHOD_NOT_ALLOWED)
             self.send_header("Content-Length", "0")
             self.end_headers()

@@ -1392,6 +1392,7 @@ def harness_command(
     provider_env: Mapping[str, str] | None = None,
     *,
     path_resolver: PathResolver | None = None,
+    extra_config_files: Mapping[str, str] | None = None,
 ) -> str:
     """Shell command that runs *agent_harness* against *instruction*.
 
@@ -1449,6 +1450,21 @@ def harness_command(
                 resolver.resolve(path), _TEMPLATES.from_string(template).render(variables)
             )
             for path, template in spec.config_files.items()
+        )
+    # ``extra_config_files`` carries literal content (no Jinja) a consuming
+    # runtime resolved outside this package — the shape ``GatewayRoute``
+    # documents. Written verbatim after the CLI's own ``spec.config_files``
+    # so a gateway-route pin (e.g. gemini-cli's ``settings.json``
+    # ``selectedType: gateway``) lands before the CLI reads it. The path is
+    # emitted through the same resolver so ``${HOME}`` / ``${CONFIG_HOME}``
+    # substitute the same way. No expansion runs on the *content*: the
+    # ``GatewayRoute`` validator refuses ``{{ … }}`` markers there, so a
+    # value reaches this line with every token already resolved.
+    if extra_config_files:
+        resolver = DEFAULT_PATH_RESOLVER if path_resolver is None else path_resolver
+        preamble_parts.extend(
+            _config_file_write(resolver.resolve(path), content)
+            for path, content in extra_config_files.items()
         )
     for var in spec.env_model_vars:
         preamble_parts.append(f"export {var}={shlex.quote(resolved_model)}")

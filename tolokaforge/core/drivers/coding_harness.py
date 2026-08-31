@@ -51,9 +51,11 @@ from tolokaforge.runner.llm_gateway import (
 from tolokaforge.secrets import expand_secret_refs
 from tolokaforge.secrets import get_default as _get_default_secrets
 from tolokaforge_coding_harnesses import (
+    ALTERNATIVE_GATEWAYS,
     INSTALL_SCRIPT,
     MIDDLEWARE_PROXY_CONTAINER_PATH,
     MIDDLEWARE_PROXY_SCRIPT,
+    GatewayRoute,
     HarnessSpec,
     ResolvedHarnessRegistry,
     harness_command,
@@ -106,6 +108,72 @@ RUNNER_SERVICE = "runner"
 DB_SERVICE = "db-service"
 
 
+def _resolve_gateway_route(
+    route: GatewayRoute, agent_model: str
+) -> tuple[dict[str, str], dict[str, str], str]:
+    """Resolve a :class:`GatewayRoute` into (provider_env, config_files, model).
+
+    Turns the ``${gateway.base_url}``, ``${gateway.passthrough_path}``, and
+    ``${secret:NAME}`` tokens ADR-0037 documents into literal strings the
+    driver hands downstream — the harness registry package ships
+    :class:`GatewayRoute` as pure data, so this expansion is the coding-
+    harness driver's job as the consuming runtime. Reads secrets via
+    :class:`SecretManager` (never ``os.environ``); refuses a route naming
+    an :data:`~tolokaforge_coding_harnesses.ALTERNATIVE_GATEWAYS` entry
+    that is not declared, and raises on any leftover ``${…}`` token so a
+    typo cannot ship to the CLI unresolved.
+
+    Returns:
+        A 3-tuple ``(provider_env, config_files, effective_model)`` where
+        ``provider_env`` is the literal env map to seed the container
+        with, ``config_files`` is the literal on-disk map to write
+        (``GatewayRoute.config_files`` values with tokens resolved), and
+        ``effective_model`` is the model string after
+        ``model_alias_pattern`` has been applied (unchanged when the
+        pattern is absent).
+    """
+    gateway = ALTERNATIVE_GATEWAYS.get(route.gateway)
+    if gateway is None:  # pragma: no cover — HarnessSpec validator rejects at load
+        raise ValueError(
+            f"gateway_route.gateway {route.gateway!r} is not in ALTERNATIVE_GATEWAYS; "
+            "the shipped registry validator normally catches this at load."
+        )
+    secret_manager = _get_default_secrets()
+    base_url = secret_manager.get_secret_or_raise(gateway.base_url_env)
+    tokens = {
+        "gateway.base_url": base_url,
+        "gateway.passthrough_path": route.passthrough_path,
+    }
+
+    def _resolve(value: str, *, where: str) -> str:
+        expanded = expand_secret_refs(value, secret_manager, where=where)
+        for name, replacement in tokens.items():
+            expanded = expanded.replace("${" + name + "}", replacement)
+        if "${" in expanded:
+            raise ValueError(
+                f"gateway_route {where}: value carries unresolved token(s) after "
+                f"substitution: {expanded!r}. Accepted tokens are "
+                f"${{gateway.base_url}}, ${{gateway.passthrough_path}}, and "
+                f"${{secret:NAME}} — anything else is a typo."
+            )
+        return expanded
+
+    provider_env = {
+        key: _resolve(value, where=f"gateway_route.provider_env[{key!r}]")
+        for key, value in route.provider_env.items()
+    }
+    config_files = {
+        path: _resolve(content, where=f"gateway_route.config_files[{path!r}]")
+        for path, content in route.config_files.items()
+    }
+    effective_model = (
+        route.model_alias_pattern.format(model=agent_model)
+        if route.model_alias_pattern is not None
+        else agent_model
+    )
+    return provider_env, config_files, effective_model
+
+
 @dataclass(frozen=True)
 class HarnessSelection:
     """Inputs the orchestrator hands the driver at construction time.
@@ -136,6 +204,24 @@ class HarnessSelection:
             ``credential_gateway`` at all. Logs a warning naming the
             harness. No effect when the harness has no
             ``credential_gateway`` to begin with.
+        gateway_route: Name of an
+            :data:`~tolokaforge_coding_harnesses.ALTERNATIVE_GATEWAYS`
+            entry to route this harness through instead of its default
+            provider. When ``None`` (default) the driver takes the
+            shielded ``credential_gateway`` path (or the unshielded path
+            for harnesses that ship none). When set, the harness's
+            ``gateway_route`` block for the same gateway name is picked:
+            ``provider_env`` tokens (``${gateway.base_url}``,
+            ``${gateway.passthrough_path}``, ``${secret:NAME}``) resolve
+            via :class:`SecretManager`, ``model_alias_pattern`` renders
+            with the run's model, ``config_files`` lands in the trial
+            container verbatim, and the credential-shield sidecar is
+            skipped (ADR-0037 § "The two paths are alternatives, not
+            layers"). Refused at construction if the resolved spec has
+            no ``gateway_route`` block or if it names a different
+            gateway. Skips ``request_middleware`` too — a gateway route
+            replaces the per-provider pin the middleware exists to
+            inject.
     """
 
     agent_harness: str
@@ -145,6 +231,7 @@ class HarnessSelection:
     presets_file: str | None = None
     plugin_discovery: bool = True
     disable_credential_gateway: bool = False
+    gateway_route: str | None = None
 
 
 class CodingHarnessDriver:
@@ -193,10 +280,66 @@ class CodingHarnessDriver:
                 selection.agent_harness,
             )
             base_spec = base_spec.model_copy(update={"credential_gateway": None})
-        self.spec: HarnessSpec = base_spec
         self._gateway_handle: GatewayHandle | None = None
         self._gateway_container_url: str | None = None
         self._gateway_upstream_token: str | None = None
+        self._gateway_route_config_files: dict[str, str] = {}
+        self._effective_model: str = selection.agent_model
+        if selection.gateway_route is not None:
+            # Gateway-route path (ADR-0037). Mutually exclusive with the
+            # credential-shield sidecar: the operator's own gateway (LiteLLM
+            # today) has its own auth boundary, so the shielded upstream
+            # rewriting has nothing to do here. ``request_middleware`` is
+            # also skipped — the gateway route replaces the per-provider pin
+            # the middleware injects, so running both would double-book the
+            # provider decision.
+            route = base_spec.gateway_route
+            if route is None:
+                raise ValueError(
+                    f"coding_harness driver: run config selected "
+                    f"gateway_route={selection.gateway_route!r}, but harness "
+                    f"{selection.agent_harness!r} ships no gateway_route block."
+                )
+            if route.gateway != selection.gateway_route:
+                raise ValueError(
+                    f"coding_harness driver: run config selected "
+                    f"gateway_route={selection.gateway_route!r}, but harness "
+                    f"{selection.agent_harness!r}'s gateway_route names "
+                    f"{route.gateway!r}. The registry pin decides which gateway "
+                    "this CLI knows how to reach; matching in the run config is "
+                    "the operator's opt-in signal, not a rename."
+                )
+            resolved_provider_env, resolved_config_files, effective_model = _resolve_gateway_route(
+                route, selection.agent_model
+            )
+            base_spec = base_spec.model_copy(
+                update={
+                    "credential_gateway": None,
+                    "request_middleware": None,
+                }
+            )
+            self.spec: HarnessSpec = base_spec
+            declared = _resolve_provider_env(
+                shipped={},
+                declared=dict(selection.provider_env_declared),
+                agent_harness=selection.agent_harness,
+            )
+            self.container_env: dict[str, str] = {
+                **declared,
+                **resolved_provider_env,
+                **dict(route.container_env),
+            }
+            self._gateway_route_config_files = resolved_config_files
+            self._effective_model = effective_model
+            logger.info(
+                "coding_harness driver: harness %r routed through gateway %r; "
+                "credential shield + request_middleware bypassed. Effective model: %r.",
+                selection.agent_harness,
+                route.gateway,
+                effective_model,
+            )
+            return
+        self.spec: HarnessSpec = base_spec
         if self.spec.credential_gateway is None:
             # Pre-shield path: the real credential is resolved straight into
             # container_env, same as every harness did before this driver
@@ -356,16 +499,17 @@ class CodingHarnessDriver:
         command = harness_command(
             self.selection.agent_harness,
             instruction=instruction,
-            model=self.selection.agent_model,
+            model=self._effective_model,
             registry={self.selection.agent_harness: self.spec},
             provider_env=self.container_env,
+            extra_config_files=(self._gateway_route_config_files or None),
         )
         metadata: dict[str, Any] = dict(base.metadata)
         metadata.update(
             {
                 "agent_harness": self.selection.agent_harness,
                 "agent_harness_version": self.spec.version,
-                "agent_harness_model": self.selection.agent_model,
+                "agent_harness_model": self._effective_model,
                 "agent_harness_command": command,
                 "agent_visible_dir": metadata.get("agent_visible_dir", "/work"),
             }
@@ -413,6 +557,25 @@ class CodingHarnessDriver:
                 manifest_update["stripped_container_secrets"] = frozenset(
                     env_manifest.stripped_container_secrets
                 ) | {gateway_spec.upstream_token_env_var}
+            elif self.selection.gateway_route is not None:
+                # Gateway-route mode. There is no shield sidecar to bridge
+                # (skipped in ``__init__``): the CLI's own container hits
+                # the external gateway (LiteLLM today) directly. Under a
+                # pack that declared ``no_internet`` / ``limited_internet``
+                # the CLI's service otherwise lives on
+                # ``netpolicy_internal`` alone and cannot reach the
+                # gateway (empirically: the CLI's own retry loop dies after
+                # 10 ``APIConnectionError`` attempts inside the isolated
+                # network). Marking the CLI's compose service as
+                # ``bridged_services`` gives it BOTH internal-net (grader
+                # RPC to the runner) AND edge-net (egress to the gateway)
+                # attachments, same treatment the shield sidecar gets. The
+                # operator's choice of ``gateway_route`` is the opt-in
+                # signal that this run's CLI is expected to reach an
+                # external endpoint.
+                manifest_update["bridged_services"] = frozenset(env_manifest.bridged_services) | {
+                    staged.agent_service
+                }
             env_manifest = env_manifest.model_copy(update=manifest_update)
         return base.model_copy(
             update={

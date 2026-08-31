@@ -83,6 +83,20 @@ class ModelConfig(BaseModel):
     # naming the harness when this fires. No effect on a harness with no
     # credential_gateway.
     disable_credential_gateway: bool = False
+    # Gateway route (ADR-0037). Names an entry in the shipped
+    # ``ALTERNATIVE_GATEWAYS`` catalog (``toloka_litellm`` is the only
+    # one today). When set, the coding-harness driver picks that
+    # harness's ``gateway_route`` block instead of its default
+    # ``credential_gateway`` path: ``${gateway.base_url}`` and
+    # ``${secret:NAME}`` tokens resolve via ``SecretManager``, the
+    # ``model_alias_pattern`` renders with this run's model, and
+    # ``config_files`` land verbatim in the trial container.
+    # ``credential_gateway`` + ``request_middleware`` are bypassed for
+    # the run — a gateway route replaces the per-provider pin the shield
+    # / middleware exist to inject, and the operator's own gateway owns
+    # its own auth boundary. ``None`` (default) → shielded
+    # ``credential_gateway`` path, unchanged.
+    gateway_route: str | None = None
     # Reasoning / thinking configuration. Must be a struct form —
     # bare strings (``reasoning: medium``) are rejected with a migration
     # pointer. See docs/CONFIG.md § reasoning for the schema.

@@ -1,17 +1,21 @@
-# Same native pack + task as run_harness.yaml — different vendor CLI.
-# gemini-cli is the ONE shipped harness without a credential_gateway shield
-# — its REST auth and dynamic path shape need work tracked in #1311. Under
-# the shield's default this run would refuse; the escape hatch keeps
-# gemini-cli usable meanwhile.
+# gemini-cli via the shipped ``toloka_litellm`` gateway route (ADR-0037).
+# LiteLLM proxies Google's native ``generateContent`` REST at
+# ``{base}/gemini/v1beta/models/…``. The registry entry's
+# ``gateway_route.config_files`` writes the required
+# ``${HOME}/.gemini/settings.json`` ``selectedType: gateway`` pin — without
+# it gemini-cli 0.55.1 refuses headless mode with "Invalid auth method".
+# Operators without LiteLLM should not set ``gateway_route``; gemini-cli
+# then falls back to its unshielded direct-Google path (``credential_gateway:
+# null`` on the shipped entry; tracked in #1311).
 
 models:
   agent:
     provider: "openrouter"
-    name: "openrouter/google/gemini-2.5-pro"
+    name: "google/gemini-2.5-flash"
     coding_harness: "gemini-cli"
+    gateway_route: "toloka_litellm"
     temperature: 0.0
     max_tokens: 4096
-    disable_credential_gateway: true
 
 compute:
   workers: 1

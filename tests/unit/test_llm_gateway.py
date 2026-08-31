@@ -139,6 +139,61 @@ class TestPathAllowlist:
         assert handler_cls.received == []
 
 
+class TestPathAllowlistGlob:
+    """``path_allowlist`` entries are ``fnmatch`` patterns — literal paths
+    behave as before (exact match; the historic shipped shape); glob patterns
+    with ``*`` accept model-name-in-path REST shapes like Google's
+    ``/v1beta/models/gemini-2.5-flash:generateContent``. This is the seam that
+    lets ``gemini-cli`` ship a shielded ``credential_gateway`` even though
+    the upstream embeds the model in the URL."""
+
+    def test_glob_pattern_matches_dynamic_segment(
+        self, upstream: tuple[str, type[_RecordingUpstreamHandler]]
+    ) -> None:
+        upstream_url, handler_cls = upstream
+        config = FakeGatewayConfig(
+            upstream_url=upstream_url,
+            path_allowlist=("/v1beta/models/*:generateContent",),
+        )
+        server, thread, port = _serve(config)
+        try:
+            ok = httpx.get(
+                f"http://127.0.0.1:{port}/v1beta/models/gemini-2.5-flash:generateContent"
+            )
+            denied = httpx.get(
+                f"http://127.0.0.1:{port}/v1beta/models/gemini-2.5-flash:countTokens"
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        assert ok.status_code == HTTPStatus.OK
+        assert denied.status_code == HTTPStatus.METHOD_NOT_ALLOWED
+
+    def test_literal_entry_still_exact_matches(
+        self, upstream: tuple[str, type[_RecordingUpstreamHandler]]
+    ) -> None:
+        """An entry with no metacharacters keeps its old exact-match semantics
+        — every previously shipped ``path_allowlist`` entry contains no
+        ``*`` / ``?`` / ``[…]`` and must be unaffected by the switch to
+        ``fnmatchcase``."""
+        upstream_url, handler_cls = upstream
+        config = FakeGatewayConfig(
+            upstream_url=upstream_url,
+            path_allowlist=("/v1/messages",),
+        )
+        server, thread, port = _serve(config)
+        try:
+            ok = httpx.get(f"http://127.0.0.1:{port}/v1/messages")
+            denied = httpx.get(f"http://127.0.0.1:{port}/v1/messages/extra")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        assert ok.status_code == HTTPStatus.OK
+        assert denied.status_code == HTTPStatus.METHOD_NOT_ALLOWED
+
+
 class TestHeaderRewriting:
     def test_dummy_incoming_authorization_is_replaced_with_real_upstream_token(
         self, running_gateway: tuple[int, type[_RecordingUpstreamHandler]]

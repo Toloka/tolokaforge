@@ -61,6 +61,7 @@ class TestHarnessCommand:
             "gpt-5-codex",
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            "--json",
             "-c",
             "model_reasoning_effort=high",
             "do it",
@@ -359,9 +360,16 @@ class TestHarnessConfigFiles:
             },
         )
         assert proc.returncode == 0, proc.stderr
-        assert (tmp_path / ".codex" / "config.toml").read_text() == (
-            'openai_base_url = "https://openrouter.ai/api/v1"\n'
-        )
+        config_toml = (tmp_path / ".codex" / "config.toml").read_text()
+        # The full template ships a large comment block explaining why the
+        # custom ``openai-openrouter`` provider exists; lock the load-bearing
+        # lines here rather than the whole file so refining the comment does
+        # not break the test.
+        assert 'openai_base_url = "https://openrouter.ai/api/v1"' in config_toml
+        assert 'model_provider = "openai-openrouter"' in config_toml
+        assert "[model_providers.openai-openrouter]" in config_toml
+        assert 'wire_api = "responses"' in config_toml
+        assert 'base_url = "https://openrouter.ai/api/v1"' in config_toml
         assert (tmp_path / ".codex" / "auth.json").read_text() == (
             '{"OPENAI_API_KEY": "sk-from-the-container"}\n'
         )
