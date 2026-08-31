@@ -167,7 +167,8 @@ Each adapter must subclass `BaseAdapter` and implement:
     The default answers `GradingSourceKind.UNINTERROGABLE` with `path=None`
     and a non-empty reason — the honest "the adapter has not declared its
     grading source". An adapter that resolves the block against its own run
-    configuration overrides.
+    configuration overrides. See `NativeAdapter.grading_source` for the
+    native reading — the shape any adapter's override here can consult.
 
     An instance method, unlike the four readers in items 13 - 16: `grading_source`
     resolves the source an adapter *actually reads* against its instance state

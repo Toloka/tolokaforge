@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from tolokaforge.adapters._task_loader import (
+    GradingSource,
+    GradingSourceKind,
     ToolActor,
     _detect_task_root,
     actor_tool_block,
@@ -629,6 +631,43 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         before the trial is paid for rather than raising during grading.
         """
         return SeededTablesLayer(tables=seeded_tables_from_task(task, task_dir))
+
+    def grading_source(self, task: TaskConfig, task_dir: Path) -> GradingSource:
+        """The grading block a native pack reads for *task*.
+
+        ``task.grading`` naming a file that is on disk resolves to
+        :attr:`~GradingSourceKind.ON_DISK` with the absolute path. Every other
+        case — a declared file that is not on disk, or no ``grading:`` field
+        and no sibling ``grading.yaml`` — resolves to
+        :attr:`~GradingSourceKind.WITHHELD` with the sentence naming the
+        author-facing fix.
+        """
+        if task.grading is not None:
+            declared = task_dir / task.grading
+            if declared.exists():
+                return GradingSource(kind=GradingSourceKind.ON_DISK, path=declared)
+            return GradingSource(
+                kind=GradingSourceKind.WITHHELD,
+                path=None,
+                reason=(
+                    f"task {task.task_id!r} declares grading source {task.grading!r} and no "
+                    f"file is at {declared}. Adapter 'native' grades from that file, so "
+                    "this task cannot be graded and is refused before any trial is scheduled. "
+                    "Correct the `grading:` path to the block this task grades by, or create "
+                    "that file."
+                ),
+            )
+        return GradingSource(
+            kind=GradingSourceKind.WITHHELD,
+            path=None,
+            reason=(
+                f"task {task.task_id!r} declares no grading source: no `grading:` field and no "
+                "sibling grading.yaml. Adapter 'native' grades from that file, so this "
+                "task cannot be graded and is refused before any trial is scheduled. "
+                "Declare `grading:` pointing at the block this task grades by, or add a "
+                "grading.yaml beside its task.yaml."
+            ),
+        )
 
     def _project_combine_defaults(self) -> dict[str, Any] | None:
         return project_grading_combine(self._project_task_defaults)
