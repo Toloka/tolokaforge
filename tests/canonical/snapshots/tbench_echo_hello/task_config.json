@@ -24,8 +24,10 @@
       "rag_port": null,
       "rag_service": null,
       "runner_port": null,
-      "runner_service": "runner"
-    }
+      "runner_service": "runner",
+      "stack_scope": null
+    },
+    "stacks": null
   },
   "grading": "__adapter__",
   "initial_state": {
