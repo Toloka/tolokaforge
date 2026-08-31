@@ -36,8 +36,6 @@ class TestRegistryVocabulary:
         assert expected.issubset(CAPABILITY_REGISTRY.keys())
 
     def test_hybrid_stack_is_registered(self) -> None:
-        """New capability entry added in #1365. HybridRuntimeBackend
-        (registered in #1366) will advertise it."""
         spec = CAPABILITY_REGISTRY["hybrid_stack"]
         assert "shared engine services" in spec.description
         assert "task-declared services per trial" in spec.description

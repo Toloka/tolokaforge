@@ -237,13 +237,12 @@ class TestConstructRuntimeBackend:
         the factory it invokes — decoupled from installed package metadata.
         """
 
-        # Stub hybrid factory returns a marker so the routing wire-through
-        # is testable before #1366 lands the real HybridRuntimeBackend.
-        # The real hybrid backend registration comes in #1366; this stub
-        # exists only so the loader in _construct_runtime_backend has
-        # something to dispatch to under a synthesised hybrid selection.
+        # No ``hybrid`` factory is registered in the plug-in group today,
+        # so the loader has nothing to dispatch to under a hybrid
+        # selection. Substitute a marker stub so the dispatch wire
+        # (selection → factory) is testable in isolation.
         class _HybridStub:
-            isolation_mode = None  # populated by the real class in #1366
+            isolation_mode = None
             advertised_capabilities = frozenset({"hybrid_stack"})
 
         def _hybrid_stub_factory(ctx: RuntimeBackendBuildContext) -> Any:
@@ -275,7 +274,7 @@ class TestConstructRuntimeBackend:
     def test_task_driven_mixed_picks_hybrid(self) -> None:
         """A mixed-isolation manifest routes through _select_backend_from_tasks
         to the ``hybrid`` name, which _construct_runtime_backend loads via
-        the plug-in registry. Real HybridRuntimeBackend lands in #1366."""
+        the plug-in registry."""
         tasks = [_task_stub("t1")]
         task_descs = {
             "t1": make_task_description(

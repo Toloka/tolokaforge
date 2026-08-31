@@ -79,8 +79,7 @@ def _per_trial_backend() -> PerTrialRuntimeBackend:
 
 def _hybrid_backend() -> Any:
     """Minimal hybrid-backend stub for the isolation-check test — only
-    ``isolation_mode`` is read by ``_verify_isolation_compatibility``.
-    The full backend lands in #1366."""
+    ``isolation_mode`` is read by ``_verify_isolation_compatibility``."""
     from tolokaforge.core.runtime import IsolationMode
 
     stub = MagicMock()
@@ -229,11 +228,10 @@ class TestPerTrialRuntimePath:
 
 
 class TestHybridRuntimePath:
-    """HybridRuntimeBackend materialises task-declared services per trial
-    (like PerTrialRuntimeBackend), so it satisfies every isolation
-    requirement including ``ephemeral`` — the same short-circuit
-    _verify_isolation_compatibility applies to per_trial. See ADR-0043
-    § Decision item 5."""
+    """A HYBRID_STACK-mode backend materialises task-declared services
+    per trial (like PerTrialRuntimeBackend), so ``_verify_isolation_compatibility``
+    admits ``ephemeral`` and ``reset`` labels the same way it admits them
+    on per_trial. See ADR-0043 § Decision item 5."""
 
     def test_ephemeral_service_passes(self) -> None:
         tasks = [_make_task_config("tbench-shape")]
@@ -249,9 +247,6 @@ class TestHybridRuntimePath:
             ),
         }
         orch = _make_orchestrator(tasks, task_descs)
-        # Under the old (per-trial only) short-circuit this would have
-        # raised for the ephemeral service; under the widened check
-        # hybrid honours ephemeral the same way per_trial does.
         orch._verify_isolation_compatibility(_hybrid_backend())
 
     def test_reset_service_passes(self) -> None:
