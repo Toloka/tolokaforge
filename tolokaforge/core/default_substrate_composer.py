@@ -42,6 +42,7 @@ from tolokaforge.core.composition_runtime import (
 )
 from tolokaforge.core.docker_compose_materialiser import DockerComposeMaterialiser
 from tolokaforge.core.models.task_config import SeedRef
+from tolokaforge.core.models.trajectory import ProvisionStage
 from tolokaforge.core.plugin_registry import ReadinessProbeFactory, load_readiness_probe
 from tolokaforge.core.run_display_events import RunDisplayEvents
 from tolokaforge.core.runtime import ProvisionError
@@ -95,6 +96,7 @@ class DefaultSubstrateComposer:
     # ------------------------------------------------------------------
 
     def materialise_run(self, plan: CompositionPlan, ctx: RunCtx) -> RunSubstrate:
+        _refuse_reserved_prefix(ctx.manifest, ctx.run_id, stage="materialise_run")
         _validate_plan(plan)
         run_scope_decls = [decl for decl in plan if decl.stack_scope == "run"]
         manifest = ctx.manifest
@@ -497,12 +499,21 @@ def _require_manifest(spec: TrialSpec) -> EnvironmentManifest:
     return manifest
 
 
-def _refuse_reserved_prefix(manifest: EnvironmentManifest, trial_id: str) -> None:
+def _refuse_reserved_prefix(
+    manifest: EnvironmentManifest,
+    trial_id: str,
+    *,
+    stage: ProvisionStage = "provision",
+) -> None:
     """Refuse a ``TOLOKAFORGE_``-prefixed key in ``stack_inputs``.
 
-    Refuses the same reserved-prefix ``stack_inputs`` keys
-    :meth:`PerTrialRuntimeBackend.provision` refuses, so both paths
-    reject an identical manifest with identical text.
+    Both composer entry points guard the same invariant:
+    :meth:`DefaultSubstrateComposer.materialise_run` passes
+    ``stage="materialise_run"`` and ``trial_id=ctx.run_id`` so a run-scope
+    manifest with a reserved key fails before any docker call;
+    :meth:`DefaultSubstrateComposer.provision_trial` (and
+    :meth:`PerTrialRuntimeBackend.provision`) leave the default
+    ``stage="provision"``. Reason text is identical modulo the id.
     """
     reserved = sorted(
         key for key in manifest.stack_inputs if key.startswith(TOLOKAFORGE_ENV_PREFIX)
@@ -510,7 +521,7 @@ def _refuse_reserved_prefix(manifest: EnvironmentManifest, trial_id: str) -> Non
     if reserved:
         raise ProvisionError(
             trial_id=trial_id,
-            stage="provision",
+            stage=stage,
             reason=(
                 f"stack_inputs key {reserved[0]!r} uses the reserved "
                 f"{TOLOKAFORGE_ENV_PREFIX} prefix (engine-authored compose "

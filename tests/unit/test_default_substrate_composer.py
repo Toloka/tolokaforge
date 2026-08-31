@@ -696,6 +696,87 @@ class TestProvisionTrialTrialScopedPlan:
 
 
 # ---------------------------------------------------------------------------
+# Reserved-prefix refusal — uniform across materialise_run + provision_trial
+# ---------------------------------------------------------------------------
+
+
+class TestReservedPrefixRefusalUniformity:
+    """Both composer entry points fail-loud on the reserved
+    ``TOLOKAFORGE_`` ``stack_inputs`` prefix with identical reason text.
+
+    :meth:`DefaultSubstrateComposer.materialise_run` fires the refusal
+    with ``stage="materialise_run"`` and ``trial_id=ctx.run_id``, before
+    ``_validate_plan`` and any materialiser call.
+    :meth:`DefaultSubstrateComposer.provision_trial` fires the refusal
+    with ``stage="provision"`` and ``trial_id=spec.trial_id``. The
+    reason text (past the id) is byte-identical.
+    """
+
+    def test_materialise_run_refuses_reserved_prefix(self, tmp_path: Path) -> None:
+        """A run-scope manifest whose ``stack_inputs`` uses the reserved
+        ``TOLOKAFORGE_`` prefix fails before any materialise call — the
+        run id (not a trial id) surfaces on the refusal, and
+        ``stage`` is ``"materialise_run"``."""
+        compose = _write_compose(tmp_path)
+        manifest = EnvironmentManifest(
+            compose_file=compose,
+            runner_service="runner",
+            stack_inputs={"TOLOKAFORGE_FOO": "x"},
+        )
+        plan = [_decl(compose)]
+        materialiser = _FakeMaterialiser()
+        composer = DefaultSubstrateComposer(
+            materialiser=materialiser,
+            runner_client_factory=_fake_client_factory,
+        )
+        ctx = _run_ctx(manifest, run_id="run-b")
+
+        with pytest.raises(ProvisionError) as excinfo:
+            composer.materialise_run(plan, ctx)
+        assert excinfo.value.stage == "materialise_run"
+        assert excinfo.value.trial_id == "run-b"
+        assert excinfo.value.reason == (
+            "stack_inputs key 'TOLOKAFORGE_FOO' uses the reserved "
+            "TOLOKAFORGE_ prefix (engine-authored compose variables); "
+            "rename or remove it from the manifest"
+        )
+        # No materialise reached — refusal precedes every substrate call.
+        assert not any(c[0] == "materialise" for c in materialiser.calls)
+
+    def test_provision_trial_refusal_still_fires_and_uses_stage_provision(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression guard on the default ``stage`` kwarg of
+        :func:`_refuse_reserved_prefix` — ``provision_trial`` must
+        continue to surface ``stage="provision"`` with the trial id and
+        the same reason text ``materialise_run`` produces (modulo id)."""
+        compose = _write_compose(tmp_path)
+        manifest = EnvironmentManifest(
+            compose_file=compose,
+            runner_service="runner",
+            stack_inputs={"TOLOKAFORGE_FOO": "x"},
+        )
+        plan = [_decl(compose, stack_scope="trial")]
+        materialiser = _FakeMaterialiser()
+        composer = DefaultSubstrateComposer(
+            materialiser=materialiser,
+            runner_client_factory=_fake_client_factory,
+        )
+        spec = _trial_spec(manifest, trial_id="task-1:0")
+
+        with pytest.raises(ProvisionError) as excinfo:
+            composer.provision_trial(plan, spec, _empty_run_sub())
+        assert excinfo.value.stage == "provision"
+        assert excinfo.value.trial_id == "task-1:0"
+        assert excinfo.value.reason == (
+            "stack_inputs key 'TOLOKAFORGE_FOO' uses the reserved "
+            "TOLOKAFORGE_ prefix (engine-authored compose variables); "
+            "rename or remove it from the manifest"
+        )
+        assert not any(c[0] == "materialise" for c in materialiser.calls)
+
+
+# ---------------------------------------------------------------------------
 # cycle_between_trials
 # ---------------------------------------------------------------------------
 

@@ -154,6 +154,8 @@ class SharedStackRuntimeBackend:
 
 At `connect()`: for each `stack_scope="run"` decl → `composer.materialise_run(...)`. At `provision(spec)`: for each `stack_scope="task"` decl whose task not yet materialised → `composer.materialise_task(...)`; for each `stack_scope="trial"` decl → `composer.materialise_trial(...)`. Between trials sharing a `run`/`task` scope stack → `composer.cycle_between_trials(...)` walks the stack's services and invokes the dispatcher registered for each isolation label.
 
+Reserved-prefix `stack_inputs` keys (`TOLOKAFORGE_*`) are refused uniformly at both composer entry points: `materialise_run` raises `ProvisionError(stage="materialise_run", trial_id=run_id)` before `_validate_plan` runs (so a bad run-scope manifest fails before any docker call); `provision_trial` raises `ProvisionError(stage="provision", trial_id=trial_id)` before any per-trial materialise call. Reason text is byte-identical past the id — one refusal helper, two entry points.
+
 ### 4. `PerTrialRuntimeBackend` retained as thin preset
 
 Its class stays exported for backward-compat imports and entry-point registration. Its body reduces to ~30 LOC: build `SharedStackRuntimeBackend` with a single-stack `trial`-scope plan synthesised from `env_manifest`. Behaviour is byte-identical to today's per-trial: docker-compose up per trial, teardown per trial.
