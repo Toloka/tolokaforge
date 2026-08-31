@@ -2902,11 +2902,12 @@ class EnvironmentManifest(BaseModel):
         - Mixed (at least one ``shared`` AND at least one
           ``reset|ephemeral``) → ``True``.
 
-        Consumed by :meth:`Orchestrator._select_backend_from_tasks` —
-        the hybrid branch is evaluated BEFORE the per-trial branch, so a
-        mixed manifest (which also reports :attr:`requires_per_trial=True`
-        because it contains non-``shared`` services) routes to hybrid,
-        not per-trial. See ADR-0043 § Decision item 4.
+        Designed for consumption by
+        :meth:`Orchestrator._select_backend_from_tasks` per ADR-0043
+        § Decision item 4: the hybrid branch is evaluated before the
+        per-trial branch so a mixed manifest (which also reports
+        :attr:`requires_per_trial=True` because it contains non-``shared``
+        services) will route to hybrid, not per-trial. Wired by #1365.
         """
         if not self.services:
             return False

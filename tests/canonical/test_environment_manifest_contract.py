@@ -220,8 +220,8 @@ class TestServiceIsolationContract:
         )
         assert m.requires_hybrid_stack is True
         # requires_per_trial is *also* True (the ephemeral service).
-        # Selection order guarantees hybrid wins over per-trial —
-        # see ADR-0043 § Decision item 4 and _select_backend_from_tasks.
+        # ADR-0043 § Decision item 4 requires _select_backend_from_tasks
+        # to evaluate hybrid before per-trial when it lands (#1365).
         assert m.requires_per_trial is True
 
     def test_mixed_shared_and_reset_requires_hybrid_stack(self) -> None:
