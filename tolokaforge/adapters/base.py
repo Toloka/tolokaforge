@@ -396,7 +396,11 @@ class BaseAdapter(ABC):
         A classmethod, matching the sibling readers: the fact reported here is
         a function of *task* and *task_dir* alone (no instance state), so the
         static ``tolokaforge validate`` gate reaches the source through the
-        same dispatch helper. See ADR-0042.
+        same dispatch helper. The dispatch helper
+        (:func:`~tolokaforge.adapters._task_loader.grading_source_under_adapter`)
+        rewrites the sentence for the UNINTERROGABLE default so the caller
+        reads which registered adapter answered — the registry key is not on
+        the class, and the ``unchecked`` channel needs it. See ADR-0042.
         """
         return GradingSource(
             kind=GradingSourceKind.UNINTERROGABLE,

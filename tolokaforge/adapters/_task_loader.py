@@ -1017,16 +1017,18 @@ def grading_source_under_adapter(
     reads. Every other case is answered off the adapter, through
     :meth:`~tolokaforge.adapters.base.BaseAdapter.grading_source`: native
     reports a :attr:`~GradingSourceKind.WITHHELD` absence naming the
-    author-facing fix, an adapter that grades from its own source pronounces on
-    the absence through its own registered kind, and the caller reads the
-    source the adapter names. An adapter type this environment has no class for
-    — not installed, or misspelled — answers
-    :attr:`~GradingSourceKind.UNINTERROGABLE` with a sentence naming the
-    adapter, because a pack whose adapter nothing here can interrogate must be
-    reported rather than refused.
+    author-facing fix, and an adapter that grades from its own source
+    pronounces on the absence through its own registered kind. The two
+    :attr:`~GradingSourceKind.UNINTERROGABLE` shapes — an adapter type no
+    class resolves for (not installed, or misspelled), and a resolved class
+    whose own default is the honest "cannot say" — are written here, because
+    ``adapter_type`` is the registry key naming the adapter in a way an author
+    can act on. The dangling-file variant also names the declared path, so
+    the sentence points at what to write next.
     """
     from tolokaforge.adapters import adapter_class
 
+    declared: Path | None = None
     if task.grading is not None:
         declared = task_dir / task.grading
         if declared.exists():
@@ -1034,18 +1036,36 @@ def grading_source_under_adapter(
 
     resolved = adapter_class(adapter_type)
     if resolved is None:
-        return GradingSource(
-            kind=GradingSourceKind.UNINTERROGABLE,
-            path=None,
-            reason=(
+        if declared is not None:
+            reason = (
+                f"grading source {str(declared)!r} declared but adapter "
+                f"{adapter_type!r} does not resolve to a class here — not "
+                "installed, or misspelled — so whether this task's grading "
+                "source is what its author intended is not checkable here. "
+                "Install the adapter package or correct the `adapter_type` "
+                "value"
+            )
+        else:
+            reason = (
                 f"adapter {adapter_type!r} does not resolve to a class here "
                 "— not installed, or misspelled — so whether this task's "
                 "grading source is what its author intended is not checkable "
                 "here. Install the adapter package or correct the "
                 "`adapter_type` value"
+            )
+        return GradingSource(kind=GradingSourceKind.UNINTERROGABLE, path=None, reason=reason)
+    source = resolved.grading_source(task, task_dir)
+    if source.kind is GradingSourceKind.UNINTERROGABLE:
+        return GradingSource(
+            kind=GradingSourceKind.UNINTERROGABLE,
+            path=None,
+            reason=(
+                f"adapter {adapter_type!r} decides for itself what a task "
+                "grades by, so whether this task's grading source is what "
+                "its author intended is not checkable here"
             ),
         )
-    return resolved.grading_source(task, task_dir)
+    return source
 
 
 def _builtin_tool_schemas(
