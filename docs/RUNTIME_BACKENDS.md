@@ -56,6 +56,16 @@ Backend names resolve through the `tolokaforge.runtime_backends` entry-point reg
 
 Legacy `orchestrator.runtime: docker` is accepted as a deprecated alias for `shared` with a `DeprecationWarning` at config load; it is coerced to `shared` before the registry lookup, since the registry has no `docker` name.
 
+## Composition-plan seams
+
+The compose-mode runtime is factored into three detachable adapter Protocols the composer stitches together per [ADR-0044 § 2](adr/0044-composition-plan-runtime.md). Each Protocol has one shipped implementation; new substrates (K8s, remote sandboxes) slot into the same seams by implementing the Protocol.
+
+- **`ComposeMaterialiser`** (`tolokaforge/core/composition_runtime.py`) — brings one `StackDecl` up as a live compose project and tears it down. `materialise(decl, ctx)` runs the copy-context / network-policy / credential-inject / docker-socket-mount / `.start()` sequence and returns an opaque `StackHandle`; `resolve_endpoint(handle, service, port)` returns `(host, host_port)` or `None`; `teardown(handle)` reverses the sequence idempotently. Shipped impl: `DockerComposeMaterialiser` (`tolokaforge/core/docker_compose_materialiser.py`).
+- **`ServiceLifecycleDispatcher`** — cycles one service between trials for a given `ServiceIsolation` label. One dispatcher per closed label — `SharedDispatcher` (no-op), `ResetDispatcher` (delegates to `RECIPE_REGISTRY.dispatch`), `EphemeralDispatcher` (targeted `docker compose rm -f -v <svc>` + `docker compose up -d --wait <svc>`). The composer resolves by `service_spec.isolation` at cycle time via `DISPATCHER_REGISTRY` in `tolokaforge/core/service_lifecycle_dispatchers.py`.
+- **`SubstrateComposer`** — the sequencer. `materialise_run(plan, ctx)` walks run-scope stacks and enforces INV-12 (exactly one stack across the plan sets `runner_service`); `provision_trial(plan, spec, run_sub)` walks task-scope and trial-scope stacks and applies reset recipes on newly-materialised stacks; `cycle_between_trials(run_sub, spec)` dispatches every service through the lifecycle registry; `teardown_trial` / `teardown_run` walk the handles in reverse scope order. Shipped impl: `DefaultSubstrateComposer` (`tolokaforge/core/default_substrate_composer.py`).
+
+`SharedStackRuntimeBackend` runs the inline materialise/teardown sequence today — its inline path and the composer are byte-for-byte equivalent for the single-stack shape (Case B), which is the only shape the compose-mode runtime exercises. Ticket #1381 wires `SharedStackRuntimeBackend` to the composer, at which point the inline `_materialise_manifest` / per-trial `provision` code paths delete. `PerTrialRuntimeBackend` collapses to a preset factory (single-stack `trial`-scope plan) in the same ticket.
+
 ## Concrete backends
 
 **`SharedStackRuntimeBackend`** — the original. One compose project brought up at
