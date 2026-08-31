@@ -112,7 +112,21 @@ class SubstrateComposer(Protocol):
     def cycle_between_trials(self, run_sub: RunSubstrate, spec: TrialSpec) -> None: ...
     def teardown_trial(self, handle: EnvHandle) -> None: ...
     def teardown_run(self, run_sub: RunSubstrate) -> None: ...
+
+@dataclass
+class RunSubstrate:
+    run_id: str
+    run_stack_handles: tuple[StackHandle, ...]
+    task_stack_handles: dict[tuple[str, str], StackHandle]
+    runner_client: RunnerClient | None
+    endpoints: EnvEndpoints | None
+    seeds: Mapping[str, SeedRef]
+    mount_docker_socket: bool
+    log_capture: LogCaptureConfig | None
+    events: RunDisplayEvents
 ```
+
+The three trailing fields (`mount_docker_socket`, `log_capture`, `events`) carry the run-wide policy `materialise_run` threads from `RunCtx` onto the substrate so `provision_trial` materialises task-scope and trial-scope stacks under the same policy the run-scope stacks were materialised with.
 
 Three new entry-point groups on `plugin_registry.py`:
 - `tolokaforge.compose_materialisers` → `type[ComposeMaterialiser]`

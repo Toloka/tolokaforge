@@ -10,8 +10,8 @@ plan invariants (INV-12) at :meth:`materialise_run`.
 
 The class stands beside :class:`SharedStackRuntimeBackend` and
 :class:`PerTrialRuntimeBackend` — the built-in triple against which
-``tests/canonical/test_composition_parity_contract.py`` locks byte-parity
-with the inline compose-mode flows for the single-stack shapes.
+``tests/canonical/test_composition_baseline_parity.py`` locks byte-parity
+with the frozen inline-flow baseline fixture for the single-stack shapes.
 """
 
 from __future__ import annotations
@@ -128,6 +128,9 @@ class DefaultSubstrateComposer:
                 runner_client=None,
                 endpoints=None,
                 seeds=ctx.seeds,
+                mount_docker_socket=ctx.mount_docker_socket,
+                log_capture=ctx.log_capture,
+                events=ctx.events,
             )
 
         assert runner_decl is not None  # narrowed by runner_handle presence
@@ -156,6 +159,9 @@ class DefaultSubstrateComposer:
             runner_client=runner_client,
             endpoints=endpoints,
             seeds=ctx.seeds,
+            mount_docker_socket=ctx.mount_docker_socket,
+            log_capture=ctx.log_capture,
+            events=ctx.events,
         )
 
     # ------------------------------------------------------------------
@@ -174,7 +180,7 @@ class DefaultSubstrateComposer:
         newly: list[tuple[StackDecl, StackHandle]] = []
         try:
             self._materialise_task_stacks(plan, spec, manifest, run_sub, newly)
-            trial_handles = self._materialise_trial_stacks(plan, spec, manifest, newly)
+            trial_handles = self._materialise_trial_stacks(plan, spec, manifest, run_sub, newly)
         except BaseException:
             _teardown_handles_best_effort(self.materialiser, [h for _, h in newly])
             raise
@@ -185,7 +191,7 @@ class DefaultSubstrateComposer:
             _teardown_handles_best_effort(self.materialiser, [h for _, h in newly])
             raise
 
-        return self._wire_trial_runner(plan, spec, manifest, trial_handles, newly)
+        return self._wire_trial_runner(plan, spec, manifest, trial_handles, newly, run_sub)
 
     def _materialise_task_stacks(
         self,
@@ -205,10 +211,10 @@ class DefaultSubstrateComposer:
                 network_policy=manifest.network_policy,
                 limited_internet_allowlist=tuple(manifest.limited_internet_allowlist),
                 restricted_services=manifest.restricted_services,
-                mount_docker_socket=False,
-                log_capture=None,
+                mount_docker_socket=run_sub.mount_docker_socket,
+                log_capture=_trial_scope_log_capture(run_sub.log_capture, spec.trial_id),
                 write_compose_env=None,
-                events=_null_events_if_none(None),
+                events=run_sub.events,
                 component_id_prefix=f"task/{spec.task.task_id}",
             )
             handle = self.materialiser.materialise(decl, ctx)
@@ -220,6 +226,7 @@ class DefaultSubstrateComposer:
         plan: CompositionPlan,
         spec: TrialSpec,
         manifest: EnvironmentManifest,
+        run_sub: RunSubstrate,
         newly: list[tuple[StackDecl, StackHandle]],
     ) -> list[StackHandle]:
         trial_handles: list[StackHandle] = []
@@ -230,13 +237,13 @@ class DefaultSubstrateComposer:
                 network_policy=manifest.network_policy,
                 limited_internet_allowlist=tuple(manifest.limited_internet_allowlist),
                 restricted_services=manifest.restricted_services,
-                mount_docker_socket=False,
-                log_capture=_trial_scope_log_capture(None, spec.trial_id),
+                mount_docker_socket=run_sub.mount_docker_socket,
+                log_capture=_trial_scope_log_capture(run_sub.log_capture, spec.trial_id),
                 write_compose_env=WriteComposeEnv(
                     trial_id=spec.trial_id,
                     stack_inputs=manifest.stack_inputs,
                 ),
-                events=_null_events_if_none(None),
+                events=run_sub.events,
                 component_id_prefix=f"trial/{spec.trial_id}",
             )
             handle = self.materialiser.materialise(decl, ctx)
@@ -251,6 +258,7 @@ class DefaultSubstrateComposer:
         manifest: EnvironmentManifest,
         trial_handles: list[StackHandle],
         newly: list[tuple[StackDecl, StackHandle]],
+        run_sub: RunSubstrate,
     ) -> ComposedEnvHandle:
         runner_handle, runner_decl = _find_runner_owner(
             trial_handles, [d for d in plan if d.stack_scope == "trial"]
@@ -298,7 +306,7 @@ class DefaultSubstrateComposer:
         endpoints = _resolve_env_endpoints(
             self.materialiser, runner_handle, runner_host, runner_host_port, manifest
         )
-        client = self.runner_client_factory(f"{runner_host}:{runner_host_port}", None)
+        client = self.runner_client_factory(f"{runner_host}:{runner_host_port}", run_sub.events)
         return ComposedEnvHandle(
             trial_id=spec.trial_id,
             trial_stack_handles=tuple(trial_handles),
@@ -754,15 +762,3 @@ def _teardown_handles_best_effort(
                 "DefaultSubstrateComposer: teardown failed for stack %r",
                 getattr(handle, "stack_id", "<unknown>"),
             )
-
-
-def _null_events_if_none(events: RunDisplayEvents | None) -> RunDisplayEvents:
-    """Return ``events`` when set, else the module-level null sink.
-
-    Materialisation always needs a real events sink — the null sink is
-    fine when the caller has none, matching every other backend's
-    ``events=None`` fallback.
-    """
-    from tolokaforge.core.run_display_events import _NULL_EVENTS
-
-    return events if events is not None else _NULL_EVENTS

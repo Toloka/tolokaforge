@@ -201,9 +201,12 @@ class TestCompanionDataclassFields:
         ]
 
     def test_run_substrate_fields(self) -> None:
-        """:attr:`seeds` is the critic-approved amendment: without it
-        Stage 4 would need to re-thread the seed map through every
-        downstream method or silently widen the Protocol."""
+        """The three trailing fields — :attr:`mount_docker_socket`,
+        :attr:`log_capture`, :attr:`events` — carry run-wide policy
+        that :meth:`SubstrateComposer.provision_trial` reads when it
+        materialises task-scope and trial-scope stacks. Threading them
+        via the substrate keeps :class:`SubstrateComposer` from
+        re-reading :class:`RunCtx` on every per-trial call."""
 
         assert [f.name for f in dataclasses.fields(RunSubstrate)] == [
             "run_id",
@@ -212,6 +215,9 @@ class TestCompanionDataclassFields:
             "runner_client",
             "endpoints",
             "seeds",
+            "mount_docker_socket",
+            "log_capture",
+            "events",
         ]
 
     def test_composed_env_handle_fields(self) -> None:

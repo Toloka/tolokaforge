@@ -98,16 +98,22 @@ class _FakeMaterialiser:
     Set :attr:`raise_on_next` to seed a failure on the next
     :meth:`materialise` invocation. :attr:`endpoint_map` overrides
     :meth:`resolve_endpoint` per ``(service, port)`` pair.
+    :attr:`materialise_contexts` snapshots the full
+    :class:`MaterialiseContext` per ``materialise`` call so tests can
+    assert on threaded policy values (``mount_docker_socket``,
+    ``log_capture``, ``events``).
     """
 
     name: str = "fake"
     calls: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
+    materialise_contexts: list[MaterialiseContext] = field(default_factory=list)
     torn_down: list[str] = field(default_factory=list)
     raise_on_next: BaseException | None = None
     endpoint_map: dict[tuple[str, int], tuple[str, int] | None] = field(default_factory=dict)
 
     def materialise(self, decl: StackDecl, ctx: MaterialiseContext) -> StackHandle:
         self.calls.append(("materialise", (decl.stack_id, ctx.scope_key, ctx.component_id_prefix)))
+        self.materialise_contexts.append(ctx)
         if self.raise_on_next is not None:
             exc = self.raise_on_next
             self.raise_on_next = None
@@ -271,6 +277,9 @@ def _empty_run_sub(run_id: str = "run-a") -> RunSubstrate:
         runner_client=None,
         endpoints=None,
         seeds={},
+        mount_docker_socket=False,
+        log_capture=None,
+        events=_NULL_EVENTS,
     )
 
 
@@ -552,6 +561,139 @@ class TestProvisionTrialTrialScopedPlan:
         # substrate work.
         assert not any(c[0] == "materialise" for c in materialiser.calls)
 
+    def test_run_substrate_log_capture_and_events_thread_to_materialise_context(
+        self, tmp_path: Path
+    ) -> None:
+        """A non-null :attr:`RunSubstrate.log_capture` +
+        :attr:`RunSubstrate.events` govern the
+        :class:`MaterialiseContext` the composer hands the materialiser
+        for both task-scope and trial-scope stacks — the run-wide
+        policy is what materialisation runs under, not a per-scope
+        default."""
+
+        class _RecordingEvents:
+            """Non-null :class:`RunDisplayEvents` sink; identity-checked."""
+
+        events_sink = _RecordingEvents()
+        run_log_capture = LogCaptureConfig(output_root=tmp_path / "out", tail=125, on_success=False)
+        task_compose = _write_compose(tmp_path / "task", name="task.compose.yaml")
+        trial_compose = _write_compose(tmp_path / "trial", name="trial.compose.yaml")
+        manifest = _manifest(trial_compose)
+        plan = [
+            _decl(
+                task_compose,
+                stack_id="task-stack",
+                stack_scope="task",
+                runner_service=None,
+            ),
+            _decl(
+                trial_compose,
+                stack_id="trial-stack",
+                stack_scope="trial",
+                runner_service="runner",
+            ),
+        ]
+        materialiser = _FakeMaterialiser()
+        composer = DefaultSubstrateComposer(
+            materialiser=materialiser,
+            runner_client_factory=_fake_client_factory,
+            readiness_probe_loader=_always_ready_loader,
+        )
+        spec = _trial_spec(manifest)
+        run_sub = RunSubstrate(
+            run_id="run-a",
+            run_stack_handles=(),
+            task_stack_handles={},
+            runner_client=None,
+            endpoints=None,
+            seeds={},
+            mount_docker_socket=False,
+            log_capture=run_log_capture,
+            events=events_sink,  # type: ignore[arg-type]
+        )
+
+        composer.provision_trial(plan, spec, run_sub)
+
+        contexts_by_stack = {ctx.stack_id: ctx for ctx in materialiser.materialise_contexts}
+        assert set(contexts_by_stack) == {"task-stack", "trial-stack"}
+        for stack_id in ("task-stack", "trial-stack"):
+            ctx = contexts_by_stack[stack_id]
+            assert ctx.events is events_sink, (
+                f"stack {stack_id!r} MaterialiseContext.events was not "
+                "threaded from RunSubstrate.events"
+            )
+            assert ctx.log_capture is not None, (
+                f"stack {stack_id!r} MaterialiseContext.log_capture is None; "
+                "RunSubstrate.log_capture was not threaded"
+            )
+            assert ctx.log_capture.tail == run_log_capture.tail
+            # trial_services_dir writes under <output_root>/trials/<task>/<idx>/services/.
+            assert ctx.log_capture.dest_dir == (
+                run_log_capture.output_root / "trials" / spec.task.task_id / "0" / "services"
+            )
+
+    def test_run_substrate_mount_docker_socket_writes_socket_mount_to_trial_compose(
+        self, tmp_path: Path
+    ) -> None:
+        """A ``RunSubstrate.mount_docker_socket=True`` reaches the
+        docker-compose materialiser via
+        :attr:`MaterialiseContext.mount_docker_socket`, which then adds
+        the host docker-socket bind-mount to the runner service on the
+        trial-scope stack's compose file. Parity-shape test — uses the
+        real :class:`DockerComposeMaterialiser` with a stub
+        ``docker_compose_factory``."""
+        from tests.canonical._docker_compose_stubs import InertDockerCompose
+        from tolokaforge.core.docker_compose_materialiser import (
+            DockerComposeMaterialiser,
+            _DockerComposeStackHandle,
+        )
+
+        compose_file = tmp_path / "trial.compose.yaml"
+        compose_file.write_text(_RUNNER_COMPOSE)
+        stubs: list[InertDockerCompose] = []
+
+        def factory(**kwargs: Any) -> InertDockerCompose:
+            stub = InertDockerCompose(**kwargs)
+            stubs.append(stub)
+            return stub
+
+        materialiser = DockerComposeMaterialiser(docker_compose_factory=factory)
+        composer = DefaultSubstrateComposer(
+            materialiser=materialiser,
+            runner_client_factory=_fake_client_factory,
+            readiness_probe_loader=_always_ready_loader,
+        )
+        manifest = _manifest(compose_file)
+        plan = [
+            _decl(
+                compose_file,
+                stack_id="trial-stack",
+                stack_scope="trial",
+                runner_service="runner",
+            )
+        ]
+        spec = _trial_spec(manifest)
+        run_sub = RunSubstrate(
+            run_id="run-a",
+            run_stack_handles=(),
+            task_stack_handles={},
+            runner_client=None,
+            endpoints=None,
+            seeds={},
+            mount_docker_socket=True,
+            log_capture=None,
+            events=_NULL_EVENTS,
+        )
+
+        env_handle = composer.provision_trial(plan, spec, run_sub)
+        try:
+            trial_handle = env_handle.trial_stack_handles[0]
+            assert isinstance(trial_handle, _DockerComposeStackHandle)
+            written = (trial_handle.temp_dir / compose_file.name).read_text()
+            assert "/var/run/docker.sock:/var/run/docker.sock" in written
+        finally:
+            composer.teardown_trial(env_handle)
+
 
 # ---------------------------------------------------------------------------
 # cycle_between_trials
@@ -716,6 +858,9 @@ class TestTeardownIdempotency:
             runner_client=runner_client,
             endpoints=None,
             seeds={},
+            mount_docker_socket=False,
+            log_capture=None,
+            events=_NULL_EVENTS,
         )
 
         composer.teardown_run(run_sub)
@@ -747,6 +892,9 @@ class TestRunnerClientAndEndpointsResolution:
             runner_client=run_client,
             endpoints=EnvEndpoints(runner_url="http://run:1"),
             seeds={},
+            mount_docker_socket=False,
+            log_capture=None,
+            events=_NULL_EVENTS,
         )
         env_handle = ComposedEnvHandle(
             trial_id="t",
@@ -770,6 +918,9 @@ class TestRunnerClientAndEndpointsResolution:
             runner_client=run_client,
             endpoints=EnvEndpoints(runner_url="http://run:1"),
             seeds={},
+            mount_docker_socket=False,
+            log_capture=None,
+            events=_NULL_EVENTS,
         )
         env_handle = ComposedEnvHandle(
             trial_id="t",
