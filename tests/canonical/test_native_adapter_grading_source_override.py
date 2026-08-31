@@ -8,10 +8,6 @@ dataclass so ``==`` covers ``kind``, ``path``, and ``reason``. Second, the
 author-facing sentences the two absence rows carry are locked by substring
 against the same prose the free-function tests hold, so a divergence in either
 copy of the reason strings breaks this file.
-
-Transitional guardrail: when :func:`grading_source_under_adapter` delegates
-through the adapter (issue #1341) and the free-function inline body goes,
-this file goes with it.
 """
 
 from __future__ import annotations
