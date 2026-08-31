@@ -244,9 +244,18 @@ harnesses:
       # "Invalid auth method selected" without a pre-pinned ``selectedType``:
       # gemini-cli 0.55.1's ``validateAuthMethod()`` has not been taught about
       # GATEWAY, so the env vars alone are not enough.
+      #
+      # ``tools.exclude`` names ``google_web_search`` and ``web_fetch``
+      # (see ``packages/core/src/tools/definitions/base-declarations.ts``): a
+      # tbench container's ``no_internet`` policy blocks their egress, and
+      # gemini-cli retries a blocked fetch on backoff before yielding a turn
+      # — 26 retries observed on one billing-holds run, consuming the turn
+      # budget past useful work. Excluding them is a scoped fix for the
+      # containerized gateway path; the direct-API path (full internet) is
+      # untouched.
       config_files:
         "${HOME}/.gemini/settings.json": |-
-          {"security":{"auth":{"selectedType":"gateway","useExternal":true}}}
+          {"security":{"auth":{"selectedType":"gateway","useExternal":true}},"tools":{"exclude":["google_web_search","web_fetch"]}}
       container_env:
         GEMINI_CLI_TRUST_WORKSPACE: "true"
       # ``GOOGLE_GEMINI_BASE_URL``'s mere presence flips the CLI to GATEWAY

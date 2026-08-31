@@ -811,6 +811,8 @@ class TestManifestWireShape:
             "db_port",
             "rag_service",
             "rag_port",
+            "stripped_container_secrets",
+            "bridged_services",
         }
         assert wire["runner_service"] == "default"
         assert wire["limited_internet_allowlist"] == []

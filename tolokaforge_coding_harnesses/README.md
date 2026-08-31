@@ -125,7 +125,14 @@ two paths ship with the exact same recipe:
   whole-replaces the `gemini-cli` entry.
 - **`gateway_route` on the spec** — what an external runtime reads when it
   attaches to a container it did not build and has to provision the same
-  files, envs and endpoints itself. Nothing in this repo consumes it.
+  files, envs and endpoints itself. `CodingHarnessDriver` also opts into
+  this path when a run config sets `models.agent.gateway_route` to a name
+  from `alternative_gateways`: the driver resolves the ADR-0037 tokens
+  against the operator's secrets, writes `config_files` into the trial
+  container verbatim, applies `model_alias_pattern` to the effective model,
+  and skips the `credential_gateway` sidecar (the two paths are mutually
+  exclusive). Absent that field, the driver stays on the shielded default
+  path unchanged.
 
 The two are siblings with different audiences.
 [ADR-0037](../docs/adr/0037-runtime-gateway-as-harness-data.md) is the design

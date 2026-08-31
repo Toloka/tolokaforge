@@ -1,6 +1,6 @@
 {
-  "bucket_a_count": 1,
-  "bucket_b_count": 16,
+  "bucket_a_count": 4,
+  "bucket_b_count": 22,
   "commits": [
     {
       "adapter_paths": [
@@ -2015,6 +2015,218 @@
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/__init__.py",
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "docs/ADAPTER_ARCHITECTURE.md",
+        "docs/CODING_HARNESSES.md",
+        "docs/adr/0039-coding-harness-adapter-agnostic.md",
+        "tests/unit/test_coding_harness_gateway.py",
+        "tolokaforge/core/compose_materialisation.py",
+        "tolokaforge/core/drivers/llm_gateway.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-27",
+      "pr": null,
+      "reason": "8 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "915940497dbe7898d5de9fdce80e8123e7c5bbe2",
+      "subject": "review(pr-1280): fix Blocker doc drift + Major misleading comments + Minor cleanups",
+      "touched_files": [
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "docs/ADAPTER_ARCHITECTURE.md",
+        "docs/CODING_HARNESSES.md",
+        "docs/adr/0039-coding-harness-adapter-agnostic.md",
+        "tests/unit/test_coding_harness_gateway.py",
+        "tolokaforge/core/compose_materialisation.py",
+        "tolokaforge/core/drivers/llm_gateway.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml"
+      ]
+    },
+    {
+      "adapter_paths": [],
+      "bucket": "A",
+      "date": "2026-08-28",
+      "pr": null,
+      "reason": "all touched paths in Bucket-A allow-list",
+      "sha": "412c88d40c371c73165c3f1fc568b374f5616085",
+      "subject": "test(coding_harness): 6 run configs for shielded tbench matrix",
+      "touched_files": [
+        "examples/terminal_bench/run_airline_segmentation_harness_claude.yaml",
+        "examples/terminal_bench/run_airline_segmentation_harness_codex.yaml",
+        "examples/terminal_bench/run_airline_segmentation_harness_opencode.yaml",
+        "examples/terminal_bench/run_billing_holds_harness_claude.yaml",
+        "examples/terminal_bench/run_billing_holds_harness_codex.yaml",
+        "examples/terminal_bench/run_billing_holds_harness_opencode.yaml"
+      ]
+    },
+    {
+      "adapter_paths": [],
+      "bucket": "A",
+      "date": "2026-08-28",
+      "pr": null,
+      "reason": "all touched paths in Bucket-A allow-list",
+      "sha": "590c4bb9b20e45631d8056158228937b4ae7f702",
+      "subject": "fix(coding_harness): pin codex to HTTP responses wire, skip WebSocket storm",
+      "touched_files": [
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml"
+      ]
+    },
+    {
+      "adapter_paths": [],
+      "bucket": "A",
+      "date": "2026-08-28",
+      "pr": null,
+      "reason": "all touched paths in Bucket-A allow-list",
+      "sha": "80c80e2afb0b6ed1cffae42a32facb75c8ff2691",
+      "subject": "feat(coding_harness): codex --json observability + grok matrix cells",
+      "touched_files": [
+        "examples/terminal_bench/run_airline_segmentation_harness_grok.yaml",
+        "examples/terminal_bench/run_billing_holds_harness_grok.yaml",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "docs/ADAPTER_ARCHITECTURE.md",
+        "docs/CODING_HARNESSES.md",
+        "docs/SECURITY.md",
+        "docs/adr/0041-coding-harness-credential-gateway.md",
+        "tests/canonical/snapshots/tbench_echo_hello/task_description.json",
+        "tests/unit/test_coding_harness_gateway.py",
+        "tests/unit/test_credential_gateway_schema.py",
+        "tests/unit/test_llm_gateway.py",
+        "tests/unit/test_llm_gateway_serve.py",
+        "tolokaforge/core/compose_materialisation.py",
+        "tolokaforge/core/drivers/coding_harness.py",
+        "tolokaforge/core/models/model_config.py",
+        "tolokaforge/runner/llm_gateway.py",
+        "tolokaforge/runner/llm_gateway_serve.py",
+        "tolokaforge/runner/tool_factory.py",
+        "tolokaforge_coding_harnesses/README.md",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-28",
+      "pr": null,
+      "reason": "19 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "83aeca4fd41c9fa4f348959589ac19c65420fbc2",
+      "subject": "fix(coding_harness): apply PR-1280 code-review findings",
+      "touched_files": [
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "docs/ADAPTER_ARCHITECTURE.md",
+        "docs/CODING_HARNESSES.md",
+        "docs/SECURITY.md",
+        "docs/adr/0041-coding-harness-credential-gateway.md",
+        "tests/canonical/snapshots/tbench_echo_hello/task_description.json",
+        "tests/unit/test_coding_harness_gateway.py",
+        "tests/unit/test_credential_gateway_schema.py",
+        "tests/unit/test_llm_gateway.py",
+        "tests/unit/test_llm_gateway_serve.py",
+        "tolokaforge/core/compose_materialisation.py",
+        "tolokaforge/core/drivers/coding_harness.py",
+        "tolokaforge/core/models/model_config.py",
+        "tolokaforge/runner/llm_gateway.py",
+        "tolokaforge/runner/llm_gateway_serve.py",
+        "tolokaforge/runner/tool_factory.py",
+        "tolokaforge_coding_harnesses/README.md",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "examples/native/coding_harness/run_harness_gemini.yaml",
+        "examples/native/coding_harness/run_harness_grok.yaml",
+        "examples/native/coding_harness/run_harness_kimi.yaml",
+        "examples/native/coding_harness/run_harness_opencode.yaml"
+      ],
+      "bucket": "B",
+      "date": "2026-08-28",
+      "pr": null,
+      "reason": "4 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "bd809ccbc91e0ae207a6ced38bf2f851cacce3dc",
+      "subject": "fix(coding_harness): per-harness path_allowlist + working example configs",
+      "touched_files": [
+        "examples/native/coding_harness/run_harness_gemini.yaml",
+        "examples/native/coding_harness/run_harness_grok.yaml",
+        "examples/native/coding_harness/run_harness_kimi.yaml",
+        "examples/native/coding_harness/run_harness_opencode.yaml",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/install-harness.sh"
+      ],
+      "bucket": "B",
+      "date": "2026-08-28",
+      "pr": null,
+      "reason": "1 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "fe2ca39c7b2051750c8a319dc3d102078bc72f82",
+      "subject": "refactor(install-harness.sh): install ca-certificates + curl at top level, not as installer side effects",
+      "touched_files": [
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/install-harness.sh"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "examples/native/coding_harness/run_harness_gemini.yaml",
+        "examples/native/coding_harness/run_harness_kimi.yaml",
+        "tests/unit/test_coding_harness_gateway.py",
+        "tests/unit/test_llm_gateway.py",
+        "tolokaforge/core/drivers/coding_harness.py",
+        "tolokaforge/core/models/model_config.py",
+        "tolokaforge/core/orchestrator.py",
+        "tolokaforge/runner/llm_gateway.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_harness_command.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-31",
+      "pr": null,
+      "reason": "10 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "2d36fd60701c677601a22259ec2129653dbfccf2",
+      "subject": "feat(coding_harness): consume shipped gateway_route (ADR-0037) for kimi + gemini",
+      "touched_files": [
+        "examples/native/coding_harness/run_harness_gemini.yaml",
+        "examples/native/coding_harness/run_harness_kimi.yaml",
+        "examples/terminal_bench/run_airline_segmentation_harness_gemini.yaml",
+        "examples/terminal_bench/run_airline_segmentation_harness_kimi.yaml",
+        "examples/terminal_bench/run_billing_holds_harness_gemini.yaml",
+        "examples/terminal_bench/run_billing_holds_harness_kimi.yaml",
+        "tests/unit/test_coding_harness_gateway.py",
+        "tests/unit/test_llm_gateway.py",
+        "tolokaforge/core/drivers/coding_harness.py",
+        "tolokaforge/core/models/model_config.py",
+        "tolokaforge/core/orchestrator.py",
+        "tolokaforge/runner/llm_gateway.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/_registry.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_harness_command.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "examples/native/coding_harness/run_harness_kimi.yaml",
+        "tolokaforge/core/drivers/coding_harness.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-31",
+      "pr": null,
+      "reason": "2 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "41de206b2dbbfbc3e5412463ea19fa7aa235c8e0",
+      "subject": "fix(coding_harness): keep the gateway-route alias verbatim, point kimi at k3",
+      "touched_files": [
+        "examples/native/coding_harness/run_harness_kimi.yaml",
+        "examples/terminal_bench/run_airline_segmentation_harness_kimi.yaml",
+        "examples/terminal_bench/run_billing_holds_harness_kimi.yaml",
+        "tolokaforge/core/drivers/coding_harness.py"
       ]
     }
   ]

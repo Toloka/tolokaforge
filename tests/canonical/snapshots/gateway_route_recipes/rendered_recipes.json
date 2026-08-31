@@ -1,7 +1,7 @@
 {
   "gemini-cli": {
     "config_files": {
-      "/root/.gemini/settings.json": "{\"security\":{\"auth\":{\"selectedType\":\"gateway\",\"useExternal\":true}}}"
+      "/root/.gemini/settings.json": "{\"security\":{\"auth\":{\"selectedType\":\"gateway\",\"useExternal\":true}},\"tools\":{\"exclude\":[\"google_web_search\",\"web_fetch\"]}}"
     },
     "container_env": {
       "GEMINI_CLI_TRUST_WORKSPACE": "true"
