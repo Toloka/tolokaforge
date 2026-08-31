@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from tolokaforge.adapters import BaseAdapter
-from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.env_identity import describe_environment_identity
 from tolokaforge.core.env_state import EnvironmentState
@@ -550,9 +549,11 @@ class InProcessConductor:
 
         adapter_env = self.adapter.create_environment(task.task_id)
 
-        # Sync adapter environment data to env_state for Tau tasks — the adapter
-        # data appears in env.yaml and is available for grading.
-        if adapter_env.data and not isinstance(self.adapter, NativeAdapter):
+        # Adapters that opt in via ``syncs_adapter_env_to_state`` publish their
+        # ``AdapterEnvironment.data`` into the runner's ``TrialState`` so the
+        # runner can read it back during grading. Tau-family adapters flip the
+        # flag; Native and Terminal-bench leave it at the default False.
+        if adapter_env.data and self.adapter.syncs_adapter_env_to_state:
             env_state.db_state = adapter_env.data
             env_state._normalize_db_state()
             self.logger.debug(
