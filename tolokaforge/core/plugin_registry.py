@@ -6,6 +6,7 @@ External code discovers and loads alternative implementations of the
 :class:`~tolokaforge.core.conductor.Conductor`,
 :class:`~tolokaforge.core.service_readiness.ServiceReadinessProbe`,
 :class:`~tolokaforge.core.actors.turn_policy.TurnPolicy`,
+:class:`~tolokaforge.core.grading.grading_method.GradingMethod`,
 :class:`~tolokaforge.core.grading.substrate.GradingSubstrate`,
 :class:`~tolokaforge.core.grading.check_runner.CheckExecutor`,
 :class:`~tolokaforge.core.grading.judge_model_provider.JudgeModelProvider`,
@@ -37,6 +38,7 @@ The groups:
 * ``tolokaforge.conductors`` → :data:`~tolokaforge.core.conductor.ConductorFactory`
 * ``tolokaforge.service_readiness_probes`` → :data:`ReadinessProbeFactory`
 * ``tolokaforge.turn_policies`` → :data:`TurnPolicyFactory`
+* ``tolokaforge.grading_methods`` → ``type[GradingMethod]``
 * ``tolokaforge.grading_substrates`` → ``type[GradingSubstrate]``
 * ``tolokaforge.custom_check_executors`` → :data:`CustomCheckExecutorFactory`
 * ``tolokaforge.judge_model_providers`` → :data:`JudgeModelProviderFactory`
@@ -68,6 +70,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
 from tolokaforge.core.grading.check_runner import CheckExecutor
+from tolokaforge.core.grading.grading_method import GradingMethod
 from tolokaforge.core.grading.judge_model_provider import JudgeModelProviderFactory
 from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorFactory
 from tolokaforge.core.grading.state_check_backend import StateCheckBackendFactory
@@ -120,6 +123,7 @@ __all__ = [
     "UnknownImplementationError",
     "available_conductors",
     "available_custom_check_executors",
+    "available_grading_methods",
     "available_grading_substrates",
     "available_judge_model_providers",
     "available_readiness_probes",
@@ -133,6 +137,7 @@ __all__ = [
     "discover_entry_points",
     "load_conductor",
     "load_custom_check_executor",
+    "load_grading_method",
     "load_grading_substrate",
     "load_judge_model_provider",
     "load_readiness_probe",
@@ -150,6 +155,7 @@ TRIAL_GRADERS_GROUP = "tolokaforge.trial_graders"
 CONDUCTORS_GROUP = "tolokaforge.conductors"
 SERVICE_READINESS_PROBES_GROUP = "tolokaforge.service_readiness_probes"
 TURN_POLICIES_GROUP = "tolokaforge.turn_policies"
+GRADING_METHODS_GROUP = "tolokaforge.grading_methods"
 GRADING_SUBSTRATES_GROUP = "tolokaforge.grading_substrates"
 CUSTOM_CHECK_EXECUTORS_GROUP = "tolokaforge.custom_check_executors"
 JUDGE_MODEL_PROVIDERS_GROUP = "tolokaforge.judge_model_providers"
@@ -448,6 +454,23 @@ def load_trace_check_operator(name: str) -> TraceCheckOperator:
     return cast(TraceCheckOperator, _load(TRACE_CHECK_OPERATORS_GROUP, name))
 
 
+def load_grading_method(name: str) -> type[GradingMethod]:
+    """Resolve a registered grading-method name to its marker class.
+
+    Returns the class object itself, matching :func:`load_grading_substrate`:
+    a downstream method registers the class it defined, and the runner
+    reads ``NAME`` off it to spot pyproject typos at discovery. Runtime
+    dispatch today branches on the wire string
+    (:meth:`RunnerServiceImpl.GradeTrial`); this loader is a validation +
+    discovery surface, called at ``RegisterTrial`` to refuse an unknown
+    ``grading.grading_method`` before the runner spends a trial on it.
+
+    Fail-loud on unknown names via :class:`UnknownImplementationError`,
+    matching every other loader in this module.
+    """
+    return cast(type[GradingMethod], _load(GRADING_METHODS_GROUP, name))
+
+
 def load_grading_substrate(name: str) -> type[GradingSubstrate]:
     """Resolve a registered grading-substrate name to its implementation class.
 
@@ -488,6 +511,11 @@ def available_readiness_probes() -> list[str]:
 def available_turn_policies() -> list[str]:
     """Sorted names registered in the ``tolokaforge.turn_policies`` group."""
     return sorted(discover_entry_points(TURN_POLICIES_GROUP))
+
+
+def available_grading_methods() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.grading_methods`` group."""
+    return sorted(discover_entry_points(GRADING_METHODS_GROUP))
 
 
 def available_grading_substrates() -> list[str]:

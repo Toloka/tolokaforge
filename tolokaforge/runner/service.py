@@ -78,7 +78,10 @@ from tolokaforge.core.models import (
     TerminationReason,
 )
 from tolokaforge.core.plugin_registry import (
+    UnknownImplementationError,
+    available_grading_methods,
     load_custom_check_executor,
+    load_grading_method,
     load_judge_model_provider,
     load_rubric_evaluator,
     load_state_check_backend,
@@ -874,6 +877,25 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
 
         task_description = trial_spec.task
+
+        # Reject an unregistered ``grading.grading_method`` before any tool
+        # artifacts land on disk — cheapest schema failure first, no cleanup
+        # path to walk on refusal. Registered names live in
+        # ``tolokaforge.grading_methods``; an unknown value would either
+        # short-circuit to nothing (dispatch reads a bare string at
+        # ``GradeTrial``) or silently run the composite path.
+        method_name = task_description.grading.grading_method
+        if method_name is not None:
+            try:
+                load_grading_method(method_name)
+            except UnknownImplementationError:
+                error = (
+                    f"Unknown grading_method {method_name!r}; registered methods: "
+                    f"{available_grading_methods()}. Add an entry to the "
+                    "tolokaforge.grading_methods group or fix the typo."
+                )
+                logger.error(f"RegisterTrial: {trial_id} - {error}")
+                return pb2.RegisterTrialResponse(success=False, error=error)
 
         # Extract tool artifacts to temp directory if present
         artifacts_dir = None

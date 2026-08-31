@@ -558,15 +558,17 @@ recipe — see [ADR-0040](adr/0040-standalone-grader.md), reserved-future
 substrate SWE-bench pattern. Not shipped today; the two shipping
 substrates are `InProcess` and `LiveCallback`.
 
-<a id="extension-points-the-seven-plug-in-groups"></a>
+<a id="extension-points-the-eight-plug-in-groups"></a>
 
-## Extension points — the seven plug-in groups
+## Extension points — the eight plug-in groups
 
-Seven `importlib.metadata` entry-point groups let a downstream package
-extend the grader without a framework change: one substrate group and
-six sub-component seams. Each group has a matching loader on
+Eight `importlib.metadata` entry-point groups let a downstream package
+extend the grader without a framework change: one runner-side dispatch
+selector, one substrate group, and six sub-component seams. Each group
+has a matching loader on
 [`tolokaforge.core.plugin_registry`](../tolokaforge/core/plugin_registry.py):
 
+- `tolokaforge.grading_methods` — `load_grading_method(name)` returns the `GradingMethod` marker **class**. Names in this group are the values `RunnerGradingConfig.grading_method` accepts at `RegisterTrial`; the marker carries `NAME: ClassVar[str]` so a downstream typo in `pyproject.toml` fails at discovery. Runtime dispatch today branches on the wire string at `RunnerServiceImpl.GradeTrial`; this loader is a validation + discovery surface.
 - `tolokaforge.grading_substrates` — `load_grading_substrate(name)` returns the `GradingSubstrate` **class** (the caller instantiates it with per-trial arguments).
 - `tolokaforge.custom_check_executors` — `load_custom_check_executor(name)` returns a factory.
 - `tolokaforge.judge_model_providers` — `load_judge_model_provider(name)` returns a factory.
@@ -578,6 +580,9 @@ six sub-component seams. Each group has a matching loader on
 Copy-paste block for a downstream `pyproject.toml`:
 
 ```toml
+[project.entry-points."tolokaforge.grading_methods"]
+my_grading_method = "my_package:my_grading_method_marker"
+
 [project.entry-points."tolokaforge.grading_substrates"]
 my_substrate = "my_package:my_substrate_class"
 
@@ -600,11 +605,11 @@ my_state_backend = "my_package:my_state_backend_factory"
 my_operator = "my_package:my_operator"
 ```
 
-`tolokaforge.trial_graders` is the eighth registration point — the
+`tolokaforge.trial_graders` is the ninth registration point — the
 top-level grader-name seam ADR-0038 shipped, already documented in
 [Registering a downstream grader](#registering-a-downstream-grader).
 A downstream package registering a new grader name lands there, not
-in any of the seven groups above.
+in any of the eight groups above.
 
 ## Parity gate
 

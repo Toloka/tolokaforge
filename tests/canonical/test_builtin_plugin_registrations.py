@@ -23,8 +23,13 @@ from tolokaforge.core.conductor import (
     InMemoryConductor,
     InProcessConductor,
 )
+from tolokaforge.core.grading.grading_method import (
+    CompositeGradingMethod,
+    TestExecutionGradingMethod,
+)
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.plugin_registry import (
+    GRADING_METHODS_GROUP,
     RUNTIME_BACKENDS_GROUP,
     SERVICE_READINESS_PROBES_GROUP,
     TURN_POLICIES_GROUP,
@@ -32,11 +37,13 @@ from tolokaforge.core.plugin_registry import (
     TrialGraderContext,
     TurnPolicyContext,
     available_conductors,
+    available_grading_methods,
     available_readiness_probes,
     available_runtime_backends,
     available_trial_graders,
     available_turn_policies,
     load_conductor,
+    load_grading_method,
     load_readiness_probe,
     load_runtime_backend,
     load_trial_grader,
@@ -146,12 +153,26 @@ def test_turn_policy_names_resolve_to_their_class() -> None:
     assert isinstance(agent_only, AgentOnlyTurnPolicy)
 
 
+@pytest.mark.parametrize(
+    ("name", "expected_cls"),
+    [
+        ("composite", CompositeGradingMethod),
+        ("test_execution", TestExecutionGradingMethod),
+    ],
+)
+def test_grading_method_names_resolve_to_their_marker(name: str, expected_cls: type) -> None:
+    marker = load_grading_method(name)
+    assert marker is expected_cls
+    assert name == marker.NAME
+
+
 def test_available_listings_match_the_builtin_set() -> None:
     assert available_runtime_backends() == ["in_memory", "per_trial", "shared"]
     assert available_trial_graders() == ["grader_rpc", "judge_only", "queue", "runner_rpc"]
     assert available_conductors() == ["in_memory", "in_process"]
     assert available_readiness_probes() == ["grpc", "http", "tcp"]
     assert available_turn_policies() == ["agent_only", "conversational"]
+    assert available_grading_methods() == ["composite", "test_execution"]
 
 
 def test_raw_entry_point_probe_lists_runtime_backends() -> None:
@@ -169,3 +190,8 @@ def test_raw_entry_point_probe_lists_readiness_probes() -> None:
 def test_raw_entry_point_probe_lists_turn_policies() -> None:
     names = sorted(ep.name for ep in importlib.metadata.entry_points(group=TURN_POLICIES_GROUP))
     assert names == ["agent_only", "conversational"]
+
+
+def test_raw_entry_point_probe_lists_grading_methods() -> None:
+    names = sorted(ep.name for ep in importlib.metadata.entry_points(group=GRADING_METHODS_GROUP))
+    assert names == ["composite", "test_execution"]
