@@ -70,6 +70,63 @@ def test_no_adapter_without_compose_tools_returns_false():
     assert _run_needs_docker_cli(None, tasks=[]) is False
 
 
+# ---- Flag-based dispatch: adapter class's requires_docker_cli_in_runner drives the decision ----
+
+
+@pytest.fixture
+def _register_throwaway_adapter():
+    """Register a stub adapter into the process-global registry for one test.
+
+    Teardown pops the name from ``_ADAPTERS`` so no test pollution leaks
+    across cases. Yields the ``register(name, cls)`` helper the tests call.
+    """
+    from tolokaforge.adapters import _ADAPTERS, register_adapter
+
+    registered_names: list[str] = []
+
+    def _register(name: str, cls: type) -> None:
+        register_adapter(name, cls)
+        registered_names.append(name)
+
+    yield _register
+
+    for name in registered_names:
+        _ADAPTERS.pop(name, None)
+
+
+def test_adapter_class_with_docker_cli_flag_triggers(_register_throwaway_adapter) -> None:
+    """Any adapter class declaring ``requires_docker_cli_in_runner = True`` fires the CLI trigger.
+
+    Locks the flag-based dispatch invariant separately from the shipped
+    ``TerminalBenchAdapter`` name — catches a regression where the reader
+    reverts to matching adapter identity instead of reading the class flag.
+    """
+    from typing import ClassVar
+
+    from tolokaforge.adapters.base import BaseAdapter
+
+    class _FakeDockerCliAdapter(BaseAdapter):
+        requires_docker_cli_in_runner: ClassVar[bool] = True
+
+    _register_throwaway_adapter("_fake_docker_cli", _FakeDockerCliAdapter)
+
+    assert _run_needs_docker_cli("_fake_docker_cli", tasks=[]) is True
+
+
+def test_adapter_class_without_docker_cli_flag_does_not_trigger(
+    _register_throwaway_adapter,
+) -> None:
+    """An adapter class leaving ``requires_docker_cli_in_runner`` at its inherited ``False`` does not fire the trigger."""
+    from tolokaforge.adapters.base import BaseAdapter
+
+    class _FakeNoCliAdapter(BaseAdapter):
+        pass
+
+    _register_throwaway_adapter("_fake_no_cli", _FakeNoCliAdapter)
+
+    assert _run_needs_docker_cli("_fake_no_cli", tasks=[]) is False
+
+
 # ---- _tasks_use_compose_variant_tools: compose-variant trigger ----
 
 
