@@ -7,9 +7,10 @@ fails on any regression that reintroduces an ``AdapterType.NATIVE.value``
 match or an ``if adapter_type ==`` / ``if adapter_type !=`` branch inside
 ``tolokaforge/adapters/_task_loader.py``.
 
-Scoped to the one file per ticket #1341: each sibling reader smell in
-``orchestrator.py`` / ``conductor.py`` (#1342) and ``rubric_migration.py``
-(#1343) carries its own guardrail if useful.
+Scoped to ``_task_loader.py`` alone: adapter-name branches in the sibling
+readers under ``orchestrator.py``, ``conductor.py``, and
+``rubric_migration.py`` are the concern of separate guardrails beside those
+files.
 """
 
 from __future__ import annotations
