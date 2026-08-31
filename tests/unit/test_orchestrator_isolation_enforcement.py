@@ -77,6 +77,17 @@ def _per_trial_backend() -> PerTrialRuntimeBackend:
     return PerTrialRuntimeBackend()
 
 
+def _hybrid_backend() -> Any:
+    """Minimal hybrid-backend stub for the isolation-check test — only
+    ``isolation_mode`` is read by ``_verify_isolation_compatibility``.
+    The full backend lands in #1366."""
+    from tolokaforge.core.runtime import IsolationMode
+
+    stub = MagicMock()
+    stub.isolation_mode = IsolationMode.HYBRID_STACK
+    return stub
+
+
 class TestSharedStackRuntimePath:
     """The load-bearing case: SharedStackRuntimeBackend refuses tasks
     whose manifest requires per-trial materialisation."""
@@ -215,6 +226,54 @@ class TestPerTrialRuntimePath:
         }
         orch = _make_orchestrator(tasks, task_descs)
         orch._verify_isolation_compatibility(_per_trial_backend())
+
+
+class TestHybridRuntimePath:
+    """HybridRuntimeBackend materialises task-declared services per trial
+    (like PerTrialRuntimeBackend), so it satisfies every isolation
+    requirement including ``ephemeral`` — the same short-circuit
+    _verify_isolation_compatibility applies to per_trial. See ADR-0043
+    § Decision item 5."""
+
+    def test_ephemeral_service_passes(self) -> None:
+        tasks = [_make_task_config("tbench-shape")]
+        task_descs = {
+            "tbench-shape": make_task_description(
+                task_id="tbench-shape",
+                environment_manifest=_manifest_with_services(
+                    {
+                        "db": ServiceSpec(isolation="ephemeral"),
+                        "default": ServiceSpec(isolation="shared"),
+                    }
+                ),
+            ),
+        }
+        orch = _make_orchestrator(tasks, task_descs)
+        # Under the old (per-trial only) short-circuit this would have
+        # raised for the ephemeral service; under the widened check
+        # hybrid honours ephemeral the same way per_trial does.
+        orch._verify_isolation_compatibility(_hybrid_backend())
+
+    def test_reset_service_passes(self) -> None:
+        from tolokaforge.core.models import ResetSpec
+
+        tasks = [_make_task_config("stateful")]
+        task_descs = {
+            "stateful": make_task_description(
+                task_id="stateful",
+                environment_manifest=_manifest_with_services(
+                    {
+                        "db": ServiceSpec(
+                            isolation="reset",
+                            reset=ResetSpec(seed="baseline"),
+                        ),
+                        "default": ServiceSpec(isolation="shared"),
+                    }
+                ),
+            ),
+        }
+        orch = _make_orchestrator(tasks, task_descs)
+        orch._verify_isolation_compatibility(_hybrid_backend())
 
 
 class TestAdapterGuard:

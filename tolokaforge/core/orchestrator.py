@@ -1055,19 +1055,21 @@ class Orchestrator:
         """
         from tolokaforge.core.project_loader import resolve
 
-        # Per-trial short-circuit — resolves via the same signal
+        # Per-trial and hybrid short-circuit — resolves via the same signal
         # ``_construct_runtime_backend`` uses to pick the backend, so the
         # two decisions stay in lock-step. Both the operator override
-        # ``orchestrator.runtime`` and the task-driven per-trial signal
-        # suppress the shared-stack heterogeneity check. Inlined rather
-        # than routed through ``_resolve_effective_runtime_choice`` so
-        # the override path works when the adapter isn't loaded yet
-        # (unit-test seams).
+        # ``orchestrator.runtime`` and the task-driven per-trial/hybrid
+        # signals suppress the shared-stack heterogeneity check: per-trial
+        # resolves ``task.environment_manifest`` per trial, and hybrid's
+        # engine slice is homogeneous across tasks by construction (see
+        # ADR-0043 § Decision item 4). Inlined rather than routed through
+        # ``_resolve_effective_runtime_choice`` so the override path works
+        # when the adapter isn't loaded yet (unit-test seams).
         override = self.config.orchestrator.runtime
-        if override == "per_trial":
+        if override in ("per_trial", "hybrid"):
             return None
         if override is None and self.adapter is not None:
-            if self._select_backend_from_tasks() == "per_trial":
+            if self._select_backend_from_tasks() in ("per_trial", "hybrid"):
                 return None
 
         project_env = self.project.default_environment if self.project is not None else None
@@ -1098,23 +1100,35 @@ class Orchestrator:
         return next(iter(manifests_by_compose.values()))
 
     def _select_backend_from_tasks(self) -> str:
-        """Return ``"per_trial"`` if any task's manifest requires per-trial
-        materialisation, otherwise ``"shared"``.
+        """Return ``"hybrid"`` if any task's manifest requests the shared
+        engine + per-trial task shape (ADR-0043), else ``"per_trial"``
+        if any task requires per-trial materialisation, else ``"shared"``.
 
-        Reads :attr:`EnvironmentManifest.requires_per_trial` for every
-        task; a task without a manifest contributes no signal. When
-        every task with a manifest is fully-``shared`` labelled, the
-        selector picks the shared backend.
+        Reads :attr:`EnvironmentManifest.requires_hybrid_stack` and
+        :attr:`EnvironmentManifest.requires_per_trial` for every task; a
+        task without a manifest contributes no signal.
+
+        Selection order is hybrid → per_trial → shared per ADR-0043
+        § Decision item 4: a mixed-isolation manifest also reports
+        ``requires_per_trial=True`` (it contains ``reset|ephemeral``
+        services), so evaluating hybrid first is the load-bearing
+        precedence — otherwise the run would route to per_trial and
+        rebuild the shared engine services every trial.
         """
         if self.adapter is None:
             raise RuntimeError(
                 "Task-driven backend selection requires the adapter to be loaded first."
             )
+        needs_per_trial = False
         for task in self.tasks:
             manifest = self._task_description(task.task_id).environment_manifest
-            if manifest is not None and manifest.requires_per_trial:
-                return "per_trial"
-        return "shared"
+            if manifest is None:
+                continue
+            if manifest.requires_hybrid_stack:
+                return "hybrid"
+            if manifest.requires_per_trial:
+                needs_per_trial = True
+        return "per_trial" if needs_per_trial else "shared"
 
     def _resolve_effective_runtime_choice(self) -> str:
         """Return the effective runtime choice — the operator override
@@ -1354,19 +1368,28 @@ class Orchestrator:
         cannot provide it.
 
         Task-driven backend selection already routes such runs onto
-        :class:`PerTrialRuntimeBackend`; this guard only fires under
-        the deprecated ``orchestrator.runtime`` override path when the
-        operator forces a shared backend against a per-trial-requiring
-        task set. It also catches an ``ephemeral``-labelled service on
-        a shared backend — that isolation label cannot be honoured
-        without a full compose-down cycle.
+        :class:`PerTrialRuntimeBackend` or :class:`HybridRuntimeBackend`;
+        this guard only fires under the deprecated
+        ``orchestrator.runtime`` override path when the operator forces
+        a shared backend against a per-trial-requiring task set. It also
+        catches an ``ephemeral``-labelled service on a shared backend —
+        that isolation label cannot be honoured without a full
+        compose-down cycle.
+
+        Both per-trial and hybrid backends materialise task-declared
+        services per trial (hybrid also materialises the shared engine
+        slice once per run), so both honour ``reset|ephemeral`` labels
+        and both skip this check. See ADR-0043 § Decision item 5.
 
         Raises :class:`RuntimeError` naming the offending tasks and the
         concrete fix.
         """
         from tolokaforge.core.runtime import IsolationMode
 
-        if runtime_backend.isolation_mode is IsolationMode.PER_TRIAL_STACK:
+        if runtime_backend.isolation_mode in (
+            IsolationMode.PER_TRIAL_STACK,
+            IsolationMode.HYBRID_STACK,
+        ):
             return
 
         if self.adapter is None:

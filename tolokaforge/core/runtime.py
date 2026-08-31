@@ -57,10 +57,17 @@ class IsolationMode(str, Enum):
       trial in the run. Cross-trial state contamination is structural.
     * ``PER_TRIAL_STACK`` — one substrate materialisation per trial.
       Concurrent trials are fully isolated.
+    * ``HYBRID_STACK`` — shared engine services (runner + db-service +
+      rag-service where declared ``isolation: shared``) materialised once
+      per run; task-declared services materialised per trial from a
+      per-service sub-compose. Grading validity is preserved: the shared
+      slice is stateless per-trial (engine services), the per-trial slice
+      is what the grader reads. See ADR-0043.
     """
 
     SHARED_STACK = "shared_stack"
     PER_TRIAL_STACK = "per_trial_stack"
+    HYBRID_STACK = "hybrid_stack"
 
 
 # ---------------------------------------------------------------------------

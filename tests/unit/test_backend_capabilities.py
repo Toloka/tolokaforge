@@ -25,6 +25,7 @@ class TestRegistryVocabulary:
         expected = {
             "per_trial_stack",
             "shared_stack",
+            "hybrid_stack",
             "reset_recipes:sql_dump",
             "reset_recipes:filesystem_dir",
             "reset_recipes:redis_dump",
@@ -33,6 +34,13 @@ class TestRegistryVocabulary:
             "network_isolation:limited_internet",
         }
         assert expected.issubset(CAPABILITY_REGISTRY.keys())
+
+    def test_hybrid_stack_is_registered(self) -> None:
+        """New capability entry added in #1365. HybridRuntimeBackend
+        (registered in #1366) will advertise it."""
+        spec = CAPABILITY_REGISTRY["hybrid_stack"]
+        assert "shared engine services" in spec.description
+        assert "task-declared services per trial" in spec.description
 
     def test_local_docker_advertises_registry_subset(self) -> None:
         assert LOCAL_DOCKER_ADVERTISED.issubset(CAPABILITY_REGISTRY.keys())

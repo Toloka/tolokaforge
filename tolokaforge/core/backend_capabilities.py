@@ -44,6 +44,10 @@ _LOCAL_DOCKER_BASELINE: tuple[CapabilitySpec, ...] = (
         description="Backend materialises one substrate for the whole run.",
     ),
     CapabilitySpec(
+        name="hybrid_stack",
+        description="Backend materialises shared engine services (runner + db-service + rag-service) once per run, plus task-declared services per trial from a per-service sub-compose. See ADR-0043.",
+    ),
+    CapabilitySpec(
         name="reset_recipes:sql_dump",
         description="Backend can restore a Postgres/SQL dump into a labelled service between trials.",
     ),

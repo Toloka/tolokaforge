@@ -1,10 +1,12 @@
 """Task-driven backend selection.
 
-The orchestrator picks :class:`PerTrialRuntimeBackend` when any task
-manifest requires per-trial materialisation, otherwise
-:class:`SharedStackRuntimeBackend`. The legacy ``orchestrator.runtime``
-override still wins but emits ``DeprecationWarning``. These tests pin
-every branch of :meth:`Orchestrator._select_backend_from_tasks` and
+The orchestrator picks ``hybrid`` when any task manifest declares a mix
+of ``shared`` and ``reset|ephemeral`` isolation levels (ADR-0043), else
+``per_trial`` when any task manifest requires per-trial materialisation
+(all-``reset|ephemeral`` service maps + empty-services default), else
+``shared``. The legacy ``orchestrator.runtime`` override still wins but
+emits ``DeprecationWarning``. These tests pin every branch of
+:meth:`Orchestrator._select_backend_from_tasks` and
 :meth:`Orchestrator._construct_runtime_backend`.
 """
 
@@ -89,7 +91,9 @@ def _manifest_all_shared() -> EnvironmentManifest:
     )
 
 
-def _manifest_with_reset() -> EnvironmentManifest:
+def _manifest_mixed_reset() -> EnvironmentManifest:
+    """Mixed manifest: ``default: shared`` + ``db: reset``. ADR-0043 hybrid
+    shape — engine service shared, task-declared service reset per trial."""
     return EnvironmentManifest(
         compose_file=_FIXTURES / "safe_two_service.yaml",
         services={
@@ -99,12 +103,38 @@ def _manifest_with_reset() -> EnvironmentManifest:
     )
 
 
-def _manifest_with_ephemeral() -> EnvironmentManifest:
+def _manifest_mixed_ephemeral() -> EnvironmentManifest:
+    """Mixed manifest: ``default: shared`` + ``db: ephemeral``. Canonical
+    T-Bench-shape hybrid manifest."""
     return EnvironmentManifest(
         compose_file=_FIXTURES / "safe_two_service.yaml",
         services={
             "db": ServiceSpec(isolation="ephemeral"),
             "default": ServiceSpec(isolation="shared"),
+        },
+    )
+
+
+def _manifest_all_reset() -> EnvironmentManifest:
+    """All-``reset`` manifest — every service reset per trial with a seed.
+    Not a hybrid shape (no ``shared`` service); routes to per_trial."""
+    return EnvironmentManifest(
+        compose_file=_FIXTURES / "safe_two_service.yaml",
+        services={
+            "db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline")),
+            "default": ServiceSpec(isolation="reset", reset=ResetSpec(seed="app")),
+        },
+    )
+
+
+def _manifest_all_ephemeral() -> EnvironmentManifest:
+    """All-``ephemeral`` manifest — every service rematerialised per trial.
+    Not a hybrid shape; routes to per_trial."""
+    return EnvironmentManifest(
+        compose_file=_FIXTURES / "safe_two_service.yaml",
+        services={
+            "db": ServiceSpec(isolation="ephemeral"),
+            "default": ServiceSpec(isolation="ephemeral"),
         },
     )
 
@@ -118,24 +148,69 @@ class TestSelectBackendFromTasks:
         orch = _make_orchestrator(tasks, task_descs)
         assert orch._select_backend_from_tasks() == "shared"
 
-    def test_any_reset_returns_per_trial(self) -> None:
-        tasks = [_task_stub("t1"), _task_stub("t2")]
+    def test_all_reset_returns_per_trial(self) -> None:
+        """All-``reset`` (no ``shared`` service) is a pure per-trial shape,
+        not hybrid. Routes to per_trial."""
+        tasks = [_task_stub("t1")]
         task_descs = {
-            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_all_shared()),
-            "t2": make_task_description(task_id="t2", environment_manifest=_manifest_with_reset()),
+            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_all_reset())
         }
         orch = _make_orchestrator(tasks, task_descs)
         assert orch._select_backend_from_tasks() == "per_trial"
 
-    def test_any_ephemeral_returns_per_trial(self) -> None:
+    def test_all_ephemeral_returns_per_trial(self) -> None:
+        """All-``ephemeral`` (no ``shared`` service) is a pure per-trial
+        shape, not hybrid. Routes to per_trial."""
         tasks = [_task_stub("t1")]
         task_descs = {
             "t1": make_task_description(
-                task_id="t1", environment_manifest=_manifest_with_ephemeral()
+                task_id="t1", environment_manifest=_manifest_all_ephemeral()
             )
         }
         orch = _make_orchestrator(tasks, task_descs)
         assert orch._select_backend_from_tasks() == "per_trial"
+
+    def test_mixed_shared_and_reset_returns_hybrid(self) -> None:
+        """Mixed ``shared`` + ``reset`` manifest is the hybrid shape per
+        ADR-0043. Routes to hybrid, not per_trial — hybrid branch is
+        evaluated before per_trial so the shared engine slice is not
+        rebuilt every trial."""
+        tasks = [_task_stub("t1"), _task_stub("t2")]
+        task_descs = {
+            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_all_shared()),
+            "t2": make_task_description(task_id="t2", environment_manifest=_manifest_mixed_reset()),
+        }
+        orch = _make_orchestrator(tasks, task_descs)
+        assert orch._select_backend_from_tasks() == "hybrid"
+
+    def test_mixed_shared_and_ephemeral_returns_hybrid(self) -> None:
+        """Mixed ``shared`` + ``ephemeral`` manifest — the canonical
+        T-Bench-shape — routes to hybrid per ADR-0043."""
+        tasks = [_task_stub("t1")]
+        task_descs = {
+            "t1": make_task_description(
+                task_id="t1", environment_manifest=_manifest_mixed_ephemeral()
+            )
+        }
+        orch = _make_orchestrator(tasks, task_descs)
+        assert orch._select_backend_from_tasks() == "hybrid"
+
+    def test_hybrid_precedes_per_trial_in_selection_order(self) -> None:
+        """When a run has both a pure per-trial task and a mixed hybrid
+        task, hybrid wins — the shared engine slice would otherwise be
+        rebuilt every trial and defeat the design (ADR-0043 § Decision
+        item 4)."""
+        tasks = [_task_stub("t1"), _task_stub("t2")]
+        task_descs = {
+            "t1": make_task_description(
+                task_id="t1", environment_manifest=_manifest_all_ephemeral()
+            ),
+            "t2": make_task_description(
+                task_id="t2", environment_manifest=_manifest_mixed_ephemeral()
+            ),
+        }
+        orch = _make_orchestrator(tasks, task_descs)
+        assert orch._select_backend_from_tasks() == "hybrid"
 
     def test_no_manifest_defaults_to_shared(self) -> None:
         tasks = [_task_stub("legacy")]
@@ -161,9 +236,23 @@ class TestConstructRuntimeBackend:
         unit tests of dispatch wiring — the name the orchestrator selects and
         the factory it invokes — decoupled from installed package metadata.
         """
+
+        # Stub hybrid factory returns a marker so the routing wire-through
+        # is testable before #1366 lands the real HybridRuntimeBackend.
+        # The real hybrid backend registration comes in #1366; this stub
+        # exists only so the loader in _construct_runtime_backend has
+        # something to dispatch to under a synthesised hybrid selection.
+        class _HybridStub:
+            isolation_mode = None  # populated by the real class in #1366
+            advertised_capabilities = frozenset({"hybrid_stack"})
+
+        def _hybrid_stub_factory(ctx: RuntimeBackendBuildContext) -> Any:
+            return _HybridStub()
+
         factories = {
             "shared": shared_runtime_backend_factory,
             "per_trial": per_trial_runtime_backend_factory,
+            "hybrid": _hybrid_stub_factory,
         }
         monkeypatch.setattr(
             "tolokaforge.core.orchestrator.load_runtime_backend",
@@ -183,10 +272,36 @@ class TestConstructRuntimeBackend:
         )
         assert isinstance(backend, SharedStackRuntimeBackend)
 
-    def test_task_driven_reset_picks_per_trial(self) -> None:
+    def test_task_driven_mixed_picks_hybrid(self) -> None:
+        """A mixed-isolation manifest routes through _select_backend_from_tasks
+        to the ``hybrid`` name, which _construct_runtime_backend loads via
+        the plug-in registry. Real HybridRuntimeBackend lands in #1366."""
         tasks = [_task_stub("t1")]
         task_descs = {
-            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_with_reset())
+            "t1": make_task_description(
+                task_id="t1", environment_manifest=_manifest_mixed_ephemeral()
+            )
+        }
+        orch = _make_orchestrator(tasks, task_descs)
+        # Sanity: selection wire → "hybrid".
+        assert orch._select_backend_from_tasks() == "hybrid"
+        # Wire-through: _construct_runtime_backend invokes the hybrid
+        # stub factory (populated in the fixture) — no shared or per_trial
+        # dispatch happens.
+        backend = orch._construct_runtime_backend(
+            runner_address="sentinel:50051",
+            env_manifest=None,
+            run_id="test-run",
+        )
+        assert not isinstance(backend, (SharedStackRuntimeBackend, PerTrialRuntimeBackend))
+        assert "hybrid_stack" in backend.advertised_capabilities
+
+    def test_task_driven_all_reset_picks_per_trial(self) -> None:
+        """All-``reset`` manifest routes to per_trial. Hybrid requires a
+        mix; pure per-trial shapes stay on per_trial."""
+        tasks = [_task_stub("t1")]
+        task_descs = {
+            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_all_reset())
         }
         orch = _make_orchestrator(tasks, task_descs)
         backend = orch._construct_runtime_backend(
@@ -224,7 +339,7 @@ class TestConstructRuntimeBackend:
         # elsewhere refuses this configuration at run time.
         tasks = [_task_stub("t1")]
         task_descs = {
-            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_with_reset())
+            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_all_reset())
         }
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
