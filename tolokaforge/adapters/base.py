@@ -381,7 +381,8 @@ class BaseAdapter(ABC):
         """
         return SeededTablesLayer.unresolvable()
 
-    def grading_source(self, task: TaskConfig, task_dir: Path) -> GradingSource:
+    @classmethod
+    def grading_source(cls, task: TaskConfig, task_dir: Path) -> GradingSource:
         """The grading block one run of *task* reads, resolved against this adapter.
 
         The honest default: an :attr:`~GradingSourceKind.UNINTERROGABLE` source
@@ -392,10 +393,10 @@ class BaseAdapter(ABC):
         does not carry (external) leaves the default in place and pronounces on
         the absence through its own registered kind.
 
-        An instance method, not a classmethod, unlike the four readers above:
-        an adapter that resolves the grading source against its own run
-        configuration (pack roots, project defaults) needs the instance to
-        answer, so the shape locked here is the shape overrides use.
+        A classmethod, matching the sibling readers: the fact reported here is
+        a function of *task* and *task_dir* alone (no instance state), so the
+        static ``tolokaforge validate`` gate reaches the source through the
+        same dispatch helper. See ADR-0042.
         """
         return GradingSource(
             kind=GradingSourceKind.UNINTERROGABLE,

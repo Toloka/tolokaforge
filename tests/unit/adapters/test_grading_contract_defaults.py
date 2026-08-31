@@ -8,8 +8,7 @@ reason, an empty runner payload, and the ``composite`` grader kind.
 
 The stub adapter registers *nothing* — the tests do not go through the
 registry, so no fixture is needed. The adapter's only purpose is to make
-:class:`BaseAdapter` instantiable so the instance-method defaults can be
-called.
+:class:`BaseAdapter` instantiable so the default methods can be called.
 """
 
 from __future__ import annotations
@@ -111,6 +110,25 @@ def test_the_grading_source_default_is_uninterrogable_with_a_non_empty_reason(
     assert source.kind is GradingSourceKind.UNINTERROGABLE
     assert source.path is None
     assert source.reason
+
+
+def test_the_grading_source_default_is_callable_on_the_class(
+    a_stub_adapter: _AStubAdapter,
+    tmp_path: Path,
+) -> None:
+    """The default :meth:`grading_source` dispatches from the class, not just an instance.
+
+    Called on the class (``_AStubAdapter.grading_source(task, task_dir)``)
+    it returns the same shipped default the instance call returns — the
+    classmethod dispatch the free-function delegation helper relies on to
+    reach the source without instantiating an adapter.
+    """
+    task = TaskConfig.model_construct(task_id="none")
+
+    from_class = _AStubAdapter.grading_source(task, tmp_path)
+    from_instance = a_stub_adapter.grading_source(task, tmp_path)
+
+    assert from_class == from_instance
 
 
 def test_the_emit_runner_grading_payload_default_is_empty(

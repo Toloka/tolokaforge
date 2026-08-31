@@ -632,7 +632,8 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         """
         return SeededTablesLayer(tables=seeded_tables_from_task(task, task_dir))
 
-    def grading_source(self, task: TaskConfig, task_dir: Path) -> GradingSource:
+    @classmethod
+    def grading_source(cls, task: TaskConfig, task_dir: Path) -> GradingSource:
         """The grading block a native pack reads for *task*.
 
         ``task.grading`` naming a file that is on disk resolves to
