@@ -1,21 +1,18 @@
-"""Composer output matches the frozen inline-flow baseline byte-for-byte.
+"""Composer output matches the frozen baseline byte-for-byte.
 
 Locks the load-bearing invariant #1381 leans on: the built-in
 ``DefaultSubstrateComposer + DockerComposeMaterialiser + DISPATCHER_REGISTRY``
-triple drives the same observable outputs the inline flows on
-:class:`SharedStackRuntimeBackend` (Scenario A) and
-:class:`PerTrialRuntimeBackend` (Scenario B) drove for their
-single-stack shapes, snapshotted to
-``fixtures/composition_parity_baseline/{scenario_a,scenario_b}/`` at
-commit-authoring time. See
-:mod:`tests.canonical._parity_baseline_capture` for the capture entry
-point (``regenerate_baseline``) — CI never regenerates the fixture, and
-a legitimate baseline shift lands in the same commit as the code
-change that produced it.
+triple drives the observable outputs the frozen fixtures under
+``fixtures/composition_parity_baseline/{scenario_a,scenario_b}/`` record
+for the two single-stack shapes — Scenario A (SINGLE_RUN, run-scope
+runner) and Scenario B (TRIAL_SCOPED_ONLY, trial-scope runner with a
+reset service). The baseline is the eternal reference; CI never
+regenerates it, and a legitimate shift lands in the same commit as the
+code change that produced it.
 
-Two scenarios drive :class:`DefaultSubstrateComposer` in-process against
-the same :class:`InertDockerCompose` stub factory the capture used and
-assert equality on:
+Two scenarios drive :class:`DefaultSubstrateComposer` in-process
+against an :class:`InertDockerCompose` stub factory and assert equality
+on:
 
 * the transformed compose file bytes on disk (network-policy transform
   + credential injection + docker-socket mount + trial-mode ``.env``),
@@ -39,7 +36,6 @@ import pytest
 
 from tests.canonical._docker_compose_stubs import InertDockerCompose, driver_state
 from tests.canonical._factories import make_task_description
-from tests.canonical._parity_baseline_capture import _tuples_to_lists
 from tolokaforge.core.composition_runtime import RunCtx, RunSubstrate
 from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
 from tolokaforge.core.docker_compose_materialiser import (
@@ -67,6 +63,20 @@ _SEED_KIND = "sql_dump"
 # ---------------------------------------------------------------------------
 # Test doubles
 # ---------------------------------------------------------------------------
+
+
+def _tuples_to_lists(value: Any) -> Any:
+    """Recursively convert tuples to lists for JSON serialisation.
+
+    :func:`driver_state` returns nested tuples for equality-check
+    clarity; JSON round-trips them as lists either way, so both sides
+    normalise before comparing.
+    """
+    if isinstance(value, tuple | list):
+        return [_tuples_to_lists(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _tuples_to_lists(v) for k, v in value.items()}
+    return value
 
 
 def _always_ready_loader(kind: str) -> Any:
@@ -157,10 +167,9 @@ def _run_composer_scenario_a(
 
 def test_scenario_a_shared_stack_env_manifest_matches_baseline() -> None:
     """Scenario A — :meth:`DefaultSubstrateComposer.materialise_run` on
-    a SINGLE_RUN plan produces the same six observable outputs the
-    frozen ``scenario_a`` fixture recorded from today's
-    ``SharedStackRuntimeBackend._materialise_manifest`` inline flow.
-    """
+    a SINGLE_RUN plan produces the six observable outputs the frozen
+    ``scenario_a`` fixture holds (compose bytes, driver-call sequence,
+    endpoints, temp-dir basename slug, log-router component ids)."""
     baseline_dir = _BASELINE_ROOT / "scenario_a"
     stubs: list[InertDockerCompose] = []
     composer, run_sub, temp_dir = _run_composer_scenario_a(_make_shared_manifest(), stubs)

@@ -64,16 +64,25 @@ The compose-mode runtime is factored into three detachable adapter Protocols the
 - **`ServiceLifecycleDispatcher`** — cycles one service between trials for a given `ServiceIsolation` label. One dispatcher per closed label — `SharedDispatcher` (no-op), `ResetDispatcher` (delegates to `RECIPE_REGISTRY.dispatch`), `EphemeralDispatcher` (targeted `docker compose rm -f -v <svc>` + `docker compose up -d --wait <svc>`). The composer resolves by `service_spec.isolation` at cycle time via `DISPATCHER_REGISTRY` in `tolokaforge/core/service_lifecycle_dispatchers.py`.
 - **`SubstrateComposer`** — the sequencer. `materialise_run(plan, ctx)` walks run-scope stacks and enforces INV-12 (exactly one stack across the plan sets `runner_service`); `provision_trial(plan, spec, run_sub)` walks task-scope and trial-scope stacks and applies reset recipes on newly-materialised stacks; `cycle_between_trials(run_sub, spec)` dispatches every service through the lifecycle registry; `teardown_trial` / `teardown_run` walk the handles in reverse scope order. Shipped impl: `DefaultSubstrateComposer` (`tolokaforge/core/default_substrate_composer.py`).
 
-`SharedStackRuntimeBackend` runs the inline materialise/teardown sequence today — its inline path and the composer are byte-for-byte equivalent for the single-stack shape (Case B), which is the only shape the compose-mode runtime exercises. Byte-parity between the built-in composer/materialiser/dispatcher triple and the frozen inline-flow baseline for the single-stack shapes is locked at `tests/canonical/test_composition_baseline_parity.py`; the baseline fixture under `tests/canonical/fixtures/composition_parity_baseline/` is regenerated only through `tests/canonical/_parity_baseline_capture.py::regenerate_baseline`, and CI never regenerates it.
+`SharedStackRuntimeBackend`'s compose-mode path walks a composition plan via the injected `SubstrateComposer`: `connect()` calls `materialise_run` for run-scope stacks, `provision(spec)` calls `provision_trial` for task-scope and trial-scope stacks, per-trial RPCs route through `runner_client_for`, and `close()` hands the substrate to `teardown_run`. The composer/materialiser/dispatcher triple is the only path — the backend carries no inline materialisation code. Byte-parity between the shipped triple and the frozen single-stack-shape baseline (the observable output today's built-in flows produced) is locked at `tests/canonical/test_composition_baseline_parity.py`; the baseline fixture under `tests/canonical/fixtures/composition_parity_baseline/` is the eternal reference, and CI never regenerates it.
 
 ## Concrete backends
 
-**`SharedStackRuntimeBackend`** — the original. One compose project brought up at
-`connect()` time and shared across every trial in the run. Per-trial
-"isolation" is `trial_id`-in-URL only; cross-trial state contamination is
-structural. `provision` / `teardown` are no-ops on the run-wide stack. Fine
-for single-tenant, sequential runs; caps concurrency at one trial per
-service that has stateful side effects.
+**`SharedStackRuntimeBackend`** — composer-driven. In built-in-stack mode
+(`env_manifest is None`), `connect()` wires a `GrpcRunnerClient` to the
+`runner_address` the orchestrator's built-in `EngineStack` already
+brought up; per-trial `provision` / `teardown` are no-ops on the
+run-wide stack. In env_manifest mode, the backend delegates every
+substrate operation to the injected `SubstrateComposer`: `connect()`
+materialises run-scope stacks, `provision(spec)` materialises the
+trial's task-scope and trial-scope stacks via
+`SubstrateComposer.provision_trial`, per-trial RPCs route through
+`SubstrateComposer.runner_client_for` (with a deferred-connect gate
+that connects a trial-owned runner client on its first RPC call), and
+`close()` hands the substrate to `SubstrateComposer.teardown_run`.
+Every trial in the run shares the run-scope substrate; cross-trial
+isolation lives in whichever service labels declare it via
+`ServiceLifecycleDispatcher`.
 
 **`PerTrialRuntimeBackend`** — this PR. One compose project per trial via
 `testcontainers.compose.DockerCompose`. Each `provision` call materialises
@@ -530,13 +539,14 @@ run-level (`SharedStackRuntimeBackend`).
   (the hook writes only the `.log` files). See
   [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § `captured_service_logs`.
 - **Shared-stack materialise-failure path** — `SharedStackRuntimeBackend`
-  materialises the task-declared compose stack once at `connect` time for the
-  whole run. If it fails (compose `up --wait` failure or the declared runner
-  service never exposing its port), the run-wide per-service logs are captured
-  before `cleanup_partial_materialisation` to a **run-level** location,
-  `<output_dir>/services/<name>.log`, with a `services/_capture.yaml` durable
-  record carrying `capture_reason: "materialise_error"` (distinguishing it from
-  the per-trial `"provision_error"`). The run then aborts with the same
+  in env_manifest mode hands the run's composition plan to
+  `SubstrateComposer.materialise_run` at `connect()` time. The composer's
+  materialiser is what stands the compose stacks up; on failure it
+  captures the run-wide per-service logs before cleanup to a
+  **run-level** location, `<output_dir>/services/<name>.log`, with a
+  `services/_capture.yaml` durable record carrying
+  `capture_reason: "materialise_error"` (distinguishing it from the
+  per-trial `"provision_error"`). The run then aborts with the same
   `ProvisionError`; a run with no `log_capture` configured writes no
   `services/` dir.
 
@@ -561,15 +571,18 @@ subprocess with `cwd=<context>` so Compose resolves the per-trial project from
 the context-dir basename. `compute.log_tail` (default 500) sets `N`.
 
 **Shared-stack surfaces.** `SharedStackRuntimeBackend.capture_service_logs`
-(the per-trial hook) returns `{}` unconditionally: its stack is run-wide, not
-trial-scoped, and its per-trial `teardown` is a no-op — there is no per-trial
-stack to read, and capturing the same run-wide containers on every trial would
-be meaningless. Capture on the shared stack happens once, at run scope, on the
-materialise-failure path (see the run-level surface above): if the task-declared
-compose stack fails to come up at `connect` time, the run-wide per-service logs
-are written to `<output_dir>/services/<name>.log` plus a
-`services/_capture.yaml` (`capture_reason: "materialise_error"`) before the
-partial stack is torn down.
+(the per-trial hook) returns `{}` in built-in-stack mode and for a
+run-scope-only composer plan: its stack is run-wide, not trial-scoped,
+and the per-trial `teardown` is a no-op there, so capturing the same
+containers on every trial would be meaningless. Under a plan that
+declares trial-scope stacks, the per-trial hook walks those stacks via
+the composer's materialiser and returns the aggregated
+`{service: bytes_written}` map. Run-scope capture happens once, on the
+materialise-failure path (see the run-level surface above): if the
+task-declared compose stack fails to come up at `connect` time, the
+run-wide per-service logs are written to `<output_dir>/services/<name>.log`
+plus a `services/_capture.yaml` (`capture_reason: "materialise_error"`)
+before the partial stack is torn down.
 
 ## `SharedStackRuntimeBackend` vs `PerTrialRuntimeBackend` side-by-side
 

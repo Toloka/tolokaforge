@@ -1,32 +1,30 @@
-"""Unit tests for :class:`SharedStackRuntimeBackend`'s task-declared-stack
-mode.
+"""Unit tests for :class:`SharedStackRuntimeBackend`'s env_manifest mode.
 
-Covers the task-declared-stack extension: when ``env_manifest`` is set
-at construction, the backend materialises the task-declared compose
-stack **once at ``connect`` time** for the whole run, resolves
-endpoints from it, and
-tears it down at ``close``. Contrast with the pre-existing built-in-stack
-mode (``runner_address`` + ``endpoints`` injected at construction), which
-is unchanged and covered by the existing test suite.
+Covers the composer-driven wiring: when ``env_manifest`` is set at
+construction, the backend delegates run-scope materialisation to the
+injected :class:`SubstrateComposer` at ``connect`` time, resolves
+endpoints and runner client from the returned :class:`RunSubstrate`,
+and hands the substrate back to the composer at ``close``. Built-in-
+stack mode (``runner_address`` + ``endpoints`` injected at
+construction) is unchanged and covered by the existing test suite.
 
-Real docker-daemon interaction lives in the docker integration tests; here
-we stub :class:`DockerCompose` and the compose-materialisation primitives
-so the tests run in-process.
+The composer's docker-side wiring — compose materialisation, network
+policy, credential injection, log routing, failure-time capture — is
+locked by the materialiser and composer tests directly; the backend
+tests below assert only on the seam.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
-import yaml
 
-from tolokaforge.core.compose_materialisation import LogCaptureConfig
+from tolokaforge.core.composition_runtime import RunSubstrate
 from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest
-from tolokaforge.secrets import CONTAINER_SECRETS_ENV_VAR
 
 pytestmark = pytest.mark.unit
 
@@ -53,6 +51,32 @@ def _make_manifest(tmp_path: Path) -> EnvironmentManifest:
     return EnvironmentManifest(compose_file=compose_file, runner_service="runner")
 
 
+def _stub_run_substrate(
+    *,
+    runner_client: MagicMock | None = None,
+    endpoints: EnvEndpoints | None = None,
+    run_id: str = "run-x",
+) -> RunSubstrate:
+    """Assemble a :class:`RunSubstrate` a stub composer returns from ``materialise_run``."""
+    if endpoints is None:
+        endpoints = EnvEndpoints(
+            db_url="http://localhost:65432",
+            rag_url=None,
+            runner_url="http://localhost:60051",
+        )
+    return RunSubstrate(
+        run_id=run_id,
+        run_stack_handles=(),
+        task_stack_handles={},
+        runner_client=runner_client,
+        endpoints=endpoints,
+        seeds={},
+        mount_docker_socket=False,
+        log_capture=None,
+        events=MagicMock(),
+    )
+
+
 class TestBackwardCompatibility:
     """The built-in-stack mode (no env_manifest) must be unchanged."""
 
@@ -61,7 +85,7 @@ class TestBackwardCompatibility:
         assert backend.runner_client is not None
         assert backend._endpoints is not None
         assert backend._env_manifest is None
-        assert backend._compose is None
+        assert backend._run_substrate is None
 
     def test_endpoints_injection_still_works(self) -> None:
         endpoints = EnvEndpoints(
@@ -86,8 +110,9 @@ class TestEnvManifestConstruction:
         assert backend._run_id == "my-run"
         assert backend.runner_client is None
         assert backend._endpoints is None
-        assert backend._compose is None
-        assert backend._temp_dir is None
+        assert backend._run_substrate is None
+        assert backend._env_handles == {}
+        assert backend._connected_trials == set()
 
     def test_env_manifest_plus_endpoints_raises(self, tmp_path: Path) -> None:
         """The two modes are mutually exclusive — passing both is a
@@ -97,482 +122,195 @@ class TestEnvManifestConstruction:
         with pytest.raises(ValueError, match="env_manifest OR endpoints"):
             SharedStackRuntimeBackend(env_manifest=manifest, endpoints=endpoints)
 
+    def test_default_composer_is_default_substrate_composer(self, tmp_path: Path) -> None:
+        """Composer defaults to :class:`DefaultSubstrateComposer` when not
+        injected — the injection seam is optional, the built-in composer
+        wired at construction time is the production path."""
+        from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
+
+        manifest = _make_manifest(tmp_path)
+        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="my-run")
+        assert isinstance(backend.composer, DefaultSubstrateComposer)
+
 
 class TestConnectMaterialises:
-    """``connect`` materialises the task-declared stack, resolves
-    endpoints, then wires the gRPC runner client."""
+    """``connect`` materialises the run via the composer and connects the
+    resolved runner client. The composer is the sole seam; docker-side
+    wiring is exercised by the composer + materialiser tests, not here.
+    """
 
-    def test_connect_materialises_and_populates_state(self, tmp_path: Path) -> None:
+    def test_connect_delegates_run_materialisation_to_composer(self, tmp_path: Path) -> None:
+        """``connect()`` builds a :class:`RunCtx` from the backend's
+        construction args, hands the manifest plan to
+        :meth:`SubstrateComposer.materialise_run`, and stores the
+        returned :class:`RunSubstrate` on the backend."""
         manifest = _make_manifest(tmp_path)
-        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
+        stub_client = MagicMock()
+        stub_sub = _stub_run_substrate(runner_client=stub_client)
+        composer = MagicMock()
+        composer.materialise_run.return_value = stub_sub
 
-        fake_compose = MagicMock()
-        fake_endpoints = EnvEndpoints(
-            db_url="http://localhost:65432",
-            rag_url=None,
-            runner_url="http://localhost:60051",
+        backend = SharedStackRuntimeBackend(
+            env_manifest=manifest,
+            run_id="run-x",
+            composer=composer,
         )
-        with (
-            patch("tolokaforge.core.shared_stack_runtime.DockerCompose", return_value=fake_compose),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.copy_compose_context",
-                lambda src, dst: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
-                lambda *a, **k: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
-                lambda *a, **k: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.resolve_runner_endpoint",
-                return_value=("localhost", 60051),
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.resolve_env_endpoints",
-                return_value=fake_endpoints,
-            ),
-            patch("tolokaforge.core.shared_stack_runtime.GrpcRunnerClient") as mock_client_cls,
-        ):
-            mock_client = MagicMock()
-            mock_client_cls.return_value = mock_client
-            backend.connect()
+        backend.connect(timeout=5.0, retry_interval=0.1)
 
-        # Materialised state is preserved on the backend for teardown.
-        assert backend._compose is fake_compose
-        assert backend._temp_dir is not None
-        assert backend._endpoints is fake_endpoints
-        assert backend.runner_client is mock_client
-        # runner client was constructed with the resolved host:port. The
-        # ``events`` kwarg is threaded through from the backend so
-        # GrpcRunnerClient's retry loop can report through the Components
-        # channel; check by-name instead of positional-only.
-        mock_client_cls.assert_called_once()
-        call_kwargs = mock_client_cls.call_args.kwargs
-        assert call_kwargs["runner_address"] == "localhost:60051"
-        assert "events" in call_kwargs
-        mock_client.connect.assert_called_once()
+        composer.materialise_run.assert_called_once()
+        call = composer.materialise_run.call_args
+        assert call.kwargs["plan"] == list(manifest.stacks)
+        ctx = call.kwargs["ctx"]
+        assert ctx.run_id == "run-x"
+        assert ctx.manifest is manifest
+        assert ctx.mount_docker_socket is False
+        assert ctx.log_capture is None
+        assert ctx.seeds == {}
+        assert backend._run_substrate is stub_sub
+        stub_client.connect.assert_called_once_with(timeout=5.0, retry_interval=0.1)
 
-    def test_connect_raises_provision_error_when_runner_missing(self, tmp_path: Path) -> None:
-        """A compose file whose runner_service isn't exposed fails loud
-        (ProvisionError with a message pointing at the runner_service)."""
+    def test_connect_skips_client_connect_when_runner_not_owned_by_run_scope(
+        self, tmp_path: Path
+    ) -> None:
+        """A TRIAL_SCOPED_ONLY plan returns a :class:`RunSubstrate` with
+        ``runner_client=None``; the run-scope :meth:`connect` must skip
+        client-side connect (a trial-scope stack will bring the runner
+        up per trial)."""
         manifest = _make_manifest(tmp_path)
-        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
+        stub_sub = _stub_run_substrate(runner_client=None, endpoints=None)
+        composer = MagicMock()
+        composer.materialise_run.return_value = stub_sub
 
-        fake_compose = MagicMock()
-        with (
-            patch("tolokaforge.core.shared_stack_runtime.DockerCompose", return_value=fake_compose),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.copy_compose_context",
-                lambda src, dst: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
-                lambda *a, **k: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
-                lambda *a, **k: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.resolve_runner_endpoint",
-                return_value=None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.cleanup_partial_materialisation"
-            ) as mock_cleanup,
-            pytest.raises(ProvisionError, match="runner_service"),
-        ):
+        backend = SharedStackRuntimeBackend(env_manifest=manifest, composer=composer)
+        backend.connect()
+
+        assert backend._run_substrate is stub_sub
+
+    def test_connect_surfaces_composer_provision_error(self, tmp_path: Path) -> None:
+        """A composer refusal (e.g. INV-12 violation, docker start
+        failure) reaches the backend as a :class:`ProvisionError` and
+        leaves ``_run_substrate`` unset — the composer owns rollback."""
+        manifest = _make_manifest(tmp_path)
+        composer = MagicMock()
+        composer.materialise_run.side_effect = ProvisionError(
+            trial_id="run-x",
+            stage="materialise_run",
+            reason="docker compose up failed",
+        )
+
+        backend = SharedStackRuntimeBackend(env_manifest=manifest, composer=composer)
+        with pytest.raises(ProvisionError, match="docker compose up failed"):
             backend.connect()
-        # Partial materialisation cleaned up before we raised.
-        mock_cleanup.assert_called_once()
+
+        assert backend._run_substrate is None
 
     def test_connect_accepts_db_url_none(self, tmp_path: Path) -> None:
-        """``db_url`` is best-effort in env_manifest mode. When the task's
-        compose file omits ``db-service:8000`` the resolver returns
-        ``EnvEndpoints(db_url=None, ...)`` and connect proceeds — the
-        runner-side ``DBServiceClient`` binds to ``DB_SERVICE_URL`` from
-        its container env, so a missing db_url is not a provisioning
-        failure. Load-bearing contract change (was: ProvisionError)."""
+        """``db_url`` is best-effort — a manifest whose compose file
+        omits ``db-service:8000`` reaches the backend as
+        ``EnvEndpoints(db_url=None, ...)`` and is surfaced verbatim by
+        :meth:`endpoints`. Fixture pinned so a regression that silently
+        substitutes a placeholder db_url fails loud."""
         manifest = _make_manifest(tmp_path)
-        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
-
-        fake_compose = MagicMock()
-        fake_endpoints = EnvEndpoints(
-            db_url=None,
-            rag_url=None,
-            runner_url="http://localhost:60051",
+        stub_client = MagicMock()
+        stub_sub = _stub_run_substrate(
+            runner_client=stub_client,
+            endpoints=EnvEndpoints(db_url=None, rag_url=None, runner_url="http://localhost:60051"),
         )
-        with (
-            patch("tolokaforge.core.shared_stack_runtime.DockerCompose", return_value=fake_compose),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.copy_compose_context",
-                lambda src, dst: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
-                lambda *a, **k: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
-                lambda *a, **k: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.resolve_runner_endpoint",
-                return_value=("localhost", 60051),
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.resolve_env_endpoints",
-                return_value=fake_endpoints,
-            ),
-            patch("tolokaforge.core.shared_stack_runtime.GrpcRunnerClient") as mock_client_cls,
-        ):
-            mock_client_cls.return_value = MagicMock()
-            backend.connect()
+        composer = MagicMock()
+        composer.materialise_run.return_value = stub_sub
 
-        assert backend._endpoints is fake_endpoints
-        assert backend._endpoints.db_url is None
+        backend = SharedStackRuntimeBackend(env_manifest=manifest, composer=composer)
+        backend.connect()
 
-    def test_connect_raises_provision_error_on_compose_start_failure(self, tmp_path: Path) -> None:
-        """A docker daemon failure during compose up surfaces as a typed
-        ProvisionError with the underlying cause attached."""
-        manifest = _make_manifest(tmp_path)
-        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
-
-        fake_compose = MagicMock()
-        fake_compose.start.side_effect = RuntimeError("daemon socket refused")
-        with (
-            patch("tolokaforge.core.shared_stack_runtime.DockerCompose", return_value=fake_compose),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.copy_compose_context",
-                lambda src, dst: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
-                lambda *a, **k: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
-                lambda *a, **k: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.cleanup_partial_materialisation"
-            ) as mock_cleanup,
-            pytest.raises(ProvisionError, match="docker compose up failed"),
-        ):
-            backend.connect()
-        mock_cleanup.assert_called_once()
-
-    def test_capture_writes_run_level_bundle_on_compose_start_failure(self, tmp_path: Path) -> None:
-        """On the compose-start failure branch the run-level ``services/``
-        bundle (per-service ``.log`` files + ``_capture.yaml`` with
-        ``capture_reason: "materialise_error"``) is written before cleanup,
-        and the original ``ProvisionError`` still propagates.
-
-        Only the docker subprocess boundary (``_fetch_service_logs``) is
-        stubbed — the real capture/manifest/file-writing code runs."""
-        manifest = _make_manifest(tmp_path)
-        log_capture = LogCaptureConfig(output_root=tmp_path, tail=100, on_success=False)
-        backend = SharedStackRuntimeBackend(
-            env_manifest=manifest, run_id="run-x", log_capture=log_capture
-        )
-
-        fake_compose = MagicMock()
-        fake_compose.start.side_effect = RuntimeError("daemon socket refused")
-        fake_compose.compose_command_property = ["docker", "compose", "-f", "x.yaml"]
-        fake_compose.context = str(tmp_path)
-
-        def fake_fetch(base_command, context, service, tail):  # noqa: ANN001, ANN202
-            return f"log-bytes-for-{service}".encode()
-
-        def assert_captured_first(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
-            assert (tmp_path / "services" / "runner.log").exists()
-
-        with (
-            patch("tolokaforge.core.shared_stack_runtime.DockerCompose", return_value=fake_compose),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.copy_compose_context",
-                lambda src, dst: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
-                lambda *a, **k: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
-                lambda *a, **k: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.cleanup_partial_materialisation",
-                side_effect=assert_captured_first,
-            ),
-            patch(
-                "tolokaforge.core.compose_materialisation._fetch_service_logs",
-                side_effect=fake_fetch,
-            ),
-            pytest.raises(ProvisionError, match="docker compose up failed"),
-        ):
-            backend.connect()
-
-        services_dir = tmp_path / "services"
-        assert (services_dir / "runner.log").read_bytes() == b"log-bytes-for-runner"
-        assert (services_dir / "db-service.log").read_bytes() == b"log-bytes-for-db-service"
-        recorded = yaml.safe_load((services_dir / "_capture.yaml").read_text())
-        assert recorded["capture_reason"] == "materialise_error"
-        assert recorded["services"] == {
-            "runner": {"bytes": len(b"log-bytes-for-runner")},
-            "db-service": {"bytes": len(b"log-bytes-for-db-service")},
-        }
-
-    def test_capture_error_does_not_mask_provision_error(self, tmp_path: Path) -> None:
-        """A capture-time error is swallowed and logged — the original
-        ``ProvisionError`` is what propagates, never the capture error."""
-        manifest = _make_manifest(tmp_path)
-        log_capture = LogCaptureConfig(output_root=tmp_path, tail=100, on_success=False)
-        backend = SharedStackRuntimeBackend(
-            env_manifest=manifest, run_id="run-x", log_capture=log_capture
-        )
-
-        fake_compose = MagicMock()
-        fake_compose.start.side_effect = RuntimeError("daemon socket refused")
-        with (
-            patch("tolokaforge.core.shared_stack_runtime.DockerCompose", return_value=fake_compose),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.copy_compose_context",
-                lambda src, dst: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
-                lambda *a, **k: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
-                lambda *a, **k: None,
-            ),
-            patch("tolokaforge.core.shared_stack_runtime.cleanup_partial_materialisation"),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.capture_compose_service_logs",
-                side_effect=RuntimeError("capture boom"),
-            ),
-            pytest.raises(ProvisionError, match="docker compose up failed"),
-        ):
-            backend.connect()
-
-    def test_no_capture_when_log_capture_none(self, tmp_path: Path) -> None:
-        """With no ``log_capture`` configured, capture is a silent no-op:
-        cleanup still runs, the ``ProvisionError`` still raises, and no
-        run-level ``services/`` dir is created."""
-        manifest = _make_manifest(tmp_path)
-        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
-
-        fake_compose = MagicMock()
-        fake_compose.start.side_effect = RuntimeError("daemon socket refused")
-        with (
-            patch("tolokaforge.core.shared_stack_runtime.DockerCompose", return_value=fake_compose),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.copy_compose_context",
-                lambda src, dst: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
-                lambda *a, **k: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
-                lambda *a, **k: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.cleanup_partial_materialisation"
-            ) as mock_cleanup,
-            pytest.raises(ProvisionError, match="docker compose up failed"),
-        ):
-            backend.connect()
-        mock_cleanup.assert_called_once()
-        assert not (tmp_path / "services").exists()
-
-    def test_capture_fires_on_missing_runner_endpoint_branch(self, tmp_path: Path) -> None:
-        """The missing-runner-endpoint branch captures the run-level bundle
-        before cleanup, same as the compose-start branch."""
-        manifest = _make_manifest(tmp_path)
-        log_capture = LogCaptureConfig(output_root=tmp_path, tail=100, on_success=False)
-        backend = SharedStackRuntimeBackend(
-            env_manifest=manifest, run_id="run-x", log_capture=log_capture
-        )
-
-        fake_compose = MagicMock()
-        fake_compose.compose_command_property = ["docker", "compose", "-f", "x.yaml"]
-        fake_compose.context = str(tmp_path)
-
-        def fake_fetch(base_command, context, service, tail):  # noqa: ANN001, ANN202
-            return f"log-bytes-for-{service}".encode()
-
-        def assert_captured_first(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
-            assert (tmp_path / "services" / "runner.log").exists()
-
-        with (
-            patch("tolokaforge.core.shared_stack_runtime.DockerCompose", return_value=fake_compose),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.copy_compose_context",
-                lambda src, dst: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.apply_network_policy_to_compose_file",
-                lambda *a, **k: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.inject_runner_credentials",
-                lambda *a, **k: None,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.resolve_runner_endpoint",
-                return_value=None,
-            ),
-            patch(
-                "tolokaforge.core.compose_materialisation._fetch_service_logs",
-                side_effect=fake_fetch,
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.cleanup_partial_materialisation",
-                side_effect=assert_captured_first,
-            ) as mock_cleanup,
-            pytest.raises(ProvisionError, match="runner_service"),
-        ):
-            backend.connect()
-
-        services_dir = tmp_path / "services"
-        assert (services_dir / "runner.log").read_bytes() == b"log-bytes-for-runner"
-        recorded = yaml.safe_load((services_dir / "_capture.yaml").read_text())
-        assert recorded["capture_reason"] == "materialise_error"
-        mock_cleanup.assert_called_once()
+        assert backend._run_substrate is stub_sub
+        assert backend._run_substrate.endpoints is not None
+        assert backend._run_substrate.endpoints.db_url is None
 
 
 class TestCloseIdempotency:
     """``close`` is safe to call in any state (before materialisation,
-    after materialisation, twice) — the shared-run lifecycle."""
+    after materialisation, twice) — the run lifecycle."""
 
     def test_close_without_materialisation_is_noop(self, tmp_path: Path) -> None:
         manifest = _make_manifest(tmp_path)
-        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
-        # Never called connect — runner_client and _compose are None.
+        composer = MagicMock()
+        backend = SharedStackRuntimeBackend(env_manifest=manifest, composer=composer)
+
         backend.close()  # must not raise
 
-    def test_close_shuts_down_compose_and_removes_temp_dir(self, tmp_path: Path) -> None:
+        composer.teardown_run.assert_not_called()
+
+    def test_close_teardown_delegates_to_composer(self, tmp_path: Path) -> None:
+        """After a successful materialisation, ``close`` hands the
+        substrate to :meth:`SubstrateComposer.teardown_run` (which owns
+        runner-client close AND stack teardown) and clears the backend's
+        per-trial caches."""
         manifest = _make_manifest(tmp_path)
-        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
-        # Simulate a successful materialisation state.
-        fake_compose = MagicMock()
-        fake_client = MagicMock()
-        real_temp = tmp_path / "materialised"
-        real_temp.mkdir()
-        backend._compose = fake_compose
-        backend._temp_dir = real_temp
-        backend.runner_client = fake_client
+        stub_sub = _stub_run_substrate(runner_client=MagicMock())
+        composer = MagicMock()
+        composer.materialise_run.return_value = stub_sub
+
+        backend = SharedStackRuntimeBackend(env_manifest=manifest, composer=composer)
+        backend.connect()
+        backend._env_handles["trial-1"] = MagicMock()
+        backend._connected_trials.add("trial-1")
 
         backend.close()
 
-        fake_client.close.assert_called_once()
-        fake_compose.stop.assert_called_once_with(down=True)
-        assert not real_temp.exists()
-        # State cleared so a second close is a no-op.
-        assert backend._compose is None
-        assert backend._temp_dir is None
+        composer.teardown_run.assert_called_once_with(stub_sub)
+        assert backend._run_substrate is None
+        assert backend._env_handles == {}
+        assert backend._connected_trials == set()
 
     def test_close_twice_is_idempotent(self, tmp_path: Path) -> None:
         manifest = _make_manifest(tmp_path)
-        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
-        fake_compose = MagicMock()
-        real_temp = tmp_path / "materialised"
-        real_temp.mkdir()
-        backend._compose = fake_compose
-        backend._temp_dir = real_temp
-        backend.runner_client = MagicMock()
+        stub_sub = _stub_run_substrate(runner_client=MagicMock())
+        composer = MagicMock()
+        composer.materialise_run.return_value = stub_sub
+
+        backend = SharedStackRuntimeBackend(env_manifest=manifest, composer=composer)
+        backend.connect()
 
         backend.close()
         backend.close()  # must not raise
 
-    def test_close_tears_down_compose_even_if_client_close_raises(self, tmp_path: Path) -> None:
-        """If the runner client's close raises (e.g. broken gRPC channel),
-        the compose stack + temp dir must still be cleaned up — otherwise
-        a leaked docker project outlives the run."""
+        # teardown fired once (on the first close), not twice
+        composer.teardown_run.assert_called_once()
+
+    def test_close_swallows_composer_teardown_errors(self, tmp_path: Path) -> None:
+        """A composer teardown failure must not surface past ``close`` —
+        the run wrapper is expected to be fail-safe. Backend state is
+        still cleared."""
         manifest = _make_manifest(tmp_path)
-        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
-        fake_compose = MagicMock()
-        real_temp = tmp_path / "materialised"
-        real_temp.mkdir()
-        fake_client = MagicMock()
-        fake_client.close.side_effect = RuntimeError("gRPC channel broken")
-        backend._compose = fake_compose
-        backend._temp_dir = real_temp
-        backend.runner_client = fake_client
+        stub_sub = _stub_run_substrate(runner_client=MagicMock())
+        composer = MagicMock()
+        composer.materialise_run.return_value = stub_sub
+        composer.teardown_run.side_effect = RuntimeError("compose stop failed")
 
-        with pytest.raises(RuntimeError, match="gRPC channel broken"):
-            backend.close()
+        backend = SharedStackRuntimeBackend(env_manifest=manifest, composer=composer)
+        backend.connect()
 
-        # Downstream teardown still ran.
-        fake_compose.stop.assert_called_once_with(down=True)
-        assert not real_temp.exists()
+        backend.close()  # must not raise
+
+        assert backend._run_substrate is None
 
 
 class TestMaterialiseIdempotent:
     """A second ``connect()`` in env_manifest mode must not clobber the
-    running stack. Mirrors ``GrpcRunnerClient.connect``'s
-    ``if self.channel is None`` guard."""
+    running stack — the substrate outlives the reconnect."""
 
     def test_double_connect_does_not_re_materialise(self, tmp_path: Path) -> None:
         manifest = _make_manifest(tmp_path)
-        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
-        # Simulate a successful first materialisation.
-        fake_compose = MagicMock()
-        backend._compose = fake_compose
-        backend._temp_dir = tmp_path / "already-there"
-        backend._temp_dir.mkdir()
-        backend._endpoints = EnvEndpoints(db_url="http://x", rag_url=None, runner_url="http://y")
-        backend.runner_client = MagicMock()
+        stub_client = MagicMock()
+        stub_sub = _stub_run_substrate(runner_client=stub_client)
+        composer = MagicMock()
+        composer.materialise_run.return_value = stub_sub
 
-        # Second _materialise_manifest is the early-return guard.
-        with patch("tolokaforge.core.shared_stack_runtime.DockerCompose") as mock_docker_compose:
-            backend._materialise_manifest()
-            mock_docker_compose.assert_not_called()
+        backend = SharedStackRuntimeBackend(env_manifest=manifest, composer=composer)
+        backend.connect()
+        backend.connect()  # second call must be a no-op
 
-        # State preserved — no clobber.
-        assert backend._compose is fake_compose
-
-
-class TestConnectDeliversCredentials:
-    """Asserted on the artifact that reaches ``docker compose``, with every
-    materialisation transform left real — the stubs the rest of this file uses
-    would prove nothing about the file the daemon reads."""
-
-    def test_the_materialised_compose_file_gives_only_the_runner_the_payload(
-        self, tmp_path: Path, installed_fake_secrets
-    ) -> None:
-        manifest = _make_manifest(tmp_path)
-        backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-creds")
-
-        with (
-            patch("tolokaforge.core.shared_stack_runtime.DockerCompose", return_value=MagicMock()),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.resolve_runner_endpoint",
-                return_value=("localhost", 60051),
-            ),
-            patch(
-                "tolokaforge.core.shared_stack_runtime.resolve_env_endpoints",
-                return_value=EnvEndpoints(db_url=None, rag_url=None, runner_url="http://x:1"),
-            ),
-            patch("tolokaforge.core.shared_stack_runtime.GrpcRunnerClient"),
-        ):
-            backend.connect()
-
-        assert backend._temp_dir is not None
-        materialised = backend._temp_dir / manifest.compose_file.name
-        services = yaml.safe_load(materialised.read_text())["services"]
-        try:
-            assert CONTAINER_SECRETS_ENV_VAR in services["runner"]["environment"]
-            for name, service in services.items():
-                if name == "runner":
-                    continue
-                assert CONTAINER_SECRETS_ENV_VAR not in yaml.safe_dump(service)
-        finally:
-            backend.close()
+        composer.materialise_run.assert_called_once()
+        # Client connect fired once on the first materialise; the second
+        # connect is a plain early-return.
+        stub_client.connect.assert_called_once()

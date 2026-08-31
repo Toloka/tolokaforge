@@ -134,7 +134,7 @@ Three new entry-point groups on `plugin_registry.py`:
 - `tolokaforge.substrate_composers` → `type[SubstrateComposer]`
 
 Built-in registrations (wheel entry points):
-- `docker_compose` materialiser (extracted from today's `_materialise_manifest`).
+- `docker_compose` materialiser — the built-in impl.
 - `shared` dispatcher (no-op — service persists).
 - `reset` dispatcher (wraps `RECIPE_REGISTRY`).
 - `ephemeral` dispatcher (new — targeted `docker compose rm -f -v <service> && docker compose up -d <service>`).

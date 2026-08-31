@@ -8,7 +8,9 @@ This module provides:
 - RunnerClient: Protocol declaring the seven-method runner-RPC surface
   (six per-trial RPCs plus a lifecycle health probe) callers depend on.
 - GrpcRunnerClient: concrete gRPC implementation of RunnerClient.
-- SharedStackRuntimeBackend: High-level wrapper for Docker runtime management.
+- SharedStackRuntimeBackend: composer-driven runtime backend. Delegates
+  every compose-mode operation to a :class:`SubstrateComposer` seam;
+  built-in-stack mode wires straight to a :class:`GrpcRunnerClient`.
 
 See docs/GRPC_PROTOCOL.md for the full protocol specification.
 """
@@ -18,33 +20,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import grpc
-from testcontainers.compose import DockerCompose
 
-from tolokaforge.core.compose_materialisation import (
-    DB_SERVICE_DEFAULT,
-    DB_SERVICE_PORT_DEFAULT,
-    LogCaptureConfig,
-    apply_network_policy_to_compose_file,
-    capture_compose_service_logs,
-    cleanup_partial_materialisation,
-    compose_container_to_snapshot,
-    copy_compose_context,
-    inject_runner_credentials,
-    make_project_temp_dir,
-    mount_docker_socket_into_runner,
-    resolve_env_endpoints,
-    resolve_runner_endpoint,
-    run_services_dir,
-    shutdown_compose,
-    write_capture_manifest,
-)
+from tolokaforge.core.compose_materialisation import LogCaptureConfig
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.health import HealthLevel, HealthReport
 from tolokaforge.core.models import SeedRef, TraceConstraintSeverity
@@ -55,9 +38,8 @@ from tolokaforge.core.run_display_events import (
     RunDisplayEvents,
     build_component_id,
 )
-from tolokaforge.core.runtime import EnvHandle, IsolationMode, ProvisionError
+from tolokaforge.core.runtime import EnvHandle, IsolationMode
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, EnvironmentManifest
-from tolokaforge.docker.logging import LogRouter
 from tolokaforge.runner import (
     ExecutionStatus,
     runner_pb2,
@@ -71,6 +53,7 @@ from tolokaforge.runner.protocol import (
 from tolokaforge.tools.registry import ToolResult
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports for provisioning surface
+    from tolokaforge.core.composition_runtime import ComposedEnvHandle, SubstrateComposer
     from tolokaforge.core.plugin_registry import RuntimeBackendBuildContext
     from tolokaforge.core.trial import TrialSpec
 
@@ -938,16 +921,30 @@ class _SharedStackHandle:
 
 
 class SharedStackRuntimeBackend:
-    """Docker runtime manager - coordinates Runner connectivity
+    """Runtime backend for compose-mode runs.
 
-    This is a high-level wrapper that manages the GrpcRunnerClient lifecycle.
-    Use as a context manager for automatic connection management.
+    Two mutually exclusive modes selected at construction:
 
-    Example:
-        with SharedStackRuntimeBackend("runner:50051") as runtime:
-            if runtime.health_check():
-                # Use runtime.runner_client for operations
-                pass
+    * **Built-in-stack mode** (``env_manifest is None``). The
+      orchestrator's :class:`EngineStack` has already brought up the
+      shared runner + db-service; :meth:`connect` wires a
+      :class:`GrpcRunnerClient` to the injected ``runner_address``.
+      Per-trial ``provision`` / ``teardown`` are no-ops. ``endpoints``
+      returns the run-wide URLs snapshot at construction.
+    * **env_manifest mode** (``env_manifest`` set). The backend delegates
+      every substrate operation to a :class:`SubstrateComposer`:
+      :meth:`connect` materialises run-scope stacks and any run-owned
+      runner via :meth:`SubstrateComposer.materialise_run`;
+      :meth:`provision` materialises task-scope and trial-scope stacks
+      via :meth:`SubstrateComposer.provision_trial`; per-trial RPCs
+      route through :meth:`SubstrateComposer.runner_client_for` with a
+      deferred-connect gate for trial-owned runners.
+
+    A third mode — ``_per_trial_mode=True`` — is set by
+    :class:`PerTrialRuntimeBackend`'s ``__post_init__``. It routes
+    :meth:`provision` through the composer with an empty
+    :class:`RunSubstrate` so trial-scope-plan runs work without a
+    materialised run scope.
     """
 
     isolation_mode: IsolationMode = IsolationMode.SHARED_STACK
@@ -967,49 +964,36 @@ class SharedStackRuntimeBackend:
         endpoints: EnvEndpoints | None = None,
         env_manifest: EnvironmentManifest | None = None,
         run_id: str = "run",
-        seeds: dict[str, SeedRef] | None = None,
+        seeds: Mapping[str, SeedRef] | None = None,
         log_capture: LogCaptureConfig | None = None,
         *,
         mount_docker_socket: bool = False,
         events: RunDisplayEvents | None = None,
+        composer: SubstrateComposer | None = None,
+        connect_timeout: float = 30.0,
+        connect_retry_interval: float = 1.0,
     ):
-        """Initialize the shared-stack runtime.
+        from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
 
-        Two mutually exclusive modes:
-
-        **Built-in-stack mode** (``env_manifest`` is ``None``, the default).
-        The orchestrator's built-in ``EngineStack`` has already brought up
-        the shared runner + db-service, and its address / endpoints are
-        passed in. ``connect`` just wires the gRPC client to that address.
-
-        **Task-declared-stack mode** (``env_manifest`` is set). The run's
-        tasks declared a shared, task-authored compose file. The backend
-        materialises it **once at ``connect`` time**, resolves endpoints
-        from the materialised stack, and wires the gRPC client to the
-        task-declared runner. Every trial in the run shares that
-        substrate; ``close`` tears it down. ``run_id`` becomes the temp-
-        dir slug so docker compose auto-generates a unique project name
-        per run.
-
-        In built-in mode ``endpoints=None`` derives placeholder URLs from
-        ``runner_address`` alone — a backwards-compat path for callers
-        that construct the backend outside the orchestrator (typically
-        tests).
-        """
         self._env_manifest = env_manifest
         self._run_id = run_id
-        self._compose: DockerCompose | None = None
-        self._temp_dir: Path | None = None
-        self._compose_log_routers: list[LogRouter] = []
         self.seeds: dict[str, SeedRef] = dict(seeds or {})
         self.log_capture = log_capture
         self._mount_docker_socket = mount_docker_socket
         self._events: RunDisplayEvents = events if events is not None else _NULL_EVENTS
+        self.composer: SubstrateComposer = (
+            composer if composer is not None else DefaultSubstrateComposer()
+        )
+        self.connect_timeout = connect_timeout
+        self.connect_retry_interval = connect_retry_interval
+        self._per_trial_mode: bool = False
+        self._run_substrate: Any = None
+        self._env_handles: dict[str, ComposedEnvHandle] = {}
+        self._connected_trials: set[str] = set()
 
         self.runner_client: GrpcRunnerClient | None
         self._endpoints: EnvEndpoints | None
         if env_manifest is None:
-            # Built-in-stack mode: runner + endpoints known at construction.
             self.runner_client = GrpcRunnerClient(runner_address, events=self._events)
             if endpoints is None:
                 endpoints = EnvEndpoints(
@@ -1019,9 +1003,6 @@ class SharedStackRuntimeBackend:
                 )
             self._endpoints = endpoints
         else:
-            # Task-declared-stack mode: runner + endpoints resolved at connect() time
-            # from the materialised compose. Both are populated inside
-            # :meth:`_materialise_manifest`.
             self.runner_client = None
             self._endpoints = None
             if endpoints is not None:
@@ -1032,316 +1013,262 @@ class SharedStackRuntimeBackend:
                 )
         logger.info("Shared-stack runtime initialized")
 
-    def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
-        """Connect to Runner service with health check retry.
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
-        In task-declared-stack mode (``env_manifest`` is set) this also
-        materialises the task-declared compose stack once for the whole
-        run and resolves endpoints from it before the gRPC client is
-        wired.
+    def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
+        """Connect to the Runner service with health-check retry.
+
+        In built-in-stack mode this delegates straight to the injected
+        :class:`GrpcRunnerClient`. In env_manifest mode the composer
+        materialises the run — bringing up every run-scope stack and
+        (when a run-scope stack owns the runner) wiring the client —
+        idempotently: a second call with :attr:`_run_substrate` set
+        returns early without re-materialising.
 
         Args:
-            timeout: Maximum time to wait for healthy service (seconds)
-            retry_interval: Time between health check attempts (seconds)
+            timeout: Maximum time to wait for healthy service (seconds).
+            retry_interval: Time between health-check attempts (seconds).
 
         Raises:
-            ProvisionError: if the task-declared stack fails to materialise
-                or its declared runner / db service is not exposed.
-            ConnectionError: If Runner not healthy after timeout.
+            ProvisionError: env_manifest mode; the composer fails to
+                materialise a stack or the declared runner service does
+                not expose its port.
+            ConnectionError: built-in-stack mode; the runner is not
+                healthy within ``timeout``.
         """
-        if self._env_manifest is not None:
-            self._materialise_manifest()
-        self.runner_client.connect(timeout=timeout, retry_interval=retry_interval)
+        if self._env_manifest is None:
+            self.runner_client.connect(timeout=timeout, retry_interval=retry_interval)
+            logger.info("Shared-stack runtime connected")
+            return
+
+        if self._run_substrate is not None:
+            return
+        from tolokaforge.core.composition_runtime import RunCtx
+
+        ctx = RunCtx(
+            run_id=self._run_id,
+            manifest=self._env_manifest,
+            mount_docker_socket=self._mount_docker_socket,
+            log_capture=self.log_capture,
+            events=self._events,
+            seeds=self.seeds,
+        )
+        self._run_substrate = self.composer.materialise_run(
+            plan=list(self._env_manifest.stacks), ctx=ctx
+        )
+        if self._run_substrate.runner_client is not None:
+            self._run_substrate.runner_client.connect(
+                timeout=timeout, retry_interval=retry_interval
+            )
         logger.info("Shared-stack runtime connected")
 
-    def close(self):
-        """Close Runner connection and tear down the task-declared stack
-        (if any). Idempotent: safe to call before ``connect`` or twice.
+    def close(self) -> None:
+        """Close the Runner connection and tear the composer state down.
 
-        A runner-client close failure (e.g. broken gRPC channel) must not
-        prevent the compose stack + temp dir from being cleaned up — the
-        downstream teardown runs in a ``try/finally`` so a leaked docker
-        project doesn't outlive the run.
+        Built-in-stack mode closes the injected :class:`GrpcRunnerClient`.
+        env_manifest mode (and per-trial-mode with a materialised run
+        substrate) hands the substrate to :meth:`SubstrateComposer.teardown_run`,
+        which owns runner-client close and stack teardown. Any
+        composer-side teardown failure is swallowed and logged so a
+        broken teardown never masks other cleanup.
         """
-        try:
+        if self._env_manifest is None and not self._per_trial_mode:
             if self.runner_client is not None:
                 self.runner_client.close()
+            logger.info("Shared-stack runtime closed")
+            return
+
+        try:
+            if self._run_substrate is not None:
+                self.composer.teardown_run(self._run_substrate)
+        except Exception:  # noqa: BLE001 — teardown must not raise past caller
+            logger.exception("SharedStackRuntimeBackend.close: composer teardown failed")
         finally:
-            for router in self._compose_log_routers:
-                try:
-                    router.stop()
-                except Exception:  # noqa: BLE001 — teardown must never mask compose cleanup
-                    logger.exception(
-                        "SharedStackRuntimeBackend: log router stop failed for container %r",
-                        router.container_name,
-                    )
-            self._compose_log_routers = []
-            if self._compose is not None:
-                shutdown_compose(self._compose)
-                self._compose = None
-            if self._temp_dir is not None:
-                shutil.rmtree(self._temp_dir, ignore_errors=True)
-                self._temp_dir = None
+            self._run_substrate = None
+            self._env_handles = {}
+            self._connected_trials = set()
         logger.info("Shared-stack runtime closed")
 
-    def _materialise_manifest(self) -> None:
-        """Bring up the task-declared compose stack once for the run and
-        wire ``self.runner_client`` + ``self._endpoints`` to it. Called
-        from :meth:`connect` when ``env_manifest`` is set.
-
-        Idempotent: a second call while the stack is up returns without
-        re-materialising, matching :class:`GrpcRunnerClient.connect`'s
-        ``if self.channel is None`` guard. A double-materialisation would
-        leak the first stack + temp dir.
-
-        Failure at any stage cleans up any partial materialisation
-        before surfacing a :class:`ProvisionError` — the shared-stack
-        equivalent of PerTrialRuntimeBackend's provision path, but with
-        run scope instead of trial scope.
-        """
-        if self._compose is not None:
-            # Already materialised — a second connect() (e.g. after a
-            # transient reconnect) must not clobber the running stack.
-            return
-        assert self._env_manifest is not None  # narrowed by caller
-        manifest = self._env_manifest
-
-        temp_dir = make_project_temp_dir(self._run_id)
-        compose: DockerCompose | None = None
-        try:
-            copy_compose_context(manifest.compose_file, temp_dir)
-            apply_network_policy_to_compose_file(
-                temp_dir / manifest.compose_file.name,
-                manifest.network_policy,
-                manifest.runner_service,
-                manifest.limited_internet_allowlist,
-                restricted_services=manifest.restricted_services,
-            )
-            inject_runner_credentials(
-                temp_dir / manifest.compose_file.name, manifest.runner_service
-            )
-            if self._mount_docker_socket:
-                mount_docker_socket_into_runner(
-                    temp_dir / manifest.compose_file.name, manifest.runner_service
-                )
-            compose = DockerCompose(
-                context=str(temp_dir),
-                compose_file_name=manifest.compose_file.name,
-                pull=False,
-                build=False,
-                wait=True,
-            )
-            compose.start()
-        except Exception as exc:  # noqa: BLE001 — surface as typed ProvisionError
-            self._capture_materialise_failure_logs(compose)
-            cleanup_partial_materialisation(compose, temp_dir)
-            raise ProvisionError(
-                trial_id=self._run_id,
-                stage="provision",
-                reason=f"docker compose up failed for shared task-declared stack: {exc}",
-            ) from exc
-
-        runner_endpoint = resolve_runner_endpoint(
-            compose, manifest.runner_service, manifest.runner_port
-        )
-        if runner_endpoint is None:
-            self._capture_materialise_failure_logs(compose)
-            cleanup_partial_materialisation(compose, temp_dir)
-            raise ProvisionError(
-                trial_id=self._run_id,
-                stage="provision",
-                reason=(
-                    f"runner_service {manifest.runner_service!r} does not expose port "
-                    f"{manifest.runner_port} in the shared task-declared compose stack"
-                ),
-            )
-        runner_host, runner_host_port = runner_endpoint
-
-        # resolve_env_endpoints is best-effort for db_url + rag_url — a task
-        # compose file that omits `db-service:8000` gets endpoints with
-        # `db_url=None`. The runner-side DBServiceClient reads DB_SERVICE_URL
-        # from its container env, and `db_json.py` tools fall back to the
-        # same env var, so a missing db_url is not a provisioning failure.
-        endpoints = resolve_env_endpoints(
-            compose,
-            runner_host,
-            runner_host_port,
-            db_service=manifest.db_service or DB_SERVICE_DEFAULT,
-            db_port=manifest.db_port or DB_SERVICE_PORT_DEFAULT,
-            rag_service=manifest.rag_service,
-            rag_port=manifest.rag_port,
-        )
-
-        # Preserve the materialised state on the backend so close() can tear it down.
-        self._compose = compose
-        self._temp_dir = temp_dir
-        self._endpoints = endpoints
-        self.runner_client = GrpcRunnerClient(
-            runner_address=f"{runner_host}:{runner_host_port}",
-            events=self._events,
-        )
-
-        # Attach a LogRouter per container in the task-declared stack so
-        # container stdout/stderr reaches the component tail widget. The
-        # compose stack is already up at this point; a per-container router
-        # failure MUST NOT abort provisioning — log it and continue with the
-        # remaining containers.
-        for container in compose.get_containers():
-            if not container.ID:
-                continue
-            try:
-                router = LogRouter(
-                    container_name=container.Name or container.Service or "unknown",
-                    container_id=container.ID,
-                    component_id=build_component_id(
-                        "engine",
-                        "docker.service",
-                        container.Service or "unknown",
-                    ),
-                )
-                router.start()
-            except Exception:  # noqa: BLE001 — router failure must not abort provisioning
-                logger.exception(
-                    "SharedStackRuntimeBackend: failed to attach log router for "
-                    "container %r (service=%r)",
-                    container.Name,
-                    container.Service,
-                )
-                continue
-            self._compose_log_routers.append(router)
-
-    def _capture_materialise_failure_logs(self, compose: DockerCompose | None) -> None:
-        """Best-effort run-level capture of the shared stack's per-service
-        compose logs on a materialise failure, before the partial stack is
-        torn down.
-
-        No-op when ``self.log_capture is None``. Writes the ``.log`` files
-        plus a ``services/_capture.yaml`` record
-        (``capture_reason: "materialise_error"``) under
-        ``<output_root>/services/`` — the run-level counterpart to
-        :class:`PerTrialRuntimeBackend`'s per-trial provision capture.
-
-        Wrapped in a fail-safe boundary: any capture error (compose parse,
-        manifest write) is logged and swallowed so it never masks the
-        :class:`ProvisionError` the caller is about to raise."""
-        if self.log_capture is None:
-            return
-        try:
-            assert self._env_manifest is not None  # narrowed by caller
-            service_names = tuple(self._env_manifest.load_compose()["services"])
-            dest_dir = run_services_dir(self.log_capture.output_root)
-            captured = capture_compose_service_logs(
-                compose, service_names, dest_dir, self.log_capture.tail
-            )
-            if captured:
-                write_capture_manifest(
-                    dest_dir,
-                    self.log_capture.tail,
-                    captured,
-                    capture_reason="materialise_error",
-                )
-        except Exception:  # noqa: BLE001 — fail-safe: must never mask the ProvisionError
-            logger.exception(
-                "SharedStackRuntimeBackend: run-level materialise-failure log capture failed"
-            )
-
     def health_check(self) -> bool:
-        """Check health of Runner service"""
-        return self.runner_client.health_check()
+        """Report whether the Runner is reachable via its gRPC channel."""
+        client = self._resolve_health_client()
+        if client is None:
+            return False
+        return client.health_check()
 
-    def cleanup_trial(self, trial_id: str) -> dict:
-        """Forget any prior registration of ``trial_id`` on the runner.
+    def _resolve_health_client(self) -> RunnerClient | None:
+        """Pick the runner client the health probe should reach.
 
-        The retry-cleanup path needs to call this *before* a per-trial
-        adapter exists, so the method lives on the runtime (delegating
-        to the gRPC client). Idempotent on the runner side.
+        Built-in-stack mode returns the injected :class:`GrpcRunnerClient`;
+        env_manifest mode reads the run substrate's runner client (a
+        materialise that has not yet run returns ``None`` — the probe
+        answers ``False`` rather than raising).
         """
-        return self.runner_client.cleanup_trial(trial_id)
+        if self._env_manifest is None and not self._per_trial_mode:
+            return self.runner_client
+        if self._run_substrate is None:
+            return None
+        return self._run_substrate.runner_client
 
-    # ---- Per-trial provisioning (ADR-0010) — shared-stack compat path ----
-    #
-    # SharedStackRuntimeBackend keeps the run-wide shared-stack semantics that existed
-    # before ADR-0010. The new methods satisfy the extended
-    # ``RuntimeBackend`` Protocol without changing behaviour: provision
-    # returns a handle pointing at the shared stack; endpoints returns the
-    # run-wide URLs the shared stack exposes; teardown is a no-op because
-    # the shared stack lives for the whole run and is torn down at
-    # ``close``. Per-trial isolation is a ``PerTrialRuntimeBackend`` concern,
-    # not a ``SharedStackRuntimeBackend`` concern.
+    # ------------------------------------------------------------------
+    # Per-trial provisioning (ADR-0010)
+    # ------------------------------------------------------------------
 
     def provision(self, spec: TrialSpec) -> EnvHandle:
-        """Return a handle pointing at the run-wide shared stack.
+        """Provision the per-trial substrate.
 
-        No per-trial containers are brought up — the shared stack is
-        already running from ``connect()``. Every trial receives an
-        equivalent handle referencing the same stack.
+        Built-in-stack mode returns an inert :class:`_SharedStackHandle`
+        — the shared stack is already running from :meth:`connect`.
+        env_manifest and per-trial modes hand the spec's plan to
+        :meth:`SubstrateComposer.provision_trial`, cache the returned
+        :class:`ComposedEnvHandle` under ``spec.trial_id``, and return
+        it. Per-trial mode passes an empty :class:`RunSubstrate` (no
+        run scope) so trial-scope-plan runs work without
+        :meth:`materialise_run` having run.
         """
-        return _SharedStackHandle(trial_id=spec.trial_id)
+        if self._env_manifest is None and not self._per_trial_mode:
+            return _SharedStackHandle(trial_id=spec.trial_id)
+
+        manifest = spec.task.environment_manifest
+        assert manifest is not None  # composer path requires a manifest
+        plan = list(manifest.stacks)
+        env_handle = self.composer.provision_trial(
+            plan=plan,
+            spec=spec,
+            run_sub=self._run_substrate_or_empty(),
+        )
+        self._env_handles[spec.trial_id] = env_handle
+        return env_handle
 
     def await_ready(self, handle: EnvHandle) -> None:  # noqa: ARG002 — Protocol conformance
-        """No-op: the shared stack becomes ready at ``connect`` time, not
-        per-trial. Health probes for the shared services are already
-        applied by :meth:`connect`'s health-check loop."""
+        """No-op: readiness is enforced by the composer at provision time
+        (trial-scope stacks) or by :meth:`connect`'s health-check loop
+        (run-scope runner). The Protocol keeps this method as an
+        explicit lifecycle affordance for backends whose readiness lags
+        provision."""
 
-    def endpoints(self, handle: EnvHandle) -> EnvEndpoints:  # noqa: ARG002 — Protocol conformance
-        """Return the run-wide shared-stack URLs.
+    def endpoints(self, handle: EnvHandle) -> EnvEndpoints:
+        """Return the per-trial endpoint bundle.
 
-        Same value for every trial in the run — the shared stack exposes
-        one set of service addresses that all trials share. In built-in
-        mode the orchestrator resolves these via ``_build_env_endpoints``
-        at construction and passes them via ``endpoints``; in
-        task-declared-stack mode :meth:`_materialise_manifest` resolves
-        them from the materialised compose stack at ``connect`` time.
-        Either way the value is snapshot on the backend by the time this
-        method is called. Callers that need per-trial URLs should use a
-        per-trial backend (e.g. ``PerTrialRuntimeBackend``, which
-        resolves real URLs from its per-trial substrate).
+        Built-in-stack mode returns the run-wide bundle snapshot at
+        construction (identical for every trial). Otherwise the
+        composer resolves per-trial endpoints from the handle it
+        produced at :meth:`provision`.
         """
-        return self._endpoints
+        if self._env_manifest is None and not self._per_trial_mode:
+            assert self._endpoints is not None  # narrowed by mode invariant
+            return self._endpoints
+        from tolokaforge.core.composition_runtime import ComposedEnvHandle
 
-    def teardown(self, handle: EnvHandle) -> None:  # noqa: ARG002 — Protocol conformance
-        """No-op: the shared stack lives for the whole run and is torn
-        down at :meth:`close`, not per-trial. Idempotent by construction."""
-
-    def capture_service_logs(  # noqa: ARG002 — Protocol conformance
-        self, handle: EnvHandle, *, capture_worthy: bool
-    ) -> dict[str, int]:
-        """Documented no-op returning ``{}``.
-
-        The shared stack is run-wide, not trial-scoped, and per-trial
-        :meth:`teardown` is a no-op — so per-trial log capture has no
-        stack to read and would capture the same run-wide containers on
-        every trial. Run-level capture on a shared-stack materialise
-        failure is a separate surface (see
-        ``docs/RUNTIME_BACKENDS.md``)."""
-        return {}
-
-    def get_infrastructure_snapshot(
-        self, handle: EnvHandle
-    ) -> list[ContainerSnapshot]:  # noqa: ARG002 — Protocol conformance
-        """Return the shared-stack container snapshot.
-
-        In task-declared-stack mode (``env_manifest`` is set) reads
-        ``self._compose.get_containers()`` — every trial sees the same
-        snapshot for the run's shared substrate. In built-in-stack mode
-        (``self._compose is None``) returns an empty list: the services
-        widget already covers the built-in ``EngineStack``.
-        """
-        if self._compose is None:
-            return []
-        try:
-            containers = self._compose.get_containers()
-        except Exception:  # noqa: BLE001 — display must never raise past orchestrator
-            logger.exception(
-                "SharedStackRuntimeBackend.get_infrastructure_snapshot: docker ps failed"
+        if not isinstance(handle, ComposedEnvHandle):
+            raise TypeError(
+                f"SharedStackRuntimeBackend.endpoints: composer path requires a "
+                f"ComposedEnvHandle; got {type(handle).__name__}"
             )
-            return []
-        return [compose_container_to_snapshot(c) for c in containers]
+        return self.composer.endpoints_for(self._run_substrate_or_empty(), handle)
 
-    # ---- Per-trial RPC operations (ADR-0013) ----
-    # Thin delegates to ``self.runner_client``. Kept as explicit methods
-    # (not ``__getattr__`` proxy magic) so the ``RuntimeBackend`` Protocol
-    # surface is discoverable in the class definition.
+    def teardown(self, handle: EnvHandle) -> None:
+        """Tear the per-trial substrate down.
+
+        Built-in-stack mode is a no-op — the shared stack lives for the
+        whole run. Otherwise hands the :class:`ComposedEnvHandle` to
+        :meth:`SubstrateComposer.teardown_trial`, drops the cached
+        entry, and forgets any deferred-connect record for the trial.
+        """
+        if self._env_manifest is None and not self._per_trial_mode:
+            return
+        from tolokaforge.core.composition_runtime import ComposedEnvHandle
+
+        if not isinstance(handle, ComposedEnvHandle):
+            raise TypeError(
+                f"SharedStackRuntimeBackend.teardown: composer path requires a "
+                f"ComposedEnvHandle; got {type(handle).__name__}"
+            )
+        self.composer.teardown_trial(handle)
+        self._env_handles.pop(handle.trial_id, None)
+        self._connected_trials.discard(handle.trial_id)
+
+    def capture_service_logs(self, handle: EnvHandle, *, capture_worthy: bool) -> dict[str, int]:
+        """Capture per-service compose logs for a still-live trial stack.
+
+        Built-in-stack mode: no-op (the shared stack is run-wide, so
+        per-trial capture would duplicate the same containers on every
+        trial). Composer path: reads the trial-scope handles from the
+        :class:`ComposedEnvHandle` and dispatches to the materialiser's
+        :meth:`ComposeMaterialiser.capture_logs`; a run-scope-only plan
+        (empty ``trial_stack_handles``) skips capture because the
+        run-scope handles are torn down at :meth:`close`, not
+        :meth:`teardown`.
+        """
+        del capture_worthy  # signal only — presence in kwargs is the trigger
+        if self._env_manifest is None and not self._per_trial_mode:
+            return {}
+        from tolokaforge.core.composition_runtime import ComposedEnvHandle
+
+        if not isinstance(handle, ComposedEnvHandle) or not handle.trial_stack_handles:
+            return {}
+        if self.log_capture is None:
+            return {}
+        from tolokaforge.core.compose_materialisation import trial_services_dir
+
+        dest_dir = trial_services_dir(self.log_capture.output_root, handle.trial_id)
+        totals: dict[str, int] = {}
+        materialiser = getattr(self.composer, "materialiser", None)
+        if materialiser is None:
+            return {}
+        for stack_handle in handle.trial_stack_handles:
+            service_names = tuple(getattr(stack_handle, "service_names", ()))
+            if not service_names:
+                continue
+            captured = materialiser.capture_logs(
+                stack_handle, service_names, dest_dir, self.log_capture.tail
+            )
+            for name, size in captured.items():
+                totals[name] = totals.get(name, 0) + size
+        return totals
+
+    def get_infrastructure_snapshot(self, handle: EnvHandle) -> list[ContainerSnapshot]:
+        """Return the container snapshot for the display path.
+
+        Built-in-stack mode returns ``[]`` (the display already covers
+        the built-in :class:`EngineStack`). env_manifest mode walks
+        the run-scope stack handles for a SINGLE_RUN plan; per-trial
+        mode walks the trial-scope handles carried on the
+        :class:`ComposedEnvHandle`. Never raises past this boundary.
+        """
+        if self._env_manifest is None and not self._per_trial_mode:
+            return []
+        materialiser = getattr(self.composer, "materialiser", None)
+        if materialiser is None:
+            return []
+        stack_handles = self._snapshot_stack_handles(handle)
+        snapshots: list[ContainerSnapshot] = []
+        for stack_handle in stack_handles:
+            try:
+                snapshots.extend(materialiser.get_containers(stack_handle))
+            except Exception:  # noqa: BLE001 — display must never raise past orchestrator
+                logger.exception(
+                    "SharedStackRuntimeBackend.get_infrastructure_snapshot: "
+                    "materialiser.get_containers failed for stack %r",
+                    getattr(stack_handle, "stack_id", "<unknown>"),
+                )
+        return snapshots
+
+    def _snapshot_stack_handles(self, handle: EnvHandle) -> tuple[Any, ...]:
+        """Pick the handles the infrastructure snapshot should walk."""
+        from tolokaforge.core.composition_runtime import ComposedEnvHandle
+
+        if isinstance(handle, ComposedEnvHandle) and handle.trial_stack_handles:
+            return handle.trial_stack_handles
+        if self._run_substrate is not None:
+            return self._run_substrate.run_stack_handles
+        return ()
+
+    # ------------------------------------------------------------------
+    # Per-trial RPC operations (ADR-0013)
+    # ------------------------------------------------------------------
 
     def register_trial(
         self,
@@ -1349,7 +1276,7 @@ class SharedStackRuntimeBackend:
         trial_spec_json: str,
         default_tool_timeout_s: float = DEFAULT_TOOL_TIMEOUT_S,
     ) -> dict:
-        return self.runner_client.register_trial(
+        return self._runner_client_for(trial_id).register_trial(
             trial_id=trial_id,
             trial_spec_json=trial_spec_json,
             default_tool_timeout_s=default_tool_timeout_s,
@@ -1364,7 +1291,7 @@ class SharedStackRuntimeBackend:
         *,
         call_id: str,
     ) -> ToolResult:
-        return self.runner_client.execute_tool(
+        return self._runner_client_for(trial_id).execute_tool(
             trial_id=trial_id,
             tool_name=tool_name,
             arguments=arguments,
@@ -1379,7 +1306,7 @@ class SharedStackRuntimeBackend:
         grading_components: list[str] | None = None,
         termination_reason: str | None = None,
     ) -> dict:
-        return self.runner_client.grade_trial(
+        return self._runner_client_for(trial_id).grade_trial(
             trial_id=trial_id,
             llm_messages_json=llm_messages_json,
             grading_components=grading_components,
@@ -1392,25 +1319,84 @@ class SharedStackRuntimeBackend:
         include_unstable: bool = True,
         tables: list[str] | None = None,
     ) -> dict:
-        return self.runner_client.get_state(
+        return self._runner_client_for(trial_id).get_state(
             trial_id=trial_id,
             include_unstable=include_unstable,
             tables=tables,
         )
 
     def reset_trial(self, trial_id: str, execute_init_actions: bool = False) -> dict:
-        return self.runner_client.reset_trial(
+        return self._runner_client_for(trial_id).reset_trial(
             trial_id=trial_id,
             execute_init_actions=execute_init_actions,
         )
 
+    def cleanup_trial(self, trial_id: str) -> dict:
+        """Forget any prior registration of ``trial_id`` on the runner.
+
+        The retry-cleanup path needs to call this *before* a per-trial
+        adapter exists, so the method lives on the runtime (delegating
+        to the runner client). Idempotent on the runner side.
+        """
+        return self._runner_client_for(trial_id).cleanup_trial(trial_id)
+
+    # ------------------------------------------------------------------
+    # Composer-mode helpers
+    # ------------------------------------------------------------------
+
+    def _runner_client_for(self, trial_id: str) -> RunnerClient:
+        """Resolve the runner client for a per-trial RPC.
+
+        Built-in-stack mode returns the shared client. Composer mode
+        asks the composer for the client (run-owned or trial-owned per
+        the plan shape) and applies the deferred-connect gate: a
+        trial-owned runner is not connected until its first per-trial
+        RPC arrives, mirroring today's :class:`PerTrialRuntimeBackend`
+        semantics; a run-owned runner was already connected at
+        :meth:`connect` time and skips the gate.
+        """
+        if self._env_manifest is None and not self._per_trial_mode:
+            return self.runner_client
+        env_handle = self._env_handles[trial_id]
+        client = self.composer.runner_client_for(self._run_substrate_or_empty(), env_handle)
+        if env_handle.trial_runner_client is not None and trial_id not in self._connected_trials:
+            client.connect(
+                timeout=self.connect_timeout,
+                retry_interval=self.connect_retry_interval,
+            )
+            self._connected_trials.add(trial_id)
+        return client
+
+    def _run_substrate_or_empty(self) -> Any:
+        """Return :attr:`_run_substrate` or an empty stand-in.
+
+        Per-trial mode never runs :meth:`materialise_run` — the composer
+        still requires a :class:`RunSubstrate` argument on the trial
+        path so it can resolve seeds / policies / events. The
+        stand-in carries the same run-wide values the backend was
+        constructed with but no live handles.
+        """
+        if self._run_substrate is not None:
+            return self._run_substrate
+        from tolokaforge.core.composition_runtime import RunSubstrate
+
+        return RunSubstrate(
+            run_id=self._run_id,
+            run_stack_handles=(),
+            task_stack_handles={},
+            runner_client=None,
+            endpoints=None,
+            seeds=self.seeds,
+            mount_docker_socket=self._mount_docker_socket,
+            log_capture=self.log_capture,
+            events=self._events,
+        )
+
     def __enter__(self):
-        """Context manager entry"""
         self.connect()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit"""
         self.close()
 
 
