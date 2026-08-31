@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from tests.canonical._docker_compose_stubs import InertDockerCompose, driver_state
 from tolokaforge.core.compose_materialisation import (
     apply_network_policy_to_compose_file,
     copy_compose_context,
@@ -47,53 +48,11 @@ from tolokaforge.runner.models import StackDecl
 pytestmark = pytest.mark.canonical
 
 
-class _InertDockerCompose:
-    """Non-docker-touching ``DockerCompose`` stand-in.
-
-    Records every driver-side interaction so the parity assertions see
-    the same invocation ordering across both paths.
-    """
-
-    def __init__(
-        self,
-        *,
-        context: str,
-        compose_file_name: str,
-        pull: bool,
-        build: bool,
-        wait: bool,
-    ) -> None:
-        self.context = context
-        self.compose_file_name = compose_file_name
-        self.pull = pull
-        self.build = build
-        self.wait = wait
-        self.calls: list[tuple[str, tuple[Any, ...]]] = [
-            ("__init__", (context, compose_file_name, pull, build, wait))
-        ]
-
-    def start(self) -> None:
-        self.calls.append(("start", ()))
-
-    def stop(self, down: bool = True) -> None:
-        self.calls.append(("stop", (down,)))
-
-    def get_containers(self) -> list[Any]:
-        self.calls.append(("get_containers", ()))
-        return []
-
-
 _FIXTURE = Path(__file__).parent / "fixtures" / "environment_manifest" / "safe_two_service.yaml"
 _FIXTURE_RUNNER_SERVICE = "default"
 
 
-def _driver_state(stub: _InertDockerCompose) -> tuple[Any, ...]:
-    """Normalise stub state for equality — the temp-dir path differs
-    across paths, so compare only the compose_file_name + the calls."""
-    return (stub.compose_file_name, stub.pull, stub.build, stub.wait, tuple(stub.calls[1:]))
-
-
-def _run_baseline_flow_a(dest_dir: Path) -> tuple[bytes, _InertDockerCompose]:
+def _run_baseline_flow_a(dest_dir: Path) -> tuple[bytes, InertDockerCompose]:
     """In-process reproduction of today's Flow A transform sequence.
 
     Mirrors ``SharedStackRuntimeBackend._materialise_manifest`` line-for-line
@@ -109,7 +68,7 @@ def _run_baseline_flow_a(dest_dir: Path) -> tuple[bytes, _InertDockerCompose]:
         restricted_services=frozenset(),
     )
     inject_runner_credentials(compose_file, _FIXTURE_RUNNER_SERVICE)
-    stub = _InertDockerCompose(
+    stub = InertDockerCompose(
         context=str(dest_dir),
         compose_file_name=_FIXTURE.name,
         pull=False,
@@ -124,7 +83,7 @@ def _run_baseline_flow_a(dest_dir: Path) -> tuple[bytes, _InertDockerCompose]:
     return compose_file.read_bytes(), stub
 
 
-def _run_baseline_flow_b(dest_dir: Path, trial_id: str) -> tuple[bytes, _InertDockerCompose]:
+def _run_baseline_flow_b(dest_dir: Path, trial_id: str) -> tuple[bytes, InertDockerCompose]:
     """In-process reproduction of today's Flow B transform sequence.
 
     Mirrors ``PerTrialRuntimeBackend.provision`` line-for-line for the
@@ -142,7 +101,7 @@ def _run_baseline_flow_b(dest_dir: Path, trial_id: str) -> tuple[bytes, _InertDo
     )
     inject_runner_credentials(compose_file, _FIXTURE_RUNNER_SERVICE)
     mount_docker_socket_into_runner(compose_file, _FIXTURE_RUNNER_SERVICE)
-    stub = _InertDockerCompose(
+    stub = InertDockerCompose(
         context=str(dest_dir),
         compose_file_name=_FIXTURE.name,
         pull=False,
@@ -168,10 +127,10 @@ def test_single_run_bytes_parity(tmp_path: Path) -> None:
         baseline_bytes, baseline_stub = _run_baseline_flow_a(baseline_dir)
 
         # Path 2: run the materialiser with the same inert stub factory.
-        materialiser_stubs: list[_InertDockerCompose] = []
+        materialiser_stubs: list[InertDockerCompose] = []
 
-        def factory(**kwargs: Any) -> _InertDockerCompose:
-            stub = _InertDockerCompose(**kwargs)
+        def factory(**kwargs: Any) -> InertDockerCompose:
+            stub = InertDockerCompose(**kwargs)
             materialiser_stubs.append(stub)
             return stub
 
@@ -199,7 +158,7 @@ def test_single_run_bytes_parity(tmp_path: Path) -> None:
         try:
             materialiser_bytes = (Path(handle.temp_dir) / _FIXTURE.name).read_bytes()  # type: ignore[attr-defined]
             assert materialiser_bytes == baseline_bytes
-            assert _driver_state(materialiser_stubs[0]) == _driver_state(baseline_stub)
+            assert driver_state(materialiser_stubs[0]) == driver_state(baseline_stub)
         finally:
             materialiser.teardown(handle)
     finally:
@@ -217,10 +176,10 @@ def test_trial_scoped_bytes_parity(tmp_path: Path) -> None:
         baseline_bytes, baseline_stub = _run_baseline_flow_b(baseline_dir, trial_id="task_a:0")
         baseline_env = _load_env(baseline_dir)
 
-        materialiser_stubs: list[_InertDockerCompose] = []
+        materialiser_stubs: list[InertDockerCompose] = []
 
-        def factory(**kwargs: Any) -> _InertDockerCompose:
-            stub = _InertDockerCompose(**kwargs)
+        def factory(**kwargs: Any) -> InertDockerCompose:
+            stub = InertDockerCompose(**kwargs)
             materialiser_stubs.append(stub)
             return stub
 
@@ -252,7 +211,7 @@ def test_trial_scoped_bytes_parity(tmp_path: Path) -> None:
             materialiser_env = (Path(handle.temp_dir) / ".env").read_text()  # type: ignore[attr-defined]
             assert materialiser_bytes == baseline_bytes
             assert materialiser_env == baseline_env
-            assert _driver_state(materialiser_stubs[0]) == _driver_state(baseline_stub)
+            assert driver_state(materialiser_stubs[0]) == driver_state(baseline_stub)
         finally:
             materialiser.teardown(handle)
     finally:
