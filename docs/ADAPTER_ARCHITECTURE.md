@@ -4,6 +4,18 @@ Adapters provide a unified interface for loading tasks and environments from dif
 
 For contributor-facing contract details, see `docs/ADAPTER_INTERFACE.md`.
 
+## Adapter families
+
+The engine exposes two disjoint families of adapters. Each family is a Protocol with an entry-point group; downstream code depends on the Protocol shape, not the concrete class.
+
+- **Harness adapters** (this document) — task loaders. `BaseAdapter` translates an adapter-specific on-disk format into `TaskConfig` / `AdapterEnvironment`. Discovered through `tolokaforge.adapters`. Consumed by the orchestrator, one adapter per run.
+- **Composition-plan adapters** (ADR-0044) — compose-mode runtime seams. Three Protocols shipped in `tolokaforge/core/composition_runtime.py`:
+  - **`ComposeMaterialiser`** — brings one `StackDecl` up as a live compose project and tears it down; shipped as `DockerComposeMaterialiser` (`tolokaforge/core/docker_compose_materialiser.py`). Ports to K8s / remote sandbox substrates land as new implementations against the same Protocol.
+  - **`ServiceLifecycleDispatcher`** — cycles one service between trials for a `ServiceIsolation` label; three built-in dispatchers (`shared`, `reset`, `ephemeral`) register into `DISPATCHER_REGISTRY` at import in `tolokaforge/core/service_lifecycle_dispatchers.py`.
+  - **`SubstrateComposer`** — sequences the two above across the run / task / trial brackets, enforces the composition-plan invariants (INV-12), and delegates between-trial service cycling; shipped as `DefaultSubstrateComposer` (`tolokaforge/core/default_substrate_composer.py`).
+
+  See [`docs/RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md#composition-plan-seams) for the seam catalogue in runtime context. Composition-plan adapters do not overlap with harness adapters — a harness adapter emits an `EnvironmentManifest`; the composer consumes the manifest's composition plan at run time.
+
 ## Design Principles
 
 1. **Unified Interface**: All task/environment loading goes through adapters
