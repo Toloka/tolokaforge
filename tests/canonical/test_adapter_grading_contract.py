@@ -59,9 +59,8 @@ def a_native_adapter(tmp_path: Path) -> NativeAdapter:
     """A minimal :class:`NativeAdapter` constructed for slot resolution.
 
     The tasks-glob does not need to resolve any task — the slot resolutions
-    tested here read the shipped defaults on :class:`BaseAdapter`, not
-    :class:`NativeAdapter`-specific overrides, so ``get_task_ids`` is never
-    called.
+    tested here call each hook against a task supplied directly and never
+    reach ``get_task_ids``.
     """
     return NativeAdapter({"base_dir": str(tmp_path), "tasks_glob": "**/task.yaml"})
 
@@ -115,24 +114,28 @@ def test_the_three_capability_flags_read_false_on_a_bare_native_adapter(
     assert a_native_adapter.syncs_adapter_env_to_state is False
 
 
-def test_the_grading_source_default_answers_uninterrogable_with_a_reason(
+def test_the_native_adapter_grading_source_reports_the_pack_grading_yaml_when_present(
     a_native_adapter: NativeAdapter,
     a_task_and_dir: tuple[TaskConfig, Path],
 ) -> None:
-    """Locks the return type and the shipped default value of :meth:`grading_source`.
+    """Locks the ON_DISK answer :class:`NativeAdapter` returns for a pack shipping ``grading.yaml``.
 
-    The default is :attr:`~GradingSourceKind.UNINTERROGABLE` with a non-empty
-    reason — the honest "the adapter has not declared its grading source"
-    every plugin starts with until it overrides.
+    The helpdesk_01 fixture ships a sibling ``grading.yaml``, which
+    ``load_task_yaml`` resolves as the declared source; the native override
+    reads that file off disk and answers :attr:`~GradingSourceKind.ON_DISK`
+    with the resolved path and no reason. The default-lock intent —
+    :attr:`~GradingSourceKind.UNINTERROGABLE` for a bare adapter — is
+    covered by ``_AStubAdapter`` in
+    ``tests/unit/adapters/test_grading_contract_defaults.py``.
     """
     task, task_dir = a_task_and_dir
 
     source = a_native_adapter.grading_source(task, task_dir)
 
     assert isinstance(source, GradingSource)
-    assert source.kind is GradingSourceKind.UNINTERROGABLE
-    assert source.path is None
-    assert source.reason  # non-empty, not exact prose
+    assert source.kind is GradingSourceKind.ON_DISK
+    assert source.path == task_dir / "grading.yaml"
+    assert source.reason == ""
 
 
 def test_the_emit_runner_grading_payload_default_is_empty(
