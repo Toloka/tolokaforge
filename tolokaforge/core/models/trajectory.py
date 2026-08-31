@@ -47,12 +47,14 @@ __all__ = [
 ]
 
 
-ProvisionStage = Literal["provision", "await_ready", "reset_recipe", "register_trial"]
-"""The four points a :class:`~tolokaforge.core.runtime.ProvisionError` can
+ProvisionStage = Literal["provision", "await_ready", "reset_recipe", "register_trial", "cycle"]
+"""The five points a :class:`~tolokaforge.core.runtime.ProvisionError` can
 be raised at, as a closed vocabulary. The provisioner declares which lifecycle
 step failed — compose-up (``provision``), the readiness gate (``await_ready``),
-the per-trial reset hook (``reset_recipe``), or the runner-side registration
-that arms the trial (``register_trial``) — and the value survives verbatim onto
+the per-trial reset hook (``reset_recipe``), the runner-side registration that
+arms the trial (``register_trial``), or the between-trials service dispatch
+(``cycle``) that a :class:`~tolokaforge.core.composition_runtime.ServiceLifecycleDispatcher`
+raises — and the value survives verbatim onto
 :attr:`Trajectory.provision_stage` and the per-trial ``metrics.yaml``
 ``error_stage`` key.
 
@@ -605,8 +607,8 @@ class Trajectory(BaseModel):
     # Non-``None`` iff ``termination_reason == PROVISION_ERROR``; ``None`` on
     # every other trial including bundles the executor writes for a failure
     # whose stage the raise site did not name (the closed set at
-    # ``ProvisionStage`` is exhaustive today, so this is a defensive default,
-    # not a documented gap).
+    # ``ProvisionStage`` is exhaustive over the raise sites today, so this
+    # is a defensive default, not a documented gap).
     provision_stage: ProvisionStage | None = None
     # Monotonic integer stamped on every trajectory; bumped whenever the
     # simulator prompt shape or the conversation context the simulator sees
