@@ -24,7 +24,7 @@ The 30× wall-clock gap is not a bug and not per-trial LLM work — engine-loop 
 
 - Every trial pays a fixed ~20 s: `docker compose up --wait` + readiness gate (~11 s) + teardown (`docker compose down --volumes` + `rmtree`, ~10 s). Across 660 trial attempts on the sample sweep, that is ~13 hours pure overhead.
 - The runner container image itself is built per shard (~5–10 min on cold Docker cache) rather than once per run.
-- `SharedStackRuntimeBackend`'s task-declared-stack path (Case B in ADR-0018) refuses runs whose tasks name different `environment_manifest.compose_file` values — the check at `orchestrator.py:1090` raises `RuntimeError`. T-Bench declares ten different compose files → shared-stack is unusable.
+- `SharedStackRuntimeBackend`'s task-declared-stack path (Case B in ADR-0018) refuses runs whose tasks name different `environment_manifest.compose_file` values — the check at `orchestrator.py:1091-1097` raises `RuntimeError`. T-Bench declares ten different compose files → shared-stack is unusable.
 
 Harbor achieves its ~2 h wall-clock via three architecture wins (not container reuse — Harbor also runs a fresh compose project per trial):
 
@@ -80,6 +80,8 @@ Adopt Option C. Concrete concerns:
 3. **New manifest signal**: `EnvironmentManifest.requires_hybrid_stack: bool` property. Semantic mirrors the admission rule above. `requires_per_trial` semantics stay unchanged for backward compatibility with existing per-trial-only task packs.
 
 4. **Backend selection**: `_select_backend_from_tasks` (in `orchestrator.py`) grows a new branch — if any task manifest reports `requires_hybrid_stack`, admit hybrid; else fall back to today's shared-vs-per_trial decision. Heterogeneous compose-file check in `_extract_run_env_manifest` is widened: under hybrid, the *engine-services* manifest is one (materialised once per run), and the *task-services* manifests are per-trial (materialised per provision call, may differ per task). The check retains its shared-backend-only enforcement for non-hybrid runs.
+
+   **Cross-task reconciliation of the shared slice.** Under hybrid, the set of services labelled `isolation: shared` in each task's manifest MUST be identical across all tasks in the run — same service names, same compose contents. `_extract_run_env_manifest` enforces this at admission time with a `RuntimeError` naming the heterogeneous services, mirroring today's compose-file check. Rationale: the shared substrate materialises once per run, so per-task divergence on its shape has no coherent meaning. Task-declared services (labelled `reset|ephemeral`) may differ freely per task — those are per-provision. The T-Bench adapter's `services` map (Decision item 7) satisfies this trivially: every task declares the same engine services, only the task-declared services vary.
 
 5. **Isolation compatibility**: `_verify_isolation_compatibility` accepts `ephemeral` services under `hybrid_stack` (already accepted under per_trial today). Refusal for `SharedStackRuntimeBackend` + `ephemeral` stays intact — that combination is still invalid.
 
