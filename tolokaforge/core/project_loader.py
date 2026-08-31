@@ -848,6 +848,7 @@ def resolve(
 
     manifest = EnvironmentManifest(**manifest_kwargs)
     _fill_missing_service_defaults(manifest)
+    _synthesise_composition_plan(manifest, merged)
     return manifest
 
 
@@ -865,6 +866,46 @@ def _fill_missing_service_defaults(manifest: EnvironmentManifest) -> None:
         if name in declared:
             continue
         manifest.services[name] = ServiceSpec(isolation="ephemeral")
+
+
+def _synthesise_composition_plan(manifest: EnvironmentManifest, merged: dict[str, Any]) -> None:
+    """Synthesise :attr:`EnvironmentManifest.stacks` from the scalar-form
+    fields when the merged patch declares no ``stacks`` block (ADR-0044
+    § 3 backward-compat coercion).
+
+    In-place on the manifest. Idempotent: no-op if ``stacks`` already
+    populated (from an explicit patch-side declaration).
+
+    The synthesised single-entry plan uses ``stack_id="default"``, the
+    manifest's ``compose_file``, and infers ``stack_scope`` from
+    :attr:`EnvironmentManifest.requires_per_trial` — True (empty services
+    or any non-``shared`` service) → ``trial``; False (all-``shared``) →
+    ``run``. This coercion preserves byte-identical behaviour for every
+    pre-ADR-0044 task pack: the scalar fields remain populated and the
+    synthetic plan captures the same scope information the previous
+    :meth:`Orchestrator._select_backend_from_tasks` would derive.
+    """
+    from tolokaforge.runner.models import StackDecl
+
+    if manifest.stacks:
+        return
+    stacks_patch = merged.get("stacks")
+    if stacks_patch:
+        raise NotImplementedError(
+            "EnvironmentPatch.stacks (multi-stack composition plan) is declared "
+            "but the multi-stack merge path is not yet wired (see ADR-0044 § 3). "
+            "Use the scalar `stack` field until the composer lands."
+        )
+    inferred_scope = "trial" if manifest.requires_per_trial else "run"
+    manifest.stacks.append(
+        StackDecl(
+            stack_id="default",
+            compose_file=manifest.compose_file,
+            stack_scope=inferred_scope,
+            runner_service=manifest.runner_service,
+            inputs=dict(manifest.stack_inputs),
+        )
+    )
 
 
 def _dump_patch(patch: EnvironmentPatch | None) -> dict[str, Any]:
@@ -893,6 +934,13 @@ def _merge_env_patches(
     stack_replacement = isinstance(task_stack, dict) and "compose_file" in task_stack
     if not stack_replacement:
         return deep_merge(project, task)
+
+    if project.get("stacks") or task.get("stacks"):
+        raise NotImplementedError(
+            "EnvironmentPatch.stacks (multi-stack composition plan) is declared "
+            "but the multi-stack merge path is not yet wired (see ADR-0044 § 3). "
+            "Use the scalar `stack` field until the composer lands."
+        )
 
     merged: dict[str, Any] = {"stack": dict(task_stack)}
     for field in _SERVICE_TREATMENT_FIELDS:
