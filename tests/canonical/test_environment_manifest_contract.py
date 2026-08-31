@@ -162,6 +162,81 @@ class TestServiceIsolationContract:
         )
         assert m.requires_per_trial is False
 
+    def test_empty_services_map_does_not_require_hybrid_stack(self) -> None:
+        """Safety default: an empty services map does not opt into hybrid.
+        The ADR-0009 default keeps routing through :attr:`requires_per_trial`
+        so existing task packs stay on the per_trial path."""
+        m = EnvironmentManifest(compose_file=_fixture("safe_one_service.yaml"))
+        assert m.services == {}
+        assert m.requires_hybrid_stack is False
+        assert m.requires_per_trial is True
+
+    def test_all_shared_services_do_not_require_hybrid_stack(self) -> None:
+        """All-shared routes to :class:`SharedStackRuntimeBackend`, not
+        hybrid. Hybrid requires a mix of isolation levels."""
+        m = EnvironmentManifest(
+            compose_file=_fixture("safe_one_service.yaml"),
+            services={"default": ServiceSpec(isolation="shared")},
+        )
+        assert m.requires_hybrid_stack is False
+        assert m.requires_per_trial is False
+
+    def test_all_ephemeral_services_do_not_require_hybrid_stack(self) -> None:
+        """All-per-trial routes to :class:`PerTrialRuntimeBackend`, not
+        hybrid."""
+        m = EnvironmentManifest(
+            compose_file=_fixture("safe_two_service.yaml"),
+            services={
+                "default": ServiceSpec(isolation="ephemeral"),
+                "db": ServiceSpec(isolation="ephemeral"),
+            },
+        )
+        assert m.requires_hybrid_stack is False
+        assert m.requires_per_trial is True
+
+    def test_all_reset_services_do_not_require_hybrid_stack(self) -> None:
+        """All-reset (reset-recipe-based per-trial state restoration) is
+        still per-trial routing at the manifest level, not hybrid."""
+        m = EnvironmentManifest(
+            compose_file=_fixture("safe_two_service.yaml"),
+            services={
+                "default": ServiceSpec(isolation="reset", reset=ResetSpec(seed="a")),
+                "db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="b")),
+            },
+        )
+        assert m.requires_hybrid_stack is False
+        assert m.requires_per_trial is True
+
+    def test_mixed_shared_and_ephemeral_requires_hybrid_stack(self) -> None:
+        """Canonical T-Bench-shape manifest: engine services `shared`,
+        task-declared services `ephemeral`. Routes to hybrid — this is
+        the missing quadrant ADR-0043 fills."""
+        m = EnvironmentManifest(
+            compose_file=_fixture("safe_two_service.yaml"),
+            services={
+                "default": ServiceSpec(isolation="shared"),
+                "db": ServiceSpec(isolation="ephemeral"),
+            },
+        )
+        assert m.requires_hybrid_stack is True
+        # requires_per_trial is *also* True (the ephemeral service).
+        # Selection order guarantees hybrid wins over per-trial —
+        # see ADR-0043 § Decision item 4 and _select_backend_from_tasks.
+        assert m.requires_per_trial is True
+
+    def test_mixed_shared_and_reset_requires_hybrid_stack(self) -> None:
+        """The other mixed shape: shared engine + reset-restored
+        task-declared services. Also routes to hybrid."""
+        m = EnvironmentManifest(
+            compose_file=_fixture("safe_two_service.yaml"),
+            services={
+                "default": ServiceSpec(isolation="shared"),
+                "db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline")),
+            },
+        )
+        assert m.requires_hybrid_stack is True
+        assert m.requires_per_trial is True
+
     def test_round_trip_preserves_services(self) -> None:
         m = EnvironmentManifest(
             compose_file=_fixture("safe_two_service.yaml"),

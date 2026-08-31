@@ -2885,6 +2885,37 @@ class EnvironmentManifest(BaseModel):
         return any(spec.isolation != "shared" for spec in self.services.values())
 
     @property
+    def requires_hybrid_stack(self) -> bool:
+        """True iff the manifest declares a *mix* of ``shared`` and
+        ``reset|ephemeral`` isolation levels — the shape that argues for
+        :class:`HybridRuntimeBackend` (shared engine services materialised
+        once per run + task-declared services materialised per trial).
+
+        Return-value semantics:
+
+        - All-shared → ``False`` (routes to :class:`SharedStackRuntimeBackend`).
+        - All-per-trial (``reset|ephemeral``) → ``False``;
+          :attr:`requires_per_trial` is ``True`` and routes to
+          :class:`PerTrialRuntimeBackend` unchanged.
+        - Empty ``services`` → ``False``; the ADR-0009 default
+          (:attr:`requires_per_trial=True`) still routes to per-trial.
+        - Mixed (at least one ``shared`` AND at least one
+          ``reset|ephemeral``) → ``True``.
+
+        Consumed by :meth:`Orchestrator._select_backend_from_tasks` —
+        the hybrid branch is evaluated BEFORE the per-trial branch, so a
+        mixed manifest (which also reports :attr:`requires_per_trial=True`
+        because it contains non-``shared`` services) routes to hybrid,
+        not per-trial. See ADR-0043 § Decision item 4.
+        """
+        if not self.services:
+            return False
+        kinds = {spec.isolation for spec in self.services.values()}
+        has_shared = "shared" in kinds
+        has_per_trial = bool(kinds & {"reset", "ephemeral"})
+        return has_shared and has_per_trial
+
+    @property
     def restricted_services(self) -> frozenset[str]:
         """Names of services marked ``network_access="restricted"``.
 
