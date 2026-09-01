@@ -312,6 +312,19 @@ class TestCaptureFinalStateEnvironmentBlock:
 
         assert "environment" not in trajectory.final_env_state
 
+    def test_skips_get_state_rpc_when_task_declares_no_json_db(self) -> None:
+        """No ``initial_state.json_db`` → ``RegisterTrial`` never provisioned
+        the DB Service (:func:`~tolokaforge.runner.models.provisions_database`),
+        so ``GetState`` has no target and the RPC is skipped."""
+        spec = _make_spec()
+        setup = self._setup()
+        setup.env_state.config.json_db = None
+        conductor = self._conductor()
+
+        conductor._capture_final_state(spec, setup, _default_success_trajectory("t1", 0))
+
+        conductor.runtime_backend.get_state.assert_not_called()
+
 
 class TestResolveMaxTurns:
     def test_orchestrator_default_is_50(self) -> None:

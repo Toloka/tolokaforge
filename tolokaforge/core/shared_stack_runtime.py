@@ -748,7 +748,7 @@ class GrpcRunnerClient:
             if response.success:
                 logger.debug(f"Got state for trial {trial_id}: stable_hash={response.stable_hash}")
             else:
-                logger.error(f"Failed to get state for trial {trial_id}: {response.error}")
+                logger.warning(f"Failed to get state for trial {trial_id}: {response.error}")
 
             return result
 

@@ -888,10 +888,13 @@ class InProcessConductor:
         service and stash it on ``trajectory.final_env_state``.
 
         The Runner's ``GetState`` RPC syncs the subprocess state to
-        db-service before reading, so this read covers every adapter.
-        ``adapter_env.data`` (from :meth:`BaseAdapter.create_environment`)
-        is a snapshot from before the trial ran; it is used as a fallback
-        only when the Runner-side read fails.
+        db-service before reading, so this read covers every adapter that
+        seeds a JSON DB. Tasks that declare no ``initial_state.json_db``
+        get a matching skip: ``RegisterTrial`` never initialised the DB
+        Service for them (see :func:`provisions_database`), so the RPC has
+        no target and only ``adapter_env.data`` — the pre-trial snapshot
+        from :meth:`BaseAdapter.create_environment` — is available for the
+        final-state stash.
 
         When the trial's task carries an ``environment_manifest`` (a
         Project-layer / multi-container substrate), the resolved
@@ -900,26 +903,27 @@ class InProcessConductor:
         the trial. Manifest-less trials keep the JSON-DB-only shape.
         """
         runner_state: dict[str, Any] | None = None
-        try:
-            state_result = self.runtime_backend.get_state(setup.trial_id)
-            if state_result.get("success") and state_result.get("state_json"):
-                import json as _json
+        if setup.env_state.config.json_db:
+            try:
+                state_result = self.runtime_backend.get_state(setup.trial_id)
+                if state_result.get("success") and state_result.get("state_json"):
+                    import json as _json
 
-                decoded = _json.loads(state_result["state_json"])
-                if isinstance(decoded, dict) and decoded:
-                    runner_state = decoded
+                    decoded = _json.loads(state_result["state_json"])
+                    if isinstance(decoded, dict) and decoded:
+                        runner_state = decoded
+                    else:
+                        self.logger.debug("Runner DB state empty, falling back to adapter env data")
                 else:
-                    self.logger.debug("Runner DB state empty, falling back to adapter env data")
-            else:
-                self.logger.debug(
-                    "Failed to fetch Runner DB state, falling back to adapter env data",
-                    error=state_result.get("error"),
+                    self.logger.debug(
+                        "Failed to fetch Runner DB state, falling back to adapter env data",
+                        error=state_result.get("error"),
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    "Could not fetch state from Runner, using adapter env data",
+                    error=str(e),
                 )
-        except Exception as e:
-            self.logger.warning(
-                "Could not fetch state from Runner, using adapter env data",
-                error=str(e),
-            )
 
         if runner_state is not None:
             setup.env_state.db_state = runner_state
