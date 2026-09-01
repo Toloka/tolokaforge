@@ -73,3 +73,24 @@ forbidden_modules =
     tolokaforge.core.grading.default_transcript_rule_matcher
     tolokaforge.core.grading.default_state_check_backends
 allow_indirect_imports = true
+
+
+# Composite-fold purity (ADR-0040 Stream B).
+#
+# ``core.grading.composite_fold`` owns the substrate-neutral fold both the
+# runner-side ``_grade_trial_async`` and the grader-side ``_run_composite``
+# drive. It must not reach *back* into the runner or grader packages, nor
+# into the live substrate — a reach would silently re-collapse the seam and
+# make the fold substrate-specific again. ``allow_indirect_imports = false``
+# is intentional: a transitive path back into a forbidden target must trip
+# the contract, not just a direct import.
+[importlinter:contract:composite-fold-purity]
+name = composite_fold is a pure library — no runner/grader/live-substrate reach
+type = forbidden
+source_modules =
+    tolokaforge.core.grading.composite_fold
+forbidden_modules =
+    tolokaforge.runner
+    tolokaforge.grader
+    tolokaforge.core.grading.substrate_live
+allow_indirect_imports = false

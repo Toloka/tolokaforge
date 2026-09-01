@@ -16,7 +16,7 @@ Locks the two seams the substrate design commits to (per ADR-0040):
    - **InProcess leg** — drive the runner's ``GradeTrial`` RPC. Its
      ``_grade_trial_async`` builds :class:`InProcessGradingSubstrate`
      internally and reassembles the ``Grade`` proto via
-     ``compose_runner_trial_verdict`` + ``build_grade_reasons``.
+     ``compose_trial_verdict`` + ``build_grade_reasons``.
    - **LiveRunnerCallback leg** — construct
      :class:`LiveRunnerCallbackGradingSubstrate` against the runner's
      in-process gRPC channel; call each ``composite.grade_*`` function
@@ -48,6 +48,11 @@ import pytest
 
 from tests.utils.dummy_grading_substrate import DummyGradingSubstrate
 from tolokaforge.core.grading import composite
+from tolokaforge.core.grading.composite_fold import (
+    build_grade_reasons,
+    compose_trial_verdict,
+    resolve_state_checks_component,
+)
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.grading.key_manifest import EVALUATED
@@ -77,11 +82,6 @@ from tolokaforge.runner import (
     add_SubstrateServiceServicer_to_server,
 )
 from tolokaforge.runner import runner_pb2 as pb2
-from tolokaforge.runner.grading import (
-    build_grade_reasons,
-    compose_runner_trial_verdict,
-    resolve_state_checks_component,
-)
 from tolokaforge.runner.grading_ledger import (
     CUSTOM_CHECKS_DISABLED_SKIP,
     CUSTOM_CHECKS_KEY,
@@ -529,7 +529,7 @@ def _reassemble_grade_from_composite(
                 grading_config.state_checks.hash_weight if grading_config.state_checks else None
             ),
         )
-        verdict = compose_runner_trial_verdict(
+        verdict = compose_trial_verdict(
             components.model_dump(),
             grading_config.model_dump(),
             judge_gate_failed=judge_gate_failed,

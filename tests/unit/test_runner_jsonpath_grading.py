@@ -12,6 +12,11 @@ from pathlib import Path
 
 import pytest
 
+from tolokaforge.core.grading.composite_fold import (
+    build_grade_reasons,
+    combine_grade_components,
+    resolve_state_checks_component,
+)
 from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenActionFailure,
@@ -23,13 +28,10 @@ from tolokaforge.core.grading.state_composition import (
 )
 from tolokaforge.runner import grading as grading_module
 from tolokaforge.runner.grading import (
-    build_grade_reasons,
-    combine_grade_components,
     evaluate_db_probes,
     evaluate_jsonpath_checks,
     evaluate_jsonpath_file_checks,
     evaluate_jsonpath_state_checks,
-    resolve_state_checks_component,
 )
 
 pytestmark = pytest.mark.unit

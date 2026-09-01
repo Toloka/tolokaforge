@@ -40,6 +40,11 @@ from tolokaforge.core.grading.check_runner import (
 )
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.grading.checks_interface import CustomChecksConfig
+from tolokaforge.core.grading.composite_fold import (
+    build_grade_reasons,
+    compose_trial_verdict,
+    resolve_state_checks_component,
+)
 from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenReplayRecord,
@@ -99,10 +104,7 @@ from tolokaforge.runner.db_client import (
     TrialNotFoundError as DBTrialNotFoundError,
 )
 from tolokaforge.runner.grading import (
-    build_grade_reasons,
-    compose_runner_trial_verdict,
     compute_state_diff,
-    resolve_state_checks_component,
 )
 from tolokaforge.runner.grading_ledger import (
     CUSTOM_CHECKS_DISABLED_SKIP,
@@ -1928,7 +1930,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     judge_status = pb2.JUDGE_STATUS_COMPLETED
                     judge_gate_failed = judge_result.gate_failed
                     # The judge's raw aggregate; the required-criterion gate is applied
-                    # by ``compose_runner_trial_verdict`` below.
+                    # by ``compose_trial_verdict`` below.
                     components.llm_judge_score = judge_result.score
                     logger.info(
                         f"GradeTrial: {trial_id} - LLM judge: "
@@ -1978,7 +1980,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 db_probe_score=components.db_probe_score,
                 hash_weight=state_checks_config.hash_weight if state_checks_config else None,
             )
-            verdict = compose_runner_trial_verdict(
+            verdict = compose_trial_verdict(
                 components.model_dump(),
                 grading_config.model_dump(),
                 judge_gate_failed=judge_gate_failed,

@@ -52,6 +52,7 @@ import pytest
 import yaml
 
 from tests.utils.golden_source_shapes import elements_that_are_no_action
+from tolokaforge.core.grading.composite_fold import build_grade_reasons
 from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenActionFailure,
@@ -62,7 +63,6 @@ from tolokaforge.core.grading.golden_replay import (
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.state_checks import StateChecker
-from tolokaforge.runner.grading import build_grade_reasons
 from tolokaforge.runner.models import (
     GoldenAction,
     HashGradingResult,

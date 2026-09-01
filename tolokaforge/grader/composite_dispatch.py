@@ -42,6 +42,11 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from tolokaforge.core.grading import composite
+from tolokaforge.core.grading.composite_fold import (
+    build_grade_reasons,
+    compose_trial_verdict,
+    resolve_state_checks_component,
+)
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.grading.tool_artifacts import extract_tool_artifacts
@@ -73,11 +78,6 @@ from tolokaforge.core.plugin_registry import (
     load_transcript_rule_matcher,
 )
 from tolokaforge.core.trial_grader import GradingFailedError
-from tolokaforge.runner.grading import (
-    build_grade_reasons,
-    compose_runner_trial_verdict,
-    resolve_state_checks_component,
-)
 from tolokaforge.runner.models import (
     RunnerGradeComponents,
     RunnerGradingConfig,
@@ -541,7 +541,7 @@ def _compose_verdict_and_reasons(
         db_probe_score=components.db_probe_score,
         hash_weight=state_checks_config.hash_weight if state_checks_config else None,
     )
-    verdict = compose_runner_trial_verdict(
+    verdict = compose_trial_verdict(
         components.model_dump(),
         grading_config.model_dump(),
         judge_gate_failed=judge_gate_failed,

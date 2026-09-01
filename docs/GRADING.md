@@ -3704,7 +3704,7 @@ met, else `0.0`.
 its own says nothing about the gate: on a rubric whose non-required criteria all
 scored full marks, a trial that *failed* a required criterion still aggregates to
 `score: 1.0`. Zeroing the component is
-[`compose_runner_trial_verdict`](#score-combination)'s, and it is what the wire
+[`compose_trial_verdict`](#score-combination)'s, and it is what the wire
 grade and the reasons string carry — measured on the five bundles under
 `tests/data/migration_corpora/notes_duplicate_check/not_met/`, whose `grade.yaml`
 records `components.llm_judge: 0.0` where the aggregate alone gives `1.0`. Read the
@@ -4141,9 +4141,9 @@ as a `0.0`. An *evaluated* component that `combine.weights` declares no weight f
 neither excluded nor defaulted: the fold raises on both substrates, per the rule above.
 
 **Where the runner-side verdict is composed.** The runner folds a trial through
-`compose_runner_trial_verdict`
-([`tolokaforge/runner/grading.py`](../tolokaforge/runner/grading.py)), which wraps
-`combine_grade_components` and applies **both gates** around it: the judge
+`compose_trial_verdict`
+([`tolokaforge/core/grading/composite_fold.py`](../tolokaforge/core/grading/composite_fold.py)),
+which wraps `combine_grade_components` and applies **both gates** around it: the judge
 component is zeroed where a required criterion failed, and a failed judge or
 trace gate then forces `binary_pass` false whatever the threshold. It returns the
 gated judge component beside `(score, binary_pass)`, because that component — not
