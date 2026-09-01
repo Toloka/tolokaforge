@@ -476,7 +476,19 @@ negative-space of the seam by forbidding
 any module under [`composite/`](../tolokaforge/core/grading/composite/__init__.py)
 from importing any of the six reference-impl-holding modules — the composite
 reaches every sub-component only through its Protocol via a resolved-instance
-kwarg.
+kwarg. Two sibling contracts fence the runner-wire side of the same story:
+[`no-runner-reach-from-core-grading`](../.importlinter) forbids every path
+(direct or transitive) from `core.grading` back into `runner.service` or
+`runner.grading`, and [`no-pb2-reach-from-core-grading`](../.importlinter)
+forbids a direct `runner_pb2` / `runner_pb2_grpc` import from any module
+under `core.grading` (`core.grading.substrate_client` is the one carve-out
+— it IS the `SubstrateService` gRPC client). Transitive `pb2` reach through
+wire-level infrastructure (`core.loop`, `core.trial_grader`,
+`core.shared_stack_runtime`, `core.plugin_registry`) is legitimate and
+permitted; the canonical AST guard
+[`tests/canonical/test_no_pb2_imports_in_composite.py`](../tests/canonical/test_no_pb2_imports_in_composite.py)
+locks the composite package specifically at unit-tier cost — a runtime `pb2`
+import anywhere under `composite/` trips at pytest collection.
 
 | Group | Protocol module | Reference impls | Granularity |
 | --- | --- | --- | --- |
