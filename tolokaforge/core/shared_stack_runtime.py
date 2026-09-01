@@ -81,6 +81,27 @@ still honoured by a new image, and a new engine's zero still resolves on an
 older one."""
 
 
+NETWORK_CAPABILITIES: frozenset[str] = frozenset(
+    {"network_isolation:no_internet", "network_isolation:limited_internet"}
+)
+"""The two network-isolation capability names every local-docker backend
+advertises — the run-wide default-deny + allowlist forwarders the compose
+transform layer wires up regardless of plan shape."""
+
+
+RESET_RECIPE_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "reset_recipes:sql_dump",
+        "reset_recipes:filesystem_dir",
+        "reset_recipes:redis_dump",
+        "reset_recipes:bare",
+    }
+)
+"""The four shipped reset-recipe capability names. Advertised whenever the
+plan admits a ``reset``-labelled service — the "reset" dispatcher delegates
+to :data:`RECIPE_REGISTRY` for these four kinds."""
+
+
 def _normalise_runner_url(runner_address: str) -> str:
     """Prepend ``http://`` to a bare ``host:port`` runner address, leaving
     fully-qualified URLs untouched."""
@@ -966,13 +987,13 @@ class SharedStackRuntimeBackend:
     * ``plan_shape=TASK_SCOPED_ONLY`` / ``MULTI_SCOPE`` → ``COMPOSED_STACK``
       (the plan spans more than one scope; each scope's stacks stay live for
       their bracket).
-    """
 
-    advertised_capabilities: frozenset[str] = frozenset(
-        {"shared_stack", "network_isolation:no_internet", "network_isolation:limited_internet"}
-    )
-    """Local-docker shared-stack capability advertisement. Read by
-    :func:`tolokaforge.core.backend_capabilities.check_admission`."""
+    :attr:`advertised_capabilities` mirrors the same branching: each posture
+    unions the scope-mode capability name with :data:`NETWORK_CAPABILITIES`,
+    and every non-``SHARED_STACK`` posture (the plan admits ``reset``-labelled
+    services) also unions :data:`RESET_RECIPE_CAPABILITIES`. Read by
+    :func:`tolokaforge.core.backend_capabilities.check_admission`.
+    """
 
     def __init__(
         self,
@@ -1043,6 +1064,15 @@ class SharedStackRuntimeBackend:
         if shape is PlanShape.TRIAL_SCOPED_ONLY:
             return IsolationMode.PER_TRIAL_STACK
         return IsolationMode.COMPOSED_STACK
+
+    @property
+    def advertised_capabilities(self) -> frozenset[str]:
+        mode = self.isolation_mode
+        if mode is IsolationMode.SHARED_STACK:
+            return frozenset({"shared_stack"}) | NETWORK_CAPABILITIES
+        if mode is IsolationMode.PER_TRIAL_STACK:
+            return frozenset({"per_trial_stack"}) | RESET_RECIPE_CAPABILITIES | NETWORK_CAPABILITIES
+        return frozenset({"composed_stack"}) | RESET_RECIPE_CAPABILITIES | NETWORK_CAPABILITIES
 
     # ------------------------------------------------------------------
     # Lifecycle

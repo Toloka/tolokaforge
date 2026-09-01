@@ -168,7 +168,7 @@ Add `IsolationMode.COMPOSED_STACK`. `SharedStackRuntimeBackend.isolation_mode` b
 - `TRIAL_SCOPED_ONLY` → `PER_TRIAL_STACK`
 - `TASK_SCOPED_ONLY` or `MULTI_SCOPE` → `COMPOSED_STACK`
 
-Add `hybrid_stack`-analog capability entry `composed_stack` to `CAPABILITY_REGISTRY`. `SharedStackRuntimeBackend.advertised_capabilities` computed from `plan_shape × dispatcher_registry` — union of the plan-shape-appropriate scope capability + reset-recipe capabilities from registered dispatchers + network isolation capabilities.
+Add `hybrid_stack`-analog capability entry `composed_stack` to `CAPABILITY_REGISTRY`. `SharedStackRuntimeBackend.advertised_capabilities` computed from `plan_shape` — union of the plan-shape-appropriate scope capability, the four shipped reset-recipe capabilities (when the plan includes any trial-scope or mixed-scope stack), and the two network isolation capabilities.
 
 ### 6. Selection + admission
 

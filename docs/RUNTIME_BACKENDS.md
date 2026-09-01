@@ -494,7 +494,13 @@ flowchart TD
     ProvisionPhase --> Trials
 ```
 
-`SharedStackRuntimeBackend` accepts every plan — the composer handles per-service isolation via its dispatcher registry, and the isolation-compat guard refuses configurations the backend's declared `isolation_mode` cannot honour.
+`SharedStackRuntimeBackend` accepts every plan — the composer handles per-service isolation via its dispatcher registry, and the isolation-compat guard refuses configurations the backend's declared `isolation_mode` cannot honour. The backend's `advertised_capabilities` is computed from the same plan shape the `isolation_mode` posture reads:
+
+- `plan_shape=SINGLE_RUN` → `{"shared_stack"}` + the two network-isolation capabilities.
+- `plan_shape=TRIAL_SCOPED_ONLY` → `{"per_trial_stack"}` + the four shipped reset-recipe capabilities (`sql_dump`, `filesystem_dir`, `redis_dump`, `bare`) + the two network-isolation capabilities.
+- `plan_shape=TASK_SCOPED_ONLY` or `MULTI_SCOPE` → `{"composed_stack"}` + the four reset-recipe capabilities + the two network-isolation capabilities.
+
+The two `env_manifest=None` construction modes fall back on the `_per_trial_mode` flag: the built-in-stack default matches `SINGLE_RUN`; the per-trial-delegate mode `PerTrialRuntimeBackend` sets matches `TRIAL_SCOPED_ONLY`.
 
 ### Per-scope invariants
 
