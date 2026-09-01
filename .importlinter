@@ -116,3 +116,27 @@ forbidden_modules =
     tolokaforge.grader
     tolokaforge.core.grading.substrate_live
 allow_indirect_imports = false
+
+
+# No runner-reach from core.grading (ADR-0041 north star).
+#
+# ``core.grading`` owns the pure grading library the runner-side
+# GradeTrial and the standalone Grader v3 service both drive. A reach
+# back into the runner surface silently re-collapses the substrate seam
+# ADR-0041 makes the boundary of. Two runner targets are fenced here:
+# the runner's gRPC service module and the narrow ``runner.grading``
+# (state-diff + wire-sentinel projection only). ``runner.grading_ledger``
+# is not on the forbid list yet — ``composite.py`` still reaches LEDGER
+# keys there; the forbid list extends when that ledger extraction lands.
+# ``allow_indirect_imports = false`` is intentional: a transitive path
+# back into a forbidden target must trip the contract, not just a direct
+# import.
+[importlinter:contract:no-runner-reach-from-core-grading]
+name = core.grading does not reach the runner-side grade RPC or narrow runner-wire helpers
+type = forbidden
+source_modules =
+    tolokaforge.core.grading
+forbidden_modules =
+    tolokaforge.runner.service
+    tolokaforge.runner.grading
+allow_indirect_imports = false

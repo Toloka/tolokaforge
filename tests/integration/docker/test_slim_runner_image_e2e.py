@@ -91,7 +91,7 @@ def test_slim_runner_image_domain_db_probe_functions(runner_image_id: str) -> No
     """
     probe_script = (
         "import asyncio, json\n"
-        "from tolokaforge.runner.grading import evaluate_db_probes\n"
+        "from tolokaforge.core.grading.db_probes import evaluate_db_probes\n"
         "probe = {'name': 'p', 'dsn': 'postgresql://u:p@127.0.0.1:1/db',"
         " 'query': 'SELECT 1', 'expect': []}\n"
         "score, reasons = asyncio.run(evaluate_db_probes([probe]))\n"

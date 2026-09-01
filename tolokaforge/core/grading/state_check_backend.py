@@ -10,10 +10,10 @@ produces per source. Discovery goes through
 
 Two reference impls ship: ``jsonpath`` reshapes the substrate's STABLE DB
 view + agent-visible filesystem into the ``{db, tables, filesystem}`` state
-:func:`evaluate_jsonpath_checks` addresses; ``db_probes`` opens task-declared
-postgres connections and applies each probe's ``expect`` block. A downstream
-package registers a third source (e.g. an S3-bucket-diff backend) alongside
-without a framework PR.
+:func:`~tolokaforge.core.grading.jsonpath_evaluators.evaluate_jsonpath_checks`
+addresses; ``db_probes`` opens task-declared postgres connections and applies
+each probe's ``expect`` block. A downstream package registers a third source
+(e.g. an S3-bucket-diff backend) alongside without a framework PR.
 
 Hash grading is deliberately NOT a registered backend. The
 ``state_checks.hash`` component has state-mutation semantics (snapshot →

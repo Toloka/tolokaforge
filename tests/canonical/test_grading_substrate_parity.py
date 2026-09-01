@@ -144,6 +144,7 @@ from tests.utils.runner_requests import execute_request, register_request, trial
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
 from tolokaforge.core.grading import composite as composite_module
+from tolokaforge.core.grading import db_probes as db_probes_module
 from tolokaforge.core.grading import (
     default_transcript_rule_matcher as default_transcript_rule_matcher_module,
 )
@@ -156,8 +157,10 @@ from tolokaforge.core.grading.composite_fold import (
     combine_grade_components,
     resolve_state_checks_component,
 )
+from tolokaforge.core.grading.db_probes import evaluate_db_probes
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord, resolve_initial_state
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.jsonpath_evaluators import evaluate_jsonpath_checks
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
@@ -179,14 +182,9 @@ from tolokaforge.core.models import (
     ToolCall,
     Trajectory,
 )
-from tolokaforge.runner import grading as runner_grading
 from tolokaforge.runner import models as runner_models
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import service as runner_service_module
-from tolokaforge.runner.grading import (
-    evaluate_db_probes,
-    evaluate_jsonpath_checks,
-)
 from tolokaforge.runner.grading_ledger import (
     LEDGER_KEYS,
     LLM_JUDGE_KEY,
@@ -258,9 +256,11 @@ _BINARY_HASH_VERDICT = frozenset({0.0, 1.0})
 _UNSCORED_COMPONENT = -1.0
 """What ``GradeComponents`` carries for a component the runner did not score.
 
-Every component evaluator in ``tolokaforge/runner/grading.py`` returns it when
-handed nothing to evaluate, so a slot holding it means no evaluation happened
-whatever the ledger recorded for the keys that feed it.
+Every component evaluator in ``tolokaforge/core/grading/jsonpath_evaluators.py``
+and ``tolokaforge/core/grading/db_probes.py``, and the runner-wire projection
+in ``tolokaforge/runner/grading.py``, returns it when handed nothing to
+evaluate, so a slot holding it means no evaluation happened whatever the
+ledger recorded for the keys that feed it.
 """
 
 _HASH_FAMILY_ROOT = "state_checks.hash"
@@ -3027,7 +3027,7 @@ def _probe_component(
     async def _rows(dsn: str, query: str) -> list[dict[str, Any]]:
         return rows
 
-    monkeypatch.setattr(runner_grading, "_fetch_probe_rows", _rows)
+    monkeypatch.setattr(db_probes_module, "_fetch_probe_rows", _rows)
     probe_score, _ = asyncio.run(evaluate_db_probes(probes))
     return resolve_state_checks_component(
         hash_score=-1.0,
@@ -3644,7 +3644,7 @@ def _drive_db_probes(
     async def _rows(_dsn: str, _query: str) -> list[dict[str, Any]]:
         return _PROBE_ROWS
 
-    monkeypatch.setattr(runner_grading, "_fetch_probe_rows", _rows)
+    monkeypatch.setattr(db_probes_module, "_fetch_probe_rows", _rows)
     task_description = _adapter_for(test_data_dir, _TASKS_GLOB).to_task_description(_PROBE_PACK)
     _register_pack(servicer, context, task_description, trial_id)
 
