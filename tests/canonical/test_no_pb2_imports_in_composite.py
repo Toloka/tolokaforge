@@ -4,18 +4,23 @@ The composite package is topology-neutral dispatch; it returns pure core
 types (``CheckResult``, ``StateChecksReadResult``, ``TraceChecksResult``,
 ``JudgeResult``, ``TranscriptEvaluationResult``). Wire encoding lives in
 :mod:`tolokaforge.runner.grading`; a direct ``runner_pb2`` import here
-would re-collapse the substrate seam ADR-0041 makes the boundary of.
+would re-collapse the substrate seam ADR-0040 makes the boundary of.
 
-Complements the ``.importlinter`` ``no-runner-reach-from-core-grading``
+Complements the ``.importlinter`` ``no-pb2-reach-from-core-grading``
 contract — the linter enforces module-level forbid rules across
 ``core.grading`` at package granularity (with ``allow_indirect_imports =
 true``); this test locks the composite package specifically, at
 unit-tier cost, so a regression trips at pytest collection even when
 ``lint-imports`` has not run. ``TYPE_CHECKING`` guards are walked
-separately: their bodies are type-only (never resolved at runtime), so
-``runner.models`` config types imported under ``TYPE_CHECKING`` remain
-permitted; a runtime import of ``runner_pb2`` / ``runner_pb2_grpc`` from
-any module in the package fails.
+separately: the body of ``if TYPE_CHECKING:`` is type-only (never
+resolved at runtime), so ``runner.models`` config types imported there
+remain permitted; the guard's ``else:`` branch DOES run at runtime and
+is walked normally. A runtime import of ``runner_pb2`` /
+``runner_pb2_grpc`` from any module in the package fails — including
+the historical ``from tolokaforge.runner import runner_pb2 as pb2``
+idiom the pre-split composite used, which the walker catches by
+emitting both ``X`` and the fully-qualified ``X.Y`` name for each
+``from X import Y`` alias.
 
 A companion assertion verifies the walker actually visited every module
 under ``composite/`` — a new module added to the package cannot bypass
@@ -68,25 +73,38 @@ def _is_type_checking_guard(test: ast.expr) -> bool:
 
 
 def _runtime_imports(module_source: str) -> list[tuple[str, int]]:
-    """Return every dotted module name imported OUTSIDE ``TYPE_CHECKING``.
+    """Return every dotted module name reachable OUTSIDE ``TYPE_CHECKING``.
 
     Walks the AST, skipping the body of any ``if TYPE_CHECKING:`` block —
     those imports never resolve at runtime and cannot re-collapse the
-    seam. Returns ``(module_name, lineno)`` pairs so a failure names the
-    exact site.
+    seam. The ``else:`` branch of such a guard runs at runtime, so its
+    statements are still processed. For each ``from X import Y``
+    statement the walker emits BOTH ``X`` and ``X.Y``: the
+    fully-qualified form is what catches the historical
+    ``from tolokaforge.runner import runner_pb2`` idiom (``child.module``
+    alone is only ``tolokaforge.runner``). Returns ``(module_name,
+    lineno)`` pairs so a failure names the exact site.
     """
     tree = ast.parse(module_source)
     imports: list[tuple[str, int]] = []
 
+    def _record(node: ast.AST) -> None:
+        if isinstance(node, ast.ImportFrom) and node.module is not None:
+            imports.append((node.module, node.lineno))
+            for alias in node.names:
+                imports.append((f"{node.module}.{alias.name}", node.lineno))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.append((alias.name, node.lineno))
+
     def _walk(node: ast.AST) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.If) and _is_type_checking_guard(child.test):
+                for else_stmt in child.orelse:
+                    _record(else_stmt)
+                    _walk(else_stmt)
                 continue
-            if isinstance(child, ast.ImportFrom) and child.module is not None:
-                imports.append((child.module, child.lineno))
-            elif isinstance(child, ast.Import):
-                for alias in child.names:
-                    imports.append((alias.name, child.lineno))
+            _record(child)
             _walk(child)
 
     _walk(tree)
@@ -124,7 +142,7 @@ def test_no_pb2_import_under_composite_at_runtime() -> None:
     The wire encoder lives runner-side
     (:func:`tolokaforge.runner.grading.project_check_result_to_runner_wire`);
     the composite returns pure core types. A runtime import of a pb2
-    module here re-collapses the substrate seam ADR-0041 makes the
+    module here re-collapses the substrate seam ADR-0040 makes the
     boundary of.
     """
     leaks: list[tuple[str, str, int]] = []

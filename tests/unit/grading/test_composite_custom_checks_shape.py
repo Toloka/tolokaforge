@@ -10,14 +10,14 @@ directly. These tests fence both surfaces at unit-tier cost:
   artifacts_dir / executor-raises / disabled) each assert the tuple's
   middle element is ``list[CheckResult]``, not a pb2 shape.
 - **Encoder byte-lock.** The reserved ``__executor__`` sentinel encodes
-  to the five pb2 field literals the pre-Stage-2 body of
-  ``_executor_error_to_wire`` produced — checked as hard-coded literals so
-  a future encoder edit trips the assertion.
+  to the five ``pb2.CustomCheckResult`` field literals — checked as
+  hard-coded literals so a future encoder edit trips the assertion in
+  place.
 - **Encoder details normalisation.** ``details`` payloads round-trip
   through ``json.dumps`` — an empty dict becomes empty-``details_json``,
   a primitive dict is JSON-encoded verbatim, a nested list is preserved,
-  and a tuple is normalised to a list (the sole subtle Python-type
-  divergence the pb2-drop plan calls out).
+  and a tuple is normalised to a list (the sole Python-type divergence
+  the encoder introduces; every shipped fixture is primitive-safe).
 """
 
 from __future__ import annotations
@@ -199,9 +199,9 @@ def test_custom_checks_disabled_returns_empty_result_tuple() -> None:
 def test_executor_error_sentinel_encoder_matches_hard_coded_wire_literals() -> None:
     """The reserved ``__executor__`` sentinel encodes to five pb2 field literals.
 
-    Hard-coded — not compared against any helper the pb2-drop stage removes.
-    Locks the encoder's byte-identical projection at unit-tier cost, before
-    the 10-pack canonical parity gate has a chance to run.
+    Hard-coded so a future encoder edit trips this assertion in place at
+    unit-tier cost, before the 10-pack canonical parity gate has a
+    chance to run.
     """
     sentinel = CheckResult(
         check_name=_CHECK_EXECUTOR_ERROR_NAME,
@@ -241,12 +241,12 @@ def test_details_encoder_normalisation_shapes(
     """``project_check_result_to_runner_wire`` details JSON contract.
 
     Locks: empty-dict → empty-``details_json``, primitive round-trip,
-    list round-trip, and — the sole subtle Python-type divergence the
-    pb2-drop plan calls out — tuple values normalise to lists via
-    ``json.dumps``. Every pre-Stage-2 fixture is primitive-safe; this
-    test names the tuple contract at unit-tier so a future fixture
-    author sees the constraint in the failing test rather than in a
-    mystery 10-pack red.
+    list round-trip, and — the sole Python-type divergence the encoder
+    introduces — tuple values normalise to lists via ``json.dumps``.
+    Every shipped fixture is primitive-safe; this test names the tuple
+    contract at unit-tier so a future fixture author sees the
+    constraint in the failing test rather than in a mystery 10-pack
+    red.
     """
     result = CheckResult(
         check_name="detail",

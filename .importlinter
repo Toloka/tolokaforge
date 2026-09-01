@@ -118,17 +118,16 @@ forbidden_modules =
 allow_indirect_imports = false
 
 
-# No runner-reach from core.grading (ADR-0041 north star).
+# No runner-reach from core.grading (ADR-0040 north star).
 #
 # ``core.grading`` owns the pure grading library the runner-side
 # GradeTrial and the standalone Grader v3 service both drive. A reach
 # back into the runner surface silently re-collapses the substrate seam
-# ADR-0041 makes the boundary of. Two runner targets are fenced here:
+# ADR-0040 makes the boundary of. Two runner targets are fenced here:
 # the runner's gRPC service module and the narrow ``runner.grading``
 # (state-diff + wire-sentinel projection + the ``CheckResult`` wire
-# encoder). ``runner.grading_ledger`` is not on the forbid list yet —
-# the composite still reaches LEDGER keys there; the forbid list
-# extends when that ledger extraction lands.
+# encoder). ``runner.grading_ledger`` is deliberately not fenced; the
+# composite reads LEDGER keys from it.
 # ``allow_indirect_imports = false`` is intentional: a transitive path
 # back into a forbidden target must trip the contract, not just a
 # direct import — a downstream cannot slip these targets in via a
@@ -144,7 +143,7 @@ forbidden_modules =
 allow_indirect_imports = false
 
 
-# No pb2 reach from core.grading (ADR-0041 north star, pb2 fence).
+# No pb2 reach from core.grading (ADR-0040 north star, pb2 fence).
 #
 # The generated ``runner_pb2`` / ``runner_pb2_grpc`` stubs are the wire
 # shape ``runner.service`` produces. A direct ``pb2`` import anywhere
