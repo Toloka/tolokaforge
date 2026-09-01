@@ -1,8 +1,9 @@
 """Reference impls of :class:`StateCheckBackend` — ``jsonpath`` + ``db_probes``.
 
 Registered under those two names in the ``tolokaforge.state_check_backends``
-entry-point group. Each wraps the corresponding
-:mod:`tolokaforge.runner.grading` evaluator and reshapes / bridges around it
+entry-point group. Each wraps the corresponding evaluator in
+:mod:`tolokaforge.core.grading.jsonpath_evaluators` /
+:mod:`tolokaforge.core.grading.db_probes` and reshapes / bridges around it
 so :func:`~tolokaforge.core.grading.composite.grade_state_checks_reads` can
 dispatch through the seam without importing either evaluator.
 
@@ -23,10 +24,11 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from tolokaforge.core.grading.db_probes import evaluate_db_probes
 from tolokaforge.core.grading.jsonpath_addressing import addresses_the_database
+from tolokaforge.core.grading.jsonpath_evaluators import evaluate_jsonpath_checks
 from tolokaforge.core.grading.state_check_backend import StateCheckBackend
 from tolokaforge.runner.db_client import TrialNotFoundError as DBTrialNotFoundError
-from tolokaforge.runner.grading import evaluate_db_probes, evaluate_jsonpath_checks
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.substrate import GradingSubstrate
@@ -49,17 +51,18 @@ class JsonpathStateCheckBackend:
     grading resolves against, so a run-scoped ``session_token`` never drags
     an author's ``$.db.users[0].session_token == 'S-1'``) and
     :meth:`substrate.filesystem_state` into the ``{db, tables, filesystem}``
-    shape :func:`evaluate_jsonpath_checks` addresses. Gates each read on the
-    expression: a path-glob-only pack fetches nothing; a DB-addressing pack
-    fetches only STABLE; a filesystem-only-``path:`` pack fetches only the
-    workspace walk.
+    shape :func:`~tolokaforge.core.grading.jsonpath_evaluators.evaluate_jsonpath_checks`
+    addresses. Gates each read on the expression: a path-glob-only pack fetches
+    nothing; a DB-addressing pack fetches only STABLE; a filesystem-only-``path:``
+    pack fetches only the workspace walk.
 
     A :class:`DBTrialNotFoundError` from the STABLE read is graceful
     degradation — filesystem-only tasks never call ``db_client.init_trial()``,
     so an absent DB is the expected shape for them, and DB-declared tasks
     whose ``$.db.*`` assertions cannot match still get the per-assertion
-    "Path not found" diagnosis from :func:`evaluate_jsonpath_checks` rather
-    than a blanket refusal.
+    "Path not found" diagnosis from
+    :func:`~tolokaforge.core.grading.jsonpath_evaluators.evaluate_jsonpath_checks`
+    rather than a blanket refusal.
     """
 
     def query(
@@ -104,12 +107,13 @@ class DbProbesStateCheckBackend:
     """Score ``db_probes`` by opening task-declared postgres connections.
 
     Each probe carries its own ``dsn`` and hits its task's postgres directly
-    via :func:`evaluate_db_probes`; the substrate does not intermediate — a
-    probe DSN resolves only inside the task's docker network, which is the
-    connection the probe itself opens. :meth:`query` is sync so the seam
-    matches the sync composite dispatch; the async evaluator runs under an
-    ephemeral :func:`asyncio.run` on the executor thread the runner already
-    parks the composite on via ``loop.run_in_executor(None, ...)``.
+    via :func:`~tolokaforge.core.grading.db_probes.evaluate_db_probes`; the
+    substrate does not intermediate — a probe DSN resolves only inside the
+    task's docker network, which is the connection the probe itself opens.
+    :meth:`query` is sync so the seam matches the sync composite dispatch;
+    the async evaluator runs under an ephemeral :func:`asyncio.run` on the
+    executor thread the runner already parks the composite on via
+    ``loop.run_in_executor(None, ...)``.
     """
 
     def query(

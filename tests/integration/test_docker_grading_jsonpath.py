@@ -7,7 +7,8 @@ DB state (``$.db.*``), not just ``path_glob:`` file checks. The flow under test 
     RegisterTrial (loads initial_state.tables into the DB service)
         -> GradeTrial RPC
             -> service fetches db_client.get_stable_state(trial_id)
-            -> grading.evaluate_jsonpath_checks routes path: -> state checks
+            -> core.grading.jsonpath_evaluators.evaluate_jsonpath_checks
+               routes path: -> state checks
             -> grade.reasons carries "State: PASS/FAIL ..." segments
 
 Unlike the unit tests in ``tests/unit/test_runner_jsonpath_grading.py`` (which call

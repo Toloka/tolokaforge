@@ -703,9 +703,11 @@ class ValuePredicate(BaseModel):
     """A conjunction of operators over one field of one event.
 
     Every declared operator must hold, so ``{gt: 0, lt: 100}`` is a range. This is
-    deliberately unlike ``evaluate_jsonpath_state_checks``, which rejects a second
-    operator: there two operators had no conjunctive reading, while here the range
-    is the common case and a misspelled operator is already a load error.
+    deliberately unlike
+    :func:`~tolokaforge.core.grading.jsonpath_evaluators.evaluate_jsonpath_state_checks`,
+    which rejects a second operator: there two operators had no conjunctive reading,
+    while here the range is the common case and a misspelled operator is already a
+    load error.
 
     An operator counts as declared when its value is not ``None``, so a predicate
     means the same thing after the gRPC round trip that dumps every unset field as

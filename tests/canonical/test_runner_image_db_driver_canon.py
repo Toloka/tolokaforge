@@ -4,11 +4,11 @@
 the runner image MUST ship that driver. Unit tests inject rows and never import
 asyncpg, and the end-to-end integration test auto-skips without Docker — so
 dropping a domain driver would otherwise fail silently at grade time. The lazy
-import (``runner/grading.py`` imports ``asyncpg`` only inside the grade call)
-also means the import-boundary subset test cannot see it. This canonical test
-is the ship-lock: it asserts every domain driver is declared in the runner
-image's dependency SSOT — ``[project.optional-dependencies].runner`` — so a
-driver can never silently leave the image.
+import (``core/grading/db_probes.py`` imports ``asyncpg`` only inside the
+grade call) also means the import-boundary subset test cannot see it. This
+canonical test is the ship-lock: it asserts every domain driver is declared
+in the runner image's dependency SSOT — ``[project.optional-dependencies].runner``
+— so a driver can never silently leave the image.
 """
 
 from __future__ import annotations

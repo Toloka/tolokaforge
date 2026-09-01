@@ -456,7 +456,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="StateChecksConfig.jsonpaths",
         runner_field="RunnerStateChecksConfig.jsonpath_checks",
         core_evaluator="tolokaforge.core.grading.state_checks.StateChecker.check_jsonpaths",
-        runner_evaluator="tolokaforge.runner.grading.evaluate_jsonpath_checks",
+        runner_evaluator="tolokaforge.core.grading.jsonpath_evaluators.evaluate_jsonpath_checks",
     ),
     GradingKey(
         author_key="state_checks.numeric_string_fields",
@@ -496,7 +496,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
         core_field="StateChecksConfig.db_probes",
         runner_field="RunnerStateChecksConfig.db_probes",
-        runner_evaluator="tolokaforge.runner.grading.evaluate_db_probes",
+        runner_evaluator="tolokaforge.core.grading.db_probes.evaluate_db_probes",
         enforcing_test=(
             "tests/integration/test_helpdesk_workflow_end_to_end.py"
             "::test_helpdesk_workflow_infrastructure_end_to_end"

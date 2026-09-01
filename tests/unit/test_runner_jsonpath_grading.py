@@ -1,4 +1,5 @@
-"""Tests for evaluate_jsonpath_file_checks in runner/grading.py.
+"""Tests for the JSONPath evaluators in core/grading/jsonpath_evaluators.py
+and the SQL-probe evaluator in core/grading/db_probes.py.
 
 The Runner-side jsonpath check evaluates state_checks.jsonpath_checks
 against files inside the runner container's /env/fs/agent-visible tree.
@@ -12,26 +13,26 @@ from pathlib import Path
 
 import pytest
 
+from tolokaforge.core.grading import db_probes as db_probes_module
 from tolokaforge.core.grading.composite_fold import (
     build_grade_reasons,
     combine_grade_components,
     resolve_state_checks_component,
 )
+from tolokaforge.core.grading.db_probes import evaluate_db_probes
 from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenActionFailure,
     GoldenReplayRecord,
 )
-from tolokaforge.core.grading.state_composition import (
-    CONFLICTING_STATE_SOURCES_MESSAGE,
-    INERT_HASH_WEIGHT_REASON,
-)
-from tolokaforge.runner import grading as grading_module
-from tolokaforge.runner.grading import (
-    evaluate_db_probes,
+from tolokaforge.core.grading.jsonpath_evaluators import (
     evaluate_jsonpath_checks,
     evaluate_jsonpath_file_checks,
     evaluate_jsonpath_state_checks,
+)
+from tolokaforge.core.grading.state_composition import (
+    CONFLICTING_STATE_SOURCES_MESSAGE,
+    INERT_HASH_WEIGHT_REASON,
 )
 
 pytestmark = pytest.mark.unit
@@ -149,7 +150,7 @@ def test_logical_agent_visible_path_translates_to_work(tmp_path: Path, monkeypat
             pattern = str(tmp_path / "work")
         return real_glob(pattern, *args, **kwargs)
 
-    monkeypatch.setattr("tolokaforge.runner.grading.glob.glob", patched_glob)
+    monkeypatch.setattr("tolokaforge.core.grading.jsonpath_evaluators.glob.glob", patched_glob)
 
     checks = [
         {
@@ -404,7 +405,7 @@ def _stub_rows(rows, monkeypatch):
     async def fake_fetch(dsn: str, query: str):
         return rows
 
-    monkeypatch.setattr(grading_module, "_fetch_probe_rows", fake_fetch)
+    monkeypatch.setattr(db_probes_module, "_fetch_probe_rows", fake_fetch)
 
 
 async def test_db_probes_empty_returns_sentinel():
@@ -465,7 +466,7 @@ async def test_db_probe_connection_error_fails_loud(monkeypatch):
     async def raising_fetch(dsn: str, query: str):
         raise ConnectionError("could not connect to app-db:5432")
 
-    monkeypatch.setattr(grading_module, "_fetch_probe_rows", raising_fetch)
+    monkeypatch.setattr(db_probes_module, "_fetch_probe_rows", raising_fetch)
     probes = [
         {
             "name": "ca_exists",

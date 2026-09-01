@@ -7,7 +7,8 @@ and asserts every leg produces the baseline byte-for-byte.
 
 Test tier: canonical. No live LLM key ever reaches the harness (the judge
 provider's :class:`LLMClient` is monkeypatched to a scripted stand-in), and
-no live postgres is ever dialled (the ``_fetch_probe_rows`` seam is
+no live postgres is ever dialled (the
+``tolokaforge.core.grading.db_probes._fetch_probe_rows`` seam is
 monkeypatched to serve pack-declared rows), so the lane stays keyless and
 network-free.
 

@@ -17,7 +17,7 @@ Pack layout on disk (per pack directory):
 * ``parity.yaml`` — accepted divergences declaration, optional ``judge_script``
   (scripted GenerationResult sequence for packs exercising ``llm_judge``),
   optional ``db_probe_rows`` mapping (deterministic rows the harness serves
-  from :func:`tolokaforge.runner.grading._fetch_probe_rows` for packs
+  from :func:`tolokaforge.core.grading.db_probes._fetch_probe_rows` for packs
   exercising ``state_checks.db_probes``), optional refusal-mode contract.
 * ``expected_grade.json`` — the committed baseline; rewritten in place by
   the canonical test when it runs under ``--refresh-baselines``.
@@ -46,6 +46,7 @@ import pytest
 import yaml
 from google.protobuf import json_format
 
+from tolokaforge.core.grading import db_probes as db_probes_module
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import StructuredLogger
@@ -59,7 +60,6 @@ from tolokaforge.runner import (
     add_SubstrateServiceServicer_to_server,
     runner_pb2,
 )
-from tolokaforge.runner import grading as runner_grading
 from tolokaforge.runner.models import (
     ResetTrialResponse,
     RestoreSnapshotResponse,
@@ -115,7 +115,7 @@ class ParityPack:
       under ``refusal_mode``; empty otherwise.
     * ``db_probe_rows`` — deterministic rows served to a pack's
       ``state_checks.db_probes`` seam, keyed by probe name. Each list is
-      the rows :func:`tolokaforge.runner.grading._fetch_probe_rows` returns
+      the rows :func:`tolokaforge.core.grading.db_probes._fetch_probe_rows` returns
       when the probe of that name runs; both legs draw from the same
       mapping. Empty for packs that declare no ``db_probes`` block, which
       is every non-``db_probes`` pack.
@@ -456,7 +456,7 @@ def _install_db_probe_rows(
     monkeypatch: pytest.MonkeyPatch,
     pack: ParityPack,
 ) -> None:
-    """Route :func:`tolokaforge.runner.grading._fetch_probe_rows` to
+    """Route :func:`tolokaforge.core.grading.db_probes._fetch_probe_rows` to
     pack-declared row sets instead of opening a live postgres connection.
 
     Both legs' ``state_check_backends["db_probes"]`` is
@@ -496,7 +496,7 @@ def _install_db_probe_rows(
                 "issued a query the pack did not declare"
             ) from exc
 
-    monkeypatch.setattr(runner_grading, "_fetch_probe_rows", fake_fetch)
+    monkeypatch.setattr(db_probes_module, "_fetch_probe_rows", fake_fetch)
 
 
 def _build_grade_dispatch(pack: ParityPack, *, substrate_address: str) -> GradeDispatch:
