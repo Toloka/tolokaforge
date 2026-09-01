@@ -517,19 +517,19 @@ class SubstrateServiceServicer:
         """Read one file under the trial's AGENT_WORK_DIR (path relative). Returns
         exists=false for a missing / non-file / symlink path; is_file=true with
         content_utf8 for text; is_file=true with content_bytes_b64 (base64) for
-        any file that fails UTF-8 decode. Mirrors the same filter
-        _read_agent_visible_filesystem applies today.
+        any file that fails UTF-8 decode. Same filter and exclusion policy as
+        tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem.
+        Refuses reads under any AGENT_VISIBLE_EXCLUDES directory.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
 
     def ListFilesystemDir(self, request, context):
-        """List the trial's agent-visible workspace: relative POSIX paths of every
-        non-symlink UTF-8-decodable file under AGENT_WORK_DIR. Same filter
-        _read_agent_visible_filesystem ships today — no path-component excluder
-        for node_modules / .venv / .git; a coding-harness workspace carries
-        those trees on the wire.
+        """List rel-paths of every non-symlink UTF-8-decodable file under
+        AGENT_WORK_DIR. Same filter and exclusion policy as
+        tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem.
+        Rel-paths returned in alphabetically-sorted order.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("Method not implemented!")

@@ -173,8 +173,11 @@ class GradingSubstrate(Protocol):
         The shape jsonpath grading resolves ``$.filesystem['/env/fs/agent-
         visible/<rel>']`` against — every non-symlink UTF-8-decodable file
         below the agent-visible root, keyed by its logical path. Binary
-        files and symlinks are skipped, matching the runner's shipped
-        ``_read_agent_visible_filesystem`` filter.
+        files, symlinks, and files under any
+        :data:`~tolokaforge.core.grading.filesystem_view.AGENT_VISIBLE_EXCLUDES`
+        subtree are skipped, matching the
+        :func:`~tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`
+        filter.
 
         ``None`` — first-class "the trial declared no filesystem surface" —
         is distinct from ``{}`` (a workspace root that exists but holds no
@@ -337,9 +340,11 @@ class SnapshotGradingSubstrate:
     (Harbor pattern)". Ship when offline replay / cross-region grading is a
     hard requirement (grader outlives the runner, or lives in a different
     network region). Filesystem cap policy + auto-fallback to live-callback
-    is part of the recipe — the runner's ``_read_agent_visible_filesystem``
-    already filters ``node_modules`` / ``.venv`` / ``.git``, so the wire
-    payload is bounded for most tolokaforge tasks.
+    is part of the recipe — the shipped agent-visible walk names its
+    exclusion set on
+    :data:`~tolokaforge.core.grading.filesystem_view.AGENT_VISIBLE_EXCLUDES`
+    (``.git`` / ``.venv`` / ``node_modules`` / ``dist`` / ``.next``), so the
+    wire payload is bounded for most tolokaforge tasks.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ARG002

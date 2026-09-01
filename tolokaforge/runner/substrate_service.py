@@ -25,6 +25,10 @@ from typing import TYPE_CHECKING
 
 import grpc
 
+from tolokaforge.core.grading.filesystem_view import (
+    is_excluded_rel_path,
+    iter_agent_visible_rel_paths,
+)
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc as pb2_grpc
 from tolokaforge.runner.db_client import (
@@ -120,6 +124,8 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         request: pb2.ReadFilesystemPathRequest,
         context: grpc.ServicerContext,
     ) -> pb2.ReadFilesystemPathResponse:
+        if request.path and is_excluded_rel_path(request.path):
+            return pb2.ReadFilesystemPathResponse(exists=False)
         root = self._workspace_root()
         target = (root / request.path).resolve() if request.path else root
         # Refuse a path that escapes the workspace root — a defensive check
@@ -156,28 +162,7 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         request: pb2.ListFilesystemDirRequest,
         context: grpc.ServicerContext,
     ) -> pb2.ListFilesystemDirResponse:
-        # Same filter _read_agent_visible_filesystem ships today: skip
-        # symlinks, non-files, and files that refuse UTF-8 decode. No
-        # path-component excluder for node_modules / .venv / .git — a
-        # coding-harness workspace carries those trees on the wire, matching
-        # the shipped runner behaviour byte-for-byte.
-        rel_paths: list[str] = []
-        root = self._workspace_root()
-        if not root.is_dir():
-            return pb2.ListFilesystemDirResponse()
-        for path in root.rglob("*"):
-            if path.is_symlink() or not path.is_file():
-                continue
-            try:
-                path.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                continue
-            except OSError as exc:
-                logger.warning(
-                    "SubstrateService.ListFilesystemDir: could not read %s: %s", path, exc
-                )
-                continue
-            rel_paths.append(path.relative_to(root).as_posix())
+        rel_paths = sorted(iter_agent_visible_rel_paths(self._workspace_root()))
         return pb2.ListFilesystemDirResponse(rel_paths=rel_paths)
 
     # ------------------------------------------------------------------

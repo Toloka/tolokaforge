@@ -2718,7 +2718,8 @@ def test_a_source_less_hash_block_on_a_task_that_seeds_nothing_is_refused_by_nam
 def test_a_filesystem_rooted_path_is_graded_not_refused(runner_service, mock_grpc_context):
     """The runner grades a ``$.filesystem[…]``-rooted path against the
     agent-visible filesystem — the state
-    :meth:`RunnerServiceImpl._read_agent_visible_filesystem` composes.
+    :func:`tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`
+    composes.
 
     The pre-existing refusal at ``_unreachable_state_checks_refusal`` classified
     every filesystem-rooted path as unreachable and led ``GradeTrial`` to answer

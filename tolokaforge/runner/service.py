@@ -41,6 +41,7 @@ from tolokaforge.core.grading.check_runner import (
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.grading.checks_interface import CustomChecksConfig
 from tolokaforge.core.grading.composite_fold import CompositeFold
+from tolokaforge.core.grading.filesystem_view import read_agent_visible_filesystem
 from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenReplayRecord,
@@ -389,7 +390,8 @@ def _unreachable_state_checks_refusal(
             continue
         # Only ``BEYOND_THE_RUNNERS_STATE`` (``agent`` / ``user`` /
         # ``mock_web_url`` / ``rag_corpus_dir``) reaches here. ``FILESYSTEM``
-        # is graded by the runner via ``_read_agent_visible_filesystem`` and
+        # is graded by the runner via
+        # ``filesystem_view.read_agent_visible_filesystem`` and
         # ``TRIAL_DATABASE`` returns ``None`` from :func:`unreachable_target`.
         described = assertion.get("description")
         return (
@@ -1606,7 +1608,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         Filesystem reads are harness-aware: a trial whose adapter emitted
         ``agent_harness_command`` + ``agent_visible_dir`` gets its tree
         snapshotted from inside its own container via the exec-wrapper;
-        every other trial reads back the runner's own ``AGENT_WORK_DIR``.
+        every other trial reads back the runner's own ``AGENT_WORK_DIR``
+        via :func:`~tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`.
         """
         loop = self._loop
         db_client = self.db_client
@@ -1668,34 +1671,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     f"GradeTrial: {trial_id} - harness trial has no exec-capable tool; "
                     "falling back to the runner's own /work/ walk"
                 )
-        return self._read_agent_visible_filesystem()
-
-    def _read_agent_visible_filesystem(self) -> dict[str, str]:
-        # Inverse of the RegisterTrial provisioner's
-        # ``/env/fs/agent-visible/<rel>`` → ``/work/<rel>`` block: expose each
-        # file back at its logical path so
-        # ``$.filesystem['/env/fs/agent-visible/<rel>']`` resolves. Binary
-        # files are skipped — ``contains:``/``equals:`` operators can only
-        # match text. Symlinks are skipped too: the assertion vocabulary was
-        # not designed to expose arbitrary container-readable paths reachable
-        # via a link the agent dropped in ``/work/``.
-        root = Path(AGENT_WORK_DIR)
-        fs: dict[str, str] = {}
-        if not root.is_dir():
-            return fs
-        for path in root.rglob("*"):
-            if path.is_symlink() or not path.is_file():
-                continue
-            try:
-                content = path.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                continue
-            except OSError as exc:
-                logger.warning(f"GradeTrial: could not read {path} for jsonpath state: {exc}")
-                continue
-            rel = path.relative_to(root)
-            fs[f"/env/fs/agent-visible/{rel.as_posix()}"] = content
-        return fs
+        return read_agent_visible_filesystem(Path(AGENT_WORK_DIR))
 
     async def _grade_trial_async(self, request: pb2.GradeTrialRequest) -> pb2.GradeTrialResponse:
         """

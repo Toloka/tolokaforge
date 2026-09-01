@@ -1342,6 +1342,15 @@ has the answer `1.0`, and that fraction of nothing never becomes a component sco
   (one whose `initial_state` declares no `tables`) still grades, and a
   `$.filesystem['/env/fs/agent-visible/<rel>']` assertion resolves to the
   file's current on-disk content.
+
+  `tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`
+  is the single source of truth for the walk contract: symlinks and
+  non-UTF-8-decodable files are skipped, and the five directory basenames
+  named on `AGENT_VISIBLE_EXCLUDES` (`.git`, `.venv`, `node_modules`,
+  `dist`, `.next`) prune subtrees at any depth. A file whose parent path
+  passes through one of those names is not addressable via
+  `$.filesystem['/env/fs/agent-visible/<rel>']`; a task that wants to grade
+  such a file names it under a differently-named directory.
 - **both**: `jsonpath_score × (1 − weight) + hash_score × weight`.
 - **neither** — an empty `jsonpaths` list with hash grading off, or on and unable
   to produce a verdict: the component is **not evaluated**. It is absent from the

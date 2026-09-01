@@ -134,13 +134,15 @@ service SubstrateService {
   // reads STABLE.
   rpc ReadFinalDBStateStable(ReadFinalDBStateStableRequest) returns (ReadStateResponse);
 
-  // One file under AGENT_WORK_DIR. Symlinks / non-files / missing paths
-  // return exists=false.
+  // One file under AGENT_WORK_DIR. Same filter and exclusion policy as
+  // tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem;
+  // refuses reads under any AGENT_VISIBLE_EXCLUDES directory. Symlinks /
+  // non-files / missing paths return exists=false.
   rpc ReadFilesystemPath(ReadFilesystemPathRequest) returns (ReadFilesystemPathResponse);
 
   // Relative POSIX paths of every non-symlink UTF-8-decodable file under
-  // AGENT_WORK_DIR. Same filter _read_agent_visible_filesystem ships
-  // today — no path-component excluder.
+  // AGENT_WORK_DIR, alphabetically sorted. Same filter and exclusion policy
+  // as tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem.
   rpc ListFilesystemDir(ListFilesystemDirRequest) returns (ListFilesystemDirResponse);
 
   // Trial's per-trial KB. kb_available=false is a first-class "no KB
