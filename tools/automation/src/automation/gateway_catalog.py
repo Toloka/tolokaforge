@@ -17,9 +17,10 @@ Which name reaches the gateway
 The engine resolves the gateway's route name from this same catalog and addresses
 the gateway by it, trying ``openrouter/<slug>`` and then the bare ``<slug>``
 (``tolokaforge.core.llm.gateway_route``). So both shapes are reachable and this
-lookup checks both, in the same order. The wildcard that counts is still one
-covering the slug's own namespace (``x-ai/*``), because a wildcard says the
-gateway will forward the request, not that the model exists behind it.
+lookup checks both, in the same order - for wildcards too: an ``openrouter/*``
+passthrough covers the prefixed candidate and a vendor wildcard (``x-ai/*``)
+covers the bare one. A wildcard still only says the gateway will forward the
+request, not that the model exists behind it.
 
 An exact entry and a wildcard are **not** equally strong evidence, so they are
 reported separately: an exact entry means someone configured this model; a

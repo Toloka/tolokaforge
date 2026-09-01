@@ -575,7 +575,9 @@ first-class fields; a `provider_raw` dump of the litellm usage block is
 included for forensics. Each LLM API call is also recorded in
 `usage.calls[]` as a `ProviderRawCall` carrying its per-call tokens,
 `cost_usd`, `cost_source` (`"litellm"` / `"local"` / `"unknown"`),
-`latency_s`, and `openrouter_generation_id` — the trial-level `cost_usd` is the
+`latency_s`, `gateway_route` + `gateway_route_kind` (`"exact"` / `"wildcard"`,
+the serving-path provenance when the call went through an LLM gateway, else
+null), and `openrouter_generation_id` — the trial-level `cost_usd` is the
 sum of those entries.
 
 `openrouter_generation_ids` lists every OpenRouter generation id the trial's
@@ -628,6 +630,8 @@ usage:
       cost_usd: 0.00912
       cost_source: litellm
       latency_s: 1.23
+      gateway_route: openrouter/anthropic/claude-sonnet-4.6
+      gateway_route_kind: exact
       openrouter_generation_id: gen-1787132417-e6DthuPJjrFMFf46ae5F
 openrouter_generation_ids:   # one per OpenRouter-served call, in call order
   - gen-1787132417-e6DthuPJjrFMFf46ae5F

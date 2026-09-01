@@ -16,7 +16,7 @@ installs a SecretManager that overrides that name for the test's duration, so a
 CI budget for integration tests stays separate from a deployment's production
 gateway budget, and a local ``.env`` cannot accidentally charge the wrong key.
 
-Two calls reach the network, each capped at a few dozen output tokens.
+Three calls reach the network (the pinned-upstream check is opt-in), each capped at a few dozen output tokens.
 
 Environment contract
 --------------------
@@ -64,7 +64,10 @@ from tolokaforge.core.llm.proxy import (
     ENV_API_KEY,
     ENV_BASE_URL,
     ENV_HEADERS,
+    ENV_PREFERRED_ROUTE,
+    ENV_PROVIDERS,
     ENV_REQUEST_ID_HEADER,
+    ENV_TRUST_WILDCARDS,
 )
 from tolokaforge.core.llm.reasoning import ReasoningConfig
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
@@ -154,7 +157,13 @@ def gateway_client(gateway_key: str) -> Iterator[LLMClient]:
     # Override the gateway credential so this run bills to the test budget even
     # when a production LLM_PROXY_API_KEY is present in .env or the environment.
     secrets: dict[str, str] = {ENV_BASE_URL: base_url, ENV_API_KEY: gateway_key}
-    for passthrough in (ENV_HEADERS, ENV_REQUEST_ID_HEADER):
+    for passthrough in (
+        ENV_HEADERS,
+        ENV_REQUEST_ID_HEADER,
+        ENV_PROVIDERS,
+        ENV_PREFERRED_ROUTE,
+        ENV_TRUST_WILDCARDS,
+    ):
         value = _secret(passthrough)
         if value:
             secrets[passthrough] = value
@@ -281,7 +290,11 @@ def test_pinned_provider_reaches_the_upstream(gateway_key: str) -> None:
         )
     openrouter_key = _secret("OPENROUTER_API_KEY")
     if not openrouter_key:
-        pytest.skip("OPENROUTER_API_KEY not set - the /generation lookup needs it.")
+        pytest.fail(
+            f"{ENV_TEST_PINNED_MODEL} is set but OPENROUTER_API_KEY is not - the "
+            "/generation lookup needs it. Unset the pinned-model envs to disable "
+            "this test deliberately."
+        )
 
     base_url = _secret(ENV_TEST_BASE_URL) or _secret(ENV_BASE_URL)
     if not base_url:
@@ -291,7 +304,13 @@ def test_pinned_provider_reaches_the_upstream(gateway_key: str) -> None:
         )
 
     secrets: dict[str, str] = {ENV_BASE_URL: base_url, ENV_API_KEY: gateway_key}
-    for passthrough in (ENV_HEADERS, ENV_REQUEST_ID_HEADER):
+    for passthrough in (
+        ENV_HEADERS,
+        ENV_REQUEST_ID_HEADER,
+        ENV_PROVIDERS,
+        ENV_PREFERRED_ROUTE,
+        ENV_TRUST_WILDCARDS,
+    ):
         value = _secret(passthrough)
         if value:
             secrets[passthrough] = value

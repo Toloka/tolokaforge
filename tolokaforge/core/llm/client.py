@@ -1867,12 +1867,16 @@ class LLMClient:
                 extra_body = kwargs.get("extra_body")
                 if isinstance(extra_body, dict) and "provider" in extra_body:
                     extra_body.pop("provider")
-                    self.logger.warning(
-                        "Dropping the OpenRouter provider pin: the gateway route "
-                        "targets another namespace, whose upstream rejects it",
-                        route=wire_model,
-                        provider=self.provider,
-                    )
+                    if not getattr(self, "_pin_drop_warned", False):
+                        # Once per client, not per call: a full eval makes
+                        # thousands of calls and the fact does not change.
+                        self._pin_drop_warned = True
+                        self.logger.warning(
+                            "Dropping the OpenRouter provider pin: the gateway route "
+                            "targets another namespace, whose upstream rejects it",
+                            route=wire_model,
+                            provider=self.provider,
+                        )
                     if not extra_body:
                         kwargs.pop("extra_body")
             kwargs["api_base"] = self._proxy.base_url
@@ -2204,7 +2208,9 @@ class LLMClient:
             latency_s=latency_s,
             cost_usd=cost_usd,
             cost_source=cost_source,
-            gateway_route=self._gateway_route,
+            # Plain str on purpose: the artifact carries data, not the resolver's
+            # str subclass (asdict deepcopies every call record).
+            gateway_route=str(self._gateway_route) if self._gateway_route is not None else None,
             gateway_route_kind=self._gateway_route_kind,
         )
 

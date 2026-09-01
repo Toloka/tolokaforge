@@ -180,3 +180,36 @@ class TestUnreadableIsNotAbsent:
     def test_an_empty_catalog_is_treated_as_no_information(self) -> None:
         """A gateway that answers with zero models is broken, not authoritative."""
         assert resolve_gateway_route("openrouter/x/y", frozenset()) is None
+
+
+class TestResolvedRouteSurvivesCopying:
+    """The route rides inside ProviderRawCall records, and dataclasses.asdict
+    DEEPCOPIES every one of them on the way into metrics.yaml - so a str
+    subclass that cannot reconstruct itself kills every routed run at the
+    first artifact write, whatever the wildcard flag says."""
+
+    def test_deepcopy_and_pickle_round_trip(self) -> None:
+        import copy
+        import pickle
+
+        from tolokaforge.core.llm.gateway_route import ResolvedGatewayRoute
+
+        route = ResolvedGatewayRoute("openrouter/minimax/minimax-m3", kind="wildcard")
+        for clone in (copy.copy(route), copy.deepcopy(route), pickle.loads(pickle.dumps(route))):
+            assert clone == "openrouter/minimax/minimax-m3"
+            assert clone.kind == "wildcard"
+
+    def test_a_call_record_carrying_a_route_serializes(self) -> None:
+        import dataclasses
+
+        from tolokaforge.core.llm.gateway_route import ResolvedGatewayRoute
+        from tolokaforge.core.llm.usage import ProviderRawCall
+
+        call = ProviderRawCall(
+            prompt_tokens=1,
+            completion_tokens=1,
+            gateway_route=ResolvedGatewayRoute("openrouter/x", kind="exact"),
+            gateway_route_kind="exact",
+        )
+        dumped = dataclasses.asdict(call)
+        assert dumped["gateway_route"] == "openrouter/x"

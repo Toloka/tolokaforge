@@ -1189,10 +1189,14 @@ credential is present**, so a checkout without the secret is quiet:
 | `LLM_PROXY_INT_TEST_MODEL` | no | The model name **as the gateway routes it**. Required rather than defaulted: a wrong guess would exercise the gateway's fallback behaviour instead of this transport. Plain config — belongs in a workflow's `env:`. |
 | `LLM_PROXY_INT_TEST_BASE_URL` | depends | Gateway base URL; falls back to `LLM_PROXY_BASE_URL`. Keep it out of a public workflow file if the hostname is internal. |
 | `LLM_PROXY_INT_TEST_PROVIDER` | no | Optional, default `openai` — see the model-naming section above. |
+| `LLM_PROXY_INT_TEST_PINNED_MODEL` | no | Optional opt-in for the pinned-upstream check: an OpenRouter-namespace slug (`nvidia/nemotron-3-super-120b-a12b`). Both pinned vars must be set together. |
+| `LLM_PROXY_INT_TEST_PINNED_PROVIDER` | no | The exact OpenRouter provider name expected to serve the pinned call (`Together`). Needs `OPENROUTER_API_KEY` for the retroactive `/generation` lookup. |
 
-Three tests: one asserts the transport is applied and billed to the test key
+Four tests: one asserts the transport is applied and billed to the test key
 without spending, two make one small call each (a completion and a tool call,
-capped at 256 output tokens).
+capped at 256 output tokens), and the opt-in pinned-upstream check makes one
+provider-pinned call and verifies the actually-serving upstream through
+OpenRouter's `/generation` endpoint.
 
 **The gating is asymmetric on purpose.** No credential → skip, quietly, which is
 the state of any checkout without the secret. Credential present but a companion

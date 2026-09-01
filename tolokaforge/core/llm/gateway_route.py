@@ -58,6 +58,13 @@ class ResolvedGatewayRoute(str):
         route.kind = kind
         return route
 
+    def __getnewargs__(self) -> tuple[str, str]:
+        # str.__getnewargs__ returns only the string value, so copy.copy,
+        # copy.deepcopy and pickle would reconstruct with a missing ``kind``
+        # and die - and dataclasses.asdict deepcopies every ProviderRawCall
+        # on its way into metrics.yaml, which is every routed call's path.
+        return (str(self), self.kind)
+
 
 class GatewayRouteError(Exception):
     """The gateway serves this model under more than one name and none was chosen."""
