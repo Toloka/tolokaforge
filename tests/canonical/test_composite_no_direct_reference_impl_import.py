@@ -13,8 +13,8 @@ holdings the composite is fenced from: :class:`LLMJudge`, :class:`LLMClient`,
 :class:`DefaultTranscriptRuleMatcher`, and the two state-check backends
 :class:`JsonpathStateCheckBackend` + :class:`DbProbesStateCheckBackend`.
 The underlying utility functions those reference impls wrap
-(:func:`evaluate_transcript_rules`, :func:`evaluate_jsonpath_checks`,
-:func:`evaluate_db_probes`) are forbidden by name for the same reason.
+(:func:`evaluate_transcript_rules`, :func:`evaluate_jsonpath_checks`) are
+forbidden by name for the same reason.
 Utility symbols the composite legitimately reuses —
 :func:`scored_transcript_rules` (events-less-trial gate),
 :func:`transcript_rules_author_keys` (accounting),
@@ -117,7 +117,6 @@ def test_composite_does_not_import_any_reference_impl_symbol() -> None:
         # Underlying utility functions each reference impl wraps
         "evaluate_transcript_rules",
         "evaluate_jsonpath_checks",
-        "evaluate_db_probes",
     }
     leaked = forbidden & imported_symbol_names
     assert not leaked, (

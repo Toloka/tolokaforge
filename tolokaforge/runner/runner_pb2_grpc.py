@@ -555,12 +555,11 @@ class SubstrateServiceServicer:
         """Run a task-declared read-only SQL probe against the DSN in the runner
         container's network context. dsn + query are AUTHOR-DECLARED — the
         runner does not validate SQL shape; a probe query that mutates state
-        is a pack authoring mistake, symmetric with the in-process
-        evaluate_db_probes semantics before the substrate rewire. Returns
-        rows encoded as a JSON array of objects; asyncpg-native scalars
-        (datetime / Decimal / UUID / bytes) are coerced via json.dumps
-        default=str, matching how ReadStateResponse.state_json handles the
-        same types for DB state reads.
+        is a pack authoring mistake. Returns rows encoded as a JSON array of
+        objects; asyncpg-native scalars (datetime / Decimal / UUID / bytes)
+        are coerced via json.dumps default=str, matching how
+        ReadStateResponse.state_json handles the same types for DB state
+        reads.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("Method not implemented!")

@@ -439,8 +439,9 @@ is enabled with a source, is refused at load on both substrates, because those s
 score the same component and one of the two verdicts would be discarded with nothing
 saying which. The block on its own is admitted because a probe is a **real**
 source. It is only not a source *core* can read: `state_checks.db_probes` is
-`RUNNER_ONLY` in the substrate-parity manifest, evaluated by `evaluate_db_probes`,
-because the probe DSN resolves only inside the task's docker network. So core leaves
+`RUNNER_ONLY` in the substrate-parity manifest, evaluated by the `db_probes` state-check
+backend through the substrate accessor `db_probe(dsn, query)`, because the probe DSN
+resolves only inside the task's docker network. So core leaves
 `state_checks` unevaluated on such a pack and folds the components that were actually
 decided — failing the trial, with a reason naming what produced no verdict, when
 there are none. Probes assert something; just not on the substrate that

@@ -79,23 +79,25 @@ def test_slim_runner_image_omits_docker_cli_by_default(runner_image_id: str) -> 
 
 
 def test_slim_runner_image_domain_db_probe_functions(runner_image_id: str) -> None:
-    """The domain DB stack functions in-container: ``evaluate_db_probes`` runs
-    its lazy ``import asyncpg`` and reaches a real connection attempt.
+    """The domain DB driver functions in-container: :func:`_fetch_probe_rows`
+    runs its lazy ``import asyncpg`` and reaches a real connection attempt.
 
-    Points a probe at an unreachable DSN and asserts the runner reports a
+    Points the helper at an unreachable DSN and asserts asyncpg surfaces a
     connection failure — not a ``ModuleNotFoundError``. The distinction is the
-    lock: if asyncpg were missing from the slim image the probe would raise an
-    import error; instead it drives the driver far enough to fail on the network,
-    proving the domain driver ships and functions (the functional companion to
-    the Stage-2 canonical declaration lock).
+    lock: if asyncpg were missing from the slim image the helper would raise
+    an import error; instead it drives the driver far enough to fail on the
+    network, proving the domain driver ships and functions (the functional
+    companion to the canonical driver-declaration lock at
+    ``tests/canonical/test_runner_image_db_driver_canon.py``).
     """
     probe_script = (
         "import asyncio, json\n"
-        "from tolokaforge.core.grading.db_probes import evaluate_db_probes\n"
-        "probe = {'name': 'p', 'dsn': 'postgresql://u:p@127.0.0.1:1/db',"
-        " 'query': 'SELECT 1', 'expect': []}\n"
-        "score, reasons = asyncio.run(evaluate_db_probes([probe]))\n"
-        "print(json.dumps({'score': score, 'reasons': reasons}))\n"
+        "from tolokaforge.core.grading.db_probes import _fetch_probe_rows\n"
+        "try:\n"
+        "    asyncio.run(_fetch_probe_rows('postgresql://u:p@127.0.0.1:1/db', 'SELECT 1'))\n"
+        "    print(json.dumps({'reasons': 'unexpected connect success'}))\n"
+        "except Exception as exc:\n"
+        "    print(json.dumps({'reasons': f'{type(exc).__name__}: {exc}'}))\n"
     )
     result = subprocess.run(
         ["docker", "run", "--rm", "--entrypoint", "python", runner_image_id, "-c", probe_script],
@@ -104,10 +106,11 @@ def test_slim_runner_image_domain_db_probe_functions(runner_image_id: str) -> No
     )
     assert result.returncode == 0, f"db-probe probe failed:\n{result.stderr}"
     payload = json.loads(result.stdout.strip().splitlines()[-1])
-    assert payload["score"] == 0.0, payload
-    assert "could not query postgres" in payload["reasons"], payload
-    assert "ModuleNotFoundError" not in payload["reasons"], payload
-    assert "No module named" not in payload["reasons"], payload
+    reasons = payload["reasons"]
+    assert "ModuleNotFoundError" not in reasons, payload
+    assert "No module named" not in reasons, payload
+    connect_tokens = ("ConnectionRefused", "ConnectionError", "OSError")
+    assert any(token in reasons for token in connect_tokens), payload
 
 
 def test_slim_runner_image_serves_grpc(runner_container) -> None:

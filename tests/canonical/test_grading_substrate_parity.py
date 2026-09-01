@@ -113,7 +113,6 @@ carries that call's own result text — is locked at the end of this module.
 """
 
 import ast
-import asyncio
 import importlib
 import json
 import re
@@ -157,7 +156,7 @@ from tolokaforge.core.grading.composite_fold import (
     combine_grade_components,
     resolve_state_checks_component,
 )
-from tolokaforge.core.grading.db_probes import evaluate_db_probes
+from tolokaforge.core.grading.default_state_check_backends import DbProbesStateCheckBackend
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord, resolve_initial_state
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.jsonpath_evaluators import evaluate_jsonpath_checks
@@ -3012,27 +3011,39 @@ def test_an_empty_assertion_list_is_unscored_on_both_substrates(declared, test_d
     )
 
 
-def _probe_component(
-    probes: list[dict[str, Any]], rows: list[dict[str, Any]], monkeypatch
-) -> float | None:
-    """The runner's ``state_checks`` slot from its real probe evaluator over ``rows``.
+class _FakeProbeSubstrate:
+    """Minimal :class:`GradingSubstrate` stand-in for ``_probe_component``.
 
-    ``rows`` stands in for the postgres the probe queries, at the seam
-    ``_fetch_probe_rows`` exists to provide — the DSN resolves only inside the task's
-    docker network, which is why the manifest enforces this key at the integration
-    tier. The probe's own ``expect`` assertions and the fold that reads the score are
-    the real ones.
+    Only :meth:`db_probe` is reached — ``DbProbesStateCheckBackend.query``
+    calls the accessor once per probe with the ``(dsn, query)`` pair the
+    pack declares. Returns the same scripted rows for every call.
     """
 
-    async def _rows(dsn: str, query: str) -> list[dict[str, Any]]:
-        return rows
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
 
-    monkeypatch.setattr(db_probes_module, "_fetch_probe_rows", _rows)
-    probe_score, _ = asyncio.run(evaluate_db_probes(probes))
+    def db_probe(self, dsn: str, query: str) -> list[dict[str, Any]]:  # noqa: ARG002
+        return list(self._rows)
+
+
+def _probe_component(probes: list[dict[str, Any]], rows: list[dict[str, Any]]) -> float | None:
+    """The runner's ``state_checks`` slot from the ``db_probes`` backend over ``rows``.
+
+    ``rows`` stands in for the postgres the probe queries, at the seam
+    :meth:`~tolokaforge.core.grading.substrate.GradingSubstrate.db_probe`
+    exposes — the DSN resolves only inside the task's docker network, which is
+    why the manifest enforces this key at the integration tier. The probe's own
+    ``expect`` assertions and the fold that reads the score are the real ones.
+    """
+    substrate = _FakeProbeSubstrate(rows)
+    probe_score, _ = DbProbesStateCheckBackend().query(
+        expression=probes,
+        substrate=substrate,  # type: ignore[arg-type]
+    )
     return resolve_state_checks_component(
         hash_score=-1.0,
         jsonpath_score=-1.0,
-        db_probe_score=probe_score,
+        db_probe_score=probe_score if probe_score is not None else -1.0,
         hash_weight=None,
     ).component
 
@@ -3045,7 +3056,7 @@ def _probe_component(
     ],
 )
 def test_a_probe_only_pack_is_unscored_core_side_and_scored_by_the_runner(
-    rows, expected, test_data_dir, monkeypatch
+    rows, expected, test_data_dir
 ):
     """The one asymmetry this presence rule is allowed to have, asserted not assumed.
 
@@ -3076,7 +3087,7 @@ def test_a_probe_only_pack_is_unscored_core_side_and_scored_by_the_runner(
         f"core scored state_checks {core!r} on a pack whose only state source it cannot "
         "read, so the number can only have come from the empty assertion list beside it"
     )
-    assert _probe_component(probes, rows, monkeypatch) == pytest.approx(expected)
+    assert _probe_component(probes, rows) == pytest.approx(expected)
 
 
 # --------------------------------------------------------------------------
