@@ -413,6 +413,7 @@ exclude = [
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/config_validation.py",
     "tolokaforge/core/grading/corpus_curation.py",
+    "tolokaforge/core/grading/judge_only_helpers.py",
     "tolokaforge/core/grading/migration_declaration.py",
     "tolokaforge/core/grading/replay.py",
     "tolokaforge/core/grading/replay_layout.py",

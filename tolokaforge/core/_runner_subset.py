@@ -126,6 +126,7 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/config_validation.py",
     "tolokaforge/core/grading/corpus_curation.py",
+    "tolokaforge/core/grading/judge_only_helpers.py",
     "tolokaforge/core/grading/migration_declaration.py",
     "tolokaforge/core/grading/replay.py",
     "tolokaforge/core/grading/replay_layout.py",
@@ -164,7 +165,12 @@ adapter for the runner's ``SubstrateService`` — and ``core.grading.substrate_l
 — :class:`LiveRunnerCallbackGradingSubstrate` and its private gRPC helpers).
 The runner never instantiates them: they are the grader container's client
 side of the substrate seam, and shipping them inside the runner image would
-double-ship the compiled ``runner_pb2`` surface without a caller. The
+double-ship the compiled ``runner_pb2`` surface without a caller.
+``core.grading.judge_only_helpers`` is the orchestrator-side dispatch body
+the ``judge_only`` :class:`TrialGrader` delegates its per-trial run to — the
+runner never invokes it, and its imports reach the orchestrator-only
+``core.trial_grader`` (for :class:`GradingFailedError`) and the already-excluded
+``core.grading.replay`` (for :func:`build_replay_grade`). The
 remaining five (``core.grading.agreement``, ``core.grading.config_validation``,
 ``core.grading.replay_layout``, ``core.grading.unknown_keys``,
 ``core.llm.fallback_client``) have only
