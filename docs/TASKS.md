@@ -118,7 +118,22 @@ docker-compose stack — extra services beyond the engine's built-in
 stack (extended to include mock-web / rag-service if the task uses their
 tools).
 
-The manifest points at a compose file that lives next to `task.yaml`, plus a per-service `services:` map that declares each service's isolation posture:
+The manifest is authored as one of two shapes (ADR-0044 § 3):
+
+* **Scalar `stack`** — an ergonomic single-stack alias. Points at one
+  compose file next to `task.yaml`, with a runner service and inputs.
+  The resolver synthesises a single-entry composition plan whose scope
+  is inferred from the services' isolation labels.
+* **Plural `stacks`** — the canonical multi-stack composition plan
+  keyed by `stack_id`. Each entry declares its own `compose_file`,
+  `stack_scope` (`run` | `task` | `trial`), optional `runner_service`
+  (exactly one stack in the plan may set this), and `inputs`.
+  Task-side entries merge into project-side entries by `stack_id` —
+  see [PROJECTS.md § Task override semantics](PROJECTS.md#task-override-semantics)
+  for the per-stack atomic-replacement vs deep-merge rule.
+
+The two shapes are aliases of the same field — a patch may set one or
+the other, never both.
 
 ```yaml
 environment_manifest:
@@ -130,6 +145,21 @@ environment_manifest:
       reset:
         seed: "postgres_baseline"   # name from project-level assets.seeds
     # any service not listed here defaults to `ephemeral`
+```
+
+A multi-stack authoring example (T-Bench balanced-10 shape: one shared
+engine + a task-specific per-trial stack):
+
+```yaml
+environment_manifest:
+  stacks:
+    engine:
+      compose_file: "./shared/engine.compose.yaml"
+      stack_scope: "run"
+      runner_service: "runner"
+    task_stack:
+      compose_file: "./task_stack.compose.yaml"
+      stack_scope: "trial"
 ```
 
 Field reference:

@@ -646,11 +646,21 @@ assets:
 # Every task inherits unless it declares its own environment_manifest.
 # Task-level environment_manifest deep-merges on top per-task.
 default_environment:
-  # `stack` is the substrate slot: the pointer to the concrete
-  # runtime definition plus everything scoped to that specific
-  # file. It replaces ATOMICALLY — see Task override semantics.
-  # Today it is compose-shaped; a future backend kind adds a
-  # sibling shape, not new root fields.
+  # The substrate is authored as one of two shapes (ADR-0044 § 3):
+  #
+  # * `stack` — an ergonomic single-stack alias. One compose file
+  #   with runner service and inputs; the resolver synthesises a
+  #   single-entry composition plan whose scope is inferred from the
+  #   services' isolation labels.
+  # * `stacks` — the canonical multi-stack composition plan (keyed
+  #   by `stack_id`). Each entry declares its own `compose_file`,
+  #   `stack_scope` (`run` | `task` | `trial`), optional
+  #   `runner_service` (exactly one stack in the plan may set this),
+  #   and `inputs`. Task-side entries merge into project-side entries
+  #   by `stack_id`; see [Task override semantics].
+  #
+  # The two shapes are aliases of the same field — a patch may set
+  # one or the other, never both.
   stack:
     compose_file: "./shared/environment.compose.yaml"
     runner_service: "runner"
@@ -893,6 +903,24 @@ Some fields replace instead of merge:
   errors — a task cannot unset the environment (or its substrate
   pointer) out from under a project that declares one, and there
   is no engine-default compose file to fall through to.
+- **`environment_manifest.stacks[<stack_id>]`**: the same
+  atomic-replacement rule holds per stack in a multi-stack
+  composition plan. Task-side entries merge into project-side
+  entries by `stack_id`: a task-side patch that sets
+  `compose_file` on an entry atomically replaces that whole
+  per-stack `StackPatch` (clean slate of `inputs` and
+  `runner_service`); a patch that leaves `compose_file` unset
+  deep-merges — the task's `inputs` layer over the project's per
+  key, other non-`null` sub-fields override, and the project-side
+  `compose_file` survives. Task-only entries append in
+  task-declared order; project-only entries survive in
+  project-declared order. Every merged entry MUST carry a
+  `stack_scope` — the multi-stack path does not fall back on
+  service-isolation-driven scope inference. The scalar `stack`
+  and the plural `stacks` are aliases of the same field; a patch
+  MUST NOT mix them, and the resolver refuses a merge that would
+  combine a scalar `stack.compose_file` on one side with a
+  `stacks` block on the other.
 - **`system_prompt`**: pointing at a different file (or inline
   text) replaces the project prompt entirely; no merge.
 
