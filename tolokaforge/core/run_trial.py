@@ -251,9 +251,11 @@ def _build_single_task_adapter(task: TaskConfig) -> BaseAdapter:
 def _resolve_runtime_name(runtime: str, task_desc: TaskDescription) -> str:
     """Map ``runtime`` to a registry name, intercepting the reserved ``"auto"``.
 
-    ``"auto"`` mirrors the orchestrator's ``_select_backend_from_tasks``: a task
-    whose resolved manifest requires per-trial isolation picks ``"per_trial"``,
-    otherwise ``"shared"``. Any explicit name passes straight through.
+    ``"auto"`` picks per-trial substrate when the task's manifest requires it,
+    otherwise the shared-stack path. This mirrors the single-trial subprocess
+    seam's contract; the orchestrator's own selection is composer-driven and
+    routes both paths through :class:`SharedStackRuntimeBackend`. Any explicit
+    name passes straight through.
     """
     if runtime != "auto":
         return runtime

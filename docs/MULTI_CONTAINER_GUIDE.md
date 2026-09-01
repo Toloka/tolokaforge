@@ -570,8 +570,9 @@ compose file. Suppose you want to add a redis cache the agent mutates:
    scripts/with_env.sh uv run tolokaforge run --config my_project/run_configs/dev.yaml
    ```
 
-Because `cache` is `reset` (and `app-db` already is), the run requires
-per-trial isolation and routes to `PerTrialRuntimeBackend` automatically.
+Because `cache` is `reset` (and `app-db` already is), the synthesised
+`StackDecl.stack_scope` coerces to `"trial"` and the composer materialises
+the stack fresh per trial.
 
 ## Grading against substrate state
 

@@ -55,23 +55,23 @@ Leave a task's services `shared` — so the run stays on the shared stack
 - The trials do not race on any shared state that could cause
   non-determinism.
 
-The shared stack is where the task-driven selector lands when no service
-requires isolation, because the cold-start cost is real: every trial in
-a per-trial run pays the cost of `docker compose up` again. On a task
-whose stack takes 30s to reach healthy, a 100-trial run costs an extra
-~50 minutes of wall clock in materialisation alone. See [Cost](#cost)
-below.
+Trial-scope materialisation is the price paid when isolation is needed:
+every trial in a trial-scope run pays the cost of `docker compose up`
+again. On a task whose stack takes 30s to reach healthy, a 100-trial
+run costs an extra ~50 minutes of wall clock in materialisation alone.
+See [Cost](#cost) below.
 
 ## How isolation is decided
 
 Isolation is decided by the *task*, not opted into by the operator.
 Every compose service in a task's manifest carries an isolation label
 via `services.<name>.isolation` — `shared`, `reset`, or `ephemeral` (a
-service with no manifest entry defaults to `ephemeral`). Backend
-selection is task-driven and automatic: any `reset`/`ephemeral` service
-on any task in the run routes the whole run onto per-trial
-materialisation, and a run whose services are all `shared` (or whose
-tasks carry no manifest at all) stays on the shared stack.
+service with no manifest entry defaults to `ephemeral`). The scalar-form
+`stack` synthesises to a single-entry composition plan whose
+`stack_scope` is coerced from the isolation labels: any `reset`/`ephemeral`
+service coerces the scope to `"trial"`, and an all-`shared` service map
+coerces to `"run"`. The composer then materialises trial-scope stacks
+fresh per trial and run-scope stacks once at `connect()` time.
 
 A task declares its per-service labels in `task.yaml`:
 
@@ -85,15 +85,15 @@ environment_manifest:
 ```
 
 That declaration is the whole mechanism. There is nothing to switch on
-at run time — the orchestrator reads every task's manifest, and if any
-service needs a fresh substrate it selects the per-trial backend that
-satisfies it. The normal path never refuses to start; it auto-selects
-the satisfying backend.
+at run time — the orchestrator resolves every task's manifest, the
+composer walks the composition plan, and each stack's `stack_scope`
+picks its materialisation lifecycle. The normal path never refuses to
+start.
 
 ### Deprecated overrides
 
-Two surfaces force a backend regardless of the task-driven signal, each
-emitting a `DeprecationWarning`. They exist for edge cases —
+Two surfaces force a plan-shape coercion regardless of the task-declared
+signal, each emitting a `DeprecationWarning`. They exist for edge cases —
 backwards-compatibility, forcing a shared stack while profile-testing,
 or forcing per-trial on a manifest-less pack to observe isolation
 behaviour (exactly what the worked example below does).
@@ -113,26 +113,30 @@ uv run tolokaforge run \
   --runtime per_trial
 ```
 
-Forcing a *shared* backend against a task set that requires per-trial
-materialisation is the one path that refuses to start. The orchestrator
-rejects the conflict at startup with a `RuntimeError` naming the
-offending task(s):
+The `shared` coercion knob rewrites every stack's `stack_scope` to
+`run`. Any service labelled `ephemeral` on a `run`- or `task`-scope
+stack is refused at startup — cycling would require compose-down on a
+stack contracted to stay live for the whole bracket. The orchestrator
+raises `RuntimeError` naming the offending
+`(task_id, stack_id, service_name, isolation, stack_scope)` tuple:
 
 ```
-Runtime backend SharedStackRuntimeBackend shares state across every
-trial in the run, but 2 task(s) require per-trial materialisation via
-their `services.<name>.isolation` labels: ['orders_customers_join_01',
-'support_triage_01']. These tasks would silently produce wrong
-verdicts on a shared-stack backend.
-  Fix: drop the deprecated `orchestrator.runtime` override so backend
-  selection is task-driven, or label every service `isolation: shared`
-  on the task(s) that genuinely tolerate shared state across trials.
+Composer-driven runtime cannot honour `isolation: ephemeral` on a
+non-trial-scope stack — cycling an ephemeral service between trials
+requires compose-down on a stack contracted to stay live for the
+whole run/task bracket. Offending
+(task_id, stack_id, service_name, isolation, stack_scope):
+[('orders_customers_join_01', 'default', 'db', 'ephemeral', 'run')].
+Move the affected services onto a trial-scope stack, or wait for
+#1383's `IsolationMode.COMPOSED_STACK` capability advertisement that
+will admit ephemeral cycling at run scope.
 ```
 
 The refusal is deliberate — silent cross-trial contamination is a
-failure mode where the grader believes it, so making it a startup error
-rather than a subtle grading bug is the safer default. Drop the override
-and the task-driven selector picks the satisfying backend on its own.
+failure mode the grader believes, so making it a startup error rather
+than a subtle grading bug is the safer default. Drop the override and
+the composer materialises the per-service isolation via its dispatcher
+registry without a scope contradiction.
 
 ## Worked example
 

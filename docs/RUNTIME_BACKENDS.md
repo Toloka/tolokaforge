@@ -48,11 +48,13 @@ graph TB
     LRB -->|"one client per trial<br/>keyed by trial_id"| T2
 ```
 
-Backend names resolve through the `tolokaforge.runtime_backends` entry-point registry: a name is looked up against the registered factories at run start, and an unknown name raises an actionable error listing the registered names (see "Plug-in extension points"). Selection is a run-level choice with two knobs and a safety enforcement:
+Backend selection is composer-driven. The orchestrator always constructs `SharedStackRuntimeBackend` in the automatic path; the composer sequences the resolved composition plan's per-scope substrate at `connect` (run-scope stacks) and `provision` (task-scope + trial-scope stacks). Backend names still resolve through the `tolokaforge.runtime_backends` entry-point registry — a name is looked up against the registered factories at run start, and an unknown name raises an actionable error listing the registered names (see "Plug-in extension points") — but the automatic path routes to the `shared` factory regardless of a task's isolation labels.
 
-- **Config**: `orchestrator.runtime: <name>` in the run config YAML — any registered backend name (built-in `shared`, `per_trial`, `in_memory`, or a plug-in's name). Deprecated: when unset, selection is task-driven (below).
-- **CLI override**: `tolokaforge run --runtime <name>` overrides the config for a single invocation, accepting any registered backend name. The banner printed at run start names the backend and the source (`cli-flag` vs `config` vs `default`) so operators can see what actually got chosen.
-- **Task-side enforcement**: every task's `environment_manifest.services.<name>.isolation` declares its per-service posture (`shared` / `reset` / `ephemeral`; unlabelled services default to `ephemeral`). Backend selection is task-driven: any `reset` or `ephemeral` service routes the run to `PerTrialRuntimeBackend` automatically. An explicit `orchestrator.runtime` override is refused at startup if it contradicts per-service semantics — silent cross-trial state contamination is what this guard prevents. See "Isolation enforcement" below.
+The deprecated `orchestrator.runtime` field is a plan-shape coercion knob, not a backend selector:
+
+- **`shared` / `per_trial`** coerce every task's plan-shape to run-scope or trial-scope respectively (single-stack packs only — a multi-stack pack refuses coercion loudly). Both still resolve to `SharedStackRuntimeBackend`; the composer sees the coerced scopes when it walks each task's manifest. Setting the field emits a `DeprecationWarning`.
+- **Any other registered name** (only `in_memory` in-tree today) is a legit backend swap and routes through the entry-point loader unchanged — the coercion knob does not apply.
+- **CLI override**: `tolokaforge run --runtime <name>` overrides the config for a single invocation with the same semantics.
 
 Legacy `orchestrator.runtime: docker` is accepted as a deprecated alias for `shared` with a `DeprecationWarning` at config load; it is coerced to `shared` before the registry lookup, since the registry has no `docker` name.
 
@@ -474,24 +476,44 @@ Isolation is declared **per service** on the resolved `EnvironmentManifest` via 
 - **`reset`** — a fresh container per trial, plus the recipe named by `reset.seed` runs at each provision to reapply the seed state.
 - **`ephemeral`** — a fresh container per trial, no seed applied. This is the default for any service declared in the compose file without an explicit `isolation` entry.
 
-Backend selection is **task-driven**, not operator-driven: if any service on any task in the run has `isolation: reset` or `ephemeral`, the orchestrator routes to `PerTrialRuntimeBackend` automatically. A run with every service labelled `shared` (or a task with no `services:` map at all — the pre-Project-layer shape) stays on `SharedStackRuntimeBackend`. An explicit `orchestrator.runtime` override in the run config wins, but is refused at startup if it violates a task's declared per-service semantics (silent cross-trial state contamination is what this guard prevents).
+Backend construction is **composer-driven**: the orchestrator always constructs `SharedStackRuntimeBackend`, and the composer walks each task's resolved plan to sequence per-scope substrate. Every service's `isolation` label is honoured at its stack's `stack_scope` — the composer materialises the stack's compose project at the scope's bracket and dispatches per-service lifecycle between trials via the registered `ServiceLifecycleDispatcher`. An `orchestrator.runtime` coercion knob (`shared` → run-scope, `per_trial` → trial-scope) rewrites every stack's scope on the manifest before the composer reads it; multi-stack packs refuse coercion loudly. The isolation-compatibility guard still refuses labels that the backend's `isolation_mode` cannot honour at the resolved scope.
 
 ```mermaid
 flowchart TD
-    Start[Orchestrator.run] --> Select{{"For each task:<br/>any service `reset` / `ephemeral` ?"}}
-    Select -->|No — all `shared`| Shared[SharedStackRuntimeBackend]
-    Select -->|Yes| PerTrial[PerTrialRuntimeBackend]
-    Override[Explicit orchestrator.runtime override] -.->|Compatible?| Shared
-    Override -.->|Compatible?| PerTrial
-    Override -.->|Incompatible| Refuse["Refuse run<br/>RuntimeError names offending tasks<br/>+ concrete fix"]
-    Shared --> Trials[Run trials]
-    PerTrial --> Trials
-    Refuse --> Stop[Zero trials executed]
+    Start[Orchestrator.run] --> Coerce{{"orchestrator.runtime<br/>coercion knob set?"}}
+    Coerce -->|shared| CoerceRun[Rewrite each stack.stack_scope = run]
+    Coerce -->|per_trial| CoerceTrial[Rewrite each stack.stack_scope = trial]
+    Coerce -->|None| Passthrough[Plan-declared scopes stand]
+    CoerceRun --> Backend[SharedStackRuntimeBackend]
+    CoerceTrial --> Backend
+    Passthrough --> Backend
+    Backend --> Composer{{"Composer walks the plan:<br/>materialise per stack_scope"}}
+    Composer -->|run-scope| ConnectPhase[connect() → materialise_run]
+    Composer -->|task-scope + trial-scope| ProvisionPhase[provision() → provision_trial]
+    ConnectPhase --> Trials[Run trials]
+    ProvisionPhase --> Trials
 ```
 
-`PerTrialRuntimeBackend` accepts every task — per-trial isolation is a superset of shared-stack semantics for correctness purposes. Cost of per-trial provisioning for genuinely stateless tasks is a separate concern (the loud-defaults banner surfaces the cost/benefit trade so operators can pick the right backend for their workload).
+`SharedStackRuntimeBackend` accepts every plan — the composer handles per-service isolation via its dispatcher registry, and the isolation-compat guard refuses configurations the backend's declared `isolation_mode` cannot honour.
+
+### Per-scope invariants
+
+**INV-1 (cross-task run-scope agreement).** Every task's ordered `run`-scope stack sequence must canonicalise to the same signature — matching `stack_id`, canonical compose bytes, `runner_service`, and `inputs`. `task`- and `trial`-scope stacks may diverge freely across tasks; the composer materialises those per-task at `provision_trial` time. `Orchestrator._extract_run_env_manifest` builds each task's signature and refuses (`RuntimeError` naming the offending task ids and stack ids) when they disagree. Every task's signature is empty (or the `TRIAL_SCOPED_ONLY` short-circuit fires) → no run-scope stack to materialise → the composer's `materialise_run` no-ops and the built-in engine address stands.
+
+**INV-2 (per-scope isolation compatibility).** Every stack's service isolation labels must be honourable at that stack's `stack_scope`. `stack_scope="trial"` admits every label (the composer materialises fresh per trial). `stack_scope="run"` and `stack_scope="task"` on a `SHARED_STACK` backend refuse `ephemeral` — cycling would require compose-down on a stack contracted to stay live for the run/task bracket. `Orchestrator._verify_isolation_compatibility` walks every task's every stack and raises `RuntimeError` naming `(task_id, stack_id, service_name, isolation, stack_scope)` for each violation. `IsolationMode.COMPOSED_STACK` (#1383) will advertise the capability once the composer's ephemeral dispatcher is admissible at run scope, at which point the refusal narrows.
 
 See [`RESET_RECIPES.md`](RESET_RECIPES.md) for the four seed kinds (`sql_dump`, `filesystem_dir`, `redis_dump`, `bare`) that `isolation: reset` binds to via `services.<name>.reset.seed`.
+
+### Environment identity
+
+`resolve_environment_identity(env, seed_digests=None)` returns a `sha256:<hex>` digest over the manifest's composition plan, per-service isolation map, and referenced seed digests. Two manifests with matching inputs produce equal identities regardless of YAML formatting; any change to a compose byte, an input, a service label, a stack scope, or a seed's digest flips the digest. Emitted for observability at run start.
+
+The digest's payload shape depends on plan cardinality:
+
+- **Single-stack (`len(env.stacks) <= 1`).** Top-level `"compose"` (canonical bytes of the sole stack's compose file) and `"inputs"` (sorted `stack_inputs`) alongside the shared `"services"` and `"seeds"` sub-payloads — byte-identical to the pre-ADR-0044 scalar-form digest. A legacy scalar-form manifest coerced into a single synthesised `StackDecl` produces the same digest as one directly constructed from the scalar fields. This is a HARD invariant locked at `tests/unit/test_env_identity.py::TestByteParityWithLegacy`.
+- **Multi-stack (`len(env.stacks) > 1`).** Top-level `"stacks"` list in plan order, each entry carrying `stack_id`, `stack_scope`, canonical compose bytes, `runner_service`, and sorted `inputs`, alongside the shared `"services"` and `"seeds"` sub-payloads. Plan order, scope, runner service, inputs, and per-stack compose bytes each flip the digest independently — locked at `tests/unit/test_env_identity.py::TestMultiStackDigest`.
+
+The two shapes cannot collide: the multi-stack payload carries a `"stacks"` key that the single-stack payload never emits. `describe_environment_identity` (the human-readable descriptor emitted into every trial's `final_env_state`) still walks the scalar compose file today; its multi-stack extension is a follow-up (see [#1396](https://github.com/Toloka/tolokaforge/issues/1396)).
 
 ## Failure modes
 
@@ -637,14 +659,14 @@ See also: [ADR-0016](adr/0016-runtime-backend-comparison.md) — resource-use, g
 
 Both satisfy the same `RuntimeBackend` Protocol. Callers depend only on the Protocol — swapping backends is a construction-time choice, not a callsite change.
 
-## Adapter compatibility with `per_trial`
+## Adapter compatibility with per-trial substrate
 
-`--runtime per_trial` is opt-in per task, gated on `TaskConfig.environment_manifest`. An adapter opts a task into orchestrator-driven per-trial isolation by populating that field on the `TaskConfig` it produces. Tasks without a manifest belong on `SharedStackRuntimeBackend`; pointing `PerTrialRuntimeBackend` at them raises `ProvisionError("… task did not declare one")` at provision time — fail-loud by design, no silent fallback.
+Per-trial substrate is opt-in per task, gated on `TaskConfig.environment_manifest`. An adapter opts a task into orchestrator-driven per-trial substrate by populating that field on the `TaskConfig` it produces; a manifest whose resolved plan is fully trial-scoped (`PlanShape.TRIAL_SCOPED_ONLY`) sees the composer materialise the plan per trial at `provision_trial` time. Tasks without a manifest run against the built-in engine; asking the composer to materialise a trial-scoped stack for a task that declares none raises `ProvisionError("… task did not declare one")` at provision time — fail-loud by design, no silent fallback.
 
-| Adapter | Populates `environment_manifest` | Compatible with `--runtime per_trial` |
+| Adapter | Populates `environment_manifest` | Composer routes to per-trial substrate |
 |---|---|---|
 | `native` | Yes — reads it from the task's `task.yaml` when declared. | Yes. Tested end-to-end with `coding_public_example_01`. |
-| `terminal_bench` | Yes — synthesises the compose file (task services + injected `runner` + `db-service`) into a staging directory, then emits an `EnvironmentPatch(stack=StackPatch(compose_file=…, runner_service="runner"))` on `TaskConfig`. `project_loader.resolve` fills every service with `ServiceSpec(isolation="ephemeral")`, which routes the run to `PerTrialRuntimeBackend`. | Yes. The `terminal_bench` adapter emits an all-`ephemeral` manifest, so `_select_backend_from_tasks` returns `per_trial`. `TrialExecutor`'s bracket, per-trial network isolation, and `PROVISION_ERROR` attribution all apply. |
+| `terminal_bench` | Yes — synthesises the compose file (task services + injected `runner` + `db-service`) into a staging directory, then emits an `EnvironmentPatch(stack=StackPatch(compose_file=…, runner_service="runner"))` on `TaskConfig`. `project_loader.resolve` fills every service with `ServiceSpec(isolation="ephemeral")`, so the synthesised plan is fully trial-scoped. | Yes. The `terminal_bench` adapter emits an all-`ephemeral` manifest, so the resolved plan is `PlanShape.TRIAL_SCOPED_ONLY` and the composer provisions per trial. `TrialExecutor`'s bracket, per-trial network isolation, and `PROVISION_ERROR` attribution all apply. |
 
 ## Extending to new substrates
 

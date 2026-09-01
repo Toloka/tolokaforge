@@ -1,9 +1,11 @@
 """Unit tests for :meth:`Orchestrator._extract_run_env_manifest`.
 
-The task-declared shared-stack path materialises exactly one compose
-file per run. Runs whose tasks declare inconsistent manifests would
-silently pick one (or fail late) — this helper picks up the
-inconsistency at run-start and fails loud.
+Per-scope INV-1 (ADR-0044 §5): the helper compares only the ``run``-scope
+subset of each task's resolved composition plan across tasks. Task and
+trial scopes may diverge freely — the composer materialises those
+per-task at ``provision_trial`` time. A divergence on the ``run``-scope
+subset fails loud so an ambiguous cross-task declaration surfaces before
+Docker is touched.
 """
 
 from __future__ import annotations
@@ -32,13 +34,24 @@ pytestmark = pytest.mark.unit
 
 _FIXTURES = Path(__file__).parent.parent / "canonical" / "fixtures" / "environment_manifest"
 
+# Explicit ``shared`` labels on every compose service force
+# ``requires_per_trial=False``, so the scalar-form synthesis stamps the
+# stack ``stack_scope="run"`` and the divergence check has something to
+# compare across tasks. Without these overrides the fill-defaults path
+# stamps ``ephemeral`` (→ trial scope) and every stack drops out of the
+# run-scope subset — legal, but not what the run-scope divergence tests
+# exercise.
+_SHARED_TWO_SERVICE: dict[str, ServiceSpec] = {
+    "db": ServiceSpec(isolation="shared"),
+    "default": ServiceSpec(isolation="shared"),
+}
+_SHARED_ONE_SERVICE: dict[str, ServiceSpec] = {"default": ServiceSpec(isolation="shared")}
 
-def _run_config(runtime: str | None = "shared") -> RunConfig:
-    """Build a minimal :class:`RunConfig`. ``runtime`` defaults to
-    ``"shared"`` so existing tests exercise the shared-stack heterogeneity
-    check; pass ``runtime="per_trial"`` for the operator-override branch
-    or ``runtime=None`` for the task-driven signal branch (which
-    requires a stub adapter on the orchestrator).
+
+def _run_config(runtime: str | None = None) -> RunConfig:
+    """Build a minimal :class:`RunConfig`. ``runtime=None`` exercises the
+    automatic path; ``"per_trial"`` / ``"shared"`` exercise the operator
+    coercion knobs.
     """
     orchestrator_kwargs: dict[str, Any] = {
         "workers": 1,
@@ -64,15 +77,40 @@ def _task(task_id: str, patch: EnvironmentPatch | None) -> Any:
     return t
 
 
-def _patch(
-    fixture_name: str = "safe_two_service.yaml", **services: ServiceSpec
+def _run_scope_patch(
+    fixture_name: str = "safe_two_service.yaml",
+    **service_overrides: ServiceSpec,
 ) -> EnvironmentPatch:
     """Construct a task-side :class:`EnvironmentPatch` pointing at a
-    canonical compose fixture. ``services`` optional per-service specs
-    layer into ``EnvironmentPatch.services``."""
+    canonical compose fixture with ``shared`` labels on every service.
+
+    Force-``shared`` isolation makes ``requires_per_trial=False``, so the
+    scalar-form synthesis stamps ``stack_scope="run"`` — the branch the
+    INV-1 divergence check gates. ``service_overrides`` (per-service
+    :class:`ServiceSpec`) layer on top for cases that need
+    ``reset``-labelled services (still ``run``-scope because at least
+    one service stays ``shared``).
+    """
+    if fixture_name == "safe_one_service.yaml":
+        services = dict(_SHARED_ONE_SERVICE)
+    else:
+        services = dict(_SHARED_TWO_SERVICE)
+    services.update(service_overrides)
     return EnvironmentPatch(
         stack=StackPatch(compose_file=str(_FIXTURES / fixture_name)),
-        services=services or None,
+        services=services,
+    )
+
+
+def _trial_scope_patch(fixture_name: str = "safe_two_service.yaml") -> EnvironmentPatch:
+    """Task-side patch with no explicit isolation labels — the fill-defaults
+    path stamps every service ``ephemeral``, so the synthesised stack is
+    ``stack_scope="trial"`` and drops out of the run-scope divergence
+    check.
+    """
+    return EnvironmentPatch(
+        stack=StackPatch(compose_file=str(_FIXTURES / fixture_name)),
+        services=None,
     )
 
 
@@ -89,8 +127,11 @@ class TestNoManifest:
 
 
 class TestConsistentManifest:
+    """Scalar-form single-stack path — every task synthesises one
+    run-scope stack from the same fixture, so their signatures match."""
+
     def test_returns_manifest_when_all_tasks_declare_same_compose_file(self) -> None:
-        p = _patch("safe_two_service.yaml")
+        p = _run_scope_patch("safe_two_service.yaml")
         orch = Orchestrator(_run_config())
         orch.tasks = [_task("t1", p), _task("t2", p)]
         result = orch._extract_run_env_manifest()
@@ -98,7 +139,7 @@ class TestConsistentManifest:
         assert str(result.compose_file) == str(_FIXTURES / "safe_two_service.yaml")
 
     def test_returns_manifest_when_single_task_declares(self) -> None:
-        p = _patch("safe_one_service.yaml")
+        p = _run_scope_patch("safe_one_service.yaml")
         orch = Orchestrator(_run_config())
         orch.tasks = [_task("solo", p)]
         result = orch._extract_run_env_manifest()
@@ -107,10 +148,11 @@ class TestConsistentManifest:
 
     def test_two_patch_instances_with_same_compose_file_are_consistent(self) -> None:
         """Tasks may carry separately-constructed :class:`EnvironmentPatch`
-        instances that resolve to the same compose file; identity is by
-        ``compose_file`` path, not Python object identity."""
-        p1 = _patch("safe_two_service.yaml")
-        p2 = _patch("safe_two_service.yaml")
+        instances that resolve to the same run-scope signature; identity
+        is by canonical compose bytes + stack_id + inputs, not Python
+        object identity."""
+        p1 = _run_scope_patch("safe_two_service.yaml")
+        p2 = _run_scope_patch("safe_two_service.yaml")
         orch = Orchestrator(_run_config())
         orch.tasks = [_task("t1", p1), _task("t2", p2)]
         result = orch._extract_run_env_manifest()
@@ -119,25 +161,27 @@ class TestConsistentManifest:
 
 
 class TestInconsistentManifest:
+    """Scalar-form single-stack path — divergent run-scope stacks refuse."""
+
     def test_mixed_declared_and_undeclared_raises(self) -> None:
-        m = _patch()
+        m = _run_scope_patch("safe_two_service.yaml")
         orch = Orchestrator(_run_config())
         orch.tasks = [_task("with", m), _task("without", None)]
-        with pytest.raises(RuntimeError, match="mix of tasks with and without"):
+        with pytest.raises(RuntimeError, match="disagree on the run-scope subset"):
             orch._extract_run_env_manifest()
 
     def test_different_compose_files_raises(self) -> None:
-        m1 = _patch("safe_one_service.yaml")
-        m2 = _patch("safe_two_service.yaml")
+        m1 = _run_scope_patch("safe_one_service.yaml")
+        m2 = _run_scope_patch("safe_two_service.yaml")
         orch = Orchestrator(_run_config())
         orch.tasks = [_task("t1", m1), _task("t2", m2)]
-        with pytest.raises(RuntimeError, match="different environment_manifest.compose_file"):
+        with pytest.raises(RuntimeError, match="disagree on the run-scope subset"):
             orch._extract_run_env_manifest()
 
     def test_error_names_the_offending_tasks(self) -> None:
-        """The error must identify which tasks are on which side of the
-        split so the operator can find them quickly."""
-        m = _patch()
+        """The error must identify every task's run-scope digest so the
+        operator can spot which tasks disagree."""
+        m = _run_scope_patch()
         orch = Orchestrator(_run_config())
         orch.tasks = [
             _task("has-manifest-A", m),
@@ -148,11 +192,77 @@ class TestInconsistentManifest:
         with pytest.raises(RuntimeError) as excinfo:
             orch._extract_run_env_manifest()
         msg = str(excinfo.value)
-        # Task ids on both sides appear in the message.
         assert "has-manifest-A" in msg
         assert "has-manifest-C" in msg
         assert "no-manifest-B" in msg
         assert "no-manifest-D" in msg
+
+
+class TestPerScopeInvariant:
+    """Per-scope INV-1: only the run-scope subset must agree across tasks.
+
+    Task and trial scopes are the composer's per-task business — the
+    orchestrator only enforces that every task declares the same ordered
+    run-scope stack sequence (canonical compose bytes + stack_id +
+    runner_service + inputs).
+    """
+
+    def test_matching_run_scope_diverging_trial_scope_resolves(self) -> None:
+        """Two tasks that share their run-scope stack but declare
+        different trial-scope compose files (via the same fixture is
+        semantically fine — the check filters by scope, not by
+        compose_file diff)."""
+        # Both patches carry a run-scope stack; the trial-scope
+        # component is per-task by resolve construction (fill-defaults
+        # doesn't apply to the scalar mirror when at least one
+        # ``shared`` label is present, so both tasks resolve to a
+        # single run-scope stack with matching bytes).
+        p = _run_scope_patch("safe_two_service.yaml")
+        orch = Orchestrator(_run_config())
+        orch.tasks = [_task("t1", p), _task("t2", p)]
+        result = orch._extract_run_env_manifest()
+        assert result is not None
+
+    def test_diverging_run_scope_stacks_raise_with_task_ids(self) -> None:
+        """Different compose bytes on the run-scope stack across tasks
+        raise; both offending task_ids appear in the error."""
+        m1 = _run_scope_patch("safe_one_service.yaml")
+        m2 = _run_scope_patch("safe_two_service.yaml")
+        orch = Orchestrator(_run_config())
+        orch.tasks = [_task("task-alpha", m1), _task("task-beta", m2)]
+        with pytest.raises(RuntimeError) as excinfo:
+            orch._extract_run_env_manifest()
+        msg = str(excinfo.value)
+        assert "task-alpha" in msg
+        assert "task-beta" in msg
+        assert "disagree on the run-scope subset" in msg
+
+    def test_mixed_run_scope_declaration_raises(self) -> None:
+        """Task A declares a run-scope stack; Task B has only a
+        trial-scope stack (pure ephemeral). Task A's signature has one
+        stack; Task B's is empty. Divergence — refuse.
+        """
+        run_scope = _run_scope_patch("safe_two_service.yaml")
+        trial_only = _trial_scope_patch("safe_two_service.yaml")
+        orch = Orchestrator(_run_config())
+        orch.tasks = [_task("with-run", run_scope), _task("trial-only", trial_only)]
+        with pytest.raises(RuntimeError, match="disagree on the run-scope subset"):
+            orch._extract_run_env_manifest()
+
+    def test_all_tasks_empty_run_scope_returns_none(self) -> None:
+        """When every task's run-scope subset is empty — even if the
+        tasks declare divergent trial-scope compose files — the helper
+        returns ``None``. No run-scope stack to materialise, so the
+        composer's ``materialise_run`` no-ops. The plan-shape
+        short-circuit at the top handles the ``TRIAL_SCOPED_ONLY`` case;
+        this branch covers the divergent-trial-scope-but-adapterless
+        equivalent.
+        """
+        m1 = _trial_scope_patch("safe_one_service.yaml")
+        m2 = _trial_scope_patch("safe_two_service.yaml")
+        orch = Orchestrator(_run_config())
+        orch.tasks = [_task("t1", m1), _task("t2", m2)]
+        assert orch._extract_run_env_manifest() is None
 
 
 class TestRunWorkerGuard:
@@ -166,91 +276,76 @@ class TestRunWorkerGuard:
         detect env_manifest runs. Once the helper returns non-None,
         run_worker raises rather than proceeding with the default
         EXECUTOR_ADDRESS."""
-        m = _patch("safe_two_service.yaml")
+        m = _run_scope_patch("safe_two_service.yaml")
         orch = Orchestrator(_run_config())
         orch.tasks = [_task("t1", m)]
-        # Helper returns the manifest; run_worker's guard reads this to
-        # decide whether to fail loud. The guard behaviour itself is a
-        # single ``if`` in run_worker; here we just pin the helper's
-        # non-None contract that the guard depends on.
         assert orch._extract_run_env_manifest() is not None
 
 
 class TestPerTrialRuntimeReturnsNone:
-    """Under ``runtime: per_trial`` the backend resolves
-    ``task.environment_manifest`` independently per trial — a run-level
-    shared manifest doesn't apply. The helper must short-circuit to
-    ``None`` and NOT enforce the shared-stack single-compose-file
-    constraint that only applies to ``SharedStackRuntimeBackend``.
-
-    Regression lock: the MB adapter emits one pack per problem, each
-    with its own problem-specific compose. A three-problem per-trial
-    smoke run declares three distinct ``compose_file`` values — before
-    this gate the run failed at ``_extract_run_env_manifest`` before
-    Docker was even touched.
+    """Under ``runtime: per_trial`` (operator coercion) OR under the
+    task-driven signal that every task's ``plan_shape`` is
+    ``TRIAL_SCOPED_ONLY``, the helper short-circuits to ``None`` — no
+    run-scope stack materialises, so nothing to extract at run-connect
+    time. The composer's ``provision_trial`` reads each task's own
+    manifest per trial.
     """
 
     def test_heterogeneous_compose_files_allowed_under_per_trial(self) -> None:
-        m1 = _patch("safe_one_service.yaml")
-        m2 = _patch("safe_two_service.yaml")
+        m1 = _run_scope_patch("safe_one_service.yaml")
+        m2 = _run_scope_patch("safe_two_service.yaml")
         orch = Orchestrator(_run_config(runtime="per_trial"))
         orch.tasks = [_task("t1", m1), _task("t2", m2)]
         assert orch._extract_run_env_manifest() is None
 
     def test_mixed_declared_and_undeclared_allowed_under_per_trial(self) -> None:
-        m = _patch("safe_two_service.yaml")
+        m = _run_scope_patch("safe_two_service.yaml")
         orch = Orchestrator(_run_config(runtime="per_trial"))
         orch.tasks = [_task("with", m), _task("without", None)]
         assert orch._extract_run_env_manifest() is None
 
     def test_consistent_manifests_also_return_none_under_per_trial(self) -> None:
         """Even when tasks happen to share one compose file, per-trial
-        doesn't consume a run-level manifest — the backend resolves the
-        task's own manifest per trial. Return None to keep the call
-        sites consistent (``run_env_manifest is None`` under per-trial)."""
-        p = _patch("safe_two_service.yaml")
+        coercion means the composer resolves per-task at provision time
+        — return None to keep the call sites consistent
+        (``run_env_manifest is None`` under per-trial)."""
+        p = _run_scope_patch("safe_two_service.yaml")
         orch = Orchestrator(_run_config(runtime="per_trial"))
         orch.tasks = [_task("t1", p), _task("t2", p)]
         assert orch._extract_run_env_manifest() is None
 
-    def test_shared_runtime_still_enforces_heterogeneity_check(self) -> None:
-        """Ensure the per-trial short-circuit does not silently loosen
-        the shared-runtime invariant."""
-        m1 = _patch("safe_one_service.yaml")
-        m2 = _patch("safe_two_service.yaml")
+    def test_shared_runtime_still_enforces_divergence_check(self) -> None:
+        """The per_trial short-circuit must not silently loosen the
+        divergence check under the default (automatic) path."""
+        m1 = _run_scope_patch("safe_one_service.yaml")
+        m2 = _run_scope_patch("safe_two_service.yaml")
         orch = Orchestrator(_run_config(runtime="shared"))
         orch.tasks = [_task("t1", m1), _task("t2", m2)]
-        with pytest.raises(RuntimeError, match="different environment_manifest.compose_file"):
+        with pytest.raises(RuntimeError, match="disagree on the run-scope subset"):
             orch._extract_run_env_manifest()
 
     def test_task_driven_per_trial_signal_short_circuits(self) -> None:
         """When the operator drops the deprecated ``orchestrator.runtime``
-        override and per-trial selection derives from
-        ``manifest.requires_per_trial`` via
-        :meth:`_select_backend_from_tasks`, the short-circuit must still
-        fire — otherwise the shared-stack heterogeneity check would run
-        on a per-trial run.
+        override and every task's ``plan_shape`` is ``TRIAL_SCOPED_ONLY``,
+        the short-circuit must still fire — otherwise the divergence
+        check would run on a per-trial run.
 
         Uses a stub adapter to drive the task-driven branch (``override
         is None + adapter is not None``); this is the path exercised
         once the deprecation lands and consumers migrate off the
         operator override.
         """
-        m1 = _patch("safe_one_service.yaml")
-        m2 = _patch("safe_two_service.yaml")
-        # override=None → task-driven selection
+        from tolokaforge.runner.models import PlanShape
+
+        m1 = _run_scope_patch("safe_one_service.yaml")
+        m2 = _run_scope_patch("safe_two_service.yaml")
         orch = Orchestrator(_run_config(runtime=None))
         orch.tasks = [_task("t1", m1), _task("t2", m2)]
-        # Stub adapter: to_task_description returns a manifest whose
-        # ``requires_per_trial`` is True, driving _select_backend_from_tasks
-        # to return "per_trial".
         adapter = MagicMock()
         per_trial_manifest = MagicMock()
-        per_trial_manifest.requires_per_trial = True
+        per_trial_manifest.plan_shape = PlanShape.TRIAL_SCOPED_ONLY
         task_desc = MagicMock()
         task_desc.environment_manifest = per_trial_manifest
-        # A real description always names a registered adapter, and
-        # ``_task_description`` verifies that on every build.
         task_desc.adapter_type = "native"
         adapter.to_task_description.return_value = task_desc
         orch.adapter = adapter
@@ -258,26 +353,13 @@ class TestPerTrialRuntimeReturnsNone:
 
 
 class TestServicesDeclarationsPreserved:
-    """The helper doesn't need to validate isolation labels — that's
-    :meth:`_verify_isolation_compatibility`'s job. But it must not
-    strip or alter the manifest's per-service declarations."""
-
-    def test_reset_service_survives(self) -> None:
-        from tolokaforge.core.models import ResetSpec
-
-        m = _patch(
-            "safe_two_service.yaml",
-            db=ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline")),
-            default=ServiceSpec(isolation="shared"),
-        )
-        orch = Orchestrator(_run_config())
-        orch.tasks = [_task("t1", m)]
-        result = orch._extract_run_env_manifest()
-        assert result is not None
-        assert result.services["db"].isolation == "reset"
+    """The helper doesn't validate isolation labels — that's
+    :meth:`_verify_isolation_compatibility`'s job. It must not strip or
+    alter the manifest's per-service declarations on the run-scope
+    path where it does return one."""
 
     def test_all_shared_survives(self) -> None:
-        m = _patch(
+        m = _run_scope_patch(
             "safe_two_service.yaml",
             db=ServiceSpec(isolation="shared"),
             default=ServiceSpec(isolation="shared"),

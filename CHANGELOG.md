@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Feat
+
+- **core**: `EnvironmentPatch.stacks` multi-stack composition plan honoured end-to-end by `resolve()` (ADR-0044). Project- and task-side stacks merge by `stack_id`: task-side entries deep-merge (`inputs` layer per key; other sub-fields override) or atomically replace when the task sets `compose_file`; task-only entries append in task-declared order. The scalar `stack` form is retained as an ergonomic single-stack alias and stays byte-identical.
+
 ## v0.21.4 (2026-08-28)
 
 ### Fix

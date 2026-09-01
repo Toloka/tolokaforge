@@ -234,6 +234,17 @@ class RuntimeBackendBuildContext:
     (``tools.agent.<tool>.service``), whose wrappers ``docker exec`` from the
     runner into a sibling service. CLI without socket, or socket without CLI,
     are both useless — the two flags are one decision."""
+    per_trial_mode: bool = False
+    """The plan has no run-scope substrate — every task materialises per
+    trial from its own manifest at :meth:`RuntimeBackend.provision` time.
+    Set by the orchestrator when the resolved plan is fully trial-scoped
+    (``PlanShape.TRIAL_SCOPED_ONLY``) or when the operator coerced with
+    ``orchestrator.runtime="per_trial"``. Consumed by
+    :func:`shared_runtime_backend_factory` to pin the backend's per-trial
+    branch so its :meth:`connect` no-ops ``materialise_run`` and its
+    :meth:`provision` routes through ``composer.provision_trial``. Default
+    ``False`` preserves built-in-engine behaviour for packs that declare
+    no manifest."""
 
 
 @dataclass(frozen=True)

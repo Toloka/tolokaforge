@@ -105,7 +105,7 @@ class TestUnknownImplementationErrors:
 
 
 # ---------------------------------------------------------------------------
-# (c) auto selection — mirrors _select_backend_from_tasks
+# (c) auto selection — task-driven per-trial signal for the run_trial subprocess seam
 # ---------------------------------------------------------------------------
 
 
