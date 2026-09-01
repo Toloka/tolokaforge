@@ -45,7 +45,12 @@ from tenacity.wait import wait_base
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyGuard
 from tolokaforge.core.llm.capabilities import ModelCapabilities
-from tolokaforge.core.llm.gateway_route import fetch_gateway_catalog, resolve_gateway_route
+from tolokaforge.core.llm.gateway_route import (
+    ResolvedGatewayRoute,
+    RouteKind,
+    fetch_gateway_catalog,
+    resolve_gateway_route,
+)
 from tolokaforge.core.llm.litellm_params import allowed_openai_params
 from tolokaforge.core.llm.params_policy import RuleAction
 from tolokaforge.core.llm.presets import build_capabilities
@@ -613,8 +618,11 @@ class LLMClient:
         # A gateway that does not serve this model must not intercept it: fall back
         # to the direct provider rather than post a name it cannot route.
         # docs/LLM_LAYER.md § Speaking to the gateway.
-        self._gateway_route: str | None = None
-        self._gateway_route_kind: str | None = None
+        self._gateway_route: ResolvedGatewayRoute | None = None
+        self._gateway_route_kind: RouteKind | None = None
+        # Declared here rather than created on the first pin drop, so the flag stays
+        # inside the client's attribute set. See the drop site in _call_with_retry.
+        self._pin_drop_warned: bool = False
         if self._proxy is not None:
             catalog = fetch_gateway_catalog(self._proxy)
             if catalog is None:
@@ -634,7 +642,9 @@ class LLMClient:
                     self._proxy.preferred_route,
                     trust_namespace_wildcards=self._proxy.trust_namespace_wildcards,
                 )
-                self._gateway_route_kind = getattr(self._gateway_route, "kind", None)
+                self._gateway_route_kind = (
+                    self._gateway_route.kind if self._gateway_route is not None else None
+                )
                 if self._gateway_route_kind == "wildcard":
                     self.logger.info(
                         "Gateway route resolved via the model namespace wildcard",
@@ -1867,7 +1877,7 @@ class LLMClient:
                 extra_body = kwargs.get("extra_body")
                 if isinstance(extra_body, dict) and "provider" in extra_body:
                     extra_body.pop("provider")
-                    if not getattr(self, "_pin_drop_warned", False):
+                    if not self._pin_drop_warned:
                         # Once per client, not per call: a full eval makes
                         # thousands of calls and the fact does not change.
                         self._pin_drop_warned = True

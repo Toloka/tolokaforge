@@ -46,6 +46,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from tolokaforge.core.llm.gateway_route import RouteKind
+
 __all__ = [
     "OPENROUTER_GENERATION_ID_HEADER",
     "CostSource",
@@ -94,7 +96,7 @@ class ProviderRawCall:
     (where the untranslated model string goes to the gateway unresolved).
     """
 
-    gateway_route_kind: str | None = None
+    gateway_route_kind: RouteKind | None = None
     """How the route matched the catalog: ``"exact"`` or ``"wildcard"``.
 
     The serving-path provenance a board audit needs: a wildcard route says
@@ -310,7 +312,7 @@ class UsageExtractor:
         cost_usd: float | None = None,
         cost_source: CostSource = "unknown",
         gateway_route: str | None = None,
-        gateway_route_kind: str | None = None,
+        gateway_route_kind: RouteKind | None = None,
     ) -> Usage:
         usage = getattr(response, "usage", None)
         if usage is None and isinstance(response, dict):

@@ -12,7 +12,7 @@ import logging
 import time
 import urllib.error
 import urllib.request
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from tolokaforge.core.llm.proxy import ProxyConfig
@@ -20,10 +20,15 @@ if TYPE_CHECKING:
 __all__ = [
     "GatewayRouteError",
     "ResolvedGatewayRoute",
+    "RouteKind",
     "resolve_gateway_route",
     "fetch_gateway_catalog",
     "clear_catalog_cache",
 ]
+
+#: How a route matched the catalog. Named so the run artifacts, the client field and
+#: the automation's availability lookup all state the same two-value contract.
+RouteKind = Literal["exact", "wildcard"]
 
 logger = logging.getLogger(__name__)
 
@@ -51,14 +56,14 @@ class ResolvedGatewayRoute(str):
     ("wildcard") - a provenance distinction the run artifacts carry.
     """
 
-    kind: str
+    kind: RouteKind
 
-    def __new__(cls, name: str, kind: str) -> ResolvedGatewayRoute:
+    def __new__(cls, name: str, kind: RouteKind) -> ResolvedGatewayRoute:
         route = super().__new__(cls, name)
         route.kind = kind
         return route
 
-    def __getnewargs__(self) -> tuple[str, str]:
+    def __getnewargs__(self) -> tuple[str, RouteKind]:
         # str.__getnewargs__ returns only the string value, so copy.copy,
         # copy.deepcopy and pickle would reconstruct with a missing ``kind``
         # and die - and dataclasses.asdict deepcopies every ProviderRawCall
