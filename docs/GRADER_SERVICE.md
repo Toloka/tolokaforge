@@ -424,7 +424,7 @@ truthy, registers `add_SubstrateServiceServicer_to_server` on the same
 started with the flag off returns `UNIMPLEMENTED` for any
 `SubstrateService/*` call.
 
-The seven RPCs:
+The eight RPCs:
 
 | RPC | What it returns |
 | --- | --- |
@@ -434,6 +434,7 @@ The seven RPCs:
 | `ReadFilesystemPath` | One file under `AGENT_WORK_DIR`; `is_file` + `content_utf8` for text, `is_file` + `content_bytes_b64` for binary. Symlinks / non-files / missing paths return `exists=false`. |
 | `ListFilesystemDir` | Relative POSIX paths of every non-symlink UTF-8-decodable file under `AGENT_WORK_DIR`, alphabetically sorted. Same filter and exclusion policy as `tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem` — prunes `.git`, `.venv`, `node_modules`, `dist`, `.next` subtrees at any depth. |
 | `KBSearch` | Trial's per-trial KB hits. `kb_available: false` is a first-class "this trial has no KB" signal; the callback substrate returns `None` from `knowledge_search()` when it is false. |
+| `RunDbProbe` | Rows returned by a task-declared read-only SQL probe: `rows_json` is `json.dumps(rows, default=str)` — a JSON array of objects. asyncpg-native scalars (`datetime`, `Decimal`, `UUID`, `bytes`) land as their `str(...)` forms. The runner container resolves the probe DSN on its own docker network; the servicer does not validate SQL shape. Feeds `DbProbesStateCheckBackend` on the grader side. |
 | `SubstrateHealthCheck` | `status: "ready" \| "degraded" \| "unavailable"` and `active_trials` — distinct from `RunnerService.HealthCheck`, which reports RunnerService plumbing. |
 
 The read-only guarantee is structural, not a docstring promise. The

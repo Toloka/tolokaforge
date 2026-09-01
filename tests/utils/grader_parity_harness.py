@@ -461,11 +461,17 @@ def _install_db_probe_rows(
 
     Both legs' ``state_check_backends["db_probes"]`` is
     :class:`~tolokaforge.core.grading.default_state_check_backends.DbProbesStateCheckBackend`,
-    whose :meth:`query` wraps :func:`evaluate_db_probes` — the sole caller
-    of :func:`_fetch_probe_rows`. Monkeypatching that seam keeps the
+    whose :meth:`query` reads each probe through
+    :meth:`~tolokaforge.core.grading.substrate.GradingSubstrate.db_probe`.
+    :func:`_fetch_probe_rows` is the single helper both substrate impls call
+    inside the runner process: the aggregate-image leg reaches it directly
+    through :class:`InProcessGradingSubstrate.db_probe`, and the
+    independent-grader leg reaches it through
+    :meth:`~tolokaforge.runner.substrate_service.SubstrateServicer.RunDbProbe`
+    — same process in the parity harness, so a single monkeypatch on
+    ``db_probes_module._fetch_probe_rows`` reaches both legs. Keeps the
     surrounding backend logic (per-probe ``expect`` JSONPath evaluation,
-    pass/fail accounting, reasons composition) under test symmetrically
-    on both legs.
+    pass/fail accounting, reasons composition) under test symmetrically.
 
     Rows are keyed by SQL ``query`` string: :func:`_fetch_probe_rows`
     receives ``(dsn, query)`` and cannot see the probe name, so the

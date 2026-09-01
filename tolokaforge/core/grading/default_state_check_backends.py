@@ -1,11 +1,14 @@
 """Reference impls of :class:`StateCheckBackend` — ``jsonpath`` + ``db_probes``.
 
 Registered under those two names in the ``tolokaforge.state_check_backends``
-entry-point group. Each wraps the corresponding evaluator in
-:mod:`tolokaforge.core.grading.jsonpath_evaluators` /
-:mod:`tolokaforge.core.grading.db_probes` and reshapes / bridges around it
-so :func:`~tolokaforge.core.grading.composite.grade_state_checks_reads` can
-dispatch through the seam without importing either evaluator.
+entry-point group. ``JsonpathStateCheckBackend`` wraps
+:func:`~tolokaforge.core.grading.jsonpath_evaluators.evaluate_jsonpath_checks`;
+``DbProbesStateCheckBackend`` drives per-probe evaluation through the
+substrate's :meth:`~tolokaforge.core.grading.substrate.GradingSubstrate.db_probe`
+accessor and applies each probe's ``expect`` block via
+:func:`~tolokaforge.core.grading.jsonpath_evaluators.evaluate_jsonpath_state_checks`.
+:func:`~tolokaforge.core.grading.composite.grade_state_checks_reads` dispatches
+through the seam without importing either evaluator.
 
 Hash grading is deliberately NOT a registered backend. Its snapshot-and-replay
 semantics need write access to the trial's DB — the read-only substrate
@@ -20,13 +23,14 @@ composite from importing it without also forbidding the Protocol module.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
-from tolokaforge.core.grading.db_probes import evaluate_db_probes
 from tolokaforge.core.grading.jsonpath_addressing import addresses_the_database
-from tolokaforge.core.grading.jsonpath_evaluators import evaluate_jsonpath_checks
+from tolokaforge.core.grading.jsonpath_evaluators import (
+    evaluate_jsonpath_checks,
+    evaluate_jsonpath_state_checks,
+)
 from tolokaforge.core.grading.state_check_backend import StateCheckBackend
 from tolokaforge.runner.db_client import TrialNotFoundError as DBTrialNotFoundError
 
@@ -104,16 +108,24 @@ class JsonpathStateCheckBackend:
 
 
 class DbProbesStateCheckBackend:
-    """Score ``db_probes`` by opening task-declared postgres connections.
+    """Score ``db_probes`` through the substrate's ``db_probe(dsn, query)`` accessor.
 
-    Each probe carries its own ``dsn`` and hits its task's postgres directly
-    via :func:`~tolokaforge.core.grading.db_probes.evaluate_db_probes`; the
-    substrate does not intermediate — a probe DSN resolves only inside the
-    task's docker network, which is the connection the probe itself opens.
-    :meth:`query` is sync so the seam matches the sync composite dispatch;
-    the async evaluator runs under an ephemeral :func:`asyncio.run` on the
-    executor thread the runner already parks the composite on via
-    ``loop.run_in_executor(None, ...)``.
+    Each probe carries its own ``dsn`` and the substrate resolves the
+    connection in the runner container's network context. The backend
+    iterates the probes, calls ``substrate.db_probe(dsn, query)`` per probe,
+    reshapes the rows into ``{"rows": [...], "row_count": N}``, and applies
+    the probe's ``expect`` JSONPath assertions via
+    :func:`~tolokaforge.core.grading.jsonpath_evaluators.evaluate_jsonpath_state_checks`.
+
+    A probe passes iff every ``expect`` assertion passes (JSONPath score
+    1.0); the component score is the fraction of passing probes. A
+    ``substrate.db_probe`` failure — asyncpg connection error, gRPC
+    ``SubstrateUnreachableError``, anything the substrate raises — is
+    caught per-probe and reported as a ``FAIL`` line naming the exception,
+    matching the shipped fail-loud contract locked by
+    ``tests/unit/test_runner_jsonpath_grading.py::test_db_probe_connection_error_fails_loud``.
+    Empty probe list returns the ``(None, None)`` sentinel every backend
+    ships for "nothing to score".
     """
 
     def query(
@@ -121,11 +133,34 @@ class DbProbesStateCheckBackend:
         *,
         expression: list[dict[str, Any]],
         substrate: GradingSubstrate,
-        trial_id: str | None = None,
+        trial_id: str | None = None,  # noqa: ARG002
     ) -> tuple[float | None, str | None]:
         if not expression:
             return None, None
-        return asyncio.run(evaluate_db_probes(expression))
+        passed = 0
+        total = len(expression)
+        reasons_parts: list[str] = []
+        for probe in expression:
+            name = probe.get("name", "")
+            description = probe.get("description") or name
+            expect = probe.get("expect", []) or []
+            try:
+                rows = substrate.db_probe(probe.get("dsn", ""), probe.get("query", ""))
+            except Exception as exc:
+                reasons_parts.append(
+                    f"FAIL: probe {name!r} could not query postgres: "
+                    f"{type(exc).__name__}: {exc} — {description}"
+                )
+                continue
+            state = {"rows": rows, "row_count": len(rows)}
+            probe_score, probe_reasons = evaluate_jsonpath_state_checks(expect, state)
+            if probe_score == 1.0:
+                passed += 1
+                reasons_parts.append(f"PASS: probe {name!r} — {probe_reasons}")
+            else:
+                reasons_parts.append(f"FAIL: probe {name!r} — {probe_reasons}")
+        score = passed / total
+        return score, "; ".join(reasons_parts)
 
 
 def _jsonpath_state_check_backend_factory() -> StateCheckBackend:

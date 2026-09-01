@@ -496,7 +496,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
         core_field="StateChecksConfig.db_probes",
         runner_field="RunnerStateChecksConfig.db_probes",
-        runner_evaluator="tolokaforge.core.grading.db_probes.evaluate_db_probes",
+        runner_evaluator="tolokaforge.core.grading.default_state_check_backends.DbProbesStateCheckBackend",
         enforcing_test=(
             "tests/integration/test_helpdesk_workflow_end_to_end.py"
             "::test_helpdesk_workflow_infrastructure_end_to_end"

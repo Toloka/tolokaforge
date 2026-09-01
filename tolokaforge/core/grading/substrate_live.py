@@ -154,6 +154,9 @@ class LiveRunnerCallbackGradingSubstrate:
             self._filesystem_root_cache = self._materialise_filesystem_root()
         return self._filesystem_root_cache
 
+    def db_probe(self, dsn: str, query: str) -> list[dict[str, Any]]:
+        return self._client.run_db_probe(dsn, query)
+
     def close(self) -> None:
         if self._closed:
             return

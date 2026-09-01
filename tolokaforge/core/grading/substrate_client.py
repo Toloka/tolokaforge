@@ -165,6 +165,18 @@ class GrpcSubstrateClient:
         ]
         return KBSearchResult(kb_available=response.kb_available, hits=hits)
 
+    def run_db_probe(self, dsn: str, query: str) -> list[dict[str, Any]]:
+        try:
+            response = self._stub.RunDbProbe(pb2.RunDbProbeRequest(dsn=dsn, query=query))
+        except grpc.RpcError as err:
+            raise SubstrateUnreachableError(str(err)) from err
+        decoded = json.loads(response.rows_json) if response.rows_json else []
+        if not isinstance(decoded, list):
+            raise SubstrateUnreachableError(
+                f"SubstrateService returned a non-array rows_json: {decoded!r}"
+            )
+        return decoded
+
     def health_check(self) -> str:
         try:
             response = self._stub.SubstrateHealthCheck(pb2.SubstrateHealthCheckRequest())

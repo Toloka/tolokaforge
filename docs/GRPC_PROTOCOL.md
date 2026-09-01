@@ -150,6 +150,13 @@ service SubstrateService {
   // knowledge_search() when it is false.
   rpc KBSearch(KBSearchRequest) returns (KBSearchResponse);
 
+  // Run a task-declared read-only SQL probe against the DSN in the runner
+  // container's network context. Returns rows as a JSON array of objects
+  // (json.dumps(rows, default=str) — same coercion ReadStateResponse.
+  // state_json applies to DB state reads). Drives DbProbesStateCheckBackend
+  // on the grader side.
+  rpc RunDbProbe(RunDbProbeRequest) returns (RunDbProbeResponse);
+
   // Substrate liveness + capacity. Distinct from RunnerService.HealthCheck.
   rpc SubstrateHealthCheck(SubstrateHealthCheckRequest) returns (SubstrateHealthCheckResponse);
 }

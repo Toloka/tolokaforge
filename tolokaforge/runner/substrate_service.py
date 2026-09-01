@@ -200,6 +200,25 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         )
 
     # ------------------------------------------------------------------
+    # SQL probe
+    # ------------------------------------------------------------------
+
+    def RunDbProbe(  # noqa: N802
+        self,
+        request: pb2.RunDbProbeRequest,
+        context: grpc.ServicerContext,
+    ) -> pb2.RunDbProbeResponse:
+        from tolokaforge.core.grading.db_probes import _fetch_probe_rows
+
+        try:
+            rows = self._runner._run_async(_fetch_probe_rows(request.dsn, request.query))
+        except Exception as exc:
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(f"RunDbProbe failed: {type(exc).__name__}: {exc}")
+            return pb2.RunDbProbeResponse()
+        return pb2.RunDbProbeResponse(rows_json=json.dumps(rows, default=str))
+
+    # ------------------------------------------------------------------
     # Health
     # ------------------------------------------------------------------
 

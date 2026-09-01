@@ -2100,10 +2100,10 @@ _UNREAD_LOT_RUN = (
 )
 
 # #773: the action is posted twice. The db_probe does see the duplicate — its third
-# assertion reads `row_count` — but `evaluate_db_probes` passes a probe only when every
-# assertion does, so a duplicate took `state_checks` to `0.0` and the remaining
-# `0.2 + 0.3` landed on `pass_threshold` exactly, which `>=` admits. A rebalance alone
-# would not close that, which is why the check is a gate.
+# assertion reads `row_count` — but `DbProbesStateCheckBackend` passes a probe only
+# when every assertion does, so a duplicate took `state_checks` to `0.0` and the
+# remaining `0.2 + 0.3` landed on `pass_threshold` exactly, which `>=` admits. A
+# rebalance alone would not close that, which is why the check is a gate.
 _DOUBLE_POST_RUN = (
     _lot(0),
     _catalog(1),
