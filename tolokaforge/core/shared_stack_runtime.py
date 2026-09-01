@@ -53,7 +53,11 @@ from tolokaforge.runner.protocol import (
 from tolokaforge.tools.registry import ToolResult
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports for provisioning surface
-    from tolokaforge.core.composition_runtime import ComposedEnvHandle, SubstrateComposer
+    from tolokaforge.core.composition_runtime import (
+        ComposedEnvHandle,
+        RunSubstrate,
+        SubstrateComposer,
+    )
     from tolokaforge.core.plugin_registry import RuntimeBackendBuildContext
     from tolokaforge.core.trial import TrialSpec
 
@@ -987,7 +991,7 @@ class SharedStackRuntimeBackend:
         self.connect_timeout = connect_timeout
         self.connect_retry_interval = connect_retry_interval
         self._per_trial_mode: bool = False
-        self._run_substrate: Any = None
+        self._run_substrate: RunSubstrate | None = None
         self._env_handles: dict[str, ComposedEnvHandle] = {}
         self._connected_trials: set[str] = set()
 
@@ -1407,7 +1411,7 @@ class SharedStackRuntimeBackend:
             self._connected_trials.add(trial_id)
         return client
 
-    def _run_substrate_or_empty(self) -> Any:
+    def _run_substrate_or_empty(self) -> RunSubstrate:
         """Return :attr:`_run_substrate` or an empty stand-in.
 
         Per-trial mode never runs :meth:`materialise_run` — the composer

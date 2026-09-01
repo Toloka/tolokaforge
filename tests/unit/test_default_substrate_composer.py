@@ -535,6 +535,61 @@ class TestProvisionTrialTrialScopedPlan:
             "(available: [])."
         )
 
+    def test_non_provision_error_from_reset_recipe_tears_down_newly_materialised_stacks(
+        self, tmp_path: Path
+    ) -> None:
+        """A raw ``RuntimeError`` (not ``ProvisionError``) from the reset
+        dispatcher still tears down every newly-materialised handle before
+        the exception propagates — the ``except BaseException`` boundary
+        around ``_apply_reset_recipes`` catches non-``ProvisionError``
+        raises too."""
+
+        @dataclass
+        class _RaisingResetDispatcher:
+            isolation: ServiceIsolation = "reset"
+
+            def cycle(
+                self,
+                service_name: str,
+                service_spec: ServiceSpec,
+                stack_handle: StackHandle,
+                materialiser: Any,
+                *,
+                seeds: Mapping[str, SeedRef],
+            ) -> None:
+                del service_name, service_spec, stack_handle, materialiser, seeds
+                raise RuntimeError("reset seam corrupted")
+
+        compose = _write_compose(tmp_path)
+        seed = SeedRef.model_validate(
+            {"path": "seed.sql", "kind": "sql_dump", "digest": "sha256:" + "0" * 64}
+        )
+        services = {
+            "db-service": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline")),
+        }
+        manifest = _manifest(compose, services=services)
+        plan = [_decl(compose, stack_scope="trial")]
+        materialiser = _FakeMaterialiser()
+        registry: dict[ServiceIsolation, Any] = {
+            "shared": _RecordingDispatcher(isolation="shared"),
+            "reset": _RaisingResetDispatcher(),
+            "ephemeral": _RecordingDispatcher(isolation="ephemeral"),
+        }
+        composer = DefaultSubstrateComposer(
+            materialiser=materialiser,
+            dispatcher_registry=registry,
+            runner_client_factory=_fake_client_factory,
+            readiness_probe_loader=_always_ready_loader,
+        )
+        run_sub = _empty_run_sub()
+        run_sub.seeds = {"baseline": seed}  # type: ignore[assignment]
+        spec = _trial_spec(manifest)
+
+        with pytest.raises(RuntimeError, match="reset seam corrupted"):
+            composer.provision_trial(plan, spec, run_sub)
+
+        assert materialiser.torn_down == ["default"]
+
     def test_refuses_reserved_prefix_in_stack_inputs(self, tmp_path: Path) -> None:
         """A ``TOLOKAFORGE_``-prefixed key in ``stack_inputs`` collides
         with the engine-authored compose variables — refused before any

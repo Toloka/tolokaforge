@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from tolokaforge.core.compose_materialisation import LogCaptureConfig
 from tolokaforge.core.composition_runtime import ComposedEnvHandle, SubstrateComposer
@@ -49,8 +49,8 @@ class PerTrialRuntimeBackend:
     monkeypatching module symbols.
     """
 
-    isolation_mode: IsolationMode = IsolationMode.PER_TRIAL_STACK
-    advertised_capabilities: frozenset[str] = frozenset(
+    isolation_mode: ClassVar[IsolationMode] = IsolationMode.PER_TRIAL_STACK
+    advertised_capabilities: ClassVar[frozenset[str]] = frozenset(
         {
             "per_trial_stack",
             "reset_recipes:sql_dump",
