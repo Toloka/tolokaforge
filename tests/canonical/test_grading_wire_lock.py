@@ -383,7 +383,7 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
     _WireKey(
         path="grading.grading_method",
         emitted_for="",
-        wire_shape="Literal['hash', 'test_execution', 'transcript', 'llm'] | None",
+        wire_shape="str | None",
     ),
     _WireKey(
         path="grading.state_checks",

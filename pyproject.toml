@@ -212,6 +212,16 @@ tcp = "tolokaforge.core.service_readiness:tcp_readiness_probe_factory"
 agent_only = "tolokaforge.core.actors.turn_policy:_agent_only_policy_factory"
 conversational = "tolokaforge.core.actors.turn_policy:_conversational_policy_factory"
 
+# Runner-side dispatch selector on ``RunnerGradingConfig.grading_method``: the
+# registered names are the ones ``RegisterTrial`` accepts. Two markers ship
+# today — ``composite`` (default state-checks / transcript-rules / trace-checks /
+# llm-judge / custom-checks fold) and ``test_execution`` (reference-suite
+# short-circuit). A downstream dispatch registers here without a framework PR;
+# see :mod:`tolokaforge.core.grading.grading_method`.
+[project.entry-points."tolokaforge.grading_methods"]
+composite = "tolokaforge.core.grading.grading_method:CompositeGradingMethod"
+test_execution = "tolokaforge.core.grading.grading_method:TestExecutionGradingMethod"
+
 # ADR-0040 § "The single design abstraction" — GradingSubstrate implementations
 # resolvable by name. Two implementations ship today (``in_process`` +
 # ``live_callback``); ``trajectory_storage`` / ``snapshot`` / ``shared_mount``
@@ -403,6 +413,7 @@ exclude = [
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/config_validation.py",
     "tolokaforge/core/grading/corpus_curation.py",
+    "tolokaforge/core/grading/judge_only_helpers.py",
     "tolokaforge/core/grading/migration_declaration.py",
     "tolokaforge/core/grading/replay.py",
     "tolokaforge/core/grading/replay_layout.py",

@@ -177,6 +177,36 @@ records every kind the walk reached, wherever the constraint was written.
 does not apply to that dispatch mode — recorded as the `grading_method` entry's
 declared `reason`.
 
+### Grading Method Dispatch
+
+`RunnerGradingConfig.grading_method` selects which runner-side dispatch a trial
+takes. The value is a bare string on the wire — the registered names live in
+the `tolokaforge.grading_methods` entry-point group and load through
+[`load_grading_method(name)`](../tolokaforge/core/plugin_registry.py). Two
+markers ship:
+
+- `composite` — the default state-checks / transcript-rules / trace-checks /
+  llm-judge / custom-checks fold. Omitting `grading_method` selects the same
+  dispatch — `None` and `"composite"` are equivalent on the wire.
+- `test_execution` — the reference-suite short-circuit. Requires an exec-capable
+  lifecycle tool in `TaskDescription.agent_tools` (`DockerComposeExecToolWrapper`
+  today); the runner reads the reward off
+  `/logs/verifier/reward.txt`. Returns before the component phase, so the
+  ledger does not apply.
+
+A downstream adapter registers a new dispatch name with one entry-point line:
+
+```toml
+[project.entry-points."tolokaforge.grading_methods"]
+terminal_bench_native = "acme_adapter:TerminalBenchNativeGradingMethod"
+```
+
+The marker class carries a `NAME: ClassVar[str]` — same shape as
+`tolokaforge.grading_substrates` from ADR-0040. `RegisterTrial` refuses an
+unregistered name with an error listing both the offending key and
+`available_grading_methods()`, so a typo in a task pack surfaces before the
+trial spends any turns.
+
 ### Single-substrate keys
 
 | Key | kind | coverage | enforcement | Why only one substrate | Tracked |

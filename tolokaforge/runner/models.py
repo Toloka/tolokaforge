@@ -2057,22 +2057,14 @@ class RunnerGradingConfig(BaseModel):
         return validate_combine_method(value, context="TaskDescription grading.combine_method")
 
     # Declarative grading dispatch — adapters tell the runner *how* to grade in data,
-    # so the runner never infers it from the adapter's identity.
-    #
-    # Values:
-    #   ``None`` (default)
-    #     Standard grading: combine state checks / transcript rules / LLM judge
-    #     using ``weights`` and ``pass_threshold``. Most adapters want this.
-    #   ``"test_execution"``
-    #     Run a reference test suite inside the trial env via an exec-capable
-    #     lifecycle tool (today: ``DockerComposeExecToolWrapper``) and score by
-    #     reading the reward written to ``/logs/verifier/reward.txt``. Requires
-    #     such a tool to be present in ``TaskDescription.agent_tools`` — without
-    #     one the runner returns a clear error at ``GradeTrial`` time.
-    #   ``"hash"`` / ``"transcript"`` / ``"llm"``
-    #     Reserved names for future single-method dispatch; not currently used
-    #     for dispatch (today their behaviour is part of the default path).
-    grading_method: Literal["hash", "test_execution", "transcript", "llm"] | None = None
+    # so the runner never infers it from the adapter's identity. The registered
+    # names live in the ``tolokaforge.grading_methods`` entry-point group
+    # (:mod:`tolokaforge.core.grading.grading_method`); read the current set with
+    # :func:`~tolokaforge.core.plugin_registry.available_grading_methods`.
+    # ``None`` (the default) picks the composite dispatch — same as
+    # ``"composite"``. Unknown names are refused at ``RegisterTrial`` with an
+    # error naming both the offending key and the registered set.
+    grading_method: str | None = None
 
     state_checks: RunnerStateChecksConfig | None = None
     transcript_rules: TranscriptRulesConfig | None = None
