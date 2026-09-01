@@ -351,7 +351,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="GradingCombineConfig.method",
         runner_field="RunnerGradingConfig.combine_method",
         core_evaluator="tolokaforge.core.grading.combine.GradingEngine.grade_trajectory",
-        runner_evaluator="tolokaforge.runner.grading.combine_grade_components",
+        runner_evaluator="tolokaforge.core.grading.composite_fold.combine_grade_components",
         reason=_COMBINE_METHOD_PARITY_REASON,
     ),
     GradingKey(
@@ -362,7 +362,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="GradingCombineConfig.weights",
         runner_field="RunnerGradingConfig.weights",
         core_evaluator="tolokaforge.core.grading.combine.GradingEngine.grade_trajectory",
-        runner_evaluator="tolokaforge.runner.grading.combine_grade_components",
+        runner_evaluator="tolokaforge.core.grading.composite_fold.combine_grade_components",
         reason=_COMBINE_WEIGHTS_MEMBERSHIP_REASON,
     ),
     GradingKey(
@@ -373,7 +373,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="GradingCombineConfig.pass_threshold",
         runner_field="RunnerGradingConfig.pass_threshold",
         core_evaluator="tolokaforge.core.grading.combine.GradingEngine.grade_trajectory",
-        runner_evaluator="tolokaforge.runner.grading.combine_grade_components",
+        runner_evaluator="tolokaforge.core.grading.composite_fold.combine_grade_components",
     ),
     GradingKey(
         author_key="state_checks.hash",
@@ -432,7 +432,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="StateHashConfig.weight",
         runner_field="RunnerStateChecksConfig.hash_weight",
         core_evaluator="tolokaforge.core.grading.state_composition.compose_state_checks_score",
-        runner_evaluator="tolokaforge.runner.grading.resolve_state_checks_component",
+        runner_evaluator="tolokaforge.core.grading.composite_fold.resolve_state_checks_component",
     ),
     GradingKey(
         author_key="state_checks.hash.description",

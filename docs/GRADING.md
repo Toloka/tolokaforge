@@ -3704,7 +3704,7 @@ met, else `0.0`.
 its own says nothing about the gate: on a rubric whose non-required criteria all
 scored full marks, a trial that *failed* a required criterion still aggregates to
 `score: 1.0`. Zeroing the component is
-[`compose_runner_trial_verdict`](#score-combination)'s, and it is what the wire
+[`CompositeFold.finalise`](#score-combination)'s, and it is what the wire
 grade and the reasons string carry — measured on the five bundles under
 `tests/data/migration_corpora/notes_duplicate_check/not_met/`, whose `grade.yaml`
 records `components.llm_judge: 0.0` where the aggregate alone gives `1.0`. Read the
@@ -4140,18 +4140,30 @@ the denominator — this includes an `llm_judge` component whose judge ERRORED
 as a `0.0`. An *evaluated* component that `combine.weights` declares no weight for is
 neither excluded nor defaulted: the fold raises on both substrates, per the rule above.
 
-**Where the runner-side verdict is composed.** The runner folds a trial through
-`compose_runner_trial_verdict`
-([`tolokaforge/runner/grading.py`](../tolokaforge/runner/grading.py)), which wraps
-`combine_grade_components` and applies **both gates** around it: the judge
-component is zeroed where a required criterion failed, and a failed judge or
-trace gate then forces `binary_pass` false whatever the threshold. It returns the
-gated judge component beside `(score, binary_pass)`, because that component — not
-the judge's raw aggregate — is what the wire grade and the reasons carry. One
-runner-side home, so an offline recomputation reaches the runner's verdict without
-repeating either gate: `tolokaforge reconcile`'s counterfactual
-([`docs/RUBRIC_MIGRATION.md`](RUBRIC_MIGRATION.md)) is that caller, and it is what
-[#775](https://github.com/toloka/tolokaforge/issues/775) would call.
+**Where the runner-side verdict is composed.** The runner drives a trial through
+`CompositeFold.finalise` in
+[`tolokaforge/core/grading/composite_fold.py`](../tolokaforge/core/grading/composite_fold.py) —
+one substrate-neutral entry point that resolves the `state_checks` slot,
+applies **both gates** around `combine_grade_components`, and joins the
+author-facing reasons string in one call. The judge component is zeroed where
+a required criterion failed, and a failed judge or trace gate then forces
+`binary_pass` false whatever the threshold. `finalise` returns a neutral
+`CompositeFoldResult` — score, `binary_pass`, gated judge component,
+`state_checks` slot as ``float | None``, joined reasons — and each dispatcher
+projects it onto its own wire type: the runner encodes into
+`pb2.GradeTrialResponse` and translates the `None` slot into the wire's
+`-1.0` sentinel via `project_state_checks_to_runner_wire`; the grader-side
+`GraderCompositeDispatch` builds the Python `Grade` and keeps the `None`.
+
+The gated judge component — not the judge's raw aggregate — is what the wire
+grade and the reasons carry. Both dispatchers drive one fold definition, so an
+offline recomputation reaches the runner's verdict without repeating either
+gate: `tolokaforge reconcile`'s counterfactual
+([`docs/RUBRIC_MIGRATION.md`](RUBRIC_MIGRATION.md)) reaches
+`compose_trial_verdict` directly (the fold's public verdict primitive) because
+it composes verdicts by historical column and swallows `MissingComponentWeight`
+into an `UnrecomputedTrial` sentinel — the reason-joining path `finalise`
+provides is not the one that caller wants.
 
 **Core composes its own**, in
 [`tolokaforge/core/grading/combine.py`](../tolokaforge/core/grading/combine.py),

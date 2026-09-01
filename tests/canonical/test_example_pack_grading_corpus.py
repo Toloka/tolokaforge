@@ -124,6 +124,7 @@ from tolokaforge.adapters._task_loader import (
 )
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
+from tolokaforge.core.grading.composite_fold import compose_trial_verdict
 from tolokaforge.core.grading.config_validation import (
     ArgumentSchema,
     AuthoringReport,
@@ -181,7 +182,6 @@ from tolokaforge.core.project_loader import (
     resolve_effective_grading_combine,
 )
 from tolokaforge.dx.cli.main import cli
-from tolokaforge.runner.grading import compose_runner_trial_verdict
 from tolokaforge.runner.grading_ledger import audit_accounted_keys
 from tolokaforge.runner.models import (
     RunnerInitialStateConfig,
@@ -2581,7 +2581,7 @@ def test_each_half_of_the_notes_policy_is_vetoed_by_the_mechanism_that_can_see_i
     judge = aggregate_rubric(
         rubric, parse_submit_report(_notes_submission(scenario.warned), rubric)
     )
-    verdict = compose_runner_trial_verdict(
+    verdict = compose_trial_verdict(
         {
             COMPONENT_BY_NAME["llm_judge"].runner_score_field: judge.score,
             COMPONENT_BY_NAME["trace_checks"].runner_score_field: trace.score,

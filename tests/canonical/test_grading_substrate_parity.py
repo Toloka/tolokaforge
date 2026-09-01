@@ -152,6 +152,10 @@ from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import COMBINE_METHODS
 from tolokaforge.core.grading.combine_weights import MissingComponentWeight
 from tolokaforge.core.grading.composite import _build_runner_check_transcript
+from tolokaforge.core.grading.composite_fold import (
+    combine_grade_components,
+    resolve_state_checks_component,
+)
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord, resolve_initial_state
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
@@ -180,10 +184,8 @@ from tolokaforge.runner import models as runner_models
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import service as runner_service_module
 from tolokaforge.runner.grading import (
-    combine_grade_components,
     evaluate_db_probes,
     evaluate_jsonpath_checks,
-    resolve_state_checks_component,
 )
 from tolokaforge.runner.grading_ledger import (
     LEDGER_KEYS,

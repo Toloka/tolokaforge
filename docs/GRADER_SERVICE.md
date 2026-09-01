@@ -185,10 +185,17 @@ The standalone service mounts
 `task_config_json` / `task_description_json` / `judge_model_config_json`,
 builds a fresh
 `tolokaforge.core.grading.substrate_live.LiveRunnerCallbackGradingSubstrate`
-against `runner_substrate_address`, and runs the composite grading
+against `runner_substrate_address`, and drives the composite grading
 functions (state checks / transcript rules / trace checks / llm judge /
-custom checks) mirroring the runner's `_grade_trial_async`. Hash grading
-is refused server-side too — the substrate is read-only. See
+custom checks) mirroring the runner's `_grade_trial_async`. Both
+dispatchers reduce their component scores through
+[`CompositeFold.finalise`](../tolokaforge/core/grading/composite_fold.py) —
+one pure substrate-neutral fold that resolves the `state_checks` slot,
+applies the judge + trace gates around the weighted combine, and joins
+the author-facing reasons string. Each side then projects the neutral
+`CompositeFoldResult` onto its own wire type: the runner encodes into
+`pb2.GradeTrialResponse`, the grader constructs a Python `Grade`. Hash
+grading is refused server-side too — the substrate is read-only. See
 [`docs/adr/0040-standalone-grader.md`](adr/0040-standalone-grader.md).
 
 The factory reads `ctx.grader_address` when the operator has split the

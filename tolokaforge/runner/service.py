@@ -40,6 +40,7 @@ from tolokaforge.core.grading.check_runner import (
 )
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.grading.checks_interface import CustomChecksConfig
+from tolokaforge.core.grading.composite_fold import CompositeFold
 from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenReplayRecord,
@@ -99,10 +100,8 @@ from tolokaforge.runner.db_client import (
     TrialNotFoundError as DBTrialNotFoundError,
 )
 from tolokaforge.runner.grading import (
-    build_grade_reasons,
-    compose_runner_trial_verdict,
     compute_state_diff,
-    resolve_state_checks_component,
+    project_state_checks_to_runner_wire,
 )
 from tolokaforge.runner.grading_ledger import (
     CUSTOM_CHECKS_DISABLED_SKIP,
@@ -1928,7 +1927,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     judge_status = pb2.JUDGE_STATUS_COMPLETED
                     judge_gate_failed = judge_result.gate_failed
                     # The judge's raw aggregate; the required-criterion gate is applied
-                    # by ``compose_runner_trial_verdict`` below.
+                    # by ``CompositeFold.finalise`` below.
                     components.llm_judge_score = judge_result.score
                     logger.info(
                         f"GradeTrial: {trial_id} - LLM judge: "
@@ -1968,21 +1967,28 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             return pb2.GradeTrialResponse(success=False, error=audit.error)
 
         # D) COMBINE SCORES
-        # Resolved before the combine, which resolves the same slot again, so that an
-        # undecidable fold fails the RPC naming this trial rather than reaching the
-        # outer catch-all as an anonymous grading error.
+        # Delegate the state-checks slot fold, the verdict composition and the
+        # reasons string to the shared fold. An undecidable fold fails the RPC
+        # naming this trial rather than reaching the outer catch-all as an
+        # anonymous grading error.
+        state_diff_dict = state_diff.model_dump() if state_diff else None
         try:
-            state_checks_slot = resolve_state_checks_component(
-                hash_score=components.hash_score,
-                jsonpath_score=components.jsonpath_score,
-                db_probe_score=components.db_probe_score,
+            fold_result = CompositeFold.finalise(
+                components_dict=components.model_dump(),
+                grading_config_dict=grading_config.model_dump(),
                 hash_weight=state_checks_config.hash_weight if state_checks_config else None,
-            )
-            verdict = compose_runner_trial_verdict(
-                components.model_dump(),
-                grading_config.model_dump(),
                 judge_gate_failed=judge_gate_failed,
                 trace_gate_failed=trace_checks_result.gate_failed,
+                state_diff_dict=state_diff_dict,
+                transcript_result_dict=(
+                    transcript_result.model_dump() if transcript_result else None
+                ),
+                judge_reasons=judge_reasons or None,
+                trace_checks_result_dict=trace_checks_result.model_dump(mode="json"),
+                golden_replay=hash_result.golden_replay if hash_result is not None else None,
+                custom_checks_reasons=custom_checks_reasons,
+                judge_errored=judge_status == pb2.JUDGE_STATUS_ERRORED,
+                ledger_skip_notes=audit.skip_notes,
             )
         except ValueError as exc:
             logger.error(f"GradeTrial: {trial_id} - {exc}")
@@ -1990,72 +1996,34 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 success=False,
                 error=f"Trial {trial_id!r} is not gradeable: {type(exc).__name__}: {exc}",
             )
-        # The gated component, not the judge's raw aggregate, is what the wire grade and
-        # the reasons carry — so the write-back happens before either is built.
-        components.llm_judge_score = verdict.judge_component
-        components_dict = components.model_dump()
-        score, binary_pass = verdict.score, verdict.binary_pass
-
-        # Build reasons string
-        state_diff_dict = state_diff.model_dump() if state_diff else None
-        transcript_result_dict = transcript_result.model_dump() if transcript_result else None
-        # Collected and joined once. The components' renderer contributes nothing for a
-        # trial that scored nothing, and appending to its output would open that grade
-        # with a separator.
-        reason_segments = [
-            build_grade_reasons(
-                components_dict,
-                state_diff_dict,
-                transcript_result_dict,
-                judge_reasons=judge_reasons or None,
-                trace_checks_result=trace_checks_result.model_dump(mode="json"),
-                golden_replay=hash_result.golden_replay if hash_result is not None else None,
-                custom_checks_reasons=custom_checks_reasons,
-            )
-        ]
-        if judge_status == pb2.JUDGE_STATUS_ERRORED:
-            reason_segments.append(f"JUDGE ERRORED: {judge_reasons}")
-
-        # A populated key whose evaluator was skipped scored nothing; say so on the
-        # grade rather than letting the trial look fully evaluated.
-        if audit.skip_notes:
-            reason_segments.append("; ".join(audit.skip_notes))
-
-        # The ledger's skip notes cover populated SCORED_CHECK keys; hash.weight is a
-        # CONFIG_INPUT the fold can skip on its own, so it reports itself.
-        if state_checks_slot.inert_weight_reason:
-            reason_segments.append(state_checks_slot.inert_weight_reason)
-
-        # A fold that counted nothing is not described by any component's reasons, so its
-        # own sentence is what stops a 0.0 arriving beside components that all read as passing.
-        if verdict.reason:
-            reason_segments.append(verdict.reason)
-
-        reasons = " | ".join(segment for segment in reason_segments if segment)
+        # The gated judge component, not the raw aggregate, is what the wire
+        # carries; the fold already applied the gate, this write-back mirrors
+        # it into the runner's typed model so the wire dict reads it back below.
+        components.llm_judge_score = fold_result.judge_component
 
         logger.info(
-            f"GradeTrial: {trial_id} - score={score:.2f}, pass={binary_pass}, "
+            f"GradeTrial: {trial_id} - score={fold_result.score:.2f}, "
+            f"pass={fold_result.binary_pass}, "
             f"termination_reason={termination_reason.value if termination_reason else 'none'}"
         )
 
-        # -1.0 is the wire's not-evaluated sentinel for a component.
         wire_component_scores = {
             spec.name: getattr(components, spec.runner_score_field)
             for spec in GRADE_COMPONENTS
             if spec.runner_score_field is not None
         }
-        wire_component_scores["state_checks"] = (
-            -1.0 if state_checks_slot.component is None else state_checks_slot.component
+        wire_component_scores["state_checks"] = project_state_checks_to_runner_wire(
+            fold_result.state_checks_component
         )
 
         return pb2.GradeTrialResponse(
             success=True,
             error="",
             grade=pb2.Grade(
-                binary_pass=binary_pass,
-                score=score,
+                binary_pass=fold_result.binary_pass,
+                score=fold_result.score,
                 components=pb2.GradeComponents(**wire_component_scores),
-                reasons=reasons,
+                reasons=fold_result.reasons,
                 state_diff_json=json.dumps(state_diff_dict) if state_diff_dict else "",
                 custom_checks=custom_check_wire_results,
                 criterion_results=[

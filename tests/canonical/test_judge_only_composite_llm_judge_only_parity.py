@@ -195,7 +195,7 @@ def test_judge_only_and_composite_llm_judge_only_agree_on_grade_shape(
     Grade-shape parity — not full :meth:`Grade.__eq__` — because the two
     paths compose their :attr:`Grade.reasons` and post-mortem fields
     (``criterion_results``, ``judge_report``) through different code
-    (``build_replay_grade`` vs. the runner-side fold + ``compose_runner_trial_verdict``).
+    (``build_replay_grade`` vs. the runner-side fold + ``compose_trial_verdict``).
     Two names of the same dispatch must not silently produce different
     verdicts on the constrained shape they collapse to.
     """

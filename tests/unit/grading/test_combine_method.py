@@ -32,8 +32,8 @@ from tolokaforge.core.grading.combine_method import (
     combine_by_method,
     validate_combine_method,
 )
+from tolokaforge.core.grading.composite_fold import combine_grade_components
 from tolokaforge.core.models import GradingCombineConfig, GradingConfig, Trajectory
-from tolokaforge.runner.grading import combine_grade_components
 from tolokaforge.runner.models import RunnerGradingConfig
 
 pytestmark = pytest.mark.unit

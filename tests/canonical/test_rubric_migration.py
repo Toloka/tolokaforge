@@ -351,7 +351,7 @@ def test_the_extraction_reproduces_every_recorded_verdict_in_the_not_met_half(
     verdict the runner reached — on all five bundles.
 
     This is the equivalence claim the extraction rests on, and it is not a tautology: the
-    *before* column is recomposed by :func:`compose_runner_trial_verdict` over each bundle's
+    *before* column is recomposed by :func:`compose_trial_verdict` over each bundle's
     recorded components and rubric, while the expected values are read straight out of that
     bundle's ``grade.yaml``. Two sources, neither derived from the other. Drop the judge-gate
     zeroing from the extracted function and every bundle reports a judge component of ``1.0``
