@@ -615,6 +615,17 @@ service SubstrateService {
   // false rather than dialing an unreachable endpoint.
   rpc KBSearch(KBSearchRequest) returns (KBSearchResponse);
 
+  // Run a task-declared read-only SQL probe against the DSN in the runner
+  // container's network context. dsn + query are AUTHOR-DECLARED — the
+  // runner does not validate SQL shape; a probe query that mutates state
+  // is a pack authoring mistake, symmetric with the in-process
+  // evaluate_db_probes semantics before the substrate rewire. Returns
+  // rows encoded as a JSON array of objects; asyncpg-native scalars
+  // (datetime / Decimal / UUID / bytes) are coerced via json.dumps
+  // default=str, matching how ReadStateResponse.state_json handles the
+  // same types for DB state reads.
+  rpc RunDbProbe(RunDbProbeRequest) returns (RunDbProbeResponse);
+
   // Substrate liveness + capacity signal. Distinct from RunnerService.
   // HealthCheck (that endpoint reports RunnerService plumbing; this one
   // reports the substrate seam and its active-trial count).
@@ -715,6 +726,26 @@ message SubstrateSearchHit {
   string source = 2;
   double score = 3;
   string text = 4;
+}
+
+// -----------------------------------------------------------------------------
+// SubstrateService — SQL probe
+// -----------------------------------------------------------------------------
+
+message RunDbProbeRequest {
+  // Task-declared DSN (e.g. postgresql://user:pw@app-db:5432/mfg). Resolved
+  // on the runner container's docker network, not the caller's.
+  string dsn = 1;
+  // Read-only SQL query. asyncpg executes it verbatim.
+  string query = 2;
+}
+
+message RunDbProbeResponse {
+  // JSON array of objects; each object is one row. Column values encoded
+  // via json.dumps(default=str) — asyncpg scalars (datetime, Decimal,
+  // UUID, bytes) coerce to str. Empty JSON array ("[]") when the query
+  // matches no rows; the field is never absent.
+  string rows_json = 1;
 }
 
 // -----------------------------------------------------------------------------

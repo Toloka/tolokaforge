@@ -57,6 +57,8 @@ ships, it registers a one-line entry point — no framework PR needed.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -163,6 +165,25 @@ class GradingSubstrate(Protocol):
 
         Implementations that source state lazily are free to memoise this
         accessor separately from :meth:`final_state`; they are two DB reads.
+        """
+        ...
+
+    def db_probe(self, dsn: str, query: str) -> list[dict[str, Any]]:
+        """Run ``query`` against ``dsn`` and return the rows as dicts.
+
+        The caller declares both the DSN (a task-declared postgres URL —
+        reachable only inside the task's docker network) and the read-only
+        SQL query. The substrate resolves ``dsn`` in whichever network the
+        implementation runs in — the runner container in every shipped
+        deployment topology — and returns the rows shaped as
+        ``[{col_name: value, ...}, ...]``. Empty result set is an empty
+        list, never ``None``.
+
+        Values are JSON-round-tripped, so asyncpg-native scalars
+        (``datetime``, ``Decimal``, ``UUID``, ``bytes``) land as their
+        ``str(...)`` forms — pack authors' ``expect`` JSONPath assertions
+        target the string forms, symmetric with how
+        :meth:`final_state` renders DB rows on the wire.
         """
         ...
 
@@ -298,6 +319,12 @@ class InProcessGradingSubstrate:
             else:
                 self._filesystem_state_cache = self._filesystem_state_factory()
         return self._filesystem_state_cache
+
+    def db_probe(self, dsn: str, query: str) -> list[dict[str, Any]]:
+        from tolokaforge.core.grading.db_probes import _fetch_probe_rows
+
+        rows = asyncio.run(_fetch_probe_rows(dsn, query))
+        return json.loads(json.dumps(rows, default=str))
 
     def close(self) -> None:
         # Nothing to release — the caller owns the DB reader, KB search,
