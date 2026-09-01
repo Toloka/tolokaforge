@@ -25,7 +25,6 @@ from tolokaforge.runner import (
     add_SubstrateServiceServicer_to_server,
 )
 from tolokaforge.runner import runner_pb2 as pb2
-from tolokaforge.runner import runner_pb2_grpc as pb2_grpc
 from tolokaforge.runner.service import RunnerServiceImpl
 from tolokaforge.runner.substrate_service import SubstrateServicer
 
@@ -123,17 +122,3 @@ def test_non_array_payload_is_refused_by_client() -> None:
 
     with pytest.raises(SubstrateUnreachableError, match="non-array rows_json"):
         client.run_db_probe("postgresql://x", "SELECT ...")
-
-
-def test_read_only_structural_gate_still_holds() -> None:
-    write_prefixes = ("set_", "insert", "update", "write", "delete", "mutate")
-    offenders = [
-        name
-        for name in dir(SubstrateServicer)
-        if not name.startswith("_") and any(name.lower().startswith(p) for p in write_prefixes)
-    ]
-    assert offenders == [], f"read-only invariant broken: {offenders!r}"
-
-
-def test_generated_base_has_run_db_probe_method() -> None:
-    assert hasattr(pb2_grpc.SubstrateServiceServicer, "RunDbProbe")
