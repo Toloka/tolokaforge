@@ -1,10 +1,11 @@
 """The four branches :func:`build_timeline_from_wire` collapses to.
 
-The wrapper composes ``split_leading_system_message`` + ``decode_transcript_wire``
-+ ``build_trial_timeline`` — a fold both grading dispatchers had inlined
-before the extraction. The behaviour it locks is the shape a records-empty
-call produces, the way records join with the message view when both views
-are present, and the pass-through of ``termination_reason``.
+The wrapper composes ``split_leading_system_message`` +
+``decode_transcript_wire`` + ``build_trial_timeline`` — the shared recipe
+both grading dispatchers reach the timeline through. The behaviour it locks
+is the shape a records-empty call produces, the way records join with the
+message view when both views are present, and the pass-through of
+``termination_reason``.
 
 The parity fixture ``_PARITY_FIXTURE_LLM_MESSAGES`` shadows the one
 ``tests/canonical/test_grader_timeline_from_wire_alone.py`` ships so drift

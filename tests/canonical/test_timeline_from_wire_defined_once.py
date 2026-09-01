@@ -77,9 +77,9 @@ def test_dispatchers_do_not_re_inline_the_raw_wire_recipe() -> None:
     """Runner and grader reach through the wrapper, not around it.
 
     ``build_trial_timeline(decode_transcript_wire(`` is the raw composed
-    recipe :func:`build_timeline_from_wire` was extracted from. Either
-    dispatcher re-inlining it — even once — would fork the recipe and
-    re-split the seam.
+    recipe :func:`build_timeline_from_wire` wraps. Either dispatcher
+    re-inlining it — even once — would fork the recipe and re-split the
+    seam.
 
     :mod:`tolokaforge.core.grading.combine` and
     :mod:`tolokaforge.core.grading.trace_replay` remain free to call

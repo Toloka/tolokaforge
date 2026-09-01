@@ -774,9 +774,8 @@ The Runner executes this grading algorithm:
 def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
     # 0. Join the transcript and the tool-call record into the trial's timeline.
     #    Raises TimelineInconsistencyError -> success=false, before any component.
-    _, transcript = split_leading_system_message(llm_messages)
-    timeline = build_trial_timeline(
-        decode_transcript_wire(transcript), trial_context.tool_call_history, termination_reason
+    timeline = build_timeline_from_wire(
+        llm_messages, trial_context.tool_call_history, termination_reason
     )
 
     # 1. Resolve every golden-action name against the tools RegisterTrial registered.
