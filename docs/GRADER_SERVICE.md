@@ -473,9 +473,10 @@ pins for every seam in the engine. Six sub-component seams cover the six
 evaluators the composite dispatch reaches. The [`.importlinter`
 `composite-sub-component-seams` contract](../.importlinter) enforces the
 negative-space of the seam by forbidding
-[`composite.py`](../tolokaforge/core/grading/composite.py) from importing
-any of the six reference-impl-holding modules — the composite reaches every
-sub-component only through its Protocol via a resolved-instance kwarg.
+any module under [`composite/`](../tolokaforge/core/grading/composite/__init__.py)
+from importing any of the six reference-impl-holding modules — the composite
+reaches every sub-component only through its Protocol via a resolved-instance
+kwarg.
 
 | Group | Protocol module | Reference impls | Granularity |
 | --- | --- | --- | --- |

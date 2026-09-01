@@ -1121,7 +1121,7 @@ def test_a_degenerate_trial_leaves_trace_checks_unscored(runner_service, mock_gr
             [{"role": "assistant", "content": "All done"}],
         ),
         (
-            "tolokaforge.core.grading.composite",
+            "tolokaforge.core.grading.composite.trace_checks",
             "evaluate_trace_checks",
             _TRACE_CHECKS_GRADING,
             TRACE_CONSTRAINT_KEY_BY_KIND["all_of"],
@@ -1148,10 +1148,11 @@ def test_grade_trial_fails_loud_when_an_evaluator_stops_decomposing_a_key(
     evaluated by neither substrate invisible, so the key the error must name is
     the kind's.
 
-    ``evaluator_module`` names the module the drift is injected on: composite
-    for :func:`evaluate_trace_checks` (still imported directly at composite
-    load time), and the default matcher module for :func:`evaluate_transcript_rules`
-    (reached through the :class:`TranscriptRuleMatcher` seam).
+    ``evaluator_module`` names the module the drift is injected on: the
+    composite's ``trace_checks`` sub-module for :func:`evaluate_trace_checks`
+    (imported directly at that sub-module's load time), and the default matcher
+    module for :func:`evaluate_transcript_rules` (reached through the
+    :class:`TranscriptRuleMatcher` seam).
     """
     import importlib
 

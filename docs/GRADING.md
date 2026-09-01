@@ -3829,7 +3829,7 @@ custom_checks:
 ```
 
 **Where the dispatch lives.** The custom-checks dispatch lives on the composite
-(`core/grading/composite.py: grade_custom_checks`) and reads its evidence through
+(`core/grading/composite/custom_checks.py: grade_custom_checks`) and reads its evidence through
 the `GradingSubstrate` seam: `substrate.initial_state()` feeds
 `ctx.initial_state`, and `substrate.final_state()` (RAW) feeds `ctx.final_state`
 — the shape a check's arithmetic over final DB rows needs. Any failure reaching

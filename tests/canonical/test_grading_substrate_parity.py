@@ -142,7 +142,6 @@ from tests.utils.grading_parity_packs import (
 from tests.utils.runner_requests import execute_request, register_request, trial_spec_json
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
-from tolokaforge.core.grading import composite as composite_module
 from tolokaforge.core.grading import db_probes as db_probes_module
 from tolokaforge.core.grading import (
     default_transcript_rule_matcher as default_transcript_rule_matcher_module,
@@ -152,6 +151,8 @@ from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import COMBINE_METHODS
 from tolokaforge.core.grading.combine_weights import MissingComponentWeight
 from tolokaforge.core.grading.composite import _build_runner_check_transcript
+from tolokaforge.core.grading.composite import state_checks as _state_checks_mod
+from tolokaforge.core.grading.composite import trace_checks as _composite_trace_checks_mod
 from tolokaforge.core.grading.composite_fold import (
     combine_grade_components,
     resolve_state_checks_component,
@@ -3808,7 +3809,7 @@ def test_the_site_lock_rejects_a_site_that_filed_a_skip_where_it_evaluated(
         outcome=KeyAccounting.SKIPPED, detail="downgraded by injection"
     )
     monkeypatch.setattr(runner_service_module, "EVALUATED", downgraded)
-    monkeypatch.setattr(composite_module, "EVALUATED", downgraded)
+    monkeypatch.setattr(_state_checks_mod, "EVALUATED", downgraded)
 
     grading_config, response = _drive_parity_pack(
         _INJECTION_JSONPATHS,
@@ -3826,7 +3827,7 @@ def test_the_site_lock_rejects_a_site_that_filed_a_skip_where_it_evaluated(
 @pytest.mark.parametrize(
     ("evaluator_module", "evaluator_name", "author_key"),
     [
-        (composite_module, "evaluate_trace_checks", _INJECTION_TRACE),
+        (_composite_trace_checks_mod, "evaluate_trace_checks", _INJECTION_TRACE),
         (
             default_transcript_rule_matcher_module,
             "evaluate_transcript_rules",
