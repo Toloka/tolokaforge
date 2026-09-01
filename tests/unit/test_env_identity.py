@@ -255,6 +255,27 @@ class TestMultiStackDigest:
         )
         assert resolve_environment_identity(base) != resolve_environment_identity(alt)
 
+    def test_changing_stack_id_flips_digest(self, tmp_path: Path) -> None:
+        # `stack_id` is a per-stack digest key. Rename one stack (nothing
+        # else changes) and the digest flips.
+        base_dir = tmp_path / "base"
+        base_dir.mkdir()
+        alt_dir = tmp_path / "alt"
+        alt_dir.mkdir()
+        base = _multi_stack_manifest(tmp_path=base_dir)
+        alt = _multi_stack_manifest(tmp_path=alt_dir)
+        # Swap the second stack's stack_id from "task" to "workspace" —
+        # a rename with identical compose bytes / scope / runner / inputs.
+        renamed = StackDecl(
+            stack_id="workspace",
+            compose_file=alt.stacks[1].compose_file,
+            stack_scope=alt.stacks[1].stack_scope,
+            runner_service=alt.stacks[1].runner_service,
+            inputs=dict(alt.stacks[1].inputs),
+        )
+        alt.stacks[1] = renamed
+        assert resolve_environment_identity(base) != resolve_environment_identity(alt)
+
     def test_multi_stack_shape_cannot_collide_with_single_stack(self, tmp_path: Path) -> None:
         # A two-stack manifest and a one-stack manifest are structurally
         # distinct — the multi-stack payload carries a top-level `stacks`

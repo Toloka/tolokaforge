@@ -56,18 +56,19 @@ default_environment:
       reset: { seed: "postgres_baseline" }
 ```
 
-A `reset` service makes `EnvironmentManifest.requires_per_trial` true, so
-backend selection routes the run onto `PerTrialRuntimeBackend` (see
-[`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md)). Services left unlabelled
+A `reset` service on a scalar-form `stack` coerces the synthesised
+`StackDecl.stack_scope` to `"trial"` (see
+[`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md)), so the composer
+materialises the stack fresh per trial. Services left unlabelled
 default to `ephemeral` (fresh per trial); the `reset`/`ephemeral` mix
-still forces per-trial selection.
+yields the same trial-scope coercion.
 
 ## The provision seam
 
-`PerTrialRuntimeBackend.provision` delegates to
-`SubstrateComposer.provision_trial`, which brings up a fresh compose
-stack per trial via `DockerComposeMaterialiser` and then walks every
-newly-materialised stack's `reset`-labelled services immediately after
+Provisioning routes through `SharedStackRuntimeBackend.provision` and
+then `SubstrateComposer.provision_trial`, which brings up a fresh
+compose stack per trial via `DockerComposeMaterialiser` and then walks
+every newly-materialised stack's `reset`-labelled services immediately after
 `docker compose up` returns. For each such service, the composer
 resolves `reset.seed` against the run substrate's seed registry
 (populated from `project.assets.seeds`) and hands the pair to
@@ -166,7 +167,7 @@ adds a missing `GET /orders/{id}/summary` endpoint and calls the testrunner's
 `POST /run-tests`, whose real `unittest` exit code writes a `PASS`/`FAIL` marker
 back into the volume — the decisive `state_checks` grading floor.
 `tests/integration/test_endpoint_add_end_to_end.py` witnesses the recipe directly:
-after a real `PerTrialRuntimeBackend` provision it reads `runner:/work/app.py` and
+after a real trial-scope provision it reads `runner:/work/app.py` and
 confirms it matches the seed (the recipe fired across the bridge), then drives
 `POST /run-tests` on the pristine source (marker `FAIL`) and again after writing
 the reference endpoint (marker `PASS`), proving the grading floor tracks the real

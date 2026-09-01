@@ -1053,20 +1053,24 @@ def _merge_multi_stack_patches(
     project_scalar = project.get("stack") or {}
     task_scalar = task.get("stack") or {}
     if project_scalar.get("compose_file") is not None:
+        stacks_side = "task" if task_stacks else "project"
         raise ValueError(
             "EnvironmentPatch merge: the project side declares scalar "
-            "`stack.compose_file` while a `stacks:` block is present on "
-            "the merged patch. The two representations are aliases of the "
-            "same field and cannot be mixed across merge layers (see "
-            "ADR-0044 § 3). Author both sides using the same shape."
+            "`stack.compose_file` while the "
+            f"{stacks_side} side declares a `stacks:` block. The two "
+            "representations are aliases of the same field and cannot be "
+            "mixed across merge layers (see ADR-0044 § 3). Author both "
+            "sides using the same shape."
         )
     if task_scalar.get("compose_file") is not None:
+        stacks_side = "project" if project_stacks else "task"
         raise ValueError(
             "EnvironmentPatch merge: the task side declares scalar "
-            "`stack.compose_file` while a `stacks:` block is present on "
-            "the merged patch. The two representations are aliases of the "
-            "same field and cannot be mixed across merge layers (see "
-            "ADR-0044 § 3). Author both sides using the same shape."
+            "`stack.compose_file` while the "
+            f"{stacks_side} side declares a `stacks:` block. The two "
+            "representations are aliases of the same field and cannot be "
+            "mixed across merge layers (see ADR-0044 § 3). Author both "
+            "sides using the same shape."
         )
 
     merged_stacks: dict[str, dict[str, Any]] = {}

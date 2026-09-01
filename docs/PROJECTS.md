@@ -1544,12 +1544,16 @@ field: compose files carry zero isolation semantics and the manifest
 is the single authority for how the harness treats each service
 between trials.
 
-Backend selection follows the per-service map: any task with a
-`reset` or `ephemeral` service routes the run onto
-`PerTrialRuntimeBackend`; runs whose every task labels every service
-`shared` route onto `SharedStackRuntimeBackend`. Operators do not
-set the backend directly — the legacy `orchestrator.runtime` field
-survives as a deprecated override with a `DeprecationWarning`.
+Plan-shape coercion follows the per-service map on the scalar-form
+`stack`: any task with a `reset` or `ephemeral` service coerces the
+synthesised `StackDecl.stack_scope` to `"trial"` (the composer
+materialises the stack fresh per trial); tasks that label every
+service `shared` coerce to `"run"` (the composer materialises once
+at run start). Operators do not set the backend directly — the
+orchestrator always constructs `SharedStackRuntimeBackend` and the
+composer sequences per-scope materialisation. The legacy
+`orchestrator.runtime` field survives as a deprecated plan-shape
+coercion knob with a `DeprecationWarning`.
 
 Two consistency rules run on the resolved document:
 
@@ -1595,7 +1599,8 @@ Every service persists across trials. State carries over between
 trials. This never happens by accident: every service the compose
 file declares must be listed under `services` with
 `isolation: "shared"`. Any missing entry defaults to `ephemeral` and
-routes the run onto `PerTrialRuntimeBackend`.
+coerces the scalar-form `StackDecl.stack_scope` to `"trial"` — the
+composer materialises the stack fresh per trial.
 
 ```yaml
 # project.yaml — every declared service labelled shared
@@ -1889,14 +1894,16 @@ manifest. Three consequences:
   `reset_recipes:{sql_dump,filesystem_dir,redis_dump,bare}`, and
   `network_isolation:no_internet`.
 
-- **Backend selection is derived from the per-service isolation
-  map, not read off a root `isolation` field.** Any task with a
-  `reset` or `ephemeral` service routes onto
-  `PerTrialRuntimeBackend`; runs whose every task labels every
-  service `shared` route onto `SharedStackRuntimeBackend`. The
-  deprecated `orchestrator.runtime` field survives as an operator
-  override with a `DeprecationWarning`; retirement lands with a
-  later cleanup milestone.
+- **Plan-shape coercion is derived from the per-service isolation
+  map on the scalar-form `stack`, not read off a root `isolation`
+  field.** Any task with a `reset` or `ephemeral` service coerces
+  the synthesised `StackDecl.stack_scope` to `"trial"`; tasks that
+  label every service `shared` coerce to `"run"`. The orchestrator
+  always constructs `SharedStackRuntimeBackend`; the composer
+  sequences per-scope materialisation. The deprecated
+  `orchestrator.runtime` field survives as a plan-shape coercion
+  knob with a `DeprecationWarning`; retirement lands with a later
+  cleanup milestone.
 
 - **Enforcement can be delegated to a capable backend.** For
   `network_policy`, the manifest declares the *need*; the *grant*

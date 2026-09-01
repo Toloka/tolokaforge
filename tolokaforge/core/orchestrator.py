@@ -1521,10 +1521,7 @@ class Orchestrator:
           — ``ephemeral`` is refused. Cycling an ephemeral service
           between trials would require a compose-down on a stack the
           composer is contracted to keep live for the whole run/task
-          bracket; :class:`IsolationMode.COMPOSED_STACK` (#1383) will
-          advertise the capability once the composer's ephemeral
-          dispatcher is admissible at run scope, at which point this
-          refusal narrows.
+          bracket.
 
         The :attr:`IsolationMode.PER_TRIAL_STACK` short-circuit at the
         top applies to backends injected via
@@ -1574,9 +1571,7 @@ class Orchestrator:
                 "to stay live for the whole run/task bracket. Offending "
                 "(task_id, stack_id, service_name, isolation, stack_scope): "
                 f"{violations!r}. Move the affected services onto a "
-                "trial-scope stack, or wait for #1383's "
-                "`IsolationMode.COMPOSED_STACK` capability advertisement "
-                "that will admit ephemeral cycling at run scope."
+                "trial-scope stack."
             )
 
     def _build_pending_trials(
