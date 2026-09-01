@@ -1,12 +1,27 @@
 """Identity views over a resolved :class:`EnvironmentManifest`.
 
 :func:`resolve_environment_identity` returns a ``sha256:<hex>`` digest
-over the canonicalised compose file bytes, ``stack_inputs``, the
-per-service isolation map, and every referenced seed digest. Two
-manifests with matching inputs produce equal identities regardless of
-YAML formatting; any change to a compose byte, an input, a service
-label, or a seed's digest flips the identity. Emitted for observability
-at run start; not persisted.
+over the manifest's composition plan, per-service isolation map, and
+every referenced seed digest. Two manifests with matching inputs
+produce equal identities regardless of YAML formatting; any change to
+a compose byte, an input, a service label, a stack scope, or a seed's
+digest flips the identity. Emitted for observability at run start; not
+persisted.
+
+The digest's payload shape depends on the plan's cardinality:
+
+* ``len(env.stacks) <= 1`` (single-stack, incl. legacy scalar-form
+  manifests coerced to one synthesised :class:`StackDecl`) — top-level
+  ``"compose"`` (canonical compose bytes) and ``"inputs"`` (sorted stack
+  inputs), byte-identical to the pre-ADR-0044 shape.
+* ``len(env.stacks) > 1`` (multi-stack) — top-level ``"stacks"`` list
+  in plan order, each entry carrying its ``stack_id``, ``stack_scope``,
+  ``runner_service``, canonical compose bytes, and sorted inputs.
+
+The two shapes cannot collide (the multi-stack shape carries a
+``"stacks"`` key that the single-stack shape never emits), and the
+single-stack shape is a HARD byte-parity invariant with the legacy
+scalar-form digest (ADR-0044 § 7).
 
 :func:`describe_environment_identity` returns a human-readable
 :class:`EnvironmentIdentity` descriptor — per-service resolved images,
@@ -27,7 +42,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from tolokaforge.core.models import EnvironmentManifest
-from tolokaforge.runner.models import _FLOATING_IMAGE_TAGS, _image_tag_or_digest
+from tolokaforge.runner.models import _FLOATING_IMAGE_TAGS, StackDecl, _image_tag_or_digest
 
 
 def resolve_environment_identity(
@@ -42,14 +57,13 @@ def resolve_environment_identity(
     references a seed, an empty dict is sufficient.
 
     The digest is stable across environments and orderings: dict keys
-    sort before hashing, and the compose file is normalised through a
+    sort before hashing, and each compose file is normalised through a
     ``yaml.safe_load`` / ``yaml.safe_dump`` round-trip with sorted keys
-    so an author reformatting the file without changing its content
-    does not shift the identity.
+    so an author reformatting a file without changing its content does
+    not shift the identity. See the module docstring for the two payload
+    shapes (single-stack byte-parity vs. multi-stack per-stack list).
     """
-    canonical = {
-        "compose": _canonical_compose_bytes(env.load_compose()),
-        "inputs": dict(env.stack_inputs),
+    canonical: dict[str, Any] = {
         "services": {
             name: {
                 "isolation": spec.isolation,
@@ -59,9 +73,33 @@ def resolve_environment_identity(
         },
         "seeds": dict(sorted((seed_digests or {}).items())),
     }
+    if len(env.stacks) > 1:
+        canonical["stacks"] = [_canonical_stack_payload(decl) for decl in env.stacks]
+    else:
+        canonical["compose"] = _canonical_compose_bytes(env.load_compose())
+        canonical["inputs"] = dict(env.stack_inputs)
     payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
     hex_digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     return f"sha256:{hex_digest}"
+
+
+def _canonical_stack_payload(decl: StackDecl) -> dict[str, Any]:
+    """Per-:class:`StackDecl` sub-payload for the multi-stack digest shape.
+
+    ``compose_file`` is loaded through the same YAML round-trip
+    :func:`_canonical_compose_bytes` uses on the scalar path, so
+    formatting-only edits to a per-stack compose file do not shift the
+    digest.
+    """
+    with decl.compose_file.open() as f:
+        compose_content = yaml.safe_load(f)
+    return {
+        "stack_id": decl.stack_id,
+        "stack_scope": decl.stack_scope,
+        "compose": _canonical_compose_bytes(compose_content),
+        "runner_service": decl.runner_service or "",
+        "inputs": dict(sorted(decl.inputs.items())),
+    }
 
 
 def _canonical_compose_bytes(compose_content: dict[str, Any]) -> str:

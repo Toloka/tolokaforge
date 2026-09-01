@@ -1911,13 +1911,17 @@ manifest. Three consequences:
 ### Environment identity
 
 `resolve_environment_identity(env)` returns a `sha256:...` digest
-over the canonicalised compose bytes, `stack_inputs`, per-service
-isolation map, and referenced seed digests. Two manifests with
-identical inputs produce equal identities regardless of YAML
-formatting; any change to a covered input flips the digest. The
-orchestrator logs it at info level once per task at run start.
-Materialisation / dedup consumers land later per the public
-roadmap.
+over the manifest's composition plan, per-service isolation map, and
+referenced seed digests. Two manifests with identical inputs produce
+equal identities regardless of YAML formatting; any change to a compose
+byte, an input, a service label, a stack scope, or a seed's digest
+flips the digest. A single-stack manifest emits the scalar-form
+payload (top-level `compose` + `inputs`); a multi-stack manifest
+emits a per-stack `stacks` list in plan order. See
+[`RUNTIME_BACKENDS.md` § Environment identity](RUNTIME_BACKENDS.md#environment-identity)
+for the payload shapes and the byte-parity contract. The orchestrator
+logs the digest at info level once per task at run start;
+materialisation / dedup consumers land later per the public roadmap.
 
 ### Explicitly future — not defined by this document
 

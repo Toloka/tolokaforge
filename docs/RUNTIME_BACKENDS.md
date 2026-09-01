@@ -504,6 +504,17 @@ flowchart TD
 
 See [`RESET_RECIPES.md`](RESET_RECIPES.md) for the four seed kinds (`sql_dump`, `filesystem_dir`, `redis_dump`, `bare`) that `isolation: reset` binds to via `services.<name>.reset.seed`.
 
+### Environment identity
+
+`resolve_environment_identity(env, seed_digests=None)` returns a `sha256:<hex>` digest over the manifest's composition plan, per-service isolation map, and referenced seed digests. Two manifests with matching inputs produce equal identities regardless of YAML formatting; any change to a compose byte, an input, a service label, a stack scope, or a seed's digest flips the digest. Emitted for observability at run start.
+
+The digest's payload shape depends on plan cardinality:
+
+- **Single-stack (`len(env.stacks) <= 1`).** Top-level `"compose"` (canonical bytes of the sole stack's compose file) and `"inputs"` (sorted `stack_inputs`) alongside the shared `"services"` and `"seeds"` sub-payloads — byte-identical to the pre-ADR-0044 scalar-form digest. A legacy scalar-form manifest coerced into a single synthesised `StackDecl` produces the same digest as one directly constructed from the scalar fields. This is a HARD invariant locked at `tests/unit/test_env_identity.py::TestByteParityWithLegacy`.
+- **Multi-stack (`len(env.stacks) > 1`).** Top-level `"stacks"` list in plan order, each entry carrying `stack_id`, `stack_scope`, canonical compose bytes, `runner_service`, and sorted `inputs`, alongside the shared `"services"` and `"seeds"` sub-payloads. Plan order, scope, runner service, inputs, and per-stack compose bytes each flip the digest independently — locked at `tests/unit/test_env_identity.py::TestMultiStackDigest`.
+
+The two shapes cannot collide: the multi-stack payload carries a `"stacks"` key that the single-stack payload never emits. `describe_environment_identity` (the human-readable descriptor emitted into every trial's `final_env_state`) still walks the scalar compose file today; its multi-stack extension is a follow-up (see [#1396](https://github.com/Toloka/tolokaforge/issues/1396)).
+
 ## Failure modes
 
 | Where | What is raised | What is cleaned up before the raise |
