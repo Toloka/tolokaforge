@@ -3779,9 +3779,11 @@ functions from a pack's `checks.py`. It's the deterministic-Python gap
 the other four components don't express: arithmetic over final DB
 rows, invariants that span multiple tables, transcript patterns tied to
 computed values. Each `@check` returns `CheckPassed` / `CheckFailed` /
-`CheckSkipped`; per-check results ride the wire as `CustomCheckResult`
-entries and the aggregate `CheckResultSet.aggregate_score` fills the
-`custom_checks` component.
+`CheckSkipped`; the composite returns a `list[CheckResult]`, and the
+runner's `project_check_result_to_runner_wire` encodes each into
+`pb2.CustomCheckResult` for the wire while the grader constructs
+`CustomCheckDetail` from each directly. The aggregate
+`CheckResultSet.aggregate_score` fills the `custom_checks` component.
 
 `aggregate_score` averages the checks that reached a verdict and excludes the
 skips, so a suite whose **every** check skipped — and one whose file declared no

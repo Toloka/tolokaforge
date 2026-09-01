@@ -1,6 +1,6 @@
 """Runner-wire helpers around GradeTrial's state-diff family.
 
-Two responsibilities live here — both runner-wire adjacent, both consumed
+Three responsibilities live here — all runner-wire adjacent, all consumed
 by ``runner.service`` on the GradeTrial path:
 
 - :func:`compute_state_diff` (+ private helpers) — human-readable diff
@@ -10,6 +10,9 @@ by ``runner.service`` on the GradeTrial path:
 - :func:`project_state_checks_to_runner_wire` — encode the composite
   fold's neutral ``None``-means-not-evaluated ``state_checks`` slot into
   the runner wire's ``-1.0`` sentinel.
+- :func:`project_check_result_to_runner_wire` — encode a composite-produced
+  :class:`~tolokaforge.core.grading.checks_interface.CheckResult` into the
+  wire ``pb2.CustomCheckResult`` for ``Grade.custom_checks``.
 
 See docs/GRPC_PROTOCOL.md for the grading algorithm specification. The
 JSONPath assertion evaluators and the SQL-probe evaluator live in
@@ -18,10 +21,13 @@ JSONPath assertion evaluators and the SQL-probe evaluator live in
 runner-side GradeTrial and the standalone Grader v3 service both drive.
 """
 
+import json
 import logging
 from typing import Any
 
+from tolokaforge.core.grading.checks_interface import CheckResult
 from tolokaforge.core.hash import canonical_number
+from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import (
     StateDiff,
     TableDiff,
@@ -214,3 +220,26 @@ def project_state_checks_to_runner_wire(slot_component: float | None) -> float:
     nothing to ``pb2``.
     """
     return -1.0 if slot_component is None else slot_component
+
+
+def project_check_result_to_runner_wire(result: CheckResult) -> pb2.CustomCheckResult:
+    """Encode a :class:`CheckResult` to the wire ``pb2.CustomCheckResult``.
+
+    ``details`` is JSON-encoded into the proto's ``details_json`` string —
+    empty when the check emitted no details. The status is projected via the
+    enum's ``.value`` (or ``str(...)`` for a plain-string status), so the
+    ``pb2.CustomCheckResult.status`` field always carries the lowercased
+    literal (``passed`` / ``failed`` / ``skipped`` / ``error``) the wire
+    contract pins. Kept beside :func:`project_state_checks_to_runner_wire` —
+    every runner wire encoder scoped to a composite output lives here so
+    the composite package owes nothing to ``pb2``.
+    """
+    status_str = result.status.value if hasattr(result.status, "value") else str(result.status)
+    details_json = json.dumps(result.details) if result.details else ""
+    return pb2.CustomCheckResult(
+        check_name=result.check_name,
+        status=status_str,
+        score=result.score,
+        message=result.message,
+        details_json=details_json,
+    )

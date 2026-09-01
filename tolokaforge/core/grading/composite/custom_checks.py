@@ -1,14 +1,12 @@
-"""Custom-checks composite dispatch and wire encoders.
+"""Custom-checks composite dispatch.
 
 The pack's ``checks.py`` is run through :func:`grade_custom_checks` — the
 executor consumes the trial's evidence via :class:`GradingSubstrate` reads,
-and the composite projects each :class:`CheckResult` to the wire
-``pb2.CustomCheckResult`` shape for the RPC response.
-
-Layering exception. This is the ONE module in the composite package that
-imports ``pb2``; the wire encoding is folded here in this stage of the
-split, and Stage 2 relocates it to :mod:`tolokaforge.runner.grading` so the
-composite returns pure :class:`CheckResult` values.
+and the composite returns the resulting :class:`CheckResult` values.
+Runner-wire encoding lives in
+:func:`tolokaforge.runner.grading.project_check_result_to_runner_wire`;
+the grader-side wrapper reads the same :class:`CheckResult` values
+directly and constructs :class:`CustomCheckDetail` from each.
 """
 
 from __future__ import annotations
@@ -28,6 +26,7 @@ from tolokaforge.core.grading.checks_helpers import (
 from tolokaforge.core.grading.checks_interface import (
     CheckResult,
     CheckResultSet,
+    CheckStatus,
     CustomChecksConfig,
     TaskContext,
     ToolCallStatus,
@@ -40,7 +39,6 @@ from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
-from tolokaforge.runner import runner_pb2 as pb2
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -92,36 +90,19 @@ def _build_runner_check_transcript(
     return Transcript(messages=check_messages)
 
 
-def _check_result_to_wire(result: CheckResult) -> pb2.CustomCheckResult:
-    """Convert a :class:`CheckResult` to the wire ``pb2.CustomCheckResult``.
-
-    ``details`` (arbitrary dict) is JSON-encoded into the proto's
-    ``details_json`` string; empty when the check emitted no details.
-    """
-    status_str = result.status.value if hasattr(result.status, "value") else str(result.status)
-    details_json = json.dumps(result.details) if result.details else ""
-    return pb2.CustomCheckResult(
-        check_name=result.check_name,
-        status=status_str,
-        score=result.score,
-        message=result.message,
-        details_json=details_json,
-    )
-
-
-def _executor_error_to_wire(error: str) -> pb2.CustomCheckResult:
-    """Wrap a top-level :class:`CheckResultSet` error as a wire result.
+def _executor_error_result(error: str) -> CheckResult:
+    """Wrap a top-level :class:`CheckResultSet` error as a synthetic result.
 
     The audit — module-load failure / timeout / executor crash — travels to
     the host under the reserved :data:`_CHECK_EXECUTOR_ERROR_NAME` sentinel
     so the reasons string is not the only place it survives.
     """
-    return pb2.CustomCheckResult(
+    return CheckResult(
         check_name=_CHECK_EXECUTOR_ERROR_NAME,
-        status="error",
+        status=CheckStatus.ERROR,
         score=0.0,
         message=error,
-        details_json="",
+        details={},
     )
 
 
@@ -135,10 +116,10 @@ def grade_custom_checks(
     artifacts_dir: Path | None,
     check_executor: CheckExecutor,
     logger: StructuredLogger,
-) -> tuple[float, list[pb2.CustomCheckResult], str | None]:
+) -> tuple[float, list[CheckResult], str | None]:
     """Run the pack's ``checks.py`` against the trial's evidence.
 
-    Returns ``(score, wire_results, reason)``. The reason is the sentence
+    Returns ``(score, results, reason)``. The reason is the sentence
     :func:`custom_checks_reason` renders and is what ``Grade.reasons`` carries
     for this component; every return that ran or tried to run supplies one, so a
     suite that failed before it started still says why. ``None`` is reserved for
@@ -154,7 +135,7 @@ def grade_custom_checks(
     composite caller share this entry point.
 
     On executor error (missing ``checks.py``, module load failure, timeout): a
-    sentinel wire entry preserves the audit, and the score follows
+    sentinel :class:`CheckResult` preserves the audit, and the score follows
     ``fail_on_error`` — ``0.0`` when true (contributes to the weighted total as
     a fail), ``-1.0`` when false (component not evaluated).
 
@@ -204,7 +185,7 @@ def grade_custom_checks(
         score = 0.0 if resolved_config.fail_on_error else -1.0
         return (
             score,
-            [_executor_error_to_wire(error_msg)],
+            [_executor_error_result(error_msg)],
             custom_checks_reason(CheckResultSet(error=error_msg)),
         )
     checks_file = artifacts_dir / resolved_config.file
@@ -256,23 +237,23 @@ def grade_custom_checks(
         score = 0.0 if resolved_config.fail_on_error else -1.0
         return (
             score,
-            [_executor_error_to_wire(str(exc))],
+            [_executor_error_result(str(exc))],
             custom_checks_reason(CheckResultSet(error=str(exc))),
         )
 
-    wire_results = [_check_result_to_wire(r) for r in result.results]
+    check_results = list(result.results)
     reason = custom_checks_reason(result)
 
     if result.error:
         logger.error(f"GradeTrial: {trial_id} - custom checks executor error: {result.error}")
-        wire_results.append(_executor_error_to_wire(result.error))
+        check_results.append(_executor_error_result(result.error))
         score = 0.0 if resolved_config.fail_on_error else -1.0
-        return score, wire_results, reason
+        return score, check_results, reason
 
     logger.info(
         f"GradeTrial: {trial_id} - custom checks: "
         f"{result.passed}/{result.total} passed, score={result.aggregate_score:.2f}"
     )
     if not result.decided_something:
-        return -1.0, wire_results, reason
-    return result.aggregate_score, wire_results, reason
+        return -1.0, check_results, reason
+    return result.aggregate_score, check_results, reason

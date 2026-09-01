@@ -29,8 +29,6 @@ composite reaches through kwargs.
 
 from tolokaforge.core.grading.composite.custom_checks import (
     _build_runner_check_transcript,
-    _check_result_to_wire,
-    _executor_error_to_wire,
     grade_custom_checks,
 )
 from tolokaforge.core.grading.composite.llm_judge import (
@@ -47,8 +45,6 @@ from tolokaforge.core.grading.composite.transcript_rules import grade_transcript
 __all__ = [
     "StateChecksReadResult",
     "_build_runner_check_transcript",
-    "_check_result_to_wire",
-    "_executor_error_to_wire",
     "build_judge_state_diff",
     "grade_custom_checks",
     "grade_llm_judge",
