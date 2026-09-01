@@ -132,12 +132,20 @@ def lookup(slug: str, catalog: list[str] | None) -> Availability:
         return Availability(slug=slug, status=STATUS_UNKNOWN)
 
     entries = set(catalog)
-    for candidate in (f"openrouter/{slug}", slug):
+    candidates = (f"openrouter/{slug}", slug)
+    for candidate in candidates:
         if candidate in entries:
             return Availability(slug=slug, status=STATUS_EXACT, route=candidate)
-    namespace = slug.split("/", 1)[0]
-    if f"{namespace}/*" in entries or "*" in entries:
-        return Availability(slug=slug, status=STATUS_WILDCARD, route=slug)
+    # The wildcard namespace is derived PER CANDIDATE, in the same order as
+    # the exact check: an ``openrouter/*`` passthrough covers the prefixed
+    # candidate, a vendor wildcard (``x-ai/*``) covers the bare one. Deriving
+    # it only from the bare slug reported ABSENT on gateways whose only
+    # wildcard is the openrouter passthrough - which made the poller DOWNGRADE
+    # explicit "via litellm" requests to OpenRouter.
+    for candidate in candidates:
+        namespace = candidate.split("/", 1)[0]
+        if f"{namespace}/*" in entries or "*" in entries:
+            return Availability(slug=slug, status=STATUS_WILDCARD, route=candidate)
     return Availability(slug=slug, status=STATUS_ABSENT)
 
 

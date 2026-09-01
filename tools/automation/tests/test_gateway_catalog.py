@@ -63,6 +63,13 @@ class TestLookup:
         assert found.reachable
         assert "passthrough" in gateway_catalog.describe(found)
 
+    def test_the_openrouter_passthrough_covers_the_prefixed_candidate(self) -> None:
+        """An ``openrouter/*``-only gateway serves every openrouter model."""
+        found = gateway_catalog.lookup("x-ai/grok-4.5", ["openrouter/*"])
+        assert found.status == gateway_catalog.STATUS_WILDCARD
+        assert found.route == "openrouter/x-ai/grok-4.5"
+        assert found.reachable
+
     def test_absent_when_catalog_covers_nothing(self) -> None:
         found = gateway_catalog.lookup("x-ai/grok-4.5", ["anthropic/claude-sonnet-4-5"])
         assert found.status == gateway_catalog.STATUS_ABSENT
