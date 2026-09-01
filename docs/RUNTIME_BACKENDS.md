@@ -64,24 +64,40 @@ The compose-mode runtime is factored into three detachable adapter Protocols the
 - **`ServiceLifecycleDispatcher`** — cycles one service between trials for a given `ServiceIsolation` label. One dispatcher per closed label — `SharedDispatcher` (no-op), `ResetDispatcher` (delegates to `RECIPE_REGISTRY.dispatch`), `EphemeralDispatcher` (targeted `docker compose rm -f -v <svc>` + `docker compose up -d --wait <svc>`). The composer resolves by `service_spec.isolation` at cycle time via `DISPATCHER_REGISTRY` in `tolokaforge/core/service_lifecycle_dispatchers.py`.
 - **`SubstrateComposer`** — the sequencer. `materialise_run(plan, ctx)` walks run-scope stacks and enforces INV-12 (exactly one stack across the plan sets `runner_service`); `provision_trial(plan, spec, run_sub)` walks task-scope and trial-scope stacks and applies reset recipes on newly-materialised stacks; `cycle_between_trials(run_sub, spec)` dispatches every service through the lifecycle registry; `teardown_trial` / `teardown_run` walk the handles in reverse scope order. Shipped impl: `DefaultSubstrateComposer` (`tolokaforge/core/default_substrate_composer.py`).
 
-`SharedStackRuntimeBackend` runs the inline materialise/teardown sequence today — its inline path and the composer are byte-for-byte equivalent for the single-stack shape (Case B), which is the only shape the compose-mode runtime exercises. Byte-parity between the built-in composer/materialiser/dispatcher triple and the inline backend flow is locked at `tests/canonical/test_composition_parity_contract.py`.
+`SharedStackRuntimeBackend`'s compose-mode path walks a composition plan via the injected `SubstrateComposer`: `connect()` calls `materialise_run` for run-scope stacks, `provision(spec)` calls `provision_trial` for task-scope and trial-scope stacks, per-trial RPCs route through `runner_client_for`, and `close()` hands the substrate to `teardown_run`. The composer/materialiser/dispatcher triple is the only path — the backend carries no inline materialisation code. Byte-parity between the shipped triple and the frozen single-stack-shape baseline (the observable output today's built-in flows produced) is locked at `tests/canonical/test_composition_baseline_parity.py`; the baseline fixture under `tests/canonical/fixtures/composition_parity_baseline/` is the eternal reference, and CI never regenerates it.
 
 ## Concrete backends
 
-**`SharedStackRuntimeBackend`** — the original. One compose project brought up at
-`connect()` time and shared across every trial in the run. Per-trial
-"isolation" is `trial_id`-in-URL only; cross-trial state contamination is
-structural. `provision` / `teardown` are no-ops on the run-wide stack. Fine
-for single-tenant, sequential runs; caps concurrency at one trial per
-service that has stateful side effects.
+**`SharedStackRuntimeBackend`** — composer-driven. In built-in-stack mode
+(`env_manifest is None`), `connect()` wires a `GrpcRunnerClient` to the
+`runner_address` the orchestrator's built-in `EngineStack` already
+brought up; per-trial `provision` / `teardown` are no-ops on the
+run-wide stack. In env_manifest mode, the backend delegates every
+substrate operation to the injected `SubstrateComposer`: `connect()`
+materialises run-scope stacks, `provision(spec)` materialises the
+trial's task-scope and trial-scope stacks via
+`SubstrateComposer.provision_trial`, per-trial RPCs route through
+`SubstrateComposer.runner_client_for` (with a deferred-connect gate
+that connects a trial-owned runner client on its first RPC call), and
+`close()` hands the substrate to `SubstrateComposer.teardown_run`.
+Every trial in the run shares the run-scope substrate; cross-trial
+isolation lives in whichever service labels declare it via
+`ServiceLifecycleDispatcher`.
 
-**`PerTrialRuntimeBackend`** — this PR. One compose project per trial via
-`testcontainers.compose.DockerCompose`. Each `provision` call materialises
-an isolated stack; the trial's runner container is only reachable through
-its own network + host-side port. Concurrent trials each get independent
-containers, networks, and volumes. Backwards-compatible because it is
-opt-in: tasks that do not declare an `environment_manifest` still run on
-`SharedStackRuntimeBackend`.
+**`PerTrialRuntimeBackend`** — thin preset over `SharedStackRuntimeBackend`
+configured for trial-scope-only composition plans. Its constructor
+kwargs (`seeds`, `log_capture`, `mount_docker_socket`,
+`readiness_probe_loader`, `connect_timeout`, `connect_retry_interval`)
+flow onto an internal `SharedStackRuntimeBackend` whose `_per_trial_mode`
+flag routes `provision(spec)` through
+`SubstrateComposer.provision_trial` with an empty run substrate —
+each call materialises the trial's own compose stack via
+`DockerComposeMaterialiser`, brings up an isolated network + host-side
+port, and returns a `ComposedEnvHandle` whose per-trial stack handles
+carry the compose project, temp dir, and log routers. Concurrent trials
+each get independent containers, networks, and volumes. Every
+`RuntimeBackend` method is a straight delegation onto the internal
+backend — the class body is a dataclass, not a re-implementation.
 
 **`InMemoryRuntimeBackend`** — test-only. Records every method call on a
 `RuntimeBackendCallLog`; no Docker daemon required. Used by canonical
@@ -118,9 +134,12 @@ for the threat model.
 
 ## A trial's lifecycle on `PerTrialRuntimeBackend`
 
-The following sequence covers one trial end-to-end. Reads left-to-right in
-time; each arrow is a real method call on the class instances named at the
-column headers.
+The following sequence covers one trial end-to-end. `PerTrialRuntimeBackend`
+delegates every method to an internal `SharedStackRuntimeBackend` in
+per-trial mode; the composer stitches
+`DockerComposeMaterialiser`, a runner-client factory, and the
+readiness-probe loader together. Each arrow is a real method call on the
+class instances named at the column headers.
 
 ```mermaid
 sequenceDiagram
@@ -128,39 +147,40 @@ sequenceDiagram
     participant Orch as Orchestrator
     participant Cond as Conductor
     participant LRB as PerTrialRuntimeBackend
-    participant DC as Testcontainers<br/>DockerCompose
+    participant Comp as SubstrateComposer
+    participant Mat as DockerComposeMaterialiser
     participant GRC as GrpcRunnerClient<br/>(this trial's)
     participant Docker as Docker daemon
 
     Note over Orch,LRB: Run start (once)
     Orch->>LRB: connect()
-    Note right of LRB: no-op — no shared runner
+    Note right of LRB: no-op — no run-scope stacks<br/>to materialise
 
     Note over Cond,LRB: Per trial (each call ↓)
     Cond->>LRB: provision(spec)
-
-    activate LRB
-    LRB->>LRB: make per-trial temp dir<br/>(embeds trial_id)
-    LRB->>LRB: copy compose file<br/>+ sibling files into it
-    LRB->>DC: new DockerCompose(<br/> context=temp_dir,<br/> wait=True)
-    LRB->>DC: .start()
-    DC->>Docker: docker compose up -d --wait
-    Docker-->>DC: containers up +<br/>healthchecks pass
-    LRB->>DC: get_service_host_and_port(<br/> runner_service, 50051)
-    LRB->>DC: get_service_host_and_port(<br/> "db-service", 8000) — best-effort
-    LRB->>DC: rag lookup (optional)
-    LRB->>GRC: new GrpcRunnerClient(<br/> host:port)
-    Note right of GRC: constructed —<br/>NOT connected
-    LRB->>LRB: cache client, snapshot endpoints on handle
-    LRB-->>Cond: _LocalEnvHandle
-    deactivate LRB
+    LRB->>Comp: provision_trial(plan, spec, run_sub=empty)
+    Comp->>Mat: materialise(trial-scope decl, ctx)
+    Mat->>Mat: make per-trial temp dir<br/>+ copy compose context<br/>+ transforms
+    Mat->>Docker: docker compose up -d --wait
+    Docker-->>Mat: containers up + healthchecks pass
+    Mat-->>Comp: _DockerComposeStackHandle
+    Comp->>Comp: apply reset recipes on newly-materialised stacks
+    Comp->>Mat: resolve_endpoint(runner_service, 50051)
+    Comp->>Comp: run readiness gate<br/>(grpc on runner + per-service probes)
+    Comp->>GRC: runner_client_factory(host:port, events)
+    Note right of GRC: constructed — NOT connected
+    Comp-->>LRB: ComposedEnvHandle<br/>(trial_stack_handles, trial_runner_client)
+    LRB-->>Cond: ComposedEnvHandle
 
     Cond->>LRB: endpoints(handle)
-    LRB-->>Cond: handle.endpoints<br/>(pure read)
+    LRB->>Comp: endpoints_for(run_sub, env_handle)
+    Comp-->>LRB: env_handle.trial_endpoints
+    LRB-->>Cond: EnvEndpoints (pure read)
 
     Note over Cond,GRC: First RPC — connect happens now
     Cond->>LRB: register_trial(trial_id, ...)
-    LRB->>LRB: _client_for(trial_id)
+    LRB->>Comp: runner_client_for(run_sub, env_handle)
+    Comp-->>LRB: env_handle.trial_runner_client
     LRB->>GRC: .connect(timeout=30)
     GRC->>Docker: gRPC health check loop
     Docker-->>GRC: healthy
@@ -180,18 +200,23 @@ sequenceDiagram
 
     Note over Cond,Docker: Teardown (finally block)
     Cond->>LRB: teardown(handle)
-    LRB->>GRC: .close()
-    LRB->>DC: .stop(down=True)
-    DC->>Docker: docker compose down -v
-    LRB->>LRB: shutil.rmtree(temp_dir)
-    LRB->>LRB: pop client from cache,<br/>discard from connected set
+    LRB->>Comp: teardown_trial(env_handle)
+    Comp->>GRC: .close()
+    Comp->>Mat: teardown(stack_handle)
+    Mat->>Docker: docker compose down -v
+    Mat->>Mat: shutil.rmtree(temp_dir)
+    LRB->>LRB: pop env_handle from cache,<br/>discard trial_id from connected set
 
     Note over Orch,LRB: Run end
     Orch->>LRB: close()
-    Note right of LRB: closes any leftover<br/>connected clients
+    Note right of LRB: closes any leftover<br/>trial handles + clients
 ```
 
-Every step above is a single method call in `tolokaforge/core/per_trial_runtime.py`.
+Every step above is a single method call in
+`tolokaforge/core/per_trial_runtime.py` (delegating),
+`tolokaforge/core/shared_stack_runtime.py`,
+`tolokaforge/core/default_substrate_composer.py`, or
+`tolokaforge/core/docker_compose_materialiser.py`.
 
 ## Trials whose task brings its own agent
 
@@ -248,19 +273,24 @@ runnable inside the container.
 
 ## Deep-dive — `provision()`
 
-Eleven steps, in order. Failure at any step raises `ProvisionError(stage="provision")` and cleans up whatever ran successfully before the raise.
+`PerTrialRuntimeBackend.provision(spec)` delegates to the internal
+`SharedStackRuntimeBackend`, which reads `spec.task.environment_manifest.stacks`
+and hands the composition plan to `SubstrateComposer.provision_trial`.
+The composer runs these steps in order; failure at any step raises
+`ProvisionError` and cleans up whatever ran successfully before the raise.
 
-1. **Guard on manifest presence.** `spec.task.environment_manifest is None` → raise. Tasks without a manifest belong on `SharedStackRuntimeBackend`, not this backend.
-2. **Reject reserved-prefix `stack_inputs`.** Any key in `manifest.stack_inputs` that starts with `TOLOKAFORGE_` raises `ProvisionError(stage="provision")` naming the offending key. The check runs **before** the compose-materialisation `try` block so the reason reads as a manifest error, not `docker compose up failed`.
-3. **Make a per-trial temp directory.** Path like `/tmp/tolokaforge-<sanitised-trial-id>-<random>/`. The basename is what Docker Compose reads for its auto-generated project name — encoding the trial id here is what gives each concurrent trial its own project.
-4. **Copy the compose context.** Everything in the compose file's parent directory (compose YAML, adjacent bind-mount source files, initial-state fixtures, and any task-authored `.env`) copies into the temp dir. Bind mounts declared as relative paths resolve inside the copied context; safety validators (ADR-0009) already reject `..` and absolute paths, so the copy is closed and complete.
-5. **Write the per-trial compose `.env`.** `<temp_dir>/.env` is (re)written with any task-authored `.env` content first, then `manifest.stack_inputs`, then the engine-reserved block (currently `TOLOKAFORGE_TRIAL_SLUG=<sanitised trial id>`). Docker Compose reads this file automatically, so `${VAR}` slots in the compose file resolve to the manifest's values — the same slug the temp-dir basename embeds is exposed as `${TOLOKAFORGE_TRIAL_SLUG}` for `container_name:` interpolation. Later entries win, so the reserved block overrides any earlier collision.
-6. **Construct `DockerCompose`** with `context=<temp_dir>`, `compose_file_name=<manifest.compose_file.name>`, `pull=False`, `build=False`, `wait=True`.
-7. **`compose.start()`.** Runs `docker compose up -d --wait`. Blocks until every service's compose `healthcheck:` reports healthy. On failure, raise `ProvisionError` and rmtree the temp dir.
-8. **Resolve the runner endpoint.** Host + port come from `compose.get_service_host_and_port(manifest.runner_service, manifest.runner_port)`; runner-missing raises `ProvisionError`.
-9. **Run the host-side readiness gate.** Probe the runner endpoint for gRPC channel-readiness, plus every service that declares a `readiness:` spec by that spec's kind on its first published port. A not-ready endpoint raises `ProvisionError(stage="provision")` carrying a `DiagnosticPayload` — see [Readiness gate](#readiness-gate).
-10. **Construct the runner client** — `GrpcRunnerClient(runner_address="<host>:<port>")`. **The client is not connected here** — `connect()` is deferred to first RPC use (see [Lazy runner-client connect](#lazy-runner-client-connect)).
-11. **Snapshot endpoints on the handle** and **cache the client** (`self._clients[spec.trial_id] = client`, the map every per-trial RPC method reads). Endpoint resolution looks up `runner_service` (required) and, best-effort, the db and rag services. Missing `db-service` leaves `EnvEndpoints.db_url = None`; the runner-side `DBServiceClient` binds to `DB_SERVICE_URL` from its container env and `db_json.py` tools fall back to the same env var, so a missing `db_url` is not a provisioning failure. Return `_LocalEnvHandle` carrying the trial_id (public), the compose stack, the runner service name + port, the temp dir, and the endpoints snapshot. All except `trial_id` are backend-private; callers treat the handle as an opaque token.
+1. **Guard on manifest presence.** `spec.task.environment_manifest is None` → the composer raises `ProvisionError(stage="provision")`. Tasks without a manifest belong on built-in-stack `SharedStackRuntimeBackend`, not this preset.
+2. **Reject reserved-prefix `stack_inputs`.** Any key in `manifest.stack_inputs` that starts with `TOLOKAFORGE_` raises `ProvisionError(stage="provision")` naming the offending key. The check runs **before** the materialisation `try` block so the reason reads as a manifest error, not `docker compose up failed`.
+3. **Walk the composition plan.** For each task-scope stack (not already materialised for this task) and each trial-scope stack, hand the `StackDecl` to `DockerComposeMaterialiser.materialise` with the trial's `MaterialiseContext` — the same context carries the network policy, credential-injection instructions, docker-socket-mount flag, log-capture destination, events sink, and component-id prefix (`trial/<trial_id>`).
+4. **Materialiser: make a per-trial temp directory.** Path like `/tmp/tolokaforge-<sanitised-scope-key>-<random>/`. The basename is what Docker Compose reads for its auto-generated project name — encoding the trial id here is what gives each concurrent trial its own project.
+5. **Materialiser: copy the compose context.** Everything in the compose file's parent directory (compose YAML, adjacent bind-mount source files, initial-state fixtures, and any task-authored `.env`) copies into the temp dir. Bind mounts declared as relative paths resolve inside the copied context; safety validators (ADR-0009) already reject `..` and absolute paths, so the copy is closed and complete.
+6. **Materialiser: write the per-trial compose `.env`.** `<temp_dir>/.env` is (re)written with any task-authored `.env` content first, then `manifest.stack_inputs`, then the engine-reserved block (currently `TOLOKAFORGE_TRIAL_SLUG=<sanitised trial id>`). Docker Compose reads this file automatically, so `${VAR}` slots in the compose file resolve to the manifest's values. Later entries win, so the reserved block overrides any earlier collision.
+7. **Materialiser: transform + start.** Apply the network-policy transform, inject runner credentials (only when the stack declares a `runner_service`), mount the docker socket into the runner if requested, then call `compose.start()` — `docker compose up -d --wait`, which blocks until every service's compose `healthcheck:` reports healthy. On failure, the materialiser captures per-service compose logs and raises `ProvisionError`; the composer tears down any sibling stacks already materialised in this trial before re-raising.
+8. **Composer: apply reset recipes.** For every newly-materialised stack, `SubstrateComposer` walks the manifest's `services.<name>.isolation == "reset"` entries and dispatches each via `DISPATCHER_REGISTRY["reset"]`. A recipe failure raises `ProvisionError(stage="reset_recipe")`; the composer tears down every newly-materialised stack before re-raising.
+9. **Composer: resolve the runner endpoint.** For the plan's runner-owning stack (the trial-scope stack whose decl carries `runner_service`), host + port come from `materialiser.resolve_endpoint(handle, runner_service, manifest.runner_port)`; runner-missing raises `ProvisionError`.
+10. **Composer: run the host-side readiness gate.** Probe the runner endpoint for gRPC channel-readiness, plus every service that declares a `readiness:` spec by that spec's kind on its first published port. A not-ready endpoint raises `ProvisionError(stage="provision")` — see [Readiness gate](#readiness-gate).
+11. **Composer: construct the runner client.** `runner_client_factory(f"{host}:{port}", run_sub.events)` returns a fresh `GrpcRunnerClient`. **The client is not connected here** — `connect()` is deferred to first RPC use (see [Lazy runner-client connect](#lazy-runner-client-connect)).
+12. **Return a `ComposedEnvHandle`.** The composer packs the trial-scope stack handles (each carrying its compose object, temp dir, log routers, and service-name snapshot), the resolved endpoints, and the trial-owned runner client into a `ComposedEnvHandle`. The delegate caches it under `spec.trial_id` in `_env_handles`. Callers treat the handle as an opaque token.
 
 ### Readiness gate
 
@@ -354,10 +384,10 @@ connect" (caller's problem).
 
 `PerTrialRuntimeBackend` follows suit:
 
-- `provision()` constructs the `GrpcRunnerClient` but does not call `.connect()`.
-- The `_connected_trials: set[str]` tracks which trials' clients have already been through their connect health check.
-- `_client_for(trial_id)` — invoked by every per-trial RPC method — checks the set; if the trial isn't in it, calls `.connect()` once and adds it. Subsequent calls to the same trial's RPCs skip the connect.
-- `teardown(handle)` and `close()` only invoke `.close()` on clients that were actually connected — closing a never-used client would have nothing to close on the gRPC side.
+- `provision()` returns a `ComposedEnvHandle` whose `trial_runner_client` was constructed by the composer's `runner_client_factory` but not connected.
+- The delegate's `_connected_trials: set[str]` tracks which trials' clients have already been through their connect health check.
+- The delegate's `_runner_client_for(trial_id)` — invoked by every per-trial RPC method — asks the composer for the client and, if the trial isn't already in `_connected_trials`, calls `.connect()` once and adds it. Subsequent calls to the same trial's RPCs skip the connect.
+- `teardown(handle)` hands the handle to `SubstrateComposer.teardown_trial`, which closes the trial-owned runner client and tears the trial-scope stacks down. `close()` walks any leftover cached env handles the same way.
 
 The deferred client connect is distinct from the [readiness gate](#readiness-gate): the gate opens a throwaway probe channel to prove the runner's host port is reachable and closes it immediately, adding milliseconds — it does not stand in for, or warm, the per-trial client. So `provision()` adds two bounded costs beyond the compose CLI: the compose `--wait` gate (blocks until every container reports healthy) and the readiness probe (fast reachability check). The first RPC call still pays the client connect cost; subsequent calls hit a warm client.
 
@@ -409,7 +439,7 @@ Guidelines:
 
 - **One row per `id`.** Reuse the same id string on every update — the panel keys on it and updates the row in place. Per-attempt polling loops fire `component_status_changed` with a fresh `detail` string; no log line scrolls.
 - **Tag existing `logger.*` calls with `extra={"component_id": ...}`.** This is the generic escape hatch — any subsystem that already emits log records (including WARNING / ERROR ones) can opt into the component-tail visualisation by adding the tag. `_LogSink` inspects `record.component_id` and routes tagged records to the component's tail buffer instead of the general ring + `print_above` channel. The log record keeps its real level (external log processors, `-v` inspection, post-mortem artefacts all see it correctly); only the panel-side visualisation is switched.
-- **Docker containers stream their stdout/stderr into the component tail automatically via `LogRouter`** — see `tolokaforge/docker/logging.py`. Reporters that own docker containers attach one router per container and set `component_id` to the same id the status snapshot uses — `engine/docker.service/<name>` for engine services, `trial/<trial_id>/container/<service>` for per-trial containers. The router emits each stdout/stderr line through Python `logging` tagged with that `component_id`, and `_LogSink` routes it into the tail like any other tagged record. `Container.start(log_router=…)` and `Container.attach_log_router(...)` are the wiring surfaces; `EngineStack`, `SharedStackRuntimeBackend`, and `PerTrialRuntimeBackend` are the reference callers.
+- **Docker containers stream their stdout/stderr into the component tail automatically via `LogRouter`** — see `tolokaforge/docker/logging.py`. Reporters that own docker containers attach one router per container and set `component_id` to the same id the status snapshot uses — `engine/docker.service/<name>` for engine services, `trial/<trial_id>/container/<service>` for per-trial containers. The router emits each stdout/stderr line through Python `logging` tagged with that `component_id`, and `_LogSink` routes it into the tail like any other tagged record. `Container.start(log_router=…)` and `Container.attach_log_router(...)` are the wiring surfaces; `EngineStack` and `DockerComposeMaterialiser` are the reference callers (`DockerComposeMaterialiser` uses the `MaterialiseContext.component_id_prefix` — `engine` for run-scope stacks, `trial/<trial_id>` for trial-scope stacks — to key each container's router).
 - **Use `component_log_appended` for records not already on the `logging` bus.** Direct-Python events (probe outcomes, correlation ids from a third-party SDK) that never went through `logger.*` can be pushed straight into the tail via the event method.
 - **Namespace by ownership.** `engine/…` for run-level infrastructure; `trial/<trial_id>/…` for per-trial substrate; `worker/<n>/…` for future worker-thread components. Any transport-native namespace (e.g. `k8s/<pod-name>`) is up to the reporter.
 - **`events=None` is legal.** Backends constructed outside the orchestrator (tests, scripts) fall through to `_NULL_EVENTS` and behave as pre-M11.2 — no events, no reporting overhead.
@@ -418,17 +448,23 @@ The reference wiring lives in `tolokaforge/core/shared_stack_runtime.py`. `GrpcR
 
 ## Teardown + cleanup
 
-`teardown(handle)` is idempotent, per ADR-0010. It performs, in order:
+`teardown(handle)` is idempotent, per ADR-0010. It hands the
+`ComposedEnvHandle` to `SubstrateComposer.teardown_trial`, which:
 
-1. Pop the client from `_clients` (returns None if already torn down).
-2. Discard the trial id from `_connected_trials`; capture whether it was in the set (that determines whether the client needs closing).
-3. If the client existed AND was connected, call `.close()` on it. Best-effort — logs on failure, does not raise.
-4. `_shutdown_compose(handle.compose)` — runs `compose.stop(down=True)`, which is `docker compose down -v` under the hood. Best-effort. Removes containers, network, and anonymous volumes.
-5. `shutil.rmtree(handle.temp_dir, ignore_errors=True)` — removes the per-trial context directory.
+1. Closes the trial-owned runner client (best-effort; logs on failure).
+2. Walks each trial-scope stack handle and calls `DockerComposeMaterialiser.teardown` — stops the log routers first, then runs `shutdown_compose(handle.compose)` (`docker compose down -v` under the hood) to remove containers, network, and anonymous volumes, and finally `shutil.rmtree(handle.temp_dir, ignore_errors=True)` on the per-trial context directory.
 
-A second `teardown(handle)` call finds nothing in the cache, exits quickly. Foreign handles (anything not `_LocalEnvHandle`) return silently — Protocol semantics say teardown of an already-torn-down handle is a no-op.
+The delegate then pops the env handle from its cache and discards the
+trial id from `_connected_trials`. A second `teardown(handle)` call
+raises `TypeError` if the handle is not a `ComposedEnvHandle` — the
+composer path rejects foreign handle families explicitly so a caller
+mis-routing surfaces rather than being silently ignored.
 
-`close()` (run-level) walks every connected trial, closes their clients, clears the cache. Rarely necessary in practice because the conductor calls `teardown(handle)` in a `finally`; `close()` catches trials that leaked past that (e.g., a caller that forgot to teardown).
+`close()` (run-level) walks every cached env handle and hands each to
+`teardown_trial`, then clears `_env_handles` and `_connected_trials`.
+Rarely necessary in practice because the conductor calls
+`teardown(handle)` in a `finally`; `close()` catches trials that leaked
+past that (e.g., a caller that forgot to teardown).
 
 ## Isolation enforcement
 
@@ -470,7 +506,7 @@ See [`RESET_RECIPES.md`](RESET_RECIPES.md) for the four seed kinds (`sql_dump`, 
 | `await_ready` | Never raises today (`--wait` gates during provision); reserved for future backends | — |
 | `endpoints` — foreign handle | `TypeError` | — |
 | `endpoints` — everything else | Never raises (pure read on the handle's snapshot) | — |
-| Any per-trial RPC — trial not provisioned | `RuntimeError("provision() must be called before…")` | — |
+| Any per-trial RPC — trial not provisioned | `KeyError` on the delegate's `_env_handles` lookup (cleanup_trial is idempotent and returns `{"success": True, "error": None}` instead) | — |
 | Any per-trial RPC — inside the RPC itself | Whatever `GrpcRunnerClient` raises (typically `grpc.RpcError`) | — |
 | `teardown` — foreign handle | Silent no-op (idempotency contract) | — |
 | `teardown` — compose down fails | Silent, logged | Whatever succeeded before the failure |
@@ -511,9 +547,12 @@ this and captures on success too.
 **Capture surfaces.** Two are per-trial (`PerTrialRuntimeBackend`); the third is
 run-level (`SharedStackRuntimeBackend`).
 
-- **Provision-failure path** — `provision()` captures before
-  `cleanup_partial_materialisation` in both failure branches (compose
-  `up --wait` failure and reset-recipe failure). No `metrics.yaml` exists yet
+- **Provision-failure path** — `DockerComposeMaterialiser` captures the
+  per-service compose logs before `cleanup_partial_materialisation` in
+  its own failure branch (compose `up --wait` failure); on the composer
+  side, a reset-recipe failure walks `_teardown_handles_best_effort` on
+  every newly-materialised stack, which triggers the same log capture
+  before removing the temp dirs. No `metrics.yaml` exists yet
   (the conductor never ran), so the durable record is a `services/_capture.yaml`
   manifest written alongside the `.log` files:
   `{"tail": int, "capture_reason": "provision_error", "services": {"<name>": {"bytes": int}}}`.
@@ -530,13 +569,14 @@ run-level (`SharedStackRuntimeBackend`).
   (the hook writes only the `.log` files). See
   [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § `captured_service_logs`.
 - **Shared-stack materialise-failure path** — `SharedStackRuntimeBackend`
-  materialises the task-declared compose stack once at `connect` time for the
-  whole run. If it fails (compose `up --wait` failure or the declared runner
-  service never exposing its port), the run-wide per-service logs are captured
-  before `cleanup_partial_materialisation` to a **run-level** location,
-  `<output_dir>/services/<name>.log`, with a `services/_capture.yaml` durable
-  record carrying `capture_reason: "materialise_error"` (distinguishing it from
-  the per-trial `"provision_error"`). The run then aborts with the same
+  in env_manifest mode hands the run's composition plan to
+  `SubstrateComposer.materialise_run` at `connect()` time. The composer's
+  materialiser is what stands the compose stacks up; on failure it
+  captures the run-wide per-service logs before cleanup to a
+  **run-level** location, `<output_dir>/services/<name>.log`, with a
+  `services/_capture.yaml` durable record carrying
+  `capture_reason: "materialise_error"` (distinguishing it from the
+  per-trial `"provision_error"`). The run then aborts with the same
   `ProvisionError`; a run with no `log_capture` configured writes no
   `services/` dir.
 
@@ -561,15 +601,18 @@ subprocess with `cwd=<context>` so Compose resolves the per-trial project from
 the context-dir basename. `compute.log_tail` (default 500) sets `N`.
 
 **Shared-stack surfaces.** `SharedStackRuntimeBackend.capture_service_logs`
-(the per-trial hook) returns `{}` unconditionally: its stack is run-wide, not
-trial-scoped, and its per-trial `teardown` is a no-op — there is no per-trial
-stack to read, and capturing the same run-wide containers on every trial would
-be meaningless. Capture on the shared stack happens once, at run scope, on the
-materialise-failure path (see the run-level surface above): if the task-declared
-compose stack fails to come up at `connect` time, the run-wide per-service logs
-are written to `<output_dir>/services/<name>.log` plus a
-`services/_capture.yaml` (`capture_reason: "materialise_error"`) before the
-partial stack is torn down.
+(the per-trial hook) returns `{}` in built-in-stack mode and for a
+run-scope-only composer plan: its stack is run-wide, not trial-scoped,
+and the per-trial `teardown` is a no-op there, so capturing the same
+containers on every trial would be meaningless. Under a plan that
+declares trial-scope stacks, the per-trial hook walks those stacks via
+the composer's materialiser and returns the aggregated
+`{service: bytes_written}` map. Run-scope capture happens once, on the
+materialise-failure path (see the run-level surface above): if the
+task-declared compose stack fails to come up at `connect` time, the
+run-wide per-service logs are written to `<output_dir>/services/<name>.log`
+plus a `services/_capture.yaml` (`capture_reason: "materialise_error"`)
+before the partial stack is torn down.
 
 ## `SharedStackRuntimeBackend` vs `PerTrialRuntimeBackend` side-by-side
 
@@ -784,9 +827,12 @@ The runner and db-service images are also published to Docker Hub (see [STANDALO
 
 ## Where to read next
 
-- `tolokaforge/core/per_trial_runtime.py` — implementation.
+- `tolokaforge/core/per_trial_runtime.py` — the preset (delegates every method onto the composer-driven `SharedStackRuntimeBackend`).
 - `tolokaforge/core/runtime.py` — the `RuntimeBackend` Protocol + `InMemoryRuntimeBackend`.
 - `tolokaforge/core/shared_stack_runtime.py` — `SharedStackRuntimeBackend` + `RunnerClient` Protocol + `GrpcRunnerClient`.
-- `tests/canonical/test_per_trial_runtime_backend.py` — the unit tests exercise every lifecycle branch documented above with fakes.
+- `tolokaforge/core/default_substrate_composer.py` — the sequencer that walks the composition plan and stitches materialiser + dispatchers together.
+- `tolokaforge/core/docker_compose_materialiser.py` — the docker-compose materialiser (compose lifecycle, log routing, per-service capture).
+- `tests/canonical/test_per_trial_runtime_backend.py` — the unit tests exercise every lifecycle branch documented above with fakes injected through the composer seam.
 - `tests/integration/docker/test_per_trial_runtime_backend_integration.py` — the real-daemon lifecycle smoke.
 - `docs/adr/0010-runtime-backend-provisioning-contract.md` — the contract this document implements.
+- `docs/adr/0044-composition-plan-runtime.md` — the composition-plan seams the backend delegates through.

@@ -1,5 +1,4 @@
-"""Canonical tests locking ``PerTrialRuntimeBackend``'s per-trial
-compose ``LogRouter`` wiring.
+"""Canonical tests locking per-trial compose ``LogRouter`` wiring.
 
 Every container that a per-trial compose stack brings up must have a
 ``LogRouter`` attached whose ``component_id`` matches what the display
@@ -10,9 +9,13 @@ underlying docker log streams are severed. A provision failure that
 happens before the router-build step (compose-up or reset-recipe) must
 leave no routers running because none were constructed on that path.
 
-Materialisation runs for real here, credential injection included, so the
-package-level ``_pin_fake_secrets`` pins the manager whose payload reaches the
-compose file.
+The composer owns compose lifecycle now, so the tests inject fakes
+through the :class:`DockerComposeMaterialiser` seams — the
+``docker_compose_factory`` for compose lifecycle, and a monkey-patched
+``LogRouter`` on the materialiser module for router construction /
+teardown recording. Materialisation transforms run for real, credential
+injection included, so the package-level ``_pin_fake_secrets`` pins the
+manager whose payload reaches the compose file.
 """
 
 from __future__ import annotations
@@ -25,9 +28,16 @@ from typing import Any
 import pytest
 
 from tests.canonical._factories import make_task_description
-from tolokaforge.core import per_trial_runtime as per_trial_runtime_module
+from tolokaforge.core import docker_compose_materialiser as materialiser_module
+from tolokaforge.core.composition_runtime import ComposedEnvHandle
+from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
+from tolokaforge.core.docker_compose_materialiser import (
+    DockerComposeMaterialiser,
+    _DockerComposeStackHandle,
+)
 from tolokaforge.core.models import ModelConfig
-from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend, _LocalEnvHandle
+from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
+from tolokaforge.core.project_loader import _synthesise_composition_plan
 from tolokaforge.core.runtime import ProvisionError
 from tolokaforge.core.service_readiness import InMemoryServiceReadinessProbe, ServiceReadinessProbe
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
@@ -55,8 +65,7 @@ def _ready_loader(kind: str) -> Callable[[], ServiceReadinessProbe]:
 class _FakeComposeContainer:
     """Minimal ``ComposeContainer`` stand-in for ``.get_containers()``.
 
-    Only exposes the attributes ``PerTrialRuntimeBackend`` reads when
-    constructing a ``LogRouter`` per container.
+    Only exposes the attributes the router-attach loop reads.
     """
 
     def __init__(
@@ -109,9 +118,9 @@ class _RecordingRouter:
 class _FakeCompose:
     """Stand-in for ``testcontainers.compose.DockerCompose``.
 
-    Exposes the seams :class:`PerTrialRuntimeBackend` touches on the
-    provisioning path plus ``get_containers`` so the router-attach step
-    can enumerate a declared set of containers.
+    Exposes the seams the materialiser touches on the provisioning path
+    plus ``get_containers`` so the router-attach step can enumerate a
+    declared set of containers.
     """
 
     def __init__(
@@ -177,12 +186,13 @@ class _FakePublisher:
 class _FakeRunnerClient:
     """Minimal ``GrpcRunnerClient`` stand-in with a close() spy."""
 
-    def __init__(self, runner_address: str) -> None:
+    def __init__(self, runner_address: str, events: Any = None) -> None:
+        del events
         self.runner_address = runner_address
         self.closed = False
 
     def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
-        pass
+        del timeout, retry_interval
 
     def close(self) -> None:
         self.closed = True
@@ -201,7 +211,8 @@ def _install_recording_router(
     events: list[tuple[str, str, float]] | None = None,
     fail_for_service: str | None = None,
 ) -> list[_RecordingRouter]:
-    """Install ``_RecordingRouter`` in place of the real ``LogRouter``.
+    """Install ``_RecordingRouter`` in place of the real ``LogRouter`` on the
+    materialiser module.
 
     Optionally raises ``LogRouterError`` when constructing a router for
     ``fail_for_service`` — used to lock the log-and-continue contract.
@@ -218,17 +229,17 @@ def _install_recording_router(
         created.append(router)
         return router
 
-    monkeypatch.setattr(per_trial_runtime_module, "LogRouter", factory)
+    monkeypatch.setattr(materialiser_module, "LogRouter", factory)
     return created
 
 
 def _install_fake_compose_with_containers(
-    monkeypatch: pytest.MonkeyPatch,
     containers_by_context: dict[str, list[_FakeComposeContainer]] | None = None,
     default_containers: list[_FakeComposeContainer] | None = None,
-) -> list[_FakeCompose]:
-    """Patch ``DockerCompose`` with a factory that seeds a fresh
-    :class:`_FakeCompose`'s ``containers`` list per invocation.
+) -> tuple[Callable[..., _FakeCompose], list[_FakeCompose]]:
+    """Return a ``docker_compose_factory`` that seeds a fresh
+    :class:`_FakeCompose`'s ``containers`` list per invocation, plus the
+    list of composes it will produce.
 
     ``containers_by_context`` keys off the compose context directory so a
     two-trial concurrency test can seed distinct containers per trial;
@@ -249,9 +260,16 @@ def _install_fake_compose_with_containers(
         created.append(compose)
         return compose
 
-    monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", factory)
-    monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
-    return created
+    return factory, created
+
+
+def _make_backend(compose_factory: Callable[..., _FakeCompose]) -> PerTrialRuntimeBackend:
+    composer = DefaultSubstrateComposer(
+        materialiser=DockerComposeMaterialiser(docker_compose_factory=compose_factory),
+        runner_client_factory=_FakeRunnerClient,
+        readiness_probe_loader=_ready_loader,
+    )
+    return PerTrialRuntimeBackend(composer=composer)
 
 
 def _make_trial_spec(
@@ -268,6 +286,8 @@ def _make_trial_spec(
         manifest = EnvironmentManifest(compose_file=compose_file)
     else:
         manifest = EnvironmentManifest(compose_file=compose_file, services=services)
+    if manifest is not None:
+        _synthesise_composition_plan(manifest, {})
     return TrialSpec(
         trial_id=trial_id,
         run_id="run_component_logs",
@@ -286,6 +306,13 @@ def _make_trial_spec(
     )
 
 
+def _stack_handle(env_handle: Any) -> _DockerComposeStackHandle:
+    assert isinstance(env_handle, ComposedEnvHandle)
+    stack_handle = env_handle.trial_stack_handles[0]
+    assert isinstance(stack_handle, _DockerComposeStackHandle)
+    return stack_handle
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -294,10 +321,9 @@ def _make_trial_spec(
 def test_provision_attaches_one_router_per_container(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every compose container gets a ``LogRouter`` whose component id
     matches ``trial/<trial_id>/container/<service>`` — the same namespace
-    ``_container_to_component`` publishes, so status row and log tail
-    land on the same component id."""
-    _install_fake_compose_with_containers(
-        monkeypatch,
+    the display publishes for per-trial containers, so status row and log
+    tail land on the same component id."""
+    factory, _composes = _install_fake_compose_with_containers(
         default_containers=[
             _FakeComposeContainer(ID="cid-default", Name="proj-default-1", Service="default"),
             _FakeComposeContainer(ID="cid-db", Name="proj-db-1", Service="db"),
@@ -305,13 +331,13 @@ def test_provision_attaches_one_router_per_container(monkeypatch: pytest.MonkeyP
     )
     created = _install_recording_router(monkeypatch)
 
-    backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
+    backend = _make_backend(factory)
     spec = _make_trial_spec(trial_id="task-1:0", compose_file=_FIXTURES / "safe_two_service.yaml")
     handle = backend.provision(spec)
 
-    assert isinstance(handle, _LocalEnvHandle)
+    stack = _stack_handle(handle)
     assert len(created) == 2
-    assert len(handle.log_routers) == 2
+    assert len(stack.log_routers) == 2
     by_component = {r.component_id: r for r in created}
     assert set(by_component.keys()) == {
         "trial/task-1:0/container/default",
@@ -325,8 +351,7 @@ def test_provision_attaches_one_router_per_container(monkeypatch: pytest.MonkeyP
 def test_teardown_stops_routers_before_shutdown_compose(monkeypatch: pytest.MonkeyPatch) -> None:
     """Teardown order: every router's ``stop`` timestamp precedes
     ``shutdown_compose``'s call timestamp."""
-    _install_fake_compose_with_containers(
-        monkeypatch,
+    factory, _composes = _install_fake_compose_with_containers(
         default_containers=[
             _FakeComposeContainer(ID="cid-default", Name="proj-default-1", Service="default"),
             _FakeComposeContainer(ID="cid-db", Name="proj-db-1", Service="db"),
@@ -340,9 +365,9 @@ def test_teardown_stops_routers_before_shutdown_compose(monkeypatch: pytest.Monk
     def recording_shutdown(_compose: Any) -> None:
         shutdown_ts.append(time.monotonic())
 
-    monkeypatch.setattr(per_trial_runtime_module, "shutdown_compose", recording_shutdown)
+    monkeypatch.setattr(materialiser_module, "shutdown_compose", recording_shutdown)
 
-    backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
+    backend = _make_backend(factory)
     spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
     handle = backend.provision(spec)
     backend.teardown(handle)
@@ -357,19 +382,20 @@ def test_teardown_stops_routers_before_shutdown_compose(monkeypatch: pytest.Monk
         ), f"router {router.container_name!r} stopped after shutdown_compose"
 
 
-def test_reset_recipe_failure_leaves_no_routers_running(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reset_recipe_failure_leaves_no_routers_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A provision failure at the reset-recipe stage happens BEFORE the
     router-build step, so no routers were ever constructed on that path
     and there is nothing to stop."""
-    _install_fake_compose_with_containers(
-        monkeypatch,
+    factory, _composes = _install_fake_compose_with_containers(
         default_containers=[
             _FakeComposeContainer(ID="cid-default", Name="proj-default-1", Service="default"),
         ],
     )
     created = _install_recording_router(monkeypatch)
 
-    backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
+    backend = _make_backend(factory)
     # Named seed absent from registry → reset-recipe stage failure.
     spec = _make_trial_spec(
         compose_file=_FIXTURES / "safe_two_service.yaml",
@@ -380,15 +406,17 @@ def test_reset_recipe_failure_leaves_no_routers_running(monkeypatch: pytest.Monk
         backend.provision(spec)
 
     assert exc.value.stage == "reset_recipe"
-    assert created == []
-    assert spec.trial_id not in backend._clients
+    # Reset dispatch runs after the compose stack starts and routers are
+    # attached — those routers must be stopped by the composer's cleanup
+    # boundary, not left running.
+    assert all(r.stopped for r in created)
+    assert spec.trial_id not in backend._delegate._env_handles
 
 
 def test_concurrent_trials_get_independent_routers(monkeypatch: pytest.MonkeyPatch) -> None:
     """Two independent trials produce routers with distinct component
     ids — one namespace per trial, no cross-trial mixing."""
-    _install_fake_compose_with_containers(
-        monkeypatch,
+    factory, _composes = _install_fake_compose_with_containers(
         containers_by_context={
             "task-1_0": [
                 _FakeComposeContainer(
@@ -404,29 +432,29 @@ def test_concurrent_trials_get_independent_routers(monkeypatch: pytest.MonkeyPat
     )
     created = _install_recording_router(monkeypatch)
 
-    backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
+    backend = _make_backend(factory)
     spec_a = _make_trial_spec(trial_id="task-1:0", compose_file=_FIXTURES / "safe_two_service.yaml")
     spec_b = _make_trial_spec(trial_id="task-1:1", compose_file=_FIXTURES / "safe_two_service.yaml")
     handle_a = backend.provision(spec_a)
     handle_b = backend.provision(spec_b)
 
-    assert isinstance(handle_a, _LocalEnvHandle)
-    assert isinstance(handle_b, _LocalEnvHandle)
-    assert {r.component_id for r in handle_a.log_routers} == {
+    stack_a = _stack_handle(handle_a)
+    stack_b = _stack_handle(handle_b)
+    assert {r.component_id for r in stack_a.log_routers} == {
         "trial/task-1:0/container/default",
     }
-    assert {r.component_id for r in handle_b.log_routers} == {
+    assert {r.component_id for r in stack_b.log_routers} == {
         "trial/task-1:1/container/default",
     }
     # Routers from the two trials share no component id.
-    a_ids = {r.component_id for r in handle_a.log_routers}
-    b_ids = {r.component_id for r in handle_b.log_routers}
+    a_ids = {r.component_id for r in stack_a.log_routers}
+    b_ids = {r.component_id for r in stack_b.log_routers}
     assert a_ids.isdisjoint(b_ids)
     # And container ids stay separate too.
-    assert {r.container_id for r in handle_a.log_routers} == {"cid-a-default"}
-    assert {r.container_id for r in handle_b.log_routers} == {"cid-b-default"}
+    assert {r.container_id for r in stack_a.log_routers} == {"cid-a-default"}
+    assert {r.container_id for r in stack_b.log_routers} == {"cid-b-default"}
     # All routers ended up on their respective handles.
-    assert set(created) == set(handle_a.log_routers) | set(handle_b.log_routers)
+    assert set(created) == set(stack_a.log_routers) | set(stack_b.log_routers)
 
 
 def test_provision_logs_and_continues_on_router_failure(
@@ -436,8 +464,7 @@ def test_provision_logs_and_continues_on_router_failure(
     """A per-container router construction failure must not abort
     provisioning — the compose stack is already up. Other routers are
     still built and the failure is logged."""
-    _install_fake_compose_with_containers(
-        monkeypatch,
+    factory, _composes = _install_fake_compose_with_containers(
         default_containers=[
             _FakeComposeContainer(ID="cid-default", Name="proj-default-1", Service="default"),
             _FakeComposeContainer(ID="cid-db", Name="proj-db-1", Service="db"),
@@ -445,18 +472,18 @@ def test_provision_logs_and_continues_on_router_failure(
     )
     created = _install_recording_router(monkeypatch, fail_for_service="default")
 
-    backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
+    backend = _make_backend(factory)
     spec = _make_trial_spec(trial_id="task-1:0", compose_file=_FIXTURES / "safe_two_service.yaml")
 
     with caplog.at_level("ERROR"):
         handle = backend.provision(spec)
 
-    assert isinstance(handle, _LocalEnvHandle)
+    stack = _stack_handle(handle)
     # ``default`` router raised at construction → not present. ``db`` router
     # was still built.
     assert len(created) == 1
     assert created[0].component_id == "trial/task-1:0/container/db"
-    assert handle.log_routers == (created[0],)
+    assert stack.log_routers == (created[0],)
     assert any(
         "failed to attach log router" in record.getMessage().lower() for record in caplog.records
     )
@@ -466,8 +493,7 @@ def test_container_without_id_is_skipped(monkeypatch: pytest.MonkeyPatch) -> Non
     """A ``ComposeContainer`` with an empty ``ID`` cannot be attached to
     (there is no docker container id to stream from); the wiring loop
     skips it silently rather than raising."""
-    _install_fake_compose_with_containers(
-        monkeypatch,
+    factory, _composes = _install_fake_compose_with_containers(
         default_containers=[
             _FakeComposeContainer(ID="", Name="proj-default-1", Service="default"),
             _FakeComposeContainer(ID="cid-db", Name="proj-db-1", Service="db"),
@@ -475,21 +501,20 @@ def test_container_without_id_is_skipped(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     created = _install_recording_router(monkeypatch)
 
-    backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
+    backend = _make_backend(factory)
     spec = _make_trial_spec(trial_id="task-1:0", compose_file=_FIXTURES / "safe_two_service.yaml")
     handle = backend.provision(spec)
 
-    assert isinstance(handle, _LocalEnvHandle)
+    stack = _stack_handle(handle)
     assert len(created) == 1
     assert created[0].component_id == "trial/task-1:0/container/db"
-    assert handle.log_routers == (created[0],)
+    assert stack.log_routers == (created[0],)
 
 
 def test_teardown_swallows_router_stop_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     """A router-stop error must not mask compose teardown — the same
     fail-safe discipline as the existing client-close ``try/except``."""
-    _install_fake_compose_with_containers(
-        monkeypatch,
+    factory, _composes = _install_fake_compose_with_containers(
         default_containers=[
             _FakeComposeContainer(ID="cid-default", Name="proj-default-1", Service="default"),
         ],
@@ -498,12 +523,12 @@ def test_teardown_swallows_router_stop_errors(monkeypatch: pytest.MonkeyPatch) -
 
     shutdown_calls: list[bool] = []
     monkeypatch.setattr(
-        per_trial_runtime_module,
+        materialiser_module,
         "shutdown_compose",
         lambda _compose: shutdown_calls.append(True),
     )
 
-    backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
+    backend = _make_backend(factory)
     spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
     handle = backend.provision(spec)
 

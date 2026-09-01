@@ -112,7 +112,21 @@ class SubstrateComposer(Protocol):
     def cycle_between_trials(self, run_sub: RunSubstrate, spec: TrialSpec) -> None: ...
     def teardown_trial(self, handle: EnvHandle) -> None: ...
     def teardown_run(self, run_sub: RunSubstrate) -> None: ...
+
+@dataclass
+class RunSubstrate:
+    run_id: str
+    run_stack_handles: tuple[StackHandle, ...]
+    task_stack_handles: dict[tuple[str, str], StackHandle]
+    runner_client: RunnerClient | None
+    endpoints: EnvEndpoints | None
+    seeds: Mapping[str, SeedRef]
+    mount_docker_socket: bool
+    log_capture: LogCaptureConfig | None
+    events: RunDisplayEvents
 ```
+
+The three trailing fields (`mount_docker_socket`, `log_capture`, `events`) carry the run-wide policy `materialise_run` threads from `RunCtx` onto the substrate so `provision_trial` materialises task-scope and trial-scope stacks under the same policy the run-scope stacks were materialised with.
 
 Three new entry-point groups on `plugin_registry.py`:
 - `tolokaforge.compose_materialisers` → `type[ComposeMaterialiser]`
@@ -120,7 +134,7 @@ Three new entry-point groups on `plugin_registry.py`:
 - `tolokaforge.substrate_composers` → `type[SubstrateComposer]`
 
 Built-in registrations (wheel entry points):
-- `docker_compose` materialiser (extracted from today's `_materialise_manifest`).
+- `docker_compose` materialiser — the built-in impl.
 - `shared` dispatcher (no-op — service persists).
 - `reset` dispatcher (wraps `RECIPE_REGISTRY`).
 - `ephemeral` dispatcher (new — targeted `docker compose rm -f -v <service> && docker compose up -d <service>`).
@@ -139,6 +153,8 @@ class SharedStackRuntimeBackend:
 ```
 
 At `connect()`: for each `stack_scope="run"` decl → `composer.materialise_run(...)`. At `provision(spec)`: for each `stack_scope="task"` decl whose task not yet materialised → `composer.materialise_task(...)`; for each `stack_scope="trial"` decl → `composer.materialise_trial(...)`. Between trials sharing a `run`/`task` scope stack → `composer.cycle_between_trials(...)` walks the stack's services and invokes the dispatcher registered for each isolation label.
+
+Reserved-prefix `stack_inputs` keys (`TOLOKAFORGE_*`) are refused uniformly at both composer entry points: `materialise_run` raises `ProvisionError(stage="materialise_run", trial_id=run_id)` before `_validate_plan` runs (so a bad run-scope manifest fails before any docker call); `provision_trial` raises `ProvisionError(stage="provision", trial_id=trial_id)` before any per-trial materialise call. Reason text is byte-identical past the id — one refusal helper, two entry points.
 
 ### 4. `PerTrialRuntimeBackend` retained as thin preset
 

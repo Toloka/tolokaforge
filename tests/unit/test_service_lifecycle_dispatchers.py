@@ -277,9 +277,9 @@ class TestResetDispatcher:
 
     def test_cycle_refuses_when_seed_map_lacks_referenced_seed(self) -> None:
         """A ``reset`` service pointing at a seed that is not in the
-        run's seed map fails loud — matches today's
-        :meth:`PerTrialRuntimeBackend._apply_reset_recipes` refusal text
-        verbatim in its ``reason`` string."""
+        run's seed map fails loud with the canonical refusal ``reason``
+        text (the dispatcher owns this phrasing; the composer supplies
+        the outer ``stage`` / ``trial_id``)."""
         handle = _make_handle(compose=_StrictSpyDockerCompose())
         with pytest.raises(ProvisionError) as excinfo:
             ResetDispatcher().cycle(
@@ -302,7 +302,7 @@ class TestResetDispatcher:
     ) -> None:
         """A :class:`RuntimeError` from the recipe dispatch surfaces as
         :class:`ProvisionError` with ``stage="cycle"`` — the reason
-        preserves today's ``_apply_reset_recipes`` phrasing."""
+        carries the canonical reset-recipe failure phrasing."""
         seed = _make_seed(kind="sql_dump")
         swap_sql_dump_dispatcher.exc = RuntimeError("dump failed")
         handle = _make_handle(compose=_StrictSpyDockerCompose())
