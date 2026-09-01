@@ -1,14 +1,25 @@
-"""Guard the "one agent-visible walk, three callers" invariant.
+"""Guard the "one agent-visible walk, split entry points" invariant.
 
-Runner's non-harness filesystem-state factory, ``SubstrateService.ListFilesystemDir``,
-and ``SubstrateService.ReadFilesystemPath`` all reach the agent-visible walk
-through :func:`~tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`.
-A fourth caller in the tree, or a caller that re-inlines the raw
-``rglob("*") + is_symlink + read_text(encoding="utf-8")`` chain, would fork
-the exclusion policy and re-split the seam.
+Two orchestration entry points share one walker:
+
+* :func:`~tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`
+  materialises ``{'/env/fs/agent-visible/<rel>': content}`` for the
+  runner-side non-harness state factory. One caller outside the pure
+  module: ``runner/service.py``.
+* :func:`~tolokaforge.core.grading.filesystem_view.iter_agent_visible_rel_paths`
+  yields the same walk one rel-path at a time (peak memory: one file's
+  bytes) for ``SubstrateService.ListFilesystemDir``. One caller outside
+  the pure module: ``runner/substrate_service.py``.
+
+``ReadFilesystemPath`` reuses :func:`is_excluded_rel_path` for its
+per-path refusal.
+
+A third caller of either entry point, or a caller that re-inlines the
+raw ``rglob("*") + is_symlink + read_text(encoding="utf-8")`` chain,
+would fork the exclusion policy and re-split the seam.
 
 Text-level assertions rather than an AST pass — the goal is to catch a
-copy-paste of the recipe into a fourth caller, not to prove semantic
+copy-paste of the recipe into a foreign caller, not to prove semantic
 equivalence, and a text sweep is what a reviewer would run.
 
 Symmetric with ``tests/canonical/test_fold_defined_once.py`` (composite
@@ -38,37 +49,50 @@ def _iter_package_python_files() -> list[Path]:
     return sorted(p for p in _PACKAGE_ROOT.rglob("*.py") if p.is_file())
 
 
-def test_read_agent_visible_filesystem_is_defined_exactly_once_in_the_pure_module() -> None:
-    """The function name appears as a ``def`` header in exactly one file."""
-    def_pattern = re.compile(r"^def\s+read_agent_visible_filesystem\b", re.MULTILINE)
+@pytest.mark.parametrize(
+    "symbol", ["read_agent_visible_filesystem", "iter_agent_visible_rel_paths"]
+)
+def test_walker_entry_point_is_defined_exactly_once_in_the_pure_module(
+    symbol: str,
+) -> None:
+    """Each orchestration entry point has one ``def`` header in the tree."""
+    def_pattern = re.compile(rf"^def\s+{symbol}\b", re.MULTILINE)
     definitions = [
         path
         for path in _iter_package_python_files()
         if def_pattern.search(path.read_text(encoding="utf-8"))
     ]
     assert definitions == [_FILESYSTEM_VIEW_MODULE], (
-        f"Expected exactly one ``def read_agent_visible_filesystem`` in "
+        f"Expected exactly one ``def {symbol}`` in "
         f"{_FILESYSTEM_VIEW_MODULE.relative_to(_REPO_ROOT)}, "
         f"found: {[p.relative_to(_REPO_ROOT) for p in definitions]}"
     )
 
 
-def test_read_agent_visible_filesystem_has_named_production_callers_only() -> None:
-    """The runner service and the substrate service are the only production callers.
+@pytest.mark.parametrize(
+    ("symbol", "expected_caller"),
+    [
+        ("read_agent_visible_filesystem", _RUNNER_SITE),
+        ("iter_agent_visible_rel_paths", _SUBSTRATE_SERVICE_SITE),
+    ],
+)
+def test_walker_entry_point_has_its_named_production_caller_only(
+    symbol: str, expected_caller: Path
+) -> None:
+    """Each entry point has exactly one production caller outside the module.
 
-    A third callsite anywhere else in ``tolokaforge/`` would signal recipe
-    leakage into a codepath the pure module was not designed for.
+    A third callsite in ``tolokaforge/`` would signal recipe leakage into a
+    codepath the pure module was not designed for.
     """
-    call_pattern = re.compile(r"\bread_agent_visible_filesystem\(")
+    call_pattern = re.compile(rf"\b{symbol}\(")
     call_sites = [
         path
         for path in _iter_package_python_files()
         if path != _FILESYSTEM_VIEW_MODULE and call_pattern.search(path.read_text(encoding="utf-8"))
     ]
-    assert sorted(call_sites) == sorted([_RUNNER_SITE, _SUBSTRATE_SERVICE_SITE]), (
-        f"Expected exactly two callers of read_agent_visible_filesystem( "
-        f"({_RUNNER_SITE.relative_to(_REPO_ROOT)}, "
-        f"{_SUBSTRATE_SERVICE_SITE.relative_to(_REPO_ROOT)}); "
+    assert call_sites == [expected_caller], (
+        f"Expected exactly one production caller of {symbol}( at "
+        f"{expected_caller.relative_to(_REPO_ROOT)}; "
         f"found: {[p.relative_to(_REPO_ROOT) for p in call_sites]}"
     )
 
@@ -106,7 +130,7 @@ def test_runner_and_substrate_service_do_not_re_inline_the_raw_walk() -> None:
             f"{path.relative_to(_REPO_ROOT)} re-inlines the raw "
             f"``rglob + is_symlink + read_text(encoding='utf-8')`` chain — "
             f"route it through filesystem_view.read_agent_visible_filesystem "
-            f"instead."
+            f"or filesystem_view.iter_agent_visible_rel_paths instead."
         )
 
 

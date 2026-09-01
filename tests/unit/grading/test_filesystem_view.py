@@ -24,6 +24,7 @@ import pytest
 from tolokaforge.core.grading.filesystem_view import (
     AGENT_VISIBLE_EXCLUDES,
     is_excluded_rel_path,
+    iter_agent_visible_rel_paths,
     read_agent_visible_filesystem,
 )
 
@@ -211,3 +212,42 @@ def test_walker_output_and_read_predicate_agree_on_every_emitted_path(
         "/env/fs/agent-visible/.git-as-file",
         "/env/fs/agent-visible/src/main.py",
     }
+
+
+# ---------------------------------------------------------------------------
+# iter_agent_visible_rel_paths — path-only view of the same walk
+# ---------------------------------------------------------------------------
+
+
+def test_iter_agent_visible_rel_paths_yields_same_keys_as_read_minus_prefix(
+    work: Path,
+) -> None:
+    """The path-only iterator and the dict-form entry point share one walker.
+
+    Every rel-path :func:`iter_agent_visible_rel_paths` yields is the same
+    key :func:`read_agent_visible_filesystem` emits, minus the
+    ``/env/fs/agent-visible/`` prefix. Locks the "one walker, two entry
+    points" invariant against drift between the iterator's filter and the
+    dict form's filter.
+    """
+    (work / "src").mkdir()
+    (work / "src" / "main.py").write_text("kept\n")
+    (work / "dist").write_text("root file named dist\n")
+    (work / ".git").mkdir()
+    (work / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    node_dir = work / "packages" / "foo" / "node_modules"
+    node_dir.mkdir(parents=True)
+    (node_dir / "bar.js").write_text("hidden\n")
+    (work / "image.bin").write_bytes(b"\x89PNG\x00\x01\x02\x03\xff\xfe")
+    (work / "readme.txt").write_text("readme")
+
+    iter_set = set(iter_agent_visible_rel_paths(work))
+    read_set = {
+        key.removeprefix("/env/fs/agent-visible/") for key in read_agent_visible_filesystem(work)
+    }
+    assert iter_set == read_set
+    assert iter_set == {"src/main.py", "dist", "readme.txt"}
+
+
+def test_iter_agent_visible_rel_paths_is_empty_for_missing_root(tmp_path: Path) -> None:
+    assert list(iter_agent_visible_rel_paths(tmp_path / "nope")) == []

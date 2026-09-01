@@ -529,7 +529,7 @@ class SubstrateServiceServicer:
         """List rel-paths of every non-symlink UTF-8-decodable file under
         AGENT_WORK_DIR. Same filter and exclusion policy as
         tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem.
-        Ordered by walk order (stable within one runner process).
+        Rel-paths returned in alphabetically-sorted order.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("Method not implemented!")
