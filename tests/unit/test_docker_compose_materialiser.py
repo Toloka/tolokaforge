@@ -366,8 +366,8 @@ class TestMaterialiseFailure:
 
     def test_start_failure_captures_logs_when_log_capture_set(self, tmp_path: Path) -> None:
         """``ctx.log_capture`` set routes a per-service log dump to the
-        declared dest_dir before cleanup — same as today's
-        ``_capture_materialise_failure_logs`` seam."""
+        declared dest_dir before cleanup — the materialiser's fail-time
+        capture surface."""
         compose_file = _write_compose(tmp_path / "case")
         capture_dir = tmp_path / "capture"
         capture_calls: list[tuple[Any, tuple[str, ...], Path, int]] = []

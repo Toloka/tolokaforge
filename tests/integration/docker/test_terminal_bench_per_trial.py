@@ -46,8 +46,10 @@ import pytest
 from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
 from tests.utils.docker_helpers import is_docker_daemon_available
+from tolokaforge.core.composition_runtime import ComposedEnvHandle
+from tolokaforge.core.docker_compose_materialiser import _DockerComposeStackHandle
 from tolokaforge.core.models import ModelConfig
-from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend, _LocalEnvHandle
+from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.docker.image import ImageError
 from tolokaforge.docker.stacks.core import core_stack
@@ -144,6 +146,13 @@ def prebuilt_environment(
     return {"env": env, "task": task}
 
 
+def _stack_handle(env_handle: Any) -> _DockerComposeStackHandle:
+    assert isinstance(env_handle, ComposedEnvHandle)
+    stack_handle = env_handle.trial_stack_handles[0]
+    assert isinstance(stack_handle, _DockerComposeStackHandle)
+    return stack_handle
+
+
 def _make_trial_spec(task_description: Any, trial_id: str) -> TrialSpec:
     """Build a ``TrialSpec`` for the fix-billing-holds task.
 
@@ -177,10 +186,10 @@ class TestTerminalBenchPerTrialBracket:
         backend = PerTrialRuntimeBackend(mount_docker_socket=True)
         spec = _make_trial_spec(prebuilt_environment["task"], f"{_TASK_ID}:0")
         handle = backend.provision(spec)
+        stack = _stack_handle(handle)
         container_ids_at_provision: list[str] = []
         try:
-            assert isinstance(handle, _LocalEnvHandle)
-            container_ids_at_provision = [c.ID for c in handle.compose.get_containers() if c.ID]
+            container_ids_at_provision = [c.ID for c in stack.compose.get_containers() if c.ID]
             assert container_ids_at_provision, "compose stack came up with no containers"
 
             endpoints = backend.endpoints(handle)
@@ -232,7 +241,7 @@ class TestTerminalBenchPerTrialBracket:
         finally:
             backend.teardown(handle)
 
-        assert not handle.temp_dir.exists()
+        assert not stack.temp_dir.exists()
         # Every container that came up during provision is gone.
         listed = subprocess.run(
             ["docker", "ps", "-a", "-q", "--no-trunc"],
@@ -260,11 +269,11 @@ class TestTerminalBenchPerTrialBracket:
         try:
             handle_b = backend.provision(spec_b)
             try:
-                assert isinstance(handle_a, _LocalEnvHandle)
-                assert isinstance(handle_b, _LocalEnvHandle)
-                assert handle_a.temp_dir != handle_b.temp_dir
-                names_a = {c.Name for c in handle_a.compose.get_containers()}
-                names_b = {c.Name for c in handle_b.compose.get_containers()}
+                stack_a = _stack_handle(handle_a)
+                stack_b = _stack_handle(handle_b)
+                assert stack_a.temp_dir != stack_b.temp_dir
+                names_a = {c.Name for c in stack_a.compose.get_containers()}
+                names_b = {c.Name for c in stack_b.compose.get_containers()}
                 assert names_a.isdisjoint(names_b), (
                     f"expected disjoint container names across concurrent trials; "
                     f"got a={names_a!r}, b={names_b!r}"
@@ -380,7 +389,7 @@ class TestTerminalBenchHarnessMode:
         spec = _make_trial_spec(task, f"{_HARNESS_TASK_ID}:0")
         handle = backend.provision(spec)
         try:
-            assert isinstance(handle, _LocalEnvHandle)
+            _stack_handle(handle)  # Verify composer-produced handle shape.
             register = backend.register_trial(
                 trial_id=spec.trial_id,
                 trial_spec_json=spec.model_dump_json(exclude={"task": {"environment_manifest"}}),

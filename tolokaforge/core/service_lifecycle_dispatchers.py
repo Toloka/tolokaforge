@@ -12,10 +12,10 @@ same idiom :mod:`tolokaforge.runtime.reset_recipes` uses for its
 :class:`ProvisionError` with ``stage="cycle"`` — the composer catches
 and re-raises with the stack + scope enriched onto the reason.
 
-Failure text for the ``reset`` dispatcher matches today's
-:meth:`PerTrialRuntimeBackend._apply_reset_recipes` verbatim in its
-``reason`` string — the composer supplies the outer ``stage`` /
-``trial_id`` when it wraps the per-trial provision path.
+The ``reset`` dispatcher's refusal and failure ``reason`` strings are
+the canonical text for reset-recipe attribution: the composer supplies
+the outer ``stage`` / ``trial_id`` when it wraps the per-trial
+provision path.
 """
 
 from __future__ import annotations
@@ -73,9 +73,9 @@ class ResetDispatcher:
     """``isolation="reset"`` — restore the service from its named seed.
 
     Delegates to :func:`tolokaforge.runtime.reset_recipes.dispatch`, which
-    resolves the seed's kind to a :class:`RecipeDispatcher`. Refusal and
-    failure ``reason`` text matches today's
-    :meth:`PerTrialRuntimeBackend._apply_reset_recipes` verbatim.
+    resolves the seed's kind to a :class:`RecipeDispatcher`. Owns the
+    canonical refusal and failure ``reason`` strings for reset-recipe
+    attribution.
     """
 
     isolation: ClassVar[ServiceIsolation] = "reset"

@@ -98,16 +98,22 @@ class _FakeMaterialiser:
     Set :attr:`raise_on_next` to seed a failure on the next
     :meth:`materialise` invocation. :attr:`endpoint_map` overrides
     :meth:`resolve_endpoint` per ``(service, port)`` pair.
+    :attr:`materialise_contexts` snapshots the full
+    :class:`MaterialiseContext` per ``materialise`` call so tests can
+    assert on threaded policy values (``mount_docker_socket``,
+    ``log_capture``, ``events``).
     """
 
     name: str = "fake"
     calls: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
+    materialise_contexts: list[MaterialiseContext] = field(default_factory=list)
     torn_down: list[str] = field(default_factory=list)
     raise_on_next: BaseException | None = None
     endpoint_map: dict[tuple[str, int], tuple[str, int] | None] = field(default_factory=dict)
 
     def materialise(self, decl: StackDecl, ctx: MaterialiseContext) -> StackHandle:
         self.calls.append(("materialise", (decl.stack_id, ctx.scope_key, ctx.component_id_prefix)))
+        self.materialise_contexts.append(ctx)
         if self.raise_on_next is not None:
             exc = self.raise_on_next
             self.raise_on_next = None
@@ -271,6 +277,9 @@ def _empty_run_sub(run_id: str = "run-a") -> RunSubstrate:
         runner_client=None,
         endpoints=None,
         seeds={},
+        mount_docker_socket=False,
+        log_capture=None,
+        events=_NULL_EVENTS,
     )
 
 
@@ -502,8 +511,8 @@ class TestProvisionTrialTrialScopedPlan:
 
     def test_refuses_on_missing_seed_for_reset_service(self, tmp_path: Path) -> None:
         """A ``reset`` service naming a seed absent from
-        :attr:`RunSubstrate.seeds` fails loud — matches
-        :meth:`PerTrialRuntimeBackend._apply_reset_recipes` message text."""
+        :attr:`RunSubstrate.seeds` fails loud with the canonical
+        reset-recipe refusal message."""
         compose = _write_compose(tmp_path)
         services = {
             "db-service": ServiceSpec(isolation="reset", reset=ResetSpec(seed="absent")),
@@ -525,6 +534,61 @@ class TestProvisionTrialTrialScopedPlan:
             "the backend has no such seed in its registry "
             "(available: [])."
         )
+
+    def test_non_provision_error_from_reset_recipe_tears_down_newly_materialised_stacks(
+        self, tmp_path: Path
+    ) -> None:
+        """A raw ``RuntimeError`` (not ``ProvisionError``) from the reset
+        dispatcher still tears down every newly-materialised handle before
+        the exception propagates — the ``except BaseException`` boundary
+        around ``_apply_reset_recipes`` catches non-``ProvisionError``
+        raises too."""
+
+        @dataclass
+        class _RaisingResetDispatcher:
+            isolation: ServiceIsolation = "reset"
+
+            def cycle(
+                self,
+                service_name: str,
+                service_spec: ServiceSpec,
+                stack_handle: StackHandle,
+                materialiser: Any,
+                *,
+                seeds: Mapping[str, SeedRef],
+            ) -> None:
+                del service_name, service_spec, stack_handle, materialiser, seeds
+                raise RuntimeError("reset seam corrupted")
+
+        compose = _write_compose(tmp_path)
+        seed = SeedRef.model_validate(
+            {"path": "seed.sql", "kind": "sql_dump", "digest": "sha256:" + "0" * 64}
+        )
+        services = {
+            "db-service": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline")),
+        }
+        manifest = _manifest(compose, services=services)
+        plan = [_decl(compose, stack_scope="trial")]
+        materialiser = _FakeMaterialiser()
+        registry: dict[ServiceIsolation, Any] = {
+            "shared": _RecordingDispatcher(isolation="shared"),
+            "reset": _RaisingResetDispatcher(),
+            "ephemeral": _RecordingDispatcher(isolation="ephemeral"),
+        }
+        composer = DefaultSubstrateComposer(
+            materialiser=materialiser,
+            dispatcher_registry=registry,
+            runner_client_factory=_fake_client_factory,
+            readiness_probe_loader=_always_ready_loader,
+        )
+        run_sub = _empty_run_sub()
+        run_sub.seeds = {"baseline": seed}  # type: ignore[assignment]
+        spec = _trial_spec(manifest)
+
+        with pytest.raises(RuntimeError, match="reset seam corrupted"):
+            composer.provision_trial(plan, spec, run_sub)
+
+        assert materialiser.torn_down == ["default"]
 
     def test_refuses_reserved_prefix_in_stack_inputs(self, tmp_path: Path) -> None:
         """A ``TOLOKAFORGE_``-prefixed key in ``stack_inputs`` collides
@@ -550,6 +614,220 @@ class TestProvisionTrialTrialScopedPlan:
         assert "TOLOKAFORGE_" in excinfo.value.reason
         # No materialise call reached — the check runs before any
         # substrate work.
+        assert not any(c[0] == "materialise" for c in materialiser.calls)
+
+    def test_run_substrate_log_capture_and_events_thread_to_materialise_context(
+        self, tmp_path: Path
+    ) -> None:
+        """A non-null :attr:`RunSubstrate.log_capture` +
+        :attr:`RunSubstrate.events` govern the
+        :class:`MaterialiseContext` the composer hands the materialiser
+        for both task-scope and trial-scope stacks — the run-wide
+        policy is what materialisation runs under, not a per-scope
+        default."""
+
+        class _RecordingEvents:
+            """Non-null :class:`RunDisplayEvents` sink; identity-checked."""
+
+        events_sink = _RecordingEvents()
+        run_log_capture = LogCaptureConfig(output_root=tmp_path / "out", tail=125, on_success=False)
+        task_compose = _write_compose(tmp_path / "task", name="task.compose.yaml")
+        trial_compose = _write_compose(tmp_path / "trial", name="trial.compose.yaml")
+        manifest = _manifest(trial_compose)
+        plan = [
+            _decl(
+                task_compose,
+                stack_id="task-stack",
+                stack_scope="task",
+                runner_service=None,
+            ),
+            _decl(
+                trial_compose,
+                stack_id="trial-stack",
+                stack_scope="trial",
+                runner_service="runner",
+            ),
+        ]
+        materialiser = _FakeMaterialiser()
+        composer = DefaultSubstrateComposer(
+            materialiser=materialiser,
+            runner_client_factory=_fake_client_factory,
+            readiness_probe_loader=_always_ready_loader,
+        )
+        spec = _trial_spec(manifest)
+        run_sub = RunSubstrate(
+            run_id="run-a",
+            run_stack_handles=(),
+            task_stack_handles={},
+            runner_client=None,
+            endpoints=None,
+            seeds={},
+            mount_docker_socket=False,
+            log_capture=run_log_capture,
+            events=events_sink,  # type: ignore[arg-type]
+        )
+
+        composer.provision_trial(plan, spec, run_sub)
+
+        contexts_by_stack = {ctx.stack_id: ctx for ctx in materialiser.materialise_contexts}
+        assert set(contexts_by_stack) == {"task-stack", "trial-stack"}
+        for stack_id in ("task-stack", "trial-stack"):
+            ctx = contexts_by_stack[stack_id]
+            assert ctx.events is events_sink, (
+                f"stack {stack_id!r} MaterialiseContext.events was not "
+                "threaded from RunSubstrate.events"
+            )
+            assert ctx.log_capture is not None, (
+                f"stack {stack_id!r} MaterialiseContext.log_capture is None; "
+                "RunSubstrate.log_capture was not threaded"
+            )
+            assert ctx.log_capture.tail == run_log_capture.tail
+            # trial_services_dir writes under <output_root>/trials/<task>/<idx>/services/.
+            assert ctx.log_capture.dest_dir == (
+                run_log_capture.output_root / "trials" / spec.task.task_id / "0" / "services"
+            )
+
+    def test_run_substrate_mount_docker_socket_writes_socket_mount_to_trial_compose(
+        self, tmp_path: Path
+    ) -> None:
+        """A ``RunSubstrate.mount_docker_socket=True`` reaches the
+        docker-compose materialiser via
+        :attr:`MaterialiseContext.mount_docker_socket`, which then adds
+        the host docker-socket bind-mount to the runner service on the
+        trial-scope stack's compose file. Parity-shape test — uses the
+        real :class:`DockerComposeMaterialiser` with a stub
+        ``docker_compose_factory``."""
+        from tests.canonical._docker_compose_stubs import InertDockerCompose
+        from tolokaforge.core.docker_compose_materialiser import (
+            DockerComposeMaterialiser,
+            _DockerComposeStackHandle,
+        )
+
+        compose_file = tmp_path / "trial.compose.yaml"
+        compose_file.write_text(_RUNNER_COMPOSE)
+        stubs: list[InertDockerCompose] = []
+
+        def factory(**kwargs: Any) -> InertDockerCompose:
+            stub = InertDockerCompose(**kwargs)
+            stubs.append(stub)
+            return stub
+
+        materialiser = DockerComposeMaterialiser(docker_compose_factory=factory)
+        composer = DefaultSubstrateComposer(
+            materialiser=materialiser,
+            runner_client_factory=_fake_client_factory,
+            readiness_probe_loader=_always_ready_loader,
+        )
+        manifest = _manifest(compose_file)
+        plan = [
+            _decl(
+                compose_file,
+                stack_id="trial-stack",
+                stack_scope="trial",
+                runner_service="runner",
+            )
+        ]
+        spec = _trial_spec(manifest)
+        run_sub = RunSubstrate(
+            run_id="run-a",
+            run_stack_handles=(),
+            task_stack_handles={},
+            runner_client=None,
+            endpoints=None,
+            seeds={},
+            mount_docker_socket=True,
+            log_capture=None,
+            events=_NULL_EVENTS,
+        )
+
+        env_handle = composer.provision_trial(plan, spec, run_sub)
+        try:
+            trial_handle = env_handle.trial_stack_handles[0]
+            assert isinstance(trial_handle, _DockerComposeStackHandle)
+            written = (trial_handle.temp_dir / compose_file.name).read_text()
+            assert "/var/run/docker.sock:/var/run/docker.sock" in written
+        finally:
+            composer.teardown_trial(env_handle)
+
+
+# ---------------------------------------------------------------------------
+# Reserved-prefix refusal — uniform across materialise_run + provision_trial
+# ---------------------------------------------------------------------------
+
+
+class TestReservedPrefixRefusalUniformity:
+    """Both composer entry points fail-loud on the reserved
+    ``TOLOKAFORGE_`` ``stack_inputs`` prefix with identical reason text.
+
+    :meth:`DefaultSubstrateComposer.materialise_run` fires the refusal
+    with ``stage="materialise_run"`` and ``trial_id=ctx.run_id``, before
+    ``_validate_plan`` and any materialiser call.
+    :meth:`DefaultSubstrateComposer.provision_trial` fires the refusal
+    with ``stage="provision"`` and ``trial_id=spec.trial_id``. The
+    reason text (past the id) is byte-identical.
+    """
+
+    def test_materialise_run_refuses_reserved_prefix(self, tmp_path: Path) -> None:
+        """A run-scope manifest whose ``stack_inputs`` uses the reserved
+        ``TOLOKAFORGE_`` prefix fails before any materialise call — the
+        run id (not a trial id) surfaces on the refusal, and
+        ``stage`` is ``"materialise_run"``."""
+        compose = _write_compose(tmp_path)
+        manifest = EnvironmentManifest(
+            compose_file=compose,
+            runner_service="runner",
+            stack_inputs={"TOLOKAFORGE_FOO": "x"},
+        )
+        plan = [_decl(compose)]
+        materialiser = _FakeMaterialiser()
+        composer = DefaultSubstrateComposer(
+            materialiser=materialiser,
+            runner_client_factory=_fake_client_factory,
+        )
+        ctx = _run_ctx(manifest, run_id="run-b")
+
+        with pytest.raises(ProvisionError) as excinfo:
+            composer.materialise_run(plan, ctx)
+        assert excinfo.value.stage == "materialise_run"
+        assert excinfo.value.trial_id == "run-b"
+        assert excinfo.value.reason == (
+            "stack_inputs key 'TOLOKAFORGE_FOO' uses the reserved "
+            "TOLOKAFORGE_ prefix (engine-authored compose variables); "
+            "rename or remove it from the manifest"
+        )
+        # No materialise reached — refusal precedes every substrate call.
+        assert not any(c[0] == "materialise" for c in materialiser.calls)
+
+    def test_provision_trial_refusal_still_fires_and_uses_stage_provision(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression guard on the default ``stage`` kwarg of
+        :func:`_refuse_reserved_prefix` — ``provision_trial`` must
+        continue to surface ``stage="provision"`` with the trial id and
+        the same reason text ``materialise_run`` produces (modulo id)."""
+        compose = _write_compose(tmp_path)
+        manifest = EnvironmentManifest(
+            compose_file=compose,
+            runner_service="runner",
+            stack_inputs={"TOLOKAFORGE_FOO": "x"},
+        )
+        plan = [_decl(compose, stack_scope="trial")]
+        materialiser = _FakeMaterialiser()
+        composer = DefaultSubstrateComposer(
+            materialiser=materialiser,
+            runner_client_factory=_fake_client_factory,
+        )
+        spec = _trial_spec(manifest, trial_id="task-1:0")
+
+        with pytest.raises(ProvisionError) as excinfo:
+            composer.provision_trial(plan, spec, _empty_run_sub())
+        assert excinfo.value.stage == "provision"
+        assert excinfo.value.trial_id == "task-1:0"
+        assert excinfo.value.reason == (
+            "stack_inputs key 'TOLOKAFORGE_FOO' uses the reserved "
+            "TOLOKAFORGE_ prefix (engine-authored compose variables); "
+            "rename or remove it from the manifest"
+        )
         assert not any(c[0] == "materialise" for c in materialiser.calls)
 
 
@@ -716,6 +994,9 @@ class TestTeardownIdempotency:
             runner_client=runner_client,
             endpoints=None,
             seeds={},
+            mount_docker_socket=False,
+            log_capture=None,
+            events=_NULL_EVENTS,
         )
 
         composer.teardown_run(run_sub)
@@ -747,6 +1028,9 @@ class TestRunnerClientAndEndpointsResolution:
             runner_client=run_client,
             endpoints=EnvEndpoints(runner_url="http://run:1"),
             seeds={},
+            mount_docker_socket=False,
+            log_capture=None,
+            events=_NULL_EVENTS,
         )
         env_handle = ComposedEnvHandle(
             trial_id="t",
@@ -770,6 +1054,9 @@ class TestRunnerClientAndEndpointsResolution:
             runner_client=run_client,
             endpoints=EnvEndpoints(runner_url="http://run:1"),
             seeds={},
+            mount_docker_socket=False,
+            log_capture=None,
+            events=_NULL_EVENTS,
         )
         env_handle = ComposedEnvHandle(
             trial_id="t",

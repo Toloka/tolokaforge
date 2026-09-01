@@ -148,6 +148,15 @@ class RunSubstrate:
     subsequent trial for that task reuses it. :attr:`runner_client` and
     :attr:`endpoints` are set iff a run-scope stack owns the runner —
     trial-scope-owned runners live on :class:`ComposedEnvHandle` instead.
+
+    :attr:`mount_docker_socket`, :attr:`log_capture`, :attr:`events`
+    are threaded from :class:`RunCtx` onto the substrate at
+    :meth:`SubstrateComposer.materialise_run` time so
+    :meth:`SubstrateComposer.provision_trial` materialises task-scope
+    and trial-scope stacks against the same policies the run-scope
+    stacks were materialised with — the run-wide values a caller set on
+    :class:`RunCtx` govern every stack the composer materialises for the
+    run.
     """
 
     run_id: str
@@ -156,6 +165,9 @@ class RunSubstrate:
     runner_client: RunnerClient | None
     endpoints: EnvEndpoints | None
     seeds: Mapping[str, SeedRef]
+    mount_docker_socket: bool
+    log_capture: LogCaptureConfig | None
+    events: RunDisplayEvents
 
 
 @dataclass(frozen=True)

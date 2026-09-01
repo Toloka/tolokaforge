@@ -64,15 +64,17 @@ still forces per-trial selection.
 
 ## The provision seam
 
-`PerTrialRuntimeBackend.provision` brings up a fresh compose stack per
-trial and calls `_apply_reset_recipes`
-([`tolokaforge/core/per_trial_runtime.py`](../tolokaforge/core/per_trial_runtime.py))
-immediately after `docker compose up` returns. For every service labelled
-`reset`, it resolves `reset.seed` against the backend's seed registry
-(populated from `project.assets.seeds`) and calls
-`tolokaforge.runtime.reset_recipes.dispatch(seed, service_name, compose)`,
-which routes to the handler for the seed's `kind`. A `reset` service with
-no `reset.seed`, or a seed name absent from the registry, raises
+`PerTrialRuntimeBackend.provision` delegates to
+`SubstrateComposer.provision_trial`, which brings up a fresh compose
+stack per trial via `DockerComposeMaterialiser` and then walks every
+newly-materialised stack's `reset`-labelled services immediately after
+`docker compose up` returns. For each such service, the composer
+resolves `reset.seed` against the run substrate's seed registry
+(populated from `project.assets.seeds`) and hands the pair to
+`DISPATCHER_REGISTRY["reset"]` — the `ResetDispatcher` in
+[`tolokaforge/core/service_lifecycle_dispatchers.py`](../tolokaforge/core/service_lifecycle_dispatchers.py)
+— which routes to the handler for the seed's `kind`. A `reset` service
+with no `reset.seed`, or a seed name absent from the registry, raises
 `ProvisionError` — the recipe never silently no-ops.
 
 Because provision runs once per trial, `repeats: K` applies the seed `K`
@@ -91,14 +93,14 @@ diagnostic output. What triggers that raise differs by kind:
 | `redis_dump` | Corrupt RDB → Redis crash-loops on restart → `PING` never returns `PONG` | ping-stage `RuntimeError` naming the service |
 | `bare` | — | Cannot fail from the caller's side: no container action is taken |
 
-At the provision seam, `_apply_reset_recipes` catches that `RuntimeError`
-and re-raises it as `ProvisionError(stage="reset_recipe")` whose reason
-names the service, the seed, the kind, and the recipe's own error text. The
-same stage also covers the pre-dispatch guards — a `reset` service with no
-`reset.seed`, or a seed name absent from the registry. Before the
-`ProvisionError` propagates, the stack is torn down
-(`docker compose down --volumes`), so a failed seed leaves no leaked
-containers or networks.
+At the provision seam, the composer catches that `RuntimeError` and
+re-raises it as `ProvisionError(stage="reset_recipe")` whose reason
+names the service, the seed, the kind, and the recipe's own error text.
+The same stage also covers the pre-dispatch guards — a `reset` service
+with no `reset.seed`, or a seed name absent from the registry. Before
+the `ProvisionError` propagates, every newly-materialised stack is torn
+down (`docker compose down --volumes`) so a failed seed leaves no
+leaked containers or networks.
 
 The trial is then marked failed with
 `termination_reason=PROVISION_ERROR`: the conductor never runs, the trial

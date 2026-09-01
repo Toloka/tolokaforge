@@ -1,23 +1,31 @@
-"""Byte-parity between :class:`DockerComposeMaterialiser` and today's inline flows.
+"""Byte-parity between :class:`DockerComposeMaterialiser` and the underlying
+compose-transform primitives.
 
-The materialiser extracts the compose-file transform sequence today's
-``SharedStackRuntimeBackend._materialise_manifest`` (Flow A) and
-``PerTrialRuntimeBackend.provision`` (Flow B) drive inline. This test
-runs both paths in-process with a stubbed
-``testcontainers.compose.DockerCompose`` factory and asserts:
+The materialiser wraps a fixed sequence of compose-file transforms
+(``copy_compose_context``, ``apply_network_policy_to_compose_file``,
+``inject_runner_credentials``, ``mount_docker_socket_into_runner``,
+``write_compose_env_file``) plus a ``testcontainers.compose.DockerCompose``
+driver call. This test drives both:
 
-- the transformed compose file bytes on disk are identical (byte-parity
-  of the network-policy, credential-injection, socket-mount, and
-  ``.env``-write steps),
-- the sequence of driver-side calls the stub records is identical (locks
-  the invocation order of the extraction so a stage-4 reorder cannot
-  silently change lifecycle semantics).
+- **Flow A** — run-scope shape (network-policy + credential injection,
+  no ``.env``, no socket mount).
+- **Flow B** — trial-scope shape (run-scope transforms + ``.env`` write
+  + docker-socket mount into the runner service).
 
-Stage 5's parity contract test extends this by monkey-patching the same
-stub factory into
-:mod:`tolokaforge.core.shared_stack_runtime` and
-:mod:`tolokaforge.core.per_trial_runtime`, so any drift between the
-materialiser and the two backends surfaces there too.
+For each flow the test runs the transform sequence in-process against a
+stubbed ``DockerCompose`` factory, then hands the same
+:class:`~tolokaforge.runner.models.StackDecl` +
+:class:`~tolokaforge.core.composition_runtime.MaterialiseContext` to
+:class:`DockerComposeMaterialiser` and asserts:
+
+- the transformed compose file bytes on disk are identical (locks the
+  materialiser to the underlying primitives),
+- the sequence of driver-side calls the stub records is identical
+  (locks the invocation order the materialiser must preserve).
+
+Broader parity between the composer / materialiser / dispatcher triple
+and the frozen single-stack observable outputs is locked at
+:mod:`tests.canonical.test_composition_baseline_parity`.
 """
 
 from __future__ import annotations
@@ -53,10 +61,13 @@ _FIXTURE_RUNNER_SERVICE = "default"
 
 
 def _run_baseline_flow_a(dest_dir: Path) -> tuple[bytes, InertDockerCompose]:
-    """In-process reproduction of today's Flow A transform sequence.
+    """Drive Flow A (run-scope shape) through the underlying primitives.
 
-    Mirrors ``SharedStackRuntimeBackend._materialise_manifest`` line-for-line
-    for the on-disk transforms + the ``DockerCompose`` driver call.
+    Reproduces the transform sequence the materialiser wraps: copy
+    context, apply network policy, inject runner credentials, start
+    compose, get containers (mirroring the LogRouter attach loop's
+    driver call). Returns the transformed compose bytes and the stub
+    for driver-state comparison.
     """
     copy_compose_context(_FIXTURE, dest_dir)
     compose_file = dest_dir / _FIXTURE.name
@@ -76,9 +87,6 @@ def _run_baseline_flow_a(dest_dir: Path) -> tuple[bytes, InertDockerCompose]:
         wait=True,
     )
     stub.start()
-    # LogRouter attach loop in today's _materialise_manifest reads
-    # compose.get_containers(); mirror that here so the driver call
-    # sequence matches the materialiser's.
     stub.get_containers()
     return compose_file.read_bytes(), stub
 

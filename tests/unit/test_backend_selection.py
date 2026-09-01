@@ -320,10 +320,10 @@ class TestRunDisplayEventsPropagation:
 class TestMountDockerSocketPropagation:
     """The compose-variant docker-socket trigger must reach the backend that
     materialises the runner. The flag lives on the build context and each
-    factory threads it onto the backend; ``provision`` / ``_materialise_manifest``
-    then inject ``/var/run/docker.sock`` into the runner service. A drop here
-    silently reverts to no socket, so every compose-variant ``docker exec``
-    fails with a no-daemon error surfaced as ``bash session failed to
+    factory threads it onto the backend; the materialiser then injects
+    ``/var/run/docker.sock`` into the runner service. A drop here silently
+    reverts to no socket, so every compose-variant ``docker exec`` fails
+    with a no-daemon error surfaced as ``bash session failed to
     become ready``."""
 
     def _ctx(self, *, env_manifest: EnvironmentManifest | None, mount: bool):
