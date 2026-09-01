@@ -1038,9 +1038,14 @@ class SharedStackRuntimeBackend:
             ConnectionError: built-in-stack mode; the runner is not
                 healthy within ``timeout``.
         """
-        if self._env_manifest is None:
+        if self._env_manifest is None and not self._per_trial_mode:
             self.runner_client.connect(timeout=timeout, retry_interval=retry_interval)
             logger.info("Shared-stack runtime connected")
+            return
+
+        if self._per_trial_mode:
+            # No run scope to materialise for trial-scope-only plans; each
+            # trial's stack comes up via provision() → composer.provision_trial().
             return
 
         if self._run_substrate is not None:
@@ -1068,11 +1073,13 @@ class SharedStackRuntimeBackend:
         """Close the Runner connection and tear the composer state down.
 
         Built-in-stack mode closes the injected :class:`GrpcRunnerClient`.
-        env_manifest mode (and per-trial-mode with a materialised run
-        substrate) hands the substrate to :meth:`SubstrateComposer.teardown_run`,
-        which owns runner-client close and stack teardown. Any
-        composer-side teardown failure is swallowed and logged so a
-        broken teardown never masks other cleanup.
+        Per-trial mode + env_manifest mode hand any leftover trial handles
+        to :meth:`SubstrateComposer.teardown_trial` first (a trial the
+        orchestrator never explicitly tore down still needs its stack
+        removed), then hand the run substrate to
+        :meth:`SubstrateComposer.teardown_run` which owns runner-client
+        close and run-scope stack teardown. Every composer-side teardown
+        is wrapped so a single failure never masks the sibling cleanup.
         """
         if self._env_manifest is None and not self._per_trial_mode:
             if self.runner_client is not None:
@@ -1081,6 +1088,14 @@ class SharedStackRuntimeBackend:
             return
 
         try:
+            for env_handle in list(self._env_handles.values()):
+                try:
+                    self.composer.teardown_trial(env_handle)
+                except Exception:  # noqa: BLE001 — one trial's teardown must not mask siblings
+                    logger.exception(
+                        "SharedStackRuntimeBackend.close: composer teardown_trial failed for %s",
+                        env_handle.trial_id,
+                    )
             if self._run_substrate is not None:
                 self.composer.teardown_run(self._run_substrate)
         except Exception:  # noqa: BLE001 — teardown must not raise past caller
@@ -1092,7 +1107,24 @@ class SharedStackRuntimeBackend:
         logger.info("Shared-stack runtime closed")
 
     def health_check(self) -> bool:
-        """Report whether the Runner is reachable via its gRPC channel."""
+        """Report whether the Runner is reachable via its gRPC channel.
+
+        Per-trial mode aggregates over the trials whose runner client has
+        already connected (via first per-trial RPC use); no connected
+        trials means trivially healthy — the run has nothing that a
+        health probe can reach yet, and reporting ``False`` would defeat
+        lazy-connect. Every other mode probes the single runner client
+        the run owns.
+        """
+        if self._per_trial_mode:
+            for trial_id in self._connected_trials:
+                env_handle = self._env_handles.get(trial_id)
+                if env_handle is None:
+                    continue
+                client = self.composer.runner_client_for(self._run_substrate_or_empty(), env_handle)
+                if not client.health_check():
+                    return False
+            return True
         client = self._resolve_health_client()
         if client is None:
             return False
@@ -1132,8 +1164,10 @@ class SharedStackRuntimeBackend:
             return _SharedStackHandle(trial_id=spec.trial_id)
 
         manifest = spec.task.environment_manifest
-        assert manifest is not None  # composer path requires a manifest
-        plan = list(manifest.stacks)
+        # An absent manifest travels into the composer, which raises the
+        # canonical ProvisionError with stage="provision" via
+        # ``_require_manifest`` — the backend does not pre-empt that refusal.
+        plan = list(manifest.stacks) if manifest is not None else []
         env_handle = self.composer.provision_trial(
             plan=plan,
             spec=spec,
@@ -1334,10 +1368,16 @@ class SharedStackRuntimeBackend:
     def cleanup_trial(self, trial_id: str) -> dict:
         """Forget any prior registration of ``trial_id`` on the runner.
 
-        The retry-cleanup path needs to call this *before* a per-trial
-        adapter exists, so the method lives on the runtime (delegating
-        to the runner client). Idempotent on the runner side.
+        The retry-cleanup path calls this *before* provision has run for
+        a given trial, so a cleanup on an unprovisioned trial returns
+        the idempotent success payload rather than raising — no runner
+        client exists to talk to. Built-in-stack mode always has a
+        run-owned client and delegates unconditionally.
         """
+        if self._env_manifest is None and not self._per_trial_mode:
+            return self.runner_client.cleanup_trial(trial_id)
+        if trial_id not in self._env_handles:
+            return {"success": True, "error": None}
         return self._runner_client_for(trial_id).cleanup_trial(trial_id)
 
     # ------------------------------------------------------------------

@@ -511,8 +511,8 @@ class TestProvisionTrialTrialScopedPlan:
 
     def test_refuses_on_missing_seed_for_reset_service(self, tmp_path: Path) -> None:
         """A ``reset`` service naming a seed absent from
-        :attr:`RunSubstrate.seeds` fails loud — matches
-        :meth:`PerTrialRuntimeBackend._apply_reset_recipes` message text."""
+        :attr:`RunSubstrate.seeds` fails loud with the canonical
+        reset-recipe refusal message."""
         compose = _write_compose(tmp_path)
         services = {
             "db-service": ServiceSpec(isolation="reset", reset=ResetSpec(seed="absent")),
