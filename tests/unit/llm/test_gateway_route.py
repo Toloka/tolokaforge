@@ -46,6 +46,63 @@ class TestRouteName:
     def test_a_provider_less_model_string_has_one_candidate(self) -> None:
         assert resolve_gateway_route("solo", frozenset({"solo"})) == "solo"
 
+    def test_an_exact_hit_reports_its_kind(self) -> None:
+        route = resolve_gateway_route(
+            "openrouter/anthropic/claude-sonnet-4.6",
+            frozenset({"openrouter/anthropic/claude-sonnet-4.6"}),
+        )
+        assert route.kind == "exact"
+
+
+class TestNamespaceWildcard:
+    """``<ns>/*`` routes a ``provider: <ns>`` model - opt-in, exact wins."""
+
+    catalog = frozenset({"openrouter/*", "anthropic/*"})
+
+    def test_off_by_default(self) -> None:
+        assert resolve_gateway_route("openrouter/minimax/minimax-m3", self.catalog) is None
+
+    def test_the_models_own_namespace_wildcard_routes_it_untranslated(self) -> None:
+        route = resolve_gateway_route(
+            "openrouter/minimax/minimax-m3",
+            self.catalog,
+            trust_namespace_wildcards=True,
+        )
+        assert route == "openrouter/minimax/minimax-m3"
+        assert route.kind == "wildcard"
+
+    def test_a_foreign_namespace_wildcard_is_not_a_route(self) -> None:
+        """``anthropic/*`` for an openrouter model is another upstream."""
+        assert (
+            resolve_gateway_route(
+                "openrouter/minimax/minimax-m3",
+                frozenset({"anthropic/*"}),
+                trust_namespace_wildcards=True,
+            )
+            is None
+        )
+
+    def test_an_exact_entry_wins_over_the_wildcard(self) -> None:
+        catalog = frozenset({"openrouter/*", "anthropic/claude-sonnet-4.6"})
+        route = resolve_gateway_route(
+            "openrouter/anthropic/claude-sonnet-4.6",
+            catalog,
+            trust_namespace_wildcards=True,
+        )
+        assert route == "anthropic/claude-sonnet-4.6"
+        assert route.kind == "exact"
+
+    def test_a_bare_global_star_is_not_trusted(self) -> None:
+        """Only the namespace form carries meaning; ``*`` says nothing."""
+        assert (
+            resolve_gateway_route(
+                "openrouter/minimax/minimax-m3",
+                frozenset({"*"}),
+                trust_namespace_wildcards=True,
+            )
+            is None
+        )
+
 
 class TestAmbiguityIsRefused:
     """Two names for one model can be two different upstreams, so guessing is refused."""

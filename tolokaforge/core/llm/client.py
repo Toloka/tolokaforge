@@ -614,6 +614,7 @@ class LLMClient:
         # to the direct provider rather than post a name it cannot route.
         # docs/LLM_LAYER.md § Speaking to the gateway.
         self._gateway_route: str | None = None
+        self._gateway_route_kind: str | None = None
         if self._proxy is not None:
             catalog = fetch_gateway_catalog(self._proxy)
             if catalog is None:
@@ -628,8 +629,18 @@ class LLMClient:
                 # A readable catalog is never empty here: the fetch maps an empty
                 # answer to None, so resolver-None below can only mean "omitted".
                 self._gateway_route = resolve_gateway_route(
-                    self.model_name, catalog, self._proxy.preferred_route
+                    self.model_name,
+                    catalog,
+                    self._proxy.preferred_route,
+                    trust_namespace_wildcards=self._proxy.trust_namespace_wildcards,
                 )
+                self._gateway_route_kind = getattr(self._gateway_route, "kind", None)
+                if self._gateway_route_kind == "wildcard":
+                    self.logger.info(
+                        "Gateway route resolved via the model namespace wildcard",
+                        base_url=self._proxy.base_url,
+                        model=self.model_name,
+                    )
                 if self._gateway_route is None:
                     self.logger.warning(
                         "Gateway does not serve this model; calling the provider directly",
@@ -1843,11 +1854,25 @@ class LLMClient:
             if route is not None:
                 kwargs["model"] = route
                 kwargs["custom_llm_provider"] = "openai"
-                # Same class as the usage extension the dialect switch removes: an
-                # OpenRouter-only body field a non-OpenRouter upstream rejects.
+            # ONE rule for the provider pin on BOTH gateway paths (resolved route
+            # and unreadable catalog): ``extra_body.provider`` survives the hop
+            # exactly when the wire name's first segment IS the model's own
+            # provider namespace - the upstream behind such a route is the same
+            # family the pin was written for, and honours it. A route into any
+            # other namespace is another upstream, which rejects the field or,
+            # worse, silently ignores it. docs/LLM_LAYER.md § Speaking to the
+            # gateway.
+            wire_model = str(kwargs.get("model", self.model_name))
+            if wire_model.split("/", 1)[0] != self.provider.split("/", 1)[0]:
                 extra_body = kwargs.get("extra_body")
-                if isinstance(extra_body, dict):
-                    extra_body.pop("provider", None)
+                if isinstance(extra_body, dict) and "provider" in extra_body:
+                    extra_body.pop("provider")
+                    self.logger.warning(
+                        "Dropping the OpenRouter provider pin: the gateway route "
+                        "targets another namespace, whose upstream rejects it",
+                        route=wire_model,
+                        provider=self.provider,
+                    )
                     if not extra_body:
                         kwargs.pop("extra_body")
             kwargs["api_base"] = self._proxy.base_url
@@ -2179,6 +2204,8 @@ class LLMClient:
             latency_s=latency_s,
             cost_usd=cost_usd,
             cost_source=cost_source,
+            gateway_route=self._gateway_route,
+            gateway_route_kind=self._gateway_route_kind,
         )
 
         return GenerationResult(

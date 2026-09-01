@@ -878,8 +878,9 @@ posting to a route the gateway does not serve.
 | `LLM_PROXY_REQUEST_ID_HEADER` | Header *name* that receives a fresh UUID4 per request. A static env var cannot express "new value per call". |
 | `LLM_PROXY_PROVIDERS` | Comma-separated provider allow-list, replacing the default. Read the routing table below before widening it. |
 | `LLM_PROXY_PREFERRED_ROUTE` | Namespace that wins when the gateway serves one model under several names, e.g. `openrouter/`. Without it an ambiguous lookup raises rather than guessing a serving path. |
+| `LLM_PROXY_TRUST_NAMESPACE_WILDCARDS` | `true`/`false` (default `false`). When true, a catalog entry of `<ns>/*` routes models whose own `provider` is `<ns>`, addressed by their untranslated name. Namespace-matched only - a foreign wildcard never routes. Exact entries always win. |
 
-All six resolve through `SecretManager`, so `.env`, the process environment,
+All seven resolve through `SecretManager`, so `.env`, the process environment,
 and the runner container's `TOLOKAFORGE_SECRETS_JSON` behave identically.
 A malformed value raises `ProxyConfigError` at the first `LLMClient`
 construction rather than running a whole evaluation with unattributed spend. Setting
@@ -1000,14 +1001,18 @@ per-client warning. On a gateway-only model that direct call fails; on any other
 runs unattributed. If a deployment cannot rename such a route, the exact-name entry
 has to be added alongside the alias.
 
-Wildcard entries (`openrouter/*`, `anthropic/*`) are deliberately **not** accepted as
-evidence: a wildcard says the gateway will forward the request, not that the model
+Wildcard entries (`openrouter/*`, `anthropic/*`) are **not** accepted as evidence by
+default: a wildcard says the gateway will forward the request, not that the model
 exists behind it. Measured on a live gateway, `anthropic/*` accepted a name that its
 Bedrock backing then rejected as invalid, while the very same wildcard also "covered"
-a nonexistent model. If routing every model through the gateway ever becomes the
-goal, the extension point is a *namespace-matched* wildcard (accept `openrouter/*`
-only for `provider: openrouter` configs, where the fallback is the same upstream the
-board is calibrated on), not looser matching.
+a nonexistent model. The opt-in (`LLM_PROXY_TRUST_NAMESPACE_WILDCARDS=true`)
+implements exactly the safe extension point that incident left room for: a
+*namespace-matched* wildcard - `<ns>/*` routes only `provider: <ns>` models, where
+the passthrough forwards to the same upstream the board is calibrated on, addressed
+by the untranslated model string. A foreign-namespace wildcard never routes, exact
+entries always win, and a wildcard-resolved call is recorded as such on the per-call
+usage (`gateway_route_kind: "wildcard"`), so a board audit can tell the serving
+paths apart.
 
 Preset resolution and pricing are unaffected: both key off `ModelConfig.provider` /
 `.name`, not off the wire name.
@@ -1106,11 +1111,16 @@ couplings described below:
   but verify it for reasoning models before trusting a run.
 
 What `_build_kwargs` does differs by path. **On a resolved route** it rewrites
-`model` to the gateway's route name, forces `custom_llm_provider="openai"`, and
-drops OpenRouter-only body fields (`extra_body.provider`). **On the
-unrouted / unreadable-catalog path** it sets only `api_base`, `api_key` and
-`extra_headers`; the model string keeps its `<provider>/<name>` shape, and
-OpenRouter's headers and provider pin still apply. Two distinct couplings hang off
+`model` to the gateway's route name and forces `custom_llm_provider="openai"`.
+**On the unrouted / unreadable-catalog path** it sets only `api_base`, `api_key`
+and `extra_headers`; the model string keeps its `<provider>/<name>` shape. The
+provider pin follows **one rule on both paths**: `extra_body.provider` survives
+exactly when the wire name's first segment is the model's own provider
+namespace - an `openrouter/...` route (or the untranslated `openrouter/<name>`
+string) forwards to the same upstream family the pin was written for, so the
+pin rides; a route into any other namespace is another upstream, so the pin is
+dropped with a warning rather than sent to a server that rejects or silently
+ignores it. Two distinct couplings hang off
 model naming, and only the second is to the formatted string:
 
 - Preset `match:` globs resolve off `ModelConfig.name` and the `providers:`
@@ -1126,8 +1136,13 @@ model naming, and only the second is to the formatted string:
 
 `ModelConfig.provider` is untouched either way, so OpenRouter's
 `HTTP-Referer` / `X-Title` headers still apply on top of the gateway; the
-`extra_body.provider` upstream pin applies only on the unrouted path (a resolved
-route drops it, since a non-OpenRouter upstream rejects it as an unknown field).
+`extra_body.provider` upstream pin follows the namespace rule above (kept
+whenever the wire name stays in the model's own provider namespace, resolved or
+not; dropped otherwise). A pinned model on a same-namespace route is only
+FAITHFULLY pinned if the gateway forwards the field to the upstream - which is
+gateway-version-dependent, so the live suite verifies the actually-serving
+upstream through the OpenRouter generation id rather than trusting the request
+shape (see below).
 On a header-name collision the gateway's configured header wins, since that is
 explicit operator configuration and the other is an engine default.
 

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "GatewayRouteError",
+    "ResolvedGatewayRoute",
     "resolve_gateway_route",
     "fetch_gateway_catalog",
     "clear_catalog_cache",
@@ -39,6 +40,23 @@ _RETRY_AFTER: dict[str, float] = {}
 
 #: How long to stop asking after a failure.
 CATALOG_RETRY_COOLDOWN_S = 60.0
+
+
+class ResolvedGatewayRoute(str):
+    """A gateway route name that also says HOW it matched.
+
+    A ``str`` subclass so every existing caller keeps treating the route as
+    the wire model name, while ``kind`` records whether the catalog held the
+    exact entry ("exact") or only the model's own namespace wildcard
+    ("wildcard") - a provenance distinction the run artifacts carry.
+    """
+
+    kind: str
+
+    def __new__(cls, name: str, kind: str) -> ResolvedGatewayRoute:
+        route = super().__new__(cls, name)
+        route.kind = kind
+        return route
 
 
 class GatewayRouteError(Exception):
@@ -114,7 +132,9 @@ def resolve_gateway_route(
     model_string: str,
     catalog: frozenset[str] | None,
     preferred_prefix: str | None = None,
-) -> str | None:
+    *,
+    trust_namespace_wildcards: bool = False,
+) -> ResolvedGatewayRoute | None:
     """Return the gateway's name for ``model_string``, or ``None`` if it serves none.
 
     Args:
@@ -124,6 +144,13 @@ def resolve_gateway_route(
             skip rewriting" rather than as "not served".
         preferred_prefix: Namespace that wins when the gateway serves the model under
             more than one name.
+        trust_namespace_wildcards: Whether a catalog entry of ``<ns>/*`` counts
+            as a route for a model whose OWN provider namespace is ``<ns>`` (an
+            ``openrouter/*`` passthrough then serves ``provider: openrouter``
+            models, addressed by their untranslated name). Namespace-matched on
+            purpose: a foreign wildcard is a DIFFERENT upstream, the measured
+            serving-path break documented in ``docs/LLM_LAYER.md``. Exact
+            entries always win over a wildcard.
 
     Raises:
         GatewayRouteError: Several names match and ``preferred_prefix`` picks none of
@@ -135,14 +162,18 @@ def resolve_gateway_route(
 
     hits = [c for c in _candidates(model_string) if c in catalog]
     if not hits:
+        if trust_namespace_wildcards and "/" in model_string:
+            namespace = model_string.split("/", 1)[0]
+            if f"{namespace}/*" in catalog:
+                return ResolvedGatewayRoute(model_string, kind="wildcard")
         return None
     if len(hits) == 1:
-        return hits[0]
+        return ResolvedGatewayRoute(hits[0], kind="exact")
 
     if preferred_prefix:
         for hit in hits:
             if hit.startswith(preferred_prefix):
-                return hit
+                return ResolvedGatewayRoute(hit, kind="exact")
     raise GatewayRouteError(
         f"the gateway serves {model_string!r} under {len(hits)} names ({', '.join(hits)}) "
         f"and no preference picks one. They can be backed by different upstreams, so "
