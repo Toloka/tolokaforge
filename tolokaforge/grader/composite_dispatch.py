@@ -47,11 +47,7 @@ from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.grading.tool_artifacts import extract_tool_artifacts
 from tolokaforge.core.grading.trace_checks import TraceChecksResult
-from tolokaforge.core.grading.trace_timeline import build_trial_timeline
-from tolokaforge.core.grading.transcript_wire import (
-    decode_transcript_wire,
-    split_leading_system_message,
-)
+from tolokaforge.core.grading.trace_timeline import build_timeline_from_wire
 from tolokaforge.core.models import (
     CustomCheckDetail,
     Grade,
@@ -250,7 +246,9 @@ class GraderCompositeDispatch:
         """Mirror ``_grade_trial_async`` (runner) minus hash / accounted-keys ledger."""
         trial_id = dispatch.trial_id
         llm_messages: list[dict[str, Any]] = json.loads(dispatch.llm_messages_json or "[]")
-        timeline = _build_timeline(llm_messages, dispatch.termination_reason)
+        timeline = build_timeline_from_wire(
+            llm_messages, [], parse_termination_reason(dispatch.termination_reason)
+        )
         components = RunnerGradeComponents()
         state_checks_config = grading_config.state_checks
         self._grade_state_checks_block(
@@ -494,24 +492,6 @@ class GraderCompositeDispatch:
                 include_agent_system_prompt=include_agent_system_prompt,
             )
         )
-
-
-def _build_timeline(
-    llm_messages: list[dict[str, Any]],
-    raw_termination_reason: str,
-) -> Any:
-    """Build the grader-side :class:`TrialTimeline` from the wire alone.
-
-    Empty ``llm_messages`` produces a records-empty timeline that still
-    reflects the termination reason. The composite skips llm_judge in
-    that case but the timeline call must reconcile without raising so
-    the trace-checks branch runs.
-    """
-    termination_reason = parse_termination_reason(raw_termination_reason)
-    if llm_messages:
-        _, transcript = split_leading_system_message(llm_messages)
-        return build_trial_timeline(decode_transcript_wire(transcript), [], termination_reason)
-    return build_trial_timeline([], [], termination_reason)
 
 
 def _build_grade(

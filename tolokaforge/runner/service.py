@@ -65,13 +65,9 @@ from tolokaforge.core.grading.substrate import (
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
     TrialTimeline,
-    build_trial_timeline,
+    build_timeline_from_wire,
 )
 from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcher
-from tolokaforge.core.grading.transcript_wire import (
-    decode_transcript_wire,
-    split_leading_system_message,
-)
 from tolokaforge.core.models import (
     CriterionResult,
     LLMJudgeConfig,
@@ -2087,13 +2083,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             ValueError: the payload does not decode into a transcript.
             TimelineInconsistencyError: the two views cannot be joined.
         """
-        if not request.llm_messages_json:
-            return [], build_trial_timeline([], trial_context.recorded, termination_reason)
-
-        llm_messages: list[dict[str, Any]] = json.loads(request.llm_messages_json)
-        _, transcript = split_leading_system_message(llm_messages)
-        return llm_messages, build_trial_timeline(
-            decode_transcript_wire(transcript), trial_context.recorded, termination_reason
+        llm_messages: list[dict[str, Any]] = (
+            json.loads(request.llm_messages_json) if request.llm_messages_json else []
+        )
+        return llm_messages, build_timeline_from_wire(
+            llm_messages, trial_context.recorded, termination_reason
         )
 
     def _grade_transcript_rules(

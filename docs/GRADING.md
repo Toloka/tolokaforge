@@ -638,6 +638,18 @@ same thing whichever substrate grades the trial:
 | `recorded_calls` | `trial_context.tool_call_history` | `trajectory.tool_log` |
 | `termination_reason` | `GradeTrialRequest.termination_reason` | `trajectory.termination_reason` |
 
+The `messages` column names one recipe both wire dispatchers share: strip the
+leading `role: system` message off the payload, decode the remaining transcript
+into `Message` objects, and hand the result to `build_trial_timeline`.
+[`build_timeline_from_wire`](../tolokaforge/core/grading/trace_timeline.py)
+owns that recipe. The runner's `_grade_time_views` and the grader's
+`GraderCompositeDispatch.grade` are its two callers — see
+[`docs/GRADER_SERVICE.md` § The `Grade` wire](GRADER_SERVICE.md#the-grade-wire)
+for the `llm_messages_json` row it decodes. An empty message list
+short-circuits to a records-only timeline; the branch reconciles without
+raising, which is what lets a hash-only trial reach the timeline the same
+way a records-only bundle does.
+
 ### Both substrates consume it
 
 Every transcript rule is evaluated off the timeline on both substrates.

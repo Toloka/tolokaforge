@@ -60,11 +60,7 @@ from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorContext
 from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.grading.substrate_live import LiveRunnerCallbackGradingSubstrate
 from tolokaforge.core.grading.trace_checks import TraceChecksResult
-from tolokaforge.core.grading.trace_timeline import build_trial_timeline
-from tolokaforge.core.grading.transcript_wire import (
-    decode_transcript_wire,
-    split_leading_system_message,
-)
+from tolokaforge.core.grading.trace_timeline import build_timeline_from_wire
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import StructuredLogger
@@ -394,10 +390,7 @@ def _reassemble_grade_from_composite(
     try:
         logger = StructuredLogger(name="parity-gate-live-callback")
         llm_messages = list(_LLM_MESSAGES)
-        _, transcript = split_leading_system_message(llm_messages)
-        timeline = build_trial_timeline(
-            decode_transcript_wire(transcript), trial_context.recorded, None
-        )
+        timeline = build_timeline_from_wire(llm_messages, trial_context.recorded, None)
 
         components = RunnerGradeComponents()
         accounted_keys: dict[str, Any] = {}
