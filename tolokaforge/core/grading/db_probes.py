@@ -11,8 +11,7 @@ task's docker network — not the trial's substrate DB. The runner container
 joins that network and opens each probe's DSN directly rather than routing
 through the substrate; the host-side core engine does not have that
 reachability, which is why :mod:`~tolokaforge.core.grading.key_manifest`
-marks the key ``RUNNER_ONLY``. A substrate-mediated route — a
-``SubstrateService.RunDbProbe`` RPC — is tracked as issue #1350.
+marks the key ``RUNNER_ONLY``.
 
 ``asyncpg`` is imported lazily inside :func:`_fetch_probe_rows` so importing
 this module does not require the driver. The runner Docker image installs
