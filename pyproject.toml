@@ -212,6 +212,24 @@ tcp = "tolokaforge.core.service_readiness:tcp_readiness_probe_factory"
 agent_only = "tolokaforge.core.actors.turn_policy:_agent_only_policy_factory"
 conversational = "tolokaforge.core.actors.turn_policy:_conversational_policy_factory"
 
+# ADR-0044 composition-plan adapter Protocols
+# (``tolokaforge/core/composition_runtime.py``). Each entry point resolves
+# directly to the impl class — the class is arg-less-constructible, so the
+# caller instantiates the returned class with its own optional injection
+# seams. A downstream K8s / Modal materialiser, a snapshot-based dispatcher
+# under a future isolation label, or an alternative composer registers
+# alongside these built-ins without a framework PR.
+[project.entry-points."tolokaforge.compose_materialisers"]
+docker_compose = "tolokaforge.core.docker_compose_materialiser:DockerComposeMaterialiser"
+
+[project.entry-points."tolokaforge.service_lifecycle_dispatchers"]
+shared = "tolokaforge.core.service_lifecycle_dispatchers:SharedDispatcher"
+reset = "tolokaforge.core.service_lifecycle_dispatchers:ResetDispatcher"
+ephemeral = "tolokaforge.core.service_lifecycle_dispatchers:EphemeralDispatcher"
+
+[project.entry-points."tolokaforge.substrate_composers"]
+default = "tolokaforge.core.default_substrate_composer:DefaultSubstrateComposer"
+
 # ADR-0040 § "The single design abstraction" — GradingSubstrate implementations
 # resolvable by name. Two implementations ship today (``in_process`` +
 # ``live_callback``); ``trajectory_storage`` / ``snapshot`` / ``shared_mount``

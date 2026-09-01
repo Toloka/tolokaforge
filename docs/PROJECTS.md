@@ -780,6 +780,49 @@ config load. There is no silent-preserve fallback — if the loader
 doesn't recognise a key, it names the file, the offending key, and
 the closest schema match and refuses to start.
 
+### `default_environment` — the two substrate shapes
+
+The single-stack `stack:` block above is the ergonomic default: one
+compose file, scope inferred from the services' isolation labels.
+When a project needs a multi-stack composition plan — a run-scope
+engine that stays up across every trial plus a trial-scope
+task-specific stack that materialises per trial — the same field
+declares its shape as `stacks:` instead (ADR-0044). Each entry is
+keyed by `stack_id`, declares its own `compose_file`, `stack_scope`
+(`run` | `task` | `trial`), and — on exactly one entry across the
+plan — `runner_service`:
+
+```yaml
+# project.yaml (excerpt) — the same default_environment slot,
+# expressed as a two-stack composition plan.
+default_environment:
+  stacks:
+    engine:
+      compose_file: "./shared/engine.compose.yaml"
+      stack_scope: "run"
+      runner_service: "runner"          # exactly one stack in the plan owns the runner
+      inputs:
+        postgres_version: "16"
+    task:
+      compose_file: "./shared/task.compose.yaml"
+      stack_scope: "trial"
+      # inputs are populated per-trial by TOLOKAFORGE_TRIAL_ID + stack_inputs
+  services:
+    postgres:                           # per-service isolation is stack-agnostic
+      isolation: "reset"
+      reset: { seed: "app_baseline" }
+    db-service:
+      isolation: "shared"
+    # runner: no entry → ephemeral
+  network_policy: "no_internet"
+```
+
+The scalar `stack` and the plural `stacks` are aliases of the same
+field — a patch MUST NOT mix them. See
+[Task override semantics § Full override](#full-override--replace-entirely)
+for the per-stack atomic-replacement rule that governs task-level
+patches into a multi-stack plan.
+
 ## Task override semantics
 
 Two patterns cover every task-level override:

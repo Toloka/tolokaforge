@@ -217,6 +217,8 @@ Every existing task pack continues to work byte-identically. Manifest with scala
 
 ## Extension seams (proving the design)
 
+The three adapter Protocols are exposed as `importlib.metadata` entry-point groups on `tolokaforge/core/plugin_registry.py` — `tolokaforge.compose_materialisers`, `tolokaforge.service_lifecycle_dispatchers`, `tolokaforge.substrate_composers`. Each group's loader resolves a registered name to the impl *class*; the caller instantiates it (arg-less for the built-ins, with optional injection seams for tests). The built-in registrations shipped in tolokaforge's own `pyproject.toml` are `docker_compose` (materialiser), `shared` / `reset` / `ephemeral` (dispatchers, one per closed `ServiceIsolation` label), and `default` (composer). A downstream package registers alongside these under a new name with no framework PR; see [`docs/RUNTIME_BACKENDS.md` § "Plug-in extension points"](../RUNTIME_BACKENDS.md#plug-in-extension-points) for the factory + group-table shape.
+
 - **K8s materialiser**: register `k8s` in `tolokaforge.compose_materialisers`; `StackDecl` gains optional `materialiser: str = "docker_compose"` field. No changes to composer or dispatchers.
 - **`task_shared` scope** (share across repeats of one task, cycle between tasks): add to `stack_scope` Literal + register a `TaskScopeDispatcher`. No Protocol change.
 - **Filesystem overlay snapshot** for isolation transform: register a new `ServiceLifecycleDispatcher` under existing `reset` label — or a future `snapshot` label if the closed vocab needs extending (its own ADR).
