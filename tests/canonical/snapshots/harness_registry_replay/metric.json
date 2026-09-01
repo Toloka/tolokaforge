@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 12,
+  "bucket_b_count": 13,
   "commits": [
     {
       "adapter_paths": [
@@ -1942,6 +1942,34 @@
         "tolokaforge/core/run_trial.py",
         "tolokaforge/core/shared_stack_runtime.py",
         "tolokaforge/runner/models.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
+        "tests/canonical/snapshots/tbench_echo_hello/task_config.json",
+        "tests/canonical/snapshots/tbench_echo_hello/task_description.json",
+        "tests/canonical/test_terminal_bench_adapter_canon.py",
+        "tests/unit/test_terminal_bench.py",
+        "tolokaforge/core/default_substrate_composer.py"
+      ],
+      "bucket": "B",
+      "date": "2026-09-02",
+      "pr": null,
+      "reason": "7 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "8f6846fe51b3581ad3683a811e2f450289e71f08",
+      "subject": "feat(tbench): two-stack composition plan (engine run + task trial) (#1385, code portion)",
+      "touched_files": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
+        "tests/canonical/snapshots/tbench_echo_hello/task_config.json",
+        "tests/canonical/snapshots/tbench_echo_hello/task_description.json",
+        "tests/canonical/snapshots/tbench_echo_hello_harness/synthesised_compose.json",
+        "tests/canonical/snapshots/tbench_echo_hello_skills_harness/synthesised_compose.json",
+        "tests/canonical/test_terminal_bench_adapter_canon.py",
+        "tests/unit/test_terminal_bench.py",
+        "tolokaforge/core/default_substrate_composer.py"
       ]
     }
   ]
