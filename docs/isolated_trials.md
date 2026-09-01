@@ -114,29 +114,32 @@ uv run tolokaforge run \
 ```
 
 The `shared` coercion knob rewrites every stack's `stack_scope` to
-`run`. Any service labelled `ephemeral` on a `run`- or `task`-scope
-stack is refused at startup — cycling would require compose-down on a
-stack contracted to stay live for the whole bracket. The orchestrator
-raises `RuntimeError` naming the offending
-`(task_id, stack_id, service_name, isolation, stack_scope)` tuple:
+`run`. Admission is per-service, not per-scope: every service's
+`isolation` label must have a registered dispatcher on the backend's
+composer. The three built-in dispatchers cover every label in the closed
+`ServiceIsolation` vocab (`shared` / `reset` / `ephemeral`), so the
+refusal fires only when a composer is constructed with a partial
+registry — for example a downstream backend that drops the `ephemeral`
+dispatcher deliberately. The orchestrator raises `RuntimeError` naming
+the offending `(task_id, stack_id, service_name, isolation, stack_scope)`
+tuple:
 
 ```
-Composer-driven runtime cannot honour `isolation: ephemeral` on a
-non-trial-scope stack — cycling an ephemeral service between trials
-requires compose-down on a stack contracted to stay live for the
-whole run/task bracket. Offending
+Composer-driven runtime cannot honour every requested `isolation`
+label — the composer's dispatcher registry has no entry for one or
+more labels declared by the tasks. Offending
 (task_id, stack_id, service_name, isolation, stack_scope):
 [('orders_customers_join_01', 'default', 'db', 'ephemeral', 'run')].
-Move the affected services onto a trial-scope stack, or wait for
-#1383's `IsolationMode.COMPOSED_STACK` capability advertisement that
-will admit ephemeral cycling at run scope.
+Register the missing dispatcher(s), or move the affected services onto
+a `trial`-scope stack (per-trial materialisation handles every label
+uniformly).
 ```
 
-The refusal is deliberate — silent cross-trial contamination is a
-failure mode the grader believes, so making it a startup error rather
-than a subtle grading bug is the safer default. Drop the override and
-the composer materialises the per-service isolation via its dispatcher
-registry without a scope contradiction.
+An operator who wants the strict "refuse ephemeral on run-scope stacks"
+behaviour as a fail-safe against silent cross-trial contamination
+registers a null/refusing dispatcher for `ephemeral` on the composer;
+the check above then fires structurally at startup instead of surfacing
+as a subtle grading bug.
 
 ## Worked example
 
