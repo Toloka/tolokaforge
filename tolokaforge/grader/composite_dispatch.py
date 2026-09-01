@@ -42,11 +42,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from tolokaforge.core.grading import composite
-from tolokaforge.core.grading.composite_fold import (
-    build_grade_reasons,
-    compose_trial_verdict,
-    resolve_state_checks_component,
-)
+from tolokaforge.core.grading.composite_fold import CompositeFold, CompositeFoldResult
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.grading.tool_artifacts import extract_tool_artifacts
@@ -295,23 +291,24 @@ class GraderCompositeDispatch:
             artifacts_dir=artifacts_dir,
             components=components,
         )
-        state_checks_slot, verdict, reasons = _compose_verdict_and_reasons(
-            components=components,
-            grading_config=grading_config,
-            state_checks_config=state_checks_config,
+        fold_result = CompositeFold.finalise(
+            components_dict=components.model_dump(),
+            grading_config_dict=grading_config.model_dump(),
+            hash_weight=state_checks_config.hash_weight if state_checks_config else None,
             judge_gate_failed=judge_gate_failed,
-            judge_status=judge_status,
-            judge_result=judge_result,
-            transcript_result=transcript_result,
-            trace_result=trace_result,
-            custom_reasons=custom_reasons,
+            trace_gate_failed=trace_result.gate_failed,
+            transcript_result_dict=(
+                transcript_result.model_dump() if transcript_result is not None else None
+            ),
+            judge_reasons=(judge_result.reasons if judge_result is not None else None) or None,
+            trace_checks_result_dict=trace_result.model_dump(mode="json"),
+            custom_checks_reasons=custom_reasons,
+            judge_errored=judge_status is JudgeStatus.ERRORED,
         )
+        components.llm_judge_score = fold_result.judge_component
         return _build_grade(
-            verdict_score=verdict.score,
-            verdict_pass=verdict.binary_pass,
+            fold_result=fold_result,
             components=components,
-            state_checks_slot_component=state_checks_slot.component,
-            reasons=reasons,
             custom_wire_results=custom_wire_results,
             trace_result=trace_result,
             judge_result=judge_result,
@@ -517,94 +514,16 @@ def _build_timeline(
     return build_trial_timeline([], [], termination_reason)
 
 
-def _compose_verdict_and_reasons(
-    *,
-    components: RunnerGradeComponents,
-    grading_config: RunnerGradingConfig,
-    state_checks_config: Any,
-    judge_gate_failed: bool,
-    judge_status: JudgeStatus,
-    judge_result: JudgeResult | None,
-    transcript_result: TranscriptEvaluationResult | None,
-    trace_result: TraceChecksResult,
-    custom_reasons: str | None,
-) -> tuple[Any, Any, str]:
-    """Fold state-checks slot, verdict, and reason segments into their wire shapes.
-
-    Mutates ``components.llm_judge_score`` to the composed judge component
-    (matching the runner's ``_grade_trial_async`` combine order). Returns
-    ``(state_checks_slot, verdict, reasons)``.
-    """
-    state_checks_slot = resolve_state_checks_component(
-        hash_score=components.hash_score,
-        jsonpath_score=components.jsonpath_score,
-        db_probe_score=components.db_probe_score,
-        hash_weight=state_checks_config.hash_weight if state_checks_config else None,
-    )
-    verdict = compose_trial_verdict(
-        components.model_dump(),
-        grading_config.model_dump(),
-        judge_gate_failed=judge_gate_failed,
-        trace_gate_failed=trace_result.gate_failed,
-    )
-    components.llm_judge_score = verdict.judge_component
-
-    judge_reasons = judge_result.reasons if judge_result is not None else None
-    reason_segments = [
-        build_grade_reasons(
-            components.model_dump(),
-            None,
-            transcript_result.model_dump() if transcript_result is not None else None,
-            judge_reasons=judge_reasons or None,
-            trace_checks_result=trace_result.model_dump(mode="json"),
-            golden_replay=None,
-            custom_checks_reasons=custom_reasons,
-        )
-    ]
-    if judge_status is JudgeStatus.ERRORED:
-        reason_segments.append(f"JUDGE ERRORED: {judge_reasons}")
-    if state_checks_slot.inert_weight_reason:
-        reason_segments.append(state_checks_slot.inert_weight_reason)
-    if verdict.reason:
-        reason_segments.append(verdict.reason)
-    reasons = " | ".join(segment for segment in reason_segments if segment)
-    return state_checks_slot, verdict, reasons
-
-
-def _components_to_grade_components(
-    components: RunnerGradeComponents,
-    state_checks_slot_component: float | None,
-) -> GradeComponents:
-    """Project the runner-side ``RunnerGradeComponents`` onto the wire
-    ``GradeComponents`` shape, translating the ``-1.0`` not-evaluated
-    sentinel into ``None``.
-    """
-
-    def _slot(value: float) -> float | None:
-        return None if value < 0 else value
-
-    return GradeComponents(
-        state_checks=state_checks_slot_component,
-        transcript_rules=_slot(components.transcript_score),
-        trace_checks=_slot(components.trace_checks_score),
-        llm_judge=_slot(components.llm_judge_score),
-        custom_checks=_slot(components.custom_checks_score),
-    )
-
-
 def _build_grade(
     *,
-    verdict_score: float,
-    verdict_pass: bool,
+    fold_result: CompositeFoldResult,
     components: RunnerGradeComponents,
-    state_checks_slot_component: float | None,
-    reasons: str,
     custom_wire_results: list[Any],
     trace_result: TraceChecksResult,
     judge_result: JudgeResult | None,
     judge_status: JudgeStatus,
 ) -> Grade:
-    """Assemble the Python :class:`Grade` from every dispatch output.
+    """Assemble the Python :class:`Grade` from the fold result + dispatch outputs.
 
     ``custom_wire_results`` are pb2 ``CustomCheckResult`` shapes the composite
     produces; they are decoded into :class:`CustomCheckDetail` for the
@@ -612,7 +531,17 @@ def _build_grade(
     the :class:`TraceChecksResult`; judge audit fields come off the
     optional :class:`JudgeResult`.
     """
-    grade_components = _components_to_grade_components(components, state_checks_slot_component)
+
+    def _slot(value: float) -> float | None:
+        return None if value < 0 else value
+
+    grade_components = GradeComponents(
+        state_checks=fold_result.state_checks_component,
+        transcript_rules=_slot(components.transcript_score),
+        trace_checks=_slot(components.trace_checks_score),
+        llm_judge=_slot(components.llm_judge_score),
+        custom_checks=_slot(components.custom_checks_score),
+    )
     custom_details = [
         CustomCheckDetail(
             check_name=r.check_name,
@@ -680,10 +609,10 @@ def _build_grade(
         criterion_results = list(judge_result.criterion_results)
 
     return Grade(
-        binary_pass=verdict_pass,
-        score=max(0.0, min(1.0, verdict_score)),
+        binary_pass=fold_result.binary_pass,
+        score=max(0.0, min(1.0, fold_result.score)),
         components=grade_components,
-        reasons=reasons,
+        reasons=fold_result.reasons,
         custom_checks_details=custom_details,
         trace_check_results=trace_check_results,
         trace_checks_summary=trace_checks_summary,

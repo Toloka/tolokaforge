@@ -6,6 +6,9 @@ This module provides helper functions for the GradeTrial RPC implementation:
 - evaluate_jsonpath_checks / evaluate_jsonpath_file_checks / evaluate_jsonpath_state_checks:
   runner-side JSONPath assertion evaluators
 - evaluate_db_probes: substrate SQL probes against a task-declared postgres
+- project_state_checks_to_runner_wire: encode the composite fold's neutral
+  ``None``-means-not-evaluated ``state_checks`` slot into the runner wire's
+  ``-1.0`` sentinel
 
 See docs/GRPC_PROTOCOL.md for grading algorithm specification.
 """
@@ -502,3 +505,15 @@ def evaluate_jsonpath_checks(
     score = passed / total if total > 0 else 0.0
     reasons = "; ".join(reasons_parts)
     return score, reasons
+
+
+def project_state_checks_to_runner_wire(slot_component: float | None) -> float:
+    """Encode the fold's ``state_checks`` slot into the runner wire's sentinel.
+
+    The composite fold reports ``None`` where the ``state_checks`` block was
+    not evaluated; the runner's ``pb2.GradeComponents`` field is a plain
+    ``float`` and reserves ``-1.0`` as the not-evaluated sentinel. Kept
+    beside the runner's other wire helpers so the pure fold module owes
+    nothing to ``pb2``.
+    """
+    return -1.0 if slot_component is None else slot_component

@@ -390,3 +390,124 @@ def build_grade_reasons(
         reasons.append(custom_checks_reasons)
 
     return " | ".join(reasons)
+
+
+@dataclass(frozen=True)
+class CompositeFoldResult:
+    """The neutral result of the shared composite fold.
+
+    Both runner and grader receive this and each does its own wire encoding.
+    ``state_checks_component`` carries ``None`` for "not evaluated"; the runner
+    projects that to its wire ``-1.0`` sentinel, the grader keeps the ``None``
+    on the Python model. ``judge_component`` is the score the judge component
+    carries *after* the required-criterion gate — every downstream reader sees
+    the gated value, not the judge's raw aggregate.
+    """
+
+    score: float
+    binary_pass: bool
+    verdict_reason: str | None
+    judge_component: float
+    state_checks_component: float | None
+    inert_weight_reason: str | None
+    reasons: str
+
+
+class CompositeFold:
+    """Shared substrate-neutral fold. One definition; two dispatchers.
+
+    Both the runner-side ``_grade_trial_async`` and the grader-side
+    ``_run_composite`` produce component scores and gate signals; each passes
+    them through :meth:`finalise` and projects the returned
+    :class:`CompositeFoldResult` onto its own wire type. The runner encodes
+    into ``pb2.GradeTrialResponse`` and translates ``state_checks_component ==
+    None`` into ``-1.0`` on the wire; the grader constructs a Python
+    :class:`~tolokaforge.core.models.Grade` and keeps ``None``.
+    """
+
+    @staticmethod
+    def finalise(
+        *,
+        components_dict: dict[str, Any],
+        grading_config_dict: dict[str, Any],
+        hash_weight: float | None,
+        judge_gate_failed: bool,
+        trace_gate_failed: bool,
+        state_diff_dict: dict[str, Any] | None = None,
+        transcript_result_dict: dict[str, Any] | None = None,
+        judge_reasons: str | None = None,
+        trace_checks_result_dict: dict[str, Any] | None = None,
+        golden_replay: GoldenReplayRecord | None = None,
+        custom_checks_reasons: str | None = None,
+        judge_errored: bool = False,
+        ledger_skip_notes: list[str] | None = None,
+    ) -> CompositeFoldResult:
+        """Fold verdict + state-checks slot + reasons in one call.
+
+        Order:
+
+        1. :func:`resolve_state_checks_component` — reduce the runner's hash /
+           jsonpath / db_probes scores into one ``state_checks`` slot, keeping
+           the ``None``-means-not-evaluated sentinel out of the aggregate.
+        2. :func:`compose_trial_verdict` — apply the judge and trace gates
+           around the weighted combine.
+        3. Reassign ``components_dict['llm_judge_score']`` to the gated
+           component so :func:`build_grade_reasons` reads the gated value that
+           reaches the wire, not the judge's raw aggregate. Callers own the
+           dict — both dispatchers pass a fresh ``model_dump()`` copy.
+        4. :func:`build_grade_reasons` on the mutated components + ancillary
+           inputs (state diff, transcript result, trace-check result, golden
+           replay, custom-checks reasons).
+        5. Append tail segments — ``"JUDGE ERRORED: <reasons>"`` (when
+           ``judge_errored``), ``ledger_skip_notes`` joined with ``"; "``,
+           ``inert_weight_reason``, ``verdict.reason`` — and join every
+           non-empty segment with ``" | "``.
+
+        Raises:
+            ValueError: propagated from :func:`resolve_state_checks_component`
+                or :func:`compose_trial_verdict` — an undecidable state-source
+                fold, an evaluated component with no declared weight, or a
+                ``combine_method`` naming no supported aggregation. Both
+                dispatchers translate this to a ``success=False`` response
+                naming the trial.
+        """
+        state_slot = resolve_state_checks_component(
+            hash_score=components_dict.get("hash_score", -1.0),
+            jsonpath_score=components_dict.get("jsonpath_score", -1.0),
+            db_probe_score=components_dict.get("db_probe_score", -1.0),
+            hash_weight=hash_weight,
+        )
+        verdict = compose_trial_verdict(
+            components_dict,
+            grading_config_dict,
+            judge_gate_failed=judge_gate_failed,
+            trace_gate_failed=trace_gate_failed,
+        )
+        components_dict[_JUDGE_SCORE_FIELD] = verdict.judge_component
+        base_reasons = build_grade_reasons(
+            components_dict,
+            state_diff_dict,
+            transcript_result_dict,
+            judge_reasons=judge_reasons or None,
+            trace_checks_result=trace_checks_result_dict,
+            golden_replay=golden_replay,
+            custom_checks_reasons=custom_checks_reasons,
+        )
+        segments = [base_reasons]
+        if judge_errored:
+            segments.append(f"JUDGE ERRORED: {judge_reasons}")
+        if ledger_skip_notes:
+            segments.append("; ".join(ledger_skip_notes))
+        if state_slot.inert_weight_reason:
+            segments.append(state_slot.inert_weight_reason)
+        if verdict.reason:
+            segments.append(verdict.reason)
+        return CompositeFoldResult(
+            score=verdict.score,
+            binary_pass=verdict.binary_pass,
+            verdict_reason=verdict.reason,
+            judge_component=verdict.judge_component,
+            state_checks_component=state_slot.component,
+            inert_weight_reason=state_slot.inert_weight_reason,
+            reasons=" | ".join(segment for segment in segments if segment),
+        )
