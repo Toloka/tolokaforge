@@ -64,6 +64,7 @@ from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.system_prompt import build_system_prompt
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialResult, TrialSpec
 from tolokaforge.core.trial_grader import GradingFailedError, TrialGrader
+from tolokaforge.runner.models import provisions_database
 
 if TYPE_CHECKING:
     from tolokaforge.core.logging import StructuredLogger
@@ -888,12 +889,13 @@ class InProcessConductor:
         service and stash it on ``trajectory.final_env_state``.
 
         The Runner's ``GetState`` RPC syncs the subprocess state to
-        db-service before reading, so this read covers every adapter that
-        seeds a JSON DB. Tasks that declare no ``initial_state.json_db``
-        get a matching skip: ``RegisterTrial`` never initialised the DB
-        Service for them (see :func:`provisions_database`), so the RPC has
-        no target and only ``adapter_env.data`` — the pre-trial snapshot
-        from :meth:`BaseAdapter.create_environment` — is available for the
+        db-service before reading, so this read covers every adapter whose
+        task provisions a database on the runner side (tables, schemas, or
+        unstable_fields — see :func:`~tolokaforge.runner.models.provisions_database`).
+        Tasks that provision none of those get a matching skip: ``RegisterTrial``
+        never initialised the DB Service for them, so the RPC has no target and
+        only ``adapter_env.data`` — the pre-trial snapshot from
+        :meth:`BaseAdapter.create_environment` — is available for the
         final-state stash.
 
         When the trial's task carries an ``environment_manifest`` (a
@@ -903,7 +905,7 @@ class InProcessConductor:
         the trial. Manifest-less trials keep the JSON-DB-only shape.
         """
         runner_state: dict[str, Any] | None = None
-        if setup.env_state.config.json_db:
+        if provisions_database(spec.task.initial_state):
             try:
                 state_result = self.runtime_backend.get_state(setup.trial_id)
                 if state_result.get("success") and state_result.get("state_json"):

@@ -42,7 +42,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
-from tolokaforge.runner.models import TaskDescription
+from tolokaforge.runner.models import TaskDescription, provisions_database
 
 pytestmark = pytest.mark.unit
 
@@ -240,11 +240,15 @@ class TestTrialSpecWireExclusion:
         assert '"adapter_type":"native"' in wire_json
 
 
-class TestCaptureFinalStateEnvironmentBlock:
-    """``_capture_final_state`` records the resolved environment identity under
-    ``final_env_state["environment"]`` only when the trial's task carries an
-    ``environment_manifest``. Manifest-less trials keep the JSON-DB-only shape —
-    the additive/back-compat guarantee the descriptor rests on.
+class TestCaptureFinalState:
+    """Invariants on ``InProcessConductor._capture_final_state``.
+
+    Covers: (a) the ``environment_manifest`` → ``final_env_state["environment"]``
+    block projection, additive over the JSON-DB-only shape;
+    (b) the ``GetState`` RPC skip when the task provisions no runner-side DB
+    (:func:`~tolokaforge.runner.models.provisions_database` == False), so the
+    conductor doesn't burn a doomed round-trip against a DB Service that
+    ``RegisterTrial`` never initialised.
     """
 
     def _conductor(self) -> InProcessConductor:
@@ -312,16 +316,16 @@ class TestCaptureFinalStateEnvironmentBlock:
 
         assert "environment" not in trajectory.final_env_state
 
-    def test_skips_get_state_rpc_when_task_declares_no_json_db(self) -> None:
-        """No ``initial_state.json_db`` → ``RegisterTrial`` never provisioned
-        the DB Service (:func:`~tolokaforge.runner.models.provisions_database`),
+    def test_skips_get_state_rpc_when_task_provisions_no_db(self) -> None:
+        """No tables / schemas / unstable_fields on the runner-side
+        ``initial_state`` → ``RegisterTrial`` never provisioned the DB Service
+        (:func:`~tolokaforge.runner.models.provisions_database` == False),
         so ``GetState`` has no target and the RPC is skipped."""
-        spec = _make_spec()
-        setup = self._setup()
-        setup.env_state.config.json_db = None
+        spec = _make_spec()  # TaskDescription default: RunnerInitialStateConfig() empty
+        assert not provisions_database(spec.task.initial_state)
         conductor = self._conductor()
 
-        conductor._capture_final_state(spec, setup, _default_success_trajectory("t1", 0))
+        conductor._capture_final_state(spec, self._setup(), _default_success_trajectory("t1", 0))
 
         conductor.runtime_backend.get_state.assert_not_called()
 
