@@ -16,18 +16,31 @@
     "network_policy": "full_internet",
     "security_context_defaults": null,
     "services": null,
-    "stack": {
-      "compose_file": "<STAGING>/echo-hello/docker-compose.tolokaforge.yaml",
-      "db_port": null,
-      "db_service": null,
-      "inputs": {},
-      "rag_port": null,
-      "rag_service": null,
-      "runner_port": null,
-      "runner_service": "runner",
-      "stack_scope": null
-    },
-    "stacks": null
+    "stack": null,
+    "stacks": {
+      "engine": {
+        "compose_file": "<STAGING>/engine/docker-compose.engine.yaml",
+        "db_port": null,
+        "db_service": null,
+        "inputs": {},
+        "rag_port": null,
+        "rag_service": null,
+        "runner_port": null,
+        "runner_service": "runner",
+        "stack_scope": "run"
+      },
+      "task": {
+        "compose_file": "<STAGING>/echo-hello/docker-compose.tolokaforge.yaml",
+        "db_port": null,
+        "db_service": null,
+        "inputs": {},
+        "rag_port": null,
+        "rag_service": null,
+        "runner_port": null,
+        "runner_service": null,
+        "stack_scope": "trial"
+      }
+    }
   },
   "grading": "__adapter__",
   "initial_state": {

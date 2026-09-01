@@ -418,7 +418,8 @@ class TestTerminalBenchAdapterRemovedParams:
 
 
 class TestTerminalBenchAdapterEnvironmentManifest:
-    """``get_task`` emits an :class:`EnvironmentPatch`; ``to_task_description`` emits the resolved manifest.
+    """``get_task`` emits a two-stack :class:`EnvironmentPatch`;
+    ``to_task_description`` emits the resolved multi-scope manifest.
 
     Structural agreement, not object identity — one patch + one resolver.
     """
@@ -435,36 +436,56 @@ class TestTerminalBenchAdapterEnvironmentManifest:
             {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
         )
 
-    def test_task_config_carries_environment_patch(self, adapter):
+    def test_task_config_carries_two_stack_environment_patch(self, adapter):
+        """The task's ``EnvironmentPatch`` declares the two-stack plan
+        directly — an engine stack (run scope, owns the runner) and a task
+        stack (trial scope, owns the agent service). INV-12: only the
+        engine stack sets ``runner_service``."""
         task = adapter.get_task("echo-hello")
         assert isinstance(task.environment_manifest, EnvironmentPatch)
-        stack = task.environment_manifest.stack
-        assert stack is not None
+        assert task.environment_manifest.stack is None
+        stacks = task.environment_manifest.stacks
+        assert stacks is not None and set(stacks) == {"engine", "task"}
         env = adapter._environment("echo-hello")
-        assert stack.compose_file == env.compose_file
-        assert stack.runner_service == "runner"
+        assert stacks["engine"].compose_file == env.engine_compose_file
+        assert stacks["engine"].stack_scope == "run"
+        assert stacks["engine"].runner_service == "runner"
+        assert stacks["task"].compose_file == env.compose_file
+        assert stacks["task"].stack_scope == "trial"
+        assert stacks["task"].runner_service is None
         assert task.environment_manifest.network_policy is NetworkPolicy.FULL_INTERNET
 
-    def test_task_description_carries_resolved_manifest(self, adapter):
+    def test_task_description_carries_resolved_multi_scope_manifest(self, adapter):
+        """The resolved manifest classifies as ``MULTI_SCOPE``; the scalar
+        ``compose_file`` mirror is the engine stack (owner of ``runner_service``)."""
+        from tolokaforge.runner.models import PlanShape
+
         td = adapter.to_task_description("echo-hello")
         manifest = td.environment_manifest
         assert isinstance(manifest, EnvironmentManifest)
         env = adapter._environment("echo-hello")
-        assert manifest.compose_file == env.compose_file
+        assert manifest.compose_file == env.engine_compose_file
         assert manifest.runner_service == "runner"
-        assert set(manifest.services) == {"runner", "db-service", env.agent_service}
-        assert {name: spec.isolation for name, spec in manifest.services.items()} == {
-            "runner": "ephemeral",
-            "db-service": "ephemeral",
-            env.agent_service: "ephemeral",
-        }
-        assert manifest.requires_per_trial is True
+        assert manifest.plan_shape is PlanShape.MULTI_SCOPE
+        stack_ids = [decl.stack_id for decl in manifest.stacks]
+        assert stack_ids == ["engine", "task"]
+        by_id = {decl.stack_id: decl for decl in manifest.stacks}
+        assert by_id["engine"].stack_scope == "run"
+        assert by_id["engine"].runner_service == "runner"
+        assert by_id["engine"].compose_file == env.engine_compose_file
+        assert by_id["task"].stack_scope == "trial"
+        assert by_id["task"].runner_service is None
+        assert by_id["task"].compose_file == env.compose_file
         assert manifest.network_policy is NetworkPolicy.FULL_INTERNET
 
-    def test_patch_and_manifest_point_at_same_compose_file(self, adapter):
-        task = adapter.get_task("echo-hello")
-        td = adapter.to_task_description("echo-hello")
-        assert task.environment_manifest.stack.compose_file == td.environment_manifest.compose_file
+    def test_patch_and_manifest_point_at_same_compose_files(self, adapter):
+        """Every stack the patch declares appears in the resolved manifest
+        with the same compose-file pointer."""
+        patch = adapter.get_task("echo-hello").environment_manifest
+        manifest = adapter.to_task_description("echo-hello").environment_manifest
+        assert {sid: sp.compose_file for sid, sp in patch.stacks.items()} == {
+            decl.stack_id: decl.compose_file for decl in manifest.stacks
+        }
 
     def test_tool_source_extra_is_two_key_shape(self, adapter):
         td = adapter.to_task_description("echo-hello")
@@ -553,11 +574,12 @@ class TestTerminalBenchAdapterNoSubprocess:
         check_output_mock.assert_not_called()
 
 
-class TestTerminalBenchTasksProduceTrialScopedPlan:
-    """The terminal-bench adapter emits ``all-ephemeral`` manifests — the
-    composer sees a fully trial-scoped plan and provisions per trial."""
+class TestTerminalBenchTasksProduceMultiScopePlan:
+    """The terminal-bench adapter emits a two-stack MULTI_SCOPE plan —
+    engine services live for the whole run, task services materialise per
+    trial (ADR-0044 § 5)."""
 
-    def test_adapter_manifest_is_trial_scoped_only(self, tmp_path):
+    def test_adapter_manifest_is_multi_scope(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
         from tolokaforge.core.models import (
@@ -586,7 +608,9 @@ class TestTerminalBenchTasksProduceTrialScopedPlan:
 
         manifest = orch._task_description("echo-hello").environment_manifest
         assert manifest is not None
-        assert manifest.plan_shape == PlanShape.TRIAL_SCOPED_ONLY
+        assert manifest.plan_shape is PlanShape.MULTI_SCOPE
+        scopes = {decl.stack_scope for decl in manifest.stacks}
+        assert scopes == {"run", "trial"}
 
 
 # =============================================================================
@@ -676,7 +700,8 @@ def _load_synthesised(env) -> dict:
 class TestComposeSynthesisFixBillingHolds:
     """The synthesised YAML for a real example task locks the emit contract."""
 
-    def test_emitted_shape(self, tmp_path):
+    def test_emitted_task_stack_shape(self, tmp_path):
+        """The task stack owns only task-declared services — no runner, no db-service."""
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
             materialise_task_environment,
         )
@@ -688,7 +713,7 @@ class TestComposeSynthesisFixBillingHolds:
         env = materialise_task_environment(tasks["fix-billing-holds"], staging_root=tmp_path)
 
         compose = _load_synthesised(env)
-        assert set(compose["services"]) == {"runner", "db-service", "main"}
+        assert set(compose["services"]) == {"main"}
         main = compose["services"]["main"]
         assert main["image"] == "tbench-fix-billing-holds:local"
         assert main["container_name"] == "tbench_${TOLOKAFORGE_TRIAL_SLUG}_main"
@@ -699,7 +724,30 @@ class TestComposeSynthesisFixBillingHolds:
         assert "${CPUS}" not in text
         assert "${MEMORY}" not in text
 
-    def test_environment_manifest_accepts_emitted_file(self, tmp_path):
+    def test_engine_stack_owns_runner_and_db_service(self, tmp_path):
+        """The run-scope engine stack has just the engine's own services;
+        its runner depends only on db-service (INV: no cross-project depends_on)."""
+        import yaml as _yaml
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+        from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+
+        examples_dir = Path(__file__).parent.parent.parent / "examples" / "terminal_bench"
+        tasks = discover_tasks(examples_dir)
+        env = materialise_task_environment(tasks["fix-billing-holds"], staging_root=tmp_path)
+
+        with env.engine_compose_file.open() as f:
+            engine = _yaml.safe_load(f)
+        assert set(engine["services"]) == {"runner", "db-service"}
+        assert engine["services"]["runner"]["depends_on"] == {
+            "db-service": {"condition": "service_healthy"},
+        }
+
+    def test_environment_manifest_accepts_engine_compose_file(self, tmp_path):
+        """The manifest's scalar ``compose_file`` mirrors the engine stack
+        (owner of ``runner_service``, per INV-12), so its safety validators
+        find the runner."""
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
             materialise_task_environment,
         )
@@ -711,7 +759,9 @@ class TestComposeSynthesisFixBillingHolds:
         tasks = discover_tasks(examples_dir)
         env = materialise_task_environment(tasks["fix-billing-holds"], staging_root=tmp_path)
 
-        manifest = EnvironmentManifest(compose_file=env.compose_file, runner_service="runner")
+        manifest = EnvironmentManifest(
+            compose_file=env.engine_compose_file, runner_service="runner"
+        )
         assert manifest.runner_service == "runner"
 
 
@@ -738,7 +788,7 @@ class TestComposeSynthesisAgentServiceResolution:
 
         assert env.agent_service == "app"
         compose = _load_synthesised(env)
-        assert set(compose["services"]) == {"runner", "db-service", "app"}
+        assert set(compose["services"]) == {"app"}
         assert (
             compose["services"]["app"]["container_name"] == "tbench_${TOLOKAFORGE_TRIAL_SLUG}_app"
         )
@@ -813,9 +863,13 @@ class TestComposeSynthesisStaging:
 
         assert first.staging_dir == second.staging_dir
         assert first.compose_file == second.compose_file
-        # Only one subdirectory under staging_root — the digest-named one.
-        subdirs = [p for p in staging_root.iterdir() if p.is_dir()]
-        assert len(subdirs) == 1
+        assert first.engine_compose_file == second.engine_compose_file
+        # Two subdirectories under staging_root — the task's digest-named
+        # staging + the engine stack's digest-named shared dir.
+        subdirs = sorted(p.name for p in staging_root.iterdir() if p.is_dir())
+        assert len(subdirs) == 2
+        assert any(name.startswith("engine-") for name in subdirs)
+        assert any(name.startswith("idempotent-") for name in subdirs)
 
     def test_root_run_tests_promoted_to_tests_test_sh(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
@@ -885,6 +939,93 @@ class TestComposeSynthesisStaging:
 
         assert not (env.staging_dir / "tests" / "__pycache__").exists()
         assert (env.staging_dir / "tests" / "test_something.py").exists()
+
+
+class TestComposeSynthesisContainerNameInterpolation:
+    """Every task-stack service — agent, task-authored siblings, harness
+    base — carries ``container_name`` that interpolates
+    ``${TOLOKAFORGE_TRIAL_SLUG}``.
+
+    Without the stamp, a task-authored ``container_name`` (or an anonymous
+    service compose auto-names from the trial-scope project) can collide
+    with a leftover container from the previous trial's teardown — the
+    task stack materialises per trial, but Docker resource cleanup lags.
+    Interpolating the slug always makes trial 2's names disjoint from
+    trial 1's regardless of what the pack declared.
+    """
+
+    def test_task_authored_container_name_is_overwritten(self, tmp_path):
+        """A task that pinned ``container_name: my_static_pg`` cannot smuggle
+        that fixed name into the trial. The synthesis stamps its own."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "authored-name",
+            {
+                "services": {
+                    "main": {"image": "python:3.11-slim"},
+                    "helper": {"image": "postgres:16", "container_name": "my_static_pg"},
+                }
+            },
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+        compose = _load_synthesised(env)
+        assert (
+            compose["services"]["helper"]["container_name"]
+            == "tbench_${TOLOKAFORGE_TRIAL_SLUG}_helper"
+        )
+        assert (
+            compose["services"]["main"]["container_name"] == "tbench_${TOLOKAFORGE_TRIAL_SLUG}_main"
+        )
+        # The task's original literal never survives, so no collision with a
+        # leftover of the same name across trials.
+        assert "my_static_pg" not in env.compose_file.read_text()
+
+    def test_harness_base_service_also_carries_the_interpolation(self, tmp_path):
+        """The harness ``-base`` service is profile-gated (build-only, never
+        started), but is stamped uniformly so no service in the task doc
+        escapes the rule."""
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _harness_task(tmp_path, "stamped", with_build=True)
+        env = materialise_task_environment(
+            meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
+        )
+        compose = _load_synthesised(env)
+        assert (
+            compose["services"]["main-base"]["container_name"]
+            == "tbench_${TOLOKAFORGE_TRIAL_SLUG}_main-base"
+        )
+
+    def test_engine_stack_services_carry_no_container_name(self, tmp_path):
+        """The engine stack is run-scope — its ``.env`` never carries
+        ``${TOLOKAFORGE_TRIAL_SLUG}``, so a container_name that referenced
+        the placeholder there would leave the literal unresolved and cause
+        an up-time collision. Engine services keep compose's own
+        project-scoped naming instead."""
+        import yaml as _yaml
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "engine-plain",
+            {"services": {"main": {"image": "python:3.11-slim"}}},
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+        with env.engine_compose_file.open() as f:
+            engine_doc = _yaml.safe_load(f)
+        for name, body in engine_doc["services"].items():
+            assert "container_name" not in body, (
+                f"engine service {name!r} declared container_name — the run-scope stack "
+                "would leave ${TOLOKAFORGE_TRIAL_SLUG} unresolved and collide across runs"
+            )
 
 
 class TestComposeSynthesisReservedNameCollision:
@@ -1086,7 +1227,7 @@ class TestComposeSynthesisHarnessLayer:
         env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
 
         compose = _load_synthesised(env)
-        assert set(compose["services"]) == {"main", "runner", "db-service"}
+        assert set(compose["services"]) == {"main"}
         assert compose["services"]["main"]["image"] == "tbench-plain:local"
         assert env.base_build_service is None
         assert not (env.staging_dir / "_harness").exists()
@@ -1102,7 +1243,7 @@ class TestComposeSynthesisHarnessLayer:
         )
 
         compose = _load_synthesised(env)
-        assert set(compose["services"]) == {"main", "main-base", "runner", "db-service"}
+        assert set(compose["services"]) == {"main", "main-base"}
 
         base = compose["services"]["main-base"]
         assert base["image"] == "tbench-layered:local"
@@ -1231,7 +1372,12 @@ class TestComposeSynthesisHarnessLayer:
             )
 
     def test_the_same_task_is_fine_without_a_harness(self, tmp_path):
-        """No harness, no injected base service — so nothing to collide with."""
+        """No harness, no injected base service — so nothing to collide with.
+
+        The task-authored ``main-base`` sibling survives verbatim except for
+        the ``container_name`` the trial-slug interpolation stamps on every
+        task-stack service.
+        """
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
             materialise_task_environment,
         )
@@ -1247,9 +1393,17 @@ class TestComposeSynthesisHarnessLayer:
             },
         )
         env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
-        assert _load_synthesised(env)["services"]["main-base"] == {"image": "busybox"}
+        assert _load_synthesised(env)["services"]["main-base"] == {
+            "image": "busybox",
+            "container_name": "tbench_${TOLOKAFORGE_TRIAL_SLUG}_main-base",
+        }
 
     def test_layered_manifest_still_validates(self, tmp_path):
+        """The engine compose file is the manifest's scalar mirror (owns
+        ``runner_service`` per INV-12); the safety validators run against it.
+        The task compose file's ``main-base`` build-only service lives on
+        the task stack and is checked separately by ``_services_in_stack``."""
+        import yaml as _yaml
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
             materialise_task_environment,
         )
@@ -1258,8 +1412,13 @@ class TestComposeSynthesisHarnessLayer:
         env = materialise_task_environment(
             meta, staging_root=tmp_path / "staging", agent_harness="claude-code"
         )
-        manifest = EnvironmentManifest(compose_file=env.compose_file, runner_service="runner")
-        assert "main-base" in manifest.load_compose()["services"]
+        manifest = EnvironmentManifest(
+            compose_file=env.engine_compose_file, runner_service="runner"
+        )
+        assert "runner" in manifest.load_compose()["services"]
+        with env.compose_file.open() as f:
+            task_doc = _yaml.safe_load(f)
+        assert "main-base" in task_doc["services"]
 
 
 def _skills_task(tmp_path: Path, task_id: str, declared: str | None, files: dict[str, str]):
@@ -1604,7 +1763,9 @@ class TestProviderEnvWire:
             }
         )
 
-    def test_keys_land_in_stack_inputs(self, fixture_dir, tmp_path):
+    def test_keys_land_in_task_stack_inputs(self, fixture_dir, tmp_path):
+        """Provider keys ride the trial-scope task stack — its ``.env`` gets
+        the values written per-trial. The run-scope engine stack takes none."""
         adapter = self._adapter(
             fixture_dir,
             tmp_path,
@@ -1614,18 +1775,20 @@ class TestProviderEnvWire:
             },
         )
         patch_ = adapter.get_task("echo-hello").environment_manifest
-        assert patch_.stack.inputs == {
+        assert patch_.stacks["task"].inputs == {
             "TBENCH_PROVIDER_ANTHROPIC_API_KEY": "sk-test",
             "TBENCH_PROVIDER_ANTHROPIC_BASE_URL": "https://proxy.example",
         }
+        assert patch_.stacks["engine"].inputs == {}
 
-    def test_keys_survive_into_the_resolved_manifest(self, fixture_dir, tmp_path):
+    def test_keys_survive_into_the_resolved_task_stack(self, fixture_dir, tmp_path):
         adapter = self._adapter(
             fixture_dir, tmp_path, agent_provider_env={"OPENAI_API_KEY": "sk-openai"}
         )
         manifest = adapter.to_task_description("echo-hello").environment_manifest
         assert manifest is not None
-        assert manifest.stack_inputs["TBENCH_PROVIDER_OPENAI_API_KEY"] == "sk-openai"
+        task_decl = next(decl for decl in manifest.stacks if decl.stack_id == "task")
+        assert task_decl.inputs["TBENCH_PROVIDER_OPENAI_API_KEY"] == "sk-openai"
 
     def test_agent_service_binds_them_to_a_namespaced_compose_input(self, fixture_dir, tmp_path):
         """Names only in the compose file — the value comes from the ``.env``."""
@@ -1748,7 +1911,9 @@ class TestProviderEnvWire:
             {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
         )
         assert adapter.agent_provider_env == {}
-        assert adapter.get_task("echo-hello").environment_manifest.stack.inputs == {}
+        stacks = adapter.get_task("echo-hello").environment_manifest.stacks
+        assert stacks["task"].inputs == {}
+        assert stacks["engine"].inputs == {}
 
     def test_switching_keys_changes_the_staging_digest(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
@@ -1965,8 +2130,9 @@ class TestHarnessPresetsFileOverlay:
         assert "${secret:" not in env.compose_file.read_text()
         manifest = adapter.to_task_description("echo-hello").environment_manifest
         assert manifest is not None
+        task_decl = next(decl for decl in manifest.stacks if decl.stack_id == "task")
         assert (
-            manifest.stack_inputs["TBENCH_PROVIDER_GOOGLE_GEMINI_BASE_URL"]
+            task_decl.inputs["TBENCH_PROVIDER_GOOGLE_GEMINI_BASE_URL"]
             == "https://litellm.example.test/gemini"
         )
 

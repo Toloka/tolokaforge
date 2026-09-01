@@ -243,7 +243,7 @@ class DefaultSubstrateComposer:
                 log_capture=_trial_scope_log_capture(run_sub.log_capture, spec.trial_id),
                 write_compose_env=WriteComposeEnv(
                     trial_id=spec.trial_id,
-                    stack_inputs=manifest.stack_inputs,
+                    stack_inputs=decl.inputs,
                 ),
                 events=run_sub.events,
                 component_id_prefix=f"trial/{spec.trial_id}",
@@ -505,7 +505,7 @@ def _refuse_reserved_prefix(
     *,
     stage: ProvisionStage = "provision",
 ) -> None:
-    """Refuse a ``TOLOKAFORGE_``-prefixed key in ``stack_inputs``.
+    """Refuse a ``TOLOKAFORGE_``-prefixed key on any stack's ``inputs``.
 
     Both composer entry points guard the same invariant:
     :meth:`DefaultSubstrateComposer.materialise_run` passes
@@ -513,17 +513,23 @@ def _refuse_reserved_prefix(
     manifest with a reserved key fails before any docker call;
     :meth:`DefaultSubstrateComposer.provision_trial` (and
     :meth:`PerTrialRuntimeBackend.provision`) leave the default
-    ``stage="provision"``. Reason text is identical modulo the id.
+    ``stage="provision"``. Walks every stack's ``decl.inputs`` so a
+    multi-stack plan cannot smuggle a reserved key past the scalar mirror.
     """
-    reserved = sorted(
-        key for key in manifest.stack_inputs if key.startswith(TOLOKAFORGE_ENV_PREFIX)
-    )
-    if reserved:
+    seen: set[str] = set()
+    for decl in manifest.stacks:
+        seen.update(key for key in decl.inputs if key.startswith(TOLOKAFORGE_ENV_PREFIX))
+    # Legacy scalar path — a manifest that has not yet been through
+    # ``_synthesise_composition_plan`` carries its inputs on the scalar
+    # field alone.
+    seen.update(key for key in manifest.stack_inputs if key.startswith(TOLOKAFORGE_ENV_PREFIX))
+    if seen:
+        offending = sorted(seen)[0]
         raise ProvisionError(
             trial_id=trial_id,
             stage=stage,
             reason=(
-                f"stack_inputs key {reserved[0]!r} uses the reserved "
+                f"stack_inputs key {offending!r} uses the reserved "
                 f"{TOLOKAFORGE_ENV_PREFIX} prefix (engine-authored compose "
                 "variables); rename or remove it from the manifest"
             ),

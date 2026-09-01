@@ -329,15 +329,31 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         )
 
     def _environment_patch(self, task_id: str) -> EnvironmentPatch:
+        """Two-stack composition plan (ADR-0044 § 5 ``MULTI_SCOPE``).
+
+        The ``engine`` stack (run-scope) owns the runner + db-service — one
+        substrate held live for every trial in the run. The ``task`` stack
+        (trial-scope) owns the agent service and any task-authored siblings
+        — materialised fresh per trial so state never leaks across trials.
+        Only the engine stack sets ``runner_service`` (INV-12).
+        """
         env = self._environment(task_id)
         return EnvironmentPatch(
-            stack=StackPatch(
-                compose_file=env.compose_file,
-                runner_service="runner",
-                inputs={
-                    provider_env_input(key): value for key, value in self.agent_provider_env.items()
-                },
-            ),
+            stacks={
+                "engine": StackPatch(
+                    compose_file=env.engine_compose_file,
+                    stack_scope="run",
+                    runner_service="runner",
+                ),
+                "task": StackPatch(
+                    compose_file=env.compose_file,
+                    stack_scope="trial",
+                    inputs={
+                        provider_env_input(key): value
+                        for key, value in self.agent_provider_env.items()
+                    },
+                ),
+            },
             network_policy=self.network_policy,
         )
 
