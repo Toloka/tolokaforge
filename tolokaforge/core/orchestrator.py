@@ -1508,31 +1508,40 @@ class Orchestrator:
         )
 
     def _verify_isolation_compatibility(self, runtime_backend: RuntimeBackend) -> None:
-        """Refuse to start the run when any stack's isolation labels
-        cannot be honoured at that stack's ``stack_scope``.
+        """Refuse to start the run when the runtime backend's composer
+        has no dispatcher registered for a service's ``isolation`` label.
 
-        Per-scope compatibility (ADR-0044 §5, INV-2):
-
-        * ``stack_scope="trial"`` — every ``ServiceIsolation`` label is
-          legal (the composer materialises the stack fresh per trial,
-          so ``shared`` / ``reset`` / ``ephemeral`` are all honourable).
-        * ``stack_scope="run"`` or ``stack_scope="task"`` on a backend
-          whose ``isolation_mode`` is :attr:`IsolationMode.SHARED_STACK`
-          — ``ephemeral`` is refused. Cycling an ephemeral service
-          between trials would require a compose-down on a stack the
-          composer is contracted to keep live for the whole run/task
-          bracket.
+        Per-service dispatcher admission (ADR-0044 §5, INV-2): every
+        service's ``isolation`` label must have a registered dispatcher
+        on the backend's composer. The composer's own cycle-time refusal
+        (:mod:`tolokaforge.core.service_lifecycle_dispatchers` raising
+        :class:`ProvisionError` at ``stage="cycle"``) is the second line
+        of defence for a registry that changes after startup; this
+        pre-flight catches the structural gap up front.
 
         The :attr:`IsolationMode.PER_TRIAL_STACK` short-circuit at the
-        top applies to backends injected via
-        ``Orchestrator(runtime_backend=...)`` that materialise fresh per
-        trial — every label is honourable there.
+        top covers backends that materialise every stack per trial —
+        every dispatcher label is honourable there regardless of the
+        composer's registry.
+
+        Reads ``runtime_backend.composer.dispatcher_registry`` when
+        present. A backend without a composer (or a composer without a
+        registry) falls back on the module-global
+        :data:`~tolokaforge.core.service_lifecycle_dispatchers.DISPATCHER_REGISTRY`,
+        which carries the three built-in labels
+        (``shared`` / ``reset`` / ``ephemeral``) — every label the closed
+        :data:`~tolokaforge.runner.models.ServiceIsolation` vocab
+        defines. The refusal fires only when a composer is constructed
+        with a partial registry.
 
         Raises :class:`RuntimeError` naming
         ``(task_id, stack_id, service_name, isolation, stack_scope)``
         for each violation.
         """
         from tolokaforge.core.runtime import IsolationMode
+        from tolokaforge.core.service_lifecycle_dispatchers import (
+            DISPATCHER_REGISTRY,
+        )
 
         if runtime_backend.isolation_mode is IsolationMode.PER_TRIAL_STACK:
             return
@@ -1542,17 +1551,21 @@ class Orchestrator:
                 "Isolation-compatibility check requires the adapter to be loaded first."
             )
 
+        composer = getattr(runtime_backend, "composer", None)
+        dispatcher_registry = getattr(composer, "dispatcher_registry", None)
+        if dispatcher_registry is None:
+            dispatcher_registry = DISPATCHER_REGISTRY
+        available_labels = frozenset(dispatcher_registry.keys())
+
         violations: list[tuple[str, str, str, str, str]] = []
         for task in self.tasks:
             manifest = self._task_description(task.task_id).environment_manifest
             if manifest is None:
                 continue
             for decl in manifest.stacks:
-                if decl.stack_scope == "trial":
-                    continue
                 stack_services = _services_in_stack(manifest, decl)
                 for service_name, spec in sorted(stack_services.items()):
-                    if spec.isolation == "ephemeral":
+                    if spec.isolation not in available_labels:
                         violations.append(
                             (
                                 task.task_id,
@@ -1565,13 +1578,14 @@ class Orchestrator:
 
         if violations:
             raise RuntimeError(
-                "Composer-driven runtime cannot honour `isolation: ephemeral` "
-                "on a non-trial-scope stack — cycling an ephemeral service "
-                "between trials requires compose-down on a stack contracted "
-                "to stay live for the whole run/task bracket. Offending "
-                "(task_id, stack_id, service_name, isolation, stack_scope): "
-                f"{violations!r}. Move the affected services onto a "
-                "trial-scope stack."
+                "Composer-driven runtime cannot honour every requested "
+                "`isolation` label — the composer's dispatcher registry has "
+                "no entry for one or more labels declared by the tasks. "
+                "Offending (task_id, stack_id, service_name, isolation, "
+                f"stack_scope): {violations!r}. Register the missing "
+                "dispatcher(s), or move the affected services onto a "
+                "`trial`-scope stack (per-trial materialisation handles every "
+                "label uniformly)."
             )
 
     def _build_pending_trials(

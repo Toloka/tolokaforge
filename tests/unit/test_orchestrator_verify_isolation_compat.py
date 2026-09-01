@@ -1,23 +1,24 @@
 """Unit tests for :meth:`Orchestrator._verify_isolation_compatibility`.
 
-Per-scope compatibility (ADR-0044 §5, INV-2): every service's isolation
-label must be honourable at the enclosing stack's ``stack_scope``.
+Per-service dispatcher admission (ADR-0044 §5, INV-2): every service's
+``isolation`` label must have a registered dispatcher on the backend's
+composer.
 
-* ``stack_scope="trial"`` — any label legal (composer materialises fresh
-  per trial).
-* ``stack_scope="run"`` / ``stack_scope="task"`` on a ``SHARED_STACK``
-  backend — ``ephemeral`` is refused (cycling would require compose-down
-  on a stack contracted to stay live for the run/task bracket). #1383's
-  ``IsolationMode.COMPOSED_STACK`` capability advertisement will narrow
-  this refusal once the composer's ephemeral dispatcher is admissible at
-  run scope.
-* ``shared`` and ``reset`` legal at every scope.
+* Every label in the closed ``ServiceIsolation`` vocab (``shared`` /
+  ``reset`` / ``ephemeral``) is admitted by the built-in dispatcher
+  registry — the refusal fires only when a composer is constructed
+  with a partial registry (a test double, or a downstream backend that
+  drops a label deliberately).
+* ``stack_scope`` is not part of the admission criterion: the composer's
+  ``ephemeral`` dispatcher cycles the service (``docker compose rm`` +
+  ``up`` on the named service), leaving the stack alive, so
+  ``ephemeral`` is honourable at ``run`` / ``task`` / ``trial`` scope
+  alike when the dispatcher is registered.
 
 The ``PER_TRIAL_STACK`` short-circuit at the top of the method covers
 backends injected via ``Orchestrator(runtime_backend=...)`` that
-materialise per trial — the automatic path always constructs
-``SharedStackRuntimeBackend`` post-Stage 2, so injection is the only
-route to that branch.
+materialise every stack per trial — every dispatcher label is
+honourable there regardless of registry.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests.canonical._factories import make_task_description
+from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
 from tolokaforge.core.models import (
     EvaluationConfig,
     ModelConfig,
@@ -39,6 +41,10 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
+from tolokaforge.core.service_lifecycle_dispatchers import (
+    ResetDispatcher,
+    SharedDispatcher,
+)
 from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 from tolokaforge.core.trial import EnvironmentManifest
 from tolokaforge.runner.models import StackDecl, StackScope, TaskDescription
@@ -136,13 +142,14 @@ class TestTrialScopeAllowsEveryLabel:
         _orch([_task("t")], descs)._verify_isolation_compatibility(_shared_backend())
 
 
-class TestNonTrialScopeRefusesEphemeral:
-    """``run`` and ``task`` scope both refuse ``ephemeral`` on a
-    ``SHARED_STACK`` backend. #1383's ``COMPOSED_STACK`` advertisement
-    will narrow this refusal once the composer's ephemeral dispatcher
-    is admissible at run scope."""
+class TestNonTrialScopeAdmitsEphemeralUnderBuiltInDispatchers:
+    """Under the built-in dispatcher registry (which carries ``shared``,
+    ``reset``, ``ephemeral``), every label is admitted at every stack
+    scope. The composer's ``EphemeralDispatcher`` cycles the service
+    without composing the stack down, so ``ephemeral`` is honourable at
+    ``run`` / ``task`` scope alike."""
 
-    def test_ephemeral_on_run_scope_raises_with_tuple(self) -> None:
+    def test_ephemeral_on_run_scope_admitted(self) -> None:
         manifest = _manifest(
             {
                 "db": ServiceSpec(isolation="ephemeral"),
@@ -156,16 +163,9 @@ class TestNonTrialScopeRefusesEphemeral:
             )
         }
         orch = _orch([_task("wants-ephemeral")], descs)
-        with pytest.raises(RuntimeError) as exc:
-            orch._verify_isolation_compatibility(_shared_backend())
-        msg = str(exc.value)
-        assert "wants-ephemeral" in msg
-        assert "default" in msg  # the stack_id
-        assert "db" in msg  # the service name
-        assert "ephemeral" in msg
-        assert "run" in msg
+        orch._verify_isolation_compatibility(_shared_backend())
 
-    def test_ephemeral_on_task_scope_raises_with_tuple(self) -> None:
+    def test_ephemeral_on_task_scope_admitted(self) -> None:
         manifest = _manifest(
             {
                 "db": ServiceSpec(isolation="ephemeral"),
@@ -179,12 +179,7 @@ class TestNonTrialScopeRefusesEphemeral:
             )
         }
         orch = _orch([_task("task-scope-ephemeral")], descs)
-        with pytest.raises(RuntimeError) as exc:
-            orch._verify_isolation_compatibility(_shared_backend())
-        msg = str(exc.value)
-        assert "task-scope-ephemeral" in msg
-        assert "db" in msg
-        assert "task" in msg
+        orch._verify_isolation_compatibility(_shared_backend())
 
     def test_all_shared_on_run_scope_legal(self) -> None:
         manifest = _manifest(
@@ -232,6 +227,112 @@ class TestNonTrialScopeRefusesEphemeral:
         )
         descs = {"t": make_task_description(task_id="t", environment_manifest=manifest)}
         _orch([_task("t")], descs)._verify_isolation_compatibility(_shared_backend())
+
+
+class TestDispatcherAdmissionRefusal:
+    """When the backend's composer is constructed with a partial
+    ``dispatcher_registry`` — dropping one label from the closed
+    ``ServiceIsolation`` vocab — a task that requests the missing label
+    is refused up front with the offending 5-tuple named."""
+
+    def _partial_registry_backend(self) -> SharedStackRuntimeBackend:
+        composer = DefaultSubstrateComposer(
+            dispatcher_registry={
+                "shared": SharedDispatcher(),
+                "reset": ResetDispatcher(),
+            }
+        )
+        return SharedStackRuntimeBackend(runner_address="sentinel:50051", composer=composer)
+
+    def test_manifest_with_unregistered_isolation_label_raises(self) -> None:
+        manifest = _manifest(
+            {
+                "db": ServiceSpec(isolation="ephemeral"),
+                "default": ServiceSpec(isolation="shared"),
+            },
+            stack_scope="run",
+        )
+        descs = {
+            "wants-ephemeral": make_task_description(
+                task_id="wants-ephemeral", environment_manifest=manifest
+            )
+        }
+        orch = _orch([_task("wants-ephemeral")], descs)
+        with pytest.raises(RuntimeError) as exc:
+            orch._verify_isolation_compatibility(self._partial_registry_backend())
+        msg = str(exc.value)
+        assert "wants-ephemeral" in msg
+        assert "default" in msg  # the stack_id
+        assert "db" in msg  # the service name
+        assert "ephemeral" in msg
+
+    def test_refusal_message_names_stack_id_service_and_isolation(self) -> None:
+        manifest = _manifest(
+            {
+                "db": ServiceSpec(isolation="ephemeral"),
+                "default": ServiceSpec(isolation="shared"),
+            },
+            stack_scope="run",
+        )
+        descs = {
+            "wants-ephemeral": make_task_description(
+                task_id="wants-ephemeral", environment_manifest=manifest
+            )
+        }
+        orch = _orch([_task("wants-ephemeral")], descs)
+        with pytest.raises(RuntimeError) as exc:
+            orch._verify_isolation_compatibility(self._partial_registry_backend())
+        msg = str(exc.value)
+        assert "('wants-ephemeral', 'default', 'db', 'ephemeral', 'run')" in msg
+
+    def test_refusal_message_carries_no_ticket_number(self) -> None:
+        manifest = _manifest(
+            {
+                "db": ServiceSpec(isolation="ephemeral"),
+                "default": ServiceSpec(isolation="shared"),
+            },
+            stack_scope="run",
+        )
+        descs = {
+            "wants-ephemeral": make_task_description(
+                task_id="wants-ephemeral", environment_manifest=manifest
+            )
+        }
+        orch = _orch([_task("wants-ephemeral")], descs)
+        with pytest.raises(RuntimeError) as exc:
+            orch._verify_isolation_compatibility(self._partial_registry_backend())
+        assert "#1383" not in str(exc.value)
+
+
+class TestDispatcherRegistryFallback:
+    """The admission check reads ``runtime_backend.composer.dispatcher_registry``
+    via chained ``getattr`` and falls back to the module-global
+    :data:`DISPATCHER_REGISTRY` when either attribute is missing. Locks the
+    intermediate branch where the composer is present but exposes no
+    ``dispatcher_registry`` — a foreign composer implementation the built-in
+    dispatcher registry must still cover for."""
+
+    def test_composer_without_dispatcher_registry_falls_back_to_module_global(
+        self,
+    ) -> None:
+        class _StubComposer:
+            """Foreign composer with no ``dispatcher_registry`` attribute."""
+
+        backend = SharedStackRuntimeBackend(
+            runner_address="sentinel:50051", composer=_StubComposer()
+        )
+        manifest = _manifest(
+            {
+                "db": ServiceSpec(isolation="ephemeral"),
+                "default": ServiceSpec(isolation="shared"),
+            },
+            stack_scope="run",
+        )
+        descs = {"task-1": make_task_description(task_id="task-1", environment_manifest=manifest)}
+        orch = _orch([_task("task-1")], descs)
+        # Module-global DISPATCHER_REGISTRY has all three built-in labels;
+        # the fallback admits ephemeral on run-scope.
+        orch._verify_isolation_compatibility(backend)
 
 
 class TestPerTrialBackendShortCircuit:

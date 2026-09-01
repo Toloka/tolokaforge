@@ -269,9 +269,6 @@ class TestConstructRuntimeBackend:
         assert isinstance(backend, SharedStackRuntimeBackend)
 
     def test_shared_override_on_per_trial_task_still_picks_shared(self) -> None:
-        # The override coerces the plan to run-scope; the isolation-compat
-        # guard refuses `reset` at run-scope until #1383 lands
-        # `COMPOSED_STACK` capability advertising.
         tasks = [_task_stub("t1")]
         task_descs = {
             "t1": make_task_description(

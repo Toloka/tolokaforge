@@ -45,6 +45,7 @@ from tolokaforge.runner import (
     runner_pb2,
     runner_pb2_grpc,
 )
+from tolokaforge.runner.models import PlanShape
 from tolokaforge.runner.protocol import (
     ENGINE_PROTOCOL_VERSION,
     TrialNotRegisteredError,
@@ -78,6 +79,27 @@ runner is the only layer that knows which tool is about to run. The field stays
 on the wire for engine/image skew: an older engine naming a positive budget is
 still honoured by a new image, and a new engine's zero still resolves on an
 older one."""
+
+
+NETWORK_CAPABILITIES: frozenset[str] = frozenset(
+    {"network_isolation:no_internet", "network_isolation:limited_internet"}
+)
+"""The two network-isolation capability names every local-docker backend
+advertises — the run-wide default-deny + allowlist forwarders the compose
+transform layer wires up regardless of plan shape."""
+
+
+RESET_RECIPE_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "reset_recipes:sql_dump",
+        "reset_recipes:filesystem_dir",
+        "reset_recipes:redis_dump",
+        "reset_recipes:bare",
+    }
+)
+"""The four shipped reset-recipe capability names. Advertised whenever the
+plan admits a ``reset``-labelled service — the "reset" dispatcher delegates
+to :data:`RECIPE_REGISTRY` for these four kinds."""
 
 
 def _normalise_runner_url(runner_address: str) -> str:
@@ -949,18 +971,29 @@ class SharedStackRuntimeBackend:
     :meth:`provision` through the composer with an empty
     :class:`RunSubstrate` so trial-scope-plan runs work without a
     materialised run scope.
+
+    :attr:`isolation_mode` is computed from :attr:`EnvironmentManifest.plan_shape`
+    when ``env_manifest`` is set; the built-in-stack and per-trial-delegate
+    modes fall back on the ``_per_trial_mode`` flag:
+
+    * ``env_manifest=None``, ``_per_trial_mode=False`` → ``SHARED_STACK``
+      (built-in-stack mode; every trial shares the injected runner).
+    * ``env_manifest=None``, ``_per_trial_mode=True`` → ``PER_TRIAL_STACK``
+      (the per-trial delegate mode :class:`PerTrialRuntimeBackend` sets).
+    * ``plan_shape=SINGLE_RUN`` → ``SHARED_STACK`` (one ``run``-scope stack
+      lives for the whole run).
+    * ``plan_shape=TRIAL_SCOPED_ONLY`` → ``PER_TRIAL_STACK`` (every stack is
+      ``trial``-scope; the composer materialises fresh per trial).
+    * ``plan_shape=TASK_SCOPED_ONLY`` / ``MULTI_SCOPE`` → ``COMPOSED_STACK``
+      (the plan spans more than one scope; each scope's stacks stay live for
+      their bracket).
+
+    :attr:`advertised_capabilities` mirrors the same branching: each posture
+    unions the scope-mode capability name with :data:`NETWORK_CAPABILITIES`;
+    the ``PER_TRIAL_STACK`` and ``COMPOSED_STACK`` postures also union
+    :data:`RESET_RECIPE_CAPABILITIES`. Read by
+    :func:`tolokaforge.core.backend_capabilities.check_admission`.
     """
-
-    isolation_mode: IsolationMode = IsolationMode.SHARED_STACK
-    """Every trial in the run talks to the same runner container. Read by
-    the orchestrator's compatibility check to refuse runs whose tasks
-    require per-trial substrate materialisation."""
-
-    advertised_capabilities: frozenset[str] = frozenset(
-        {"shared_stack", "network_isolation:no_internet", "network_isolation:limited_internet"}
-    )
-    """Local-docker shared-stack capability advertisement. Read by
-    :func:`tolokaforge.core.backend_capabilities.check_admission`."""
 
     def __init__(
         self,
@@ -1016,6 +1049,30 @@ class SharedStackRuntimeBackend:
                     "materialised compose stack at connect() time."
                 )
         logger.info("Shared-stack runtime initialized")
+
+    @property
+    def isolation_mode(self) -> IsolationMode:
+        if self._env_manifest is None:
+            return (
+                IsolationMode.PER_TRIAL_STACK
+                if self._per_trial_mode
+                else IsolationMode.SHARED_STACK
+            )
+        shape = self._env_manifest.plan_shape
+        if shape is PlanShape.SINGLE_RUN:
+            return IsolationMode.SHARED_STACK
+        if shape is PlanShape.TRIAL_SCOPED_ONLY:
+            return IsolationMode.PER_TRIAL_STACK
+        return IsolationMode.COMPOSED_STACK
+
+    @property
+    def advertised_capabilities(self) -> frozenset[str]:
+        mode = self.isolation_mode
+        if mode is IsolationMode.SHARED_STACK:
+            return frozenset({"shared_stack"}) | NETWORK_CAPABILITIES
+        if mode is IsolationMode.PER_TRIAL_STACK:
+            return frozenset({"per_trial_stack"}) | RESET_RECIPE_CAPABILITIES | NETWORK_CAPABILITIES
+        return frozenset({"composed_stack"}) | RESET_RECIPE_CAPABILITIES | NETWORK_CAPABILITIES
 
     # ------------------------------------------------------------------
     # Lifecycle

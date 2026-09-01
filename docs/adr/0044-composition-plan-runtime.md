@@ -168,7 +168,7 @@ Add `IsolationMode.COMPOSED_STACK`. `SharedStackRuntimeBackend.isolation_mode` b
 - `TRIAL_SCOPED_ONLY` → `PER_TRIAL_STACK`
 - `TASK_SCOPED_ONLY` or `MULTI_SCOPE` → `COMPOSED_STACK`
 
-Add `hybrid_stack`-analog capability entry `composed_stack` to `CAPABILITY_REGISTRY`. `SharedStackRuntimeBackend.advertised_capabilities` computed from `plan_shape × dispatcher_registry` — union of the plan-shape-appropriate scope capability + reset-recipe capabilities from registered dispatchers + network isolation capabilities.
+Add `hybrid_stack`-analog capability entry `composed_stack` to `CAPABILITY_REGISTRY`. `SharedStackRuntimeBackend.advertised_capabilities` computed from `plan_shape` — union of the plan-shape-appropriate scope capability, the four shipped reset-recipe capabilities (when the plan includes any trial-scope or mixed-scope stack), and the two network isolation capabilities.
 
 ### 6. Selection + admission
 
@@ -191,7 +191,7 @@ Every existing task pack continues to work byte-identically. Manifest with scala
 | INV | Old enforcement | New enforcement point |
 |---|---|---|
 | INV-1 (one substrate per SharedStack run) | `tolokaforge/core/orchestrator.py:1091-1097` refuses heterogeneous `compose_file` | `_extract_run_env_manifest` refuses cross-task divergence of the `run`-scope subset only. `task`/`trial` scope stacks may differ freely per task. |
-| INV-2 (SharedStack refuses `ephemeral`) | `tolokaforge/core/orchestrator.py:1404-1411` | Enforced per-stack-scope in `_verify_isolation_compatibility`: `ephemeral` is legal iff the stack is `trial`-scope OR the stack has an `ephemeral` dispatcher registered (which the built-in dispatcher provides). |
+| INV-2 (SharedStack refuses `ephemeral`) | `tolokaforge/core/orchestrator.py:1404-1411` | Enforced per-service in `_verify_isolation_compatibility`: every service's `isolation` label must have a registered dispatcher on the backend's composer. The three built-in dispatchers cover the closed `{shared, reset, ephemeral}` vocab, so the refusal fires only when a composer is constructed with a partial registry. |
 | INV-3 (SharedStack refuses `reset` via `requires_per_trial`) | INV-2's twin | Same as INV-2 for `reset`. All four built-in reset recipes work at any scope. |
 | INV-4 (closed `ServiceIsolation` vocab) | `tolokaforge/runner/models.py:2222` | Unchanged. |
 | INV-5 (reset iff seed) | `ServiceSpec._check_reset_agrees_with_isolation` | Unchanged. |
