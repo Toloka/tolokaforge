@@ -689,7 +689,7 @@ The isolation axis (shared vs per-trial) and the substrate axis (docker compose 
 
 ## Plug-in extension points
 
-Five swappable seams — `RuntimeBackend`, `TrialGrader`, `Conductor`, `ServiceReadinessProbe`, and `TurnPolicy` — are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. Each entry point resolves to a **factory callable** — not the raw class — so divergent constructors are adapted behind a factory. Four of the seams pass a per-group frozen-dataclass context (`Callable[[<Context>], <Impl>]`); a readiness probe needs no build dependencies, so its factory is arg-less (`Callable[[], ServiceReadinessProbe]`). tolokaforge's own built-ins register through the same mechanism.
+Eight swappable seams are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. An entry point resolves in one of two shapes, one per seam: a **factory callable** that adapts divergent constructors behind a factory (four seams pass a per-group frozen-dataclass context, `Callable[[<Context>], <Impl>]`; the readiness probe seam is arg-less, `Callable[[], ServiceReadinessProbe]`), or the **impl class** itself — the three composition-plan adapter seams (ADR-0044) are arg-less-constructible with their own optional injection seams, so the caller instantiates the returned class. tolokaforge's own built-ins register through the same mechanism.
 
 | Group | Factory type | Context |
 | --- | --- | --- |
@@ -698,6 +698,9 @@ Five swappable seams — `RuntimeBackend`, `TrialGrader`, `Conductor`, `ServiceR
 | `tolokaforge.conductors` | `Callable[[ConductorContext], Conductor]` | per-run deps (adapter, writer, config, agent client, runtime backend, grader, …) |
 | `tolokaforge.service_readiness_probes` | `Callable[[], ServiceReadinessProbe]` | *no context* |
 | `tolokaforge.turn_policies` | `Callable[[TurnPolicyContext], TurnPolicy]` | `user_simulator` (the resolved user :class:`Actor`; ``None`` for policies that dispatch no user) |
+| `tolokaforge.compose_materialisers` | `type[ComposeMaterialiser]` | *no context* — class is instantiated by the composer |
+| `tolokaforge.service_lifecycle_dispatchers` | `type[ServiceLifecycleDispatcher]` | *no context* — one class per `ServiceIsolation` label; the class's `isolation` ClassVar names the label the composer looks it up by |
+| `tolokaforge.substrate_composers` | `type[SubstrateComposer]` | *no context* — the backend instantiates the composer and injects its own materialiser + dispatcher registry |
 
 A factory is free to ignore context fields it does not need. The runtime-backend, trial-grader, and readiness-probe context/factory types are imported from `tolokaforge.core.plugin_registry`; the conductor context is imported from `tolokaforge.core.conductor` (as shown in the conductor example below) since it reuses the pre-existing `ConductorContext` seam. Keep the factory module free of any `tolokaforge.core.orchestrator` import so `.load()` stays independent of the orchestration engine.
 
@@ -780,6 +783,39 @@ my_shape = "mypkg.turn_policy:my_policy_factory"
 ```
 
 tolokaforge ships `conversational` (two-party user-plus-agent) as a built-in under this group.
+
+**Composition-plan adapter seams** — `mypkg/k8s.py`. ADR-0044 splits the compose-mode runtime into three detachable adapter Protocols (see [Composition-plan seams](#composition-plan-seams) above for the shape). Each entry-point group targets an impl class directly; the caller instantiates with the class's own optional injection seams:
+
+```python
+from tolokaforge.core.composition_runtime import (
+    ComposeMaterialiser,
+    MaterialiseContext,
+    StackHandle,
+)
+from tolokaforge.runner.models import StackDecl
+
+class KubernetesMaterialiser:
+    name: str = "kubernetes"
+
+    def materialise(self, decl: StackDecl, ctx: MaterialiseContext) -> StackHandle:
+        ...  # translate compose_file → k8s manifests, kubectl apply, return handle
+    # (resolve_endpoint, get_containers, capture_logs, teardown — full Protocol)
+```
+
+```toml
+[project.entry-points."tolokaforge.compose_materialisers"]
+kubernetes = "mypkg.k8s:KubernetesMaterialiser"
+
+[project.entry-points."tolokaforge.service_lifecycle_dispatchers"]
+snapshot = "mypkg.k8s:SnapshotDispatcher"
+
+[project.entry-points."tolokaforge.substrate_composers"]
+kubernetes = "mypkg.k8s:KubernetesComposer"
+```
+
+A `ServiceLifecycleDispatcher` class carries an `isolation: ClassVar[ServiceIsolation]` naming the label it cycles (`shared` / `reset` / `ephemeral` are the closed built-in vocab); a downstream dispatcher registers under a new name in the group but must match the label it targets. A `SubstrateComposer` is looked up by name from the backend's constructor; the backend injects the materialiser + dispatcher registry into the composer instance it constructs.
+
+tolokaforge ships `docker_compose` (materialiser), `shared` / `reset` / `ephemeral` (dispatchers), and `default` (composer) as built-ins under these three groups.
 
 **Fail-loud resolution.** Names resolve lazily and are cached per group. Discovery enumerates names and distributions **without importing any target**, which gives the policy two distinct shapes:
 

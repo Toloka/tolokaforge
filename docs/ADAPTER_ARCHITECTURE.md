@@ -117,10 +117,10 @@ so one broken plug-in never poisons resolution of a healthy sibling.
 ### Fail-loud registry pattern
 
 Every engine-side `importlib.metadata` entry-point registry — `tolokaforge.adapters`,
-the five plugin-registry seams (`tolokaforge.runtime_backends`,
-`tolokaforge.trial_graders`, `tolokaforge.conductors`,
-`tolokaforge.service_readiness_probes`, `tolokaforge.turn_policies`), and any
-future group added under [ADR-0030](adr/0030-tolokaforge-models-split.md) —
+every plugin-registry seam listed in
+[`docs/RUNTIME_BACKENDS.md` § "Plug-in extension points"](RUNTIME_BACKENDS.md#plug-in-extension-points),
+and any future group added under
+[ADR-0030](adr/0030-tolokaforge-models-split.md) —
 routes discovery through `tolokaforge.core.plugin_registry.discover_entry_points`.
 The primitive splits fail-loud into two shapes:
 
