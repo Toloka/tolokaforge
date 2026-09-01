@@ -989,9 +989,9 @@ class SharedStackRuntimeBackend:
       their bracket).
 
     :attr:`advertised_capabilities` mirrors the same branching: each posture
-    unions the scope-mode capability name with :data:`NETWORK_CAPABILITIES`,
-    and every non-``SHARED_STACK`` posture (the plan admits ``reset``-labelled
-    services) also unions :data:`RESET_RECIPE_CAPABILITIES`. Read by
+    unions the scope-mode capability name with :data:`NETWORK_CAPABILITIES`;
+    the ``PER_TRIAL_STACK`` and ``COMPOSED_STACK`` postures also union
+    :data:`RESET_RECIPE_CAPABILITIES`. Read by
     :func:`tolokaforge.core.backend_capabilities.check_admission`.
     """
 

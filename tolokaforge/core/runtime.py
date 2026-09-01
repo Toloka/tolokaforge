@@ -468,7 +468,7 @@ class InMemoryRuntimeBackend:
     isolation_mode: IsolationMode = IsolationMode.SHARED_STACK
     """Test fixture keeps the shared-stack posture by default so tests that
     inject it against tasks with no isolation requirement continue to work.
-    Tests exercising the per-trial-required-but-shared-provided branch of
+    Tests exercising the per-trial short-circuit at the top of
     :meth:`Orchestrator._verify_isolation_compatibility` can override the
     attribute on the instance."""
 

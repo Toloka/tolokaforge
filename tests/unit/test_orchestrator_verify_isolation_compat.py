@@ -304,6 +304,37 @@ class TestDispatcherAdmissionRefusal:
         assert "#1383" not in str(exc.value)
 
 
+class TestDispatcherRegistryFallback:
+    """The admission check reads ``runtime_backend.composer.dispatcher_registry``
+    via chained ``getattr`` and falls back to the module-global
+    :data:`DISPATCHER_REGISTRY` when either attribute is missing. Locks the
+    intermediate branch where the composer is present but exposes no
+    ``dispatcher_registry`` — a foreign composer implementation the built-in
+    dispatcher registry must still cover for."""
+
+    def test_composer_without_dispatcher_registry_falls_back_to_module_global(
+        self,
+    ) -> None:
+        class _StubComposer:
+            """Foreign composer with no ``dispatcher_registry`` attribute."""
+
+        backend = SharedStackRuntimeBackend(
+            runner_address="sentinel:50051", composer=_StubComposer()
+        )
+        manifest = _manifest(
+            {
+                "db": ServiceSpec(isolation="ephemeral"),
+                "default": ServiceSpec(isolation="shared"),
+            },
+            stack_scope="run",
+        )
+        descs = {"task-1": make_task_description(task_id="task-1", environment_manifest=manifest)}
+        orch = _orch([_task("task-1")], descs)
+        # Module-global DISPATCHER_REGISTRY has all three built-in labels;
+        # the fallback admits ephemeral on run-scope.
+        orch._verify_isolation_compatibility(backend)
+
+
 class TestPerTrialBackendShortCircuit:
     """An injected ``PerTrialRuntimeBackend`` (``isolation_mode ==
     PER_TRIAL_STACK``) materialises the whole plan per trial, so every
