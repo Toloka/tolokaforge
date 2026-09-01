@@ -179,9 +179,7 @@ class ModelConfig(BaseModel):
             )
 
         # ---- Reject an empty struct-form coding_harness_version ----
-        # The slug form (`claude-code@`) refuses this at line 178 below,
-        # and the mixin path in the coding-harness driver refuses it at
-        # construction. Without this check the direct struct form
+        # Without this check the direct struct form
         # (`coding_harness_version: ""`) would slip past the schema, get
         # threaded into the driver's HarnessSelection, and coerce to
         # None at the ``params.get("agent_harness_version") or None``

@@ -88,12 +88,13 @@ class TestEmptySegments:
 
     def test_empty_struct_form_version_raises(self) -> None:
         """The three empty-version paths must all fail identically: slug
-        empty version (test_empty_version_after_at_raises above), mixin
-        empty version_override (covered in the mixin's own tests), and
-        the struct form (`coding_harness_version: ""`) here. Without this
-        check the struct form silently coerces to `None` downstream and
-        the shipped pin is used — the exact fail-fast violation the
-        review flagged."""
+        empty version (``test_empty_version_after_at_raises`` above),
+        driver-side empty ``version_override`` (locked at
+        ``TestDriverResolvesVersionOverride.test_empty_override_raises``),
+        and the struct form (``coding_harness_version: ""``) here.
+        Without this check the struct form silently coerces to ``None``
+        downstream and the shipped pin is used — the exact fail-fast
+        violation the review flagged."""
         with pytest.raises(ValueError) as excinfo:
             ModelConfig(**_agent(coding_harness="claude-code", coding_harness_version=""))
         assert "empty" in str(excinfo.value).lower()
@@ -184,8 +185,8 @@ class TestLegacyHarnessFieldLift:
 
 @pytest.mark.usefixtures("env_backed_secrets")
 class TestDriverResolvesVersionOverride:
-    """``CodingHarnessDriver`` — not the retired mixin — resolves the
-    ``version_override`` onto the shipped :class:`HarnessSpec`."""
+    """``CodingHarnessDriver`` resolves the ``version_override`` onto the
+    shipped :class:`HarnessSpec`."""
 
     def test_override_replaces_spec_version(self) -> None:
         from tolokaforge.core.drivers.coding_harness import CodingHarnessDriver, HarnessSelection

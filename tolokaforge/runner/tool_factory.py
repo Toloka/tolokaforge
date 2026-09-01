@@ -1207,6 +1207,8 @@ class DockerComposeExecToolWrapper(ToolWrapper):
                 stdout += _decode_partial_output(more_out)
                 stderr += _decode_partial_output(more_err)
             except subprocess.TimeoutExpired:
+                # Best-effort drain; the primary timeout is already surfaced
+                # in the wrapper's timed-out footer below.
                 pass
             timed_out = True
         output = stdout
