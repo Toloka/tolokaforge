@@ -1,21 +1,5 @@
 {
   "services": {
-    "db-service": {
-      "healthcheck": {
-        "interval": "2s",
-        "retries": 30,
-        "start_period": "3s",
-        "test": [
-          "CMD-SHELL",
-          "curl -fs http://localhost:8000/health || exit 1"
-        ],
-        "timeout": "3s"
-      },
-      "image": "tolokaforge-db-service:local",
-      "ports": [
-        "8000"
-      ]
-    },
     "main": {
       "build": {
         "context": ".",
@@ -45,38 +29,10 @@
       "build": {
         "context": "./environment"
       },
+      "container_name": "tbench_${TOLOKAFORGE_TRIAL_SLUG}_main-base",
       "image": "tbench-echo-hello:local",
       "profiles": [
         "tolokaforge-build"
-      ]
-    },
-    "runner": {
-      "depends_on": {
-        "db-service": {
-          "condition": "service_healthy"
-        },
-        "main": {
-          "condition": "service_started"
-        }
-      },
-      "environment": {
-        "DB_SERVICE_URL": "http://db-service:8000"
-      },
-      "healthcheck": {
-        "interval": "2s",
-        "retries": 30,
-        "start_period": "3s",
-        "test": [
-          "CMD",
-          "bash",
-          "-c",
-          "echo > /dev/tcp/127.0.0.1/50051"
-        ],
-        "timeout": "3s"
-      },
-      "image": "tolokaforge-runner:local",
-      "ports": [
-        "50051"
       ]
     }
   }
