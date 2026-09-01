@@ -290,7 +290,7 @@ its dispatch consumes and leaves the rest empty.
 | Field                         | # | Purpose                                                                                   |
 | ----------------------------- | - | ----------------------------------------------------------------------------------------- |
 | `trial_id`                    | 1 | Canonical `"{task_id}:{trial_index}"` identifier — the join key for logs and future stores. |
-| `llm_messages_json`           | 2 | Transcript as an LLM-messages JSON string; the timeline builder decodes it. The agent system prompt rides as the leading `role=system` message; the grader recovers it via `split_leading_system_message`. |
+| `llm_messages_json`           | 2 | Transcript as an LLM-messages JSON string; the composite dispatcher hands the decoded list to [`build_timeline_from_wire`](../tolokaforge/core/grading/trace_timeline.py), which splits the leading `role=system` message off (the agent system prompt) and decodes the remaining transcript before joining it with the empty grader-side records. |
 | `termination_reason`          | 3 | `TerminationReason` value name; empty when the caller reports none.                       |
 | `task_config_json`            | 4 | `RunnerGradingConfig` JSON — the whole `grading:` block the composite dispatcher reads.   |
 | `judge_model_config_json`     | 5 | Optional `ModelConfig` JSON for the judge; empty when the task declares no `llm_judge`.   |
