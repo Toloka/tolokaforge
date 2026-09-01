@@ -113,26 +113,30 @@ uv run tolokaforge run \
   --runtime per_trial
 ```
 
-Forcing a *shared* backend against a task set that requires per-trial
-materialisation is the one path that refuses to start. The orchestrator
-rejects the conflict at startup with a `RuntimeError` naming the
-offending task(s):
+The `shared` coercion knob rewrites every stack's `stack_scope` to
+`run`. Any service labelled `ephemeral` on a `run`- or `task`-scope
+stack is refused at startup — cycling would require compose-down on a
+stack contracted to stay live for the whole bracket. The orchestrator
+raises `RuntimeError` naming the offending
+`(task_id, stack_id, service_name, isolation, stack_scope)` tuple:
 
 ```
-Runtime backend SharedStackRuntimeBackend shares state across every
-trial in the run, but 2 task(s) require per-trial materialisation via
-their `services.<name>.isolation` labels: ['orders_customers_join_01',
-'support_triage_01']. These tasks would silently produce wrong
-verdicts on a shared-stack backend.
-  Fix: drop the deprecated `orchestrator.runtime` override so backend
-  selection is task-driven, or label every service `isolation: shared`
-  on the task(s) that genuinely tolerate shared state across trials.
+Composer-driven runtime cannot honour `isolation: ephemeral` on a
+non-trial-scope stack — cycling an ephemeral service between trials
+requires compose-down on a stack contracted to stay live for the
+whole run/task bracket. Offending
+(task_id, stack_id, service_name, isolation, stack_scope):
+[('orders_customers_join_01', 'default', 'db', 'ephemeral', 'run')].
+Move the affected services onto a trial-scope stack, or wait for
+#1383's `IsolationMode.COMPOSED_STACK` capability advertisement that
+will admit ephemeral cycling at run scope.
 ```
 
 The refusal is deliberate — silent cross-trial contamination is a
-failure mode where the grader believes it, so making it a startup error
-rather than a subtle grading bug is the safer default. Drop the override
-and the task-driven selector picks the satisfying backend on its own.
+failure mode the grader believes, so making it a startup error rather
+than a subtle grading bug is the safer default. Drop the override and
+the composer materialises the per-service isolation via its dispatcher
+registry without a scope contradiction.
 
 ## Worked example
 

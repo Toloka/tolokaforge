@@ -496,6 +496,12 @@ flowchart TD
 
 `SharedStackRuntimeBackend` accepts every plan — the composer handles per-service isolation via its dispatcher registry, and the isolation-compat guard refuses configurations the backend's declared `isolation_mode` cannot honour.
 
+### Per-scope invariants
+
+**INV-1 (cross-task run-scope agreement).** Every task's ordered `run`-scope stack sequence must canonicalise to the same signature — matching `stack_id`, canonical compose bytes, `runner_service`, and `inputs`. `task`- and `trial`-scope stacks may diverge freely across tasks; the composer materialises those per-task at `provision_trial` time. `Orchestrator._extract_run_env_manifest` builds each task's signature and refuses (`RuntimeError` naming the offending task ids and stack ids) when they disagree. Every task's signature is empty (or the `TRIAL_SCOPED_ONLY` short-circuit fires) → no run-scope stack to materialise → the composer's `materialise_run` no-ops and the built-in engine address stands.
+
+**INV-2 (per-scope isolation compatibility).** Every stack's service isolation labels must be honourable at that stack's `stack_scope`. `stack_scope="trial"` admits every label (the composer materialises fresh per trial). `stack_scope="run"` and `stack_scope="task"` on a `SHARED_STACK` backend refuse `ephemeral` — cycling would require compose-down on a stack contracted to stay live for the run/task bracket. `Orchestrator._verify_isolation_compatibility` walks every task's every stack and raises `RuntimeError` naming `(task_id, stack_id, service_name, isolation, stack_scope)` for each violation. `IsolationMode.COMPOSED_STACK` (#1383) will advertise the capability once the composer's ephemeral dispatcher is admissible at run scope, at which point the refusal narrows.
+
 See [`RESET_RECIPES.md`](RESET_RECIPES.md) for the four seed kinds (`sql_dump`, `filesystem_dir`, `redis_dump`, `bare`) that `isolation: reset` binds to via `services.<name>.reset.seed`.
 
 ## Failure modes

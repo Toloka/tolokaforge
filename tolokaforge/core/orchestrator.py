@@ -65,6 +65,7 @@ from tolokaforge.core.models import (
     ModelConfig,
     ProjectConfig,
     RunConfig,
+    ServiceSpec,
     TaskConfig,
     TerminationReason,
     Trajectory,
@@ -383,6 +384,93 @@ def _engine_service_snapshots(service_stack: Any) -> list[ServiceSnapshot]:
             )
         )
     return snapshots
+
+
+_RunScopeStackSignature = tuple[str, str, str, tuple[tuple[str, str], ...]]
+"""One ``run``-scope stack's canonical divergence signature:
+``(stack_id, canonical compose bytes, runner_service or "", sorted inputs)``.
+"""
+
+
+def _run_scope_signature(
+    manifest: EnvironmentManifest | None,
+) -> tuple[_RunScopeStackSignature, ...]:
+    """Canonicalise ``manifest``'s ``run``-scope subset for cross-task
+    divergence comparison.
+
+    Returns the ordered tuple of per-stack signatures for stacks whose
+    ``stack_scope == "run"``, sorted by ``stack_id`` so plan order does
+    not cause spurious divergence. A ``None`` manifest or a manifest with
+    no ``run``-scope stack returns ``()`` — the empty signature.
+    """
+    from tolokaforge.core.env_identity import _canonical_compose_bytes
+
+    if manifest is None:
+        return ()
+    run_stacks = [decl for decl in manifest.stacks if decl.stack_scope == "run"]
+    signatures = [
+        (
+            decl.stack_id,
+            _canonical_compose_bytes(_load_yaml_mapping(decl.compose_file)),
+            decl.runner_service or "",
+            tuple(sorted(decl.inputs.items())),
+        )
+        for decl in run_stacks
+    ]
+    return tuple(sorted(signatures, key=lambda s: s[0]))
+
+
+def _load_yaml_mapping(compose_file: Path) -> dict[str, Any]:
+    """Parse ``compose_file`` and return its top-level mapping.
+
+    Every :class:`StackDecl` in a resolved plan points at a valid compose
+    file (:meth:`EnvironmentManifest.load_compose` validates the scalar
+    mirror at construction, and the multi-stack path routes each entry
+    through the same YAML load in
+    :func:`tolokaforge.core.project_loader._build_stack_decl`). Reading
+    here is safe.
+    """
+    import yaml
+
+    with compose_file.open() as f:
+        return yaml.safe_load(f) or {}
+
+
+def _services_in_stack(manifest: EnvironmentManifest, decl: Any) -> dict[str, ServiceSpec]:
+    """Return the ``ServiceSpec`` map for the compose services declared by
+    ``decl``, defaulting to ``ephemeral`` for services not listed on
+    :attr:`EnvironmentManifest.services`.
+
+    Multi-stack manifests keep isolation labels on the flat
+    :attr:`EnvironmentManifest.services` map (a decision the composer
+    already relies on); this helper narrows that map to one stack by
+    intersecting compose-declared service names with the labels the
+    manifest carries. Services in the stack's compose file that lack a
+    manifest entry inherit the fill-defaults convention
+    (:func:`tolokaforge.core.project_loader._fill_missing_service_defaults`).
+    """
+    stack_compose = _load_yaml_mapping(decl.compose_file)
+    stack_service_names = list((stack_compose.get("services") or {}).keys())
+    services: dict[str, ServiceSpec] = {}
+    for name in stack_service_names:
+        services[name] = manifest.services.get(name, ServiceSpec(isolation="ephemeral"))
+    return services
+
+
+def _hash_signature(signature: tuple[_RunScopeStackSignature, ...]) -> str:
+    """Short hex digest for the divergence-refusal error message."""
+    import hashlib
+    import json
+
+    payload = json.dumps(
+        [
+            [stack_id, compose_bytes, runner_service, list(inputs)]
+            for stack_id, compose_bytes, runner_service, inputs in signature
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _build_env_endpoints(runner_address: str) -> EnvEndpoints:
@@ -1015,51 +1103,49 @@ class Orchestrator:
             )
 
     def _extract_run_env_manifest(self) -> EnvironmentManifest | None:
-        """Return the shared ``environment_manifest`` declared by the run's
-        tasks, or ``None`` if none of them declare one.
+        """Return a representative manifest for the run's shared ``run``-scope
+        stacks, or ``None`` if no ``run``-scope stack is declared.
 
         Each task carries an :class:`EnvironmentPatch` (input shape,
         pre-resolve); this method calls
         :func:`tolokaforge.core.project_loader.resolve` per task to bind
         the project-side and task-side patches into an
-        :class:`EnvironmentManifest`, then dedupes by compose-file
-        identity.
+        :class:`EnvironmentManifest`, then compares only the ``run``-scope
+        subset of each task's resolved plan.
 
-        For a **shared** runtime, the run's tasks must be consistent:
-        either every task in the run declares the same
-        ``environment_manifest.compose_file`` or none do. Mixed runs
-        (some tasks with, some without; or different compose files
-        across tasks) fail loud — a single ``SharedStackRuntimeBackend``
-        can only materialise one substrate per run, and a mixed
-        declaration signals an ambiguous operator intent.
+        Per-scope INV-1 (ADR-0044 §5): every task's ordered ``run``-scope
+        stack sequence must canonicalise to the same signature — same
+        ``stack_id``, same round-tripped compose bytes, same
+        ``runner_service``, same ``inputs``. ``task`` and ``trial`` scopes
+        may differ freely across tasks; the composer resolves those
+        per-task at ``provision_trial`` time. On agreement, the first
+        task's manifest is returned verbatim as the representative (the
+        composer filters to ``stack_scope=="run"`` at ``materialise_run``
+        time, so noise scopes in the returned manifest are ignored on
+        the run-connect path).
 
-        For **per_trial** runtime this constraint does not apply — the
-        backend resolves ``task.environment_manifest`` independently per
-        trial. Heterogeneous compose files are legitimate (e.g. the MB
-        adapter emits one pack per problem, each with its own
-        problem-specific compose). Return ``None`` — per-trial doesn't
-        consume a run-level shared manifest.
+        Short-circuits to ``None``:
+
+        - ``orchestrator.runtime="per_trial"`` coerces every stack to
+          ``trial`` scope; the composer materialises per-trial from each
+          task's own manifest.
+        - Every task's ``plan_shape`` is ``TRIAL_SCOPED_ONLY`` — same
+          reasoning; no ``run``-scope stack to materialise.
+        - Every task agrees on an empty ``run``-scope subset (e.g. a
+          ``MULTI_SCOPE`` plan mixing ``task`` and ``trial`` scopes,
+          with no ``run``-scope stack in any task).
 
         Two call sites read this return value:
 
-        - :meth:`run` (the main run entry point): uses the manifest to
-          decide shared-stack materialisation and endpoint logging. Under
-          per-trial the ``None`` return routes through the task-scoped
-          resolution path.
-        - :meth:`run_worker` (distributed worker mode): raises when the
-          return is non-``None`` because a worker joining an env-manifest
-          run would connect to the parent's testcontainers-allocated
-          address, which isn't propagated. Under per-trial the guard is
-          skipped — workers materialise their own per-trial stacks and
-          never depend on a parent-allocated address.
+        - :meth:`run`: threads the representative into the composer's
+          ``connect`` path so ``materialise_run`` sees a plan.
+        - :meth:`run_worker`: raises when the return is non-``None``
+          because a worker joining a run-scope-materialised run would
+          connect to the parent's testcontainers-allocated address,
+          which isn't propagated to workers.
         """
         from tolokaforge.core.project_loader import resolve
 
-        # No run-scope stack materialises when either the operator coerced the
-        # plan to trial-scope via ``orchestrator.runtime="per_trial"`` or every
-        # task's plan is fully trial-scoped-only (the composer's provisioning
-        # runs per-trial from each task's own manifest). Both short-circuits
-        # produce ``None`` — nothing shared to extract.
         override = self.config.orchestrator.runtime
         if override == "per_trial":
             return None
@@ -1071,32 +1157,42 @@ class Orchestrator:
             if present and all(m.plan_shape == PlanShape.TRIAL_SCOPED_ONLY for m in present):
                 return None
 
-        project_env = self.project.default_environment if self.project is not None else None
-        manifests_by_compose: dict[str, EnvironmentManifest] = {}
-        tasks_by_manifest_status: dict[bool, list[str]] = {True: [], False: []}
-        for task in self.tasks:
-            resolved = resolve(project_env, task.environment_manifest)
-            tasks_by_manifest_status[resolved is not None].append(task.task_id)
-            if resolved is not None:
-                manifests_by_compose[str(resolved.compose_file)] = resolved
-        if not manifests_by_compose:
+        if not self.tasks:
             return None
-        if tasks_by_manifest_status[False]:
-            raise RuntimeError(
-                "Run has a mix of tasks with and without environment_manifest — "
-                "SharedStackRuntimeBackend can only materialise one substrate per run. "
-                f"Tasks with manifest: {tasks_by_manifest_status[True]}. "
-                f"Tasks without: {tasks_by_manifest_status[False]}. "
-                "Split into separate runs or declare a consistent manifest for all tasks."
+
+        project_env = self.project.default_environment if self.project is not None else None
+        resolved_by_task: dict[str, EnvironmentManifest | None] = {}
+        for task in self.tasks:
+            resolved_by_task[task.task_id] = resolve(project_env, task.environment_manifest)
+
+        signatures_by_task: dict[str, tuple[_RunScopeStackSignature, ...]] = {
+            task_id: _run_scope_signature(manifest)
+            for task_id, manifest in resolved_by_task.items()
+        }
+        distinct_signatures = set(signatures_by_task.values())
+        if len(distinct_signatures) > 1:
+            digests = {task_id: _hash_signature(sig) for task_id, sig in signatures_by_task.items()}
+            offending_stack_ids = sorted(
+                {stack_id for sig in distinct_signatures for stack_id, *_ in sig}
             )
-        if len(manifests_by_compose) > 1:
             raise RuntimeError(
-                "Run has tasks declaring different environment_manifest.compose_file "
-                f"values: {sorted(manifests_by_compose)}. A single "
-                "SharedStackRuntimeBackend materialises one substrate for the whole run. "
-                "Split into separate runs or converge on one compose file."
+                "Run has tasks that disagree on the run-scope subset of their "
+                "composition plan — every task must declare the same ordered "
+                "sequence of run-scope stacks (matching stack_id, compose bytes, "
+                "runner_service, and inputs). Task/trial-scope stacks may differ "
+                "freely (composer materialises those per-trial). "
+                f"Per-task run-scope digests: {digests!r}. "
+                f"Offending stack ids: {offending_stack_ids!r}. "
+                "Split into separate runs or converge the run-scope subset."
             )
-        return next(iter(manifests_by_compose.values()))
+
+        (only_signature,) = distinct_signatures
+        if not only_signature:
+            return None
+        for manifest in resolved_by_task.values():
+            if manifest is not None:
+                return manifest
+        return None
 
     def _select_backend_from_tasks(self) -> str:
         """External-import-safe shim returning the collapsed backend label.
@@ -1412,20 +1508,32 @@ class Orchestrator:
         )
 
     def _verify_isolation_compatibility(self, runtime_backend: RuntimeBackend) -> None:
-        """Refuse to start the run if any task requires per-trial
-        substrate materialisation but the selected runtime backend
-        cannot provide it.
+        """Refuse to start the run when any stack's isolation labels
+        cannot be honoured at that stack's ``stack_scope``.
 
-        Task-driven backend selection already routes such runs onto
-        :class:`PerTrialRuntimeBackend`; this guard only fires under
-        the deprecated ``orchestrator.runtime`` override path when the
-        operator forces a shared backend against a per-trial-requiring
-        task set. It also catches an ``ephemeral``-labelled service on
-        a shared backend — that isolation label cannot be honoured
-        without a full compose-down cycle.
+        Per-scope compatibility (ADR-0044 §5, INV-2):
 
-        Raises :class:`RuntimeError` naming the offending tasks and the
-        concrete fix.
+        * ``stack_scope="trial"`` — every ``ServiceIsolation`` label is
+          legal (the composer materialises the stack fresh per trial,
+          so ``shared`` / ``reset`` / ``ephemeral`` are all honourable).
+        * ``stack_scope="run"`` or ``stack_scope="task"`` on a backend
+          whose ``isolation_mode`` is :attr:`IsolationMode.SHARED_STACK`
+          — ``ephemeral`` is refused. Cycling an ephemeral service
+          between trials would require a compose-down on a stack the
+          composer is contracted to keep live for the whole run/task
+          bracket; :class:`IsolationMode.COMPOSED_STACK` (#1383) will
+          advertise the capability once the composer's ephemeral
+          dispatcher is admissible at run scope, at which point this
+          refusal narrows.
+
+        The :attr:`IsolationMode.PER_TRIAL_STACK` short-circuit at the
+        top applies to backends injected via
+        ``Orchestrator(runtime_backend=...)`` that materialise fresh per
+        trial — every label is honourable there.
+
+        Raises :class:`RuntimeError` naming
+        ``(task_id, stack_id, service_name, isolation, stack_scope)``
+        for each violation.
         """
         from tolokaforge.core.runtime import IsolationMode
 
@@ -1437,40 +1545,38 @@ class Orchestrator:
                 "Isolation-compatibility check requires the adapter to be loaded first."
             )
 
-        per_trial_violations: list[str] = []
-        ephemeral_violations: list[tuple[str, list[str]]] = []
+        violations: list[tuple[str, str, str, str, str]] = []
         for task in self.tasks:
             manifest = self._task_description(task.task_id).environment_manifest
             if manifest is None:
                 continue
-            if manifest.requires_per_trial:
-                per_trial_violations.append(task.task_id)
-            ephemeral = sorted(
-                name for name, spec in manifest.services.items() if spec.isolation == "ephemeral"
-            )
-            if ephemeral:
-                ephemeral_violations.append((task.task_id, ephemeral))
+            for decl in manifest.stacks:
+                if decl.stack_scope == "trial":
+                    continue
+                stack_services = _services_in_stack(manifest, decl)
+                for service_name, spec in sorted(stack_services.items()):
+                    if spec.isolation == "ephemeral":
+                        violations.append(
+                            (
+                                task.task_id,
+                                decl.stack_id,
+                                service_name,
+                                spec.isolation,
+                                decl.stack_scope,
+                            )
+                        )
 
-        if per_trial_violations:
+        if violations:
             raise RuntimeError(
-                f"Runtime backend {type(runtime_backend).__name__} shares state "
-                f"across every trial in the run, but {len(per_trial_violations)} "
-                f"task(s) require per-trial materialisation via their "
-                f"`services.<name>.isolation` labels: "
-                f"{sorted(per_trial_violations)!r}. These tasks would silently "
-                "produce wrong verdicts on a shared-stack backend.\n"
-                "  Fix: drop the deprecated `orchestrator.runtime` override so "
-                "backend selection is task-driven, or label every service "
-                "`isolation: shared` on the task(s) that genuinely tolerate "
-                "shared state across trials."
-            )
-        if ephemeral_violations:
-            raise RuntimeError(
-                "Shared-stack backend cannot honour `isolation: ephemeral` "
-                "services (they require a compose-down between trials). "
-                f"Offending: {ephemeral_violations!r}. "
-                "Fix: drop the deprecated `orchestrator.runtime` override "
-                "so the task-driven selector picks a per-trial backend."
+                "Composer-driven runtime cannot honour `isolation: ephemeral` "
+                "on a non-trial-scope stack — cycling an ephemeral service "
+                "between trials requires compose-down on a stack contracted "
+                "to stay live for the whole run/task bracket. Offending "
+                "(task_id, stack_id, service_name, isolation, stack_scope): "
+                f"{violations!r}. Move the affected services onto a "
+                "trial-scope stack, or wait for #1383's "
+                "`IsolationMode.COMPOSED_STACK` capability advertisement "
+                "that will admit ephemeral cycling at run scope."
             )
 
     def _build_pending_trials(
