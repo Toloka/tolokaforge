@@ -92,6 +92,16 @@ class TestNamespaceWildcard:
         assert route == "anthropic/claude-sonnet-4.6"
         assert route.kind == "exact"
 
+    def test_a_non_openrouter_namespace_works_the_same_way(self) -> None:
+        """The rule is generic: any provider namespace, e.g. a self-hosted vLLM."""
+        route = resolve_gateway_route(
+            "nebius-llmqa-vllm/qwen3-32b",
+            frozenset({"nebius-llmqa-vllm/*"}),
+            trust_namespace_wildcards=True,
+        )
+        assert route == "nebius-llmqa-vllm/qwen3-32b"
+        assert route.kind == "wildcard"
+
     def test_a_bare_global_star_is_not_trusted(self) -> None:
         """Only the namespace form carries meaning; ``*`` says nothing."""
         assert (
@@ -129,6 +139,15 @@ class TestAmbiguityIsRefused:
             resolve_gateway_route("openrouter/anthropic/claude-sonnet-4.6", self.both, preference)
             == expected
         )
+
+    def test_a_preference_list_is_honoured_in_order(self) -> None:
+        """Multi-namespace deployments rank their routes; the first match wins."""
+        route = resolve_gateway_route(
+            "openrouter/anthropic/claude-sonnet-4.6",
+            self.both,
+            "gemini/,anthropic/,openrouter/",
+        )
+        assert route == "anthropic/claude-sonnet-4.6"
 
     def test_a_preference_matching_neither_still_raises(self) -> None:
         """Silently ignoring the preference would pick a serving path nobody asked for."""

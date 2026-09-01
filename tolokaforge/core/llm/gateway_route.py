@@ -142,8 +142,10 @@ def resolve_gateway_route(
         catalog: Route ids from :func:`fetch_gateway_catalog`. ``None`` means the
             catalog could not be read, which the caller treats as "keep the gateway,
             skip rewriting" rather than as "not served".
-        preferred_prefix: Namespace that wins when the gateway serves the model under
-            more than one name.
+        preferred_prefix: Namespace(s) that win when the gateway serves the model
+            under more than one name. A comma-separated list is honoured in
+            order (first matching prefix wins), so a deployment serving several
+            provider namespaces can rank them: ``"openrouter/,nebius/"``.
         trust_namespace_wildcards: Whether a catalog entry of ``<ns>/*`` counts
             as a route for a model whose OWN provider namespace is ``<ns>`` (an
             ``openrouter/*`` passthrough then serves ``provider: openrouter``
@@ -171,12 +173,15 @@ def resolve_gateway_route(
         return ResolvedGatewayRoute(hits[0], kind="exact")
 
     if preferred_prefix:
-        for hit in hits:
-            if hit.startswith(preferred_prefix):
-                return ResolvedGatewayRoute(hit, kind="exact")
+        prefixes = [p.strip() for p in preferred_prefix.split(",") if p.strip()]
+        for prefix in prefixes:
+            for hit in hits:
+                if hit.startswith(prefix):
+                    return ResolvedGatewayRoute(hit, kind="exact")
     raise GatewayRouteError(
         f"the gateway serves {model_string!r} under {len(hits)} names ({', '.join(hits)}) "
         f"and no preference picks one. They can be backed by different upstreams, so "
         f"this is a serving-path choice rather than a transport detail: set "
-        f"LLM_PROXY_PREFERRED_ROUTE to the namespace you want."
+        f"LLM_PROXY_PREFERRED_ROUTE to the namespace you want "
+        f"(a comma-separated list is honoured in order)."
     )

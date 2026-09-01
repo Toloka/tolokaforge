@@ -877,7 +877,7 @@ posting to a route the gateway does not serve.
 | `LLM_PROXY_HEADERS` | JSON object of static headers added to every request, e.g. `{"X-Team-Id": "research"}`. Wins over the engine's own provider headers on a name collision. A value may reference a secret as `${secret:NAME}`, see below. |
 | `LLM_PROXY_REQUEST_ID_HEADER` | Header *name* that receives a fresh UUID4 per request. A static env var cannot express "new value per call". |
 | `LLM_PROXY_PROVIDERS` | Comma-separated provider allow-list, replacing the default. Read the routing table below before widening it. |
-| `LLM_PROXY_PREFERRED_ROUTE` | Namespace that wins when the gateway serves one model under several names, e.g. `openrouter/`. Without it an ambiguous lookup raises rather than guessing a serving path. |
+| `LLM_PROXY_PREFERRED_ROUTE` | Namespace(s) that win when the gateway serves one model under several names. A comma-separated list is honoured in order (`openrouter/,nebius/`), so multi-provider gateways can rank their routes. Without a matching entry an ambiguous lookup raises rather than guessing a serving path. |
 | `LLM_PROXY_TRUST_NAMESPACE_WILDCARDS` | `true`/`false` (default `false`). When true, a catalog entry of `<ns>/*` routes models whose own `provider` is `<ns>`, addressed by their untranslated name. Namespace-matched only - a foreign wildcard never routes. Exact entries always win. |
 
 All seven resolve through `SecretManager`, so `.env`, the process environment,
@@ -1013,6 +1013,31 @@ by the untranslated model string. A foreign-namespace wildcard never routes, exa
 entries always win, and a wildcard-resolved call is recorded as such on the per-call
 usage (`gateway_route_kind: "wildcard"`), so a board audit can tell the serving
 paths apart.
+
+### Serving a NEW provider behind the gateway
+
+Wiring an additional upstream (a self-hosted vLLM fleet, a direct vendor
+account) into the gateway needs **no engine change**. The recipe:
+
+1. The gateway operator adds the catalog entries - exact names
+   (`nebius-llmqa-vllm/qwen3-32b`) or the namespace wildcard
+   (`nebius-llmqa-vllm/*`).
+2. The deployment allow-lists the provider: `LLM_PROXY_PROVIDERS=
+   openrouter,openai,nebius-llmqa-vllm` - deliberate fail-closed, so a new
+   catalog namespace never reroutes configs by itself.
+3. Configs name the provider as the FACT it is: `provider: nebius-llmqa-vllm`,
+   `name: qwen3-32b`. A resolved route forces the OpenAI-compatible dialect,
+   so litellm does not need to know the provider natively - which also means
+   such a provider works **only while the catalog is readable**: on the
+   unreadable-catalog path the call keeps the provider-native dialect and
+   fails loudly for a provider litellm cannot speak to directly.
+4. With several gateway namespaces in play, rank them:
+   `LLM_PROXY_PREFERRED_ROUTE=openrouter/,nebius-llmqa-vllm/`.
+5. Pricing and presets follow the normal registration path (they key off
+   `provider`/`name`, so nothing is lost by the gateway hop), and a new
+   serving path is a new calibration - never mix it with another path
+   inside one comparable set; the per-call `gateway_route` /
+   `gateway_route_kind` provenance is what audits the split.
 
 Preset resolution and pricing are unaffected: both key off `ModelConfig.provider` /
 `.name`, not off the wire name.
