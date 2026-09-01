@@ -140,15 +140,30 @@ runner_rpc = "tolokaforge.core.trial_grader:runner_rpc_trial_grader_factory"
 
 ### `judge_only` — `JudgeBackedTrialGrader`
 
-Host-side dispatch to an injected judge callable. No runner state, no
-transcript rules, no custom checks — pure rubric evaluation. Auto-fail
-branches match `RunnerRPCTrialGrader` so both are drop-in swaps for the
-caller.
+Host-side dispatch to :class:`~tolokaforge.core.grading.judge.LLMJudge` over
+a trajectory. No runner state, no transcript rules, no custom checks —
+pure rubric evaluation against the task's `grading.llm_judge` block, using
+the run's `models.judge`. Auto-fail branches match `RunnerRPCTrialGrader`
+so both are drop-in swaps for the caller.
 
-The factory ships with an unwired default that raises `NotImplementedError`
-if selected in production before a real `LLMJudge`-backed dispatch is
-wired; direct construction with a real `JudgeGradeFn` works today (for
-tests and offline-replay integration).
+`judge_only` and the composite dispatch selected by
+`grading.grading_method: composite` (or omitted) with
+`weights: {llm_judge: 1.0}` and no other component surface are two names
+for the same run: both route through the shared
+`tolokaforge.core.grading.judge_only_helpers.run_judge_only_for_trajectory`
+helper, and both reach :class:`LLMJudge` with byte-identical evidence on
+that constrained-input shape. The equivalence is pinned by the module
+constant `_JUDGE_ONLY_EQUIVALENT_CONFIG` on
+`tolokaforge.core.trial_grader` and the byte-parity canonical test at
+`tests/canonical/test_judge_only_composite_llm_judge_only_parity.py`.
+
+Fail-loud shape: a task without `grading.llm_judge`, a run without
+`models.judge`, or an `ERRORED` judge verdict surfaces as
+`GradingFailedError` naming the trial — never a booked agent failure.
+Discovery-time gate: the factory calls `load_grading_method("composite")`
+at construction so a misconfigured install (missing the
+`tolokaforge.grading_methods` entry-point group) fails there rather than
+at grade time.
 
 ```toml
 [project.entry-points."tolokaforge.trial_graders"]
