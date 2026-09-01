@@ -652,8 +652,8 @@ def test_no_shipped_pack_addresses_a_state_its_substrate_cannot_reach() -> None:
     )
 
     # ``$.filesystem[…]`` is reachable on the runner (via
-    # ``_read_agent_visible_filesystem``), so it is *not* in the negative-control
-    # set. The residue is ``agent`` / ``user`` / ``mock_web_url`` /
+    # ``filesystem_view.read_agent_visible_filesystem``), so it is *not* in the
+    # negative-control set. The residue is ``agent`` / ``user`` / ``mock_web_url`` /
     # ``rag_corpus_dir`` — roots the core engine composes from a run's live env
     # that the runner has no equivalent for.
     probed_paths, _ = _states_a_pack_addresses_but_cannot_reach(

@@ -98,7 +98,7 @@ def unreachable_target(assertion: Mapping[str, Any]) -> JsonPathTarget | None:
     ``path`` that is not text. Only an expression that parses and rooting at a segment
     the runner does not compose can be *shown* to be unreachable; the runner composes
     both the trial's database and the agent-visible filesystem (see
-    :meth:`~tolokaforge.runner.service.RunnerServiceImpl._read_agent_visible_filesystem`),
+    :func:`~tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`),
     so a ``$.filesystem[…]``-rooted path grades on both substrates. The evaluators
     name an unreadable path per assertion.
     """

@@ -26,6 +26,7 @@ from unittest.mock import MagicMock
 import grpc
 import pytest
 
+from tolokaforge.core.grading.filesystem_view import read_agent_visible_filesystem
 from tolokaforge.core.grading.kb_search import SearchHit
 from tolokaforge.core.grading.substrate import (
     GradingSubstrate,
@@ -471,7 +472,7 @@ class TestLiveCallbackSubstrateReads:
             finally:
                 substrate.close()
 
-    def test_filesystem_root_matches_read_agent_visible_filesystem(
+    def test_filesystem_root_matches_agent_visible_filesystem(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         (tmp_path / "notes").mkdir()
@@ -481,7 +482,7 @@ class TestLiveCallbackSubstrateReads:
         fake_db = _FakeDBServiceClient(raw=_RAW_FINAL_TABLES, stable=_STABLE_FINAL_TABLES)
         with _running_runner(
             fake_db=fake_db, kb=None, workspace_root=tmp_path, monkeypatch=monkeypatch
-        ) as (runner, _trial, channel, _server):
+        ) as (_runner, _trial, channel, _server):
             substrate = LiveRunnerCallbackGradingSubstrate(
                 runner_substrate_address="unused", trial_id=_TRIAL_ID, channel=channel
             )
@@ -495,7 +496,7 @@ class TestLiveCallbackSubstrateReads:
                 }
                 shipped = {
                     key.removeprefix("/env/fs/agent-visible/"): value
-                    for key, value in runner._read_agent_visible_filesystem().items()
+                    for key, value in read_agent_visible_filesystem(tmp_path).items()
                 }
                 assert materialised == shipped
                 assert materialised == {"top.md": "# top", "notes/one.txt": "hello"}

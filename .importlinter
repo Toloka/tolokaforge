@@ -94,3 +94,25 @@ forbidden_modules =
     tolokaforge.grader
     tolokaforge.core.grading.substrate_live
 allow_indirect_imports = false
+
+
+# Filesystem-view purity (ADR-0040 Stream B).
+#
+# ``core.grading.filesystem_view`` owns the agent-visible workspace-walk
+# contract every grading path reaches through: the runner's non-harness
+# filesystem-state factory, ``SubstrateService.ListFilesystemDir``, and
+# ``SubstrateService.ReadFilesystemPath``. A reach back into the runner,
+# grader, or live substrate would silently re-collapse the seam and make
+# the walk caller-specific again. ``allow_indirect_imports = false`` is
+# intentional: a transitive path back into a forbidden target must trip
+# the contract, not just a direct import.
+[importlinter:contract:filesystem-view-purity]
+name = filesystem_view is a pure library — no runner/grader/live-substrate reach
+type = forbidden
+source_modules =
+    tolokaforge.core.grading.filesystem_view
+forbidden_modules =
+    tolokaforge.runner
+    tolokaforge.grader
+    tolokaforge.core.grading.substrate_live
+allow_indirect_imports = false

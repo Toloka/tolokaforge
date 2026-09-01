@@ -322,8 +322,9 @@ _RULES: tuple[_Rule, ...] = (
     ),
     _Rule(
         # ``$.filesystem[…]`` is *reachable* on the runner (via
-        # ``_read_agent_visible_filesystem``), so the authoring gate should not
-        # refuse it — this rule now exercises the residual unreachable set
+        # ``filesystem_view.read_agent_visible_filesystem``), so the authoring
+        # gate should not refuse it — this rule now exercises the residual
+        # unreachable set
         # (``agent`` / ``user`` / ``mock_web_url`` / ``rag_corpus_dir``), which
         # the core engine composes from a run's live env and the runner does not.
         label="a_path_addressing_beyond_the_runners_state",

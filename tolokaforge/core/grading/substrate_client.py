@@ -41,8 +41,9 @@ class FilesystemEntry:
 
     ``content_utf8`` and ``content_bytes`` are mutually exclusive — the servicer
     populates one branch or the other per the same UTF-8-decode filter
-    ``_read_agent_visible_filesystem`` ships today. A missing / symlink /
-    non-file target yields ``exists=False`` with both branches empty.
+    :func:`~tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`
+    ships. A missing / symlink / non-file target yields ``exists=False`` with
+    both branches empty.
     """
 
     exists: bool

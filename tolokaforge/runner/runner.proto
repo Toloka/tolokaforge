@@ -598,15 +598,15 @@ service SubstrateService {
   // Read one file under the trial's AGENT_WORK_DIR (path relative). Returns
   // exists=false for a missing / non-file / symlink path; is_file=true with
   // content_utf8 for text; is_file=true with content_bytes_b64 (base64) for
-  // any file that fails UTF-8 decode. Mirrors the same filter
-  // _read_agent_visible_filesystem applies today.
+  // any file that fails UTF-8 decode. Same filter and exclusion policy as
+  // tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem.
+  // Refuses reads under any AGENT_VISIBLE_EXCLUDES directory.
   rpc ReadFilesystemPath(ReadFilesystemPathRequest) returns (ReadFilesystemPathResponse);
 
-  // List the trial's agent-visible workspace: relative POSIX paths of every
-  // non-symlink UTF-8-decodable file under AGENT_WORK_DIR. Same filter
-  // _read_agent_visible_filesystem ships today — no path-component excluder
-  // for node_modules / .venv / .git; a coding-harness workspace carries
-  // those trees on the wire.
+  // List rel-paths of every non-symlink UTF-8-decodable file under
+  // AGENT_WORK_DIR. Same filter and exclusion policy as
+  // tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem.
+  // Ordered by walk order (stable within one runner process).
   rpc ListFilesystemDir(ListFilesystemDirRequest) returns (ListFilesystemDirResponse);
 
   // Query the trial's per-trial KB (rag-service). kb_available=false is a
@@ -685,8 +685,7 @@ message ListFilesystemDirRequest {
 
 message ListFilesystemDirResponse {
   // Relative POSIX paths of every non-symlink UTF-8-decodable file under
-  // AGENT_WORK_DIR. Ordered by walk order (rglob), stable within one
-  // servicer version.
+  // AGENT_WORK_DIR, alphabetically sorted.
   repeated string rel_paths = 1;
 }
 
