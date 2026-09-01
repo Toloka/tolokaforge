@@ -223,6 +223,29 @@ without changing shape. External adapters can import it for a
 optional — the harness reaches through the slots directly, not through the
 Protocol.
 
+#### AdapterGradingContractSuite (reusable pytest suite)
+
+`tolokaforge.testing.adapters.AdapterGradingContractSuite` pins one
+adapter's conformance against the contract in 11 test methods (six method
+slots, three capability flags, emit-payload schema, preferred-kind
+registry resolution). Subclass, provide two fixtures, and (optionally)
+override four class attributes when the adapter's declaration diverges
+from the shipped default:
+
+- `adapter` (fixture) → constructed adapter instance.
+- `task_and_dir` (fixture) → `tuple[TaskConfig, Path]` the adapter can
+  resolve.
+- `expected_requires_docker_cli_in_runner: bool = False`
+- `expected_grades_from_task_grading_file: bool = False`
+- `expected_syncs_adapter_env_to_state: bool = False`
+- `expected_preferred_grader_kind: str = "composite"`
+
+Reference subclasses:
+`tests/canonical/test_native_adapter_grading_contract.py::TestNativeAdapterGradingContract`
+(in-tree) and
+`external_adapters/tolokaforge-adapter-terminal-bench/tests/test_terminal_bench_grading_contract.py::TestTerminalBenchAdapterGradingContract`
+(third-party adopter pattern).
+
 ## Lifecycle Expectations
 
 1. Discovery: enumerate tasks deterministically.
