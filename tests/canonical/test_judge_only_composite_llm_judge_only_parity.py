@@ -1,21 +1,21 @@
 """``judge_only`` grades a trajectory identically to composite ``weights: {llm_judge: 1.0}``.
 
-The umbrella wants ``judge_only`` (external) and ``composite + weights: {llm_judge:
-1.0}`` (external) to be two names for the same grading dispatch. This canonical
-gate locks that convergence at the ``Grade`` layer under the constrained-input
-shape both paths collapse to when a task declares an ``llm_judge`` rubric and
-nothing else — no ``state_checks``, no ``transcript_rules``, no ``trace_checks``,
-no ``custom_checks``, no ``search_policy`` KB plane, and an empty
-``initial_state``. On that shape, both paths reach :class:`LLMJudge` with
-byte-identical evidence: the composite's
+``judge_only`` and ``composite + weights: {llm_judge: 1.0}`` are two
+names for the same grading dispatch. This canonical gate locks that
+convergence at the ``Grade`` layer under the constrained-input shape
+both paths collapse to when a task declares an ``llm_judge`` rubric and
+nothing else — no ``state_checks``, no ``transcript_rules``, no
+``trace_checks``, no ``custom_checks``, no ``search_policy`` KB plane,
+and an empty ``initial_state``. On that shape, both paths reach
+:class:`LLMJudge` with byte-identical evidence: the composite's
 :func:`~tolokaforge.core.grading.composite.build_judge_state_diff` early-returns
 ``None`` on empty ``initial_state`` (matching ``judge_only``'s
 unconditional ``state_diff=None``); the substrate reads (``db_reader``,
 ``kb_search``, ``filesystem_root``) all resolve to the same
 "no live state" answers ``judge_only`` passes as ``None``; and
 ``extra_read_tools`` collapses to ``[]`` when no ``search_policy`` connector
-was reconstructed. Grade-shape parity across the two names is the property
-the umbrella cares about.
+was reconstructed. Grade-shape parity across the two names is the
+property this suite locks.
 
 Substitution shape (per plan): :meth:`LLMJudge.run` is monkey-patched on the
 class itself to return a fixed :class:`JudgeResult`. Both paths construct
@@ -196,9 +196,8 @@ def test_judge_only_and_composite_llm_judge_only_agree_on_grade_shape(
     paths compose their :attr:`Grade.reasons` and post-mortem fields
     (``criterion_results``, ``judge_report``) through different code
     (``build_replay_grade`` vs. the runner-side fold + ``compose_runner_trial_verdict``).
-    The scoring surface is what the umbrella cares about: two names of
-    the same dispatch must not silently produce different verdicts on
-    the constrained shape they collapse to.
+    Two names of the same dispatch must not silently produce different
+    verdicts on the constrained shape they collapse to.
     """
     fixed = _fixed_judge_result()
 

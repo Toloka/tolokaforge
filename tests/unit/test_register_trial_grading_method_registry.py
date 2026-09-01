@@ -1,20 +1,19 @@
 """``RegisterTrial`` refuses an unregistered ``grading.grading_method``.
 
-The wire model widened past its former closed ``Literal`` so a downstream
-adapter can register its own dispatch under ``tolokaforge.grading_methods``
-without a framework PR (see
-``tests/canonical/test_grading_methods_registry.py``). The safety net
-that used to live in the pydantic model moves to ``RegisterTrial``:
-every value crossing the wire must resolve against the entry-point
-registry, and an unknown name is refused with a message naming both the
-offending key and the registered set — matching the fail-loud shape
+The wire model accepts any string so a downstream adapter can register
+its own dispatch under ``tolokaforge.grading_methods`` without a
+framework PR (see ``tests/canonical/test_grading_methods_registry.py``).
+The safety net lives in ``RegisterTrial``: every value crossing the wire
+must resolve against the entry-point registry, and an unknown name is
+refused with a message naming both the offending key and the registered
+set — matching the fail-loud shape
 :func:`~tolokaforge.adapters.ensure_registered_adapter` sets for the
 adapter registry.
 
 The registered marker only asserts the name exists; runtime dispatch on
 :meth:`RunnerServiceImpl.GradeTrial` still branches on the wire string.
 An adapter that ships a marker but no matching branch would still hit
-the composite fold at grade time — that convergence is Phase C's job.
+the composite fold at grade time.
 """
 
 from __future__ import annotations

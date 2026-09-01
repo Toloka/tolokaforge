@@ -5,9 +5,8 @@ resolves the value against this entry-point group at ``RegisterTrial``.
 This canonical suite locks the group's public contract: the two shipped
 markers resolve; ``available_grading_methods()`` matches the ADR-locked
 set; an unknown name fails loud with a message an operator can act on;
-and the pydantic model widened past its former closed ``Literal`` so a
-downstream adapter can register its own dispatch under the same group
-without a framework PR.
+and the pydantic model accepts any string so a downstream adapter can
+register its own dispatch under the same group without a framework PR.
 
 See :mod:`tolokaforge.core.grading.grading_method` for the marker
 Protocol + shipped implementations.

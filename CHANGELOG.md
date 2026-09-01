@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Removed
+
+- `grading_method` reserved names `hash`, `transcript`, `llm` — never emitted, never dispatched. Task packs using these values fail loud at `RegisterTrial` with a message naming the registered set. Use `composite` (or leave `grading_method` unset).
+
 ## v0.21.4 (2026-08-28)
 
 ### Fix

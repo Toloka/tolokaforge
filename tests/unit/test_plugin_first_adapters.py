@@ -201,13 +201,13 @@ class TestGradingMethodErrorHandling:
     The value axis on ``grading_method`` is open — the pydantic model
     accepts any string so a downstream adapter can register its own
     dispatch under ``tolokaforge.grading_methods`` without a framework
-    PR. Rejection of unregistered values moves to ``RegisterTrial``,
+    PR. Rejection of unregistered values happens at ``RegisterTrial``,
     where the runner names both the offending key and the registered
     set; see ``tests/unit/test_register_trial_grading_method_registry.py``.
     """
 
     def test_grading_method_model_accepts_any_string_for_registry_widening(self):
-        """The pydantic model no longer gates the value axis — the registry does."""
+        """The pydantic model accepts any string — the registry gates the value axis."""
         cfg = RunnerGradingConfig(grading_method="terminal_bench_native")
         assert cfg.grading_method == "terminal_bench_native"
 
