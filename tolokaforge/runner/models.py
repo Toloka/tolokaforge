@@ -3012,9 +3012,9 @@ class EnvironmentManifest(BaseModel):
         """True iff at least one service is labelled ``reset`` or
         ``ephemeral``, or the manifest declares no services at all.
 
-        Consumed by :meth:`Orchestrator._select_backend_from_tasks` to
-        pick :class:`PerTrialRuntimeBackend` for any run whose tasks
-        need per-trial substrate materialisation.
+        Consumed by :func:`project_loader.resolve` to infer the
+        synthesised stack's ``stack_scope`` for scalar-form manifests
+        (``True`` → ``trial``, ``False`` → ``run``).
         """
         if not self.services:
             return True

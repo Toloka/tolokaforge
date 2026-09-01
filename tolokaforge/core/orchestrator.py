@@ -98,7 +98,7 @@ from tolokaforge.core.trial import (
     TrialSpec,
 )
 from tolokaforge.core.trial_executor import TrialExecutor
-from tolokaforge.runner.models import AdapterType, TaskDescription
+from tolokaforge.runner.models import AdapterType, PlanShape, StackScope, TaskDescription
 from tolokaforge.secrets import register_runtime_secret
 
 if TYPE_CHECKING:
@@ -1055,19 +1055,20 @@ class Orchestrator:
         """
         from tolokaforge.core.project_loader import resolve
 
-        # Per-trial short-circuit — resolves via the same signal
-        # ``_construct_runtime_backend`` uses to pick the backend, so the
-        # two decisions stay in lock-step. Both the operator override
-        # ``orchestrator.runtime`` and the task-driven per-trial signal
-        # suppress the shared-stack heterogeneity check. Inlined rather
-        # than routed through ``_resolve_effective_runtime_choice`` so
-        # the override path works when the adapter isn't loaded yet
-        # (unit-test seams).
+        # No run-scope stack materialises when either the operator coerced the
+        # plan to trial-scope via ``orchestrator.runtime="per_trial"`` or every
+        # task's plan is fully trial-scoped-only (the composer's provisioning
+        # runs per-trial from each task's own manifest). Both short-circuits
+        # produce ``None`` — nothing shared to extract.
         override = self.config.orchestrator.runtime
         if override == "per_trial":
             return None
         if override is None and self.adapter is not None:
-            if self._select_backend_from_tasks() == "per_trial":
+            task_manifests = [
+                self._task_description(task.task_id).environment_manifest for task in self.tasks
+            ]
+            present = [m for m in task_manifests if m is not None]
+            if present and all(m.plan_shape == PlanShape.TRIAL_SCOPED_ONLY for m in present):
                 return None
 
         project_env = self.project.default_environment if self.project is not None else None
@@ -1098,36 +1099,78 @@ class Orchestrator:
         return next(iter(manifests_by_compose.values()))
 
     def _select_backend_from_tasks(self) -> str:
-        """Return ``"per_trial"`` if any task's manifest requires per-trial
-        materialisation, otherwise ``"shared"``.
+        """External-import-safe shim returning the collapsed backend label.
 
-        Reads :attr:`EnvironmentManifest.requires_per_trial` for every
-        task; a task without a manifest contributes no signal. When
-        every task with a manifest is fully-``shared`` labelled, the
-        selector picks the shared backend.
+        Backend selection is composer-driven — the orchestrator always
+        constructs :class:`SharedStackRuntimeBackend`; per-scope
+        provisioning is dispatched from the resolved composition plan.
+        The two-way vote this helper used to run is retired; ``"composed"``
+        is the single value the shim reports so third-party callers that
+        still import the method observe a stable constant.
         """
         if self.adapter is None:
             raise RuntimeError(
                 "Task-driven backend selection requires the adapter to be loaded first."
             )
+        return "composed"
+
+    def _any_task_declares_environment_manifest(self) -> bool:
+        """True iff at least one task's resolved description declares an
+        ``environment_manifest``.
+
+        The composer owns substrate provisioning whenever any task's
+        manifest is present — the built-in engine containers stay unused
+        (only their images are built for ``:local`` aliases). Callers
+        that decide between "start built-in engine" and "images-only"
+        route on this signal.
+        """
+        if self.adapter is None:
+            return False
+        for task in self.tasks:
+            if self._task_description(task.task_id).environment_manifest is not None:
+                return True
+        return False
+
+    def _coerce_plan_shape_for_override(self, override: str | None) -> None:
+        """Rewrite every task's resolved plan ``stack_scope`` to match the
+        operator's ``orchestrator.runtime`` coercion knob.
+
+        ``"shared"`` coerces every stack to ``stack_scope="run"``;
+        ``"per_trial"`` coerces to ``stack_scope="trial"``. Refuses
+        ``RuntimeError`` on a task whose plan has more than one stack —
+        the two coercion knobs are defined for single-stack packs only,
+        and multi-stack packs must declare per-stack scope explicitly
+        (ADR-0044 §6 deprecation).
+
+        Any other ``override`` value (registered non-shared, non-per_trial
+        backend name — only ``"in_memory"`` in-tree today) is a legit
+        backend swap that carries no plan-shape semantics; the helper
+        no-ops in that case.
+
+        Called at :meth:`run` / :meth:`run_worker` entry BEFORE
+        :meth:`_extract_run_env_manifest` fires, so the composer at
+        ``provision_trial`` time reads the already-coerced scopes.
+        """
+        if override is None or override not in ("shared", "per_trial"):
+            return
+        target_scope: StackScope = "run" if override == "shared" else "trial"
+        if self.adapter is None:
+            return
         for task in self.tasks:
             manifest = self._task_description(task.task_id).environment_manifest
-            if manifest is not None and manifest.requires_per_trial:
-                return "per_trial"
-        return "shared"
-
-    def _resolve_effective_runtime_choice(self) -> str:
-        """Return the effective runtime choice — the operator override
-        when set, otherwise the task-driven signal.
-
-        Callers that need to route on "per-trial mode" (stack bring-up,
-        endpoint logging) read this helper so the override path and the
-        task-driven path stay in lock-step with backend construction.
-        """
-        override = self.config.orchestrator.runtime
-        if override is not None:
-            return override
-        return self._select_backend_from_tasks()
+            if manifest is None:
+                continue
+            if len(manifest.stacks) > 1:
+                raise RuntimeError(
+                    f"orchestrator.runtime={override!r} cannot coerce task "
+                    f"{task.task_id!r}: its plan declares {len(manifest.stacks)} "
+                    "stacks and the coercion knob is defined for single-stack "
+                    "packs only. Multi-stack packs must declare stack_scope on "
+                    "each stack directly. See ADR-0044 §6 (orchestrator.runtime "
+                    "deprecation)."
+                )
+            for decl in manifest.stacks:
+                decl.stack_scope = target_scope
 
     def _build_log_capture(self, output_dir: Path) -> LogCaptureConfig:
         """Build the run's per-service log-capture policy from ``compute``.
@@ -1151,18 +1194,21 @@ class Orchestrator:
         run_id: str = "run",
         log_capture: LogCaptureConfig | None = None,
     ) -> RuntimeBackend:
-        """Construct the runtime backend from the task-driven signal,
-        with the deprecated ``config.orchestrator.runtime`` override
-        taking precedence when set.
+        """Construct the composer-driven runtime backend.
 
-        Task-driven selection: any task requiring per-trial materialisation
-        → :class:`PerTrialRuntimeBackend`; otherwise
-        :class:`SharedStackRuntimeBackend`. When ``env_manifest`` is
-        passed the shared backend materialises the task-declared compose
-        stack once per run at ``connect`` time; without it the backend
-        connects to the built-in shared engine at ``runner_address``.
+        Automatic path and the ``orchestrator.runtime`` coercion knobs
+        (``"shared"`` / ``"per_trial"``) both resolve to
+        :class:`SharedStackRuntimeBackend` — the composer sequences the
+        resolved plan's per-scope substrate at ``connect`` and
+        ``provision`` time. When ``env_manifest`` is passed the composer
+        materialises the task-declared plan; without it the backend
+        connects to the built-in engine at ``runner_address``.
 
-        ``log_capture`` is threaded onto the per-trial backend so its
+        Any other registered ``orchestrator.runtime`` value (only
+        ``"in_memory"`` in-tree today) is a legit backend swap and
+        routes through :func:`load_runtime_backend` unchanged.
+
+        ``log_capture`` is threaded onto the backend so its
         provision-failure path can capture per-service logs before
         teardown.
 
@@ -1170,18 +1216,34 @@ class Orchestrator:
         ``Orchestrator.__init__(runtime_backend=...)``.
         """
         override = self.config.orchestrator.runtime
-        if override is not None:
-            runtime_choice = override
-            source = "config-override"
+        if override is None:
+            runtime_choice = "shared"
+            source = "composed"
+        elif override in ("shared", "per_trial"):
+            runtime_choice = "shared"
+            source = f"override:{override}"
         else:
-            runtime_choice = self._select_backend_from_tasks()
-            source = "tasks"
+            runtime_choice = override
+            source = f"override:{override}"
 
         factory = load_runtime_backend(runtime_choice)
         adapter_type = (
             self.config.evaluation.harness_adapter.type
             if self.config.evaluation.harness_adapter
             else None
+        )
+        # No run-scope manifest survives extraction when the plan is fully
+        # trial-scoped (automatic short-circuit) or when the operator coerced
+        # to ``per_trial``. In that case the composer still owns provisioning
+        # from each task's own manifest — ``per_trial_mode`` pins the backend's
+        # per-trial branch so ``connect`` no-ops ``materialise_run`` and
+        # ``provision`` routes through ``composer.provision_trial``. Signalled
+        # only when at least one task actually declares a manifest; a pack
+        # that declares none stays on built-in-engine mode.
+        per_trial_mode = (
+            env_manifest is None
+            and override != "shared"
+            and self._any_task_declares_environment_manifest()
         )
         backend = factory(
             RuntimeBackendBuildContext(
@@ -1192,6 +1254,7 @@ class Orchestrator:
                 log_capture=log_capture,
                 events=self._events,
                 mount_docker_socket=_run_needs_docker_cli(adapter_type, self.tasks),
+                per_trial_mode=per_trial_mode,
             )
         )
         self.logger.info(
@@ -2036,6 +2099,12 @@ class Orchestrator:
                 max_requests_per_second=self.config.effective_max_requests_per_second,
             )
 
+        # The deprecated ``orchestrator.runtime`` override coerces every task's
+        # plan-shape here — the composer at ``provision_trial`` time reads the
+        # already-coerced scopes. Fires BEFORE ``_extract_run_env_manifest`` so
+        # the extract sees the coerced plan.
+        self._coerce_plan_shape_for_override(self.config.orchestrator.runtime)
+
         # Task-declared shared-stack manifest: if the run's tasks declare an
         # environment_manifest, extract the shared manifest here — mixed / divergent
         # declarations fail loud before we touch docker.
@@ -2140,17 +2209,13 @@ class Orchestrator:
                 if self.config.grader is not None and self.config.grader.expose_substrate:
                     core_stack_kwargs["expose_substrate"] = True
                 service_stack = stack_factory(config=docker_config, **core_stack_kwargs)
-                # Route through the effective-choice helper so both the
-                # operator override and the task-driven per-trial signal
-                # produce the same task-declared-stack decision (see
-                # sibling guard at the endpoint-logging site below).
-                per_trial_mode = self._resolve_effective_runtime_choice() == "per_trial"
-                # In per_trial mode OR shared+env_manifest mode the built-in engine
-                # containers go unused — the task-declared compose stack owns the
-                # runner + db-service. The engine images still need to be BUILT so
-                # task compose files can reference the `:local` aliases; skipping
-                # the container-start is the shared-with-per_trial optimisation.
-                task_stack_mode = per_trial_mode or run_env_manifest is not None
+                # Any task-declared manifest hands the substrate to the
+                # composer — the task-declared compose owns the runner +
+                # db-service, so the built-in engine containers go unused.
+                # The engine images still need to be BUILT so task compose
+                # files can reference the ``:local`` aliases, but the
+                # container-start is skipped.
+                task_stack_mode = self._any_task_declares_environment_manifest()
                 if task_stack_mode:
                     self.logger.info(
                         "Preparing Docker engine images (task-declared-stack mode: "
@@ -2262,20 +2327,12 @@ class Orchestrator:
         from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
         env_endpoints = _build_env_endpoints(runner_address)
-        # Route through ``_resolve_effective_runtime_choice`` so the guard
-        # covers both the operator override AND the task-driven per-trial
-        # signal. The direct ``config.orchestrator.runtime`` string check
-        # would miss the task-driven case now that
-        # ``_extract_run_env_manifest`` returns ``None`` for it — the
-        # ``else`` branch below would then log phantom default endpoints
-        # that never reach a trial spec, defeating this guard's intent.
-        if self._resolve_effective_runtime_choice() == "per_trial" or run_env_manifest is not None:
-            # Per-trial backend resolves fresh endpoints per trial via
-            # ``endpoints(handle)``. Shared+env_manifest resolves them once
-            # at connect time from the materialised stack. In both cases the
-            # default values built here would be phantom values that never
-            # reach a trial spec — logging them here would misdirect
-            # log-based diagnosis.
+        # Any task-declared manifest hands endpoint resolution to the composer:
+        # the backend either materialises run-scope stacks at ``connect`` or
+        # ``provision_trial`` per trial. The default ``env_endpoints`` built
+        # from ``runner_address`` are phantom in that case, so logging them
+        # would misdirect log-based diagnosis.
+        if self._any_task_declares_environment_manifest():
             self.logger.info(
                 "Trial-scoped service endpoints resolved by backend from task-declared stack"
             )
@@ -2708,6 +2765,11 @@ class Orchestrator:
             request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)
 
         runner_address = os.environ.get("EXECUTOR_ADDRESS", "executor:50051")
+
+        # Coerce plan-shape for the deprecated override BEFORE the worker's
+        # ``_extract_run_env_manifest`` fires, so worker and parent agree on
+        # what the plan looks like.
+        self._coerce_plan_shape_for_override(self.config.orchestrator.runtime)
 
         # Workers join an already-materialised run; if the run's tasks declare
         # env_manifest, the parent orchestrator materialised a task-declared
