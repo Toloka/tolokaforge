@@ -57,10 +57,15 @@ class IsolationMode(str, Enum):
       trial in the run. Cross-trial state contamination is structural.
     * ``PER_TRIAL_STACK`` — one substrate materialisation per trial.
       Concurrent trials are fully isolated.
+    * ``COMPOSED_STACK`` — the composition plan spans more than one scope
+      (task-scope-only or multi-scope). The composer materialises run-scope
+      stacks at connect-time and trial-scope stacks at provision-time; state
+      contamination is scoped per stack, not run-wide.
     """
 
     SHARED_STACK = "shared_stack"
     PER_TRIAL_STACK = "per_trial_stack"
+    COMPOSED_STACK = "composed_stack"
 
 
 # ---------------------------------------------------------------------------

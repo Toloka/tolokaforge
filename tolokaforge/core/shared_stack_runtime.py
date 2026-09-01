@@ -45,6 +45,7 @@ from tolokaforge.runner import (
     runner_pb2,
     runner_pb2_grpc,
 )
+from tolokaforge.runner.models import PlanShape
 from tolokaforge.runner.protocol import (
     ENGINE_PROTOCOL_VERSION,
     TrialNotRegisteredError,
@@ -949,12 +950,23 @@ class SharedStackRuntimeBackend:
     :meth:`provision` through the composer with an empty
     :class:`RunSubstrate` so trial-scope-plan runs work without a
     materialised run scope.
-    """
 
-    isolation_mode: IsolationMode = IsolationMode.SHARED_STACK
-    """Every trial in the run talks to the same runner container. Read by
-    the orchestrator's compatibility check to refuse runs whose tasks
-    require per-trial substrate materialisation."""
+    :attr:`isolation_mode` is computed from :attr:`EnvironmentManifest.plan_shape`
+    when ``env_manifest`` is set; the built-in-stack and per-trial-delegate
+    modes fall back on the ``_per_trial_mode`` flag:
+
+    * ``env_manifest=None``, ``_per_trial_mode=False`` → ``SHARED_STACK``
+      (built-in-stack mode; every trial shares the injected runner).
+    * ``env_manifest=None``, ``_per_trial_mode=True`` → ``PER_TRIAL_STACK``
+      (the per-trial delegate mode :class:`PerTrialRuntimeBackend` sets).
+    * ``plan_shape=SINGLE_RUN`` → ``SHARED_STACK`` (one ``run``-scope stack
+      lives for the whole run).
+    * ``plan_shape=TRIAL_SCOPED_ONLY`` → ``PER_TRIAL_STACK`` (every stack is
+      ``trial``-scope; the composer materialises fresh per trial).
+    * ``plan_shape=TASK_SCOPED_ONLY`` / ``MULTI_SCOPE`` → ``COMPOSED_STACK``
+      (the plan spans more than one scope; each scope's stacks stay live for
+      their bracket).
+    """
 
     advertised_capabilities: frozenset[str] = frozenset(
         {"shared_stack", "network_isolation:no_internet", "network_isolation:limited_internet"}
@@ -1016,6 +1028,21 @@ class SharedStackRuntimeBackend:
                     "materialised compose stack at connect() time."
                 )
         logger.info("Shared-stack runtime initialized")
+
+    @property
+    def isolation_mode(self) -> IsolationMode:
+        if self._env_manifest is None:
+            return (
+                IsolationMode.PER_TRIAL_STACK
+                if self._per_trial_mode
+                else IsolationMode.SHARED_STACK
+            )
+        shape = self._env_manifest.plan_shape
+        if shape is PlanShape.SINGLE_RUN:
+            return IsolationMode.SHARED_STACK
+        if shape is PlanShape.TRIAL_SCOPED_ONLY:
+            return IsolationMode.PER_TRIAL_STACK
+        return IsolationMode.COMPOSED_STACK
 
     # ------------------------------------------------------------------
     # Lifecycle
