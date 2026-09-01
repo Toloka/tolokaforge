@@ -1,11 +1,11 @@
-"""Task-driven backend selection.
+"""Composer-driven backend selection.
 
-The orchestrator picks :class:`PerTrialRuntimeBackend` when any task
-manifest requires per-trial materialisation, otherwise
-:class:`SharedStackRuntimeBackend`. The legacy ``orchestrator.runtime``
-override still wins but emits ``DeprecationWarning``. These tests pin
-every branch of :meth:`Orchestrator._select_backend_from_tasks` and
-:meth:`Orchestrator._construct_runtime_backend`.
+The orchestrator always constructs :class:`SharedStackRuntimeBackend` in
+the automatic path and under the ``orchestrator.runtime`` coercion knobs
+``"shared"`` / ``"per_trial"``. Any other registered name (only
+``"in_memory"`` in-tree today) is a legit backend swap. These tests pin
+every branch of :meth:`Orchestrator._construct_runtime_backend` and the
+plan-shape coercion helper :meth:`Orchestrator._coerce_plan_shape_for_override`.
 """
 
 from __future__ import annotations
@@ -27,10 +27,7 @@ from tolokaforge.core.models import (
     ServiceSpec,
 )
 from tolokaforge.core.orchestrator import Orchestrator
-from tolokaforge.core.per_trial_runtime import (
-    PerTrialRuntimeBackend,
-    per_trial_runtime_backend_factory,
-)
+from tolokaforge.core.per_trial_runtime import per_trial_runtime_backend_factory
 from tolokaforge.core.plugin_registry import (
     RuntimeBackendBuildContext,
     UnknownImplementationError,
@@ -40,7 +37,7 @@ from tolokaforge.core.shared_stack_runtime import (
     shared_runtime_backend_factory,
 )
 from tolokaforge.core.trial import EnvironmentManifest
-from tolokaforge.runner.models import TaskDescription
+from tolokaforge.runner.models import StackDecl, StackScope, TaskDescription
 
 pytestmark = pytest.mark.unit
 
@@ -109,25 +106,83 @@ def _manifest_with_ephemeral() -> EnvironmentManifest:
     )
 
 
+def _manifest_with_single_stack(stack_scope: StackScope = "trial") -> EnvironmentManifest:
+    """An in-code manifest carrying a single explicit :class:`StackDecl`.
+
+    Bypasses :func:`project_loader.resolve` for tests that need to poke
+    ``stacks`` directly (e.g. locking the plan-shape coercion helper's
+    per-stack rewrite).
+    """
+    return EnvironmentManifest(
+        compose_file=_FIXTURES / "safe_two_service.yaml",
+        services={
+            "db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="baseline")),
+            "default": ServiceSpec(isolation="shared"),
+        },
+        stacks=[
+            StackDecl(
+                stack_id="default",
+                compose_file=_FIXTURES / "safe_two_service.yaml",
+                stack_scope=stack_scope,
+                runner_service="default",
+                inputs={},
+            )
+        ],
+    )
+
+
+def _manifest_multi_stack() -> EnvironmentManifest:
+    return EnvironmentManifest(
+        compose_file=_FIXTURES / "safe_two_service.yaml",
+        services={
+            "db": ServiceSpec(isolation="shared"),
+            "default": ServiceSpec(isolation="shared"),
+        },
+        stacks=[
+            StackDecl(
+                stack_id="engine",
+                compose_file=_FIXTURES / "safe_two_service.yaml",
+                stack_scope="run",
+                runner_service=None,
+                inputs={},
+            ),
+            StackDecl(
+                stack_id="task",
+                compose_file=_FIXTURES / "safe_two_service.yaml",
+                stack_scope="trial",
+                runner_service="default",
+                inputs={},
+            ),
+        ],
+    )
+
+
 class TestSelectBackendFromTasks:
-    def test_all_shared_returns_shared(self) -> None:
+    """External-import-safe shim locking the collapsed backend label.
+
+    The historical two-way vote (``shared`` / ``per_trial``) is retired;
+    selection is composer-driven. The helper survives as a stable
+    ``"composed"`` constant for third-party callers.
+    """
+
+    def test_all_shared_returns_composed(self) -> None:
         tasks = [_task_stub("t1")]
         task_descs = {
             "t1": make_task_description(task_id="t1", environment_manifest=_manifest_all_shared())
         }
         orch = _make_orchestrator(tasks, task_descs)
-        assert orch._select_backend_from_tasks() == "shared"
+        assert orch._select_backend_from_tasks() == "composed"
 
-    def test_any_reset_returns_per_trial(self) -> None:
+    def test_any_reset_returns_composed(self) -> None:
         tasks = [_task_stub("t1"), _task_stub("t2")]
         task_descs = {
             "t1": make_task_description(task_id="t1", environment_manifest=_manifest_all_shared()),
             "t2": make_task_description(task_id="t2", environment_manifest=_manifest_with_reset()),
         }
         orch = _make_orchestrator(tasks, task_descs)
-        assert orch._select_backend_from_tasks() == "per_trial"
+        assert orch._select_backend_from_tasks() == "composed"
 
-    def test_any_ephemeral_returns_per_trial(self) -> None:
+    def test_any_ephemeral_returns_composed(self) -> None:
         tasks = [_task_stub("t1")]
         task_descs = {
             "t1": make_task_description(
@@ -135,13 +190,13 @@ class TestSelectBackendFromTasks:
             )
         }
         orch = _make_orchestrator(tasks, task_descs)
-        assert orch._select_backend_from_tasks() == "per_trial"
+        assert orch._select_backend_from_tasks() == "composed"
 
-    def test_no_manifest_defaults_to_shared(self) -> None:
+    def test_no_manifest_returns_composed(self) -> None:
         tasks = [_task_stub("legacy")]
         task_descs = {"legacy": make_task_description(task_id="legacy", environment_manifest=None)}
         orch = _make_orchestrator(tasks, task_descs)
-        assert orch._select_backend_from_tasks() == "shared"
+        assert orch._select_backend_from_tasks() == "composed"
 
     def test_missing_adapter_raises(self) -> None:
         orch = Orchestrator(_run_config())
@@ -170,40 +225,34 @@ class TestConstructRuntimeBackend:
             lambda name: factories[name],
         )
 
-    def test_task_driven_all_shared_picks_shared(self) -> None:
-        tasks = [_task_stub("t1")]
-        task_descs = {
-            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_all_shared())
-        }
-        orch = _make_orchestrator(tasks, task_descs)
-        backend = orch._construct_runtime_backend(
-            runner_address="sentinel:50051",
-            env_manifest=None,
-            run_id="test-run",
-        )
-        assert isinstance(backend, SharedStackRuntimeBackend)
-
-    def test_task_driven_reset_picks_per_trial(self) -> None:
-        tasks = [_task_stub("t1")]
-        task_descs = {
-            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_with_reset())
-        }
-        orch = _make_orchestrator(tasks, task_descs)
-        backend = orch._construct_runtime_backend(
-            runner_address="sentinel:50051",
-            env_manifest=None,
-            run_id="test-run",
-        )
-        assert isinstance(backend, PerTrialRuntimeBackend)
+    def test_task_driven_always_picks_shared_backend(self) -> None:
+        """Every manifest shape resolves to ``SharedStackRuntimeBackend`` —
+        the composer sequences per-scope substrate regardless of whether a
+        task's services are ``shared`` / ``reset`` / ``ephemeral``."""
+        for manifest in (
+            _manifest_all_shared(),
+            _manifest_with_reset(),
+            _manifest_with_ephemeral(),
+        ):
+            tasks = [_task_stub("t1")]
+            task_descs = {"t1": make_task_description(task_id="t1", environment_manifest=manifest)}
+            orch = _make_orchestrator(tasks, task_descs)
+            backend = orch._construct_runtime_backend(
+                runner_address="sentinel:50051",
+                env_manifest=None,
+                run_id="test-run",
+            )
+            assert isinstance(backend, SharedStackRuntimeBackend)
 
     def test_explicit_override_wins_and_warns(self) -> None:
         tasks = [_task_stub("t1")]
         task_descs = {
             "t1": make_task_description(task_id="t1", environment_manifest=_manifest_all_shared())
         }
-        # Explicit per_trial override on a shared-labelled task fires the
-        # deprecation warning at RunConfig construction time and picks
-        # per-trial anyway.
+        # Explicit per_trial override fires the deprecation warning at
+        # RunConfig construction time; the coerced plan-shape reaches the
+        # composer via ``_coerce_plan_shape_for_override``, and the backend
+        # stays :class:`SharedStackRuntimeBackend`.
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             orch = _make_orchestrator(tasks, task_descs, run_config_kwargs={"runtime": "per_trial"})
@@ -217,24 +266,67 @@ class TestConstructRuntimeBackend:
             env_manifest=None,
             run_id="test-run",
         )
-        assert isinstance(backend, PerTrialRuntimeBackend)
+        assert isinstance(backend, SharedStackRuntimeBackend)
 
     def test_shared_override_on_per_trial_task_still_picks_shared(self) -> None:
-        # The override wins at construction; the isolation-compat guard
-        # elsewhere refuses this configuration at run time.
+        # The override coerces the plan to run-scope; the isolation-compat
+        # guard refuses `reset` at run-scope until #1383 lands
+        # `COMPOSED_STACK` capability advertising.
         tasks = [_task_stub("t1")]
         task_descs = {
-            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_with_reset())
+            "t1": make_task_description(
+                task_id="t1", environment_manifest=_manifest_with_single_stack("trial")
+            )
         }
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             orch = _make_orchestrator(tasks, task_descs, run_config_kwargs={"runtime": "shared"})
+
+        orch._coerce_plan_shape_for_override("shared")
+
+        coerced = orch._task_description("t1").environment_manifest
+        assert coerced is not None
+        assert all(decl.stack_scope == "run" for decl in coerced.stacks)
+
         backend = orch._construct_runtime_backend(
             runner_address="sentinel:50051",
             env_manifest=None,
             run_id="test-run",
         )
         assert isinstance(backend, SharedStackRuntimeBackend)
+
+    def test_per_trial_override_coerces_stack_scope(self) -> None:
+        """``"per_trial"`` rewrites every stack's ``stack_scope`` to ``trial``."""
+        tasks = [_task_stub("t1")]
+        task_descs = {
+            "t1": make_task_description(
+                task_id="t1", environment_manifest=_manifest_with_single_stack("run")
+            )
+        }
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            orch = _make_orchestrator(tasks, task_descs, run_config_kwargs={"runtime": "per_trial"})
+
+        orch._coerce_plan_shape_for_override("per_trial")
+
+        coerced = orch._task_description("t1").environment_manifest
+        assert coerced is not None
+        assert all(decl.stack_scope == "trial" for decl in coerced.stacks)
+
+    def test_override_refuses_multi_stack_plan(self) -> None:
+        """The coercion knob is defined for single-stack packs only —
+        multi-stack packs must declare stack-scope explicitly (ADR-0044
+        §6 deprecation)."""
+        tasks = [_task_stub("t1")]
+        task_descs = {
+            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_multi_stack())
+        }
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            orch = _make_orchestrator(tasks, task_descs, run_config_kwargs={"runtime": "per_trial"})
+
+        with pytest.raises(RuntimeError, match=r"ADR-0044.*deprecation"):
+            orch._coerce_plan_shape_for_override("per_trial")
 
 
 class TestUnknownRuntimeName:

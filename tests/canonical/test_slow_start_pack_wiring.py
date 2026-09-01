@@ -1,14 +1,14 @@
-"""Load + resolve + backend-selection wiring for the shipped
+"""Load + resolve + backend construction wiring for the shipped
 ``examples/native/multi_service_slow_start`` pack.
 
 Proves the pack routes from disk to backend construction on the
 no-services-block seam: the project loads with no ``assets.seeds`` and no
 per-service isolation, so the default environment resolves to a manifest
-whose every service is ``ephemeral`` (making ``requires_per_trial`` true),
-and the task-driven selector routes the run onto
-:class:`PerTrialRuntimeBackend`. No Docker and no LLM key — this is the
-pure load/resolve/select contract; the end-to-end slow start firing is
-covered by the sibling integration test.
+whose every service is ``ephemeral`` (making ``plan_shape`` fully
+trial-scoped), and the orchestrator constructs a
+:class:`SharedStackRuntimeBackend`. No Docker and no LLM key — this is
+the pure load/resolve/construct contract; the end-to-end slow start
+firing is covered by the sibling integration test.
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ from tolokaforge.core.models import (
     RunConfig,
 )
 from tolokaforge.core.orchestrator import Orchestrator
-from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.project_loader import load_project_config, resolve
+from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 from tolokaforge.runner.models import TaskDescription
 
 pytestmark = pytest.mark.canonical
@@ -71,8 +71,9 @@ def test_default_environment_resolves_all_ephemeral() -> None:
 
 def test_backend_selector_routes_pack_to_per_trial() -> None:
     """A run whose task inherits this project's all-ephemeral default
-    environment requires per-trial substrate, so backend selection picks
-    :class:`PerTrialRuntimeBackend`."""
+    environment requires per-trial substrate, so the orchestrator
+    constructs :class:`SharedStackRuntimeBackend` and the composer
+    provisions the fully trial-scoped plan per trial."""
     project = load_project_config(_PROJECT_YAML)
     manifest = resolve(project.default_environment, None)
     assert manifest is not None
@@ -93,11 +94,9 @@ def test_backend_selector_routes_pack_to_per_trial() -> None:
     orch.adapter = MagicMock()
     orch.adapter.to_task_description.side_effect = lambda tid: task_desc
 
-    assert orch._select_backend_from_tasks() == "per_trial"
-
     backend = orch._construct_runtime_backend(
         runner_address="sentinel:50051",
         env_manifest=None,
         run_id="slow-start-pack-smoke",
     )
-    assert isinstance(backend, PerTrialRuntimeBackend)
+    assert isinstance(backend, SharedStackRuntimeBackend)

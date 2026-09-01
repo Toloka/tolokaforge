@@ -646,11 +646,21 @@ assets:
 # Every task inherits unless it declares its own environment_manifest.
 # Task-level environment_manifest deep-merges on top per-task.
 default_environment:
-  # `stack` is the substrate slot: the pointer to the concrete
-  # runtime definition plus everything scoped to that specific
-  # file. It replaces ATOMICALLY — see Task override semantics.
-  # Today it is compose-shaped; a future backend kind adds a
-  # sibling shape, not new root fields.
+  # The substrate is authored as one of two shapes (ADR-0044 § 3):
+  #
+  # * `stack` — an ergonomic single-stack alias. One compose file
+  #   with runner service and inputs; the resolver synthesises a
+  #   single-entry composition plan whose scope is inferred from the
+  #   services' isolation labels.
+  # * `stacks` — the canonical multi-stack composition plan (keyed
+  #   by `stack_id`). Each entry declares its own `compose_file`,
+  #   `stack_scope` (`run` | `task` | `trial`), optional
+  #   `runner_service` (exactly one stack in the plan may set this),
+  #   and `inputs`. Task-side entries merge into project-side entries
+  #   by `stack_id`; see [Task override semantics].
+  #
+  # The two shapes are aliases of the same field — a patch may set
+  # one or the other, never both.
   stack:
     compose_file: "./shared/environment.compose.yaml"
     runner_service: "runner"
@@ -893,6 +903,24 @@ Some fields replace instead of merge:
   errors — a task cannot unset the environment (or its substrate
   pointer) out from under a project that declares one, and there
   is no engine-default compose file to fall through to.
+- **`environment_manifest.stacks[<stack_id>]`**: the same
+  atomic-replacement rule holds per stack in a multi-stack
+  composition plan. Task-side entries merge into project-side
+  entries by `stack_id`: a task-side patch that sets
+  `compose_file` on an entry atomically replaces that whole
+  per-stack `StackPatch` (clean slate of `inputs` and
+  `runner_service`); a patch that leaves `compose_file` unset
+  deep-merges — the task's `inputs` layer over the project's per
+  key, other non-`null` sub-fields override, and the project-side
+  `compose_file` survives. Task-only entries append in
+  task-declared order; project-only entries survive in
+  project-declared order. Every merged entry MUST carry a
+  `stack_scope` — the multi-stack path does not fall back on
+  service-isolation-driven scope inference. The scalar `stack`
+  and the plural `stacks` are aliases of the same field; a patch
+  MUST NOT mix them, and the resolver refuses a merge that would
+  combine a scalar `stack.compose_file` on one side with a
+  `stacks` block on the other.
 - **`system_prompt`**: pointing at a different file (or inline
   text) replaces the project prompt entirely; no merge.
 
@@ -1516,12 +1544,16 @@ field: compose files carry zero isolation semantics and the manifest
 is the single authority for how the harness treats each service
 between trials.
 
-Backend selection follows the per-service map: any task with a
-`reset` or `ephemeral` service routes the run onto
-`PerTrialRuntimeBackend`; runs whose every task labels every service
-`shared` route onto `SharedStackRuntimeBackend`. Operators do not
-set the backend directly — the legacy `orchestrator.runtime` field
-survives as a deprecated override with a `DeprecationWarning`.
+Plan-shape coercion follows the per-service map on the scalar-form
+`stack`: any task with a `reset` or `ephemeral` service coerces the
+synthesised `StackDecl.stack_scope` to `"trial"` (the composer
+materialises the stack fresh per trial); tasks that label every
+service `shared` coerce to `"run"` (the composer materialises once
+at run start). Operators do not set the backend directly — the
+orchestrator always constructs `SharedStackRuntimeBackend` and the
+composer sequences per-scope materialisation. The legacy
+`orchestrator.runtime` field survives as a deprecated plan-shape
+coercion knob with a `DeprecationWarning`.
 
 Two consistency rules run on the resolved document:
 
@@ -1567,7 +1599,8 @@ Every service persists across trials. State carries over between
 trials. This never happens by accident: every service the compose
 file declares must be listed under `services` with
 `isolation: "shared"`. Any missing entry defaults to `ephemeral` and
-routes the run onto `PerTrialRuntimeBackend`.
+coerces the scalar-form `StackDecl.stack_scope` to `"trial"` — the
+composer materialises the stack fresh per trial.
 
 ```yaml
 # project.yaml — every declared service labelled shared
@@ -1861,14 +1894,16 @@ manifest. Three consequences:
   `reset_recipes:{sql_dump,filesystem_dir,redis_dump,bare}`, and
   `network_isolation:no_internet`.
 
-- **Backend selection is derived from the per-service isolation
-  map, not read off a root `isolation` field.** Any task with a
-  `reset` or `ephemeral` service routes onto
-  `PerTrialRuntimeBackend`; runs whose every task labels every
-  service `shared` route onto `SharedStackRuntimeBackend`. The
-  deprecated `orchestrator.runtime` field survives as an operator
-  override with a `DeprecationWarning`; retirement lands with a
-  later cleanup milestone.
+- **Plan-shape coercion is derived from the per-service isolation
+  map on the scalar-form `stack`, not read off a root `isolation`
+  field.** Any task with a `reset` or `ephemeral` service coerces
+  the synthesised `StackDecl.stack_scope` to `"trial"`; tasks that
+  label every service `shared` coerce to `"run"`. The orchestrator
+  always constructs `SharedStackRuntimeBackend`; the composer
+  sequences per-scope materialisation. The deprecated
+  `orchestrator.runtime` field survives as a plan-shape coercion
+  knob with a `DeprecationWarning`; retirement lands with a later
+  cleanup milestone.
 
 - **Enforcement can be delegated to a capable backend.** For
   `network_policy`, the manifest declares the *need*; the *grant*
@@ -1883,13 +1918,17 @@ manifest. Three consequences:
 ### Environment identity
 
 `resolve_environment_identity(env)` returns a `sha256:...` digest
-over the canonicalised compose bytes, `stack_inputs`, per-service
-isolation map, and referenced seed digests. Two manifests with
-identical inputs produce equal identities regardless of YAML
-formatting; any change to a covered input flips the digest. The
-orchestrator logs it at info level once per task at run start.
-Materialisation / dedup consumers land later per the public
-roadmap.
+over the manifest's composition plan, per-service isolation map, and
+referenced seed digests. Two manifests with identical inputs produce
+equal identities regardless of YAML formatting; any change to a compose
+byte, an input, a service label, a stack scope, or a seed's digest
+flips the digest. A single-stack manifest emits the scalar-form
+payload (top-level `compose` + `inputs`); a multi-stack manifest
+emits a per-stack `stacks` list in plan order. See
+[`RUNTIME_BACKENDS.md` § Environment identity](RUNTIME_BACKENDS.md#environment-identity)
+for the payload shapes and the byte-parity contract. The orchestrator
+logs the digest at info level once per task at run start;
+materialisation / dedup consumers land later per the public roadmap.
 
 ### Explicitly future — not defined by this document
 

@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 11,
+  "bucket_b_count": 12,
   "commits": [
     {
       "adapter_paths": [
@@ -1865,6 +1865,53 @@
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py",
         "tolokaforge_coding_harnesses/tests/canonical/test_pypi_ready.py",
         "tolokaforge_coding_harnesses/tests/unit/test_adapter_support.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "AGENTS.md",
+        "docs/CONFIG.md",
+        "docs/RUNTIME_BACKENDS.md",
+        "tests/canonical/test_endpoint_add_pack_wiring.py",
+        "tests/canonical/test_example_microservices_pack.py",
+        "tests/canonical/test_reset_recipe_pack_wiring.py",
+        "tests/canonical/test_slow_start_pack_wiring.py",
+        "tests/unit/test_backend_selection.py",
+        "tests/unit/test_orchestrator_extract_run_env_manifest.py",
+        "tests/unit/test_run_trial.py",
+        "tests/unit/test_terminal_bench.py",
+        "tolokaforge/core/models/run_config.py",
+        "tolokaforge/core/orchestrator.py",
+        "tolokaforge/core/plugin_registry.py",
+        "tolokaforge/core/run_trial.py",
+        "tolokaforge/core/shared_stack_runtime.py",
+        "tolokaforge/runner/models.py"
+      ],
+      "bucket": "B",
+      "date": "2026-09-01",
+      "pr": null,
+      "reason": "17 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "1be167de828d8da58a0b46880dc5aac205781855",
+      "subject": "feat(core): composer-driven orchestrator selection (#1382, stage 2)",
+      "touched_files": [
+        "AGENTS.md",
+        "docs/CONFIG.md",
+        "docs/RUNTIME_BACKENDS.md",
+        "examples/terminal_bench/README.md",
+        "tests/canonical/test_endpoint_add_pack_wiring.py",
+        "tests/canonical/test_example_microservices_pack.py",
+        "tests/canonical/test_reset_recipe_pack_wiring.py",
+        "tests/canonical/test_slow_start_pack_wiring.py",
+        "tests/unit/test_backend_selection.py",
+        "tests/unit/test_orchestrator_extract_run_env_manifest.py",
+        "tests/unit/test_run_trial.py",
+        "tests/unit/test_terminal_bench.py",
+        "tolokaforge/core/models/run_config.py",
+        "tolokaforge/core/orchestrator.py",
+        "tolokaforge/core/plugin_registry.py",
+        "tolokaforge/core/run_trial.py",
+        "tolokaforge/core/shared_stack_runtime.py",
+        "tolokaforge/runner/models.py"
       ]
     }
   ]

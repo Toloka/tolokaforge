@@ -1449,10 +1449,19 @@ def shared_runtime_backend_factory(
 ) -> SharedStackRuntimeBackend:
     """Build a :class:`SharedStackRuntimeBackend` from a build context.
 
-    Task-declared-stack mode (``ctx.env_manifest`` set) materialises the
-    task-authored compose stack once per run; built-in-stack mode wires the
-    gRPC client to ``ctx.runner_address`` and resolves service URLs from the
-    environment via :func:`_build_env_endpoints`.
+    Three modes:
+
+    * env_manifest set — materialise the task-authored compose plan; the
+      composer walks run-scope stacks at :meth:`connect` and per-scope
+      stacks at :meth:`provision`.
+    * ``per_trial_mode`` set (env_manifest absent) — pin the per-trial
+      branch: :meth:`connect` no-ops ``materialise_run`` and every
+      :meth:`provision` materialises the trial's own compose plan via
+      ``composer.provision_trial``. The orchestrator sets this when
+      short-circuiting the run-scope extract on a fully trial-scoped plan.
+    * neither set — built-in engine mode: the gRPC client dials
+      ``ctx.runner_address`` and service URLs resolve via
+      :func:`_build_env_endpoints`.
     """
     if ctx.env_manifest is not None:
         return SharedStackRuntimeBackend(
@@ -1463,6 +1472,16 @@ def shared_runtime_backend_factory(
             mount_docker_socket=ctx.mount_docker_socket,
             events=ctx.events,
         )
+    if ctx.per_trial_mode:
+        backend = SharedStackRuntimeBackend(
+            env_manifest=None,
+            seeds=ctx.seeds,
+            log_capture=ctx.log_capture,
+            mount_docker_socket=ctx.mount_docker_socket,
+            events=ctx.events,
+        )
+        backend._per_trial_mode = True
+        return backend
     return SharedStackRuntimeBackend(
         runner_address=ctx.runner_address,
         endpoints=_build_env_endpoints(ctx.runner_address),

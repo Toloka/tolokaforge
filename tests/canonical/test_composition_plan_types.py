@@ -278,10 +278,8 @@ class TestEnvironmentPatchStacksBlockRefusal:
 
     def test_stacks_block_alone_is_accepted(self) -> None:
         """New composition-plan patch — no scalar `stack.compose_file`.
-        The multi-stack merge path is not wired in this ticket; this test
-        only pins that the patch construction itself accepts the shape.
-        The end-to-end refusal on `resolve` is locked by
-        :meth:`test_stacks_block_is_refused_end_to_end`."""
+        Locks that the patch construction accepts the shape; end-to-end
+        resolution is locked by :meth:`test_stacks_block_resolves_end_to_end`."""
         patch = EnvironmentPatch(
             stacks={
                 "engine": StackPatch(
@@ -293,25 +291,56 @@ class TestEnvironmentPatchStacksBlockRefusal:
         assert patch.stacks is not None
         assert "engine" in patch.stacks
 
-    def test_stacks_block_is_refused_end_to_end(self) -> None:
-        """The whole point of accepting the `stacks` block at patch level
-        is that it must be caught at resolve time, not silently degenerate
-        into the scalar coercion path. Locks the guard in the synthesiser —
-        a follow-up refactor that removes it would land here."""
+    def test_stacks_block_resolves_end_to_end(self) -> None:
+        """Task-side `stacks` block deep-merges into the project side via
+        `resolve()`. Locks that the multi-stack merge algorithm walks
+        end-to-end: two project stacks + one task-only + one task-side
+        deep-merge produce a plan with the expected three-entry order,
+        each entry carrying the expected `stack_id` / `compose_file` /
+        `stack_scope` / `inputs`. Scalar mirror on the manifest points
+        at the runner-owning stack."""
         from tolokaforge.core.project_loader import resolve
 
         project_patch = EnvironmentPatch(
-            stack=StackPatch(compose_file=_fixture("safe_one_service.yaml"))
+            stacks={
+                "engine": StackPatch(
+                    compose_file=_fixture("safe_two_service.yaml"),
+                    stack_scope="run",
+                    runner_service="default",
+                    inputs={"ENGINE_A": "1"},
+                ),
+                "gateway": StackPatch(
+                    compose_file=_fixture("safe_one_service.yaml"),
+                    stack_scope="run",
+                    inputs={"GW_A": "1"},
+                ),
+            }
         )
         task_patch = EnvironmentPatch(
             stacks={
-                "engine": StackPatch(
-                    compose_file=_fixture("safe_one_service.yaml"), stack_scope="run"
-                )
+                "engine": StackPatch(inputs={"ENGINE_B": "2"}),
+                "task_stack": StackPatch(
+                    compose_file=_fixture("safe_one_service.yaml"),
+                    stack_scope="trial",
+                ),
             }
         )
-        with pytest.raises(NotImplementedError, match="multi-stack merge path is not yet wired"):
-            resolve(project_env=project_patch, task_env=task_patch)
+        m = resolve(project_env=project_patch, task_env=task_patch)
+        assert m is not None
+        assert [decl.stack_id for decl in m.stacks] == ["engine", "gateway", "task_stack"]
+        engine, gateway, task_stack = m.stacks
+        assert engine.compose_file == _fixture("safe_two_service.yaml")
+        assert engine.stack_scope == "run"
+        assert engine.runner_service == "default"
+        assert engine.inputs == {"ENGINE_A": "1", "ENGINE_B": "2"}
+        assert gateway.compose_file == _fixture("safe_one_service.yaml")
+        assert gateway.stack_scope == "run"
+        assert gateway.inputs == {"GW_A": "1"}
+        assert task_stack.compose_file == _fixture("safe_one_service.yaml")
+        assert task_stack.stack_scope == "trial"
+        assert m.compose_file == _fixture("safe_two_service.yaml")
+        assert m.runner_service == "default"
+        assert m.stack_inputs == {"ENGINE_A": "1", "ENGINE_B": "2"}
 
     def test_stack_without_compose_file_and_stacks_together_accepted(self) -> None:
         """Edge case: `stack` set but ONLY carrying inputs/runner_service

@@ -783,34 +783,43 @@ def resolve(
     the manifest — the point where the disk-touching validators
     (compose-file existence, safety checks) run. Returns ``None`` when
     neither side declares an environment; raises ``ValueError`` when the
-    merged patch has no ``compose_file`` (the manifest would be
-    unconstructible).
+    merged patch declares no compose file on either the scalar
+    :attr:`~EnvironmentPatch.stack` slot or the plural
+    :attr:`~EnvironmentPatch.stacks` block.
 
-    Atomic ``stack`` replacement — the trigger is the presence of the
-    ``compose_file`` key on the task's ``stack`` patch, never path
-    identity. When it fires:
+    Two authoring shapes are honoured (ADR-0044 § 3):
 
-    - The task's ``stack`` replaces the project's ``stack`` outright —
-      clean slate of ``inputs`` and ``runner_service`` (a foreign
-      compose file's ``${var}`` slots must never silently capture
-      inherited values).
-    - Service-treatment fields (``initial_state``, ``services``) are
-      discarded — the project's per-service opt-outs reviewed the
-      project's services, not the replacement stack.
-    - Policy-request fields (``network_policy``,
+    * Scalar :attr:`~EnvironmentPatch.stack` — a single substrate slot.
+      Atomic ``stack`` replacement fires when the task declares
+      ``stack.compose_file``: the task's ``stack`` replaces the project's
+      outright — clean slate of ``inputs`` and ``runner_service``
+      (a foreign compose file's ``${var}`` slots must never silently
+      capture inherited values). Service-treatment fields
+      (``initial_state``, ``services``) are discarded on the replacement;
+      policy-request fields (``network_policy``,
       ``limited_internet_allowlist``, ``security_context_defaults``)
-      survive — substrate-neutral, they describe the trial regardless of
-      substrate.
+      survive.
+    * Plural :attr:`~EnvironmentPatch.stacks` — the multi-stack
+      composition plan. Task-side entries merge into project-side entries
+      by ``stack_id`` (see :func:`_merge_multi_stack_patches`); the
+      manifest's scalar ``compose_file`` / ``runner_service`` /
+      ``stack_inputs`` mirror the runner-owning stack so every consumer
+      of the scalar-form fields (``env_identity.describe_environment_identity``
+      included) keeps working.
+
+    Mixing the two shapes across merge layers is refused — the scalar
+    ``stack.compose_file`` and the ``stacks`` block are aliases of the
+    same field. Author both sides using the same shape.
 
     After manifest construction, every compose service missing from the
     merged ``services`` map is filled with an ``ephemeral`` default so
     downstream consumers see the complete map.
 
-    Anchoring: ``stack.compose_file`` paths must already be absolute
-    when this runs. The project loader and the task loader anchor them
-    to the file that declared them before ``ProjectConfig`` /
-    ``TaskConfig`` are constructed; this function assumes that
-    invariant.
+    Anchoring: every compose-file path (scalar and per-stack) must
+    already be absolute when this runs. The project loader and the task
+    loader anchor them to the file that declared them before
+    ``ProjectConfig`` / ``TaskConfig`` are constructed; this function
+    assumes that invariant.
     """
     if project_env is None and task_env is None:
         return None
@@ -821,19 +830,29 @@ def resolve(
     merged = _merge_env_patches(project_data, task_data)
 
     stack = merged.get("stack") or {}
-    compose_file = stack.get("compose_file")
+    stacks_patch = merged.get("stacks")
+
+    if stacks_patch:
+        mirror = _pick_scalar_mirror_stack(stacks_patch)
+        compose_file = mirror.get("compose_file")
+        runner_service = mirror.get("runner_service")
+        stack_inputs = dict(mirror.get("inputs") or {})
+    else:
+        compose_file = stack.get("compose_file")
+        runner_service = stack.get("runner_service")
+        stack_inputs = dict(stack.get("inputs") or {})
+
     if not compose_file:
         raise ValueError(
             "EnvironmentPatch resolve produced no compose_file — either the "
             "project's default_environment or the task's environment_manifest "
-            "must declare `stack.compose_file`."
+            "must declare `stack.compose_file` or a `stacks:` block."
         )
 
     manifest_kwargs: dict[str, Any] = {
         "compose_file": compose_file,
-        "stack_inputs": dict(stack.get("inputs") or {}),
+        "stack_inputs": stack_inputs,
     }
-    runner_service = stack.get("runner_service")
     if runner_service:
         manifest_kwargs["runner_service"] = runner_service
     for field in _ENDPOINT_OVERRIDE_FIELDS:
@@ -869,21 +888,24 @@ def _fill_missing_service_defaults(manifest: EnvironmentManifest) -> None:
 
 
 def _synthesise_composition_plan(manifest: EnvironmentManifest, merged: dict[str, Any]) -> None:
-    """Synthesise :attr:`EnvironmentManifest.stacks` from the scalar-form
-    fields when the merged patch declares no ``stacks`` block (ADR-0044
-    § 3 backward-compat coercion).
+    """Populate :attr:`EnvironmentManifest.stacks` from the merged patch.
 
     In-place on the manifest. Idempotent: no-op if ``stacks`` already
-    populated (from an explicit patch-side declaration).
+    populated (from an explicit patch-side declaration this function has
+    not yet visited).
 
-    The synthesised single-entry plan uses ``stack_id="default"``, the
-    manifest's ``compose_file``, and infers ``stack_scope`` from
-    :attr:`EnvironmentManifest.requires_per_trial` — True (empty services
-    or any non-``shared`` service) → ``trial``; False (all-``shared``) →
-    ``run``. This coercion preserves byte-identical behaviour for every
-    pre-ADR-0044 task pack: the scalar fields remain populated and the
-    synthetic plan captures the same scope information the previous
-    :meth:`Orchestrator._select_backend_from_tasks` would derive.
+    Two paths (ADR-0044 § 3):
+
+    * ``merged["stacks"]`` is set — one :class:`StackDecl` per entry, in
+      plan order. Each entry's ``stack_scope`` is required at this point:
+      the multi-stack path does not infer scope from services (that
+      heuristic applies only to the scalar 'stack' form).
+    * Otherwise — the scalar backward-compat coercion. Synthesises a
+      single-entry plan under ``stack_id="default"``, mirroring the
+      manifest's scalar fields, with ``stack_scope`` inferred from
+      :attr:`EnvironmentManifest.requires_per_trial` (``True`` → ``trial``,
+      ``False`` → ``run``). This preserves byte-identical behaviour for
+      every pre-ADR-0044 task pack.
     """
     from tolokaforge.runner.models import StackDecl
 
@@ -891,11 +913,9 @@ def _synthesise_composition_plan(manifest: EnvironmentManifest, merged: dict[str
         return
     stacks_patch = merged.get("stacks")
     if stacks_patch:
-        raise NotImplementedError(
-            "EnvironmentPatch.stacks (multi-stack composition plan) is declared "
-            "but the multi-stack merge path is not yet wired (see ADR-0044 § 3). "
-            "Use the scalar `stack` field until the composer lands."
-        )
+        for stack_id, patch in stacks_patch.items():
+            manifest.stacks.append(_build_stack_decl(stack_id, patch))
+        return
     inferred_scope = "trial" if manifest.requires_per_trial else "run"
     manifest.stacks.append(
         StackDecl(
@@ -906,6 +926,54 @@ def _synthesise_composition_plan(manifest: EnvironmentManifest, merged: dict[str
             inputs=dict(manifest.stack_inputs),
         )
     )
+
+
+def _build_stack_decl(stack_id: str, patch: dict[str, Any]) -> Any:
+    """Return a :class:`StackDecl` for one entry in a merged ``stacks`` block.
+
+    ``stack_scope`` is required — the multi-stack path does not fall back
+    on the scalar-form ``requires_per_trial`` heuristic. ``compose_file``
+    is required — every stack must resolve to a compose file after merge.
+    """
+    from tolokaforge.runner.models import StackDecl
+
+    scope = patch.get("stack_scope")
+    if scope is None:
+        raise ValueError(
+            f"stacks.{stack_id}.stack_scope is required — the multi-stack "
+            "path does not infer scope from services (that heuristic applies "
+            "only to the scalar 'stack' form; see ADR-0044 § 3)"
+        )
+    compose_file = patch.get("compose_file")
+    if not compose_file:
+        raise ValueError(
+            f"stacks.{stack_id}.compose_file is required — every stack "
+            "entry must declare a compose file after merge (see ADR-0044 § 3)."
+        )
+    return StackDecl(
+        stack_id=stack_id,
+        compose_file=compose_file,
+        stack_scope=scope,
+        runner_service=patch.get("runner_service"),
+        inputs=dict(patch.get("inputs") or {}),
+    )
+
+
+def _pick_scalar_mirror_stack(stacks_patch: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Return the entry whose fields are mirrored onto the manifest's
+    scalar ``compose_file`` / ``runner_service`` / ``stack_inputs`` slots.
+
+    INV-12 (ADR-0044 § 7) guarantees at most one stack in a plan sets
+    ``runner_service``; that stack is the mirror. If no stack owns the
+    runner (legal iff a ``trial``-scope stack will own the runner at
+    ``provision_trial`` time), the first stack in plan order is the
+    mirror. Every existing consumer of the scalar fields keeps loading a
+    valid compose file either way.
+    """
+    for patch in stacks_patch.values():
+        if patch.get("runner_service"):
+            return patch
+    return next(iter(stacks_patch.values()))
 
 
 def _dump_patch(patch: EnvironmentPatch | None) -> dict[str, Any]:
@@ -922,25 +990,27 @@ def _merge_env_patches(
     project: dict[str, Any],
     task: dict[str, Any],
 ) -> dict[str, Any]:
-    """Deep-merge two patch dicts with the atomic-``stack`` rule.
+    """Deep-merge two patch dicts under the ADR-0044 § 3 shape rules.
 
-    Standard deep-merge (task wins) applies to every field except
-    ``stack``. The atomic rule fires only when the task declares
-    ``stack.compose_file``: the task's ``stack`` replaces the project's
-    entirely, and service-treatment fields are dropped so they don't
-    silently extend from a reviewed stack to an unreviewed one.
+    Three cases:
+
+    * Either side declares a plural ``stacks`` block — route to
+      :func:`_merge_multi_stack_patches`.
+    * Task declares scalar ``stack.compose_file`` — atomic ``stack``
+      replacement: the task's ``stack`` replaces the project's entirely,
+      and service-treatment fields are dropped so they don't silently
+      extend from a reviewed stack to an unreviewed one.
+    * Otherwise — standard :func:`deep_merge` (task wins).
     """
+    project_stacks = project.get("stacks")
+    task_stacks = task.get("stacks")
+    if project_stacks or task_stacks:
+        return _merge_multi_stack_patches(project, task, project_stacks or {}, task_stacks or {})
+
     task_stack = task.get("stack")
     stack_replacement = isinstance(task_stack, dict) and "compose_file" in task_stack
     if not stack_replacement:
         return deep_merge(project, task)
-
-    if project.get("stacks") or task.get("stacks"):
-        raise NotImplementedError(
-            "EnvironmentPatch.stacks (multi-stack composition plan) is declared "
-            "but the multi-stack merge path is not yet wired (see ADR-0044 § 3). "
-            "Use the scalar `stack` field until the composer lands."
-        )
 
     merged: dict[str, Any] = {"stack": dict(task_stack)}
     for field in _SERVICE_TREATMENT_FIELDS:
@@ -951,4 +1021,95 @@ def _merge_env_patches(
             merged[field] = task[field]
         elif field in project:
             merged[field] = project[field]
+    return merged
+
+
+def _merge_multi_stack_patches(
+    project: dict[str, Any],
+    task: dict[str, Any],
+    project_stacks: dict[str, dict[str, Any]],
+    task_stacks: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Merge two patch dicts on the multi-stack path (ADR-0044 § 3).
+
+    Per-``stack_id`` merge rules:
+
+    * Project-only entry survives.
+    * Task-only entry appends in task-declared order.
+    * Both sides declare the same ``stack_id`` and the task-side sets
+      ``compose_file`` — atomic per-stack replacement (the task's whole
+      :class:`StackPatch` replaces the project's, clean slate of
+      ``inputs`` / ``runner_service``).
+    * Both sides declare the same ``stack_id`` and the task-side leaves
+      ``compose_file`` unset — deep-merge: the task's ``inputs`` layer
+      over the project's per key; other non-``None`` sub-fields override.
+
+    Cross-shape refusal: mixing the scalar ``stack.compose_file`` with a
+    ``stacks`` block across merge layers is refused (they are aliases of
+    the same field per ADR-0044 § 3). Policy-request and
+    service-treatment fields deep-merge as on the scalar-form path
+    (task wins on conflict).
+    """
+    project_scalar = project.get("stack") or {}
+    task_scalar = task.get("stack") or {}
+    if project_scalar.get("compose_file") is not None:
+        stacks_side = "task" if task_stacks else "project"
+        raise ValueError(
+            "EnvironmentPatch merge: the project side declares scalar "
+            "`stack.compose_file` while the "
+            f"{stacks_side} side declares a `stacks:` block. The two "
+            "representations are aliases of the same field and cannot be "
+            "mixed across merge layers (see ADR-0044 § 3). Author both "
+            "sides using the same shape."
+        )
+    if task_scalar.get("compose_file") is not None:
+        stacks_side = "project" if project_stacks else "task"
+        raise ValueError(
+            "EnvironmentPatch merge: the task side declares scalar "
+            "`stack.compose_file` while the "
+            f"{stacks_side} side declares a `stacks:` block. The two "
+            "representations are aliases of the same field and cannot be "
+            "mixed across merge layers (see ADR-0044 § 3). Author both "
+            "sides using the same shape."
+        )
+
+    merged_stacks: dict[str, dict[str, Any]] = {}
+    for stack_id, project_patch in project_stacks.items():
+        task_patch = task_stacks.get(stack_id)
+        if task_patch is None:
+            merged_stacks[stack_id] = dict(project_patch)
+        elif task_patch.get("compose_file") is not None:
+            merged_stacks[stack_id] = dict(task_patch)
+        else:
+            merged_stacks[stack_id] = _deep_merge_stack_patch(project_patch, task_patch)
+    for stack_id, task_patch in task_stacks.items():
+        if stack_id in merged_stacks:
+            continue
+        merged_stacks[stack_id] = dict(task_patch)
+
+    merged: dict[str, Any] = {"stacks": merged_stacks}
+    for field in (*_SERVICE_TREATMENT_FIELDS, *_POLICY_REQUEST_FIELDS):
+        if field in task:
+            merged[field] = task[field]
+        elif field in project:
+            merged[field] = project[field]
+    return merged
+
+
+def _deep_merge_stack_patch(
+    project_patch: dict[str, Any],
+    task_patch: dict[str, Any],
+) -> dict[str, Any]:
+    """Layer *task_patch* over *project_patch* per the multi-stack
+    deep-merge rule: ``inputs`` layer per key, other sub-fields override
+    when the task-side declares a non-``None`` value.
+    """
+    merged = dict(project_patch)
+    for key, value in task_patch.items():
+        if key == "inputs":
+            layered = dict(merged.get("inputs") or {})
+            layered.update(value or {})
+            merged["inputs"] = layered
+        else:
+            merged[key] = value
     return merged

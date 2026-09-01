@@ -553,10 +553,11 @@ class TestTerminalBenchAdapterNoSubprocess:
         check_output_mock.assert_not_called()
 
 
-class TestTerminalBenchTasksSelectPerTrialBackend:
-    """Backend selection is task-driven: an ``all-ephemeral`` manifest picks per-trial."""
+class TestTerminalBenchTasksProduceTrialScopedPlan:
+    """The terminal-bench adapter emits ``all-ephemeral`` manifests — the
+    composer sees a fully trial-scoped plan and provisions per trial."""
 
-    def test_select_backend_returns_per_trial(self, tmp_path):
+    def test_adapter_manifest_is_trial_scoped_only(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
         from tolokaforge.core.models import (
@@ -566,6 +567,7 @@ class TestTerminalBenchTasksSelectPerTrialBackend:
             RunConfig,
         )
         from tolokaforge.core.orchestrator import Orchestrator
+        from tolokaforge.runner.models import PlanShape
 
         fixture_dir = Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
         adapter = TerminalBenchAdapter(
@@ -582,7 +584,9 @@ class TestTerminalBenchTasksSelectPerTrialBackend:
         task.task_id = "echo-hello"
         orch.tasks = [task]
 
-        assert orch._select_backend_from_tasks() == "per_trial"
+        manifest = orch._task_description("echo-hello").environment_manifest
+        assert manifest is not None
+        assert manifest.plan_shape == PlanShape.TRIAL_SCOPED_ONLY
 
 
 # =============================================================================

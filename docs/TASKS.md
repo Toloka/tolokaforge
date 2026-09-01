@@ -118,7 +118,22 @@ docker-compose stack — extra services beyond the engine's built-in
 stack (extended to include mock-web / rag-service if the task uses their
 tools).
 
-The manifest points at a compose file that lives next to `task.yaml`, plus a per-service `services:` map that declares each service's isolation posture:
+The manifest is authored as one of two shapes (ADR-0044 § 3):
+
+* **Scalar `stack`** — an ergonomic single-stack alias. Points at one
+  compose file next to `task.yaml`, with a runner service and inputs.
+  The resolver synthesises a single-entry composition plan whose scope
+  is inferred from the services' isolation labels.
+* **Plural `stacks`** — the canonical multi-stack composition plan
+  keyed by `stack_id`. Each entry declares its own `compose_file`,
+  `stack_scope` (`run` | `task` | `trial`), optional `runner_service`
+  (exactly one stack in the plan may set this), and `inputs`.
+  Task-side entries merge into project-side entries by `stack_id` —
+  see [PROJECTS.md § Task override semantics](PROJECTS.md#task-override-semantics)
+  for the per-stack atomic-replacement vs deep-merge rule.
+
+The two shapes are aliases of the same field — a patch may set one or
+the other, never both.
 
 ```yaml
 environment_manifest:
@@ -132,13 +147,28 @@ environment_manifest:
     # any service not listed here defaults to `ephemeral`
 ```
 
+A multi-stack authoring example (T-Bench balanced-10 shape: one shared
+engine + a task-specific per-trial stack):
+
+```yaml
+environment_manifest:
+  stacks:
+    engine:
+      compose_file: "./shared/engine.compose.yaml"
+      stack_scope: "run"
+      runner_service: "runner"
+    task_stack:
+      compose_file: "./task_stack.compose.yaml"
+      stack_scope: "trial"
+```
+
 Field reference:
 
 | Field | Required | Default | Description |
 | --- | --- | --- | --- |
 | `compose_file` | yes | — | Path to the docker-compose YAML. Relative paths resolve against `task.yaml`. This file is the sole source of truth for services, images, ports, volumes, healthchecks, and `depends_on`. |
 | `runner_service` | no | `"default"` | Which compose service is the tolokaforge runner. Must be a service declared in the compose file. |
-| `services.<name>.isolation` | no | `"ephemeral"` | Per-service posture: `"shared"` (long-lived across trials), `"reset"` (fresh container per trial + `reset.seed` recipe reapplied at each provision), `"ephemeral"` (fresh container per trial, no seed). Backend selection is task-driven — any `reset`/`ephemeral` service routes the run to `PerTrialRuntimeBackend` automatically. See the [multi-container guide](MULTI_CONTAINER_GUIDE.md#choosing-isolation) for how to pick. |
+| `services.<name>.isolation` | no | `"ephemeral"` | Per-service posture: `"shared"` (long-lived across trials), `"reset"` (fresh container per trial + `reset.seed` recipe reapplied at each provision), `"ephemeral"` (fresh container per trial, no seed). The scalar-form `stack` coerces to `stack_scope="trial"` when any service is `reset`/`ephemeral` (else `"run"`); the composer materialises trial-scope stacks fresh per trial. See the [multi-container guide](MULTI_CONTAINER_GUIDE.md#choosing-isolation) for how to pick. |
 | `services.<name>.reset.seed` | when `isolation: reset` | — | Name of the seed to apply on each provision. Must exist in the project's `assets.seeds` registry. See [`docs/RESET_RECIPES.md`](RESET_RECIPES.md) for the four seed kinds (`sql_dump` / `filesystem_dir` / `redis_dump` / `bare`). |
 | `services.<name>.network_access` | no | `"default"` | Per-service opt-out from the harness-injected shared internal network. `"default"` (existing behaviour) attaches the service to `tolokaforge_netpolicy_internal` under `no_internet` and `limited_internet` and injects `HTTP(S)_PROXY` env under `limited_internet`. `"restricted"` skips both — the service joins only the networks its compose entry declares (which are still forced `internal: true`). Use for an untrusted sibling that must not reach other harness-injected services. See the [multi-container guide](MULTI_CONTAINER_GUIDE.md#partitioning-an-untrusted-sibling). |
 | `network_policy` | no | `"no_internet"` | Public-egress posture for the task's application services. `no_internet` (default) attaches every task service (unless opted out via `services.<name>.network_access: restricted`) to an `internal` docker network so no service can reach the public internet; `full_internet` runs the compose file unchanged; `limited_internet` permits egress only to the hosts in `limited_internet_allowlist` via an injected forward proxy. See below. |
