@@ -594,3 +594,88 @@ def test_missing_write_file_tool_when_grading_expected_files():
     missing_tool_evidence = [ev for ev in attribution["evidence"] if ev["kind"] == "missing_tool"]
     assert len(missing_tool_evidence) == 1
     assert missing_tool_evidence[0]["tool"] == "write_file"
+
+
+def _synth_trajectory(
+    marker: TerminationReason, termination: TerminationReason | None
+) -> Trajectory:
+    """A trajectory carrying a harness-synthesised auto-fail grade.
+
+    ``termination`` is the trajectory's own ``termination_reason`` (what the
+    ``TrialGrader`` observed); ``marker`` is the value that lands on
+    :attr:`Grade.synthesized_by_termination_reason`. The two are decoupled so
+    the STUCK case (whose termination reason is enumerated, but whose marker
+    is set to STUCK_DETECTED by the grader) can be exercised beside the
+    ERROR-fallback case (termination is None; marker is ERROR).
+    """
+    traj = _base_trajectory()
+    traj.status = TrialStatus.COMPLETED if termination is not None else TrialStatus.ERROR
+    traj.termination_reason = termination
+    assert traj.grade is not None
+    traj.grade.synthesized_by_termination_reason = marker
+    return traj
+
+
+def test_a_stuck_detected_synth_grade_is_attributed_to_harness_autofail() -> None:
+    """A STUCK_DETECTED synth-marker grade classifies as ``harness_autofail``.
+
+    STUCK_DETECTED is not in the ``timeout_or_resource`` enumerated set, so the
+    tool-log scan below would otherwise settle on ``model_reasoning`` for a
+    synth trial with an empty tool log — which would blame the model for a
+    trial the harness itself terminated. The ``harness_autofail`` branch fires
+    on any synth-marker grade the deterministic elif chain does not, marks it
+    deterministic, and carries the reason as evidence.
+    """
+    traj = _synth_trajectory(
+        marker=TerminationReason.STUCK_DETECTED,
+        termination=TerminationReason.STUCK_DETECTED,
+    )
+
+    attribution = attribute_failure(traj)
+
+    assert attribution["failure_class"] == "harness_autofail"
+    assert attribution["deterministic"] is True
+    assert attribution["confidence"] == 1.0
+    assert attribution["synthesized"] is True
+    assert attribution["synthesized_by_termination_reason"] == "stuck_detected"
+    synth_evidence = [ev for ev in attribution["evidence"] if ev["kind"] == "synthesized_grade"]
+    assert synth_evidence == [{"kind": "synthesized_grade", "termination_reason": "stuck_detected"}]
+
+
+def test_a_synth_grade_over_an_enumerated_termination_reason_keeps_its_class() -> None:
+    """A synth grade whose ``TerminationReason`` is in the ``timeout_or_resource``
+    branch (EMPTY_COMPLETION, ERROR, TIMEOUT) keeps that class — the marker
+    fields ride alongside without changing the failure_class the enumerated
+    branch already catches. Otherwise a downstream consumer aggregating on
+    ``failure_class`` would see EMPTY_COMPLETION migrate from
+    ``timeout_or_resource`` to ``harness_autofail`` under a synth grade,
+    which is a wire shift the ``harness_autofail`` extension does not intend.
+    """
+    traj = _synth_trajectory(
+        marker=TerminationReason.EMPTY_COMPLETION,
+        termination=TerminationReason.EMPTY_COMPLETION,
+    )
+
+    attribution = attribute_failure(traj)
+
+    assert attribution["failure_class"] == "timeout_or_resource"
+    assert attribution["deterministic"] is True
+    assert attribution["synthesized"] is True
+    assert attribution["synthesized_by_termination_reason"] == "empty_completion"
+
+
+def test_a_real_measured_grade_is_not_marked_synthesized() -> None:
+    """The control: the two new fields default off on every grade a real
+    evaluator produced.
+
+    Without this the fields could default ``True``/populated and every downstream
+    consumer would read every trial as harness-synthesised.
+    """
+    traj = _base_trajectory()
+    traj.status = TrialStatus.TIMEOUT
+    traj.termination_reason = TerminationReason.TIMEOUT
+
+    attribution = attribute_failure(traj)
+
+    assert attribution["synthesized"] is False
+    assert attribution["synthesized_by_termination_reason"] is None

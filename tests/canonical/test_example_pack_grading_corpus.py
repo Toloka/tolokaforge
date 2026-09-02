@@ -2254,16 +2254,18 @@ def test_a_run_that_never_opened_the_action_fails_both_correlations_and_stays_gr
     assert audit.skip_notes == ()
 
 
-def test_the_guessed_reason_code_is_caught_by_the_correlation_and_by_nothing_else() -> None:
-    """The correlation earns its weight over the fold rather than restating the probe.
+def test_the_guessed_reason_code_is_caught_by_the_correlation_on_the_scored_component() -> None:
+    """The correlation earns its weight against the grounded run's, on the one
+    component the core substrate reaches.
 
-    Driven through the real ``GradingEngine`` at the pack's weights, the guessed run
-    and the grounded run differ in ``trace_checks`` and in no other component. The
-    substrate oracle agrees with them both twice over: ``db_probes`` is RUNNER_ONLY, so
-    core evaluates none of it here, and on a real run a guess that happens to be right
-    lands the identical ``corrective_actions`` row — ``reason_code``, ``status`` and
-    ``row_count`` all read the same. The judge is unscored in a deterministic fold, so
-    ``llm_judge`` is ``None`` on both.
+    ``db_probes`` is RUNNER_ONLY, so core evaluates none of it here, and the judge
+    is unscored in a deterministic fold — the whole-grade fold refuses because
+    ``state_checks`` and ``llm_judge`` are declared but produced no verdict. What
+    is still measurable is the ``trace_checks`` component itself: the correlation
+    on the guessed run scores below the correlation on the grounded run, so the
+    process discipline the pack was written to catch is caught by the correlation
+    on that component alone. Authoritative fold-level scoring is deferred to the
+    runner substrate, which scores every declared component.
     """
     grounded = _lot_ops_grade(_LOT_OPS_CORRECT_RUN)
     guessed = _lot_ops_grade(_GUESSED_CODE_RUN)
@@ -2274,71 +2276,76 @@ def test_the_guessed_reason_code_is_caught_by_the_correlation_and_by_nothing_els
     assert grounded.components.state_checks is None
     assert guessed.components.llm_judge is None
     assert grounded.components.llm_judge is None
-    assert guessed.score < grounded.score
+    assert guessed.components.trace_checks < grounded.components.trace_checks
 
 
-# Every core-side verdict the CHANGELOG's compatibility notice names for the two
-# shipped ``examples/**`` packs, folded through the real ``GradingEngine`` at each
-# pack's own weights and its own committed scenarios. The notice is a published
-# surface and the numbers in it are what an operator compares a stored score
-# against, so a fold that moved without the notice moving is a silent break.
-#
-# Both packs' core-side fold is carried entirely by ``trace_checks``:
-# ``state_checks.db_probes`` is RUNNER_ONLY, so core evaluates none of it, and core
-# assigns no ``llm_judge`` component at all — which is why each verdict below equals
-# its trial's ``trace_checks`` score rather than a blend of three.
+# Every core-side verdict for the two shipped ``examples/**`` packs, folded through
+# the real ``GradingEngine`` at each pack's own weights and its own committed
+# scenarios. Both packs declare grading components the core substrate cannot score
+# on its own: ``state_checks.db_probes`` is RUNNER_ONLY (only the runner substrate
+# executes it) and ``llm_judge`` needs a live judge call (deterministic core
+# aggregation cannot compose it). The fold refuses to compose a grade when a
+# declared component produced no verdict — folding the remainder would silently
+# redistribute the missing share and let the trial pass on the components core
+# happened to reach. Every row below therefore lands at the same refusal shape,
+# ``score=0.0`` and ``binary_pass=False``, with a reason naming the missing
+# component. Authoritative scoring of these packs is deferred to the runner
+# substrate, where every declared component reaches its evaluator.
 _PUBLISHED_CORE_VERDICTS = (
-    pytest.param(_lot_ops_grade, _LOT_OPS_CORRECT_RUN, 1.0, True, id="lot_ops_grounded_process"),
-    pytest.param(_lot_ops_grade, _GUESSED_CODE_RUN, 0.5, True, id="lot_ops_guessed_reason_code"),
-    pytest.param(
-        _lot_ops_grade, _FABRICATED_CODE_RUN, 0.5, True, id="lot_ops_code_outside_the_catalog"
-    ),
-    pytest.param(_lot_ops_grade, _UNREAD_LOT_RUN, 0.5, True, id="lot_ops_lot_never_read"),
-    pytest.param(_lot_ops_grade, _DOUBLE_POST_RUN, 0.0, False, id="lot_ops_duplicate_gate_tripped"),
-    pytest.param(_lot_ops_grade, _NO_ACTION_RUN, 0.0, False, id="lot_ops_no_action_opened"),
-    pytest.param(_lot_ops_grade, (), 0.0, False, id="lot_ops_empty_trajectory"),
-    pytest.param(_helpdesk_grade, _POLICY_CORRECT_RUN, 1.0, True, id="helpdesk_correct_process"),
+    pytest.param(_lot_ops_grade, _LOT_OPS_CORRECT_RUN, id="lot_ops_grounded_process"),
+    pytest.param(_lot_ops_grade, _GUESSED_CODE_RUN, id="lot_ops_guessed_reason_code"),
+    pytest.param(_lot_ops_grade, _FABRICATED_CODE_RUN, id="lot_ops_code_outside_the_catalog"),
+    pytest.param(_lot_ops_grade, _UNREAD_LOT_RUN, id="lot_ops_lot_never_read"),
+    pytest.param(_lot_ops_grade, _DOUBLE_POST_RUN, id="lot_ops_duplicate_gate_tripped"),
+    pytest.param(_lot_ops_grade, _NO_ACTION_RUN, id="lot_ops_no_action_opened"),
+    pytest.param(_lot_ops_grade, (), id="lot_ops_empty_trajectory"),
+    pytest.param(_helpdesk_grade, _POLICY_CORRECT_RUN, id="helpdesk_correct_process"),
     *(
-        pytest.param(_helpdesk_grade, param.values[0], 2 / 3, True, id=f"helpdesk_{param.id}")
+        pytest.param(_helpdesk_grade, param.values[0], id=f"helpdesk_{param.id}")
         for param in _WRONG_PROCESS_RUNS
     ),
-    pytest.param(_helpdesk_grade, (), 0.0, False, id="helpdesk_empty_trajectory"),
+    pytest.param(_helpdesk_grade, (), id="helpdesk_empty_trajectory"),
 )
 
 
-@pytest.mark.parametrize(("grade_pack", "calls", "score", "binary_pass"), _PUBLISHED_CORE_VERDICTS)
-def test_each_published_core_verdict_folds_to_the_number_the_notice_names(
+@pytest.mark.parametrize(("grade_pack", "calls"), _PUBLISHED_CORE_VERDICTS)
+def test_each_pack_refuses_the_fold_on_core_because_its_declared_components_do_not_all_score(
     grade_pack: Callable[[Sequence[RecordedToolCall]], Grade],
     calls: Sequence[RecordedToolCall],
-    score: float,
-    binary_pass: bool,
 ) -> None:
-    """The compatibility notice's own numbers, measured rather than asserted in prose.
+    """Every scenario refuses the fold on core, and the reason names why.
 
-    Both the score and the verdict, because the two move independently: the no-action
-    run is the row where the verdict flipped, and the wrong-process rows are rows where
-    the score moved and the verdict did not.
+    ``lot_ops_01`` declares ``state_checks.db_probes`` (RUNNER_ONLY) and
+    ``llm_judge``; ``helpdesk_01`` declares the same shape. Core scores neither, so
+    the declared-but-unscored refusal fires whichever trace_checks verdict the
+    trajectory earned — and the reason names one of the missing components, so an
+    operator reading a refused verdict learns which declaration the substrate
+    cannot answer for.
     """
     grade = grade_pack(calls)
 
-    assert (grade.score, grade.binary_pass) == (pytest.approx(score), binary_pass)
+    assert (grade.score, grade.binary_pass) == (0.0, False)
+    reasons = grade.reasons
+    named = "state_checks" in reasons or "llm_judge" in reasons
+    assert named, f"refusal must name a declared component: {reasons!r}"
 
 
-def test_the_lot_ops_wrong_process_runs_pass_by_exactly_their_threshold() -> None:
-    """No margin at all, which is the property that makes this pack's fold fragile.
+def test_the_lot_ops_wrong_process_runs_refuse_the_fold_on_core() -> None:
+    """The wrong-process scenarios refuse the fold, alongside the correct run.
 
-    ``0.5`` is ``pass_threshold`` to the digit, admitted only because the comparison is
-    ``>=``. Any reweighting, or one more constraint in the block, moves these three
-    trials from pass to fail — so the equality is pinned here rather than left implicit
-    in the rows above, where ``0.5`` beside ``True`` reads like a comfortable pass.
+    Under the pack's own weights ``state_checks.db_probes`` (RUNNER_ONLY) and
+    ``llm_judge`` are declared components core cannot score, so any core-side
+    grade on this pack refuses whichever ``trace_checks`` score the trajectory
+    produced. Authoritative scoring of these trajectories is deferred to the
+    runner substrate, where the substrate oracle and the judge both run.
     """
-    threshold = _lot_ops_grading().combine.pass_threshold
     wrong_process = (_GUESSED_CODE_RUN, _FABRICATED_CODE_RUN, _UNREAD_LOT_RUN)
 
-    scores = [_lot_ops_grade(calls).score for calls in wrong_process]
+    grades = [_lot_ops_grade(calls) for calls in wrong_process]
 
-    assert scores == [pytest.approx(threshold)] * len(wrong_process)
-    assert all(_lot_ops_grade(calls).binary_pass for calls in wrong_process)
+    assert [(grade.score, grade.binary_pass) for grade in grades] == [(0.0, False)] * len(
+        wrong_process
+    )
 
 
 def _reload_from_bundle(trial_dir: Path) -> Trajectory:
@@ -2862,7 +2869,12 @@ def test_a_record_less_corpus_reports_the_flagship_correlation_as_never_decided(
     gate = _row(report, _LOT_OPS_CONSTRAINTS[2][0])
     assert (lot.trials_labelled, lot.agreed_with_recorded_pass) == (3, 3)
     assert (gate.trials_labelled, gate.agreed_with_recorded_pass) == (3, 3)
-    assert [trial.recorded_binary_pass for trial in report.trials] == [True, True, False]
+    # Every trial's recorded verdict is ``False``: the fold on core refuses to compose
+    # a grade for these packs (``state_checks.db_probes`` is RUNNER_ONLY and
+    # ``llm_judge`` is unscored in a deterministic fold, so the declared-but-unscored
+    # branch fires for every trajectory). The trial-level pass column is uniform;
+    # the per-constraint agreement above is what still discriminates.
+    assert [trial.recorded_binary_pass for trial in report.trials] == [False, False, False]
 
 
 def test_a_correlation_decided_on_one_trial_of_three_is_reported_undecided_in_part(

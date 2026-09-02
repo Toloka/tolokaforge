@@ -1787,7 +1787,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     trial_id, trial_context, state_checks_config
                 )
                 components.hash_match = hash_result.hash_match
-                components.hash_score = hash_result.hash_score
+                if not hash_result.hash_unscorable:
+                    components.hash_score = hash_result.hash_score
+                # An unscorable replay leaves ``components.hash_score`` at the -1.0
+                # not-evaluated sentinel: the trial's world was hashed against a state
+                # no author asked for, and the fold's declared-but-unscored refusal
+                # (:mod:`tolokaforge.core.grading.combine_weights`) fires downstream
+                # rather than the trial passing on a fabricated ``hash_score: 0.0``.
                 state_diff = hash_result.state_diff
                 accounted_keys.update(hash_family_accounting(hash_result.basis))
             except Exception as e:
@@ -1968,6 +1974,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 success=False,
                 error=f"Trial {trial_id!r} is not gradeable: {type(exc).__name__}: {exc}",
             )
+        if verdict.refusal:
+            # A declared component produced no verdict (a judge that errored, a
+            # golden replay that did not run whole) or the scored components carry
+            # no weight; folding on the remainder would silently redistribute the
+            # missing share, so the RPC refuses and the trial lands UNGRADEABLE.
+            logger.error(f"GradeTrial: {trial_id} - {verdict.reason}")
+            return pb2.GradeTrialResponse(success=False, error=verdict.reason or "")
         # The gated component, not the judge's raw aggregate, is what the wire grade and
         # the reasons carry — so the write-back happens before either is built.
         components.llm_judge_score = verdict.judge_component
@@ -2420,6 +2433,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         two compare the trial against the state step 3 restored — identically, since
         what separates them is which declaration asked for it, which is the runtime
         ledger's question rather than the verdict's.
+
+        A per-action failure during replay populates ``golden_replay.failures`` and the
+        derived :attr:`HashGradingResult.hash_unscorable` reads ``True``: the caller then
+        leaves ``components.hash_score`` at the ``-1.0`` not-evaluated sentinel, and the
+        fold's declared-but-unscored refusal fires — the trial lands UNGRADEABLE rather
+        than surfacing a fabricated ``hash_score: 0.0`` against a state no author asked
+        for.
 
         Args:
             trial_id: Trial identifier

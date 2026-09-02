@@ -3687,8 +3687,28 @@ class HashGradingResult(BaseModel):
 
     @property
     def hash_score(self) -> float:
-        """Derived from ``hash_match``, so a non-binary or contradictory verdict cannot exist."""
+        """Derived from ``hash_match``, so a non-binary or contradictory verdict cannot exist.
+
+        Meaningful only when :attr:`hash_unscorable` is ``False``: a broken replay hashed
+        the trial against a state no author asked for, so the caller reads
+        :attr:`hash_unscorable` before writing this into the runner components — the write
+        skipped, the ``hash_score`` field stays at the ``-1.0`` not-evaluated sentinel, and
+        the fold refuses the trial rather than composing a fabricated verdict.
+        """
         return 1.0 if self.hash_match else 0.0
+
+    @property
+    def hash_unscorable(self) -> bool:
+        """Whether the golden replay left the trial's state hashable against a real world.
+
+        ``True`` when :attr:`golden_replay.failures` is non-empty — one or more per-action
+        failures during replay left partial state behind, so a hash against it would grade
+        the trial against a world no author asked for. The runner call site reads this bit
+        before writing :attr:`hash_score` into the runner components, so the ``-1.0``
+        not-evaluated sentinel survives and the fold's declared-but-unscored refusal fires
+        downstream.
+        """
+        return bool(self.golden_replay.failures)
 
 
 _DEPRECATED_MODEL_ALIASES: dict[str, str] = {
