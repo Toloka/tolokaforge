@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **grading**: `SnapshotGradingSubstrate` — bundle-backed offline / cross-region / replay grading path. Constructed per-trial as `SnapshotGradingSubstrate(bundle_view: GradeBundleView)` from a bundle loaded via `load_grade_bundle(bundle_dir)`; reads initial / final / final-stable DB state, the filesystem tar (lazily extracted with PEP 706 `tar.extractall(filter='data')`), and custom-check bytes from the bundle parts. Registered under the `tolokaforge.grading_substrates` entry-point group as `snapshot` (resolvable via `load_grading_substrate("snapshot")`). Two Protocol methods have hard offline limits in bundle format v1.0 and fail loud rather than silently returning empty: `db_probe(dsn, query)` raises `SubstrateUnreachableError` naming the DSN (bundle v1.1 will pre-materialise probe rows — [#1438](https://github.com/Toloka/tolokaforge/issues/1438)); `knowledge_search()` returns `None` (bundle v1.1 will carry an indexed KB snapshot — [#1439](https://github.com/Toloka/tolokaforge/issues/1439)). See [`docs/GRADER_SERVICE.md`](docs/GRADER_SERVICE.md) § Snapshot substrate and [`docs/GRADE_BUNDLE.md`](docs/GRADE_BUNDLE.md).
+
 ### Removed
 
 - `grading_method` reserved names `hash`, `transcript`, `llm` — never emitted, never dispatched. Task packs using these values fail loud at `RegisterTrial` with a message naming the registered set. Use `composite` (or leave `grading_method` unset).

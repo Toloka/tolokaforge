@@ -202,10 +202,15 @@ terminal_bench_native = "acme_adapter:TerminalBenchNativeGradingMethod"
 ```
 
 The marker class carries a `NAME: ClassVar[str]` — same shape as
-`tolokaforge.grading_substrates` from ADR-0040. `RegisterTrial` refuses an
-unregistered name with an error listing both the offending key and
-`available_grading_methods()`, so a typo in a task pack surfaces before the
-trial spends any turns.
+`tolokaforge.grading_substrates` from ADR-0040 (three shipped: `in_process`,
+`live_callback`, `snapshot`; the last reads a serialised grade bundle so the
+grader grades a trial without a live runner in reach — see
+[docs/GRADER_SERVICE.md](GRADER_SERVICE.md) and
+[docs/GRADE_BUNDLE.md](GRADE_BUNDLE.md) for the substrate topology and
+bundle format).
+`RegisterTrial` refuses an unregistered name with an error listing both the
+offending key and `available_grading_methods()`, so a typo in a task pack
+surfaces before the trial spends any turns.
 
 ### Single-substrate keys
 
