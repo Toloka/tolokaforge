@@ -109,4 +109,5 @@ A pure-shell approximation using `jq`, `sha256sum`, and `tar` is possible and de
 
 - Optional `provenance.json` sibling for engine-bump debugging (not covered by the manifest digest): [#1428](https://github.com/Toloka/tolokaforge/issues/1428).
 - Cross-language parser example (`jq` + `sha256sum` + `tar tvf`): [#1430](https://github.com/Toloka/tolokaforge/issues/1430).
-- `SnapshotGradingSubstrate` (grader-side consumer that reads bundles as a substrate): [#1353](https://github.com/Toloka/tolokaforge/issues/1353).
+- Pre-materialised `db_probes.json` for offline `db_probe` grading (a snapshot substrate refuses `db_probe` in v1.0 because the DSN is only reachable inside the task's docker network): [#1438](https://github.com/Toloka/tolokaforge/issues/1438).
+- Indexed KB snapshot for offline `knowledge_search` (a snapshot substrate returns `None` in v1.0 because the optional `kb/` subtree carries raw bytes without a queryable index): [#1439](https://github.com/Toloka/tolokaforge/issues/1439).

@@ -1,9 +1,9 @@
 """``GradingSubstrate`` — Protocol shape + shipped-impl contract locks.
 
-Locks the seam ADR-0040 introduces: one Protocol, two implementations
-shipped today (``in_process``, ``live_callback``), three reserved future
-implementations raising ``NotImplementedError`` with a pointer to the ADR
-recipe.
+Locks the seam ADR-0040 introduces: one Protocol, three implementations
+shipped today (``in_process``, ``live_callback``, ``snapshot``), two
+reserved future implementations raising ``NotImplementedError`` with a
+pointer to the ADR recipe.
 
 Also locks the entry-point group ``tolokaforge.grading_substrates`` — the
 future trajectory-storage service will register itself via one entry-point
@@ -12,7 +12,8 @@ line, and this test proves discovery works.
 ``TestLiveCallbackSubstrateReads`` exercises the live-callback impl over an
 in-process gRPC channel wired to a real :class:`RunnerServiceImpl` +
 :class:`SubstrateServicer`, asserting the wire path returns the same values
-:class:`InProcessGradingSubstrate` would over the same runner.
+:class:`InProcessGradingSubstrate` would over the same runner. The snapshot
+impl's per-Protocol-method locks live in :mod:`tests.unit.grading.test_snapshot_substrate`.
 """
 
 from __future__ import annotations
@@ -559,14 +560,15 @@ class TestLiveCallbackSubstrateReads:
 
 
 class TestReservedFutureSubstratesRaiseWithAdrPointer:
-    """The three reserved future substrates (``TrajectoryStorage``,
-    ``Snapshot``, ``SharedMount``) each raise ``NotImplementedError`` with
-    a pointer to ADR-0040. A contributor reaching for them sees the recipe
-    rather than a mystery stub."""
+    """A substrate is "reserved" iff its no-arg ``__init__`` raises
+    ``NotImplementedError`` with a pointer to ADR-0040 — a contributor
+    reaching for it sees the recipe rather than a mystery stub. Activating
+    a reserved substrate replaces the stub with a real constructor and
+    removes it from this parametrize list."""
 
     @pytest.mark.parametrize(
         "cls",
-        [TrajectoryStorageGradingSubstrate, SnapshotGradingSubstrate, SharedMountGradingSubstrate],
+        [TrajectoryStorageGradingSubstrate, SharedMountGradingSubstrate],
     )
     def test_construction_raises_with_adr_pointer(self, cls: type) -> None:
         with pytest.raises(NotImplementedError, match="ADR-0040|0040-standalone-grader"):
@@ -575,19 +577,22 @@ class TestReservedFutureSubstratesRaiseWithAdrPointer:
 
 class TestEntryPointGroupResolves:
     """The ``tolokaforge.grading_substrates`` entry-point group resolves
-    ``in_process`` and ``live_callback`` by name. Trajectory-storage adds
-    itself with a one-line entry point at land time.
+    ``in_process``, ``live_callback``, and ``snapshot`` by name.
+    Trajectory-storage adds itself with a one-line entry point at land time.
     """
 
-    def test_in_process_is_registered_and_resolves(self) -> None:
+    def test_shipped_substrates_are_registered_and_resolve(self) -> None:
         import importlib.metadata
 
         eps = list(importlib.metadata.entry_points(group="tolokaforge.grading_substrates"))
         names = {ep.name for ep in eps}
         assert "in_process" in names
         assert "live_callback" in names
+        assert "snapshot" in names
         in_process_ep = next(ep for ep in eps if ep.name == "in_process")
         assert in_process_ep.load() is InProcessGradingSubstrate
+        snapshot_ep = next(ep for ep in eps if ep.name == "snapshot")
+        assert snapshot_ep.load() is SnapshotGradingSubstrate
 
 
 class TestSubstrateUnreachableError:

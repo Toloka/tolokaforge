@@ -40,6 +40,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGE_ROOT = _REPO_ROOT / "tolokaforge"
 _FILESYSTEM_VIEW_MODULE = _PACKAGE_ROOT / "core" / "grading" / "filesystem_view.py"
 _RUNNER_SITE = _PACKAGE_ROOT / "runner" / "service.py"
+_SUBSTRATE_SITE = _PACKAGE_ROOT / "core" / "grading" / "substrate.py"
 _SUBSTRATE_SERVICE_SITE = _PACKAGE_ROOT / "runner" / "substrate_service.py"
 _DOCS_ROOT = _REPO_ROOT / "docs"
 _TESTS_CANONICAL_ROOT = _REPO_ROOT / "tests" / "canonical"
@@ -70,19 +71,24 @@ def test_walker_entry_point_is_defined_exactly_once_in_the_pure_module(
 
 
 @pytest.mark.parametrize(
-    ("symbol", "expected_caller"),
+    ("symbol", "expected_callers"),
     [
-        ("read_agent_visible_filesystem", _RUNNER_SITE),
-        ("iter_agent_visible_rel_paths", _SUBSTRATE_SERVICE_SITE),
+        ("read_agent_visible_filesystem", (_SUBSTRATE_SITE, _RUNNER_SITE)),
+        ("iter_agent_visible_rel_paths", (_SUBSTRATE_SERVICE_SITE,)),
     ],
 )
-def test_walker_entry_point_has_its_named_production_caller_only(
-    symbol: str, expected_caller: Path
+def test_walker_entry_point_has_its_named_production_callers_only(
+    symbol: str, expected_callers: tuple[Path, ...]
 ) -> None:
-    """Each entry point has exactly one production caller outside the module.
+    """Each entry point has its named production callers outside the module,
+    and no others. An unnamed callsite in ``tolokaforge/`` would signal recipe
+    leakage into a codepath the pure module was not designed for.
 
-    A third callsite in ``tolokaforge/`` would signal recipe leakage into a
-    codepath the pure module was not designed for.
+    ``read_agent_visible_filesystem`` has two callers: ``runner/service.py``
+    (runner-side non-harness state factory) and ``core/grading/substrate.py``
+    (``SnapshotGradingSubstrate.filesystem_state`` walks the extracted bundle
+    tmpdir through the shared helper). Each is one entry per module, so the
+    "one walker, no re-inline" invariant holds per site.
     """
     call_pattern = re.compile(rf"\b{symbol}\(")
     call_sites = [
@@ -90,10 +96,10 @@ def test_walker_entry_point_has_its_named_production_caller_only(
         for path in _iter_package_python_files()
         if path != _FILESYSTEM_VIEW_MODULE and call_pattern.search(path.read_text(encoding="utf-8"))
     ]
-    assert call_sites == [expected_caller], (
-        f"Expected exactly one production caller of {symbol}( at "
-        f"{expected_caller.relative_to(_REPO_ROOT)}; "
-        f"found: {[p.relative_to(_REPO_ROOT) for p in call_sites]}"
+    assert sorted(call_sites) == sorted(expected_callers), (
+        f"Expected production callers of {symbol}( at "
+        f"{sorted(p.relative_to(_REPO_ROOT) for p in expected_callers)}; "
+        f"found: {sorted(p.relative_to(_REPO_ROOT) for p in call_sites)}"
     )
 
 

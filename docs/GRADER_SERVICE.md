@@ -591,8 +591,26 @@ wire.
 topology where an independent grader container reads the substrate off
 a shared filesystem/DB mount is the reserved `SharedMountGradingSubstrate`
 recipe — see [ADR-0040](adr/0040-standalone-grader.md), reserved-future
-substrate SWE-bench pattern. Not shipped today; the two shipping
-substrates are `InProcess` and `LiveCallback`.
+substrate SWE-bench pattern. Not shipped today; the three shipping
+substrates are `InProcess`, `LiveCallback`, and `Snapshot`.
+
+**Snapshot substrate — offline / cross-region / replay path.** A trial's
+state travels as a serialised grade bundle (see
+[docs/GRADE_BUNDLE.md](GRADE_BUNDLE.md)) rather than over a live wire.
+The grader constructs `SnapshotGradingSubstrate(bundle_view)` from a
+`GradeBundleView` (loaded via `load_grade_bundle(bundle_dir)`) and reads
+initial / final / final-stable DB state, filesystem tar (lazily
+extracted to a per-substrate tmpdir), and custom-check bytes from the
+bundle parts. Two Protocol methods have hard offline limits in bundle
+format v1.0 and fail loud rather than silently returning empty:
+`db_probe(dsn, query)` raises `SubstrateUnreachableError` naming the
+DSN (the DSN is only reachable inside the task's docker network; bundle
+v1.1 will pre-materialise probe rows — [#1438](https://github.com/Toloka/tolokaforge/issues/1438));
+`knowledge_search()` returns `None` (the optional `kb/` subtree carries
+raw bytes without a queryable index — [#1439](https://github.com/Toloka/tolokaforge/issues/1439)).
+Packs declaring `state_checks.db_probes` or judge criteria that need KB
+search grade correctly on `InProcess` / `LiveCallback`; snapshot mode
+routes those trials to a live-callback path in the caller.
 
 <a id="extension-points-the-eight-plug-in-groups"></a>
 
