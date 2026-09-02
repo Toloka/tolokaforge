@@ -313,6 +313,47 @@ def test_generation_error_is_classified_via_shared_classifier():
     assert messages[-1].role == MessageRole.SYSTEM
 
 
+def test_empty_completion_terminates_before_appending():
+    """A generation with no text and no tool calls terminates the loop with
+    ``EMPTY_COMPLETION``, without ever appending the empty assistant message
+    that a subsequent request would send to the provider."""
+    client = _ScriptedClient(
+        [
+            GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=1)),
+            GenerationResult(text="unreached", usage=Usage(prompt_tokens=1)),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(client, should_terminate=_never_terminate, max_turns=5).run(
+        "sys", messages, time.time()
+    )
+
+    assert client.calls == 1
+    assert outcome.termination_reason == TerminationReason.EMPTY_COMPLETION
+    assert outcome.status == TrialStatus.FAILED
+    assert not any(
+        m.role == MessageRole.ASSISTANT and m.content == "" and not m.tool_calls for m in messages
+    )
+    assert messages[-1].role == MessageRole.SYSTEM
+    assert "empty completion" in messages[-1].content
+
+
+def test_empty_completion_still_records_generation_usage():
+    """The trial paid for the empty completion, so metrics record it — only the
+    assistant message is skipped."""
+    client = _ScriptedClient(
+        [GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=7))]
+    )
+    sink = _CountingSink()
+    messages: list[Message] = []
+    _loop(client, should_terminate=_never_terminate, sink=sink, max_turns=5).run(
+        "sys", messages, time.time()
+    )
+
+    assert sink.generations == 1
+    assert sink.prompt_tokens == 7
+
+
 def test_effective_system_prompt_captured_from_first_generation_only():
     client = _ScriptedClient(
         [

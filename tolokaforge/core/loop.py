@@ -8,7 +8,13 @@ the same machinery.
 The engine is deliberately behaviour-light: it owns turn structure (episode
 timeout, generate, accumulate, append assistant, terminate, execute tools,
 optional user turn, error classification, max-turns), and delegates every
-*policy* decision to pluggable seams:
+*policy* decision to pluggable seams. A provider-shaped *empty completion* —
+``result.text == "" and not result.tool_calls`` — is the one wire-shape
+observation the engine consumes directly: it terminates the trial with
+:attr:`TerminationReason.EMPTY_COMPLETION` before the empty assistant message
+is appended, because appending it would send a request whose tail is an empty
+``role=model`` turn on the next iteration and providers such as Gemini reject
+that as an API error rather than pass it through.
 
 * :class:`LoopLLMClient` — the provider-agnostic generate seam (the agent's
   :class:`~tolokaforge.core.llm.client.LLMClient` already satisfies it).
@@ -355,6 +361,16 @@ class ToolCallingLoop:
         self._capture_effective_prompt(result)
         self.metrics.record_generation(result)
         self._log_generation(turn, result)
+
+        if not result.text and not result.tool_calls:
+            messages.append(
+                self._system_message(
+                    "Model returned an empty completion (no text, no tool calls); "
+                    "trial terminated to keep the next request provider-legal."
+                )
+            )
+            return TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, True
+
         messages.append(self._assistant_message(result))
 
         decision = self.should_terminate(result, turn, messages)

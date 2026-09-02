@@ -1682,6 +1682,30 @@ as a compatibility surface — user overlay syntax and the
 `resolve_policy_names` fingerprint). Routing pinned by
 [`tests/canonical/test_message_assembly_filler_routing.py`](../tests/canonical/test_message_assembly_filler_routing.py).
 
+### Provider-side empty completion
+
+A generation that comes back with both `text == ""` and `tool_calls == []`
+is a *provider-side empty completion*: the request round-tripped and the
+provider chose to return nothing. `ToolCallingLoop._run_turn` recognises
+that shape immediately after `_generate` — before the assistant message
+would be appended — and terminates the trial with
+`TerminationReason.EMPTY_COMPLETION` and `TrialStatus.FAILED`. The empty
+assistant message is not appended, and the metrics sink still records the
+generation because the trial paid for the call.
+
+The distinction from `empty_assistant_filler` above is where the empty
+content lives. `empty_assistant_filler` handles empty **content the loop
+is about to send back to the provider on a tool-call turn** — Bedrock/Nova
+and Moonshot direct reject a request whose assistant turn has empty
+`content` alongside `tool_calls`, so those provider families opt in to a
+non-empty filler string. `EMPTY_COMPLETION` handles empty **content the
+provider produced**: appending it would send a request whose tail is a
+`role=model` turn with empty `content` and no `tool_calls` on the next
+iteration, and Gemini rejects that as an API error. The engine consumes
+this one wire-shape observation directly rather than routing it through
+`classify_loop_error` so post-run analysis can tell "the model produced
+nothing" apart from the API-error class that used to swallow it.
+
 ## `response_policy`
 
 Tool-call argument post-processing.

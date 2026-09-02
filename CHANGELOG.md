@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Fix
+
+- **loop**: empty completions (no text + no tool calls) now terminate with
+  `TerminationReason.EMPTY_COMPLETION` (fail-loud) instead of silently
+  appending an empty assistant message that Gemini and similar providers
+  reject on the next request as an API error. The termination reason is
+  additive on `Trajectory`; the failure-attribution table classifies it as
+  `timeout_or_resource` (provider-side deterministic termination), and the
+  runner-side graders auto-fail it without dispatching to `grade_trial`.
+
 ## v0.22.1 (2026-09-02)
 
 ## v0.22.0 (2026-09-02)

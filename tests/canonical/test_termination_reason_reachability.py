@@ -225,6 +225,7 @@ def observed_outcomes() -> frozenset[tuple[TrialStatus, TerminationReason]]:
         _run_trial(_wrapped_rate_limit()),
         _run_trial(RuntimeError("OpenAI returned 500")),
         _run_trial(RuntimeError("something the classifier cannot name")),
+        _run_trial(GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=1))),
         _provision_failure_trajectory(),
         drive_lost_trial()[0],
     ]

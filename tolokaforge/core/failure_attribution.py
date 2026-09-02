@@ -162,6 +162,7 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         TerminationReason.TIMEOUT,
         TerminationReason.RATE_LIMIT,
         TerminationReason.API_ERROR,
+        TerminationReason.EMPTY_COMPLETION,
         TerminationReason.ERROR,
     ):
         failure_class = "timeout_or_resource"
