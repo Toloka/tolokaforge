@@ -1055,6 +1055,29 @@ params bag; the lift makes coding-harness selection a first-class
 run-config concept that any adapter can accept."""
 
 
+def require_user_simulator_config(user_config: ModelConfig | None) -> ModelConfig:
+    """Return ``user_config`` or raise if it is missing.
+
+    Callers that dispatch a user simulator (``Orchestrator.run``,
+    ``Orchestrator.run_worker``, the library entry ``core.run_trial``)
+    fail loud here when ``RunConfig.models["user"]`` is unset, so a run
+    always names the provider it ships user turns to. There is
+    deliberately no hardcoded default: a project that wants a shared
+    fallback declares it under ``project.run_defaults.models.user`` and
+    lets the project loader merge it into every run config.
+    """
+    if user_config is not None:
+        return user_config
+    raise ValueError(
+        "No user-simulator model configured. Set `models.user` on the run "
+        "config to the provider/name the user turns should run against. "
+        "Projects can declare a project-wide fallback under "
+        "`project.run_defaults.models.user` and the loader will merge it "
+        "in. Example: `models: {user: {provider: openrouter, "
+        "name: openai/gpt-5}}`."
+    )
+
+
 class RunConfig(BaseModel):
     """Complete run configuration"""
 

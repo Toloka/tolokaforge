@@ -23,6 +23,11 @@ models:
     # Optional: override auto-detected model capabilities
     capabilities:
       dict_map_prompt_hints: true
+  # Required when the run dispatches a user simulator. The orchestrator
+  # fails loud if `models.user` is absent — there is no hardcoded provider
+  # default, so a run always names the provider it ships user turns to.
+  # Project-wide fallbacks live under `project.run_defaults.models.user`
+  # (see docs/PROJECTS.md); the loader merges them into each run config.
   user:
     provider: "openai"
     name: "gpt-4o-mini"

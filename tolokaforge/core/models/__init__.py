@@ -73,6 +73,7 @@ from tolokaforge.core.models.run_config import (
     TimeoutConfig,
     TracingConfig,
     TypeSenseConfig,
+    require_user_simulator_config,
     validate_rate_limit_probe_budget,
 )
 from tolokaforge.core.models.task_config import (
@@ -231,6 +232,7 @@ __all__ = [
     "RateLimitProbeConfig",
     "RunConfig",
     "RunDefaults",
+    "require_user_simulator_config",
     "S3StorageConfig",
     "StorageBackend",
     "StorageConfig",

@@ -71,6 +71,7 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
     TypeSenseConfig,
+    require_user_simulator_config,
 )
 from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
@@ -2164,17 +2165,7 @@ class Orchestrator:
             self.logger.error("Agent model configuration required")
             raise ValueError("Agent model configuration required")
 
-        # Apply default user model if not configured
-        if user_config is None:
-            user_config = ModelConfig(
-                provider="openrouter",
-                name="anthropic/claude-sonnet-4.6",
-                temperature=0.2,
-            )
-            self.logger.info(
-                "Using default user model",
-                user_model="openrouter/anthropic/claude-sonnet-4.6",
-            )
+        user_config = require_user_simulator_config(user_config)
 
         # Resolve the run-level judge model and reject the run up front if any
         # selected task needs a judge but none is configured (fail loud).
@@ -2823,17 +2814,7 @@ class Orchestrator:
         if not agent_config:
             raise ValueError("Agent model configuration required")
 
-        # Apply default user model if not configured
-        if user_config is None:
-            user_config = ModelConfig(
-                provider="openrouter",
-                name="anthropic/claude-sonnet-4.6",
-                temperature=0.2,
-            )
-            self.logger.info(
-                "Using default user model",
-                user_model="openrouter/anthropic/claude-sonnet-4.6",
-            )
+        user_config = require_user_simulator_config(user_config)
 
         # Resolve the run-level judge model and reject the run up front if any
         # selected task needs a judge but none is configured (fail loud).

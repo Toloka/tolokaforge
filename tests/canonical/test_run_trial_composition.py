@@ -85,7 +85,10 @@ def _orchestrator_trajectory(base_dir: Path, task, output_dir: Path) -> Trajecto
     task_desc = adapter.to_task_description(task.task_id)
 
     config = RunConfig(
-        models={"agent": ModelConfig(**_AGENT)},
+        models={
+            "agent": ModelConfig(**_AGENT),
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+        },
         orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
         evaluation=EvaluationConfig(output_dir=str(output_dir)),
     )
@@ -120,7 +123,10 @@ def test_run_trial_matches_orchestrator_composition(flat_pack: Path, tmp_path: P
 
     result = run_trial(
         task=task,
-        models={"agent": _AGENT},
+        models={
+            "agent": _AGENT,
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+        },
         runtime="in_memory",
         conductor="in_memory",
         output_dir=None,
