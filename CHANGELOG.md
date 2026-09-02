@@ -2,12 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
-
-### Feat
-
-- **core**: `EnvironmentPatch.stacks` multi-stack composition plan honoured end-to-end by `resolve()` (ADR-0044). Project- and task-side stacks merge by `stack_id`: task-side entries deep-merge (`inputs` layer per key; other sub-fields override) or atomically replace when the task sets `compose_file`; task-only entries append in task-declared order. The scalar `stack` form is retained as an ergonomic single-stack alias and stays byte-identical.
-- **runtime**: `SharedStackRuntimeBackend.isolation_mode` and `advertised_capabilities` computed from `EnvironmentManifest.plan_shape`; new `IsolationMode.COMPOSED_STACK` + `composed_stack` capability; per-service dispatcher-admission replaces the stale ephemeral-on-non-trial-scope refusal (ADR-0044 §5 INV-2).
+## v0.22.1 (2026-09-02)
 
 ## v0.22.0 (2026-09-02)
 
