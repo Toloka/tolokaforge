@@ -114,6 +114,29 @@ def test_open_part_raises_integrity_error_on_tamper(tmp_path: Path) -> None:
     assert tampered_rel in str(excinfo.value)
 
 
+def test_open_part_refuses_path_traversal_outside_bundle_dir(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"secret")
+    outside_digest = hashlib.sha256(b"secret").hexdigest()
+
+    escape_rel = "../outside.txt"
+    manifest = {
+        "schema_version": "1.0",
+        "trial_id": "traversal-attempt",
+        "parts": {escape_rel: {"sha256": outside_digest, "size": len(b"secret")}},
+    }
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest, sort_keys=True))
+
+    view = load_grade_bundle(bundle_dir)
+
+    with pytest.raises(BundleIntegrityError) as excinfo:
+        view.open_part(escape_rel)
+    assert "outside bundle_dir" in str(excinfo.value)
+    assert escape_rel in str(excinfo.value)
+
+
 _MISSING = object()
 
 

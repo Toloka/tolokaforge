@@ -185,10 +185,10 @@ closure reaches none of them.
 ``core.grading.bundle`` is the offline grade-bundle format library — a
 manifest-first, part-addressable, content-addressable directory carrying
 everything a grader needs to score one trial without a live runner. Its
-imports are stdlib-only, but the runner container never instantiates it:
-the producer writes bundles for offline replay / cross-topology grading,
-and the consumer is a grader-side snapshot substrate — not the runner's
-own wire path. Ships as dead weight in the runner image.
+imports are stdlib-only, but the runner container has no code path that
+reads or writes bundles: the producer runs host-side (offline replay /
+cross-topology grading), and no runner boot-closure module reaches into
+it. Ships as dead weight in the runner image.
 """
 
 

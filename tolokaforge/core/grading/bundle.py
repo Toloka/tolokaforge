@@ -123,7 +123,13 @@ class GradeBundleView:
     def open_part(self, rel_path: str) -> bytes:
         entry = self.manifest.parts[rel_path]
         expected = entry["sha256"]
-        data = (self.bundle_dir / rel_path).read_bytes()
+        candidate = (self.bundle_dir / rel_path).resolve(strict=False)
+        root = self.bundle_dir.resolve(strict=False)
+        if candidate != root and root not in candidate.parents:
+            raise BundleIntegrityError(
+                f"part {rel_path!r} resolves outside bundle_dir " f"({candidate} not under {root})"
+            )
+        data = candidate.read_bytes()
         actual = hashlib.sha256(data).hexdigest()
         if actual != expected:
             raise BundleIntegrityError(

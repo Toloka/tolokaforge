@@ -188,11 +188,11 @@ allow_indirect_imports = true
 #
 # ``core.grading.bundle`` ships the offline grade-bundle format library
 # (manifest schema v1.0 + reader + producer + `%.6g` float normaliser).
-# The bundle is the offline representation both the future snapshot
-# substrate and external downstream tools consume without a live runner;
-# a reach back into ``runner``, ``grader``, or the live substrate would
-# silently couple the format to the wire and defeat the "one canonical
-# offline bytes" invariant the manifest digest names the bundle by.
+# The bundle is content-addressable: its canonical name is
+# ``sha256(manifest.json)``, and each part is digested inside the manifest.
+# A reach back into ``runner``, ``grader``, or the live substrate would
+# couple the format bytes to the wire and defeat that invariant — the
+# same trial serialised on two topologies would land at different digests.
 # ``allow_indirect_imports = false`` mirrors ``composite-fold-purity`` /
 # ``filesystem-view-purity`` — a transitive path back into a forbidden
 # target trips the contract, not just a direct import.

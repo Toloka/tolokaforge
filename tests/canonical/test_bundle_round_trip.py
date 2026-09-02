@@ -6,17 +6,15 @@ byte-identical bytes across every part and on a matching
 identity across storage moves depends on the producer being deterministic
 inside one interpreter.
 
-Also covers the round-1 tar-format hardening: the emitted tar carries no
-PAX headers at the archive level or on any member. Python's
-``tarfile.DEFAULT_FORMAT`` is PAX and auto-injects extension headers for
-long paths or non-ASCII names — a producer regression to the default
-would silently diverge bytes on the first long-path task pack, and the
-same-process round-trip alone would not catch it.
+Also covers the tar-format lock: the emitted tar carries no PAX headers
+at the archive level or on any member. Python's ``tarfile.DEFAULT_FORMAT``
+is PAX and auto-injects extension headers for long paths or non-ASCII
+names — a producer that fell back to the default would silently diverge
+bytes on the first long-path task pack, and the same-process round-trip
+alone would not catch it.
 
-Cross-Python-version / cross-OS / cross-language drift is silently
-unchecked here — that hardening belongs to a follow-up ticket with a
-committed golden-bytes fixture. This lane locks the minimum invariant
-those follow-ups build on.
+Cross-Python-version / cross-OS / cross-language drift is out of scope
+for this lane.
 """
 
 from __future__ import annotations

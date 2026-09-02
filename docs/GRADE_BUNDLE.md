@@ -34,14 +34,14 @@ Every part named in the top-level `manifest.json` MUST be present on disk with a
   "schema_version": "1.0",
   "trial_id": "<opaque string, e.g. task-name/2024-05-14T12:34:56Z-abc123>",
   "parts": {
-    "initial_state.json":       { "path": "initial_state.json",       "sha256": "<hex>", "size": 1234 },
-    "final_state.json":         { "path": "final_state.json",         "sha256": "<hex>", "size": 4567 },
-    "final_state_stable.json":  { "path": "final_state_stable.json",  "sha256": "<hex>", "size": 4321 },
-    "filesystem.tar":           { "path": "filesystem.tar",           "sha256": "<hex>", "size": 8192 },
-    "trajectory.json":          { "path": "trajectory.json",          "sha256": "<hex>", "size": 23456 },
-    "grading_config.json":      { "path": "grading_config.json",      "sha256": "<hex>", "size": 890 },
-    "checks/manifest.json":     { "path": "checks/manifest.json",     "sha256": "<hex>", "size": 234 },
-    "kb/manifest.json":         { "path": "kb/manifest.json",         "sha256": "<hex>", "size": 234 }
+    "initial_state.json":       { "sha256": "<hex>", "size": 1234 },
+    "final_state.json":         { "sha256": "<hex>", "size": 4567 },
+    "final_state_stable.json":  { "sha256": "<hex>", "size": 4321 },
+    "filesystem.tar":           { "sha256": "<hex>", "size": 8192 },
+    "trajectory.json":          { "sha256": "<hex>", "size": 23456 },
+    "grading_config.json":      { "sha256": "<hex>", "size": 890 },
+    "checks/manifest.json":     { "sha256": "<hex>", "size": 234 },
+    "kb/manifest.json":         { "sha256": "<hex>", "size": 234 }
   }
 }
 ```
@@ -49,7 +49,7 @@ Every part named in the top-level `manifest.json` MUST be present on disk with a
 Fields:
 - `schema_version` — string, `"MAJOR.MINOR"`, digit-only components.
 - `trial_id` — opaque string identifying the trial; producers should keep it stable across replays.
-- `parts` — map of `rel_path -> {path, sha256, size}`. `path` is the file's location relative to the bundle directory; `sha256` is the hex-encoded digest over the file's exact bytes on disk; `size` is the byte length.
+- `parts` — map of `rel_path -> {sha256, size}`. The map key IS the file's location relative to the bundle directory; `sha256` is the hex-encoded digest over the file's exact bytes on disk; `size` is the byte length.
 
 The `checks/` and `kb/` subtrees are optional. When present, each carries its own nested `<subtree>/manifest.json` with per-file digests for the subtree's contents; the top-level manifest names only the nested manifest's digest.
 
@@ -100,13 +100,13 @@ An external tool that consumes a bundle needs no engine dependency:
 
 1. Read `manifest.json` from the bundle directory.
 2. Validate `schema_version` — reject unknown MAJOR.
-3. For each part named in `parts`: read the file at `path`, compute SHA-256 over its bytes, compare against `parts[name].sha256`. On mismatch, refuse the bundle.
+3. For each part named in `parts`: read the file at the map key (which IS the relative path), compute SHA-256 over its bytes, compare against `parts[name].sha256`. On mismatch, refuse the bundle.
 4. Load the parts the consumer needs — parse the JSON parts, extract the tar, etc.
 
 A pure-shell approximation using `jq`, `sha256sum`, and `tar` is possible and demonstrates the format is truly language-neutral. The Python reference reader is `tolokaforge.core.grading.bundle.load_grade_bundle`; consumers in other languages implement the same manifest walk.
 
-## Follow-ups
+## Not covered in v1.0
 
-- Optional `provenance.json` sibling for engine-bump debugging (not covered by the manifest digest): tracked in [#1428](https://github.com/Toloka/tolokaforge/issues/1428).
-- Cross-language parser example (`jq` + `sha256sum` + `tar tvf`): tracked in [#1430](https://github.com/Toloka/tolokaforge/issues/1430).
-- `SnapshotGradingSubstrate` (grader-side consumer that reads bundles as a substrate): tracked in [#1353](https://github.com/Toloka/tolokaforge/issues/1353).
+- Optional `provenance.json` sibling for engine-bump debugging (not covered by the manifest digest): [#1428](https://github.com/Toloka/tolokaforge/issues/1428).
+- Cross-language parser example (`jq` + `sha256sum` + `tar tvf`): [#1430](https://github.com/Toloka/tolokaforge/issues/1430).
+- `SnapshotGradingSubstrate` (grader-side consumer that reads bundles as a substrate): [#1353](https://github.com/Toloka/tolokaforge/issues/1353).
