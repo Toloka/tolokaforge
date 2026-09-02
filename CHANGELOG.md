@@ -6,6 +6,11 @@ All notable changes to this project are documented in this file.
 
 ### Fix
 
+- **grading**: a golden replay whose per-action execution errored no longer
+  composes a fabricated `hash_score: 0.0`; the runner reads
+  `HashGradingResult.hash_unscorable`, leaves `components.hash_score` at the
+  `-1.0` not-evaluated sentinel, and the declared-but-unscored fold refusal
+  fires — the trial lands UNGRADEABLE, matching the judge-errored case.
 - **grading**: a declared-but-unscored component (e.g. a judge that errored)
   now refuses the fold and returns a fail-loud verdict; the trial lands
   UNGRADEABLE rather than passing on a silently redistributed weighted mean.

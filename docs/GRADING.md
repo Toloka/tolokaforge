@@ -712,23 +712,29 @@ Two failure modes reach this branch today:
 | mode | how the component ended up unscored |
 |---|---|
 | `llm_judge` declared and errored | the judge returned `JudgeStatus.ERRORED` with no numeric score (a provider outage, a rubric the judge could not parse, a submit_report the judge refused after retries), leaving `llm_judge_score` at `-1.0` |
-| `state_checks` declared and its golden replay errored | `_execute_hash_grading` recorded a per-action failure and its downstream write-back left `hash_score` unscored, so the composed `state_checks` slot is empty |
+| `state_checks` declared and its golden replay errored | `_execute_hash_grading` recorded a per-action failure on `golden_replay.failures`; `HashGradingResult.hash_unscorable` reads `True`; the runner call site at `runner/service.py:_grade_trial_async` skips the `components.hash_score` write, leaving it at the `-1.0` not-evaluated sentinel; the composed `state_checks` slot is empty |
 
 Folding on the remaining components would silently redistribute the missing
 component's declared weight onto whatever else scored. A judge-errored trial
 that happened to score `state_checks: 1.0` beside a `-1.0` `llm_judge_score`
 would otherwise surface as `score=1.0, binary_pass=True`, indistinguishable
-from a trial the judge actually confirmed. The refusal removes that ambiguity:
-the trial's downstream trace is the same one a state_checks-unanswerable trial
-already had — `Trajectory.grading_error` records the reason,
-`classify_trial_outcome` returns `UNGRADEABLE`, the trial reaches
-`measured_trials` while staying out of `scored_trials`, and the process exits
-non-zero once the run has otherwise completed.
+from a trial the judge actually confirmed. A golden-replay-errored trial
+whose replay left partial state behind would otherwise hash equal to that
+partial world and score `hash_score: 0.0` — indistinguishable from a real
+hash mismatch the agent's actions produced, and the golden-path defect would
+be recorded only as a string appended to `reasons`. The refusal removes that
+ambiguity: the trial's downstream trace is the same one a
+state_checks-unanswerable trial already had — `Trajectory.grading_error`
+records the reason, `classify_trial_outcome` returns `UNGRADEABLE`, the trial
+reaches `measured_trials` while staying out of `scored_trials`, and the
+process exits non-zero once the run has otherwise completed.
 
 The refusal fires on the `-1.0` sentinel alone. A judge that scored `0.0` (or
 a required-criterion gate that zeroed the judge's aggregate) still folds in
 normally, because that zero is a real measured verdict rather than a missing
-one.
+one. A hash grade that ran whole and returned `hash_match=False` also folds
+in as a real `state_checks: 0.0` — the replay ran, the world it produced is
+the one the pack asked for, and the agent did not reach it.
 
 ### The event
 
