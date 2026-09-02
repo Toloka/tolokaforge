@@ -284,7 +284,7 @@ produces a `Grade` end-to-end against a running stack.
 
 `GraderService.Grade` is stateless per call: every field the grader-side
 composite dispatcher needs to grade the trial rides on the request. The
-wire carries seven named fields — the caller populates whichever ones
+wire carries nine named fields — the caller populates whichever ones
 its dispatch consumes and leaves the rest empty.
 
 | Field                         | # | Purpose                                                                                   |
@@ -296,11 +296,17 @@ its dispatch consumes and leaves the rest empty.
 | `judge_model_config_json`     | 5 | Optional `ModelConfig` JSON for the judge; empty when the task declares no `llm_judge`.   |
 | `task_description_json`       | 6 | `TaskDescription` JSON — carries `initial_state`, `state_checks.id_fields`, `unstable_fields`, and `tool_artifacts` (checks.py plus every sibling artefact module the pack imports). |
 | `runner_substrate_address`    | 7 | gRPC address of the runner's `SubstrateService`; the grader builds a `LiveRunnerCallbackGradingSubstrate` against it per trial. |
+| `bundle_manifest_json`        | 13 | Wire v3 additive. `GradeBundleManifest` JSON — the parsed manifest (see [`GRADE_BUNDLE.md`](GRADE_BUNDLE.md)). Empty when the caller has no bundle. Not populated by `wire_snapshot.build_grade_request_fields`; no in-tree caller populates it yet. |
+| `bundle_parts_uri`            | 14 | Wire v3 additive. Bundle-store URI — `bundle://<store-name>/<content-hash>`. Empty when the caller has no bundle. Not populated by `wire_snapshot.build_grade_request_fields`; no in-tree caller populates it yet. |
 
-Field numbers are stable and additive: a future field lands on number 8
-so an existing client's payload never lands in a new slot. Provider +
-model-name evidence rides on field 5 so the grader constructs its
-`LLMClient` via the [`judge_model_providers` seam](#sub-component-plug-in-seams)
+Field numbers are stable and additive. The bundle-URI pair lands on 13
+and 14 so numbers 8–12 stay free as a reserved window for future
+growth (per-trial substrate override, grader-kind hint, credentials
+envelope, retry budget, opt-in trace bundle) without another reshuffle.
+An existing client's payload never lands in a new slot: fields the
+sender leaves unset arrive as proto3 empty defaults on the grader.
+Provider + model-name evidence rides on field 5 so the grader constructs
+its `LLMClient` via the [`judge_model_providers` seam](#sub-component-plug-in-seams)
 without inferring provider from a model name (AGENTS.md Core Rule 10).
 
 ### Client-side snapshot
@@ -319,6 +325,7 @@ above the trajectory-shaped trio. The builder returns a frozen
 | `judge_model_config_json` | `spec.judge_model_config.model_dump_json()`, empty when `spec.judge_model_config is None` |
 | `task_description_json`   | `spec.task.model_dump_json()` — one field carries `initial_state`, `state_checks.id_fields`, `initial_state.unstable_fields`, and `tool_artifacts` |
 | `runner_substrate_address`| Passthrough from the grader's stored context (`ctx.runner_address`) |
+| `bundle_manifest_json` / `bundle_parts_uri` | Not projected; no in-tree caller populates yet. |
 
 The builder is a pure projection: it reads only in-memory Pydantic
 models, opens no gRPC channel, and never touches the filesystem. Both

@@ -72,6 +72,29 @@ message GradeRequest {
   // gRPC address of the runner's SubstrateService — the composite dispatch
   // builds a LiveRunnerCallbackGradingSubstrate against it per trial.
   string runner_substrate_address = 7;
+
+  // Wire v3 additive fields — populated per-trial when the runner has
+  // produced a grade bundle and the caller wants the grader to consume
+  // it instead of dialling ``runner_substrate_address``. Both fields
+  // are empty on a wire-v2 request; wire-v2 clients keep working
+  // byte-identically.
+
+  // ``GradeBundleManifest`` JSON — the parsed manifest of the trial's
+  // grade bundle (``trial_id``, ``schema_version``, per-part digests,
+  // part index). Empty when the trial has no bundle. The
+  // grader-side dispatcher uses the manifest to short-circuit dialling
+  // the runner's ``SubstrateService``: when populated, the grader
+  // builds a ``SnapshotGradingSubstrate`` against the bundle at
+  // ``bundle_parts_uri`` and grades offline. See docs/GRADE_BUNDLE.md.
+  string bundle_manifest_json = 13;
+
+  // Bundle-store URI locating the bundle parts —
+  // ``bundle://<store-name>/<content-hash>``. Empty when the trial has
+  // no bundle. Resolved via the ``tolokaforge.bundle_stores``
+  // entry-point group: ``load_bundle_store(<store-name>).get(uri, dest)``
+  // reads the parts to a local directory the grader hands to
+  // ``load_grade_bundle`` + ``SnapshotGradingSubstrate``.
+  string bundle_parts_uri = 14;
 }
 
 message GradeResponse {
