@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 4,
-  "bucket_b_count": 22,
+  "bucket_b_count": 23,
   "commits": [
     {
       "adapter_paths": [
@@ -2173,6 +2173,31 @@
       "subject": "refactor(install-harness.sh): install ca-certificates + curl at top level, not as installer side effects",
       "touched_files": [
         "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/install-harness.sh"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "tests/canonical/snapshots/gateway_route_recipes/rendered_recipes.json",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/test_environment_manifest_contract.py",
+        "tolokaforge_coding_harnesses/README.md",
+        "tolokaforge_coding_harnesses/tests/unit/test_registry.py"
+      ],
+      "bucket": "B",
+      "date": "2026-08-31",
+      "pr": null,
+      "reason": "5 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "07aff5295a70e18fffa1d2a5c5a18a1d816a73d1",
+      "subject": "docs(coding_harness): reflect that CodingHarnessDriver now consumes gateway_route + drop blocked WebSearch from gemini-cli",
+      "touched_files": [
+        "docs/adr/0037-runtime-gateway-as-harness-data.md",
+        "examples/terminal_bench/gemini_litellm_overlay.yaml",
+        "tests/canonical/snapshots/gateway_route_recipes/rendered_recipes.json",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/test_environment_manifest_contract.py",
+        "tolokaforge_coding_harnesses/README.md",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml",
+        "tolokaforge_coding_harnesses/tests/unit/test_registry.py"
       ]
     },
     {

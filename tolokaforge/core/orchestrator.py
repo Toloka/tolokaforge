@@ -466,10 +466,19 @@ class GradingCompleteness:
 
     ``ungradeable_trial_ids`` is the whole of the state; the count derives from
     it rather than being carried beside it, so the two cannot disagree.
+
+    ``measured_trials`` / ``scored_trials`` / ``judge_errored_trials`` carry
+    the three counts the two completion gates read (see
+    ``docs/adr/0041-zero-coverage-exit-signal.md``). ``scored_trials`` is the
+    same quantity :func:`tolokaforge.core.metrics._measured_averages` computes
+    from ``t.grade is not None`` — one derivation, referenced everywhere.
     """
 
     total_attempts: int
     ungradeable_trial_ids: tuple[str, ...]
+    measured_trials: int = 0
+    scored_trials: int = 0
+    judge_errored_trials: int = 0
 
     @property
     def ungradeable(self) -> int:
@@ -478,6 +487,26 @@ class GradingCompleteness:
     @property
     def is_complete(self) -> bool:
         return not self.ungradeable_trial_ids
+
+    @property
+    def zero_coverage(self) -> bool:
+        """No trial reached the agent measurement point on a run that had trials.
+
+        See ``docs/adr/0041-zero-coverage-exit-signal.md``.
+        """
+        return self.total_attempts > 0 and self.measured_trials == 0
+
+    @property
+    def zero_judge_graded(self) -> bool:
+        """Every produced grade has ``judge_status == ERRORED``.
+
+        The ``judge_errored_trials > 0`` guard keeps a run whose measured
+        trials never produced any grade (``scored_trials == 0``) from firing
+        this gate: the failure mode is a judge that errored on scoring
+        attempts, not the absence of scoring. See
+        ``docs/adr/0041-zero-coverage-exit-signal.md``.
+        """
+        return self.judge_errored_trials > 0 and self.judge_errored_trials == self.scored_trials
 
 
 class Orchestrator:
@@ -498,11 +527,19 @@ class Orchestrator:
         strict: bool = False,
         deps: OrchestratorDeps | None = None,
         project: ProjectConfig | None = None,
+        *,
+        config_path: Path | None = None,
     ):
         self.config = config
         self.resume = resume
         self.verbose = verbose
         self.strict = strict
+        # Path to the run-config YAML the operator invoked with, threaded from
+        # the CLI (``tolokaforge run`` / ``prepare`` / ``worker``) and stamped
+        # verbatim into ``run_state.json`` at initialize time. ``None`` marks a
+        # programmatic caller that supplied no path — the fresh-run branch
+        # writes ``""`` to keep :class:`RunState.config_path` a plain ``str``.
+        self._config_path: Path | None = config_path
         # Enclosing project (loaded from ``project.yaml``). Adapter
         # instantiation reads ``project.task_defaults`` from here so every
         # task inherits the project-level defaults declared alongside
@@ -872,11 +909,14 @@ class Orchestrator:
                 "Conductor cannot be built before the adapter is loaded. "
                 "Ensure load_tasks() has run successfully."
             )
-        # ``None`` when the backend has no runner surface (in-memory / test);
-        # the built-in address-needing factories (``runner_rpc``, ``grader_rpc``)
-        # raise loudly when they observe it. Downstream graders that do not need
-        # a network address (a stub, a callable-injected grader) receive the
-        # ``None`` verbatim and ignore it.
+        # ``None`` when the backend has no runner surface (in-memory / test,
+        # or ``PerTrialRuntimeBackend`` — each trial owns its own runner
+        # endpoint so no single address applies); the built-in
+        # address-needing factories (``grader_rpc``, ``queue``) raise loudly
+        # when they observe it. Downstream graders that do not need a
+        # network address receive the ``None`` verbatim and ignore it, and
+        # ``runner_rpc`` picks the ``runtime_backend`` dispatch path below
+        # instead of dialling.
         runner_address = getattr(runtime_backend, "runner_address", None)
         # ``config.grader.name`` overrides the adapter's default for this
         # run; the queue subblock rides the same context so
@@ -887,11 +927,18 @@ class Orchestrator:
         grader_name = (
             grader_config.name if grader_config and grader_config.name else None
         ) or self.adapter.trial_grader_name
+        # In-process routing shim: only populated when the backend has no
+        # static runner endpoint (``PerTrialRuntimeBackend`` — each trial
+        # owns its own endpoint). Shared-stack keeps its address-only,
+        # orchestrator-independent grader client so ADR-0038's seam
+        # invariant is preserved for every case that can honour it.
+        in_process_backend_shim = runtime_backend if runner_address is None else None
         trial_grader = load_trial_grader(grader_name)(
             TrialGraderContext(
                 runner_address=runner_address,
                 logger=self.logger,
                 grader_config=grader_config,
+                runtime_backend=in_process_backend_shim,
             )
         )
         # Per-trial runtime backends serve per-trial runner addresses that
@@ -1951,7 +1998,7 @@ class Orchestrator:
             report = validate_grading_yaml(
                 source.path,
                 inventory=tool_inventory_under_adapter(task, task_dir, adapter_type),
-                replay_world=replay_world_under_adapter(task, adapter_type),
+                replay_world=replay_world_under_adapter(task, task_dir, adapter_type),
                 hash_sources=self.adapter.grading_hash_source_layer(task, task_dir),
                 seeded_tables=seeded_tables_under_adapter(task, task_dir, adapter_type),
                 combine_layer=self.adapter.grading_combine_layer(),
@@ -2064,7 +2111,7 @@ class Orchestrator:
             task_ids = [task.task_id for task in self.tasks]
             run_state = self.state_manager.initialize_run(
                 run_id=run_id,
-                config_path=str(self.config.evaluation.output_dir),
+                config_path=str(self._config_path) if self._config_path is not None else "",
                 task_ids=task_ids,
                 repeats=self.config.orchestrator.repeats,
             )
@@ -2681,14 +2728,11 @@ class Orchestrator:
                     threshold=last_hit.threshold if last_hit is not None else None,
                     total_cost_usd=round(total_cost_usd, 6),
                 )
-            else:
-                # Mark run as completed
-                self.state_manager.mark_run_completed()
 
-            # Cleanup Docker runtime if used
+            # Cleanup runtime backend if used; SharedStackRuntimeBackend
+            # logs its own "Shared-stack runtime closed" line, no dup needed.
             if runtime_backend:
                 runtime_backend.close()
-                self.logger.info("Docker runtime closed")
 
             # Stop TypeSense BEFORE destroying the EngineStack.
             # TypeSense is connected to runner-net (via _connect_typesense_to_runner_network),
@@ -2708,9 +2752,11 @@ class Orchestrator:
                 except Exception as e:
                     self.logger.warning("Failed to destroy EngineStack", error=str(e))
 
-            # Generate reports
-            self._generate_reports(output_dir)
-            self._publish_grading_completeness()
+            # Publish completeness and generate reports before stamping the
+            # run as completed, so ``run_state.json``'s completion gates are
+            # derived from the published counts.
+            if not (budget_exhausted and remaining > 0):
+                self._finalize_run_reports_and_status(output_dir)
 
             resolved_output_dir = output_dir.resolve()
             self._events.run_finished(output_dir=resolved_output_dir)
@@ -3098,14 +3144,56 @@ class Orchestrator:
                 pass_at_k_without_coverage=lost_k,
             )
 
+    def _finalize_run_reports_and_status(self, output_dir: Path) -> None:
+        """Publish completeness, generate reports, and stamp completion status.
+
+        ``zc`` / ``zjg`` initialize to False before the try so a
+        ``BaseException`` raised inside (``KeyboardInterrupt``, ``SystemExit``,
+        anything ``except Exception`` would miss) still stamps a well-defined
+        state via ``finally``. The invariant is
+        ``status == "completed"`` on a non-paused run regardless of exception
+        class — resume-detection reads ``status`` alone. See ADR-0041.
+        """
+        zc = False
+        zjg = False
+        try:
+            self._generate_reports(output_dir)
+            self._publish_grading_completeness()
+            zc = self.grading_completeness.zero_coverage
+            zjg = self.grading_completeness.zero_judge_graded
+        finally:
+            self.state_manager.mark_run_completed(zero_coverage=zc, zero_judge_graded=zjg)
+
     def _publish_grading_completeness(self) -> None:
-        """Stamp :attr:`grading_completeness` from the attempts this process ran."""
+        """Stamp :attr:`grading_completeness` from the attempts this process ran.
+
+        ``measured_trials`` counts trials that reached the agent measurement
+        point; ``scored_trials`` follows the single derivation
+        :func:`tolokaforge.core.metrics._measured_averages` uses
+        (``t.grade is not None``); ``judge_errored_trials`` counts scored
+        trials whose judge component errored. The two completion-gate
+        booleans are derived properties on ``GradingCompleteness``.
+        """
+        from tolokaforge.core.models.grade import JudgeStatus
+
         self.grading_completeness = GradingCompleteness(
             total_attempts=len(self.results),
             ungradeable_trial_ids=tuple(
                 f"{trajectory.task_id}:{trajectory.trial_index}"
                 for trajectory in self.results
                 if classify_trial_outcome(trajectory) is TrialOutcomeClass.UNGRADEABLE
+            ),
+            measured_trials=sum(
+                1
+                for trajectory in self.results
+                if classify_trial_outcome(trajectory) is TrialOutcomeClass.MEASURED
+            ),
+            scored_trials=sum(1 for trajectory in self.results if trajectory.grade is not None),
+            judge_errored_trials=sum(
+                1
+                for trajectory in self.results
+                if trajectory.grade is not None
+                and trajectory.grade.judge_status is JudgeStatus.ERRORED
             ),
         )
 

@@ -201,11 +201,20 @@ def _missing_evidence(fields: Iterable[str], positions: Iterable[int]) -> str:
 
 
 class _Truth(str, Enum):
-    """Whether an event matches, given evidence that may be missing."""
+    """Whether an event matches, given evidence that may be missing.
+
+    ``WITHHELD`` names the author-opted-out verdict :class:`OnMissing.WITHHOLD`
+    yields on an unmatched anchor. It is contagious under composites — an
+    ``all_of`` or ``any_of`` a withheld branch enters withholds too, unless a
+    definite verdict beats it (``FALSE`` under conjunction, ``TRUE`` under
+    disjunction), so an author writing ``all_of: [genuinely_failing,
+    withheld_thing]`` still learns which branch failed.
+    """
 
     TRUE = "true"
     FALSE = "false"
     UNKNOWN = "unknown"
+    WITHHELD = "withheld"
 
 
 def select_events(
@@ -296,7 +305,7 @@ def _resolve(
     unreadable_when_none = _unreadable_when_none(outcome)
     readings = _predicate_readings(matcher, event, outcome)
     records = [
-        _comparison_records(field, value, predicate, bindings, event)
+        _comparison_records(field, None if value is _MISSING else value, predicate, bindings, event)
         for field, value, predicate in readings
     ]
     unreadable = {
@@ -429,13 +438,32 @@ def _results_by_call_id(timeline: TrialTimeline) -> dict[str, TraceEvent]:
     }
 
 
+# What an argument path resolves to where the key was never sent — distinct from
+# JSON ``null``, which resolves to ``None``. Only ``omitted`` reads the difference
+# between the two; every other operator receives ``None`` for both. The sentinel
+# never leaves this module: ``_operator_holds`` reads it directly for ``is_null`` /
+# ``omitted`` and collapses it to ``None`` for every other operator, ``_resolve``
+# collapses it at the tuple boundary before ``_comparison_records`` — the one
+# transit path that would otherwise reach ``json_type_of`` — and
+# ``_binder_reading`` collapses it at the extraction boundary.
+_MISSING: Any = object()
+
+
 def _argument_at(arguments: Mapping[str, Any] | None, path: str) -> Any:
-    """The value a dotted argument path addresses, or ``None`` where it does not resolve."""
+    """The value a dotted argument path addresses.
+
+    Returns the :data:`_MISSING` sentinel where the path does not resolve — an
+    ancestor that is not a mapping, or a segment absent from the mapping that
+    carries it. Every operator but ``omitted`` reads the sentinel as ``None`` at
+    :func:`_operator_holds`'s dispatch gate, so the key-absent path becomes the
+    same reading a JSON ``null`` already had. ``omitted`` is what makes the two
+    tellable apart, and reads the sentinel directly.
+    """
     value: Any = arguments
     for segment in path.split("."):
-        if not isinstance(value, Mapping):
-            return None
-        value = value.get(segment)
+        if not isinstance(value, Mapping) or segment not in value:
+            return _MISSING
+        value = value[segment]
     return value
 
 
@@ -454,15 +482,31 @@ def _predicate_holds(predicate: ValuePredicate, value: Any, bindings: Mapping[st
 def _operator_holds(name: str, value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
     """One operator over one value.
 
-    Only ``exists`` reads a ``None``. Every other operator is false there rather
-    than answering about a value the trial does not have — ``not_equals`` against an
-    absent argument would otherwise hold, which is the vacuous truth the timeline
-    contract forbids. The gate is a dispatch invariant declared once here rather
-    than repeated inside every registered operator.
+    ``is_null`` reads whether the field held an explicit JSON ``null``, and
+    ``omitted`` whether the key was never sent — the pair whose meaning turns on
+    the argument's state before the reading. Both are special-cased ahead of the
+    entry-point dispatch: the :data:`_MISSING` sentinel that separates the two
+    is private to this module, so the seam cannot answer for them; their
+    registered callables are stubs kept only to keep the frozenset and the
+    entry-point registry in lockstep. Every other operator reads a ``_MISSING``
+    as ``None`` — so a JSON ``null`` and an absent key collapse to one reading
+    at the seam and the sentinel never reaches a registered callable.
 
-    ``name`` resolves through the ``tolokaforge.trace_check_operators`` entry-point
-    group — the only dispatch table this evaluator reads.
+    Only ``exists`` reads a ``None``. Every other operator is false there rather
+    than answering about a value the trial does not have — ``not_equals`` against
+    an absent argument would otherwise hold, which is the vacuous truth the
+    timeline contract forbids. The gate is a dispatch invariant declared once
+    here rather than repeated inside every registered operator.
+
+    ``name`` resolves through the ``tolokaforge.trace_check_operators``
+    entry-point group — the only dispatch table this evaluator reads.
     """
+    if name == "is_null":
+        return (value is None) is expected
+    if name == "omitted":
+        return (value is _MISSING) is expected
+    if value is _MISSING:
+        value = None
     if value is None and name != "exists":
         return False
     from tolokaforge.core.plugin_registry import load_trace_check_operator
@@ -477,7 +521,8 @@ def _binding_operator_names() -> list[str]:
     Materialised from the entry-point registry, filtered by the ``_binding``
     suffix — the sole marker for binding operators (ADR-0040). The discovery
     scan is cached in ``plugin_registry``, so a per-call filter is O(N) over
-    the registry size (17 shipped + downstream) and does not fire the loader.
+    the registry size (shipped defaults plus downstream) and does not fire
+    the loader.
     """
     from tolokaforge.core.plugin_registry import (
         TRACE_CHECK_OPERATORS_GROUP,
@@ -580,7 +625,7 @@ def _precedence(route: _DecisionSet) -> tuple[float, bool]:
 
 
 def _decision_set(results: list[TraceConstraintResult]) -> _DecisionSet:
-    """``results`` scored over its non-gate members, or collapsed to the gate verdict.
+    """``results`` scored over its non-gate, non-withheld members, or collapsed to the gate verdict.
 
     A gate enters neither the numerator nor the denominator, so a decision set whose
     every member is a gate has no weighted average to take — and an author who wrote
@@ -590,19 +635,30 @@ def _decision_set(results: list[TraceConstraintResult]) -> _DecisionSet:
     :func:`_weighted_fraction`, whose denominator its callers keep positive, and it
     is not conditional on ``alternatives``: a flat block of nothing but gates
     reaches it too.
+
+    A withheld constraint is out of the decision on both sides: excluded from the
+    numerator and denominator of the weighted fraction, from the all-gates collapse,
+    and from ``failed_gate_ids`` — a withheld gate is neither passing nor failing.
     """
-    scored = [item for item in results if item.severity is not TraceConstraintSeverity.GATE]
+    scored = [
+        item
+        for item in results
+        if item.severity is not TraceConstraintSeverity.GATE and not item.withheld
+    ]
+    decided = [item for item in results if not item.withheld]
     return _DecisionSet(
         results=results,
         score=(
             _weighted_fraction(scored)
             if scored
-            else (1.0 if all(item.passed for item in results) else 0.0)
+            else (1.0 if all(item.passed for item in decided) else 0.0)
         ),
         failed_gate_ids=[
             item.id
             for item in results
-            if item.severity is TraceConstraintSeverity.GATE and not item.passed
+            if item.severity is TraceConstraintSeverity.GATE
+            and not item.passed
+            and not item.withheld
         ],
     )
 
@@ -624,7 +680,7 @@ def _component(
     judge's aggregate when a required criterion fails, done once here for both.
     """
     return TraceChecksResult(
-        passed=all(item.passed for item in winner.results),
+        passed=all(item.passed for item in winner.results if not item.withheld),
         score=0.0 if winner.failed_gate_ids else winner.score,
         constraints=winner.results,
         winning_path=winner_id,
@@ -729,11 +785,13 @@ def _evaluate_constraint(
             _unbound_truth(constraint.bind),
         )
     )
+    withheld = truth is _Truth.WITHHELD
     return TraceConstraintResult(
         id=constraint.id,
         kind=kind,
         passed=truth is _Truth.TRUE,
         undecided=truth is _Truth.UNKNOWN,
+        withheld=withheld,
         weight=constraint.weight,
         severity=constraint.severity,
         message=(
@@ -741,7 +799,9 @@ def _evaluate_constraint(
             if unmakeable
             else _folded_message(readings, truth, kind, candidates.undetermined)
         ),
-        matched_positions=sorted({item for reading in readings for item in reading.positions}),
+        matched_positions=(
+            [] if withheld else sorted({item for reading in readings for item in reading.positions})
+        ),
     )
 
 
@@ -855,6 +915,7 @@ def _assignment_text(environment: Mapping[str, Any]) -> str:
 _FOLD_PHRASE: Mapping[_Truth, str] = {
     _Truth.FALSE: "failed under",
     _Truth.UNKNOWN: "undecided under",
+    _Truth.WITHHELD: "withheld under",
 }
 
 
@@ -1079,12 +1140,19 @@ def _extracted(bound: BoundValue, event: TraceEvent, outcome: TraceEvent | None)
 
 
 def _binder_reading(bound: BoundValue, event: TraceEvent, outcome: TraceEvent | None) -> Any:
-    """The raw value the extraction addresses, before any capture narrows it."""
+    """The raw value the extraction addresses, before any capture narrows it.
+
+    An extraction reads a JSON ``null`` and an absent key as one condition — the
+    call that omitted the argument silences a report a sibling call earned, so
+    the :data:`_MISSING` sentinel :func:`_argument_at` returns is folded into
+    ``None`` at this boundary and never reaches a bound value.
+    """
     head = bound.head_segment()
     if head != "args":
         return _BINDER_FIELDS[head](event, outcome)
     _, _, path = bound.field.partition(".")
-    return _argument_at(event.arguments, path) if path else event.arguments
+    value = _argument_at(event.arguments, path) if path else event.arguments
+    return None if value is _MISSING else value
 
 
 # ``status`` and ``executor`` are on no row: a binding over a closed vocabulary of a
@@ -1165,6 +1233,19 @@ class _Resolver:
             if item.anchor and not item.outcome.matched and not item.outcome.undecidable
         ]
 
+    def empty_sides(self) -> list[str]:
+        """Every resolved matcher whose outcome carried no event, anchor or not.
+
+        Reads the withheld verdict on ``count`` — whose matcher is not an
+        anchor (its empty count is a defined verdict) but whose ``WITHHELD``
+        under ``on_missing: withhold`` still names the same side.
+        """
+        return [
+            item.label
+            for item in self._resolved
+            if not item.outcome.matched and not item.outcome.undecidable
+        ]
+
 
 def _restricted(outcome: MatcherOutcome, within: TurnWindow | None) -> MatcherOutcome:
     """``outcome`` with every event outside the constraint's turn window dropped.
@@ -1200,14 +1281,20 @@ def _evaluate(expr: TraceConstraintExpr, resolver: _Resolver, on_missing: OnMiss
 
 
 def _present(payload: PresentConstraint, resolver: _Resolver, on_missing: OnMissing) -> _Truth:
-    """No match is this constraint's own ``False``, never a question ``on_missing`` answers.
+    """No match is this constraint's own ``False``, unless the author opted to withhold.
 
-    The matcher is still resolved as an anchor so the grade names which side
-    selected nothing, but the verdict is decided here: the load tier refuses
-    ``on_missing`` anywhere above a ``present``, and this is the same answer read
-    off the kind rather than off a policy that never legally arrives.
+    The matcher is resolved as an anchor so the grade names which side selected
+    nothing. A matcher that yielded no candidate at all — no definite match and
+    no undecidable one — is what ``on_missing: withhold`` opts out of: the
+    verdict is ``WITHHELD`` and the check leaves numerator and denominator
+    alone. With a match or an undecidable candidate the reading falls through
+    to the count-based decision, where ``PASS`` and ``FAIL`` are refused at
+    load and ``WITHHOLD`` behaves as ``FAIL`` on any completion that reads
+    zero.
     """
     counts = _reachable_counts(resolver.resolve("match", payload.match, anchor=True))
+    if on_missing is OnMissing.WITHHOLD and counts == range(0, 1):
+        return _Truth.WITHHELD
     return _decide((count > 0 for count in counts), on_missing)
 
 
@@ -1217,7 +1304,17 @@ def _absent(payload: AbsentConstraint, resolver: _Resolver, on_missing: OnMissin
 
 
 def _count(payload: CountConstraint, resolver: _Resolver, on_missing: OnMissing) -> _Truth:
+    """The count-based verdict, unless the matcher yielded nothing and the author withheld.
+
+    An empty outcome — no definite match, no undecidable one — is what
+    ``on_missing: withhold`` opts out of, and the ``min`` / ``max`` bounds are
+    irrelevant there: the withhold is on the absence of the anchor, not on
+    whether the count falls in bounds. With any candidate the reading falls
+    through to the bounds check.
+    """
     counts = _reachable_counts(resolver.resolve("match", payload.match, anchor=False))
+    if on_missing is OnMissing.WITHHOLD and counts == range(0, 1):
+        return _Truth.WITHHELD
     return _decide(
         (_within_bounds(count, payload.min, payload.max) for count in counts), on_missing
     )
@@ -1378,6 +1475,8 @@ def _conjunction(verdicts: Iterable[_Truth]) -> _Truth:
     seen = set(verdicts)
     if _Truth.FALSE in seen:
         return _Truth.FALSE
+    if _Truth.WITHHELD in seen:
+        return _Truth.WITHHELD
     return _Truth.UNKNOWN if _Truth.UNKNOWN in seen else _Truth.TRUE
 
 
@@ -1385,6 +1484,8 @@ def _disjunction(verdicts: Iterable[_Truth]) -> _Truth:
     seen = set(verdicts)
     if _Truth.TRUE in seen:
         return _Truth.TRUE
+    if _Truth.WITHHELD in seen:
+        return _Truth.WITHHELD
     return _Truth.UNKNOWN if _Truth.UNKNOWN in seen else _Truth.FALSE
 
 
@@ -1392,6 +1493,7 @@ _NEGATED: Mapping[_Truth, _Truth] = {
     _Truth.TRUE: _Truth.FALSE,
     _Truth.FALSE: _Truth.TRUE,
     _Truth.UNKNOWN: _Truth.UNKNOWN,
+    _Truth.WITHHELD: _Truth.WITHHELD,
 }
 
 _HANDLERS: Mapping[TraceConstraintKind, Callable[[Any, _Resolver, OnMissing], _Truth]] = {
@@ -1472,10 +1574,16 @@ def _decide(values: Iterable[bool | None], on_missing: OnMissing) -> _Truth:
 
     ``None`` is an unmatched anchor — a question the trial answered by not
     containing the anchor at all, not one the missing record left open — so
-    ``on_missing`` resolves it before the readings are compared.
+    ``on_missing`` resolves it before the readings are compared. Under
+    ``OnMissing.WITHHOLD`` a single unmatched anchor withholds the whole reading;
+    with no unmatched anchor at all, ``WITHHOLD`` reads as ``FAIL`` — the
+    ordering or adjacency was decidable.
     """
+    readings = list(values)
+    if on_missing is OnMissing.WITHHOLD and any(value is None for value in readings):
+        return _Truth.WITHHELD
     unmatched_verdict = on_missing is OnMissing.PASS
-    agreed = {unmatched_verdict if value is None else value for value in values}
+    agreed = {unmatched_verdict if value is None else value for value in readings}
     if agreed == {True}:
         return _Truth.TRUE
     if agreed == {False}:
@@ -1542,6 +1650,9 @@ def _message(
         return ""
     if truth is _Truth.UNKNOWN:
         return f"{kind.value} cannot be decided — " + "; ".join(resolver.undecided())
+    if truth is _Truth.WITHHELD:
+        empty = resolver.empty_sides()
+        return f"{kind.value} withheld: {' and '.join(empty)} selected no event"
     unmatched = resolver.unmatched_anchors() if on_missing is OnMissing.FAIL else []
     if unmatched:
         return f"{kind.value} is unmatched: {' and '.join(unmatched)} selected no event"

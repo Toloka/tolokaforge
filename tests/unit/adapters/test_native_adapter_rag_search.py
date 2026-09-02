@@ -76,7 +76,7 @@ class TestRagSearchEnabled:
     def test_corpus_and_search_kb_enable_per_trial_rag(self, tmp_path: Path) -> None:
         adapter = _build_adapter(
             tmp_path,
-            enabled_agent_tools=["search_kb", "submit_report"],
+            enabled_agent_tools=["search_kb", "bash"],
             rag={"corpus_dir": "rag/corpus"},
         )
         td = adapter.to_task_description("rag_task")
@@ -112,7 +112,7 @@ class TestRagSearchEnabled:
         """
         adapter = _build_adapter(
             tmp_path,
-            enabled_agent_tools=["submit_report"],
+            enabled_agent_tools=["bash"],
             enabled_user_tools=["search_kb"],
             rag={"corpus_dir": "rag/corpus"},
         )
@@ -121,14 +121,14 @@ class TestRagSearchEnabled:
         assert td.search.enabled is True
         assert td.search.documents_path == "rag/corpus"
         assert "rag/corpus/policies.md" in td.tool_artifacts
-        assert [t.name for t in td.agent_tools] == ["submit_report"]
+        assert [t.name for t in td.agent_tools] == ["bash"]
         search_kb = next(t for t in td.user_tools if t.name == "search_kb")
         assert set(search_kb.parameters["properties"]) == {"query", "top_k", "alpha"}
 
 
 class TestRagSearchDisabled:
     def test_no_rag_block_keeps_search_disabled(self, tmp_path: Path) -> None:
-        adapter = _build_adapter(tmp_path, enabled_agent_tools=["submit_report"])
+        adapter = _build_adapter(tmp_path, enabled_agent_tools=["bash"])
         td = adapter.to_task_description("rag_task")
 
         assert td.search.enabled is False
@@ -141,7 +141,7 @@ class TestRagSearchFailFast:
     def test_corpus_without_search_kb_raises(self, tmp_path: Path) -> None:
         adapter = _build_adapter(
             tmp_path,
-            enabled_agent_tools=["submit_report"],
+            enabled_agent_tools=["bash"],
             rag={"corpus_dir": "rag/corpus"},
         )
         with pytest.raises(ValueError, match="search_kb"):

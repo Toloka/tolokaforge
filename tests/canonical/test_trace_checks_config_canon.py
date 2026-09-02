@@ -109,6 +109,61 @@ def test_a_config_spanning_the_vocabulary_survives_the_wire():
     )
 
 
+def test_a_config_declaring_on_missing_withhold_survives_the_wire():
+    """An ``on_missing: withhold`` config crosses the trial-spec JSON byte-identical and equal.
+
+    The runner rehydrates ``TraceChecksConfig`` from the JSON that rides the
+    trial spec, so the withhold declaration reaches the runner as the same
+    enum value the author wrote. Both a bare ``present`` carrier and a nested
+    ``count`` inside an ``all_of`` are asserted, so a future refactor that
+    stopped threading the policy through composites would break here.
+    """
+    config = TraceChecksConfig(
+        constraints=[
+            {
+                "id": "kb_succeeded",
+                "description": "search_kb was called successfully",
+                "on_missing": "withhold",
+                "require": {
+                    "present": {
+                        "match": {
+                            "kind": "tool_call",
+                            "tool": {"equals": "search_kb"},
+                            "status": {"equals": "success"},
+                        }
+                    }
+                },
+            },
+            {
+                "id": "kb_called_at_most_once",
+                "description": "search_kb was called at most once and succeeded",
+                "on_missing": "withhold",
+                "require": {
+                    "all_of": [
+                        {
+                            "count": {
+                                "match": {
+                                    "kind": "tool_call",
+                                    "tool": {"equals": "search_kb"},
+                                    "status": {"equals": "success"},
+                                },
+                                "min": 1,
+                                "max": 1,
+                            }
+                        }
+                    ]
+                },
+            },
+        ]
+    )
+
+    delivered = TraceChecksConfig.model_validate_json(config.model_dump_json())
+
+    assert delivered.model_dump_json() == config.model_dump_json()
+    assert delivered == config
+    assert [item.on_missing.value for item in delivered.constraints] == ["withhold", "withhold"]
+
+
 def test_the_block_reaches_the_runner_as_the_object_the_engine_holds(test_data_dir: Path):
     """One model, both substrates, passed through the adapter with no translation.
 

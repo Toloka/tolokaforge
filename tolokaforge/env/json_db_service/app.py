@@ -6,6 +6,15 @@ This module provides a schema-aware JSON state storage with:
 - Snapshot/Restore: Supports golden path execution during grading
 - SQL queries: SQLite-based querying on JSON data
 - JSONPath queries: Query state using JSONPath expressions
+
+Deployment. This service ships as a container built from
+:file:`tolokaforge/docker/dockerfiles/db_service.Dockerfile`, which installs
+`fastapi` / `uvicorn` / `jsonpath-ng` from :file:`requirements.txt` next to
+this file. The core `tolokaforge` wheel does NOT depend on `fastapi`; a
+plain `pip install tolokaforge` will not import this module. Callers that
+run the service outside the container (typically the test suite, which
+uses `TestClient`) need `pip install 'tolokaforge[runner]'` — the `runner`
+extra carries `fastapi>=0.108.0`.
 """
 
 import copy
@@ -16,7 +25,17 @@ import sqlite3
 from threading import Lock
 from typing import Any, NoReturn
 
-from fastapi import FastAPI, HTTPException, Query
+try:
+    from fastapi import FastAPI, HTTPException, Query
+except ImportError as exc:  # noqa: BLE001 -- explicit re-raise below
+    raise ImportError(
+        "tolokaforge.env.json_db_service.app requires `fastapi`. "
+        "The service ships as a container that installs its own dependencies "
+        "(tolokaforge/env/json_db_service/requirements.txt). To run this "
+        "module outside the container — for example the test suite — install "
+        "the runner extra: `pip install 'tolokaforge[runner]'`."
+    ) from exc
+
 from jsonpath_ng.ext import parse  # .ext: supports filter exprs, superset of base grammar
 from pydantic import BaseModel, Field, PrivateAttr
 

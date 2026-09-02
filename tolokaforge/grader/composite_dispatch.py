@@ -634,6 +634,7 @@ def _build_grade(
             matched_positions=list(c.matched_positions),
             severity=c.severity,
             undecided=c.undecided,
+            withheld=c.withheld,
         )
         for c in trace_result.constraints
     ]

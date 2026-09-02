@@ -289,24 +289,40 @@ def test_timeout_classification():
     traj.status = TrialStatus.TIMEOUT
     traj.termination_reason = TerminationReason.TIMEOUT
 
+    # A non-provision trajectory carries no provisioning-lifecycle stage; the
+    # field is populated only when the executor synthesizes a
+    # ``PROVISION_ERROR`` result. Locks the reverse direction of the invariant
+    # ``provision_stage non-None iff termination_reason == PROVISION_ERROR``.
+    assert traj.provision_stage is None
+
     assert is_failed_trajectory(traj) is True
     attribution = attribute_failure(traj)
     assert attribution["failure_class"] == "timeout_or_resource"
     assert attribution["deterministic"] is True
+    # ``provision_stage`` is a first-class field on every attribution record —
+    # present-but-null off the provision path so downstream consumers read it
+    # without a ``.get()`` / ``KeyError`` dance.
+    assert attribution["provision_stage"] is None
 
 
 def test_provision_error_classification():
     """A trajectory carrying ``PROVISION_ERROR`` classifies as ``provision_failure`` —
     substrate came up wrong before the trial body ran, so the failure is
-    infra-side, not model-side."""
+    infra-side, not model-side. The stage that raised is a first-class field
+    on the returned dict alongside the evidence list, not buried inside it: a
+    reader answering "which point of the provisioning lifecycle failed" does
+    not walk ``evidence`` to find out.
+    """
     traj = _base_trajectory()
     traj.status = TrialStatus.ERROR
     traj.termination_reason = TerminationReason.PROVISION_ERROR
+    traj.provision_stage = "register_trial"
 
     assert is_failed_trajectory(traj) is True
     attribution = attribute_failure(traj)
     assert attribution["failure_class"] == "provision_failure"
     assert attribution["deterministic"] is True
+    assert attribution["provision_stage"] == "register_trial"
     assert any(e["kind"] == "termination_reason" for e in attribution["evidence"])
 
     # A provision failure (which a reset-recipe failure surfaces as) counts

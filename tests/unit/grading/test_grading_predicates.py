@@ -16,6 +16,7 @@ evaluator no longer calls answers for nothing.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
 from itertools import product
 from typing import Any
 
@@ -24,6 +25,7 @@ import pytest
 from tolokaforge.core.grading.predicates import (
     _EVER_SATISFIABLE,
     JSON_TYPES,
+    date_comparison_key,
     ever_satisfiable,
     json_type_of,
 )
@@ -162,3 +164,78 @@ def test_the_table_answers_for_exactly_the_operators_a_predicate_may_bind() -> N
 
     with pytest.raises(ValueError, match="is not a binding operator"):
         ever_satisfiable("regex", "string", "string")
+
+
+# --------------------------------------------------------------------------
+# ``date_comparison_key`` — the shared normalization every date check reads.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("literal", "expected"),
+    [
+        ("2026-03-01", datetime(2026, 3, 1, tzinfo=timezone.utc)),
+        ("2026-03-01T12:00:00Z", datetime(2026, 3, 1, 12, tzinfo=timezone.utc)),
+        ("2026-03-01T12:00:00+00:00", datetime(2026, 3, 1, 12, tzinfo=timezone.utc)),
+        (
+            "2026-03-01T12:00:00+02:00",
+            datetime(2026, 3, 1, 10, tzinfo=timezone.utc),
+        ),
+        ("2026-03-01T12:00:00", datetime(2026, 3, 1, 12, tzinfo=timezone.utc)),
+        (
+            "2026-03-01T12:00:00.123456Z",
+            datetime(2026, 3, 1, 12, 0, 0, 123456, tzinfo=timezone.utc),
+        ),
+        (
+            "2026-03-01T12:00:00.1Z",
+            datetime(2026, 3, 1, 12, 0, 0, 100000, tzinfo=timezone.utc),
+        ),
+    ],
+    ids=[
+        "date-only-midnight-utc",
+        "z-suffix",
+        "explicit-utc-offset",
+        "east-two-normalized-to-utc",
+        "naive-read-as-utc",
+        "microseconds",
+        "one-fractional-digit-padded",
+    ],
+)
+def test_date_comparison_key_normalizes_an_iso_shape(literal: str, expected: datetime) -> None:
+    """Every accepted shape reads through the same UTC datetime.
+
+    Six rows span the policy: a date-only string is midnight UTC of that day;
+    the Z suffix and an explicit ``+00:00`` are the same instant; a naive
+    datetime reads as UTC; a non-UTC offset converts; a fractional second
+    passes through — including the one-digit shape Python 3.10's
+    ``fromisoformat`` would reject without the helper's padding.
+    """
+    assert date_comparison_key(literal) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, 5, 5.0, True, [], {}, "next week", "March 2026", "2026-13-01", ""],
+    ids=[
+        "none",
+        "integer",
+        "number",
+        "boolean",
+        "empty-list",
+        "empty-object",
+        "prose",
+        "month-only-prose",
+        "invalid-month",
+        "empty-string",
+    ],
+)
+def test_date_comparison_key_reads_a_non_date_as_no_evidence(value: Any) -> None:
+    """A non-string and a string no calendar holds both read as ``None``.
+
+    JSON carries no date type, so ``json_type_of``'s "no evidence" reading
+    extends here: a value the helper cannot read is unknown rather than a
+    mismatch. The four date operators pair this with a load-time refusal on
+    the *bound* side, so a value that reads as ``None`` at runtime is what
+    the gate has already covered from the author's side.
+    """
+    assert date_comparison_key(value) is None

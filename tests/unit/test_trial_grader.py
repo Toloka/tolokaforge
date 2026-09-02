@@ -346,3 +346,76 @@ class TestJudgeMessagesJson:
         assert backend.calls[0]["llm_messages_json"] is not None
         parsed = json.loads(backend.calls[0]["llm_messages_json"])
         assert parsed == [{"role": "system", "content": "you are a helper"}]
+
+
+class TestRuntimeBackendDispatchPreference:
+    """When ``runtime_backend`` is set on the grader (in-process per-trial
+    routing), :meth:`grade` dispatches through it — not through the
+    address-built client. When ``runtime_backend`` is ``None`` (the P2/P3
+    on-the-wire shape), the address-built client is the target. This is the
+    regression this PR fixes: on ``PerTrialRuntimeBackend``, the client was
+    bound to ``""`` and every ``grade_trial`` call failed with
+    :class:`_InactiveRpcError`.
+    """
+
+    def test_runtime_backend_wins_when_both_are_set(self) -> None:
+        """Grade a COMPLETED trajectory with both a runtime_backend and a
+        runner_client set. Only the runtime_backend must record the call —
+        the fallback client stays silent."""
+        backend_target = _StubBackend()
+        client_target = _StubBackend()
+        grader = RunnerRPCTrialGrader(
+            runner_address="stub:0",
+            logger=MagicMock(),
+            runner_client=client_target,
+            runtime_backend=backend_target,  # type: ignore[arg-type]
+        )
+
+        grader.grade(
+            make_trial_spec(),
+            make_trajectory(status=TrialStatus.COMPLETED),
+            "sysprompt",
+        )
+
+        assert len(backend_target.calls) == 1
+        assert backend_target.calls[0]["trial_id"].endswith(":0")
+        assert client_target.calls == []
+
+    def test_runner_client_used_when_runtime_backend_is_none(self) -> None:
+        """The P2/P3 on-the-wire shape — no runtime_backend, only an
+        address-built client. This locks that Stage 2's routing change did
+        not regress the out-of-process path."""
+        client_target = _StubBackend()
+        grader = RunnerRPCTrialGrader(
+            runner_address="stub:0",
+            logger=MagicMock(),
+            runner_client=client_target,
+            runtime_backend=None,
+        )
+
+        grader.grade(
+            make_trial_spec(),
+            make_trajectory(status=TrialStatus.COMPLETED),
+            "sysprompt",
+        )
+
+        assert len(client_target.calls) == 1
+        assert client_target.calls[0]["trial_id"].endswith(":0")
+
+    def test_factory_threads_runtime_backend_from_context(self) -> None:
+        """``runner_rpc_trial_grader_factory(ctx)`` must pull
+        ``ctx.runtime_backend`` into the grader when set, AND skip building
+        a live gRPC client (nothing to dial — the backend is the target)."""
+        from tolokaforge.core.plugin_registry import TrialGraderContext
+        from tolokaforge.core.trial_grader import runner_rpc_trial_grader_factory
+
+        backend_target = _StubBackend()
+        ctx = TrialGraderContext(
+            runner_address=None,
+            logger=MagicMock(),
+            runtime_backend=backend_target,  # type: ignore[arg-type]
+        )
+        grader = runner_rpc_trial_grader_factory(ctx)
+
+        assert grader.runtime_backend is backend_target
+        assert grader.runner_client is None

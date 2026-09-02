@@ -3,23 +3,32 @@
 Pins the contract that empty-content filler injection (the substitution in
 :meth:`~tolokaforge.core.llm.client.LLMClient._convert_messages`) is a
 :class:`~tolokaforge.core.llm.message_assembly_policy.MessageAssemblyPolicy`
-capability, not a hard-coded engine rule.
+capability, not a hard-coded engine rule, and that the filler string is
+per-instance data — different providers pick different fillers.
 
-Why this needed a contract: the filler exists because AWS Bedrock/Nova
-rejects empty ``content`` on assistant-with-tool_calls messages
-(commit 73e01e9e6, 2025-11-25). It was applied universally with no
-provider check, which the 2026-04-30 OTS eval revealed to be actively
-harmful for Gemini — Gemini Pro pattern-matches the filler in past
-assistant turns and echoes ``"I'll help you with that."`` back as its
-own content (empirically 2/5 calls when the filler is in context,
-0/5 when content is left empty). The ratchet: only Nova carries
-:class:`~tolokaforge.core.llm.message_assembly_policy.NovaMessageAssembly`;
-every other preset carries
+Two provider families opt in today:
+
+* ``aws_nova`` / ``aws_nova_openrouter`` — Bedrock/Nova rejects empty
+  ``content`` on assistant-with-tool_calls messages (commit 73e01e9e6,
+  2025-11-25). Filler defaults to ``"I'll help you with that."``.
+* ``moonshot_kimi_k3`` — Moonshot direct rejects the same shape with
+  HTTP 400 "the message at position N with role 'assistant' must not
+  be empty" (issue #1284). Filler is a single space ``" "``: minimum
+  content that clears the check without introducing a phrase Kimi
+  could echo back.
+
+The filler is data on the policy instance because a universal filler
+was proven harmful on 2026-04-30 — Gemini Pro pattern-matches the
+substituted string in past assistant turns and echoes ``"I'll help you
+with that."`` back as its own content (empirically 2/5 calls when the
+filler is in context, 0/5 when content is left empty). The ratchet:
+every non-opted-in preset carries
 :class:`~tolokaforge.core.llm.message_assembly_policy.NullMessageAssembly`.
 
 If this test fails, a new preset opted into the filler unintentionally —
-or the Nova preset lost it. Either way the right move is to flip the
-``message_assembly_policy`` explicitly, not to mute the assertion.
+or an existing preset lost it, or the filler string drifted. Either way
+the right move is to flip ``message_assembly_policy`` explicitly, not to
+mute the assertion.
 """
 
 from __future__ import annotations
@@ -28,7 +37,7 @@ import pytest
 
 from tolokaforge.core.llm import build_capabilities
 from tolokaforge.core.llm.message_assembly_policy import (
-    NovaMessageAssembly,
+    FillEmptyAssistantAssembly,
     NullMessageAssembly,
 )
 
@@ -42,6 +51,20 @@ _FILLER_INJECTION_MODELS = [
     ("nova-pro", "nova"),
     ("nova-2-lite", "nova"),
     ("amazon/nova-2-lite-v1", "openrouter"),
+]
+
+
+# Models whose preset overlays the default filler string with a
+# provider-specific one via ``{name: nova, params: {empty_assistant_filler: "…"}}``.
+# The tuple is ``(model, provider, expected_filler)``; the filler string
+# is data on the policy instance, not an engine constant.
+_CUSTOM_FILLER_MODELS = [
+    # Moonshot direct rejects empty assistant content on tool-call turns
+    # with HTTP 400 "the message at position N with role 'assistant' must
+    # not be empty". A bare space is the minimum content that clears the
+    # check without introducing a phrase Kimi could echo back — see
+    # ``moonshot_kimi_k3`` in ``model_presets.yaml`` and issue #1284.
+    ("moonshotai/kimi-k3", "openrouter", " "),
 ]
 
 
@@ -71,8 +94,8 @@ _NO_FILLER_MODELS = [
 @pytest.mark.parametrize(("model", "provider"), _FILLER_INJECTION_MODELS)
 def test_nova_family_keeps_empty_assistant_filler(model: str, provider: str) -> None:
     caps = build_capabilities(model, provider)
-    assert isinstance(caps.message_assembly_policy, NovaMessageAssembly), (
-        f"{model!r} (Nova preset) must resolve to NovaMessageAssembly — "
+    assert isinstance(caps.message_assembly_policy, FillEmptyAssistantAssembly), (
+        f"{model!r} (Nova preset) must resolve to FillEmptyAssistantAssembly — "
         "Bedrock/Nova rejects empty ``content`` on assistant-with-tool_calls. "
         f"Got: {type(caps.message_assembly_policy).__name__}."
     )
@@ -84,13 +107,34 @@ def test_nova_family_keeps_empty_assistant_filler(model: str, provider: str) -> 
     )
 
 
+@pytest.mark.parametrize(("model", "provider", "expected_filler"), _CUSTOM_FILLER_MODELS)
+def test_custom_filler_preset_overlays_reach_message_assembly_slot(
+    model: str, provider: str, expected_filler: str
+) -> None:
+    caps = build_capabilities(model, provider)
+    assert isinstance(caps.message_assembly_policy, FillEmptyAssistantAssembly), (
+        f"{model!r} must resolve to a filler-on message-assembly policy — its "
+        "preset opts in via ``message_assembly_policy: {name: nova, params: "
+        "{empty_assistant_filler: ...}}``. Got: "
+        f"{type(caps.message_assembly_policy).__name__}."
+    )
+    assert caps.message_assembly_policy.inject_empty_assistant_filler is True
+    assert caps.message_assembly_policy.empty_assistant_filler == expected_filler, (
+        f"{model!r} custom filler drifted: expected {expected_filler!r}, "
+        f"got {caps.message_assembly_policy.empty_assistant_filler!r}. The "
+        "string is data on the policy instance — a preset overlay change "
+        "shows up here."
+    )
+
+
 @pytest.mark.parametrize("model", _NO_FILLER_MODELS)
-def test_non_nova_presets_do_not_inject_empty_assistant_filler(model: str) -> None:
+def test_non_filler_presets_do_not_inject_empty_assistant_filler(model: str) -> None:
     caps = build_capabilities(model, "openrouter")
     assert isinstance(caps.message_assembly_policy, NullMessageAssembly), (
-        f"{model!r} must resolve to NullMessageAssembly. Nova is the only "
-        "preset that opts into the filler; injecting it elsewhere creates a "
-        "few-shot pattern some models (notably Gemini) echo back as their own "
-        f"response content. Got: {type(caps.message_assembly_policy).__name__}."
+        f"{model!r} must resolve to NullMessageAssembly. Only presets whose "
+        "provider rejects empty assistant content on tool-call turns opt into "
+        "the filler; injecting it elsewhere creates a few-shot pattern some "
+        "models (notably Gemini) echo back as their own response content. "
+        f"Got: {type(caps.message_assembly_policy).__name__}."
     )
     assert caps.message_assembly_policy.inject_empty_assistant_filler is False

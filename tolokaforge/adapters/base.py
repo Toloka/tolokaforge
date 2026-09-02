@@ -8,7 +8,13 @@ from itertools import product
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from tolokaforge.core.grading.config_validation import CombineLayer, HashSourceLayer
+from tolokaforge.core.grading.config_validation import (
+    CombineLayer,
+    HashSourceLayer,
+    ReplayWorld,
+    SeededTablesLayer,
+    ToolInventory,
+)
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Grade, GradingConfig, TaskConfig, Trajectory
 
@@ -326,6 +332,54 @@ class BaseAdapter(ABC):
         function of the task and its directory alone.
         """
         return HashSourceLayer.unresolvable()
+
+    @classmethod
+    def grading_tool_inventory(cls, task: TaskConfig, task_dir: Path) -> ToolInventory:
+        """The tool set this adapter presents at runtime, for tool-name checking.
+
+        The pre-run authoring gate reads this to hold ``present`` / ``absent`` matchers
+        and tool references in trace checks against a real set of names. An adapter
+        whose runtime tool set is not the native reading of ``tools.agent.enabled`` —
+        one that resolves tools from its own registry or a fixture the pack does not
+        name — reports its own set here so the same rules protect its packs.
+        :meth:`ToolInventory.unresolvable` is the honest default and the answer that
+        keeps every tool-aware rule reported rather than refused for adapters that
+        cannot answer.
+
+        A classmethod, matching :meth:`grading_hash_source_layer`: ``tolokaforge
+        validate`` holds no adapter instance and must keep validating packs whose
+        adapter package is not installed, so every fact reported here has to be a
+        function of the task and its directory alone. See ADR-0042.
+        """
+        return ToolInventory.unresolvable()
+
+    @classmethod
+    def grading_replay_world(cls, task: TaskConfig, task_dir: Path) -> ReplayWorld:
+        """What this adapter gives a golden-action replay to be executed against.
+
+        Two facts, neither of them readable from ``grading.yaml``: what the state a
+        replay loads is (an initial-state JSON file, an inline mapping, or nothing),
+        and whether the pack ships the tool module those actions call. The native
+        reading is ``initial_state.json_db`` and ``tools.agent.mcp_server``; an
+        adapter that builds a world from its own fixtures reports through this hook
+        instead. :meth:`ReplayWorld.unresolvable` is the honest default. See
+        ADR-0042.
+        """
+        return ReplayWorld.unresolvable()
+
+    @classmethod
+    def grading_seeded_tables(cls, task: TaskConfig, task_dir: Path) -> SeededTablesLayer:
+        """The tables this adapter seeds, which the pack's ``id_fields`` decl keys.
+
+        The pre-run authoring gate reads this to hold a declared primary key against
+        a real view of the state the trial starts on. The native reading is
+        ``initial_state.json_db``; an adapter whose seeded state lives elsewhere —
+        a database fixture, a compose service's own seed dump — reports its tables
+        through this hook. :meth:`SeededTablesLayer.unresolvable` is the honest
+        default and the answer that leaves the declaration reported rather than
+        refused where the tables cannot be read. See ADR-0042.
+        """
+        return SeededTablesLayer.unresolvable()
 
     @abstractmethod
     def get_task_ids(self) -> list[str]:

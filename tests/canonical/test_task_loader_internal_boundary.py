@@ -10,6 +10,9 @@ The guard asserts the bare module token ``_task_loader`` appears nowhere under
 the ``from … import load_task_yaml`` line, the dotted
 ``tolokaforge.adapters._task_loader.load_task_yaml`` reference, an aliased
 import, and the ``from …adapters import _task_loader`` module import.
+
+Architecture Decision Records under ``docs/adr/`` are internal design records
+that legitimately name the internals they decide on, so the scan skips them.
 """
 
 from __future__ import annotations
@@ -22,17 +25,23 @@ pytestmark = pytest.mark.canonical
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCANNED_ROOTS = ("examples", "docs")
+_SCAN_EXCLUDED_DIRS = ("docs/adr",)
 _TEXT_SUFFIXES = {".py", ".md", ".rst", ".txt", ".yaml", ".yml", ".sh", ".toml"}
 _FORBIDDEN_TOKEN = "_task_loader"
 
 
 def _scanned_files() -> list[Path]:
+    excluded = tuple((_REPO_ROOT / part).resolve() for part in _SCAN_EXCLUDED_DIRS)
     files: list[Path] = []
     for root in _SCANNED_ROOTS:
         files.extend(
             path
             for path in (_REPO_ROOT / root).rglob("*")
-            if path.is_file() and path.suffix in _TEXT_SUFFIXES
+            if path.is_file()
+            and path.suffix in _TEXT_SUFFIXES
+            and not any(
+                str(path.resolve()).startswith(str(excluded_root)) for excluded_root in excluded
+            )
         )
     return files
 

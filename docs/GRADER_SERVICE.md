@@ -210,9 +210,7 @@ queue = "tolokaforge.core.trial_grader:queue_trial_grader_factory"
 
 `deploy/standalone/docker-compose.yaml` is the operator template — no
 Kubernetes manifest ships in-tree. Adapting the compose recipe to a
-Kubernetes cluster is the operator's job; the follow-up
-[#1272](https://github.com/Toloka/tolokaforge/issues/1272) tracks a
-first-party K8s example.
+Kubernetes cluster is the operator's job.
 
 The `tolokaforge-grader` image ships alongside the other four first-party
 images. `deploy/standalone/docker-compose.yaml` brings the five-service
@@ -462,7 +460,7 @@ sub-component only through its Protocol via a resolved-instance kwarg.
 | `tolokaforge.judge_model_providers` | [`judge_model_provider.py::JudgeModelProvider`](../tolokaforge/core/grading/judge_model_provider.py) | `LiteLLMJudgeModelProvider` (fronts `LLMClient`) | holistic |
 | `tolokaforge.rubric_evaluators` | [`rubric_evaluator.py::RubricEvaluator`](../tolokaforge/core/grading/rubric_evaluator.py) | `LLMJudgeRubricEvaluator` (wraps `LLMJudge`) | holistic |
 | `tolokaforge.transcript_rule_matchers` | [`transcript_rule_matcher.py::TranscriptRuleMatcher`](../tolokaforge/core/grading/transcript_rule_matcher.py) | `DefaultTranscriptRuleMatcher` (wraps `evaluate_transcript_rules`) | holistic |
-| `tolokaforge.trace_check_operators` | [`trace_check_operator.py::TraceCheckOperator`](../tolokaforge/core/grading/trace_check_operator.py) | 17 shipped operator functions — 15 non-binding (`equals`, `equals_ci`, `contains`, `contains_ci`, `not_equals`, `regex`, `gt`, `gte`, `lt`, `lte`, `in_`, `not_in`, `len_gt`, `len_gte`, `exists`) + 2 binding (`equals_binding`, `contains_binding`) | per-operator |
+| `tolokaforge.trace_check_operators` | [`trace_check_operator.py::TraceCheckOperator`](../tolokaforge/core/grading/trace_check_operator.py) | the shipped trace-check operators — non-binding and binding forms — registered via the entry-point group; see [`GRADING.md` § Operators](GRADING.md#operators) for the authored vocabulary | per-operator |
 | `tolokaforge.state_check_backends` | [`state_check_backend.py::StateCheckBackend`](../tolokaforge/core/grading/state_check_backend.py) | `JsonpathStateCheckBackend`, `DbProbesStateCheckBackend` (hash is NOT a backend — runner-integrated) | per-source |
 
 Register a downstream impl the same way as a `TrialGrader`:

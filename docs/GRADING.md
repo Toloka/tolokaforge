@@ -1152,6 +1152,10 @@ reject it.
 | `custom_checks` | every pack | `v0.13.1` | new engine → old image |
 | `transcript_rules.min_assistant_turns` | a pack declaring `transcript_rules` | `v0.15.0` | new engine → old image |
 | `trace_checks` | every pack | `v0.15.0` | new engine → old image |
+| `trace_checks.constraints.<kind>.on_missing == "withhold"` | a pack declaring `on_missing: withhold` on a trace constraint | `unreleased` | new engine → old image |
+| `trace_checks` negative-text operators (`not_contains`, `not_regex`) | a pack declaring one under a matcher predicate | `unreleased` | new engine → old image |
+| `trace_checks` nullness operators (`is_null`, `omitted`) | a pack declaring one under a matcher's `args` or `text` predicate | `unreleased` | new engine → old image |
+| `trace_checks` date operators (`date_gt`, `date_gte`, `date_lt`, `date_lte`) | a pack declaring one under a matcher predicate | `unreleased` | new engine → old image |
 | `state_checks.id_fields` | a pack declaring `state_checks` | `v0.16.1` | new engine → old image |
 | `state_checks.expect_initial_state` | a pack declaring `state_checks` | `unreleased` | both directions |
 | `transcript_rules.required_actions[*].name` | a pack declaring `transcript_rules.required_actions` | `unreleased` | both directions |
@@ -1190,6 +1194,17 @@ value one side's set does not hold is rejected at the value rather than at the k
 model served both the authored block and the trial spec; the authored `grading.yaml`
 key is `name:` and is unchanged, so nothing in a task pack migrates.
 
+`trace_checks.constraints.<kind>.on_missing == "withhold"` is a value-domain lock: the
+`OnMissing` enum on the runner side is a closed set `{fail, pass, withhold}`, and an
+image predating `withhold` declares only `{fail, pass}` — so a pack declaring the new
+value crosses in `trial_spec_json` and the runner's Pydantic model refuses it at
+`RegisterTrial`-time with an enum-value error naming `on_missing`. The response
+direction defaults silently: an old runner's `TraceConstraintResult` proto message
+lacks field `9`, a new decoder reads the proto3 scalar default `withheld == False`,
+which is the value the runner writes on every result whose constraint did not
+declare `on_missing: withhold`. So the row's direction is `new engine → old
+image` only.
+
 A new engine therefore requires a runner image presenting every key above, and
 `make docker-build-core` is part of every engine upgrade. `db_hash_check` is **not**
 on this table: it was never declared on the runner config at all, so no engine ever
@@ -1224,7 +1239,7 @@ database** — and **exactly one** comparison from a closed set of four:
 | `contains` / `contains_ci` | the value contains it — recursively, per [`contains`](#operators) |
 
 The same four are the vocabulary of `db_probes[*].expect`. They are deliberately
-narrower than the seventeen [`trace_checks` operators](#operators): a second comparison
+narrower than the [`trace_checks` operators](#operators): a second comparison
 at one path has no conjunctive reading and is almost always a typo, so **two
 operators on one assertion is a failed check**, not a conjunction. So is **no**
 operator: a bare `path:`, or a misspelled `op:` / `expected:` key, fails rather than
@@ -1701,14 +1716,20 @@ predicates, nested argument paths, counting, and a call's status or result.
 `grade_trajectory` and by the runner's `GradeTrial`, over the timeline each
 already builds, so the component score does not depend on which substrate graded
 the trial. The per-constraint verdicts cross the wire on `Grade.trace_checks`,
-each carrying its `severity` and whether it was
-[undecided](#when-a-constraint-cannot-be-decided), and are written inline in
-`grade.yaml` under `trace_check_results`; `Grade.trace_checks_summary` carries the winning route, the
-gates that shut and one line per alternative, and lands beside them under
-`trace_checks_summary`. **A tripped gate fails the trial on both substrates** —
-the core engine's combine and the runner's `GradeTrial` each force `binary_pass`
-false, the same act the runner already performs on the judge's
-[required-criterion gate](#required-gate-semantics).
+each carrying its `severity`, whether it was
+[undecided](#when-a-constraint-cannot-be-decided), and whether it was
+[withheld](#on_missing--what-an-unmatched-anchor-decides). They are written
+inline in `grade.yaml` under `trace_check_results`; `Grade.trace_checks_summary`
+carries the winning route, the gates that shut and one line per alternative, and
+lands beside them under `trace_checks_summary`. **A tripped gate fails the trial
+on both substrates** — the core engine's combine and the runner's `GradeTrial`
+each force `binary_pass` false, the same act the runner already performs on the
+judge's [required-criterion gate](#required-gate-semantics). The `withheld`
+boolean's request-side value-domain lock is the [`on_missing == "withhold"` row](#runner-engine-version-lock)
+on the runner-engine version-lock table — a runner image predating the enum
+value refuses a pack declaring it at `RegisterTrial`-time; the response side
+defaults silently under proto3 (`withheld == False` from an older runner,
+matching every pack that never declared `on_missing: withhold`).
 
 **A trial whose timeline carries no events leaves the component unscored.** Every
 constraint would otherwise be answered by evidence the trial does not have. The
@@ -1740,7 +1761,7 @@ trace_checks:
       description: "payment looked up before the duplicate-refund case is denied"
       weight: 2.0                               # default 1.0
       severity: scored                          # scored (default) | gate
-      on_missing: fail                          # fail (default) | pass
+      on_missing: fail                          # fail (default) | pass | withhold
       within: { first_turn: 2, last_turn: 5 }   # optional, inclusive turn window
       bind: …                                   # optional, see Correlating arguments
       require:
@@ -1813,19 +1834,35 @@ grading must not depend on it.
 ### Operators
 
 A predicate is the **conjunction of its operators**: every one it declares must
-hold, so `{ gt: 0, lt: 100 }` is a range. Seventeen operators:
+hold, so `{ gt: 0, lt: 100 }` is a range. The vocabulary:
 
 | operator | holds when |
 |---|---|
 | `equals` / `not_equals` | the value is (is not) equal |
 | `equals_ci` | a string equal to it, case-insensitively |
 | `contains` / `contains_ci` | the value contains it, case-sensitively or not |
+| `not_contains` | the value does not contain it — over a value the event carries |
 | `regex` | the pattern **searches** the value — unanchored, and only a string matches |
+| `not_regex` | the pattern finds nothing in the value — the complement of `regex` within declared events |
 | `gt` / `gte` / `lt` / `lte` | the value is a real number and the comparison holds |
+| `date_gt` / `date_gte` / `date_lt` / `date_lte` | the value is an ISO-8601 date or datetime and the comparison holds chronologically |
 | `in_` / `not_in` | the value is (is not) a member of the list |
 | `len_gt` / `len_gte` | the value has a length, above (at or above) the bound |
-| `exists` | the field is present (`exists: false` is the absence primitive) |
+| `exists` | the field is present — a missing key and an explicit `null` both read as absent |
+| `is_null` / `omitted` | the value is explicit JSON `null` / the key was never sent — the two conditions `exists: false` reads as one |
 | `equals_binding` / `contains_binding` | the same, against a value the constraint's `bind` extracted under that name |
+
+**The date comparisons read ISO-8601 and one normalization policy.** A date-only
+string is midnight UTC of that day, a datetime carrying an offset (trailing `Z`
+included) converts to UTC, and a datetime carrying no offset is read as UTC —
+never the grader host's clock, which would make one trajectory grade differently
+per grader host. A non-string is `None` from the helper — not-a-date, not-an-error
+— so a numeric argument is false under every date comparison the same way it is
+under `regex`. So `args: { departure_date: { date_gte: "2026-03-01", date_lt:
+"2026-04-01" } }` reads "a March 2026 departure" without enumerating the days by
+regex, and one bound that no calendar holds — `date_gte: "next week"`,
+`date_gt: "March 2026"` — is refused at load naming the field and both accepted
+shapes rather than silently holding for no trial.
 
 **The two binding operators name a value rather than writing one.** Their argument
 is a name declared under the constraint's own `bind.values`, and the comparison
@@ -1848,18 +1885,24 @@ string, not a range. `len_gt` / `len_gte` are the same shape one level up: they 
 only where the value has a length (a string, list, dict), so `{ len_gt: 0 }` reads
 "non-empty" and is false against a number.
 
-Two limits worth meeting here rather than in a silently ignored predicate:
+Two rules worth meeting here rather than in a silently ignored predicate:
 
-- **`equals: null` is not expressible.** An operator counts as declared when its
-  value is not `null`, which is what keeps a predicate meaning the same thing after
-  the gRPC round trip that writes every unset field as `null`. So "this argument is
-  JSON `null`" cannot be written; `exists: false` covers the far commoner "the
-  argument is absent".
-- **There is no `not_contains` / `not_regex`.** A predicate cannot negate a
-  substring or pattern match — `negate` operates on a whole constraint, not on one
-  predicate — so "select the calls whose url does *not* contain `/admin`" is not a
-  *selection*. "Never another customer's record" is `not_equals` on the argument,
-  which does ship.
+- **`is_null` / `omitted` subdivide what `exists: false` reads as one condition,**
+  and both are argument material — on `status` / `executor` / `result` a missing
+  value is missing evidence, so a nullness probe there is a load error naming the
+  offending field and pointing the author at `args` (or `text`) or `exists: false`.
+  An operator counts as declared when its value is not `null`, which is what keeps
+  a predicate meaning the same thing after the gRPC round trip that writes every
+  unset field as `null`, so a nullness probe is spelled `is_null: true` (or
+  `false`) rather than `equals: null`.
+- **`not_contains` / `not_regex` negate the match, never the evidence** — they
+  hold only over a value the event carries, so an absent or `None` argument
+  satisfies neither, the same way every operator but `exists` reads a `None`.
+  "Select the calls whose url does *not* contain `/admin`" is a selection over
+  calls that carry a `url`; a call that carried none is unmatched, not a match.
+  "Never another customer's record" over an argument that may be absent stays
+  `not_equals`, which does hold over the absent case the way negative-text
+  operators do not.
 
 There is no `absent` operator — it is `exists: false`, and an operator named
 `absent` beside a *constraint* named `absent` is an ambiguity the vocabulary does
@@ -1870,11 +1913,13 @@ not need. A predicate declaring **no** operator is rejected at load.
 Resolving a matcher yields two sets — the events that **definitely** match, and the
 events **nobody can decide**. Three rules govern them.
 
-**A predicate over a `None` field is unmatched, never vacuously true.** Only
-`exists` reads a `None`; every other operator is false there. So
-`args: { refund_id: { not_equals: R-1 } }` does **not** hold for a call that carried
-no `refund_id` at all — an absent argument satisfies no negative predicate. Write
-`exists: false` for "the argument is absent".
+**A predicate over a `None` field is unmatched, never vacuously true.** `exists`,
+`is_null`, and `omitted` read the shape of the absence itself; every other
+operator is false there. So `args: { refund_id: { not_equals: R-1 } }` does
+**not** hold for a call that carried no `refund_id` at all — an absent argument
+satisfies no negative predicate. Write `exists: false` for "the argument is
+absent", `is_null: true` for "the value is explicit JSON `null`", or
+`omitted: true` for "the key was never sent".
 
 **A `tool_call` matcher reads `status` and `result` through the result paired to it
 by `call_id`.** The call event carries neither of its own — a `tool_call` event
@@ -1903,9 +1948,9 @@ Undecidability is scoped **to the matcher**, never to the event kind:
 
 | kind | payload, by position | meaning | `on_missing` anchor |
 |---|---|---|---|
-| `present` | `match` | at least one event matches (LTLf `F A`) | rejected |
+| `present` | `match` | at least one event matches (LTLf `F A`) | empty match, `withhold` only |
 | `absent` | `match` | no event matches (`G ¬A`) | rejected |
-| `count` | `match`, `min`, `max` | the match count is within the bounds | rejected |
+| `count` | `match`, `min`, `max` | the match count is within the bounds | empty match, `withhold` only |
 | `before` | `left`, `right` | ordering under both quantifiers | both sides |
 | `immediately_before` | `left`, `right`, `among` | adjacency in the named view (`A ∧ X B`) | both sides |
 | `absent_before` | `forbidden`, `anchor` | `¬A U B` — the no-prefill primitive | `anchor` |
@@ -1914,12 +1959,18 @@ Undecidability is scoped **to the matcher**, never to the event kind:
 | `any_of` | `list` of expressions | disjunction | delegated |
 | `negate` | one expression | negation | delegated |
 
-`on_missing` is rejected over any `require` tree holding `present`, `absent` or
-`count`: their verdict *is* the match, so a policy for "the matcher found nothing"
-would answer the question the constraint asks. The three composites delegate the
+`on_missing: fail` and `on_missing: pass` are rejected over any `require` tree
+holding `present`, `absent` or `count`: their verdict *is* the match, so those two
+policies would answer the question the constraint asks — an always-pass or a
+redundant name for the constraint's own zero. `on_missing: withhold` is admitted
+on `present` and `count`: a matcher that yielded no candidate at all is a distinct
+case from `present`'s zero and `count`'s out-of-bounds, so opting the constraint
+out of scoring is a defined verdict rather than a vacuous one. It stays refused on
+`absent`, whose empty match IS its positive verdict — withholding there would
+withhold the very check the constraint asks. The three composites delegate the
 policy to every expression they hold rather than consuming it, so the rejection
 reads the whole tree — `on_missing` beside an `all_of` is admitted exactly when
-every kind under it anchors something.
+every kind under it accepts the policy value written.
 
 There is no `after`, because it reduces exactly:
 
@@ -2023,23 +2074,69 @@ comes from the `role: tool` message instead and carries an `Error: ` prefix (G6b
 
 A side or anchor that matched **nothing** leaves the constraint's question unasked:
 `before` has no ordering to check, `absent_between` has no window. That is not the
-same as the condition failing, so it is decided by `on_missing`, which defaults to
-**`fail`** — a named failing sub-check saying which position selected no event.
+same as the condition failing, so it is decided by `on_missing`, which takes three
+values — `fail` (default), `pass`, `withhold`.
 
-The default is `fail` because the alternative is a vacuous pass, and a matcher that
+`fail` is the default because the alternative is a vacuous pass, and a matcher that
 selects nothing is far more often an author's typo or an agent that never got
-started than a condition genuinely satisfied. `on_missing: pass` is the explicit
-opt-in for "this constraint only applies when the anchor occurred".
+started than a condition genuinely satisfied. The verdict reads as a named failing
+sub-check naming which position selected no event.
 
-`on_missing` is rejected at load wherever `present`, `absent` or `count` appears in
-the `require` tree, whose verdicts *are* the match. On `present` the pair would be an
-always-pass check — unmatched passes by the policy, matched passes by the constraint
-— so the load error is what stops a declaration that cannot fail from being written.
-Nesting the kind under a composite does not change that: `all_of` / `any_of` /
-`negate` pass the policy down unchanged, so the rejection is read off every kind in
-the tree and not off the top one. `present` also decides its own empty match as a
-failure rather than deferring it to the policy, so the vacuous pass is out of reach
-from the evaluator's side too.
+`pass` is the explicit opt-in for "this constraint only applies when the anchor
+occurred": an unmatched anchor decides the constraint as held rather than failed.
+It earns its place on a scored constraint whose sibling already charges the agent
+for the thing not happening, so charging it twice on this one would count the same
+failure twice.
+
+`withhold` is the explicit opt-in for "the anchor may or may not occur; when it
+does not, take the constraint out of the score". A withheld constraint is excluded
+from the block's weighted average on **both** sides: its weight enters neither the
+numerator nor the denominator, so the score is the weighted fraction of the
+constraints that *reached* a verdict. On a [`severity: gate`](#severity--a-check-that-must-hold),
+a withheld verdict is neither passing nor failing — it does not enter
+`failed_gate_ids` and does not shut the block. The verdict rides on
+`TraceConstraintResult.withheld`, so a reader classifies a withheld constraint from
+the grade without matching on `message` prose. The rule for the fold is the same:
+Σweight runs over the constraints the trial answered.
+
+Admitted on `present`, `count`, `before`, `immediately_before`, `absent_before` and
+`absent_between`. Not on `absent`: an empty match IS its positive verdict, so
+withholding there would withhold the very check the constraint asks. Refused at
+load with an error naming `absent`.
+
+Worked — the KB-search flaky-anchor pattern. A pack asserts the assistant grounded
+its reply in a knowledge-base lookup:
+
+```yaml
+- id: kb_before_reply
+  description: "search_kb succeeded before the assistant answered"
+  severity: gate
+  on_missing: withhold
+  require:
+    before:
+      left:  { quantifier: any, match: { kind: tool_call, tool: { equals: search_kb },
+                                          status: { equals: success } } }
+      right: { quantifier: any, match: { kind: assistant_message } }
+```
+
+On a trial whose `search_kb` call errored, the left anchor's `status: success`
+matches nothing — the KB was unreachable, not the agent's failure. Under `fail`,
+the gate would shut and zero every scored sibling's weight. Under `withhold`, the
+constraint carries `withheld: true`, the block's `failed_gate_ids` stays empty, and
+the score is the weighted average of the scored siblings alone. On a trial whose
+KB call succeeded, the anchor matches; `withhold` has no unmatched anchor to answer
+and the ordering decides the constraint the same way `fail` would.
+
+`on_missing` is rejected at load wherever a kind whose verdict *is* the match
+would receive it. `pass` is refused over any `require` tree holding `present`,
+`absent` or `count`: on `present` the pair would be an always-pass check —
+unmatched passes by the policy, matched passes by the constraint — so the load
+error is what stops a declaration that cannot fail from being written. `fail` is
+refused on the same three kinds because it is already the constraint's own zero;
+writing it there is redundant. Composites pass the policy down unchanged: `all_of`
+/ `any_of` / `negate` are read off every kind in the tree, not off the top one.
+`present` also decides its own empty match as a failure rather than deferring it
+to the policy, so the vacuous pass is out of reach from the evaluator's side too.
 
 ### Correlating arguments across matchers
 
@@ -2299,12 +2396,16 @@ constraint is decided only when **every** completion of the undecidable evidence
 reaches the same verdict; otherwise it is **undecided**, which is a failing
 sub-check naming the constraint and the evidence the trial does not carry.
 
-The verdict carries it as a field. `grade.yaml`'s `trace_check_results` entries
-each hold `undecided`, `true` exactly where the fold reached no verdict, so
-"the agent did not do this" and "nobody wrote down what it did" are told apart
-without reading `message` prose. `passed: false` beside `undecided: true` is the
-only pairing an undecided verdict takes — see
-[`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md#trace-check-verdicts).
+The verdict carries it as a field beside a peer for the author-opted
+[withheld](#on_missing--what-an-unmatched-anchor-decides) case. `grade.yaml`'s
+`trace_check_results` entries each hold `undecided` (`true` where the fold
+reached no verdict) and `withheld` (`true` where `on_missing: withhold` opted the
+unmatched anchor out of scoring), so "the agent did not do this", "nobody wrote
+down what it did" and "the author declared this an out-of-scope case" are told
+apart without reading `message` prose. `passed: false` beside `undecided: true`
+and `passed: false` beside `withheld: true` are the two pairings a non-decided
+verdict takes; the two flags never co-occur, and neither sits beside `passed:
+true` — see [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md#trace-check-verdicts).
 
 Worked, over *d* definite matches and *u* undecidable ones:
 
@@ -2337,6 +2438,12 @@ The component score is `Σ(weight · passed) / Σ(weight)`, `weight` defaulting 
 that passed. `weight` must be **positive**: a zero weight is a declared check that
 contributes to neither the numerator nor the denominator, and "evaluated but not
 scored" is what [`severity: gate`](#severity--a-check-that-must-hold) is for.
+
+The fold runs over the constraints that **reached a verdict**. A constraint
+carrying [`withheld: true`](#on_missing--what-an-unmatched-anchor-decides) has
+its weight excluded from **both** sums — a withheld sibling neither passes nor
+fails, and the score of the remaining set is the weighted average of the
+constraints the trial actually answered.
 
 Prefer uniform weights. Reach for `weight` when migrating an already-weighted
 criterion, not to express that one condition feels more important — a weight map
@@ -2371,6 +2478,17 @@ record touched, an order mutated by a diagnose-only agent.
 
 A tripped gate takes the component to `0.0` and fails the trial, whatever the scored
 constraints said, and the grade names the gates that tripped.
+
+**A withheld gate is neither passing nor failing.** Under
+[`on_missing: withhold`](#on_missing--what-an-unmatched-anchor-decides), a gate
+whose anchor matched nothing is out of the decision — its id does not enter
+`failed_gate_ids` and its verdict does not shut the block. That is the counterpart
+to `on_missing: pass` on a gate, whose vacuous pass is refused at load: the
+withheld verdict is not a pass, it is the author declaring the case out of scope,
+so it double-charges nothing. Reach for it when the gate anchors on evidence that
+a flaky substrate can silently strip — a KB search's `status: success`, a database
+probe's read — where forcing the gate to `fail` on an infrastructure blip would
+zero every passing weight in the block.
 
 **A gate nobody can decide trips.** Undecided is not a pass in the agent's favour
 anywhere in this vocabulary, and a gate is the one check the author said must hold —
@@ -2875,10 +2993,10 @@ Findings come in three classes:
 | a task naming no grading source at all — no `grading:` field and no sibling `grading.yaml` — where its declared `adapter_type` is `native` | error | the task itself — this refusal carries no block address, because there is no block |
 | a task naming a grading file with nothing at the path it resolves to, where its declared `adapter_type` is `native` | error | as above |
 | either absence where the task declares any other `adapter_type` | unchecked | `grading` |
-| a tool set the loader cannot resolve for this task | unchecked | whole block |
-| what a task gives a golden replay, where no caller resolved it | unchecked | `state_checks.hash.golden_actions` |
-| a database-reading `state_checks` block where no caller resolved the seeded tables — the declared `adapter_type` is not `native`, or names an adapter this environment has not installed | unchecked | `state_checks` |
-| an `id_fields` declaration where no caller resolved the seeded tables — the declared `adapter_type` is not `native`, or names an adapter this environment has not installed | unchecked | `state_checks.id_fields` |
+| a tool set the adapter's `grading_tool_inventory` hook answers `unresolvable()` for | unchecked | whole block |
+| a golden-action world the adapter's `grading_replay_world` hook answers `unresolvable()` for | unchecked | `state_checks.hash.golden_actions` |
+| a database-reading `state_checks` block whose adapter's `grading_seeded_tables` hook answers `unresolvable()` — the adapter has not implemented the hook, or the environment has no class registered for the declared `adapter_type` | unchecked | `state_checks` |
+| an `id_fields` declaration whose adapter's `grading_seeded_tables` hook answers `unresolvable()` — the adapter has not implemented the hook, or the environment has no class registered for the declared `adapter_type` | unchecked | `state_checks.id_fields` |
 | an effective `combine` no caller could resolve | unchecked | `combine.weights` |
 | an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |
 | an `args` address below its first segment | unchecked | per path |
@@ -2901,6 +3019,25 @@ declaration whose seeded tables no caller resolved, a hash block whose flag and 
 disagree under an external adapter that may supply the source itself,
 and a task with no grading block on disk under an adapter that resolves its own all
 land here.
+
+Each `unchecked` entry carries a `SkipKind` that tags whose silence it is.
+`SkipKind.STRUCTURAL` covers the environment side: the loader cannot inspect the
+pack — the `adapter_type` names no class this environment holds, a tool schema does
+not resolve, an `args` path is malformed. `SkipKind.ADAPTER_DECLARED` covers the
+adapter side: the adapter's class *is* installed and its `grading_*` hook returned
+`unresolvable()`, which is the adapter saying "I cannot say" rather than the
+environment failing to ask. The distinction is what lets a task-pack CI author
+targeting a specific adapter promote its own adapter's `ADAPTER_DECLARED` skips to
+fatal — the pack is targeted; the adapter is present; a silence there is the
+pack's problem to fix. Every `Skip` reads its kind off the layer the rule read,
+so no producer names the kind twice.
+
+The promotion knob is [`tolokaforge validate --strict-authoring`](CLI.md#--strict-authoring),
+which reads `Skip.kind` at the CLI, after the gate returns, and refuses any task
+carrying an `ADAPTER_DECLARED` skip. STRUCTURAL skips stay never-fatal under the
+flag, so a pack whose target adapter is uninstalled still validates. The gate's
+own `report.fatal(fail_on)` shape is unchanged — enforcement is a caller decision.
+See [ADR-0042](adr/0042-adapter-blind-authoring-gate.md).
 
 **Having no grading block on disk is answered by the adapter the task declares.**
 `get_grading_config` is abstract and the implementations disagree: the native adapter

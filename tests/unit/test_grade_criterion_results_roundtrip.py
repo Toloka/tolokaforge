@@ -252,6 +252,15 @@ def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
                     message="present cannot be decided — the trial records no status at position 2",
                     undecided=True,
                 ),
+                runner_pb2.TraceConstraintResult(
+                    id="kb_before_reply",
+                    kind="before",
+                    passed=False,
+                    weight=1.0,
+                    message="before withheld: left selected no event",
+                    severity="gate",
+                    withheld=True,
+                ),
             ],
             trace_checks_summary=runner_pb2.TraceChecksSummary(
                 winning_path="served_vs_source",
@@ -278,6 +287,7 @@ def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
             "message": "before: no match is ordered before the other side",
             "matched_positions": [2, 4],
             "undecided": False,
+            "withheld": False,
         },
         {
             "id": "no_prefill",
@@ -288,6 +298,7 @@ def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
             "message": "",
             "matched_positions": [],
             "undecided": False,
+            "withheld": False,
         },
         {
             "id": "order_untouched",
@@ -298,6 +309,7 @@ def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
             "message": "absent: a forbidden call was made",
             "matched_positions": [],
             "undecided": False,
+            "withheld": False,
         },
         {
             "id": "the_refund_was_issued",
@@ -308,6 +320,18 @@ def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
             "message": "present cannot be decided — the trial records no status at position 2",
             "matched_positions": [],
             "undecided": True,
+            "withheld": False,
+        },
+        {
+            "id": "kb_before_reply",
+            "kind": "before",
+            "passed": False,
+            "weight": 1.0,
+            "severity": "gate",
+            "message": "before withheld: left selected no event",
+            "matched_positions": [],
+            "undecided": False,
+            "withheld": True,
         },
     ]
     assert written["trace_checks_summary"] == {

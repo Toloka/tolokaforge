@@ -39,8 +39,10 @@ PyPI. The published surface remains one ``tolokaforge`` wheel.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import tomllib
 from hatchling.builders.wheel import WheelBuilder
 
 if TYPE_CHECKING:
@@ -53,58 +55,76 @@ if TYPE_CHECKING:
 # identifier differs.
 SUBSET_DISTRIBUTION_NAME = "tolokaforge-runner-subset"
 
-# The subset wheel's ``entry_points.txt`` — literally what pip writes into
-# ``site-packages/…-dist-info/entry_points.txt``. Kept as a module constant so
-# ``pip show``, ``importlib.metadata.entry_points``, and the canonical
-# drift-lock test all read the same string. See ADR-0027 for the shim.
-#
-# Two audiences read this file at runtime inside the runner container:
-#   1. The console-script shim binds a subset-native ``tolokaforge`` CLI.
-#   2. The grader-detachment path (ADR-0038 / ADR-0040) resolves grading-side
-#      plugins — check executors, judge model providers, rubric evaluators,
-#      transcript-rule matchers, state-check backends, trace-check operators,
-#      grading substrates — through ``importlib.metadata.entry_points`` on
-#      the ``tolokaforge.*`` groups. Every group whose target module lives
-#      inside the runner subset (``tolokaforge/core/grading/…``) must be
-#      declared here or ``composite_dispatch`` refuses to start with
-#      ``Unknown implementation '<name>' in entry-point group
-#      'tolokaforge.<group>'. Known names: (none registered).``
-#
-# Runtime backends / trial graders / conductors / turn policies are
-# orchestrator-side entry points — the runner never dispatches through them,
-# so they stay off this file.
-SUBSET_ENTRY_POINTS: str = (
-    "[console_scripts]\n"
-    "tolokaforge = tolokaforge.runner._cli:main\n"
-    "\n"
-    "[tolokaforge.grading_substrates]\n"
-    "in_process = tolokaforge.core.grading.substrate:InProcessGradingSubstrate\n"
-    "live_callback = tolokaforge.core.grading.substrate_live:LiveRunnerCallbackGradingSubstrate\n"
-    "\n"
-    "[tolokaforge.custom_check_executors]\n"
-    "check_runner = tolokaforge.core.grading.check_runner:_check_runner_factory\n"
-    "in_memory = tolokaforge.core.grading.check_runner:_in_memory_check_executor_factory\n"
-    "\n"
-    "[tolokaforge.judge_model_providers]\n"
-    "litellm = tolokaforge.core.grading.default_judge_model_provider:_litellm_judge_model_provider_factory\n"
-    "\n"
-    "[tolokaforge.rubric_evaluators]\n"
-    "llm_judge = tolokaforge.core.grading.default_rubric_evaluator:_llm_judge_rubric_evaluator_factory\n"
-    "\n"
-    "[tolokaforge.transcript_rule_matchers]\n"
-    "default = tolokaforge.core.grading.default_transcript_rule_matcher:_default_transcript_rule_matcher_factory\n"
-    "\n"
-    "[tolokaforge.state_check_backends]\n"
-    "jsonpath = tolokaforge.core.grading.default_state_check_backends:_jsonpath_state_check_backend_factory\n"
-    "db_probes = tolokaforge.core.grading.default_state_check_backends:_db_probes_state_check_backend_factory\n"
-    "\n"
-    "[tolokaforge.trace_check_operators]\n"
-    "equals = tolokaforge.core.grading.trace_check_operator:equals\n"
-    "equals_ci = tolokaforge.core.grading.trace_check_operator:equals_ci\n"
-    "contains = tolokaforge.core.grading.trace_check_operator:contains_op\n"
-    "contains_ci = tolokaforge.core.grading.trace_check_operator:contains_ci\n"
-    "not_equals = tolokaforge.core.grading.trace_check_operator:not_equals\n"
+# Base wheel entry-point groups the runner subset MUST carry. Every seam
+# the runner reaches through ``load_*`` at boot or during a Grade RPC —
+# the six sub-component seams reachable from ``RunnerServiceImpl``
+# (ADR-0040) — is loaded via ``importlib.metadata.entry_points``, so the
+# group's rows must appear in the subset wheel's ``entry_points.txt``
+# even though their target modules are already inside the subset
+# partition. Groups NOT listed here — ``runtime_backends``,
+# ``trial_graders``, ``conductors``, ``service_readiness_probes``,
+# ``turn_policies`` (all called from ``tolokaforge.core.runner``, which
+# lives outside the subset partition; the runner container calls
+# ``tolokaforge.runner.__main__`` instead), and ``grading_substrates``
+# (runner instantiates ``InProcessGradingSubstrate`` directly; the
+# group's ``live_callback`` row targets ``substrate_live.py``, which is
+# grader-side and excluded from the subset partition) — are
+# deliberately kept out. The
+# ``test_subset_partition_load_calls_are_in_the_allowlist`` drift-lock
+# guards this list against a new runner-side ``load_*`` call being
+# added silently.
+RUNNER_REACHABLE_ENTRY_POINT_GROUPS: tuple[str, ...] = (
+    "tolokaforge.custom_check_executors",
+    "tolokaforge.judge_model_providers",
+    "tolokaforge.rubric_evaluators",
+    "tolokaforge.transcript_rule_matchers",
+    "tolokaforge.state_check_backends",
+    "tolokaforge.trace_check_operators",
 )
+
+
+def _read_pyproject_entry_points() -> dict[str, dict[str, str]]:
+    """Read ``[project.entry-points.*]`` tables from the repo-root pyproject."""
+    pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    with pyproject_path.open("rb") as f:
+        data = tomllib.load(f)
+    return data.get("project", {}).get("entry-points", {}) or {}
+
+
+def _build_subset_entry_points() -> str:
+    """Assemble the subset wheel's ``entry_points.txt`` contents.
+
+    Carries the subset-native ``[console_scripts]`` shim (ADR-0027) plus,
+    for every group named in :data:`RUNNER_REACHABLE_ENTRY_POINT_GROUPS`,
+    the base wheel's registrations verbatim. Reading pyproject at build
+    time keeps the subset's registrations from drifting when a new seam
+    entry is added to the base wheel.
+    """
+    lines = ["[console_scripts]", "tolokaforge = tolokaforge.runner._cli:main"]
+    pyproject_ep = _read_pyproject_entry_points()
+    for group in RUNNER_REACHABLE_ENTRY_POINT_GROUPS:
+        rows = pyproject_ep.get(group)
+        if not rows:
+            raise RuntimeError(
+                f"runner-reachable entry-point group {group!r} missing from "
+                "pyproject.toml — check "
+                "RUNNER_REACHABLE_ENTRY_POINT_GROUPS against "
+                "[project.entry-points.*]"
+            )
+        lines.append("")
+        lines.append(f"[{group}]")
+        for name, target in rows.items():
+            lines.append(f"{name} = {target}")
+    return "\n".join(lines) + "\n"
+
+
+# The subset wheel's ``entry_points.txt`` — the subset-native CLI shim's
+# ``[project.scripts]`` binding plus every runner-reachable seam group.
+# Kept as a module constant so ``pip show``,
+# ``importlib.metadata.entry_points``, and the canonical drift-lock test
+# all read the same string. See ADR-0027 for the shim and ADR-0040 for
+# the seams.
+SUBSET_ENTRY_POINTS: str = _build_subset_entry_points()
 
 
 # Runtime dependencies the runner container needs.
@@ -144,8 +164,14 @@ SUBSET_DEPENDENCIES: tuple[str, ...] = (
     "starlette>=0.52.1",
     "typesense>=2.0.0",
     "structlog>=24.0.0",
-    "grpcio>=1.60.0",
-    "grpcio-health-checking>=1.60.0",
+    # See the pyproject.toml comment: the generated runner_pb2_grpc module
+    # the subset wheel ships enforces ``grpcio>=1.83.0`` at import time,
+    # so the subset wheel's declared floor must track the grpcio-tools
+    # version used to regenerate the stubs — mirror the base wheel here
+    # so a fresh ``pip install tolokaforge-runner-subset`` (or the runner
+    # Docker image install step) never resolves the pre-1.83 line.
+    "grpcio>=1.83.0",
+    "grpcio-health-checking>=1.83.0",
     # See the pyproject.toml comment: the generated runner_pb2 module the
     # subset wheel ships requires the 7.x protobuf runtime, so mirror the
     # base wheel's explicit floor here so a fresh ``pip install

@@ -33,11 +33,14 @@ COPY pyproject.toml README.md LICENSE .python-version /src/
 COPY scripts/hatch/ /src/scripts/hatch/
 COPY tolokaforge/ /src/tolokaforge/
 COPY tolokaforge_models/ /src/tolokaforge_models/
+COPY tolokaforge_coding_harnesses/ /src/tolokaforge_coding_harnesses/
 
 # Build the base wheel — the grader ships the whole tolokaforge distribution
-# for now, tolokaforge_models included. Subset build target is a follow-up.
+# for now, tolokaforge_models and tolokaforge_coding_harnesses included.
+# Subset build target is a follow-up.
 RUN python -m hatchling build --target wheel && \
-    cd /src/tolokaforge_models && python -m hatchling build
+    cd /src/tolokaforge_models && python -m hatchling build && \
+    cd /src/tolokaforge_coding_harnesses && python -m hatchling build
 
 # ---------------------------------------------------------------------------
 # builder — install the wheel into /opt/venv
@@ -53,10 +56,13 @@ RUN python -m venv /opt/venv && \
 
 COPY --from=wheel-builder /src/dist/*.whl /tmp/wheels/
 COPY --from=wheel-builder /src/tolokaforge_models/dist/*.whl /tmp/wheels/
+COPY --from=wheel-builder /src/tolokaforge_coding_harnesses/dist/*.whl /tmp/wheels/
 
-# Install the models wheel first so its version resolves before the base
-# wheel that depends on it (matching the runner image install order).
-RUN /opt/venv/bin/pip install --no-cache-dir /tmp/wheels/tolokaforge_models-*.whl && \
+# Install the sibling wheels first so their versions resolve before the
+# base wheel that depends on them (matching the runner image install order).
+RUN /opt/venv/bin/pip install --no-cache-dir \
+        /tmp/wheels/tolokaforge_models-*.whl \
+        /tmp/wheels/tolokaforge_coding_harnesses-*.whl && \
     /opt/venv/bin/pip install --no-cache-dir /tmp/wheels/tolokaforge-*.whl
 
 # ---------------------------------------------------------------------------

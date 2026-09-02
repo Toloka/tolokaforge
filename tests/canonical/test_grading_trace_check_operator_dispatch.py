@@ -56,7 +56,7 @@ class _EntryPointStub:
 
 
 def _inject_demo_operator(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Register the demo operator alongside the 17 shipped names."""
+    """Register the demo operator alongside the shipped names."""
     _clear_discovery_cache()
     shipped = list(importlib.metadata.entry_points(group=TRACE_CHECK_OPERATORS_GROUP))
     injected = _EntryPointStub("test_trace_operator", is_positive_number)

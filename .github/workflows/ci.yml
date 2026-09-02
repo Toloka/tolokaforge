@@ -95,10 +95,11 @@ jobs:
     - name: Set up Python (pinned in .python-version)
       run: uv python install "$(cat .python-version)"
 
-    - name: Build both wheels (engine + models)
+    - name: Build engine + sibling wheels (models, coding-harnesses)
       run: |
         uv build --wheel --package tolokaforge
         uv build --wheel --package tolokaforge-models
+        uv build --wheel --package tolokaforge-coding-harnesses
 
     - name: Install the engine wheel into a clean venv (no source tree on the path)
       # Use --find-links so uv resolves `tolokaforge-models` against the

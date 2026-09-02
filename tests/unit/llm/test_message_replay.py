@@ -279,7 +279,7 @@ def test_openai_default_empty_assistant_content_with_tool_calls_stays_empty() ->
 
 def test_nova_empty_assistant_content_with_tool_calls_gets_filler() -> None:
     """Nova/Bedrock validation rejects empty assistant content alongside
-    ``tool_calls``. The Nova preset carries ``NovaMessageAssembly``
+    ``tool_calls``. The Nova preset carries ``FillEmptyAssistantAssembly``
     (inject_empty_assistant_filler=True, empty_assistant_filler=
     ``"I'll help you with that."``) so the original Bedrock fix
     (commit 73e01e9e6) is preserved exactly where it's needed."""

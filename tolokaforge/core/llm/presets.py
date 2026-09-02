@@ -38,8 +38,8 @@ from tolokaforge.core.llm.content_policy import (
 )
 from tolokaforge.core.llm.litellm_params import DECLARABLE_FLAGS
 from tolokaforge.core.llm.message_assembly_policy import (
+    FillEmptyAssistantAssembly,
     MessageAssemblyPolicy,
-    NovaMessageAssembly,
     NullMessageAssembly,
 )
 from tolokaforge.core.llm.params_policy import GenerationParams, ParamsPolicy
@@ -134,7 +134,7 @@ _PARAMS_POLICIES: dict[str, type[ParamsPolicy]] = {
 
 _MESSAGE_ASSEMBLY_POLICIES: dict[str, type[MessageAssemblyPolicy]] = {
     "null": NullMessageAssembly,
-    "nova": NovaMessageAssembly,
+    "nova": FillEmptyAssistantAssembly,
 }
 
 _ASSISTANT_TEXT_POLICIES: dict[str, type[AssistantTextPolicy]] = {

@@ -4667,7 +4667,7 @@ wheels = [
 
 [[package]]
 name = "tolokaforge"
-version = "0.19.1"
+version = "0.21.4"
 source = { editable = "." }
 dependencies = [
     { name = "addict" },
@@ -4693,6 +4693,7 @@ dependencies = [
     { name = "structlog" },
     { name = "tenacity" },
     { name = "testcontainers" },
+    { name = "tolokaforge-coding-harnesses" },
     { name = "tolokaforge-models" },
     { name = "toml" },
     { name = "typesense" },
@@ -4804,8 +4805,8 @@ requires-dist = [
     { name = "docstring-parser", specifier = ">=0.16" },
     { name = "fastapi", marker = "extra == 'runner'", specifier = ">=0.108.0" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.108.0" },
-    { name = "grpcio", specifier = ">=1.60.0" },
-    { name = "grpcio-health-checking", specifier = ">=1.60.0" },
+    { name = "grpcio", specifier = ">=1.83.0" },
+    { name = "grpcio-health-checking", specifier = ">=1.83.0" },
     { name = "httpx", specifier = ">=0.25.0" },
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "jsonpath-ng", specifier = ">=1.6.0" },
@@ -4838,6 +4839,7 @@ requires-dist = [
     { name = "tolokaforge", extras = ["dx", "browser", "server", "rag", "office", "adapters", "runner"], marker = "extra == 'all'", editable = "." },
     { name = "tolokaforge", extras = ["terminal-bench"], marker = "extra == 'adapters'", editable = "." },
     { name = "tolokaforge-adapter-terminal-bench", marker = "extra == 'terminal-bench'", editable = "external_adapters/tolokaforge-adapter-terminal-bench" },
+    { name = "tolokaforge-coding-harnesses", editable = "tolokaforge_coding_harnesses" },
     { name = "tolokaforge-models", editable = "tolokaforge_models" },
     { name = "toml", specifier = ">=0.10.0" },
     { name = "typesense", specifier = ">=2.0.0" },
@@ -4856,9 +4858,9 @@ dev = [
     { name = "dev-mcp", editable = "tools/dev-mcp" },
     { name = "docker", specifier = ">=7.0.0" },
     { name = "fastapi", specifier = ">=0.108.0" },
-    { name = "grpcio", specifier = ">=1.60.0" },
-    { name = "grpcio-health-checking", specifier = ">=1.60.0" },
-    { name = "grpcio-tools", specifier = ">=1.60.0" },
+    { name = "grpcio", specifier = ">=1.83.0" },
+    { name = "grpcio-health-checking", specifier = ">=1.83.0" },
+    { name = "grpcio-tools", specifier = ">=1.83.0" },
     { name = "hatchling", specifier = ">=1.31.0" },
     { name = "import-linter", specifier = ">=2.0" },
     { name = "mcp", specifier = ">=1.0,<2" },
@@ -4919,7 +4921,7 @@ requires-dist = [
 
 [[package]]
 name = "tolokaforge-models"
-version = "1.2.0"
+version = "1.3.0"
 source = { editable = "tolokaforge_models" }
 
 [[package]]

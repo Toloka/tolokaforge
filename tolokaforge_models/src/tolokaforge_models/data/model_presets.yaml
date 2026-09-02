@@ -21,11 +21,15 @@
 #   params_policy:            generation_params (default; ``params:`` on the
 #                             preset are the ``GenerationParams`` kwargs)
 #   message_assembly_policy:  null (default) | nova
-#     ``nova`` substitutes ``empty_assistant_filler`` (default
-#     ``"I'll help you with that."``) for empty assistant content on
-#     tool-call turns — Bedrock rejects the empty shape. Every other
-#     preset stays on ``null``: injecting the filler elsewhere creates
-#     a few-shot pattern that Gemini echoes back as its own response
+#     ``nova`` substitutes ``empty_assistant_filler`` for empty assistant
+#     content on tool-call turns — Bedrock and Moonshot direct both
+#     reject the empty shape. The filler string is data on the policy
+#     instance, picked per preset: ``aws_nova*`` uses the default
+#     ``"I'll help you with that."``; ``moonshot_kimi_k3`` uses a
+#     single space ``" "`` (a bare space clears the check without
+#     introducing a phrase Kimi could echo back). Every other preset
+#     stays on ``null``: injecting the filler elsewhere creates a
+#     few-shot pattern that Gemini echoes back as its own response
 #     (2026-04-30 OTS regression).
 #   assistant_text_policy:    passthrough (default; every shipped preset)
 #     A subclass reshapes ``message.content`` before it lands in
@@ -305,6 +309,64 @@ presets:
     prompt_policy: dict_map_hints
     reasoning_codec: openai_summary_replay
 
+  # z-ai/glm-5.3 — model-specific overlay landed via auto-resolve (PR #1277).
+  # Declared BEFORE the shared ``openrouter_dict_stringify_recovery`` preset
+  # (whose ``z-ai/glm-5*`` glob already claimed this route) so first-match-wins
+  # routing picks it up for this one model; every other z-ai/glm-5 sibling keeps
+  # the shared axes untouched.
+  #
+  # It is a FULL COPY of that shared preset PLUS a ``reasoning_codec`` swap:
+  # ``passthrough`` schema + ``json_coerce`` response + ``dict_map_hints`` prompt
+  # are re-declared VERBATIM. The copy is LOAD-BEARING -- ``_match_preset``
+  # returns the first matching entry with NO fallback merge to the shared
+  # preset, so these three lines are not "duplicates" and must not be pruned:
+  # dropping them would silently regress the dict-stringify recovery the whole
+  # baseline was measured under (pinned by tests/unit/llm/test_z_ai_glm_5_3_preset.py).
+  # Exactly ONE axis changes:
+  #
+  #   reasoning_codec: openai -> openai_summary_replay
+  #
+  # The observe baseline (2026-08-25, measured ON the shared preset since its
+  # glob already claimed glm-5.3) is a clean tool-caller: all 25 tool-call /
+  # shape probes 15/15 (dict_map, discriminated-union two-turn, recursive $ref,
+  # heterogeneous arrays, allOf merge, decimal), all 6 shape variants 15/15, and
+  # 0 tool-arg rejections across 688 tool calls / 199 wire trials. The one
+  # preset-fixable failure was ``test_unsigned_thinking_replay`` 0/15
+  # ("assistant dict missing ``reasoning_details`` — the codec's
+  # encode_for_replay path is not running"): the plain ``openai`` codec's
+  # ``encode_for_replay`` is a no-op, so the outgoing assistant dict carried no
+  # envelope at all. ``openai_summary_replay``
+  # (``OpenAISummaryReplayReasoningCodec``) inherits the OpenAI ``extract``
+  # VERBATIM — so THINKING_EMITS_BLOCKS keeps its 15/15 summary surface (the
+  # route reports 38–64 reasoning_tokens per call) — and adds only the unsigned
+  # OpenRouter ``reasoning_details`` rebuild. Same delta that went 5/5 on
+  # deepseek-v4-flash-0731 and grok-4.6; reprobe went 5/5 here.
+  #
+  # It synthesises no signature, so signed ``THINKING_REPLAY_ROUNDTRIP`` ("no
+  # signed blocks on turn 1", 15/15) stays a declared ceiling — the honest half
+  # of the pair this codec deliberately does NOT flip. ``PROMPT_CACHING`` (0
+  # cache_creation_input_tokens on an 8.2 k-token first call, 15/15) is the other
+  # ceiling: no Anthropic-style ephemeral cache exists on this z-ai route, so no
+  # ``cache_policy`` can manufacture one (``anthropic_ephemeral`` would only
+  # inject cache_control markers the route ignores) — same posture as the
+  # glm-5.1 / glm-5.2 siblings. ``IMPLICIT_PROMPT_CACHING`` passes 15/15 and
+  # stays required. See registry.py.
+  z_ai_glm_5_3:
+    match:
+      # Exact shapes only -- the bare route and the gateway-prefixed form
+      # (openrouter/..., litellm_proxy/...) that reaches the same model through
+      # a transport prefix. No trailing "*": fnmatch's "*" also matches "." and
+      # "-", so "z-ai/glm-5.3*" would claim an unmeasured z-ai/glm-5.3.1,
+      # glm-5.30, glm-5.3-fast or glm-5.3:variant and hand it this codec
+      # without a reprobe. Those fall through to the shared preset below; a new
+      # point release gets its own explicit entry with reprobe evidence.
+      - "z-ai/glm-5.3"
+      - "*/z-ai/glm-5.3"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+    prompt_policy: dict_map_hints
+    reasoning_codec: openai_summary_replay
+
   # Open-weights / OpenAI-API-compatible routes whose tool-call adapters
   # stringify nested object / Dict[str, T] arguments — same failure mode
   # ``JsonCoerceResponse`` was built for on Qwen.
@@ -349,6 +411,49 @@ presets:
     response_policy: json_coerce
     prompt_policy: dict_map_hints
     reasoning_codec: openai
+
+  # moonshotai/kimi-k3 — Moonshot direct rejects assistant turns whose
+  # ``content`` is empty when ``tool_calls`` is present:
+  #
+  #   HTTP 400 "the message at position N with role 'assistant' must not
+  #   be empty"
+  #
+  # Kimi K3 legitimately returns ``content: null`` when the reasoning
+  # stage consumes its token budget; the engine stores that turn and
+  # re-sends it on the next request as ``content: ""``. Moonshot AI's
+  # first-party endpoint (reachable via OpenRouter with
+  # ``provider.only:["moonshotai"]`` or ``provider.order:["Moonshot AI"]``)
+  # 400s the reissued turn — same class of strict-API failure Amazon
+  # Bedrock's Converse API produces. A 2026-08-25 live probe recorded 6/6
+  # rejections; issue #1284 carries the trace.
+  #
+  # The filler policy substitutes ``" "`` for the empty ``content``. A
+  # single space is the minimum content that satisfies Moonshot's
+  # must-not-be-empty check and carries no semantic pattern Kimi could
+  # echo back on a later turn (the 2026-04-30 Gemini echo-back regression
+  # matched the phrase ``"I'll help you with that."``; a bare space has
+  # nothing to imitate). Harbor's ``probe_callback.py`` proxy uses the
+  # same single-space rewrite for the equivalent Bedrock symptom, so this
+  # is precedent, not novelty.
+  #
+  # K2.x is DELIBERATELY NOT in this preset. The
+  # ``openrouter_dict_stringify_recovery`` preset above covers K2.6 and
+  # K2.7-code but ships ``message_assembly_policy`` unset (→ ``null``);
+  # we have no live 400 repro for the K2 line on Moonshot direct yet.
+  # Issue #1286 tracks the K2 filler-on decision, gated on a repro.
+  #
+  # Placed AFTER ``openrouter_dict_stringify_recovery`` (Moonshot
+  # siblings clustered). No glob overlap: ``moonshotai/kimi-k3`` does
+  # not match ``*kimi-k2*`` (K2 slugs carry a dot before the version:
+  # ``kimi-k2.6``, ``kimi-k2.7-code``).
+  moonshot_kimi_k3:
+    match:
+      - "moonshotai/kimi-k3*"
+      - "*kimi-k3*"
+    message_assembly_policy:
+      name: nova
+      params:
+        empty_assistant_filler: " "
 
   # thinkingmachines/inkling — model-specific overlay landed via auto-resolve
   # (Slack-requested integration, PR #719). Exact-match globs only; no generic

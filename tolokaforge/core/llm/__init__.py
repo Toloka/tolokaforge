@@ -26,8 +26,8 @@ from tolokaforge.core.llm.content_policy import (
 )
 from tolokaforge.core.llm.dict_maps import find_additional_properties
 from tolokaforge.core.llm.message_assembly_policy import (
+    FillEmptyAssistantAssembly,
     MessageAssemblyPolicy,
-    NovaMessageAssembly,
     NullMessageAssembly,
 )
 from tolokaforge.core.llm.params_policy import GenerationParams, ParamsPolicy
@@ -200,7 +200,7 @@ __all__ = [
     "GenerationParams",
     "MessageAssemblyPolicy",
     "NullMessageAssembly",
-    "NovaMessageAssembly",
+    "FillEmptyAssistantAssembly",
     # Capabilities + presets (lazy)
     "ModelCapabilities",
     "build_capabilities",

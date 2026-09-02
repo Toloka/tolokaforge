@@ -64,7 +64,7 @@ Adopt the extraction target #1, the throughput property #2 (both variants ship),
 
 Concretely:
 
-1. **Grader plug-in receives serialisable configuration only.** The construction context becomes endpoint URL + auth token + timeout + run-scoped logger. No live runtime-backend object crosses the seam.
+1. **Grader plug-in receives configuration only — nothing live crosses the seam.** The construction context is endpoint URL + auth token + timeout + run-scoped logger, plus one optional in-process routing shim (`runtime_backend`) populated only for backends whose runner endpoints are reachable per-trial (`PerTrialRuntimeBackend` — each trial owns its own endpoint, so no static address applies). The shim MUST be `None` whenever the grader will cross an address boundary; every out-of-process factory (`grader_rpc`, `queue`, `judge_backed`) MUST ignore the field. The hygiene test at `tests/canonical/test_trial_grader_context_hygiene.py` pins the ignore contract statically (AST) and at runtime (sentinel-backend) for every bundled out-of-process factory.
 2. **New RPC contract for the grader, owned by the grader.** The runner's grade RPC ships one more release with a deprecation notice, then goes away.
 3. **Standalone grader service binary.** Embeds the pure evaluator plus the runner-specific grader glue. No tool execution, no sandbox, no env-state.
 4. **New grader plug-in registered under the existing plugin group,** reaching the new service.

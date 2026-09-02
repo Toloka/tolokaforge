@@ -81,43 +81,37 @@ def terminal_bench_tasks_dir(test_data_dir):
 
 @pytest.fixture(scope="session")
 def built_wheels_dir(tmp_path_factory) -> Path:
-    """Build the ``tolokaforge`` engine + ``tolokaforge-models`` wheels
-    into one directory and return that directory.
+    """Build the ``tolokaforge`` engine + every workspace-member wheel
+    ``[project].dependencies`` names into one directory and return that directory.
 
-    The engine's ``[project].dependencies`` names ``tolokaforge-models``, so
-    a scratch-venv install of the engine wheel resolves that dep against
-    this same directory (via ``uv pip install --find-links``). Skips loud
-    if the ``uv`` CLI is unavailable; hard-fails with captured build output
-    if either build fails.
+    A scratch-venv install of the engine wheel resolves its workspace-member
+    deps against this same directory (via ``uv pip install --find-links``), so
+    every workspace dep the engine declares must ship a wheel here. Skips loud
+    if the ``uv`` CLI is unavailable; hard-fails with captured build output on
+    any build failure.
     """
     if shutil.which("uv") is None:
         pytest.skip("uv CLI not available")
 
     out_dir = tmp_path_factory.mktemp("built_wheels")
-    engine_build = subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(out_dir)],
-        cwd=_REPO_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=False,
+    _WORKSPACE_MEMBERS: tuple[tuple[str, Path], ...] = (
+        ("engine", _REPO_ROOT),
+        ("models", _REPO_ROOT / "tolokaforge_models"),
+        ("coding-harnesses", _REPO_ROOT / "tolokaforge_coding_harnesses"),
     )
-    assert engine_build.returncode == 0, (
-        f"uv build (engine) failed (rc={engine_build.returncode}):\n"
-        f"stdout:\n{engine_build.stdout}\nstderr:\n{engine_build.stderr}"
-    )
-    models_build = subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(out_dir)],
-        cwd=_REPO_ROOT / "tolokaforge_models",
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=False,
-    )
-    assert models_build.returncode == 0, (
-        f"uv build (models) failed (rc={models_build.returncode}):\n"
-        f"stdout:\n{models_build.stdout}\nstderr:\n{models_build.stderr}"
-    )
+    for label, source in _WORKSPACE_MEMBERS:
+        result = subprocess.run(
+            ["uv", "build", "--wheel", "--out-dir", str(out_dir)],
+            cwd=source,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        assert result.returncode == 0, (
+            f"uv build ({label}) failed (rc={result.returncode}):\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
     return out_dir
 
 

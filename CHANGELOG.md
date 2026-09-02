@@ -2,7 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## v0.21.4 (2026-08-28)
+
+### Fix
+
+- **ci**: switch claude-review model to claude-opus-4-7 (#1338)
+- **ci**: bump Claude Code Action pin to v1.0.209 (#1337)
+
+## v0.21.3 (2026-08-28)
 
 ### Security
 
@@ -11,6 +18,11 @@ All notable changes to this project are documented in this file.
 ### Feat
 
 - **coding-harnesses**: the `AgentDriver` Strategy — `EngineLoopDriver` (default, no-op) and `CodingHarnessDriver` (vendor CLI) — owns "how a trial runs". The orchestrator selects one per run from `models.agent.coding_harness`; the adapter carries no mode state, opting in solely by overriding `BaseAdapter.stage_task(task_id) -> StagedTask | None` to materialise a per-trial staging directory the driver layers onto. Adding a new mode (Harbor as an embedded library, a custom agent loop) is a new driver class with no adapter edit. See [ADR-0039](docs/adr/0039-coding-harness-adapter-agnostic.md).
+- **grading**: engine-repin-unblock — runner wire-model aliases, expected_hash refusal, trace_checks on_missing: withhold (#1315)
+
+### Fix
+
+- **grader**: route RunnerRPCTrialGrader through runtime_backend for per-trial runtimes (#1328)
 
 ### Refactor
 

@@ -179,9 +179,10 @@ message JudgeReport {
 }
 
 // TraceConstraintResult — mirrors runner.TraceConstraintResult including
-// ``severity`` (field 7) and ``undecided`` (field 8). An earlier grader.proto
-// shape dropped both, so a Grade with trace_checks would have decoded on
-// the runner side with those fields silently zeroed.
+// ``severity`` (field 7), ``undecided`` (field 8), and ``withheld`` (field 9).
+// The wire mirror keeps every author-facing verdict field grader clients read
+// aligned with the runner shape; a Grade produced on either substrate must
+// decode identically on both sides.
 message TraceConstraintResult {
   string id = 1;
   string kind = 2;
@@ -191,6 +192,7 @@ message TraceConstraintResult {
   repeated int32 matched_positions = 6;
   string severity = 7;
   bool undecided = 8;
+  bool withheld = 9;
 }
 
 // One alternative route's own outcome, whether or not it won.

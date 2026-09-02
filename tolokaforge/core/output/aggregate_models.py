@@ -415,6 +415,14 @@ class FailureRecord(BaseModel):
     trial_index: int
     status: str
     termination_reason: str | None = None
+    # Which point of the provisioning lifecycle raised ``ProvisionError``. Non-
+    # ``None`` iff ``termination_reason == "provision_error"``; otherwise present
+    # and null so a downstream consumer can read ``record["provision_stage"]``
+    # unconditionally rather than gate the access on ``termination_reason``.
+    # Typed ``str`` (not the ``ProvisionStage`` Literal) for the same reason
+    # ``termination_reason`` is: a bundle written by a future run whose classifier
+    # has heard of a new stage round-trips rather than raising here.
+    provision_stage: str | None = None
     outcome_class: TrialOutcomeClass
     failure_class: str
     deterministic: bool

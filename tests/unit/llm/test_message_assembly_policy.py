@@ -6,9 +6,9 @@ slot:
 1. The three policy classes route the filler correctly through
    ``LLMClient._convert_messages``:
    - ``NullMessageAssembly`` (default) leaves empty assistant content empty.
-   - ``NovaMessageAssembly()`` (bare-name overlay shape) substitutes the
+   - ``FillEmptyAssistantAssembly()`` (bare-name overlay shape) substitutes the
      default filler ``"I'll help you with that."``.
-   - ``NovaMessageAssembly(empty_assistant_filler="…")`` (``{name, params}``
+   - ``FillEmptyAssistantAssembly(empty_assistant_filler="…")`` (``{name, params}``
      overlay shape) substitutes the caller-supplied filler — i.e. the string
      is data on the policy instance, not an engine constant.
 
@@ -25,7 +25,7 @@ import pytest
 
 from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.llm.message_assembly_policy import (
-    NovaMessageAssembly,
+    FillEmptyAssistantAssembly,
     NullMessageAssembly,
 )
 from tolokaforge.core.llm.presets import (
@@ -69,12 +69,29 @@ def test_null_policy_leaves_empty_assistant_content_empty() -> None:
 def test_nova_policy_default_filler_matches_shipped_string() -> None:
     client = LLMClient(ModelConfig(provider="nova", name="nova-pro"))
     policy = client.capabilities.message_assembly_policy
-    assert isinstance(policy, NovaMessageAssembly)
+    assert isinstance(policy, FillEmptyAssistantAssembly)
     assert policy.inject_empty_assistant_filler is True
     assert policy.empty_assistant_filler == "I'll help you with that."
 
     converted = client._convert_messages(system=None, messages=_empty_assistant_with_tool_call())
     assert _assistant_content(converted) == "I'll help you with that."
+
+
+def test_moonshot_kimi_k3_preset_substitutes_space_filler_on_wire() -> None:
+    """The ``moonshot_kimi_k3`` preset overlays the default filler with a
+    single space. This locks the wire behaviour end-to-end for the
+    Moonshot-direct HTTP 400 fix in issue #1284: on an empty
+    assistant-with-tool_calls turn, ``_convert_messages`` must emit
+    ``content == " "`` rather than ``""``.
+    """
+    client = LLMClient(ModelConfig(provider="openrouter", name="moonshotai/kimi-k3"))
+    policy = client.capabilities.message_assembly_policy
+    assert isinstance(policy, FillEmptyAssistantAssembly)
+    assert policy.inject_empty_assistant_filler is True
+    assert policy.empty_assistant_filler == " "
+
+    converted = client._convert_messages(system=None, messages=_empty_assistant_with_tool_call())
+    assert _assistant_content(converted) == " "
 
 
 def test_nova_policy_overlay_params_propagate_through_wire(
@@ -98,7 +115,7 @@ def test_nova_policy_overlay_params_propagate_through_wire(
     set_overlay_path(str(overlay))
     try:
         caps = build_capabilities("custom-nova/model", "custom")
-        assert isinstance(caps.message_assembly_policy, NovaMessageAssembly)
+        assert isinstance(caps.message_assembly_policy, FillEmptyAssistantAssembly)
         assert caps.message_assembly_policy.empty_assistant_filler == "Certainly."
         assert resolve_policy_names(caps)["message_assembly_policy"] == "nova"
 

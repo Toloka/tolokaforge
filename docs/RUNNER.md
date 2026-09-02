@@ -248,10 +248,25 @@ renames the distribution to `tolokaforge-runner-subset`, replaces the base
 wheel's dependency list with the runner-runtime deps, and binds the
 subset-native CLI shim
 ([ADR-0027](adr/0027-subset-native-cli-shim.md)) — `tolokaforge =
-tolokaforge.runner._cli:main` — as the subset wheel's sole `[console_scripts]`
-entry. The base wheel's other entry-point tables (runtime backends,
-trial-grader factories, conductors) still point at orchestrator-only modules
-and are deliberately stripped from the subset.
+tolokaforge.runner._cli:main` — as the subset wheel's `[console_scripts]`
+entry, and carries every runner-reachable seam group verbatim from
+`pyproject.toml`: `tolokaforge.custom_check_executors`,
+`tolokaforge.judge_model_providers`, `tolokaforge.rubric_evaluators`,
+`tolokaforge.transcript_rule_matchers`, `tolokaforge.state_check_backends`,
+and `tolokaforge.trace_check_operators`. Without these, the runner boots
+then crashes at first seam load with "Unknown implementation …". The
+canonical enumeration lives at
+`scripts/hatch/hatch_runner_subset_builder.py::RUNNER_REACHABLE_ENTRY_POINT_GROUPS`
+and two drift-locks guard it: `test_subset_wheel_carries_runner_reachable_entry_point_groups`
+asserts each group's rows target modules the subset ships, and
+`test_subset_partition_load_calls_are_in_the_allowlist` walks every
+`load_*` seam call reachable from the subset partition and asserts its
+group is in the allowlist. The other groups (`runtime_backends`,
+`trial_graders`, `conductors`, `service_readiness_probes`,
+`turn_policies`, `grading_substrates`) point at modules the subset does
+not ship — their loaders are called from `tolokaforge.core.runner` /
+`tolokaforge.grader.composite_dispatch`, which live outside the subset
+partition — and are deliberately excluded from the subset wheel.
 
 ```bash
 uv run hatch build --target custom

@@ -196,14 +196,17 @@ _EXAMPLES = EXAMPLES_ROOT
 _TEST_DATA = TEST_DATA_ROOT
 
 # Every task under ``examples/`` the corpus grades, so a guard that enumerated nothing
-# fails instead of passing over the empty set. The two files outside it are the
-# ``terminal_bench`` pair, which ship no enclosing project and are the corpus's two
-# known-invalid tasks.
-_GRADED_TASK_COUNT = 30
+# fails instead of passing over the empty set. The three files outside it are the two
+# ``terminal_bench`` packs, which load as no ``TaskConfig`` at all, and the
+# ``coding_harness`` pack, which loads as a valid ``TaskConfig`` but declares no
+# grading source because its trial verifier writes the score itself — three packs
+# ``tolokaforge validate`` refuses.
+_GRADED_TASK_COUNT = 29
 # Tool schemas the corpus puts on the wire, across the 24 tasks that declare any, so a
 # parameter comparison that resolved nothing fails instead of passing over empty maps.
 _CORPUS_TOOL_COUNT = 56
 _TASKS_WITHOUT_A_PROJECT = (
+    _EXAMPLES / "native" / "coding_harness" / "task.yaml",
     _EXAMPLES / "terminal_bench" / "fix-airline-segmentation" / "task.yaml",
     _EXAMPLES / "terminal_bench" / "fix-billing-holds" / "task.yaml",
 )
@@ -266,10 +269,10 @@ _TASKS_OUTSIDE_THE_GRADED_CORPUS = _TASKS_WITHOUT_A_PROJECT + (
     _TEST_DATA / "actor_binding" / "task.yaml",
 )
 
-# Every authored pack in the repository whose grading config loads: 30 under
+# Every authored pack in the repository whose grading config loads: 29 under
 # ``examples/``, each beneath a ``project.yaml``, and 80 project-less packs under
 # ``tests/data``. Reconciled by the partition guard rather than only counted here.
-_AUTHORED_PACK_COUNT = 110
+_AUTHORED_PACK_COUNT = 109
 
 
 def _is_a_recorded_artifact(task_yaml: Path) -> bool:
@@ -463,7 +466,7 @@ _TEST_DATA_TASKS = Path(__file__).resolve().parents[1] / "data" / "tasks"
 
 # Every pack under the two roots that ships a grading.yaml, so a guard that
 # enumerated nothing fails instead of passing over the empty set.
-_GATED_PACK_COUNT = 61
+_GATED_PACK_COUNT = 60
 
 # The one pack whose tool inventory cannot be built: it declares
 # ``tools.agent.mobile: true``, a typo fixture whose whole point is that a non-mapping
@@ -755,7 +758,7 @@ def test_no_shipped_pack_fails_the_authoring_gate() -> None:
             task_yaml,
             grading,
             inventory,
-            replay_world_under_adapter(task, task.adapter_type),
+            replay_world_under_adapter(task, task_dir, task.adapter_type),
             hash_source_layer_under_adapter(task, task_dir, task.adapter_type),
             seeded_tables_under_adapter(task, task_dir, task.adapter_type),
         )
@@ -831,7 +834,7 @@ def test_no_authored_grading_block_asserts_nothing() -> None:
         report = inspect_grading_authoring(
             grading,
             ToolInventory.unresolvable(),
-            replay_world=replay_world_under_adapter(task, task.adapter_type),
+            replay_world=replay_world_under_adapter(task, task_dir, task.adapter_type),
             hash_sources=hash_source_layer_under_adapter(task, task_dir, task.adapter_type),
             seeded_tables=seeded_tables_under_adapter(task, task_dir, task.adapter_type),
         )
@@ -1088,7 +1091,7 @@ def test_the_packs_outside_the_gate_walk_are_held_to_the_whole_gate() -> None:
         assert task.grading is not None
         grading = yaml.safe_load((task_dir / task.grading).read_text()) or {}
         inventory = build_tool_inventory(task, task_dir)
-        world = replay_world_under_adapter(task, task.adapter_type)
+        world = replay_world_under_adapter(task, task_dir, task.adapter_type)
         layer = hash_source_layer_under_adapter(task, task_dir, task.adapter_type)
         tables = seeded_tables_under_adapter(task, task_dir, task.adapter_type)
         pack = str(task_yaml.relative_to(_REPO))
@@ -1226,7 +1229,7 @@ def test_no_authored_pack_gives_its_golden_replay_no_world_to_be_built_in() -> N
         task, task_dir = load_task_yaml(task_yaml)
         assert task.grading is not None
         grading = yaml.safe_load((task_dir / task.grading).read_text()) or {}
-        world = replay_world_under_adapter(task, task.adapter_type)
+        world = replay_world_under_adapter(task, task_dir, task.adapter_type)
         pack = str(task_yaml.relative_to(_REPO))
         assert world.known, f"{pack} resolved no replay world, so it proves nothing here"
         report = inspect_grading_authoring(
@@ -1266,10 +1269,10 @@ _AN_INJECTED_PROBE = {
     "expect": [{"path": "$.row_count", "equals": 1}],
 }
 
-# How many of the 110 declare a state source the fold also scores, so the control's two
-# arms cannot silently collapse into one: 27 packs where injecting a probe must be
+# How many of the 109 declare a state source the fold also scores, so the control's two
+# arms cannot silently collapse into one: 26 packs where injecting a probe must be
 # refused, and 83 where it must not, because the injection leaves them probe-only.
-_PACKS_DECLARING_A_FOLD_SCORED_STATE_SOURCE = 27
+_PACKS_DECLARING_A_FOLD_SCORED_STATE_SOURCE = 26
 
 
 def _probe_exclusivity_findings(report: AuthoringReport) -> list[str]:
@@ -1348,7 +1351,7 @@ def test_no_authored_pack_declares_a_probe_beside_another_state_source() -> None
         task, task_dir = load_task_yaml(task_yaml)
         assert task.grading is not None
         grading = yaml.safe_load((task_dir / task.grading).read_text()) or {}
-        world = replay_world_under_adapter(task, task.adapter_type)
+        world = replay_world_under_adapter(task, task_dir, task.adapter_type)
         pack = str(task_yaml.relative_to(_REPO))
         report = inspect_grading_authoring(
             grading, ToolInventory.unresolvable(), replay_world=world
@@ -1395,17 +1398,19 @@ def test_no_authored_pack_declares_a_probe_beside_another_state_source() -> None
     )
 
 
-def test_the_two_project_less_task_files_are_the_terminal_bench_pair() -> None:
+def test_the_project_less_task_files_stay_the_declared_set() -> None:
     """A native pack losing its project layer would otherwise drop out unnoticed."""
     orphans = tuple(
-        task_yaml
-        for task_yaml in sorted(_EXAMPLES.rglob("task.yaml"))
-        if enclosing_project(task_yaml) is None
+        sorted(
+            task_yaml
+            for task_yaml in _EXAMPLES.rglob("task.yaml")
+            if enclosing_project(task_yaml) is None
+        )
     )
-    assert orphans == _TASKS_WITHOUT_A_PROJECT
+    assert orphans == tuple(sorted(_TASKS_WITHOUT_A_PROJECT))
 
 
-def test_validate_gates_the_example_corpus_on_its_two_invalid_tasks() -> None:
+def test_validate_gates_the_example_corpus_on_its_invalid_tasks() -> None:
     """The corpus proof that layering the project defaults rejects nothing new.
 
     ``COLUMNS`` is set wide so the per-task lines carry a whole path each and the

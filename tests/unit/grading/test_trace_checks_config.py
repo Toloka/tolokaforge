@@ -145,12 +145,20 @@ _OPERATOR_SAMPLES: dict[str, Any] = {
     "equals_ci": "WRITTEN",
     "contains": "writ",
     "contains_ci": "WRIT",
+    "not_contains": "deleted",
     "not_equals": "deleted",
     "regex": "^writ",
+    "not_regex": "^deleted",
+    "is_null": True,
+    "omitted": True,
     "gt": 0.0,
     "gte": 1.5,
     "lt": 10.0,
     "lte": 9.5,
+    "date_gt": "2026-03-01",
+    "date_gte": "2026-03-01",
+    "date_lt": "2026-04-01",
+    "date_lte": "2026-04-01",
     "in_": ["written", "queued"],
     "not_in": ["deleted"],
     "len_gt": 0,
@@ -286,6 +294,30 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         ),
         message="no tool executor produces",
         validator="_reject_a_status_literal_no_execution_produces",
+    ),
+    _Rejection(
+        label="nullness_probe_on_recorded_evidence",
+        block=_block(
+            _constraint(
+                {"present": {"match": {"kind": "tool_result", "status": {"is_null": True}}}}
+            )
+        ),
+        message="'no evidence recorded'",
+        validator="_reject_a_nullness_probe_on_recorded_evidence",
+    ),
+    _Rejection(
+        label="date_bound_no_calendar_holds",
+        block=_block(
+            _constraint(
+                {
+                    "present": {
+                        "match": {"kind": "tool_call", "args": {"at": {"date_gt": "next week"}}}
+                    }
+                }
+            )
+        ),
+        message="ISO-8601",
+        validator="_require_a_date_literal_some_calendar_holds",
     ),
     _Rejection(
         label="immediately_before_without_among",
@@ -1077,9 +1109,9 @@ def test_an_operator_is_declared_by_its_value_and_survives_the_wire(operator: st
 
     The runner receives this config as JSON inside the trial spec, and dumping a
     model writes every unset field as ``null`` — so reading declaredness off
-    pydantic's ``model_fields_set`` would report all seventeen operators after the
-    round trip and grade a one-operator predicate as a seventeen-operator
-    conjunction. Reading it off the values is what makes the two sides agree.
+    pydantic's ``model_fields_set`` would report every operator after the round
+    trip and grade a one-operator predicate as a whole-vocabulary conjunction.
+    Reading it off the values is what makes the two sides agree.
     """
     predicate = ValuePredicate(**{operator: value})
     assert predicate.declared_operators() == {operator}
@@ -1396,3 +1428,59 @@ def test_the_shared_block_spans_the_declared_vocabulary():
         f"the shared matcher exercises {sorted(exercised)}, not every declared operator; "
         f"missing {sorted(TRACE_PREDICATE_OPERATORS - exercised)}"
     )
+
+
+@pytest.mark.parametrize(
+    ("operator", "malformed"),
+    [
+        ("date_gt", "next week"),
+        ("date_gte", "March 2026"),
+        ("date_lt", "yesterday"),
+        ("date_lte", "not a date"),
+    ],
+)
+def test_a_bound_no_calendar_holds_is_refused_at_load(operator: str, malformed: str) -> None:
+    """A malformed bound is a load error naming the value and the expected shapes.
+
+    ``next week`` and ``March 2026`` are the shapes an author writes when the
+    concept is a date but the syntax is not the one JSON carries. The gate
+    reports each in the message so the fix reads directly, alongside the
+    ISO-8601 shapes an author is invited to write instead.
+    """
+    block = _block(
+        _constraint(
+            {"present": {"match": {"kind": "tool_call", "args": {"at": {operator: malformed}}}}}
+        )
+    )
+
+    with pytest.raises(ValidationError) as excinfo:
+        TraceChecksConfig(**block)
+
+    message = str(excinfo.value)
+    assert malformed in message
+    assert "ISO-8601" in message
+    assert "2026-03-01" in message
+
+
+@pytest.mark.parametrize(
+    "literal",
+    [
+        "2026-03-01",
+        "2026-03-01T12:00:00Z",
+        "2026-03-01T12:00:00+02:00",
+        "2026-03-01T12:00:00.123456Z",
+    ],
+)
+def test_a_valid_date_literal_is_admitted_at_load(literal: str) -> None:
+    """The accepted-shape surface: what an author is invited to write loads clean."""
+    config = TraceChecksConfig(
+        **_block(
+            _constraint(
+                {"present": {"match": {"kind": "tool_call", "args": {"at": {"date_gte": literal}}}}}
+            )
+        )
+    )
+
+    loaded = config.constraints[0].require.present.match.args
+    assert loaded is not None
+    assert loaded["at"].date_gte == literal

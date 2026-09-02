@@ -6,6 +6,24 @@ its release cadence is orthogonal to the `tolokaforge` engine wheel's own
 `vX.Y.Z` tag axis. See
 [`docs/RELEASING.md`](https://github.com/Toloka/tolokaforge/blob/main/docs/RELEASING.md#pypi-package--tolokaforge-models-models-vxyz-automated).
 
+## models-v1.3.0 (2026-08-25)
+
+### Feat
+
+- **grader**: standalone-extensible-grader — the deployed grader image grades the full surface (#1259) (#1276)
+- **coding-harness**: lift agent_harness to a top-level, adapter-agnostic capability (#1279)
+- **grader**: wire the queue trial grader end-to-end (#1254) (#1256)
+- **grader**: Milestone 32 — grader-detachment seam foundation (#1202)
+- **llm**: persist the OpenRouter generation id per request (#1242)
+- **coding-harnesses**: RuntimeGateway + ContainerFileInjector + gateway_route (ADR-0037) (#1241)
+- **refactor**: hoist coding-harness surface to top-level tolokaforge_coding_harnesses (#1236)
+- **grading**: deterministic trace checks — the trace-checks tail (37 issues) (#1196)
+- **tbench**: consolidated matrix harness fixes — Kimi K2.7 middleware, opencode routing/auth, Gemini via LiteLLM, supervisord, disk hygiene (#1228)
+
+### Fix
+
+- **orchestrator**: fail loud when a docker-CLI-needing run resolves to pull (#1267)
+
 ## models-v1.2.0 (2026-08-17)
 
 ## models-v1.1.0 (2026-08-17)
