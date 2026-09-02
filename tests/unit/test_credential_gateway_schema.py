@@ -18,18 +18,16 @@ from tolokaforge_coding_harnesses import HARNESSES, CredentialGateway
 pytestmark = pytest.mark.unit
 
 
-UNSHIELDED_HARNESSES: frozenset[str] = frozenset({"gemini-cli"})
+UNSHIELDED_HARNESSES: frozenset[str] = frozenset()
 """Shipped harnesses that intentionally carry no ``credential_gateway`` yet.
 
 Each entry needs a tracking issue and a comment in ``data/harnesses.yaml``
 explaining the gap — this set exists so a *silent* regression (a harness
 losing its shield with no comment, no issue, no test change) still fails
-here, while a *documented* one does not. gemini-cli: real REST auth header
-(``x-goog-api-key``, not Bearer) plus a base-URL override that also flips
-its auth mode, needing a config-file pin the gateway sidecar cannot yet
-express, and a per-model dynamic path shape the gateway's exact-match
-allowlist cannot enumerate — see
-https://github.com/Toloka/tolokaforge/issues/1311.
+here, while a *documented* one does not. Empty today: every shipped
+harness is shielded. gemini-cli's shield (closed #1311) uses the glob
+``path_allowlist`` shape (``/v1beta/models/*:generateContent``) and a
+``config_files`` pin for its GATEWAY auth mode.
 """
 
 

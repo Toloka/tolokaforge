@@ -264,24 +264,47 @@ harnesses:
       provider_env:
         GOOGLE_GEMINI_BASE_URL: "${gateway.base_url}${gateway.passthrough_path}"
         GEMINI_API_KEY: "${secret:LITELLM_API_KEY}"
-    # gemini-cli ships WITHOUT a credential_gateway — unlike the other
-    # five shipped harnesses, its shield needs two things the gateway
-    # sidecar does not yet provide:
-    #   1. Its only base-URL override hook, GOOGLE_GEMINI_BASE_URL, ALSO
-    #      flips gemini-cli into "GATEWAY" auth mode, which 400s
-    #      ("Invalid auth method selected") without the
-    #      `${HOME}/.gemini/settings.json` selectedType pin the gateway_route
-    #      block above already carries for its own (LiteLLM) path — nothing
-    #      generates that pin for this path yet.
-    #   2. Google's real REST paths embed the model name
-    #      (`/v1beta/models/<model>:generateContent`), which the gateway's
-    #      exact-match path_allowlist cannot enumerate ahead of a trial's
-    #      model selection.
-    # Real behavior is unchanged for this harness: CodingHarnessDriver falls
-    # back to resolving GEMINI_API_KEY unshielded, same as before this PR.
-    # Tracked in https://github.com/Toloka/tolokaforge/issues/1311; see
-    # ADR-0041.
-    credential_gateway: null
+    # Shielded default path. The sidecar keeps the real ``GEMINI_API_KEY``
+    # out of the trial container: the CLI sees only the dummy value, sends
+    # its requests to ``GOOGLE_GEMINI_BASE_URL`` (which points at the
+    # sidecar), and the sidecar rewrites the ``x-goog-api-key`` header on
+    # every allow-listed request before forwarding to Google's real
+    # Generative Language API. Closes #1311.
+    #
+    # ``path_allowlist`` uses the glob shape the gateway proxy grew for
+    # this exact reason: Google's REST endpoints embed the model name in
+    # the path (``/v1beta/models/<model>:generateContent``), which an
+    # exact-match allowlist cannot enumerate ahead of a trial's model
+    # selection. The four listed shapes cover every request the CLI makes
+    # today; ``countTokens`` is on the list because gemini-cli sends one
+    # per turn to price the next request against the context window.
+    credential_gateway:
+      upstream_url: "https://generativelanguage.googleapis.com"
+      upstream_token_env_var: "GEMINI_API_KEY"
+      upstream_auth_header: "x-goog-api-key"
+      # Google's API auth is the header value itself, not a
+      # ``Bearer``-prefixed token.
+      upstream_auth_template: "{token}"
+      dummy_token_env_var: "GEMINI_API_KEY"
+      dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
+      base_url_env_var: "GOOGLE_GEMINI_BASE_URL"
+      path_allowlist:
+        - "/v1beta/models"
+        - "/v1beta/models/*:generateContent"
+        - "/v1beta/models/*:streamGenerateContent"
+        - "/v1beta/models/*:countTokens"
+    # Shielded ``settings.json``. ``GOOGLE_GEMINI_BASE_URL``'s mere
+    # presence flips gemini-cli 0.55.1 into GATEWAY auth mode, which 400s
+    # ("Invalid auth method selected") without a pre-pinned
+    # ``selectedType``: ``validateAuthMethod()`` has not been taught about
+    # GATEWAY, so the sidecar's ``base_url`` override alone is not enough.
+    # Same ``tools.exclude`` list as the ``gateway_route`` recipe below —
+    # a tbench container's netpolicy blocks ``google_web_search`` /
+    # ``web_fetch`` egress, and gemini-cli retries on backoff before
+    # yielding a turn.
+    config_files:
+      "${HOME}/.gemini/settings.json": |-
+        {"security":{"auth":{"selectedType":"gateway","useExternal":true}},"tools":{"exclude":["google_web_search","web_fetch"]}}
 
   kimi-code:
     install_method: "npm"

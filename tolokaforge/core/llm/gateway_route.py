@@ -12,17 +12,23 @@ import logging
 import time
 import urllib.error
 import urllib.request
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from tolokaforge.core.llm.proxy import ProxyConfig
 
 __all__ = [
     "GatewayRouteError",
+    "ResolvedGatewayRoute",
+    "RouteKind",
     "resolve_gateway_route",
     "fetch_gateway_catalog",
     "clear_catalog_cache",
 ]
+
+#: How a route matched the catalog. Named so the run artifacts, the client field and
+#: the automation's availability lookup all state the same two-value contract.
+RouteKind = Literal["exact", "wildcard"]
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +45,30 @@ _RETRY_AFTER: dict[str, float] = {}
 
 #: How long to stop asking after a failure.
 CATALOG_RETRY_COOLDOWN_S = 60.0
+
+
+class ResolvedGatewayRoute(str):
+    """A gateway route name that also says HOW it matched.
+
+    A ``str`` subclass so every existing caller keeps treating the route as
+    the wire model name, while ``kind`` records whether the catalog held the
+    exact entry ("exact") or only the model's own namespace wildcard
+    ("wildcard") - a provenance distinction the run artifacts carry.
+    """
+
+    kind: RouteKind
+
+    def __new__(cls, name: str, kind: RouteKind) -> ResolvedGatewayRoute:
+        route = super().__new__(cls, name)
+        route.kind = kind
+        return route
+
+    def __getnewargs__(self) -> tuple[str, RouteKind]:
+        # str.__getnewargs__ returns only the string value, so copy.copy,
+        # copy.deepcopy and pickle would reconstruct with a missing ``kind``
+        # and die - and dataclasses.asdict deepcopies every ProviderRawCall
+        # on its way into metrics.yaml, which is every routed call's path.
+        return (str(self), self.kind)
 
 
 class GatewayRouteError(Exception):
@@ -114,7 +144,9 @@ def resolve_gateway_route(
     model_string: str,
     catalog: frozenset[str] | None,
     preferred_prefix: str | None = None,
-) -> str | None:
+    *,
+    trust_namespace_wildcards: bool = False,
+) -> ResolvedGatewayRoute | None:
     """Return the gateway's name for ``model_string``, or ``None`` if it serves none.
 
     Args:
@@ -122,8 +154,17 @@ def resolve_gateway_route(
         catalog: Route ids from :func:`fetch_gateway_catalog`. ``None`` means the
             catalog could not be read, which the caller treats as "keep the gateway,
             skip rewriting" rather than as "not served".
-        preferred_prefix: Namespace that wins when the gateway serves the model under
-            more than one name.
+        preferred_prefix: Namespace(s) that win when the gateway serves the model
+            under more than one name. A comma-separated list is honoured in
+            order (first matching prefix wins), so a deployment serving several
+            provider namespaces can rank them: ``"openrouter/,nebius/"``.
+        trust_namespace_wildcards: Whether a catalog entry of ``<ns>/*`` counts
+            as a route for a model whose OWN provider namespace is ``<ns>`` (an
+            ``openrouter/*`` passthrough then serves ``provider: openrouter``
+            models, addressed by their untranslated name). Namespace-matched on
+            purpose: a foreign wildcard is a DIFFERENT upstream, the measured
+            serving-path break documented in ``docs/LLM_LAYER.md``. Exact
+            entries always win over a wildcard.
 
     Raises:
         GatewayRouteError: Several names match and ``preferred_prefix`` picks none of
@@ -135,17 +176,24 @@ def resolve_gateway_route(
 
     hits = [c for c in _candidates(model_string) if c in catalog]
     if not hits:
+        if trust_namespace_wildcards and "/" in model_string:
+            namespace = model_string.split("/", 1)[0]
+            if f"{namespace}/*" in catalog:
+                return ResolvedGatewayRoute(model_string, kind="wildcard")
         return None
     if len(hits) == 1:
-        return hits[0]
+        return ResolvedGatewayRoute(hits[0], kind="exact")
 
     if preferred_prefix:
-        for hit in hits:
-            if hit.startswith(preferred_prefix):
-                return hit
+        prefixes = [p.strip() for p in preferred_prefix.split(",") if p.strip()]
+        for prefix in prefixes:
+            for hit in hits:
+                if hit.startswith(prefix):
+                    return ResolvedGatewayRoute(hit, kind="exact")
     raise GatewayRouteError(
         f"the gateway serves {model_string!r} under {len(hits)} names ({', '.join(hits)}) "
         f"and no preference picks one. They can be backed by different upstreams, so "
         f"this is a serving-path choice rather than a transport detail: set "
-        f"LLM_PROXY_PREFERRED_ROUTE to the namespace you want."
+        f"LLM_PROXY_PREFERRED_ROUTE to the namespace you want "
+        f"(a comma-separated list is honoured in order)."
     )

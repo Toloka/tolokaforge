@@ -16,12 +16,13 @@ SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
 def _normalize_paths(obj):
     """Replace absolute paths + the content digest with stable placeholders.
 
-    Adapter output contains two machine-varying strings: the absolute
+    Adapter output contains three machine-varying strings: the absolute
     prefix leading to ``tests/data/terminal_bench_tasks/`` (differs by
-    checkout root), and the staging directory name
+    checkout root), the task staging directory name
     ``<staging_root>/echo-hello-<16-hex-digest>/…`` (differs by the
-    per-test ``tmp_path``). Both are normalised to keep the snapshot
-    portable across machines and CI.
+    per-test ``tmp_path``), and the shared engine staging directory
+    ``<staging_root>/engine-<16-hex-digest>/…``. All three are normalised
+    to keep the snapshot portable across machines and CI.
     """
     text = json.dumps(obj)
     text = re.sub(
@@ -32,6 +33,11 @@ def _normalize_paths(obj):
     text = re.sub(
         r'"[^"]*?/echo-hello-[0-9a-f]{16}/',
         r'"<STAGING>/echo-hello/',
+        text,
+    )
+    text = re.sub(
+        r'"[^"]*?/engine-[0-9a-f]{16}/',
+        r'"<STAGING>/engine/',
         text,
     )
     return json.loads(text)

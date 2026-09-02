@@ -115,6 +115,69 @@ presets:
     params:
       supports_seed: false
 
+  # Claude Fable 5.1 — landed via auto-resolve (Slack-requested integration,
+  # PR #1449). Declared BEFORE the generic ``anthropic`` preset so
+  # first-match-wins routing picks it up. It is the generic ``anthropic`` preset
+  # this model already resolved to during observe (content/reasoning/cache =
+  # anthropic, supports_seed: false — restated verbatim so the superset rule
+  # holds) PLUS one fable-5.1-observed fix, scoped to THIS model's match globs
+  # so no sibling Anthropic route is affected:
+  #
+  #   * ``param_value_rules.reasoning_effort.medium -> override with high``. The
+  #     observe (default) baseline surfaced exactly ONE failure:
+  #     ``thinking_emits_blocks`` 5/15, all 10 failures the same assertion
+  #     ("StructuredReasoning should be surfaced", i.e. ``reasoning is None``).
+  #     The two sibling probes on the SAME anthropic reasoning codec and the
+  #     SAME OpenRouter transport passed 15/15 — ``unsigned_thinking_replay``
+  #     (adaptive, effort_hint="high") and ``thinking_replay_roundtrip``
+  #     (budget_tokens=4000), and the latter asserts *signed* turn-1 blocks — so
+  #     the model demonstrably emits structured signed thinking and the codec
+  #     demonstrably decodes it. The sole discriminator is the effort LEVEL:
+  #     only the failing probe sends effort_hint="medium". At
+  #     ``extra_body.reasoning={"effort":"medium","enabled":true}`` OpenRouter
+  #     allocates a small budget and this adaptive thinker frequently declines
+  #     to think at all; at "high" it always does. Effort-routing
+  #     under-allocation, not a capability gap — hence a params fix rather than
+  #     a ceiling. ``override`` (not ``reject``, which raises; not ``drop``,
+  #     which yields the provider default budget — the very under-allocation
+  #     that causes the miss) is the sanctioned action for this shape, and the
+  #     engine logs a WARNING naming both values on every substituted call.
+  #     "high" is untouched, so ``unsigned_thinking_replay``'s strict
+  #     ``extra_body.reasoning == {"effort":"high","enabled":true}`` assertion
+  #     still holds. Reprobe went 5/5 on the fix-target.
+  #
+  # ``reasoning_via_extra_body`` is deliberately NOT pinned here: it belongs to
+  # the ``providers.openrouter`` overlay, which merges AFTER the preset match
+  # and so survives untouched. Pinning it would wrongly force OpenRouter
+  # routing onto a direct-Anthropic route for the same model.
+  anthropic_claude_fable_5_1:
+    match:
+      - "anthropic/claude-fable-5.1*"
+      - "*claude-fable-5.1*"
+    content_policy: anthropic
+    reasoning_codec: anthropic
+    cache_policy: anthropic_ephemeral
+    params:
+      supports_seed: false
+      param_value_rules:
+        reasoning_effort:
+          medium:
+            action: override
+            with: high
+            evidence: >-
+              2026-09-02, openrouter/anthropic/claude-fable-5.1, engine
+              51a092e, observe 15 reps/probe:
+              extra_body.reasoning={"effort":"medium","enabled":true} surfaced
+              no StructuredReasoning on 10/15 runs
+              (test_thinking_emits_blocks 5/15), while the same anthropic
+              reasoning codec on the same OpenRouter transport passed 15/15 at
+              effort="high" (test_unsigned_thinking_replay) and 15/15 at
+              budget_tokens=4000 with SIGNED turn-1 blocks
+              (test_thinking_replay_roundtrip). The model emits structured
+              signed blocks; "medium" under-allocates the adaptive thinking
+              budget so it often declines to think at all. "high" is the
+              nearest level that reliably engages it.
+
   anthropic:
     match:
       - "anthropic/*"

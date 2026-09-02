@@ -813,6 +813,7 @@ class TestManifestWireShape:
             "rag_port",
             "stripped_container_secrets",
             "bridged_services",
+            "stacks",  # ADR-0044 composition plan; default empty list preserves backward compat.
         }
         assert wire["runner_service"] == "default"
         assert wire["limited_internet_allowlist"] == []
@@ -845,6 +846,26 @@ class TestManifestWireShape:
             "capabilities_drop": ["ALL"],
             "capabilities_add": [],
         }
+
+    def test_scalar_only_manifest_byte_round_trips_identically(self) -> None:
+        """Pre-ADR-0044 backward-compat lock. A manifest constructed from
+        the scalar-only surface (no `stacks` block) must dump to wire and
+        reload byte-identically. The new `stacks` field defaults to `[]`
+        so `dict1 == dict2` — that equality is the compat guarantee."""
+        original = EnvironmentManifest(
+            compose_file=_fixture("safe_two_service.yaml"),
+            runner_service="default",
+            services={"default": ServiceSpec(isolation="shared")},
+        )
+        wire = original.model_dump(mode="json")
+        assert wire["stacks"] == []
+        reloaded = EnvironmentManifest.model_validate(wire)
+        assert reloaded.model_dump(mode="json") == wire
+
+        wire_pre_adr = {k: v for k, v in wire.items() if k != "stacks"}
+        reloaded_legacy = EnvironmentManifest.model_validate(wire_pre_adr)
+        assert reloaded_legacy.stacks == []
+        assert reloaded_legacy.model_dump(mode="json") == wire
 
 
 # ---------------------------------------------------------------------------

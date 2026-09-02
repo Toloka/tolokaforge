@@ -1,0 +1,27 @@
+services:
+  db:
+    image: postgres:16
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+    - tolokaforge_netpolicy_internal
+  default:
+    image: tolokaforge/runner:0.5.0
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+    - tolokaforge_netpolicy_internal
+    - tolokaforge_netpolicy_edge
+    environment:
+      TOLOKAFORGE_SECRETS_JSON: '{"FAKE_JUDGE_API_KEY": "sk-fake-a$$bc", "FAKE_SEARCH_API_KEY":
+        "fake-search-value"}'
+networks:
+  tolokaforge_netpolicy_internal:
+    internal: true
+  tolokaforge_netpolicy_edge: {}

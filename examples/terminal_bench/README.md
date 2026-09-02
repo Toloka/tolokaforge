@@ -119,7 +119,7 @@ reward printed to stdout.
 
 ## Runtime compatibility
 
-Terminal-bench tasks run under `PerTrialRuntimeBackend`. Backend selection is task-driven: the manifest the adapter emits declares every compose service as `ephemeral`, so `Orchestrator._select_backend_from_tasks()` returns `per_trial` and every trial gets its own compose project — no config change is required. `TrialExecutor`'s `provision → await_ready → endpoints → teardown` bracket, per-trial network isolation, and `PROVISION_ERROR` attribution all apply. See `docs/RUNTIME_BACKENDS.md` § "Adapter compatibility with `per_trial`".
+Terminal-bench tasks run under a composer-driven `SharedStackRuntimeBackend`. The manifest the adapter emits declares every compose service as `ephemeral`, so the resolved plan is fully trial-scoped (`PlanShape.TRIAL_SCOPED_ONLY`) and the composer materialises each trial's own compose project at `provision_trial` time — no config change is required. `TrialExecutor`'s `provision → await_ready → endpoints → teardown` bracket, per-trial network isolation, and `PROVISION_ERROR` attribution all apply. See `docs/RUNTIME_BACKENDS.md` § "Isolation enforcement".
 
 ## Related docs
 

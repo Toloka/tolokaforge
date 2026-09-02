@@ -72,10 +72,14 @@ class TestHarnessCommand:
 
         from tolokaforge_coding_harnesses import harness_command
 
-        # Shipped gemini-cli takes the direct Google AI Studio path — pure
-        # env, no ``config_files``, so no preamble. The command is the CLI
-        # argv verbatim.
-        assert shlex.split(harness_command("gemini-cli", "do it", "google/gemini-2.5-flash")) == [
+        # Shipped gemini-cli is shielded (closed #1311): the ``config_files``
+        # entry writes a ``settings.json`` GATEWAY-auth pin as a preamble
+        # before the CLI runs. The CLI argv itself sits after ``" && "``.
+        _, sep, cli = harness_command("gemini-cli", "do it", "google/gemini-2.5-flash").rpartition(
+            " && "
+        )
+        assert sep, "gemini-cli must chain a settings.json preamble before the CLI"
+        assert shlex.split(cli) == [
             "gemini",
             "--model",
             "gemini-2.5-flash",
@@ -101,20 +105,23 @@ class TestHarnessCommand:
         assert "auth.json" in preamble
         assert "OPENAI_API_KEY" in preamble
 
-    def test_shipped_gemini_default_writes_no_settings_json(self):
-        """The shipped default is the direct Google AI Studio route — pure
-        env, no config-file writes. A settings.json write is exclusive to
-        the operator overlay at
-        ``examples/terminal_bench/gemini_litellm_overlay.yaml`` (whose
-        resolution is locked by
-        ``TestHarnessPresetsFileOverlay.test_shipped_gemini_litellm_overlay_resolves``).
+    def test_shipped_gemini_default_writes_the_shielded_settings_json(self):
+        """Closed #1311: the shipped shield writes ``settings.json`` before
+        the CLI runs. GEMINI_API_KEY's presence flips gemini-cli 0.55.1's
+        ``validateAuthMethod`` into GATEWAY mode, which 400s without the
+        ``selectedType: gateway`` pin — hence the config-file write. The
+        LiteLLM-gateway overlay at ``examples/terminal_bench/
+        gemini_litellm_overlay.yaml`` still whole-replaces this entry;
+        their parity is locked in
+        ``tests/canonical/test_gateway_route_recipes.py``.
         """
         from tolokaforge_coding_harnesses import harness_command
 
         command = harness_command("gemini-cli", "go", "google/gemini-2.5-flash")
-        assert " && " not in command
-        assert "settings.json" not in command
-        assert "printf" not in command
+        assert " && " in command
+        assert "settings.json" in command
+        assert "printf" in command
+        assert "selectedType" in command and "gateway" in command
 
     def test_instruction_is_one_shell_argument(self):
         import shlex
@@ -521,7 +528,12 @@ class TestModelFlagStyle:
 
         from tolokaforge_coding_harnesses import harness_command
 
-        argv = shlex.split(harness_command("gemini-cli", "go", "google/gemini-2.5-flash"))
+        # Shielded gemini writes a settings.json preamble before the CLI —
+        # split it off so the argv assertion sees the CLI argv alone.
+        _, _, cli = harness_command("gemini-cli", "go", "google/gemini-2.5-flash").rpartition(
+            " && "
+        )
+        argv = shlex.split(cli)
         assert argv[1:3] == ["--model", "gemini-2.5-flash"]
 
     def test_equals_style_is_one_argv_word(self):

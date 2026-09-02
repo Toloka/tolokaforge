@@ -157,10 +157,14 @@ class TestSidecarService:
             driver.close()
 
     def test_no_sidecar_when_credential_gateway_is_none(self, canary_secret_manager: None) -> None:
+        """The escape hatch strips a shipped harness's ``credential_gateway``
+        at ``__init__`` time. No shipped harness ships an unset gateway
+        today (gemini-cli's shield closed #1311), so the escape hatch is
+        how this branch is reached from a real run config."""
         adapter = _pack_adapter()
         staged = adapter.stage_task("fix_factorial")
         assert staged is not None
-        driver = _driver(agent_harness="gemini-cli")
+        driver = _driver(disable_credential_gateway=True)
         driver.attach("native", True)
         try:
             driver.apply_container_layers(staged=staged)
@@ -200,11 +204,14 @@ class TestRunnerSecretStrip:
     def test_unshielded_manifest_leaves_strip_set_untouched(
         self, canary_secret_manager: None
     ) -> None:
+        """Reached via the escape hatch — see
+        ``test_no_sidecar_when_credential_gateway_is_none`` for why
+        gemini-cli no longer stands in as the unshielded example."""
         adapter = _pack_adapter()
         staged = adapter.stage_task("fix_factorial")
         assert staged is not None
         base = adapter.to_task_description("fix_factorial")
-        driver = _driver(agent_harness="gemini-cli")
+        driver = _driver(disable_credential_gateway=True)
         driver.attach("native", True)
         try:
             td = driver.decorate_task_description(base, staged=staged)

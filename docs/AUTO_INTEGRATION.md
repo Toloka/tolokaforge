@@ -217,24 +217,30 @@ advisory on purpose: a gateway route may be backed by a *different upstream* for
 name, which is a comparability decision for a human, not a transport detail the automaton should
 take on itself.
 
-The names looked up are the ones that actually reach the gateway. The engine resolves a route
-from this same catalog, trying `openrouter/<slug>` and then the bare `<slug>`, and addresses the
-gateway by whichever it finds
-([`docs/LLM_LAYER.md` § speaking to the gateway](LLM_LAYER.md#speaking-to-the-gateway)), so this
-lookup checks both in that order and a prefixed-only entry *is* evidence.
+The names looked up are the ones that actually reach the gateway, because the lookup **calls the
+engine's resolver** rather than restating its rules: it asks about `<provider>/<slug>`, the model
+string the integration run will build, and reports what the run would get
+([`docs/LLM_LAYER.md` § speaking to the gateway](LLM_LAYER.md#speaking-to-the-gateway)). A
+prefixed-only entry *is* evidence, and so is a bare one.
 
-The two agree except on a catalog carrying **both** names for one model: this lookup reports the
-prefixed one, while the engine refuses to guess and requires `LLM_PROXY_PREFERRED_ROUTE`, because
-the two names can be backed by different upstreams. On such a catalog the reply promises a route
-the run will not take until that variable is set.
+Delegation rather than a second implementation because the two drifted once: a hand-mirrored copy
+of the rule reported a vendor wildcard (`x-ai/*`) as covering a model the run addresses as
+`openrouter/<slug>`, which the engine refuses - that wildcard is a different upstream. The reply
+said `via litellm` for a run that went to OpenRouter direct.
+
+Two deployment variables therefore change what the poller reports, and they are the same two the
+run reads: `LLM_PROXY_TRUST_NAMESPACE_WILDCARDS` (whether a passthrough counts as coverage at all)
+and `LLM_PROXY_PREFERRED_ROUTE` (which name wins when the catalog carries several). A catalog
+carrying **both** names for one model with no preference set is reported as *unknown* rather than
+reachable, because that is what a run does with it: it refuses to guess and raises.
 
 The report distinguishes two strengths, because they are not equally trustworthy:
 
 | Reply says | Means |
 |---|---|
 | `also on the gateway as <route>` | an explicit catalog entry for one of the two names, so someone configured this model |
-| `probably reachable … (matched a passthrough)` | only a wildcard over the slug's own namespace (`x-ai/*`, or a bare `*`) covers it; a live call is the real proof |
-| `not on the gateway` | the catalog was read and does not cover it |
+| `probably reachable … (matched a passthrough)` | no explicit entry: only a wildcard over the namespace the run addresses (`openrouter/*`) covers it, and only where the deployment sets `LLM_PROXY_TRUST_NAMESPACE_WILDCARDS`. A bare `*` never counts. A live call is the real proof |
+| `not on the gateway` | the catalog was read and does not cover it (an untrusted passthrough included) |
 
 A requester can choose the route with `via litellm` / `via openrouter` (also `through the
 gateway`, `using the proxy`, `via OR`). The directive is stripped before model-phrase parsing,

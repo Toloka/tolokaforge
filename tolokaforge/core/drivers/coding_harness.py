@@ -65,7 +65,7 @@ from tolokaforge_coding_harnesses import (
 )
 
 if TYPE_CHECKING:
-    from tolokaforge.runner.models import TaskDescription
+    from tolokaforge.runner.models import EnvironmentManifest, TaskDescription, ToolSchema
 
 logger = logging.getLogger(__name__)
 
@@ -269,102 +269,128 @@ class CodingHarnessDriver:
                     "use the shipped pin."
                 )
             base_spec = base_spec.model_copy(update={"version": selection.version_override})
-        escape_hatch_active = (
-            selection.disable_credential_gateway and base_spec.credential_gateway is not None
-        )
-        if escape_hatch_active:
-            logger.warning(
-                "coding_harness driver: harness %r credential gateway disabled — "
-                "provider credentials will be baked into the trial container's "
-                "environment; the model can read them via printenv.",
-                selection.agent_harness,
-            )
-            base_spec = base_spec.model_copy(update={"credential_gateway": None})
         self._gateway_handle: GatewayHandle | None = None
         self._gateway_container_url: str | None = None
         self._gateway_upstream_token: str | None = None
         self._gateway_route_config_files: dict[str, str] = {}
         self._effective_model: str = selection.agent_model
+        base_spec, escape_hatch_active = self._apply_escape_hatch(base_spec)
         if selection.gateway_route is not None:
-            # Gateway-route path (ADR-0037). Mutually exclusive with the
-            # credential-shield sidecar: the operator's own gateway (LiteLLM
-            # today) has its own auth boundary, so the shielded upstream
-            # rewriting has nothing to do here. ``request_middleware`` is
-            # also skipped — the gateway route replaces the per-provider pin
-            # the middleware injects, so running both would double-book the
-            # provider decision.
-            route = base_spec.gateway_route
-            if route is None:
-                raise ValueError(
-                    f"coding_harness driver: run config selected "
-                    f"gateway_route={selection.gateway_route!r}, but harness "
-                    f"{selection.agent_harness!r} ships no gateway_route block."
-                )
-            if route.gateway != selection.gateway_route:
-                raise ValueError(
-                    f"coding_harness driver: run config selected "
-                    f"gateway_route={selection.gateway_route!r}, but harness "
-                    f"{selection.agent_harness!r}'s gateway_route names "
-                    f"{route.gateway!r}. The registry pin decides which gateway "
-                    "this CLI knows how to reach; matching in the run config is "
-                    "the operator's opt-in signal, not a rename."
-                )
-            resolved_provider_env, resolved_config_files, effective_model = _resolve_gateway_route(
-                route, selection.agent_model
-            )
-            base_spec = base_spec.model_copy(
-                update={
-                    "credential_gateway": None,
-                    "request_middleware": None,
-                    # The alias ``_resolve_gateway_route`` produced already
-                    # names the model the gateway serves it as — kimi's
-                    # ``{model}-moonshotai-pinned`` renders
-                    # ``moonshotai/kimi-k2.7-code-moonshotai-pinned``, the
-                    # exact ``model_name`` LiteLLM's proxy config
-                    # registers. Letting ``harness_command`` re-run
-                    # ``harness_model``'s vendor-namespace strip on top of
-                    # that would drop the ``moonshotai/`` prefix and turn
-                    # the request into ``kimi-k2.7-code-moonshotai-pinned``
-                    # — an unregistered alias, and the proxy answers
-                    # ``400 Invalid model name``. ``strip_vendor_namespace``
-                    # was for the default OpenRouter path where the CLI
-                    # wants the raw vendor slug; the alias path already
-                    # produced its final form and must land verbatim.
-                    "strip_vendor_namespace": False,
-                }
-            )
-            self.spec: HarnessSpec = base_spec
-            declared = _resolve_provider_env(
-                shipped={},
-                declared=dict(selection.provider_env_declared),
-                agent_harness=selection.agent_harness,
-            )
-            self.container_env: dict[str, str] = {
-                **declared,
-                **resolved_provider_env,
-                **dict(route.container_env),
-            }
-            self._gateway_route_config_files = resolved_config_files
-            self._effective_model = effective_model
-            logger.info(
-                "coding_harness driver: harness %r routed through gateway %r; "
-                "credential shield + request_middleware bypassed. Effective model: %r.",
-                selection.agent_harness,
-                route.gateway,
-                effective_model,
-            )
+            self._apply_gateway_route(base_spec)
             return
+        self._apply_credential_shield(base_spec, escape_hatch_active=escape_hatch_active)
+
+    def _apply_escape_hatch(self, base_spec: HarnessSpec) -> tuple[HarnessSpec, bool]:
+        """Strip ``credential_gateway`` when the operator opted out.
+
+        The escape hatch is the pre-shield behavior — the CLI reads the
+        real credential straight from its container env. Warns loudly so
+        the choice is visible in run logs.
+        """
+        escape_hatch_active = (
+            self.selection.disable_credential_gateway and base_spec.credential_gateway is not None
+        )
+        if not escape_hatch_active:
+            return base_spec, False
+        logger.warning(
+            "coding_harness driver: harness %r credential gateway disabled — "
+            "provider credentials will be baked into the trial container's "
+            "environment; the model can read them via printenv.",
+            self.selection.agent_harness,
+        )
+        return base_spec.model_copy(update={"credential_gateway": None}), True
+
+    def _apply_gateway_route(self, base_spec: HarnessSpec) -> None:
+        """Route the CLI through the named alternative gateway (ADR-0037).
+
+        Mutually exclusive with the credential-shield sidecar: the
+        operator's own gateway (LiteLLM today) has its own auth boundary,
+        so the shielded upstream rewriting has nothing to do here.
+        ``request_middleware`` is also skipped — the gateway route
+        replaces the per-provider pin the middleware injects, so running
+        both would double-book the provider decision.
+        """
+        selection = self.selection
+        route = base_spec.gateway_route
+        if route is None:
+            raise ValueError(
+                f"coding_harness driver: run config selected "
+                f"gateway_route={selection.gateway_route!r}, but harness "
+                f"{selection.agent_harness!r} ships no gateway_route block."
+            )
+        if route.gateway != selection.gateway_route:
+            raise ValueError(
+                f"coding_harness driver: run config selected "
+                f"gateway_route={selection.gateway_route!r}, but harness "
+                f"{selection.agent_harness!r}'s gateway_route names "
+                f"{route.gateway!r}. The registry pin decides which gateway "
+                "this CLI knows how to reach; matching in the run config is "
+                "the operator's opt-in signal, not a rename."
+            )
+        resolved_provider_env, resolved_config_files, effective_model = _resolve_gateway_route(
+            route, selection.agent_model
+        )
+        # The alias ``_resolve_gateway_route`` produced already names the
+        # model the gateway serves it as — kimi's ``{model}-moonshotai-
+        # pinned`` renders ``moonshotai/kimi-k2.7-code-moonshotai-pinned``,
+        # the exact ``model_name`` LiteLLM's proxy config registers.
+        # Letting ``harness_command`` re-run ``harness_model``'s
+        # vendor-namespace strip on top of that would drop the
+        # ``moonshotai/`` prefix and turn the request into
+        # ``kimi-k2.7-code-moonshotai-pinned`` — an unregistered alias,
+        # and the proxy answers ``400 Invalid model name``.
+        # ``strip_vendor_namespace`` was for the default OpenRouter path
+        # where the CLI wants the raw vendor slug; the alias path already
+        # produced its final form and must land verbatim.
+        base_spec = base_spec.model_copy(
+            update={
+                "credential_gateway": None,
+                "request_middleware": None,
+                "strip_vendor_namespace": False,
+            }
+        )
         self.spec: HarnessSpec = base_spec
-        if self.spec.credential_gateway is None:
-            # Pre-shield path: the real credential is resolved straight into
-            # container_env, same as every harness did before this driver
-            # grew a gateway. Reachable either because the harness
-            # intentionally ships no credential_gateway (see
-            # UNSHIELDED_HARNESSES in tests/unit/test_credential_gateway_schema.py)
-            # or because escape_hatch_active just stripped one — every other
-            # shipped harness takes the `else` branch below.
+        declared = _resolve_provider_env(
+            shipped={},
+            declared=dict(selection.provider_env_declared),
+            agent_harness=selection.agent_harness,
+        )
+        self.container_env: dict[str, str] = {
+            **declared,
+            **resolved_provider_env,
+            **dict(route.container_env),
+        }
+        self._gateway_route_config_files = resolved_config_files
+        self._effective_model = effective_model
+        logger.info(
+            "coding_harness driver: harness %r routed through gateway %r; "
+            "credential shield + request_middleware bypassed. Effective model: %r.",
+            selection.agent_harness,
+            route.gateway,
+            effective_model,
+        )
+
+    def _apply_credential_shield(
+        self, base_spec: HarnessSpec, *, escape_hatch_active: bool
+    ) -> None:
+        """The default path: shielded sidecar, or unshielded fallback.
+
+        Reached when no ``gateway_route`` was named. Sets
+        :attr:`container_env` on the driver — either the shipped provider
+        envelope (pre-shield / unshielded) or the dummy token + sidecar
+        URL that only the credential-gateway sidecar knows how to expand.
+        """
+        selection = self.selection
+        self.spec: HarnessSpec = base_spec
+        if base_spec.credential_gateway is None:
+            # Pre-shield path: the real credential is resolved straight
+            # into container_env. Reachable either because the harness
+            # intentionally ships no credential_gateway
+            # (see UNSHIELDED_HARNESSES in
+            # tests/unit/test_credential_gateway_schema.py) or because
+            # ``_apply_escape_hatch`` just stripped one.
             self.container_env: dict[str, str] = _resolve_provider_env(
-                shipped=dict(self.spec.provider_env),
+                shipped=dict(base_spec.provider_env),
                 declared=dict(selection.provider_env_declared),
                 agent_harness=selection.agent_harness,
             )
@@ -376,37 +402,35 @@ class CodingHarnessDriver:
                     "https://github.com/Toloka/tolokaforge/issues/1311.",
                     selection.agent_harness,
                 )
-        else:
-            # Shielded path: never resolve the upstream token here — that is
-            # the gateway's job, done from its own SecretManager call at
-            # attach() below. container_env carries only the dummy value the
-            # CLI is allowed to see; the gateway's own container-reachable
-            # URL is added once attach() has actually launched it.
-            gateway_spec = self.spec.credential_gateway
-            extra_env = _resolve_provider_env(
-                shipped={},
-                declared=dict(selection.provider_env_declared),
-                agent_harness=selection.agent_harness,
-            )
-            self.container_env = {
-                **extra_env,
-                gateway_spec.dummy_token_env_var: gateway_spec.dummy_token_value,
-                # Under LIMITED_INTERNET, netpolicy points every service's
-                # HTTP(S)_PROXY at squid. Squid would then intercept the
-                # CLI's gateway hop too — and squid's allowlist (empty by
-                # default for a shielded run, since the CLI needs no
-                # external destinations) would 403 it. NO_PROXY on the
-                # CLI tells its HTTP client to skip squid for the sidecar
-                # hostname; the CLI reaches the sidecar directly over the
-                # netpolicy internal network the sidecar is bridged onto.
-                # ``enforce_network_policy._merge_proxy_env`` unions this
-                # with squid's own no-proxy list, so both survive: the
-                # sidecar hop is direct, everything else transits squid.
-                # Under NO_INTERNET and FULL_INTERNET there is no squid;
-                # the variable is inert then.
-                "NO_PROXY": GATEWAY_HOSTNAME,
-                "no_proxy": GATEWAY_HOSTNAME,
-            }
+            return
+        # Shielded path: never resolve the upstream token here — that is
+        # the gateway's job, done from its own SecretManager call at
+        # attach() below. container_env carries only the dummy value the
+        # CLI is allowed to see; the gateway's own container-reachable
+        # URL is added once attach() has actually launched it.
+        gateway_spec = base_spec.credential_gateway
+        extra_env = _resolve_provider_env(
+            shipped={},
+            declared=dict(selection.provider_env_declared),
+            agent_harness=selection.agent_harness,
+        )
+        self.container_env = {
+            **extra_env,
+            gateway_spec.dummy_token_env_var: gateway_spec.dummy_token_value,
+            # Under LIMITED_INTERNET, netpolicy points every service's
+            # HTTP(S)_PROXY at squid. Squid would then intercept the
+            # CLI's gateway hop too — and squid's allowlist (empty by
+            # default for a shielded run) would 403 it. NO_PROXY on the
+            # CLI tells its HTTP client to skip squid for the sidecar
+            # hostname; the CLI reaches the sidecar directly over the
+            # netpolicy internal network the sidecar is bridged onto.
+            # ``enforce_network_policy._merge_proxy_env`` unions this with
+            # squid's own no-proxy list, so both survive: the sidecar hop
+            # is direct, everything else transits squid. Under NO_INTERNET
+            # and FULL_INTERNET there is no squid; the variable is inert.
+            "NO_PROXY": GATEWAY_HOSTNAME,
+            "no_proxy": GATEWAY_HOSTNAME,
+        }
 
     # -- driver protocol ----------------------------------------------------
 
@@ -471,39 +495,9 @@ class CodingHarnessDriver:
                 "coding_harness driver: decorate_task_description requires a "
                 "StagedTask; the orchestrator must call adapter.stage_task first."
             )
-        from tolokaforge.runner.models import (
-            InvocationStyle,
-            RunnerGradingConfig,
-            ToolSchema,
-            ToolSource,
-        )
+        from tolokaforge.runner.models import RunnerGradingConfig
 
-        bash_schema = ToolSchema(
-            name="bash",
-            description="Execute a bash command inside the task container",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "Shell command to run",
-                    }
-                },
-                "required": ["command"],
-            },
-            category="compute",
-            timeout_s=_DEFAULT_BASH_TIMEOUT_S,
-            source=ToolSource(
-                toolset="coding_harness",
-                module_path="",
-                class_name="bash",
-                invocation_style=InvocationStyle.DOCKER_COMPOSE_EXEC,
-                extra={
-                    "service": staged.agent_service,
-                    "compose_project_prefix": staged.compose_project_prefix,
-                },
-            ),
-        )
+        bash_schema = self._build_bash_tool_schema(staged)
         grading = RunnerGradingConfig(
             combine_method="weighted",
             weights={"custom_checks": 1.0},
@@ -529,77 +523,98 @@ class CodingHarnessDriver:
                 "agent_visible_dir": metadata.get("agent_visible_dir", "/work"),
             }
         )
-        # Redirect the wire environment_manifest at the *staged* compose
-        # file (with the harness layer + runner/db-service sidecars) and
-        # at the injected ``runner`` sidecar as the trial's runner service
-        # — the pack's own compose file has neither the sidecars nor the
-        # layered image, and its runner_service is the pack's agent
-        # container which does not expose the grader RPC port.
-        env_manifest = base.environment_manifest
-        if env_manifest is not None:
-            manifest_update: dict[str, Any] = {
-                "compose_file": staged.compose_file,
-                "runner_service": RUNNER_SERVICE,
-            }
-            # Shield sidecar bridge. The gateway sidecar the driver adds in
-            # ``_rewrite_compose`` must be reachable from the CLI's service
-            # (over the netpolicy internal network) AND able to reach the
-            # LLM provider on the internet (over the edge network). Marking
-            # its compose service name as ``bridged_services`` gives it
-            # both attachments under ``no_internet`` and
-            # ``limited_internet`` — the same treatment
-            # :attr:`~EnvironmentManifest.runner_service` gets. Under
-            # ``full_internet`` it has no effect (netpolicy is identity).
-            # The pack's own declared ``network_policy`` is left untouched;
-            # no elevation, no downgrade — the sidecar keeps working
-            # whichever posture the pack picked.
-            if self._gateway_handle is not None:
-                manifest_update["bridged_services"] = frozenset(env_manifest.bridged_services) | {
-                    GATEWAY_HOSTNAME
-                }
-                # The gateway sidecar already carries the real upstream
-                # token. Strip it from the runner container's
-                # ``TOLOKAFORGE_SECRETS_JSON`` payload so the trial's
-                # compose file holds only one copy of the credential —
-                # the sidecar's — instead of duplicating it into every
-                # container that shares the trial network. The rest of
-                # the runner's payload (judge keys, litellm endpoints,
-                # tokenizer cache paths) is untouched.
-                gateway_spec = self.spec.credential_gateway
-                assert (
-                    gateway_spec is not None
-                )  # attach() sets _gateway_handle iff spec is not None
-                manifest_update["stripped_container_secrets"] = frozenset(
-                    env_manifest.stripped_container_secrets
-                ) | {gateway_spec.upstream_token_env_var}
-            elif self.selection.gateway_route is not None:
-                # Gateway-route mode. There is no shield sidecar to bridge
-                # (skipped in ``__init__``): the CLI's own container hits
-                # the external gateway (LiteLLM today) directly. Under a
-                # pack that declared ``no_internet`` / ``limited_internet``
-                # the CLI's service otherwise lives on
-                # ``netpolicy_internal`` alone and cannot reach the
-                # gateway (empirically: the CLI's own retry loop dies after
-                # 10 ``APIConnectionError`` attempts inside the isolated
-                # network). Marking the CLI's compose service as
-                # ``bridged_services`` gives it BOTH internal-net (grader
-                # RPC to the runner) AND edge-net (egress to the gateway)
-                # attachments, same treatment the shield sidecar gets. The
-                # operator's choice of ``gateway_route`` is the opt-in
-                # signal that this run's CLI is expected to reach an
-                # external endpoint.
-                manifest_update["bridged_services"] = frozenset(env_manifest.bridged_services) | {
-                    staged.agent_service
-                }
-            env_manifest = env_manifest.model_copy(update=manifest_update)
         return base.model_copy(
             update={
                 "agent_tools": [bash_schema],
                 "grading": grading,
                 "metadata": metadata,
-                "environment_manifest": env_manifest,
+                "environment_manifest": self._rewrite_environment_manifest(
+                    base.environment_manifest, staged
+                ),
             }
         )
+
+    def _build_bash_tool_schema(self, staged: StagedTask) -> ToolSchema:
+        """The single ``bash`` tool the CLI runs its trial through.
+
+        Bound to the staged compose project so the runner's exec targets
+        the layered agent service, not the pack's own container name.
+        """
+        from tolokaforge.runner.models import InvocationStyle, ToolSchema, ToolSource
+
+        return ToolSchema(
+            name="bash",
+            description="Execute a bash command inside the task container",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command to run",
+                    }
+                },
+                "required": ["command"],
+            },
+            category="compute",
+            timeout_s=_DEFAULT_BASH_TIMEOUT_S,
+            source=ToolSource(
+                toolset="coding_harness",
+                module_path="",
+                class_name="bash",
+                invocation_style=InvocationStyle.DOCKER_COMPOSE_EXEC,
+                extra={
+                    "service": staged.agent_service,
+                    "compose_project_prefix": staged.compose_project_prefix,
+                },
+            ),
+        )
+
+    def _rewrite_environment_manifest(
+        self,
+        env_manifest: EnvironmentManifest | None,
+        staged: StagedTask,
+    ) -> EnvironmentManifest | None:
+        """Redirect the manifest at the staged compose + bridge the CLI hop.
+
+        The pack's own compose file has neither the harness layer + runner/
+        db-service sidecars nor a service exposing the grader RPC port,
+        so ``compose_file`` and ``runner_service`` swap to the staged
+        stack. Bridging is one of three shapes:
+
+        * shield sidecar active (``self._gateway_handle`` set) — bridge
+          the sidecar service (edge egress to the LLM provider + internal
+          reach to the CLI); also strip the shielded upstream token from
+          the runner's ``TOLOKAFORGE_SECRETS_JSON`` payload so the
+          credential lives in exactly one service in the trial stack.
+        * gateway-route active (no sidecar) — bridge the CLI's own
+          service so it can reach the external gateway under
+          ``no_internet`` / ``limited_internet``.
+        * neither — no bridge; only the redirect.
+
+        The pack's declared ``network_policy`` is never elevated or
+        downgraded — the bridge attaches the named service to both
+        networks under the pack's own posture.
+        """
+        if env_manifest is None:
+            return None
+        manifest_update: dict[str, Any] = {
+            "compose_file": staged.compose_file,
+            "runner_service": RUNNER_SERVICE,
+        }
+        if self._gateway_handle is not None:
+            manifest_update["bridged_services"] = frozenset(env_manifest.bridged_services) | {
+                GATEWAY_HOSTNAME
+            }
+            gateway_spec = self.spec.credential_gateway
+            assert gateway_spec is not None  # attach() sets _gateway_handle iff spec is not None
+            manifest_update["stripped_container_secrets"] = frozenset(
+                env_manifest.stripped_container_secrets
+            ) | {gateway_spec.upstream_token_env_var}
+        elif self.selection.gateway_route is not None:
+            manifest_update["bridged_services"] = frozenset(env_manifest.bridged_services) | {
+                staged.agent_service
+            }
+        return env_manifest.model_copy(update=manifest_update)
 
     def apply_container_layers(self, *, staged: StagedTask) -> StagedTaskLayers:
         """Write the harness Dockerfile + rewrite compose in place.

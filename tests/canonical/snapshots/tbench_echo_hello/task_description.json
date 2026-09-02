@@ -68,6 +68,15 @@
       }
     },
     "stack_inputs": {},
+    "stacks": [
+      {
+        "compose_file": "<STAGING>/echo-hello/docker-compose.tolokaforge.yaml",
+        "inputs": {},
+        "runner_service": "runner",
+        "stack_id": "default",
+        "stack_scope": "trial"
+      }
+    ],
     "stripped_container_secrets": []
   },
   "generated_at": null,
