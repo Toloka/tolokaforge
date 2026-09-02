@@ -123,6 +123,7 @@ base wheel."""
 RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/actors/turn_policy.py",
     "tolokaforge/core/grading/agreement.py",
+    "tolokaforge/core/grading/bundle.py",
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/config_validation.py",
     "tolokaforge/core/grading/corpus_curation.py",
@@ -180,6 +181,14 @@ authoring gate, the rubric-to-trace-check migration and the offline replay
 commands all run on the host, before or after any trial is scheduled, and they
 would ship as dead weight. The runner container's runtime
 closure reaches none of them.
+
+``core.grading.bundle`` is the offline grade-bundle format library — a
+manifest-first, part-addressable, content-addressable directory carrying
+everything a grader needs to score one trial without a live runner. Its
+imports are stdlib-only, but the runner container has no code path that
+reads or writes bundles: the producer runs host-side (offline replay /
+cross-topology grading), and no runner boot-closure module reaches into
+it. Ships as dead weight in the runner image.
 """
 
 
