@@ -2,47 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## v0.22.2 (2026-09-02)
+
+### Feat
+
+- **grading**: engine-eval-repin-blockers — widened fail-loud contract (M#42) (#1471)
 
 ### Fix
 
-- **grading**: harness-synthesised auto-fail grades on
-  `ERROR`/`TIMEOUT`/`STUCK_DETECTED`/`EMPTY_COMPLETION` trajectories now
-  carry a `synthesized_by_termination_reason` marker and empty
-  `GradeComponents()` instead of a fabricated `state_checks: 0.0`.
-  `GradingCompleteness.zero_coverage` fires on a run whose every measured
-  trial was auto-failed. `failure_attribution.json` records the marker via
-  new `synthesized` + `synthesized_by_termination_reason` fields, and
-  STUCK_DETECTED trials classify as `harness_autofail` instead of
-  `model_reasoning`.
-- **grading**: a golden replay whose per-action execution errored no longer
-  composes a fabricated `hash_score: 0.0`; the runner reads
-  `HashGradingResult.hash_unscorable`, leaves `components.hash_score` at the
-  `-1.0` not-evaluated sentinel, and the declared-but-unscored fold refusal
-  fires — the trial lands UNGRADEABLE, matching the judge-errored case.
-- **grading**: a declared-but-unscored component (e.g. a judge that errored)
-  now refuses the fold and returns a fail-loud verdict; the trial lands
-  UNGRADEABLE rather than passing on a silently redistributed weighted mean.
-  `resolve_uncounted_fold` marks the refusal with `FoldedGrade.refusal = True`;
-  the runner's `GradeTrial` and the grader-service dispatch both surface it
-  as `success = False` on the wire. `lot_ops_01` and `helpdesk_01` example
-  packs are now UNGRADEABLE on the core substrate (their `state_checks`
-  (RUNNER_ONLY) + `llm_judge` declarations require the runner substrate to
-  score); runner-side grading unchanged.
-- **loop**: empty completions (no text + no tool calls) now terminate with
-  `TerminationReason.EMPTY_COMPLETION` (fail-loud) instead of silently
-  appending an empty assistant message that Gemini and similar providers
-  reject on the next request as an API error. The termination reason is
-  additive on `Trajectory`; the failure-attribution table classifies it as
-  `timeout_or_resource` (provider-side deterministic termination), and the
-  runner-side graders auto-fail it without dispatching to `grade_trial`.
-- **loop**: transient `TerminationReason.API_ERROR` classifications are
-  retried once (bounded, hardcoded default via
-  `LoopConfig.api_error_retries=1` + `api_error_backoff_s=1.0`) before
-  terminating the trial. Rate limits, API timeouts, `TRIAL_LOST` and empty
-  completions remain one-shot. The retry budget resets at every outer
-  turn, and the `messages` list is unchanged on a failed attempt so the
-  retry attempts against the same prefix.
+- **orchestrator**: user-simulator config fails loud instead of silent Anthropic fallback (#1451)
 
 ## v0.22.1 (2026-09-02)
 
