@@ -29,7 +29,6 @@ from pydantic import ValidationError
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import Turn, build_timeline, build_turn_timeline
 from tests.utils.trace_constraints import evaluate_constraint
-from tolokaforge.core.grading import trace_checks
 from tolokaforge.core.grading.trace_checks import (
     _FAILURE_DETAIL,
     _HANDLERS,
@@ -614,7 +613,9 @@ def test_a_result_reports_the_positions_that_matched():
 
 
 def _fold_function() -> ast.FunctionDef:
-    source = Path(trace_checks.__file__).read_text()
+    from tolokaforge.core.grading.trace_checks import evaluator
+
+    source = Path(evaluator.__file__).read_text()
     functions = [
         node
         for node in ast.walk(ast.parse(source))

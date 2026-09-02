@@ -1,7 +1,7 @@
 """The registry IS the dispatch table both trace-check sites read.
 
 Locks the two invariants of the entry-point rewrite in
-``tolokaforge/core/grading/trace_checks.py``:
+``tolokaforge/core/grading/trace_checks/``:
 
 * **Site A — ``_operator_holds`` reads the loader.** Swapping the ``equals``
   entry-point for a callable that returns the opposite boolean flips
