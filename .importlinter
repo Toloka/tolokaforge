@@ -206,3 +206,26 @@ forbidden_modules =
     tolokaforge.grader
     tolokaforge.core.grading.substrate_live
 allow_indirect_imports = false
+
+
+# Bundle-store purity (grade bundle transport seam).
+#
+# ``core.grading.bundle_store`` ships the ``BundleStore`` Protocol and its
+# built-in implementations. The seam moves an already-serialised bundle
+# between storage endpoints; a reach back into ``runner``, ``grader``, or
+# the live substrate would couple the transport to the wire and break the
+# seam that lets an offline grader consume a bundle produced anywhere.
+# ``bundle_store`` MAY reach ``tolokaforge.core.grading.bundle`` (for the
+# manifest digest primitive). ``allow_indirect_imports = false`` mirrors
+# ``bundle-library-purity`` — a transitive path back into a forbidden
+# target trips the contract, not just a direct import.
+[importlinter:contract:bundle-store-purity]
+name = tolokaforge.core.grading.bundle_store is a pure transport module — no runner/grader/substrate_live reach
+type = forbidden
+source_modules =
+    tolokaforge.core.grading.bundle_store
+forbidden_modules =
+    tolokaforge.runner
+    tolokaforge.grader
+    tolokaforge.core.grading.substrate_live
+allow_indirect_imports = false

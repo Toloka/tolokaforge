@@ -124,6 +124,7 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/actors/turn_policy.py",
     "tolokaforge/core/grading/agreement.py",
     "tolokaforge/core/grading/bundle.py",
+    "tolokaforge/core/grading/bundle_store.py",
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/config_validation.py",
     "tolokaforge/core/grading/corpus_curation.py",
@@ -189,6 +190,12 @@ imports are stdlib-only, but the runner container has no code path that
 reads or writes bundles: the producer runs host-side (offline replay /
 cross-topology grading), and no runner boot-closure module reaches into
 it. Ships as dead weight in the runner image.
+
+``core.grading.bundle_store`` ships the ``BundleStore`` Protocol and its
+built-in transports for the same offline grade-bundle format. Its
+producers and consumers live host-side (offline replay, cross-topology
+grading, standalone grader service); no runner boot-closure module
+reaches into it. Excluded on the same grounds as ``core.grading.bundle``.
 """
 
 
