@@ -2206,12 +2206,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """Delegate to :func:`composite.grade_custom_checks` over the runner's substrate.
 
         The composite owns the custom-checks dispatch (config normalisation,
-        artifacts-dir gating, degrade-to-empty on DB failure, executor drive,
-        wire-result wrapping). This wrapper hands it the runner-owned pieces —
-        the per-trial ``artifacts_dir``, the sync :class:`CheckExecutor`, the
-        parsed ``TaskDescription``, and the ``InProcessGradingSubstrate`` built
-        once by :meth:`_build_grading_substrate` at the outer level and shared
-        with the state-checks + judge paths.
+        artifacts-dir gating, degrade-to-empty on DB failure, executor drive)
+        and returns pure :class:`CheckResult` values. This wrapper hands the
+        composite the runner-owned pieces — the per-trial ``artifacts_dir``,
+        the sync :class:`CheckExecutor`, the parsed ``TaskDescription``, and
+        the ``InProcessGradingSubstrate`` built once by
+        :meth:`_build_grading_substrate` at the outer level and shared with the
+        state-checks + judge paths — then encodes each returned
+        :class:`CheckResult` to its wire ``pb2.CustomCheckResult`` shape via
+        :func:`project_check_result_to_runner_wire` before returning.
 
         Sync-in-async: :func:`composite.grade_custom_checks` is a sync function
         whose ``substrate.final_state`` bridge to :meth:`db_client.get_state`
@@ -2220,10 +2223,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         the bridges resolve rather than deadlocking on this loop.
         """
         from tolokaforge.core.grading.composite import grade_custom_checks
+        from tolokaforge.runner.grading import project_check_result_to_runner_wire
 
         grading_config = trial_context.grading_config
         custom_config_raw = grading_config.custom_checks if grading_config else None
-        return await self._loop.run_in_executor(
+        score, results, reasons = await self._loop.run_in_executor(
             None,
             lambda: grade_custom_checks(
                 trial_id=trial_id,
@@ -2236,6 +2240,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
             ),
         )
+        wire_results = [project_check_result_to_runner_wire(r) for r in results]
+        return score, wire_results, reasons
 
     def _resolve_judge_kb_search(
         self, trial_id: str, agent_tools: dict[str, Callable]

@@ -42,6 +42,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from tolokaforge.core.grading import composite
+from tolokaforge.core.grading.checks_interface import CheckResult
 from tolokaforge.core.grading.composite_fold import CompositeFold, CompositeFoldResult
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
@@ -280,7 +281,7 @@ class GraderCompositeDispatch:
             unstable_fields=unstable_fields,
             components=components,
         )
-        custom_wire_results, custom_reasons = self._grade_custom_checks_block(
+        custom_check_results, custom_reasons = self._grade_custom_checks_block(
             trial_id=trial_id,
             grading_config=grading_config,
             task_description=task_description,
@@ -307,7 +308,7 @@ class GraderCompositeDispatch:
         return _build_grade(
             fold_result=fold_result,
             components=components,
-            custom_wire_results=custom_wire_results,
+            custom_check_results=custom_check_results,
             trace_result=trace_result,
             judge_result=judge_result,
             judge_status=judge_status,
@@ -394,13 +395,14 @@ class GraderCompositeDispatch:
         substrate: GradingSubstrate,
         artifacts_dir: Any,
         components: RunnerGradeComponents,
-    ) -> tuple[list[Any], str | None]:
+    ) -> tuple[list[CheckResult], str | None]:
         """Run custom checks and fold the score onto ``components``.
 
-        Returns ``(custom_wire_results, custom_reasons)`` for the reason
-        composition and Grade assembly downstream.
+        Returns ``(custom_check_results, custom_reasons)`` for the reason
+        composition and Grade assembly downstream — the grader-side path
+        consumes :class:`CheckResult` directly, without a pb2 hop.
         """
-        custom_score, custom_wire_results, custom_reasons = composite.grade_custom_checks(
+        custom_score, custom_check_results, custom_reasons = composite.grade_custom_checks(
             trial_id=trial_id,
             config=grading_config.custom_checks,
             substrate=substrate,
@@ -411,7 +413,7 @@ class GraderCompositeDispatch:
             logger=self._logger,
         )
         components.custom_checks_score = custom_score
-        return custom_wire_results, custom_reasons
+        return custom_check_results, custom_reasons
 
     def _grade_llm_judge_block(
         self,
@@ -498,17 +500,20 @@ def _build_grade(
     *,
     fold_result: CompositeFoldResult,
     components: RunnerGradeComponents,
-    custom_wire_results: list[Any],
+    custom_check_results: list[CheckResult],
     trace_result: TraceChecksResult,
     judge_result: JudgeResult | None,
     judge_status: JudgeStatus,
 ) -> Grade:
     """Assemble the Python :class:`Grade` from the fold result + dispatch outputs.
 
-    ``custom_wire_results`` are pb2 ``CustomCheckResult`` shapes the composite
-    produces; they are decoded into :class:`CustomCheckDetail` for the
-    Grade's inline field. Trace-check verdicts and the summary come off
-    the :class:`TraceChecksResult`; judge audit fields come off the
+    ``custom_check_results`` are the pure :class:`CheckResult` values the
+    composite returns; each is projected into :class:`CustomCheckDetail` for
+    the Grade's inline field — the status enum's ``.value`` normalises to the
+    lowercased literal the wire contract pins, and ``details`` is carried
+    verbatim (an empty dict is folded to ``None`` to match the wire contract's
+    empty-``details_json`` decode). Trace-check verdicts and the summary come
+    off the :class:`TraceChecksResult`; judge audit fields come off the
     optional :class:`JudgeResult`.
     """
 
@@ -525,12 +530,12 @@ def _build_grade(
     custom_details = [
         CustomCheckDetail(
             check_name=r.check_name,
-            status=r.status,
+            status=r.status.value if hasattr(r.status, "value") else str(r.status),
             score=r.score,
             message=r.message,
-            details=json.loads(r.details_json) if r.details_json else None,
+            details=r.details or None,
         )
-        for r in custom_wire_results
+        for r in custom_check_results
     ] or None
 
     trace_check_results = [

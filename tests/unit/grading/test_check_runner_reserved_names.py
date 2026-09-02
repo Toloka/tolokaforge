@@ -1,11 +1,12 @@
 """Reserved-name contract for :meth:`CheckRunner.load_checks_module`.
 
 A pack author who writes ``@check\\ndef __executor__(...)`` would produce a
-wire ``custom_checks`` list where two entries share ``check_name`` — the
-author's check *and* the sentinel emitted by
-``composite._executor_error_to_wire``
-on a top-level executor failure. The loader refuses the ambiguity at load
-time so the sentinel remains unambiguous end-to-end.
+``custom_checks`` list where two entries share ``check_name`` — the
+author's check *and* the synthetic :class:`CheckResult` returned by
+:func:`tolokaforge.core.grading.composite.grade_custom_checks` under the
+reserved sentinel on a top-level executor failure. The loader refuses
+the ambiguity at load time so the sentinel remains unambiguous
+end-to-end.
 
 The reserved set lives in
 :data:`tolokaforge.core.grading.check_runner._RESERVED_CHECK_NAMES`, with

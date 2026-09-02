@@ -1,6 +1,6 @@
 """Structural lock: the ``.importlinter`` contract that fences
 ``core.grading`` from reaching the runner-side grade RPC or the narrow
-runner-wire helpers keeps the exact shape ADR-0041 depends on.
+runner-wire helpers keeps the exact shape ADR-0040 depends on.
 
 Parses ``.importlinter`` with :mod:`configparser` and asserts:
 
@@ -14,7 +14,7 @@ Parses ``.importlinter`` with :mod:`configparser` and asserts:
   a forbidden target trips the contract, not just a direct import.
 
 A silent narrowing of the shape (dropping the strict flag, dropping a
-forbidden target) would let the ADR-0041 boundary re-collapse without
+forbidden target) would let the ADR-0040 boundary re-collapse without
 tripping ``lint-imports`` — this test locks the shape at canonical tier
 so a shape drift fails collection rather than only surfacing later.
 """
@@ -68,7 +68,7 @@ def test_forbidden_modules_are_the_two_runner_targets() -> None:
         f"{_SECTION} forbidden_modules must be exactly {sorted(expected)!r} — "
         f"got {sorted(forbidden)!r}. Adding a new target extends the shape "
         "the fold-in ledger extraction depends on; dropping one silently "
-        "narrows the ADR-0041 boundary."
+        "narrows the ADR-0040 boundary."
     )
 
 

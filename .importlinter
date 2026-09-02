@@ -118,19 +118,20 @@ forbidden_modules =
 allow_indirect_imports = false
 
 
-# No runner-reach from core.grading (ADR-0041 north star).
+# No runner-reach from core.grading (ADR-0040 north star).
 #
 # ``core.grading`` owns the pure grading library the runner-side
 # GradeTrial and the standalone Grader v3 service both drive. A reach
 # back into the runner surface silently re-collapses the substrate seam
-# ADR-0041 makes the boundary of. Two runner targets are fenced here:
+# ADR-0040 makes the boundary of. Two runner targets are fenced here:
 # the runner's gRPC service module and the narrow ``runner.grading``
-# (state-diff + wire-sentinel projection only). ``runner.grading_ledger``
-# is not on the forbid list yet — ``composite.py`` still reaches LEDGER
-# keys there; the forbid list extends when that ledger extraction lands.
+# (state-diff + wire-sentinel projection + the ``CheckResult`` wire
+# encoder). ``runner.grading_ledger`` is deliberately not fenced; the
+# composite reads LEDGER keys from it.
 # ``allow_indirect_imports = false`` is intentional: a transitive path
-# back into a forbidden target must trip the contract, not just a direct
-# import.
+# back into a forbidden target must trip the contract, not just a
+# direct import — a downstream cannot slip these targets in via a
+# wire-infrastructure module either.
 [importlinter:contract:no-runner-reach-from-core-grading]
 name = core.grading does not reach the runner-side grade RPC or narrow runner-wire helpers
 type = forbidden
@@ -140,3 +141,44 @@ forbidden_modules =
     tolokaforge.runner.service
     tolokaforge.runner.grading
 allow_indirect_imports = false
+
+
+# No pb2 reach from core.grading (ADR-0040 north star, pb2 fence).
+#
+# The generated ``runner_pb2`` / ``runner_pb2_grpc`` stubs are the wire
+# shape ``runner.service`` produces. A direct ``pb2`` import anywhere
+# under ``core.grading`` re-collapses the fence at the layer the
+# composite package was split to make legible.
+#
+# Carve-out: ``core.grading.substrate_client`` IS the
+# ``SubstrateService`` gRPC client — it lives under ``core.grading``
+# because the composite reads through the substrate seam, but it must
+# import the generated stubs to speak gRPC. The ``ignore_imports``
+# clauses below name the two specific edges (``substrate_client →
+# runner_pb2`` and ``→ runner_pb2_grpc``) so the carve-out is legible
+# at the source.
+#
+# ``allow_indirect_imports = true`` is deliberate: wire-level
+# infrastructure (``core.loop``, ``core.trial_grader``,
+# ``core.shared_stack_runtime``, ``core.plugin_registry``) legitimately
+# imports ``pb2`` and is legitimately consumed by ``core.grading``
+# modules; a strict-transitive fence would trip on those chains without
+# catching the pattern this contract exists to prevent — a module
+# under ``core.grading`` naming a ``pb2`` module in its own imports.
+# The canonical AST grep guard at
+# ``tests/canonical/test_no_pb2_imports_in_composite.py`` locks the
+# composite package specifically at unit-tier cost, so a direct
+# reintroduction on the surface the split makes legible trips at
+# pytest collection.
+[importlinter:contract:no-pb2-reach-from-core-grading]
+name = core.grading does not directly import runner_pb2 or runner_pb2_grpc (transitive via wire infrastructure is OK)
+type = forbidden
+source_modules =
+    tolokaforge.core.grading
+forbidden_modules =
+    tolokaforge.runner.runner_pb2
+    tolokaforge.runner.runner_pb2_grpc
+ignore_imports =
+    tolokaforge.core.grading.substrate_client -> tolokaforge.runner.runner_pb2
+    tolokaforge.core.grading.substrate_client -> tolokaforge.runner.runner_pb2_grpc
+allow_indirect_imports = true
