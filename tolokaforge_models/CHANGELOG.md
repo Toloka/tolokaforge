@@ -6,6 +6,25 @@ its release cadence is orthogonal to the `tolokaforge` engine wheel's own
 `vX.Y.Z` tag axis. See
 [`docs/RELEASING.md`](https://github.com/Toloka/tolokaforge/blob/main/docs/RELEASING.md#pypi-package--tolokaforge-models-models-vxyz-automated).
 
+## models-v1.4.0 (2026-09-02)
+
+### Feat
+
+- **llm**: namespace-matched gateway wildcards, one provider-pin rule, route provenance (#1407)
+- **grading**: engine-repin-unblock — runner wire-model aliases, expected_hash refusal, trace_checks on_missing: withhold (#1315)
+
+### Fix
+
+- **conductor**: skip Runner GetState RPC when task declares no json_db + demote no-target log (#1414)
+- **ci**: switch claude-review model to claude-opus-4-7 (#1338)
+- **ci**: bump Claude Code Action pin to v1.0.209 (#1337)
+- **grader**: route RunnerRPCTrialGrader through runtime_backend for per-trial runtimes (#1328)
+- **deps**: bump grpcio floor to 1.83.0 to match generated runner stubs (#1310)
+- **llm**: route moonshotai/kimi-k3 to empty-assistant filler-on + rename NovaMessageAssembly (#1284) (#1288)
+- **tests**: sync pipe-listener from inside select() to stop Linux CI flake (#1289)
+- **publish**: grader/rag build sibling coding-harnesses; runner subset ships seam entry-points (#1285)
+- **tests**: main test-smoke regressions from milestone-36 + coding-harness lift (#1283)
+
 ## models-v1.3.0 (2026-08-25)
 
 ### Feat
