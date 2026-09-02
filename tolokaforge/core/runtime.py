@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from tolokaforge.core.models.trajectory import ProvisionStage
@@ -29,8 +30,11 @@ from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialSpec
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
+    from tolokaforge.core.grading.bundle import GradeBundleManifest
+    from tolokaforge.core.models.trajectory import Trajectory
     from tolokaforge.core.plugin_registry import RuntimeBackendBuildContext
     from tolokaforge.core.service_readiness import DiagnosticPayload
+    from tolokaforge.runner.models import TaskDescription
     from tolokaforge.tools.registry import ToolResult
 
 __all__ = [
@@ -301,6 +305,73 @@ class RuntimeBackend(Protocol):
 
         Called by both the retry-cleanup path (before a per-trial adapter
         exists) and by trial teardown (after a successful trial run).
+        Also clears any per-trial state the backend stashed via
+        :meth:`remember_trial_inputs`.
+        """
+        ...
+
+    def remember_trial_inputs(
+        self,
+        trial_id: str,
+        trajectory: Trajectory,
+        task_description: TaskDescription,
+    ) -> None:
+        """Stash the caller's trajectory + task description against
+        ``trial_id`` so a subsequent :meth:`build_grade_bundle` call can
+        emit them into the bundle.
+
+        Called by the orchestrator's trial-end producer seam right before
+        :meth:`build_grade_bundle`. Keeps ``build_grade_bundle`` a
+        domain-clean ``(trial_id, out_dir)`` call — the alternative of
+        passing the two objects as kwargs would couple the Protocol to
+        :class:`~tolokaforge.core.models.trajectory.Trajectory` and
+        :class:`~tolokaforge.runner.models.TaskDescription` on every
+        implementation. Cleared by :meth:`cleanup_trial` so per-run
+        memory stays bounded.
+
+        Backends that do not implement snapshot mode may treat this as a
+        no-op (recording the call for tests to inspect) — the orchestrator
+        gates the ``build_grade_bundle`` path on the ``snapshot`` config
+        so ``remember_trial_inputs`` on a snapshot-incapable backend is
+        never followed by a ``build_grade_bundle`` call.
+        """
+        ...
+
+    def build_grade_bundle(
+        self,
+        trial_id: str,
+        *,
+        out_dir: Path,
+    ) -> GradeBundleManifest:
+        """Produce a grade bundle for ``trial_id`` in ``out_dir``.
+
+        Opt-in. Called by the orchestrator's trial-end producer seam when
+        ``RunConfig.grader.snapshot.enabled`` is ``True`` — and only then.
+
+        Backends that support snapshot bundle production materialise the
+        bundle by composing reads over the runner's ``SubstrateService``
+        (already dialled for live-callback grading) plus the trajectory
+        and :class:`~tolokaforge.runner.models.TaskDescription` the caller
+        stashed via :meth:`remember_trial_inputs`, then calling
+        :func:`~tolokaforge.core.grading.bundle.serialize_grade_bundle`.
+
+        Backends that do not support it raise
+        :class:`NotImplementedError`. The orchestrator refuses
+        ``grader.snapshot.enabled=true`` at run-start against a backend
+        that raises here (the probe runs once during
+        :meth:`Orchestrator._validate_snapshot_mode_compatibility`), so
+        this method is never called against a backend that opts out.
+
+        ``out_dir`` MUST be empty on entry; the bundle producer's own
+        :class:`FileExistsError` fence surfaces otherwise. The caller
+        owns lifecycle — the orchestrator writes to a per-trial
+        :class:`tempfile.TemporaryDirectory` and cleans up after
+        ``store.put``.
+
+        Returns the parsed
+        :class:`~tolokaforge.core.grading.bundle.GradeBundleManifest` the
+        producer wrote. The bundle's canonical name is
+        ``manifest_digest((out_dir / "manifest.json").read_bytes())``.
         """
         ...
 
@@ -408,6 +479,7 @@ class RuntimeBackendCallLog:
     endpoints_calls: list[str] = field(default_factory=list)
     torn_down_trials: list[str] = field(default_factory=list)
     capture_service_logs_calls: list[tuple[str, bool]] = field(default_factory=list)
+    remembered_trial_inputs: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -625,6 +697,37 @@ class InMemoryRuntimeBackend:
             "InMemoryRuntimeBackend.reset_trial is not implemented. "
             "Tests that exercise the runner RPC surface must use "
             "SharedStackRuntimeBackend or mock the method on the backend instance."
+        )
+
+    def remember_trial_inputs(
+        self,
+        trial_id: str,
+        trajectory: Trajectory,
+        task_description: TaskDescription,
+    ) -> None:
+        """Record the call on :attr:`call_log`; no state is kept.
+
+        The in-memory backend does not implement
+        :meth:`build_grade_bundle`, so the stashed inputs are never
+        consulted. Tests can assert on
+        :attr:`RuntimeBackendCallLog.remembered_trial_inputs` to prove
+        the orchestrator drove the seam.
+        """
+        del trajectory, task_description
+        self.call_log.remembered_trial_inputs.append(trial_id)
+
+    def build_grade_bundle(
+        self,
+        trial_id: str,
+        *,
+        out_dir: Path,
+    ) -> GradeBundleManifest:
+        del trial_id, out_dir
+        raise NotImplementedError(
+            "InMemoryRuntimeBackend.build_grade_bundle is not implemented. "
+            "Tests that exercise the snapshot bundle producer surface must use "
+            "SharedStackRuntimeBackend or PerTrialRuntimeBackend, or mock the "
+            "method on the backend instance."
         )
 
 

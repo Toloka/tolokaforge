@@ -9,13 +9,16 @@ base — plus the rate-limit probe budget invariant.
 import warnings
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from tolokaforge.core.deprecations import coerce_task_packs_alias, drop_retired_max_idle_turns
 from tolokaforge.core.models.docker_config import DockerConfig
 from tolokaforge.core.models.model_config import ModelConfig
+
+if TYPE_CHECKING:
+    from tolokaforge.core.grading.bundle_store import BundleStore
 
 # The probe's bucketing defaults live next to the accumulator that applies them
 # (``run_display_events`` has no ``core.models`` dependency, so this direction
@@ -26,25 +29,32 @@ from tolokaforge.core.run_display_events import (
 )
 
 __all__ = [
+    "BundleStoreBackend",
     "ComputeConfig",
     "DOCKER_RUNTIME_ALIAS_TARGET",
     "EngineConfig",
     "EvaluationConfig",
+    "GraderConfig",
     "HarnessAdapterConfig",
+    "JudgeGraderConfig",
     "LEGACY_DOCKER_RUNTIME_ALIAS",
+    "LocalDiskBundleStoreConfig",
     "LocalDockerComputeConfig",
     "LocalStorageConfig",
     "LoggingConfig",
     "MetricsConfig",
     "ObservabilityConfig",
     "OrchestratorConfig",
+    "QueueGraderConfig",
     "QueueStorageConfig",
     "RATE_LIMIT_PROBE_ATTEMPT_CEILING_S",
     "RATE_LIMIT_PROBE_MIN_EPISODE_S",
     "RateLimitProbeConfig",
     "RunConfig",
     "RunDefaults",
+    "S3BundleStoreConfig",
     "S3StorageConfig",
+    "SnapshotBundleConfig",
     "StorageBackend",
     "StorageConfig",
     "StuckHeuristics",
@@ -915,6 +925,99 @@ class JudgeGraderConfig(BaseModel):
         return value
 
 
+class LocalDiskBundleStoreConfig(BaseModel):
+    """Local-filesystem grade-bundle store —
+    :class:`~tolokaforge.core.grading.bundle_store.LocalDiskBundleStore`
+    constructor kwargs.
+
+    Extras rejected so a mis-tagged input (e.g. ``bucket`` on a
+    ``type=local_disk`` block) fails loud instead of dropping the stray
+    field. The discriminator on :data:`BundleStoreBackend` selects this
+    variant by ``type``; extras=forbid makes the selection safe.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    type: Literal["local_disk"] = "local_disk"
+    root_dir: str
+
+
+class S3BundleStoreConfig(BaseModel):
+    """S3-compatible grade-bundle store —
+    :class:`~tolokaforge.core.grading.bundle_store.S3BundleStore`
+    constructor kwargs.
+
+    Extras rejected — same rationale as :class:`LocalDiskBundleStoreConfig`.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    type: Literal["s3"] = "s3"
+    bucket: str
+    prefix: str = "grade_bundles"
+
+
+BundleStoreBackend = Annotated[
+    LocalDiskBundleStoreConfig | S3BundleStoreConfig,
+    Field(discriminator="type"),
+]
+"""Discriminated union over ``store.type``. A mis-tagged input (an
+``s3`` field on a ``local_disk`` block) fails loud at load-time; the
+losing variant's fields never silently drop through.
+"""
+
+
+class SnapshotBundleConfig(BaseModel):
+    """Opt-in grade-bundle production per trial.
+
+    Presence + ``enabled=true`` turns on the orchestrator's trial-end
+    producer seam. Requires the runtime backend to implement
+    :meth:`RuntimeBackend.build_grade_bundle` (probed at run-start) AND
+    ``grader.expose_substrate=true`` — the ``SubstrateService`` gRPC seam
+    the producer composes reads over.
+
+    The producer walks the on-disk bundle after materialisation. When
+    the walk exceeds ``max_bundle_mb`` the bundle is discarded and the
+    trial's :attr:`Trajectory.snapshot_status` records the fallback;
+    otherwise the store's :meth:`BundleStore.put` uploads it and the URI
+    lands on ``snapshot_status``.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = False
+    store: BundleStoreBackend | None = None
+    max_bundle_mb: float = Field(default=32.0, gt=0)
+    fallback_on_oversize: Literal["live_callback"] = "live_callback"
+
+    @model_validator(mode="after")
+    def _require_store_when_enabled(self) -> Self:
+        if self.enabled and self.store is None:
+            raise ValueError(
+                "grader.snapshot.enabled=true requires grader.snapshot.store "
+                "to select a bundle transport (type: local_disk | s3)."
+            )
+        return self
+
+    def build_store(self) -> "BundleStore":
+        """Materialise the configured store via
+        :func:`~tolokaforge.core.plugin_registry.load_bundle_store`.
+
+        The discriminated union means the loader receives a Pydantic
+        variant whose fields match the store's ``__init__`` kwargs, so
+        no ad-hoc per-store branch lives on the caller side beyond this
+        method. Requires ``.store`` to be set — enabled=true configs are
+        validated to satisfy that at load-time.
+        """
+        from tolokaforge.core.plugin_registry import load_bundle_store
+
+        if self.store is None:
+            raise ValueError("SnapshotBundleConfig.build_store requires .store to be set.")
+        store_cls = load_bundle_store(self.store.type)
+        kwargs = self.store.model_dump(exclude={"type"}, exclude_none=True)
+        return store_cls(**kwargs)
+
+
 class GraderConfig(BaseModel):
     """Run-level ``TrialGrader`` selection and per-transport settings.
 
@@ -939,6 +1042,10 @@ class GraderConfig(BaseModel):
     with the flag off returns ``UNIMPLEMENTED`` for any ``SubstrateService/*``
     call. Default off so a brownfield deploy never accidentally opens the
     surface.
+
+    ``snapshot`` opts into grade-bundle production per trial. Presence
+    + ``enabled=true`` turns on the orchestrator's trial-end producer
+    seam; see :class:`SnapshotBundleConfig`.
     """
 
     model_config = {"extra": "forbid"}
@@ -947,6 +1054,7 @@ class GraderConfig(BaseModel):
     queue: QueueGraderConfig | None = None
     judge: JudgeGraderConfig | None = None
     expose_substrate: bool = False
+    snapshot: SnapshotBundleConfig | None = None
 
 
 class TracingConfig(BaseModel):

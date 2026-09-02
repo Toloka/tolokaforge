@@ -45,7 +45,9 @@ from tolokaforge.core.compose_materialisation import (
     shutdown_compose,
     write_capture_manifest,
 )
+from tolokaforge.core.grading.bundle_producer import serialize_bundle_from_substrate
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.substrate_live import LiveRunnerCallbackGradingSubstrate
 from tolokaforge.core.health import HealthLevel, HealthReport
 from tolokaforge.core.models import SeedRef, TraceConstraintSeverity
 from tolokaforge.core.run_display_events import (
@@ -71,8 +73,11 @@ from tolokaforge.runner.protocol import (
 from tolokaforge.tools.registry import ToolResult
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports for provisioning surface
+    from tolokaforge.core.grading.bundle import GradeBundleManifest
+    from tolokaforge.core.models.trajectory import Trajectory
     from tolokaforge.core.plugin_registry import RuntimeBackendBuildContext
     from tolokaforge.core.trial import TrialSpec
+    from tolokaforge.runner.models import TaskDescription
 
 logger = logging.getLogger(__name__)
 
@@ -1005,6 +1010,15 @@ class SharedStackRuntimeBackend:
         self.log_capture = log_capture
         self._mount_docker_socket = mount_docker_socket
         self._events: RunDisplayEvents = events if events is not None else _NULL_EVENTS
+        # Populated by ``remember_trial_inputs`` before each trial-end
+        # ``build_grade_bundle`` call; cleared by ``cleanup_trial`` so a
+        # long-running orchestrator process does not accumulate per-trial
+        # domain objects in memory. Only consulted when snapshot mode is
+        # active — the orchestrator's startup gate refuses that mode when
+        # this backend lacks ``build_grade_bundle``, so the entries here
+        # exist only when the producer seam will actually read them.
+        self._pending_trajectories: dict[str, Trajectory] = {}
+        self._pending_task_descriptions: dict[str, TaskDescription] = {}
 
         self.runner_client: GrpcRunnerClient | None
         self._endpoints: EnvEndpoints | None
@@ -1254,9 +1268,67 @@ class SharedStackRuntimeBackend:
 
         The retry-cleanup path needs to call this *before* a per-trial
         adapter exists, so the method lives on the runtime (delegating
-        to the gRPC client). Idempotent on the runner side.
+        to the gRPC client). Idempotent on the runner side. Also drops
+        any pending snapshot-producer inputs the orchestrator stashed
+        via :meth:`remember_trial_inputs`.
         """
+        self._pending_trajectories.pop(trial_id, None)
+        self._pending_task_descriptions.pop(trial_id, None)
         return self.runner_client.cleanup_trial(trial_id)
+
+    def remember_trial_inputs(
+        self,
+        trial_id: str,
+        trajectory: Trajectory,
+        task_description: TaskDescription,
+    ) -> None:
+        """Stash the trajectory + task description keyed by ``trial_id``.
+
+        Called by the orchestrator's producer seam right before
+        :meth:`build_grade_bundle`; cleared by :meth:`cleanup_trial`.
+        """
+        self._pending_trajectories[trial_id] = trajectory
+        self._pending_task_descriptions[trial_id] = task_description
+
+    def build_grade_bundle(
+        self,
+        trial_id: str,
+        *,
+        out_dir: Path,
+    ) -> GradeBundleManifest:
+        """Produce a grade bundle for ``trial_id`` in ``out_dir`` by
+        composing reads over the runner's ``SubstrateService``.
+
+        A fresh :class:`LiveRunnerCallbackGradingSubstrate` dials the same
+        runner address the live-callback grader path uses; the bundle
+        producer helper reads state through that substrate and stitches
+        it with the trajectory + task description stashed by
+        :meth:`remember_trial_inputs`. The substrate's gRPC channel is
+        closed in ``try/finally`` so a serialise failure still releases
+        the transport.
+        """
+        if self.runner_client is None:
+            raise RuntimeError(
+                "SharedStackRuntimeBackend.build_grade_bundle called before connect()."
+            )
+        if trial_id not in self._pending_trajectories:
+            raise KeyError(
+                f"SharedStackRuntimeBackend.build_grade_bundle: no remembered trajectory "
+                f"for trial_id={trial_id!r}; call remember_trial_inputs first."
+            )
+        trajectory = self._pending_trajectories[trial_id]
+        task_description = self._pending_task_descriptions[trial_id]
+        substrate = LiveRunnerCallbackGradingSubstrate(self.runner_client.runner_address, trial_id)
+        try:
+            return serialize_bundle_from_substrate(
+                substrate=substrate,
+                trial_id=trial_id,
+                out_dir=out_dir,
+                trajectory=trajectory,
+                task_description=task_description,
+            )
+        finally:
+            substrate.close()
 
     # ---- Per-trial provisioning (ADR-0010) — shared-stack compat path ----
     #

@@ -37,6 +37,8 @@ __all__ = [
     "RateLimitProbeBucketMetrics",
     "RateLimitProbeRoleMetrics",
     "ReplyDefect",
+    "SnapshotOutcome",
+    "SnapshotStatus",
     "TerminationReason",
     "ToolCall",
     "ToolUsage",
@@ -101,6 +103,74 @@ class FirstUserMessageSource(str, Enum):
 
     PINNED = "pinned"  # The task's initial_user_message, delivered verbatim
     SIMULATOR = "simulator"  # A user-simulator dispatch produced it
+
+
+class SnapshotOutcome(str, Enum):
+    """Trial-end grade-bundle produce outcome tag.
+
+    Written to :attr:`SnapshotStatus.outcome` by the orchestrator's
+    trial-end producer seam. Downstream reporting code imports the symbol
+    and compares by identity (``status.outcome is SnapshotOutcome.STORED``)
+    rather than by string literal — string comparisons drift when a new
+    outcome is added.
+    """
+
+    STORED = "stored"
+    OVERSIZE = "oversize"
+    PRODUCE_FAILED = "produce_failed"
+    UNGRADED = "ungraded"
+
+
+class SnapshotStatus(BaseModel):
+    """Grade-bundle produce outcome for a trial.
+
+    Populated when the orchestrator's snapshot mode is enabled
+    (``grader.snapshot.enabled=true``) and the trial reached the
+    producer seam. ``uri`` / ``bundle_size_bytes`` / ``cap_bytes`` /
+    ``reason`` are keyed by ``outcome``: :attr:`SnapshotOutcome.STORED`
+    carries ``uri`` + ``bundle_size_bytes``; :attr:`SnapshotOutcome.OVERSIZE`
+    carries ``bundle_size_bytes`` + ``cap_bytes`` + ``reason``;
+    :attr:`SnapshotOutcome.PRODUCE_FAILED` carries ``reason``;
+    :attr:`SnapshotOutcome.UNGRADED` carries no side data. Consumers gate on
+    ``outcome`` before reading the optional fields.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    outcome: SnapshotOutcome
+    uri: str | None = None
+    bundle_size_bytes: int | None = None
+    cap_bytes: int | None = None
+    reason: str | None = None
+
+    @classmethod
+    def stored(cls, *, uri: str, bundle_size_bytes: int) -> Self:
+        return cls(
+            outcome=SnapshotOutcome.STORED,
+            uri=uri,
+            bundle_size_bytes=bundle_size_bytes,
+        )
+
+    @classmethod
+    def oversize(cls, *, bundle_size_bytes: int, cap_bytes: int) -> Self:
+        return cls(
+            outcome=SnapshotOutcome.OVERSIZE,
+            bundle_size_bytes=bundle_size_bytes,
+            cap_bytes=cap_bytes,
+            reason=(
+                f"Snapshot bundle exceeded cap "
+                f"({bundle_size_bytes / 1024 / 1024:.1f} MB > "
+                f"{cap_bytes / 1024 / 1024:.1f} MB); fell back."
+            ),
+        )
+
+    @classmethod
+    def produce_failed(cls, reason: str) -> Self:
+        return cls(outcome=SnapshotOutcome.PRODUCE_FAILED, reason=reason)
+
+    @classmethod
+    def ungraded(cls) -> Self:
+        return cls(outcome=SnapshotOutcome.UNGRADED)
 
 
 class ToolCall(BaseModel):
@@ -608,6 +678,11 @@ class Trajectory(BaseModel):
     # ``ProvisionStage`` is exhaustive today, so this is a defensive default,
     # not a documented gap).
     provision_stage: ProvisionStage | None = None
+    # Grade-bundle produce outcome for this trial. ``None`` iff snapshot
+    # mode is disabled for the run OR the trial ended before grading.
+    # Populated by the orchestrator's trial-end producer seam after
+    # ``_grade`` completes when ``grader.snapshot.enabled=true``.
+    snapshot_status: SnapshotStatus | None = None
     # Monotonic integer stamped on every trajectory; bumped whenever the
     # simulator prompt shape or the conversation context the simulator sees
     # is revised so that downstream analytics can gate comparisons across

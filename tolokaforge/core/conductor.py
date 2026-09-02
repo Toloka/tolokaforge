@@ -22,6 +22,7 @@ body.
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -44,6 +45,7 @@ from tolokaforge.core.models import (
     ModelConfig,
     RateLimitProbeConfig,
     RunConfig,
+    SnapshotStatus,
     TaskConfig,
     Trajectory,
     TrialStatus,
@@ -379,6 +381,13 @@ class InMemoryConductor:
         )
 
 
+def _bundle_dir_size_bytes(bundle_dir: Path) -> int:
+    """Total on-disk bytes below ``bundle_dir``. Authoritative snapshot-mode
+    size measurement (one ``stat`` per file over a bounded parts count).
+    """
+    return sum(p.stat().st_size for p in bundle_dir.rglob("*") if p.is_file())
+
+
 # ---------------------------------------------------------------------------
 # InProcessConductor — production implementation
 # ---------------------------------------------------------------------------
@@ -461,6 +470,7 @@ class InProcessConductor:
         trajectory, runner, system_prompt = self._run_agent_loop(spec, task_config, setup)
         self._capture_final_state(spec, setup, trajectory)
         self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
+        self._produce_grade_bundle(spec, setup, trajectory)
         self._write_artifacts(spec, task_config, setup, trajectory, runner)
         return TrialResult.from_trajectory(
             trial_id=setup.trial_id, trajectory=trajectory, worker_id=spec.worker_id
@@ -1009,6 +1019,68 @@ class InProcessConductor:
             score=grade.score,
             binary_pass=grade.binary_pass,
         )
+
+    def _produce_grade_bundle(
+        self,
+        spec: TrialSpec,
+        setup: _TrialSetup,
+        trajectory: Trajectory,
+    ) -> None:
+        """Trial-end snapshot producer seam. No-op unless ``grader.snapshot.enabled``.
+
+        Runs after :meth:`_grade` populated ``trajectory.grade`` and before
+        :meth:`_write_artifacts` serialises the trajectory to disk, so
+        ``trajectory.snapshot_status`` lands on the artifact bundle. Never
+        raises — a produce failure records
+        :attr:`SnapshotOutcome.PRODUCE_FAILED` on the trajectory and the
+        trial continues its normal completion path.
+
+        Ungraded trials (``trajectory.grade is None``) skip the producer
+        and leave ``snapshot_status`` unset — snapshot mode records only
+        outcomes the producer actually attempted.
+        """
+        grader = self.config.grader
+        snapshot = grader.snapshot if grader is not None else None
+        if snapshot is None or not snapshot.enabled:
+            return
+        if trajectory.grade is None:
+            return
+        store = snapshot.build_store()
+        try:
+            with tempfile.TemporaryDirectory(prefix="snapshot-bundle-") as scratch:
+                bundle_dir = Path(scratch) / "bundle"
+                self.runtime_backend.remember_trial_inputs(setup.trial_id, trajectory, spec.task)
+                try:
+                    self.runtime_backend.build_grade_bundle(setup.trial_id, out_dir=bundle_dir)
+                except Exception as exc:  # noqa: BLE001 — produce failure contained
+                    self.logger.error(
+                        "Snapshot bundle produce failed",
+                        trial_id=setup.trial_id,
+                        error=str(exc),
+                    )
+                    trajectory.snapshot_status = SnapshotStatus.produce_failed(str(exc))
+                    return
+                size_bytes = _bundle_dir_size_bytes(bundle_dir)
+                cap_bytes = int(snapshot.max_bundle_mb * 1024 * 1024)
+                if size_bytes > cap_bytes:
+                    self.logger.warning(
+                        "Snapshot bundle exceeds cap; falling back",
+                        trial_id=setup.trial_id,
+                        bundle_size_mb=round(size_bytes / 1024 / 1024, 3),
+                        cap_mb=snapshot.max_bundle_mb,
+                    )
+                    trajectory.snapshot_status = SnapshotStatus.oversize(
+                        bundle_size_bytes=size_bytes,
+                        cap_bytes=cap_bytes,
+                    )
+                    return
+                uri = store.put(bundle_dir)
+                trajectory.snapshot_status = SnapshotStatus.stored(
+                    uri=uri,
+                    bundle_size_bytes=size_bytes,
+                )
+        finally:
+            store.close()
 
     def _write_artifacts(
         self,

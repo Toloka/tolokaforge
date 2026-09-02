@@ -60,7 +60,10 @@ from tolokaforge.core.compose_materialisation import (
     write_capture_manifest,
     write_compose_env_file,
 )
+from tolokaforge.core.grading.bundle_producer import serialize_bundle_from_substrate
+from tolokaforge.core.grading.substrate_live import LiveRunnerCallbackGradingSubstrate
 from tolokaforge.core.models import SeedRef
+from tolokaforge.core.models.trajectory import Trajectory
 from tolokaforge.core.plugin_registry import load_readiness_probe
 from tolokaforge.core.run_display_events import ContainerSnapshot, build_component_id
 from tolokaforge.core.runtime import EnvHandle, IsolationMode, ProvisionError
@@ -68,9 +71,10 @@ from tolokaforge.core.service_readiness import DiagnosticPayload, ResolvedEndpoi
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
 from tolokaforge.docker.logging import LogRouter
-from tolokaforge.runner.models import EnvironmentManifest
+from tolokaforge.runner.models import EnvironmentManifest, TaskDescription
 
 if TYPE_CHECKING:
+    from tolokaforge.core.grading.bundle import GradeBundleManifest
     from tolokaforge.core.plugin_registry import ReadinessProbeFactory, RuntimeBackendBuildContext
     from tolokaforge.core.trial import TrialSpec
     from tolokaforge.tools.registry import ToolResult
@@ -188,6 +192,15 @@ class PerTrialRuntimeBackend:
 
     _clients: dict[str, RunnerClient] = field(default_factory=dict)
     _connected_trials: set[str] = field(default_factory=set)
+    _pending_trajectories: dict[str, Trajectory] = field(default_factory=dict)
+    """Trajectories stashed by :meth:`remember_trial_inputs` for the trial-end
+    snapshot producer. Cleared by :meth:`cleanup_trial` so per-run memory
+    stays bounded. Only consulted when snapshot mode is active — the
+    orchestrator gates that mode on backend capability at run-start."""
+
+    _pending_task_descriptions: dict[str, TaskDescription] = field(default_factory=dict)
+    """Companion to :attr:`_pending_trajectories`; the producer helper
+    needs both to compose a bundle."""
     """Trial ids whose runner client has passed ``connect()``. Connect
     is deferred until the first per-trial RPC call: the compose stack's
     ``--wait`` flag has already gated container readiness and the provision
@@ -536,12 +549,61 @@ class PerTrialRuntimeBackend:
         )
 
     def cleanup_trial(self, trial_id: str) -> dict[str, Any]:
+        self._pending_trajectories.pop(trial_id, None)
+        self._pending_task_descriptions.pop(trial_id, None)
         client = self._clients.get(trial_id)
         if client is None:
             # Retry-cleanup path called before provision (or after teardown).
             # Contract says cleanup is idempotent; report success.
             return {"success": True, "error": None}
         return client.cleanup_trial(trial_id)
+
+    def remember_trial_inputs(
+        self,
+        trial_id: str,
+        trajectory: Trajectory,
+        task_description: TaskDescription,
+    ) -> None:
+        """Stash trajectory + task description keyed by ``trial_id`` for the
+        trial-end snapshot producer; cleared by :meth:`cleanup_trial`."""
+        self._pending_trajectories[trial_id] = trajectory
+        self._pending_task_descriptions[trial_id] = task_description
+
+    def build_grade_bundle(
+        self,
+        trial_id: str,
+        *,
+        out_dir: Path,
+    ) -> GradeBundleManifest:
+        """Produce a grade bundle by dialling the per-trial runner's
+        ``SubstrateService`` and composing reads via the bundle producer.
+
+        ``_client_for(trial_id)`` connects the per-trial gRPC client if
+        first use; a fresh
+        :class:`LiveRunnerCallbackGradingSubstrate` shares the same
+        runner address for the duration of the produce call. The substrate
+        is closed in ``try/finally`` so a serialise failure still releases
+        the channel.
+        """
+        if trial_id not in self._pending_trajectories:
+            raise KeyError(
+                f"PerTrialRuntimeBackend.build_grade_bundle: no remembered trajectory "
+                f"for trial_id={trial_id!r}; call remember_trial_inputs first."
+            )
+        client = self._client_for(trial_id)
+        trajectory = self._pending_trajectories[trial_id]
+        task_description = self._pending_task_descriptions[trial_id]
+        substrate = LiveRunnerCallbackGradingSubstrate(client.runner_address, trial_id)
+        try:
+            return serialize_bundle_from_substrate(
+                substrate=substrate,
+                trial_id=trial_id,
+                out_dir=out_dir,
+                trajectory=trajectory,
+                task_description=task_description,
+            )
+        finally:
+            substrate.close()
 
     # ---- Reset seam ----
 

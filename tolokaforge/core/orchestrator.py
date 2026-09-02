@@ -3,7 +3,9 @@
 import logging
 import os
 import random
+import shutil
 import socket
+import tempfile
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -1418,6 +1420,55 @@ class Orchestrator:
                 "so the task-driven selector picks a per-trial backend."
             )
 
+    def _validate_snapshot_mode_compatibility(self, runtime_backend: RuntimeBackend) -> None:
+        """Refuse ``grader.snapshot.enabled=true`` on backends / configs that
+        cannot honour it.
+
+        Runs once at run-start after the backend is resolved. Two guards:
+
+        * ``grader.expose_substrate`` must be ``True`` — the runtime
+          backend composes bundle reads over the runner's
+          ``SubstrateService``; a runner started with the surface
+          disabled returns ``UNIMPLEMENTED`` and every trial would
+          record ``produce_failed``.
+        * The resolved backend must implement
+          :meth:`RuntimeBackend.build_grade_bundle` — probed with a
+          fake ``__snapshot_probe__`` trial id. A backend that raises
+          :class:`NotImplementedError` opts out; any other exception
+          (trial-not-registered from a real impl, in particular) is
+          treated as "backend supports snapshot mode".
+
+        Actionable :class:`ValueError` names the failing condition and
+        the concrete fix.
+        """
+        grader = self.config.grader
+        if grader is None or grader.snapshot is None or not grader.snapshot.enabled:
+            return
+        if not grader.expose_substrate:
+            raise ValueError(
+                "grader.snapshot.enabled=true requires grader.expose_substrate=true "
+                "so the producer can compose SubstrateService reads at trial-end. "
+                "Set grader.expose_substrate: true in your run config."
+            )
+        probe_dir = Path(tempfile.mkdtemp(prefix="tolokaforge-snapshot-probe-"))
+        try:
+            runtime_backend.build_grade_bundle(trial_id="__snapshot_probe__", out_dir=probe_dir)
+        except NotImplementedError as exc:
+            raise ValueError(
+                "grader.snapshot.enabled=true requires a runtime backend that "
+                "implements RuntimeBackend.build_grade_bundle. The resolved "
+                f"backend {type(runtime_backend).__name__!r} does not. "
+                "Use SharedStackRuntimeBackend or PerTrialRuntimeBackend, or "
+                "extend your custom backend with a real implementation of the hook."
+            ) from exc
+        except Exception:
+            # Any other exception means the backend implements the hook but
+            # the probe trial isn't registered — which is the point of the
+            # probe. Backend is snapshot-capable.
+            pass
+        finally:
+            shutil.rmtree(probe_dir, ignore_errors=True)
+
     def _build_pending_trials(
         self,
         tasks: list[TaskConfig],
@@ -2266,6 +2317,7 @@ class Orchestrator:
         runtime_backend.connect()
         self.logger.info("Runtime backend connected")
         self._verify_isolation_compatibility(runtime_backend)
+        self._validate_snapshot_mode_compatibility(runtime_backend)
 
         from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
@@ -2740,6 +2792,7 @@ class Orchestrator:
             runtime_backend = self._construct_runtime_backend(runner_address)
         runtime_backend.connect()
         self._verify_isolation_compatibility(runtime_backend)
+        self._validate_snapshot_mode_compatibility(runtime_backend)
 
         from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
