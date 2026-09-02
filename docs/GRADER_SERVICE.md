@@ -641,11 +641,16 @@ my_state_backend = "my_package:my_state_backend_factory"
 my_operator = "my_package:my_operator"
 ```
 
-`tolokaforge.trial_graders` is the ninth registration point — the
-top-level grader-name seam ADR-0038 shipped, already documented in
+`tolokaforge.trial_graders` is the top-level grader-name seam ADR-0038
+shipped, already documented in
 [Registering a downstream grader](#registering-a-downstream-grader).
 A downstream package registering a new grader name lands there, not
 in any of the eight groups above.
+
+The bundle-transport seam `tolokaforge.bundle_stores` is documented in
+the [Bundle store seam](#bundle-store-seam) section below — it extends a
+different surface (offline bundle transport, not grader plug-ins) and
+uses the same entry-point-group + `load_bundle_store` shape.
 
 ## Bundle store seam
 

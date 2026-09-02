@@ -1,9 +1,8 @@
 """Shared synthetic-bundle fixtures for the canonical grading-bundle tests.
 
-The bundle round-trip lock, the content-addressability lock, and any
-future bundle-shape test all want the same synthetic trial inputs.
-Extracted here so a fixture tweak lands in one place and every consumer
-sees the same shape.
+Every canonical test that grades a bundle reads its trial inputs from
+``synthetic_inputs``; a fixture tweak lands here and every reader sees
+the same shape.
 """
 
 from __future__ import annotations
