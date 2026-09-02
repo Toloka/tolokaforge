@@ -617,13 +617,14 @@ def _synth_trajectory(
 
 
 def test_a_stuck_detected_synth_grade_is_attributed_to_harness_autofail() -> None:
-    """The misattribution one artifact over: a STUCK_DETECTED synth previously
-    fell past the deterministic elif chain (STUCK_DETECTED is not in the
-    ``timeout_or_resource`` set), reached the tool-log scan with an empty log,
-    and settled on ``model_reasoning`` — blaming the model when the harness
-    itself terminated the trial. The new ``harness_autofail`` branch catches
-    every synth-marker grade the elif chain does not, and marks it
-    deterministic with the reason as evidence.
+    """A STUCK_DETECTED synth-marker grade classifies as ``harness_autofail``.
+
+    STUCK_DETECTED is not in the ``timeout_or_resource`` enumerated set, so the
+    tool-log scan below would otherwise settle on ``model_reasoning`` for a
+    synth trial with an empty tool log — which would blame the model for a
+    trial the harness itself terminated. The ``harness_autofail`` branch fires
+    on any synth-marker grade the deterministic elif chain does not, marks it
+    deterministic, and carries the reason as evidence.
     """
     traj = _synth_trajectory(
         marker=TerminationReason.STUCK_DETECTED,

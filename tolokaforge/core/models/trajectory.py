@@ -38,11 +38,9 @@ __all__ = [
     "RateLimitProbeBucketMetrics",
     "RateLimitProbeRoleMetrics",
     "ReplyDefect",
-    "TerminationReason",
     "ToolCall",
     "ToolUsage",
     "Trajectory",
-    "TrialStatus",
     "UserReplyGuardEvent",
     "UserReplyOutcome",
 ]

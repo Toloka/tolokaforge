@@ -267,10 +267,9 @@ def test_auto_fail_synthesis_carries_marker_and_empty_components(
     assert grade.binary_pass is False
     assert grade.score == 0.0
     assert grade.synthesized_by_termination_reason is expected_marker
-    # Every component field reads as ``None`` — nothing was measured. The
-    # fabricated ``state_checks=0.0`` / ``llm_judge=0.0`` shape the auto-fail
-    # branches used to emit is gone; downstream analytics can tell an
-    # auto-failed trial from one that measured ``state_checks: 0.0``.
+    # Every component field reads as ``None`` — nothing was measured.
+    # Downstream analytics can tell an auto-failed trial from one that
+    # measured ``state_checks: 0.0``.
     components = grade.components
     assert components.state_checks is None
     assert components.transcript_rules is None

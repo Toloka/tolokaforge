@@ -1,12 +1,7 @@
-"""Trial status + termination reason enums, imported by both the trajectory
-wire type and the grade wire type.
-
-Split from :mod:`tolokaforge.core.models.trajectory` so that
-:class:`~tolokaforge.core.models.grade.Grade` can reference
-:class:`TerminationReason` without closing an import cycle:
-``trajectory`` imports :class:`Grade` (for :attr:`Trajectory.grade`), and
-:class:`Grade` types :attr:`Grade.synthesized_by_termination_reason` as a
-:class:`TerminationReason`.
+""":class:`TrialStatus` and :class:`TerminationReason` live here rather than in
+:mod:`tolokaforge.core.models.trajectory` because :class:`Grade` references
+:class:`TerminationReason` and :class:`Trajectory` references :class:`Grade` —
+housing both enums in ``trajectory`` would close an import cycle.
 """
 
 from enum import Enum

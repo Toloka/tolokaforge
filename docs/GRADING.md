@@ -766,9 +766,10 @@ Two downstream properties depend on the marker:
 
 - `failure_attribution.py:attribute_failure` returns `failure_class:
   harness_autofail` on any synth trial whose termination reason is not
-  otherwise enumerated in the deterministic elif chain (today that is
-  `STUCK_DETECTED` — previously misrouted to `model_reasoning`, blaming the
-  model in an artifact whose whole purpose is naming the right cause). Every
+  otherwise enumerated in the deterministic elif chain (today only
+  `STUCK_DETECTED`). The default `model_reasoning` label from the tool-log
+  scan would misattribute a harness-terminated trial to the model, so the
+  synth marker takes precedence. Every
   attribution record also carries `synthesized: bool` and
   `synthesized_by_termination_reason: str | None` as first-class fields.
 - `GradingCompleteness.zero_coverage` fires when

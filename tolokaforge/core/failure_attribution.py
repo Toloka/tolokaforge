@@ -183,12 +183,12 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         # A harness-synthesised auto-fail grade — the deterministic branches above
         # already claim ``timeout_or_resource`` for the ERROR / TIMEOUT /
         # EMPTY_COMPLETION reasons, so this branch fires on any synthesised trial
-        # whose ``termination_reason`` is not enumerated above (today that is
-        # STUCK_DETECTED, which previously fell through to ``model_reasoning`` —
-        # blaming the model in the artifact whose whole purpose is naming the
-        # right cause). Forward-compat: a future ``TerminationReason`` value
-        # ``TrialGrader`` synthesises from without an enumerated branch above
-        # lands here rather than falling through to the tool-log scan.
+        # whose ``termination_reason`` is not enumerated above (today only
+        # STUCK_DETECTED). The tool-log scan below settles on ``model_reasoning``
+        # by default, which would misattribute a harness-terminated trial to the
+        # model, so the synth marker takes precedence. Forward-compat: a future
+        # ``TerminationReason`` value ``TrialGrader`` synthesises from without
+        # an enumerated branch above lands here rather than falling through.
         failure_class = "harness_autofail"
         deterministic = True
         evidence.append(

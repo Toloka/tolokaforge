@@ -240,9 +240,10 @@ deterministic elif chain — today that is `STUCK_DETECTED` (the `TIMEOUT` /
 `timeout_or_resource` label because the enumerated branch catches them
 first). It is forward-compat: any future `TerminationReason` a `TrialGrader`
 synthesises from without an enumerated branch lands here rather than falling
-through to the tool-log scan and settling on `model_reasoning`. The trial
-was never measured by an evaluator, so blaming the model is the exact
-misattribution this class exists to end.
+through to the tool-log scan and settling on `model_reasoning`. The trial was
+never measured by an evaluator, so any fallthrough that blames the model
+would misattribute a harness-terminated trial — the misattribution this
+class prevents.
 
 Every attribution record also carries `outcome_class` (`measured` /
 `harness_error` / `infrastructure_abort` / `ungradeable`), so a reader of a single
