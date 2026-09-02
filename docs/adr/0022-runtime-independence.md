@@ -5,6 +5,7 @@
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
 - **Superseded by:** —
+- **Amended-by:** ADR-0044 (backend selection is composer-driven — the "task-driven backend selection" claim in §Context and the `_select_backend_from_tasks` reference in the `runtime="auto"` reconciliation are replaced by §6 of ADR-0044; the entry-point registry surface and the `orchestrator.runtime` override as a plan-shape coercion knob are unchanged)
 
 ## Context and Problem Statement
 

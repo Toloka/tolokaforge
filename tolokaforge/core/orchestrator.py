@@ -1194,22 +1194,6 @@ class Orchestrator:
                 return manifest
         return None
 
-    def _select_backend_from_tasks(self) -> str:
-        """External-import-safe shim returning the collapsed backend label.
-
-        Backend selection is composer-driven — the orchestrator always
-        constructs :class:`SharedStackRuntimeBackend`; per-scope
-        provisioning is dispatched from the resolved composition plan.
-        The two-way vote this helper used to run is retired; ``"composed"``
-        is the single value the shim reports so third-party callers that
-        still import the method observe a stable constant.
-        """
-        if self.adapter is None:
-            raise RuntimeError(
-                "Task-driven backend selection requires the adapter to be loaded first."
-            )
-        return "composed"
-
     def _any_task_declares_environment_manifest(self) -> bool:
         """True iff at least one task's resolved description declares an
         ``environment_manifest``.

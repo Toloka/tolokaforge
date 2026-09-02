@@ -54,7 +54,7 @@ dual-home knob resolution, task-schema relaxation to `task_id` +
 `description`, and `${VAR}` run-config interpolation. M3 delivered
 per-service isolation (`services.<name>.isolation`:
 `shared` / `reset` / `ephemeral`), seed-backed reset recipes,
-task-driven backend selection, backend-capability admission, the
+composer-driven backend selection (ADR-0044), backend-capability admission, the
 shared-assets registry, the grading provider registry, and
 `resolve_environment_identity`. See the CHANGELOG for the per-release
 detail.

@@ -1,6 +1,6 @@
 # 0044. Composition-plan runtime — redesigned `SharedStackRuntimeBackend`
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-31
 - **Deciders:** @CiroGamboa
 - **Supersedes:** — (replaces an unshipped ADR-0043 draft — `HybridRuntimeBackend` as a distinct class — that was never merged to `main`; number 0043 is intentionally skipped, see `docs/adr/README.md` index note)

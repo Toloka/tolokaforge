@@ -157,55 +157,6 @@ def _manifest_multi_stack() -> EnvironmentManifest:
     )
 
 
-class TestSelectBackendFromTasks:
-    """External-import-safe shim locking the collapsed backend label.
-
-    The historical two-way vote (``shared`` / ``per_trial``) is retired;
-    selection is composer-driven. The helper survives as a stable
-    ``"composed"`` constant for third-party callers.
-    """
-
-    def test_all_shared_returns_composed(self) -> None:
-        tasks = [_task_stub("t1")]
-        task_descs = {
-            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_all_shared())
-        }
-        orch = _make_orchestrator(tasks, task_descs)
-        assert orch._select_backend_from_tasks() == "composed"
-
-    def test_any_reset_returns_composed(self) -> None:
-        tasks = [_task_stub("t1"), _task_stub("t2")]
-        task_descs = {
-            "t1": make_task_description(task_id="t1", environment_manifest=_manifest_all_shared()),
-            "t2": make_task_description(task_id="t2", environment_manifest=_manifest_with_reset()),
-        }
-        orch = _make_orchestrator(tasks, task_descs)
-        assert orch._select_backend_from_tasks() == "composed"
-
-    def test_any_ephemeral_returns_composed(self) -> None:
-        tasks = [_task_stub("t1")]
-        task_descs = {
-            "t1": make_task_description(
-                task_id="t1", environment_manifest=_manifest_with_ephemeral()
-            )
-        }
-        orch = _make_orchestrator(tasks, task_descs)
-        assert orch._select_backend_from_tasks() == "composed"
-
-    def test_no_manifest_returns_composed(self) -> None:
-        tasks = [_task_stub("legacy")]
-        task_descs = {"legacy": make_task_description(task_id="legacy", environment_manifest=None)}
-        orch = _make_orchestrator(tasks, task_descs)
-        assert orch._select_backend_from_tasks() == "composed"
-
-    def test_missing_adapter_raises(self) -> None:
-        orch = Orchestrator(_run_config())
-        orch.tasks = [_task_stub("t")]
-        orch.adapter = None
-        with pytest.raises(RuntimeError, match="adapter"):
-            orch._select_backend_from_tasks()
-
-
 class TestConstructRuntimeBackend:
     @pytest.fixture(autouse=True)
     def _stub_runtime_loader(self, monkeypatch: pytest.MonkeyPatch) -> None:
