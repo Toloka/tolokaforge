@@ -601,6 +601,33 @@ class CodingHarnessDriver:
             "compose_file": staged.compose_file,
             "runner_service": RUNNER_SERVICE,
         }
+        # Also rewrite the ADR-0044 composition plan when the manifest
+        # carries one. ``EnvironmentManifest.stacks`` is what the
+        # composer builds its plan from; the legacy ``compose_file`` +
+        # ``runner_service`` fields feed the backward-compat synthesised
+        # single-stack plan. When the manifest already declares an
+        # explicit ``stacks`` list, the composer reads it verbatim and
+        # ignores the legacy fields, so updating only those two would
+        # leave the composer pointing at the pack's original stack. We
+        # mirror the staged compose + runner service onto every trial-
+        # scope stack (there is one under today's harness pack shape;
+        # future multi-scope harness packs would need a more selective
+        # rewrite).
+        if env_manifest.stacks:
+            rewritten_stacks = [
+                (
+                    stack.model_copy(
+                        update={
+                            "compose_file": staged.compose_file,
+                            "runner_service": RUNNER_SERVICE,
+                        }
+                    )
+                    if stack.stack_scope == "trial"
+                    else stack
+                )
+                for stack in env_manifest.stacks
+            ]
+            manifest_update["stacks"] = rewritten_stacks
         if self._gateway_handle is not None:
             manifest_update["bridged_services"] = frozenset(env_manifest.bridged_services) | {
                 GATEWAY_HOSTNAME

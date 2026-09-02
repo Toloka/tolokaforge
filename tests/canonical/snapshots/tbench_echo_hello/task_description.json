@@ -36,7 +36,7 @@
   "description": "Create a file /tmp/hello.txt containing the text \"Hello, World!\".\n",
   "environment_manifest": {
     "bridged_services": [],
-    "compose_file": "<STAGING>/echo-hello/docker-compose.tolokaforge.yaml",
+    "compose_file": "<STAGING>/engine/docker-compose.engine.yaml",
     "db_port": null,
     "db_service": null,
     "initial_state": {},
@@ -54,12 +54,6 @@
         "readiness": null,
         "reset": null
       },
-      "main": {
-        "isolation": "ephemeral",
-        "network_access": "default",
-        "readiness": null,
-        "reset": null
-      },
       "runner": {
         "isolation": "ephemeral",
         "network_access": "default",
@@ -70,10 +64,17 @@
     "stack_inputs": {},
     "stacks": [
       {
-        "compose_file": "<STAGING>/echo-hello/docker-compose.tolokaforge.yaml",
+        "compose_file": "<STAGING>/engine/docker-compose.engine.yaml",
         "inputs": {},
         "runner_service": "runner",
-        "stack_id": "default",
+        "stack_id": "engine",
+        "stack_scope": "run"
+      },
+      {
+        "compose_file": "<STAGING>/echo-hello/docker-compose.tolokaforge.yaml",
+        "inputs": {},
+        "runner_service": null,
+        "stack_id": "task",
         "stack_scope": "trial"
       }
     ],
@@ -101,9 +102,8 @@
   },
   "initialization_actions": [],
   "metadata": {
-    "agent_visible_dir": "/app",
+    "agent_harness": "engine-loop",
     "difficulty": "easy",
-    "initial_user_message": "Create a file /tmp/hello.txt containing the text \"Hello, World!\".\n",
     "tags": [
       "shell",
       "basics"

@@ -51,6 +51,7 @@ from ._registry import (
     validate_harness,
     validate_provider_env_keys,
 )
+from .adapter_support import CodingHarnessAdapterMixin
 from .container_injection import (
     ContainerFileInjector,
     ContainerInjectionError,
@@ -78,6 +79,7 @@ __all__ = [
     "PROVIDER_ENV_KEYS",
     "SHIPPED_REGISTRY_FILE",
     "SHIPPED_REGISTRY_META_FILE",
+    "CodingHarnessAdapterMixin",
     "ContainerFileInjector",
     "ContainerInjectionError",
     "CredentialGateway",

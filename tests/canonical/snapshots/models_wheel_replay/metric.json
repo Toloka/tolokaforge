@@ -1,5 +1,5 @@
 {
-  "bucket_a_count": 3,
+  "bucket_a_count": 4,
   "bucket_b_count": 7,
   "integrations": [
     {
@@ -199,6 +199,20 @@
         "tolokaforge_models/src/tolokaforge_models/data/pricing.json",
         "tolokaforge_models/tests/unit/fixtures/openrouter_z_ai_glm_5_3_reasoning_response.json",
         "tolokaforge_models/tests/unit/test_reasoning_codec_openai_summary_replay.py"
+      ]
+    },
+    {
+      "bucket": "A",
+      "date": "2026-09-02",
+      "engine_paths": [],
+      "model": "anthropic/claude-fable-5.1",
+      "pr": 1449,
+      "reason": "all touched paths in Bucket-A allow-list",
+      "sha": "e8f837d760111f70afeb41a5dbe6302cdc3c7f99",
+      "touched_files": [
+        "tolokaforge_models/src/tolokaforge_models/certificates/registry.py",
+        "tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml",
+        "tolokaforge_models/src/tolokaforge_models/data/pricing.json"
       ]
     }
   ]

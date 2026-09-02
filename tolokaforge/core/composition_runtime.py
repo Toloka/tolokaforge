@@ -112,13 +112,15 @@ class MaterialiseContext:
     network_policy: NetworkPolicy
     limited_internet_allowlist: tuple[str, ...]
     restricted_services: frozenset[str]
-    bridged_services: frozenset[str]
-    stripped_container_secrets: frozenset[str]
     mount_docker_socket: bool
     log_capture: MaterialiseLogCapture | None
     write_compose_env: WriteComposeEnv | None
     events: RunDisplayEvents
     component_id_prefix: str
+    # ADR-0041 credential-shield sidecar plumbing — default empty so tests
+    # constructing a context need not care about the shield surface.
+    bridged_services: frozenset[str] = frozenset()
+    stripped_container_secrets: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

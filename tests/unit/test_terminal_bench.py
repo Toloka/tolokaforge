@@ -1,7 +1,6 @@
 """Unit tests for terminal-bench adapter and Docker Compose exec wrapper."""
 
 import shutil
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -161,14 +160,24 @@ class TestDockerComposeExecWrapperInit:
 
 class TestDockerComposeExecWrapperExec:
     def test_exec_sync_success(self, wrapper):
+        """The wrapper spawns via ``Popen`` (not ``subprocess.run``) so a
+        slow-agent timeout can surface buffered stdout — see
+        ``tool_factory._exec_sync``. This test patches ``Popen`` and
+        drives its ``communicate()``."""
         wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="hello world\n", stderr=""
-            )
+        fake_proc = type(
+            "FakeProc",
+            (),
+            {
+                "communicate": lambda self, timeout=None: ("hello world\n", ""),
+                "returncode": 0,
+                "kill": lambda self: None,
+            },
+        )()
+        with patch("subprocess.Popen", return_value=fake_proc) as mock_popen:
             result = wrapper._exec_sync("echo hello world", 30.0)
             assert result == "hello world\n"
-            argv = mock_run.call_args.args[0]
+            argv = mock_popen.call_args.args[0]
             assert argv == [
                 "docker",
                 "exec",
@@ -181,10 +190,16 @@ class TestDockerComposeExecWrapperExec:
 
     def test_exec_sync_nonzero_exit(self, wrapper):
         wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=1, stdout="partial", stderr="error msg"
-            )
+        fake_proc = type(
+            "FakeProc",
+            (),
+            {
+                "communicate": lambda self, timeout=None: ("partial", "error msg"),
+                "returncode": 1,
+                "kill": lambda self: None,
+            },
+        )()
+        with patch("subprocess.Popen", return_value=fake_proc):
             result = wrapper._exec_sync("bad cmd", 30.0)
             assert "partial" in result
             assert "[exit code: 1]" in result

@@ -188,6 +188,8 @@ class TestCompanionDataclassFields:
             "write_compose_env",
             "events",
             "component_id_prefix",
+            "bridged_services",
+            "stripped_container_secrets",
         ]
 
     def test_run_ctx_fields(self) -> None:
