@@ -1682,6 +1682,30 @@ as a compatibility surface — user overlay syntax and the
 `resolve_policy_names` fingerprint). Routing pinned by
 [`tests/canonical/test_message_assembly_filler_routing.py`](../tests/canonical/test_message_assembly_filler_routing.py).
 
+### Provider-side empty completion
+
+A generation that comes back with both `text == ""` and `tool_calls == []`
+is a *provider-side empty completion*: the request round-tripped and the
+provider chose to return nothing. `ToolCallingLoop._run_turn` recognises
+that shape immediately after `_generate` — before the assistant message
+would be appended — and terminates the trial with
+`TerminationReason.EMPTY_COMPLETION` and `TrialStatus.FAILED`. The empty
+assistant message is not appended, and the metrics sink still records the
+generation because the trial paid for the call.
+
+The distinction from `empty_assistant_filler` above is where the empty
+content lives. `empty_assistant_filler` handles empty **content the loop
+is about to send back to the provider on a tool-call turn** — Bedrock/Nova
+and Moonshot direct reject a request whose assistant turn has empty
+`content` alongside `tool_calls`, so those provider families opt in to a
+non-empty filler string. `EMPTY_COMPLETION` handles empty **content the
+provider produced**: appending it would send a request whose tail is a
+`role=model` turn with empty `content` and no `tool_calls` on the next
+iteration, and Gemini rejects that as an API error. The engine consumes
+this one wire-shape observation directly rather than routing it through
+`classify_loop_error` so post-run analysis can tell "the model produced
+nothing" apart from the API-error class that used to swallow it.
+
 ## `response_policy`
 
 Tool-call argument post-processing.
@@ -2094,6 +2118,40 @@ module boundary. `ToolCallingLoop` receives it via
 `classify_error=llm_client.classify_loop_error`. The remaining text-matching
 classifiers (`core/runner.py`'s user-simulator retry, `core/resume.py`) are
 separate and unaffected — `AllApiKeysExhaustedError` subclasses `RuntimeError`.
+
+### Bounded API-error retry
+
+`ToolCallingLoop.run` retries a classified `TerminationReason.API_ERROR` in
+place, without incrementing the outer turn counter. `LoopConfig.api_error_retries`
+bounds the retry budget (default `1` — one retry, then fail loud);
+`LoopConfig.api_error_backoff_s` is the sleep between attempts (default
+`1.0` s). Sleep is dispatched through `ToolCallingLoop.retry_sleep`, which
+defaults to `time.sleep` and is swapped for a no-op in unit tests.
+
+The retry class is `API_ERROR` only. `RATE_LIMIT`, `API_TIMEOUT`, `TRIAL_LOST`
+and `EMPTY_COMPLETION` stay one-shot terminal because each already owns a
+dedicated path — typed 429 handling in the `_build_retrying` /
+`_build_probe_retrying` outer controllers above, transport-timeout retry in
+`_call_completion_with_timeout_retry`, substrate re-registration in the runner
+protocol, and the provider-shape fail-loud at wire receipt (see
+`empty_assistant_filler` § *Provider-side empty completion*). Retrying them at
+the loop level would double-count the exclusion and confuse the denominator.
+
+The retry budget resets to zero at the start of every outer iteration, so a
+successful turn 0 followed by an API-error turn 1 gets a fresh budget. The
+`messages` mutation invariant on a failed attempt is what makes replay safe:
+`_run_turn` mutates `messages` only after `_generate` succeeds
+(`messages.append(self._assistant_message(...))` sits after the `_generate`
+call), so a raise before that line leaves `messages` unchanged and the retry
+attempts against the same prefix.
+
+Composition with the judge's own retry: `RubricJudge` runs a bounded retry loop
+around `submit_report` validation errors inside its `LLMJudge` shell; a bad
+provider response inside one rubric turn retries once at the loop level, and the
+outer judge loop retries `submit_report` semantics on top. The two retries are
+orthogonal — one covers wire-level API-error transience, the other covers
+grader-contract validation — so composing them does not double-count the
+budget.
 
 ### Probe telemetry recording sites
 
