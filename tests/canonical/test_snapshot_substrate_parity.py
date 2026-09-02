@@ -14,18 +14,15 @@ Two Protocol methods are DELIBERATELY excluded from the parity assertion:
   :class:`SubstrateUnreachableError` (the caller-supplied DSN is only
   reachable inside the task's docker network; offline substrates cannot
   dial it). InProcess opens a real connection to the DSN and returns
-  rows. Bundle format v1.0 has no pre-materialised probe part; a v1.1
-  extension carrying ``db_probes.json`` is tracked upstream as a
-  discovered issue.
+  rows. Bundle format v1.0 has no pre-materialised probe part.
 - :meth:`GradingSubstrate.knowledge_search` — snapshot returns ``None``
   (bundle format v1.0's optional ``kb/`` subtree carries raw bytes
   without a queryable index; the judge's Protocol treats ``None`` as
   "the trial declared no KB"). InProcess wires whatever KB the caller
-  passes at construction. A v1.1 extension carrying an indexed KB
-  snapshot is tracked upstream as a discovered issue.
+  passes at construction.
 
-The behaviour on both excluded methods is locked separately by the Stage 1
-unit tests in :mod:`tests.unit.grading.test_snapshot_substrate`.
+The behaviour on both excluded methods is locked separately by the unit
+tests in :mod:`tests.unit.grading.test_snapshot_substrate`.
 
 The parity fixture routes the in-process leg's dict inputs through the
 same :func:`~tolokaforge.core.grading.bundle.normalise_floats` the bundle
