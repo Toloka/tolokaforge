@@ -17,10 +17,9 @@ resolved at runtime), so ``runner.models`` config types imported there
 remain permitted; the guard's ``else:`` branch DOES run at runtime and
 is walked normally. A runtime import of ``runner_pb2`` /
 ``runner_pb2_grpc`` from any module in the package fails — including
-the historical ``from tolokaforge.runner import runner_pb2 as pb2``
-idiom the pre-split composite used, which the walker catches by
-emitting both ``X`` and the fully-qualified ``X.Y`` name for each
-``from X import Y`` alias.
+``from tolokaforge.runner import runner_pb2 as pb2``, which the walker
+catches by emitting both ``X`` and the fully-qualified ``X.Y`` name for
+each ``from X import Y`` alias.
 
 A companion assertion verifies the walker actually visited every module
 under ``composite/`` — a new module added to the package cannot bypass
@@ -80,10 +79,10 @@ def _runtime_imports(module_source: str) -> list[tuple[str, int]]:
     seam. The ``else:`` branch of such a guard runs at runtime, so its
     statements are still processed. For each ``from X import Y``
     statement the walker emits BOTH ``X`` and ``X.Y``: the
-    fully-qualified form is what catches the historical
-    ``from tolokaforge.runner import runner_pb2`` idiom (``child.module``
-    alone is only ``tolokaforge.runner``). Returns ``(module_name,
-    lineno)`` pairs so a failure names the exact site.
+    fully-qualified form catches the ``from tolokaforge.runner import
+    runner_pb2`` idiom (``child.module`` alone is only
+    ``tolokaforge.runner``). Returns ``(module_name, lineno)`` pairs so
+    a failure names the exact site.
     """
     tree = ast.parse(module_source)
     imports: list[tuple[str, int]] = []
