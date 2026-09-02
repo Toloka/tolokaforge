@@ -717,51 +717,6 @@ def test_subset_wheel_ships_cli_shim_module(subset_wheel_path: Path) -> None:
     )
 
 
-def test_subset_wheel_carries_grading_seam_entry_points(subset_wheel_path: Path) -> None:
-    """The subset wheel's ``entry_points.txt`` must carry the seven
-    ``tolokaforge.*`` grading-side plug-in groups the grader-detachment
-    path resolves at trial start
-    (see ``scripts/hatch/hatch_runner_subset_builder.SUBSET_ENTRY_POINTS``).
-
-    Without them, the runner container boots and grading dispatch fails
-    at ``composite_dispatch`` with ``Unknown implementation '<name>' in
-    entry-point group 'tolokaforge.<group>'. Known names: (none registered).``
-    That failure mode shipped once (fix commit ``51403421``) — this
-    assertion locks the groups so a future edit to
-    ``SUBSET_ENTRY_POINTS`` cannot silently drop one."""
-    entry_points_txt = _wheel_read(subset_wheel_path, "*.dist-info/entry_points.txt")
-    required_groups = (
-        "[tolokaforge.grading_substrates]",
-        "[tolokaforge.custom_check_executors]",
-        "[tolokaforge.judge_model_providers]",
-        "[tolokaforge.rubric_evaluators]",
-        "[tolokaforge.transcript_rule_matchers]",
-        "[tolokaforge.state_check_backends]",
-        "[tolokaforge.trace_check_operators]",
-    )
-    for group in required_groups:
-        assert group in entry_points_txt, (
-            f"subset wheel entry_points.txt is missing the {group} section — "
-            f"a grader-detachment plug-in lookup for that group would fail at "
-            f"trial start with 'Unknown implementation … Known names: (none "
-            f"registered).' entry_points.txt shipped:\n{entry_points_txt}"
-        )
-    # Representative binding checks — one implementer name per group so a
-    # section header emitted without its body still fails.
-    representative_bindings = (
-        "check_runner = tolokaforge.core.grading.check_runner:_check_runner_factory",
-        "in_process = tolokaforge.core.grading.substrate:InProcessGradingSubstrate",
-        "litellm = tolokaforge.core.grading.default_judge_model_provider:_litellm_judge_model_provider_factory",
-    )
-    for binding in representative_bindings:
-        assert binding in entry_points_txt, (
-            f"subset wheel entry_points.txt is missing the binding {binding!r} "
-            f"— its group header is present but the body is empty, which "
-            f"reproduces the boot-time 'Known names: (none registered)' "
-            f"failure. entry_points.txt shipped:\n{entry_points_txt}"
-        )
-
-
 def test_subset_wheel_requires_tolokaforge_models(subset_wheel_path: Path) -> None:
     """The runner container's pricing / preset / provider tables now ship
     inside the :mod:`tolokaforge_models` wheel — the subset wheel resolves

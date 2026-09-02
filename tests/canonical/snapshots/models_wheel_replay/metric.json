@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 3,
-  "bucket_b_count": 6,
+  "bucket_b_count": 7,
   "integrations": [
     {
       "bucket": "B",
@@ -178,6 +178,27 @@
         "tolokaforge_models/src/tolokaforge_models/policies/__init__.py",
         "tolokaforge_models/src/tolokaforge_models/policies/xai.py",
         "tolokaforge_models/tests/unit/test_policies_reachable.py"
+      ]
+    },
+    {
+      "bucket": "B",
+      "date": "2026-08-25",
+      "engine_paths": [
+        "tests/canonical/snapshots/certify_suite_collection/collection.json",
+        "tests/unit/llm/test_z_ai_glm_5_3_preset.py"
+      ],
+      "model": "z-ai/glm-5.3",
+      "pr": 1277,
+      "reason": "2 engine-side path(s) outside Bucket-A allow-list",
+      "sha": "300bb1c153693cb1352f627db12851dcf1d162f9",
+      "touched_files": [
+        "tests/canonical/snapshots/certify_suite_collection/collection.json",
+        "tests/unit/llm/test_z_ai_glm_5_3_preset.py",
+        "tolokaforge_models/src/tolokaforge_models/certificates/registry.py",
+        "tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml",
+        "tolokaforge_models/src/tolokaforge_models/data/pricing.json",
+        "tolokaforge_models/tests/unit/fixtures/openrouter_z_ai_glm_5_3_reasoning_response.json",
+        "tolokaforge_models/tests/unit/test_reasoning_codec_openai_summary_replay.py"
       ]
     }
   ]
