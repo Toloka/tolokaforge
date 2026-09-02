@@ -16,7 +16,7 @@ installs a SecretManager that overrides that name for the test's duration, so a
 CI budget for integration tests stays separate from a deployment's production
 gateway budget, and a local ``.env`` cannot accidentally charge the wrong key.
 
-Two calls reach the network, each capped at a few dozen output tokens.
+Three calls reach the network (the pinned-upstream check is opt-in), each capped at a few dozen output tokens.
 
 Environment contract
 --------------------
@@ -64,7 +64,10 @@ from tolokaforge.core.llm.proxy import (
     ENV_API_KEY,
     ENV_BASE_URL,
     ENV_HEADERS,
+    ENV_PREFERRED_ROUTE,
+    ENV_PROVIDERS,
     ENV_REQUEST_ID_HEADER,
+    ENV_TRUST_WILDCARDS,
 )
 from tolokaforge.core.llm.reasoning import ReasoningConfig
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
@@ -77,6 +80,12 @@ ENV_TEST_API_KEY = "LLM_PROXY_INT_TEST_API_KEY"
 ENV_TEST_MODEL = "LLM_PROXY_INT_TEST_MODEL"
 ENV_TEST_BASE_URL = "LLM_PROXY_INT_TEST_BASE_URL"
 ENV_TEST_PROVIDER = "LLM_PROXY_INT_TEST_PROVIDER"
+# Optional pinned-upstream check (skipped when unset): an OpenRouter-namespace
+# slug plus the exact OpenRouter provider name expected to serve it. Needs a
+# gateway that forwards openrouter/... routes AND an OPENROUTER_API_KEY for the
+# retroactive /generation lookup.
+ENV_TEST_PINNED_MODEL = "LLM_PROXY_INT_TEST_PINNED_MODEL"
+ENV_TEST_PINNED_PROVIDER = "LLM_PROXY_INT_TEST_PINNED_PROVIDER"
 
 _WEATHER_TOOL = {
     "type": "function",
@@ -148,7 +157,13 @@ def gateway_client(gateway_key: str) -> Iterator[LLMClient]:
     # Override the gateway credential so this run bills to the test budget even
     # when a production LLM_PROXY_API_KEY is present in .env or the environment.
     secrets: dict[str, str] = {ENV_BASE_URL: base_url, ENV_API_KEY: gateway_key}
-    for passthrough in (ENV_HEADERS, ENV_REQUEST_ID_HEADER):
+    for passthrough in (
+        ENV_HEADERS,
+        ENV_REQUEST_ID_HEADER,
+        ENV_PROVIDERS,
+        ENV_PREFERRED_ROUTE,
+        ENV_TRUST_WILDCARDS,
+    ):
         value = _secret(passthrough)
         if value:
             secrets[passthrough] = value
@@ -251,3 +266,95 @@ def test_gateway_serves_a_tool_call(gateway_client: LLMClient) -> None:
     # tool payload shows up as a missing key rather than a silent pass.
     assert "city" in arguments
     assert "unit" in arguments
+
+
+def test_pinned_provider_reaches_the_upstream(gateway_key: str) -> None:
+    """A provider-pinned call through the gateway is served by THE pinned upstream.
+
+    This is the check the request shape cannot give: litellm's proxy may or may
+    not forward ``extra_body.provider`` to OpenRouter depending on its version,
+    and an upstream silently ignoring the field is invisible in the response
+    body. OpenRouter's ``/generation`` endpoint reports which provider actually
+    served the call, keyed by the generation id the engine already extracts
+    (``usage.openrouter_generation_id``).
+    """
+    import json
+    import urllib.request
+
+    pinned_model = _secret(ENV_TEST_PINNED_MODEL)
+    pinned_provider = _secret(ENV_TEST_PINNED_PROVIDER)
+    if not pinned_model or not pinned_provider:
+        pytest.skip(
+            f"{ENV_TEST_PINNED_MODEL} / {ENV_TEST_PINNED_PROVIDER} not set - "
+            "skipping the pinned-upstream check."
+        )
+    openrouter_key = _secret("OPENROUTER_API_KEY")
+    if not openrouter_key:
+        pytest.fail(
+            f"{ENV_TEST_PINNED_MODEL} is set but OPENROUTER_API_KEY is not - the "
+            "/generation lookup needs it. Unset the pinned-model envs to disable "
+            "this test deliberately."
+        )
+
+    base_url = _secret(ENV_TEST_BASE_URL) or _secret(ENV_BASE_URL)
+    if not base_url:
+        pytest.fail(
+            f"{ENV_TEST_PINNED_MODEL} is set but no gateway base URL is; set "
+            f"{ENV_TEST_BASE_URL} or {ENV_BASE_URL}."
+        )
+
+    secrets: dict[str, str] = {ENV_BASE_URL: base_url, ENV_API_KEY: gateway_key}
+    for passthrough in (
+        ENV_HEADERS,
+        ENV_REQUEST_ID_HEADER,
+        ENV_PROVIDERS,
+        ENV_PREFERRED_ROUTE,
+        ENV_TRUST_WILDCARDS,
+    ):
+        value = _secret(passthrough)
+        if value:
+            secrets[passthrough] = value
+
+    original = secrets_manager._default_manager
+    secrets_manager._default_manager = SecretManager([DictProvider(secrets)])
+    try:
+        client = LLMClient(
+            ModelConfig(
+                provider="openrouter",
+                name=pinned_model,
+                temperature=0.0,
+                max_tokens=64,
+                reasoning=ReasoningConfig(mode="off"),
+                openrouter={"provider_order": [pinned_provider], "allow_fallbacks": False},
+            )
+        )
+        assert client._proxy is not None, "gateway did not claim the openrouter provider"
+        result = client.generate(
+            system="Answer with a single word.",
+            messages=[Message(role=MessageRole.USER, content="Say OK")],
+        )
+    finally:
+        secrets_manager._default_manager = original
+
+    generation_ids = [
+        call.openrouter_generation_id
+        for call in result.usage.calls
+        if call.openrouter_generation_id
+    ]
+    assert generation_ids, (
+        "no OpenRouter generation id on the response: either the gateway does not "
+        "forward upstream response headers (attribution is then impossible on this "
+        "route) or the call never reached OpenRouter"
+    )
+
+    request = urllib.request.Request(
+        f"https://openrouter.ai/api/v1/generation?id={generation_ids[-1]}",
+        headers={"Authorization": f"Bearer {openrouter_key}"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = json.load(response)
+    served_by = (payload.get("data") or {}).get("provider_name")
+    assert served_by == pinned_provider, (
+        f"the pin did not hold through the gateway: pinned {pinned_provider!r}, "
+        f"served by {served_by!r} - the proxy dropped extra_body.provider"
+    )

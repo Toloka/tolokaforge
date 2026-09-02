@@ -46,6 +46,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from tolokaforge.core.llm.gateway_route import RouteKind
+
 __all__ = [
     "OPENROUTER_GENERATION_ID_HEADER",
     "CostSource",
@@ -87,6 +89,20 @@ class ProviderRawCall:
     cost_usd: float | None = None
     cost_source: CostSource = "unknown"
     latency_s: float = 0.0
+    gateway_route: str | None = None
+    """The gateway route name this call was addressed to, else ``None``.
+
+    ``None`` on the direct-provider path and on the unreadable-catalog path
+    (where the untranslated model string goes to the gateway unresolved).
+    """
+
+    gateway_route_kind: RouteKind | None = None
+    """How the route matched the catalog: ``"exact"`` or ``"wildcard"``.
+
+    The serving-path provenance a board audit needs: a wildcard route says
+    the gateway forwarded by namespace rather than by an explicit entry.
+    """
+
     openrouter_generation_id: str | None = None
     """OpenRouter's id for the generation this call produced, else ``None``.
 
@@ -295,6 +311,8 @@ class UsageExtractor:
         latency_s: float = 0.0,
         cost_usd: float | None = None,
         cost_source: CostSource = "unknown",
+        gateway_route: str | None = None,
+        gateway_route_kind: RouteKind | None = None,
     ) -> Usage:
         usage = getattr(response, "usage", None)
         if usage is None and isinstance(response, dict):
@@ -339,6 +357,8 @@ class UsageExtractor:
             cost_usd=cost_usd,
             cost_source=cost_source,
             latency_s=latency_s,
+            gateway_route=gateway_route,
+            gateway_route_kind=gateway_route_kind,
             openrouter_generation_id=extract_openrouter_generation_id(response),
         )
 
