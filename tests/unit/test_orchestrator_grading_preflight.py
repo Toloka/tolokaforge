@@ -304,25 +304,23 @@ def _orchestrator(
     every task off-cache when it has to answer, and that walk would otherwise be
     counted against the pre-flight it runs beside.
     """
-    from tolokaforge.core.models.run_config import RunDefaultsConfig
-
     evaluation: dict[str, Any] = {"output_dir": str(output_dir), "projects": [str(root)]}
     if fail_on is not None:
         evaluation["grading_validation"] = {"fail_on": fail_on.value}
     conductor = InMemoryConductor()
     orchestrator = Orchestrator(
         RunConfig(
+            # models.user is required — the orchestrator fails loud otherwise
+            # (see require_user_simulator_config).
             models={
                 "agent": ModelConfig(provider="openai", name="gpt-4"),
+                "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
                 "judge": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
             },
             orchestrator=OrchestratorConfig(
                 workers=1, repeats=repeats, auto_start_services=False, shuffle_trials=False
             ),
             evaluation=EvaluationConfig(**evaluation),
-            defaults=RunDefaultsConfig(
-                user_simulator=ModelConfig(provider="openai", name="gpt-4-user-sim"),
-            ),
         ),
         deps=OrchestratorDeps(
             runtime_backend=InMemoryRuntimeBackend(),

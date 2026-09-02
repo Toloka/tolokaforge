@@ -36,8 +36,13 @@ class RunnerStub:
 
 
 def make_run_config(output_dir: Path, *, repeats: int = 1) -> RunConfig:
+    # models.user is required — the orchestrator fails loud otherwise (see
+    # require_user_simulator_config).
     return RunConfig(
-        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        models={
+            "agent": ModelConfig(provider="openai", name="gpt-4"),
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+        },
         orchestrator=OrchestratorConfig(
             workers=1,
             repeats=repeats,

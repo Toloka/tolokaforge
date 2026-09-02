@@ -1055,19 +1055,27 @@ params bag; the lift makes coding-harness selection a first-class
 run-config concept that any adapter can accept."""
 
 
-class RunDefaultsConfig(BaseModel):
-    """Fallback ``ModelConfig``\\s for roles a run leaves unset in ``models``.
+def require_user_simulator_config(user_config: ModelConfig | None) -> ModelConfig:
+    """Return ``user_config`` or raise if it is missing.
 
-    Only the user-simulator fallback is wired today. Set
-    ``defaults.user_simulator`` to name the model the orchestrator should
-    use when ``RunConfig.models["user"]`` is missing; leaving both unset
-    fails the run loud rather than silently routing user turns through
-    any hardcoded provider.
+    Callers that dispatch a user simulator (``Orchestrator.run``,
+    ``Orchestrator.run_worker``, the library entry ``core.run_trial``)
+    fail loud here when ``RunConfig.models["user"]`` is unset, so a run
+    always names the provider it ships user turns to. There is
+    deliberately no hardcoded default: a project that wants a shared
+    fallback declares it under ``project.run_defaults.models.user`` and
+    lets the project loader merge it into every run config.
     """
-
-    model_config = {"extra": "forbid"}
-
-    user_simulator: ModelConfig | None = None
+    if user_config is not None:
+        return user_config
+    raise ValueError(
+        "No user-simulator model configured. Set `models.user` on the run "
+        "config to the provider/name the user turns should run against. "
+        "Projects can declare a project-wide fallback under "
+        "`project.run_defaults.models.user` and the loader will merge it "
+        "in. Example: `models: {user: {provider: openrouter, "
+        "name: openai/gpt-5}}`."
+    )
 
 
 class RunConfig(BaseModel):
@@ -1084,7 +1092,6 @@ class RunConfig(BaseModel):
     observability: ObservabilityConfig | None = None
     docker: DockerConfig | None = None
     grader: GraderConfig | None = None
-    defaults: RunDefaultsConfig | None = None
 
     @property
     def effective_workers(self) -> int:

@@ -390,7 +390,6 @@ cli.add_command(run_trial)
 
 
 # Default user model configuration
-DEFAULT_USER_MODEL = "anthropic/claude-sonnet-4.6"
 DEFAULT_USER_MODEL_PROVIDER = "openrouter"
 DEFAULT_USER_MODEL_TEMPERATURE = 0.2
 

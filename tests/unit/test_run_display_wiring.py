@@ -240,7 +240,10 @@ def test_in_process_conductor_grade_fires_judgment_scored(tmp_path: Path) -> Non
         adapter=MagicMock(),
         artifact_writer=MagicMock(),
         config=RunConfig(
-            models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+            models={
+                "agent": ModelConfig(provider="openai", name="gpt-4"),
+                "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+            },
             orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
             evaluation=EvaluationConfig(output_dir=str(tmp_path / "results" / "run")),
         ),
@@ -302,7 +305,10 @@ def test_in_process_conductor_default_events_is_null_sink(tmp_path: Path) -> Non
         adapter=MagicMock(),
         artifact_writer=MagicMock(),
         config=RunConfig(
-            models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+            models={
+                "agent": ModelConfig(provider="openai", name="gpt-4"),
+                "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+            },
             orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
             evaluation=EvaluationConfig(output_dir=str(tmp_path / "results" / "run")),
         ),
@@ -470,7 +476,10 @@ def test_orchestrator_stores_events_from_deps() -> None:
 
     events = _RecordingEvents()
     config = RunConfig(
-        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        models={
+            "agent": ModelConfig(provider="openai", name="gpt-4"),
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+        },
         orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
         evaluation=EvaluationConfig(output_dir="/tmp/test-events-wiring"),
     )
@@ -504,7 +513,10 @@ def _make_orchestrator_with_tasks(task_ids: list[str], repeats: int, shuffle: bo
     from tolokaforge.core.orchestrator import Orchestrator
 
     config = RunConfig(
-        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        models={
+            "agent": ModelConfig(provider="openai", name="gpt-4"),
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+        },
         orchestrator=OrchestratorConfig(
             workers=1,
             repeats=repeats,
@@ -655,7 +667,10 @@ def _build_orch_for_seam_threading(events: Any) -> Any:
     from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 
     config = RunConfig(
-        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        models={
+            "agent": ModelConfig(provider="openai", name="gpt-4"),
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+        },
         orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
         evaluation=EvaluationConfig(output_dir="/tmp/seam-thread-test"),
     )
@@ -815,7 +830,10 @@ def test_run_emits_lifecycle_with_distinct_trial_started_total_indices(tmp_path:
     run_root = tmp_path / "results" / "run_base"
     run_root.parent.mkdir(parents=True, exist_ok=True)
     config = RunConfig(
-        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        models={
+            "agent": ModelConfig(provider="openai", name="gpt-4"),
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+        },
         orchestrator=OrchestratorConfig(
             workers=1,
             repeats=1,
@@ -886,7 +904,10 @@ def test_run_with_default_null_events_completes_without_raising(tmp_path: Path) 
     run_root = tmp_path / "results" / "null_base"
     run_root.parent.mkdir(parents=True, exist_ok=True)
     config = RunConfig(
-        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        models={
+            "agent": ModelConfig(provider="openai", name="gpt-4"),
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+        },
         orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
         evaluation=EvaluationConfig(output_dir=str(run_root)),
     )

@@ -71,6 +71,7 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
     TypeSenseConfig,
+    require_user_simulator_config,
 )
 from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
@@ -1907,35 +1908,6 @@ class Orchestrator:
 
         self.logger.info("Tasks loaded", count=len(self.tasks), adapter=type(self.adapter).__name__)
 
-    def _resolve_user_simulator_config(self, user_config: ModelConfig | None) -> ModelConfig:
-        """Resolve the user-simulator ``ModelConfig`` or fail loud.
-
-        Selection order: ``models.user`` on the run config →
-        ``defaults.user_simulator`` on the run config → hard error. There
-        is deliberately no hardcoded provider default: a run that ships
-        user turns to a provider must name that provider explicitly, so
-        a buyer running the agent on GPT / Gemini / Kimi does not
-        silently route user turns through a different provider.
-        """
-        if user_config is not None:
-            return user_config
-        default_user = (
-            self.config.defaults.user_simulator if self.config.defaults is not None else None
-        )
-        if default_user is not None:
-            self.logger.info(
-                "Using defaults.user_simulator for the user model",
-                user_model=f"{default_user.provider}/{default_user.name}",
-            )
-            return default_user
-        raise ValueError(
-            "No user-simulator model configured. Set `models.user` on the run "
-            "config to the provider/name the user turns should run against, or "
-            "set `defaults.user_simulator` to a fallback that applies when a "
-            "specific run leaves `models.user` unset. Example: "
-            "`models: {user: {provider: openrouter, name: openai/gpt-5}}`."
-        )
-
     def _resolve_judge_config(self) -> ModelConfig | None:
         """Resolve the run-level judge model and fail loud on the missing-judge case.
 
@@ -2193,7 +2165,7 @@ class Orchestrator:
             self.logger.error("Agent model configuration required")
             raise ValueError("Agent model configuration required")
 
-        user_config = self._resolve_user_simulator_config(user_config)
+        user_config = require_user_simulator_config(user_config)
 
         # Resolve the run-level judge model and reject the run up front if any
         # selected task needs a judge but none is configured (fail loud).
@@ -2842,7 +2814,7 @@ class Orchestrator:
         if not agent_config:
             raise ValueError("Agent model configuration required")
 
-        user_config = self._resolve_user_simulator_config(user_config)
+        user_config = require_user_simulator_config(user_config)
 
         # Resolve the run-level judge model and reject the run up front if any
         # selected task needs a judge but none is configured (fail loud).

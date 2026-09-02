@@ -141,7 +141,10 @@ def test_adapter_declared_grader_name_reaches_grade(
     task = adapter.get_task(_TASK_ID)
 
     config = RunConfig(
-        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        models={
+            "agent": ModelConfig(provider="openai", name="gpt-4"),
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+        },
         orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
         evaluation=EvaluationConfig(output_dir=str(tmp_path / "results")),
     )
