@@ -229,3 +229,30 @@ forbidden_modules =
     tolokaforge.grader
     tolokaforge.core.grading.substrate_live
 allow_indirect_imports = false
+
+
+# Bundle-producer purity (grade bundle orchestrator-side producer helper).
+#
+# ``core.grading.bundle_producer`` is the orchestrator-side helper the
+# runtime backend's ``build_grade_bundle`` hook delegates to. It composes
+# substrate reads plus caller-supplied trajectory + task-description
+# inputs into a v1.0 bundle via ``serialize_grade_bundle``. A reach back
+# into ``runner``, ``grader``, or the live substrate would couple the
+# producer to the wire and defeat the seam that lets any topology
+# emit a byte-identical bundle for the same trial. The helper MAY reach
+# ``tolokaforge.core.grading.bundle`` (for the serialiser + manifest) and
+# ``tolokaforge.core.grading.substrate`` (the ``GradingSubstrate``
+# Protocol — the caller passes a live-callback substrate, but the helper
+# talks to it structurally). ``allow_indirect_imports = false`` mirrors
+# ``bundle-library-purity`` — a transitive path back into a forbidden
+# target trips the contract, not just a direct import.
+[importlinter:contract:bundle-producer-purity]
+name = tolokaforge.core.grading.bundle_producer is a pure orchestrator-side helper — no runner/grader/substrate_live reach
+type = forbidden
+source_modules =
+    tolokaforge.core.grading.bundle_producer
+forbidden_modules =
+    tolokaforge.runner
+    tolokaforge.grader
+    tolokaforge.core.grading.substrate_live
+allow_indirect_imports = false

@@ -124,6 +124,7 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/actors/turn_policy.py",
     "tolokaforge/core/grading/agreement.py",
     "tolokaforge/core/grading/bundle.py",
+    "tolokaforge/core/grading/bundle_producer.py",
     "tolokaforge/core/grading/bundle_store.py",
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/config_validation.py",
@@ -196,6 +197,12 @@ built-in transports for the same offline grade-bundle format. Its
 producers and consumers live host-side (offline replay, cross-topology
 grading, standalone grader service); no runner boot-closure module
 reaches into it. Excluded on the same grounds as ``core.grading.bundle``.
+
+``core.grading.bundle_producer`` is the orchestrator-side helper the
+runtime backend's ``build_grade_bundle`` hook delegates to. It composes
+substrate reads plus caller-supplied trajectory and task-description
+inputs into a v1.0 bundle via ``serialize_grade_bundle``; the runner
+never invokes it. Excluded on the same grounds as ``core.grading.bundle``.
 """
 
 

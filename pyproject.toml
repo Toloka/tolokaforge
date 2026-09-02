@@ -429,6 +429,7 @@ exclude = [
     "tolokaforge/core/actors/turn_policy.py",
     "tolokaforge/core/grading/agreement.py",
     "tolokaforge/core/grading/bundle.py",
+    "tolokaforge/core/grading/bundle_producer.py",
     "tolokaforge/core/grading/bundle_store.py",
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/config_validation.py",
