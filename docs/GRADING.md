@@ -693,6 +693,43 @@ touch. A grading failure that a second attempt would have got past is therefore
 recorded ungradeable on the first: the price of never fabricating a verdict and
 never counting one attempt twice.
 
+#### A component the config declared that produced no verdict
+
+The same fail-loud shape covers any component the config declared and the trial
+did not score. `resolve_uncounted_fold`
+(`tolokaforge/core/grading/combine_weights.py`) refuses the fold when a
+component in `combine.weights` with its matching config section arrives with a
+score of `-1.0` (the "not evaluated" sentinel), and marks the verdict with
+`FoldedGrade.refusal = True`. The runner's `GradeTrial` reads that flag and
+returns `success = False` with a reason naming the missing component; the
+grader-service dispatch raises `GradingFailedError` with the same reason. The
+grader-service `Grade` handler translates that raise to
+`GradeResponse(success = False)`, so both substrates surface the same wire
+shape.
+
+Two failure modes reach this branch today:
+
+| mode | how the component ended up unscored |
+|---|---|
+| `llm_judge` declared and errored | the judge returned `JudgeStatus.ERRORED` with no numeric score (a provider outage, a rubric the judge could not parse, a submit_report the judge refused after retries), leaving `llm_judge_score` at `-1.0` |
+| `state_checks` declared and its golden replay errored | `_execute_hash_grading` recorded a per-action failure and its downstream write-back left `hash_score` unscored, so the composed `state_checks` slot is empty |
+
+Folding on the remaining components would silently redistribute the missing
+component's declared weight onto whatever else scored. A judge-errored trial
+that happened to score `state_checks: 1.0` beside a `-1.0` `llm_judge_score`
+would otherwise surface as `score=1.0, binary_pass=True`, indistinguishable
+from a trial the judge actually confirmed. The refusal removes that ambiguity:
+the trial's downstream trace is the same one a state_checks-unanswerable trial
+already had — `Trajectory.grading_error` records the reason,
+`classify_trial_outcome` returns `UNGRADEABLE`, the trial reaches
+`measured_trials` while staying out of `scored_trials`, and the process exits
+non-zero once the run has otherwise completed.
+
+The refusal fires on the `-1.0` sentinel alone. A judge that scored `0.0` (or
+a required-criterion gate that zeroed the judge's aggregate) still folds in
+normally, because that zero is a real measured verdict rather than a missing
+one.
+
 ### The event
 
 One flat `TraceEvent` type carries all four kinds — `assistant_message`,

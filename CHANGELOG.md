@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ### Fix
 
+- **grading**: a declared-but-unscored component (e.g. a judge that errored)
+  now refuses the fold and returns a fail-loud verdict; the trial lands
+  UNGRADEABLE rather than passing on a silently redistributed weighted mean.
+  `resolve_uncounted_fold` marks the refusal with `FoldedGrade.refusal = True`;
+  the runner's `GradeTrial` and the grader-service dispatch both surface it
+  as `success = False` on the wire.
 - **loop**: empty completions (no text + no tool calls) now terminate with
   `TerminationReason.EMPTY_COMPLETION` (fail-loud) instead of silently
   appending an empty assistant message that Gemini and similar providers

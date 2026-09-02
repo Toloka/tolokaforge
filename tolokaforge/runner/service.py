@@ -1968,6 +1968,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 success=False,
                 error=f"Trial {trial_id!r} is not gradeable: {type(exc).__name__}: {exc}",
             )
+        if verdict.refusal:
+            # A declared component produced no verdict (a judge that errored, a
+            # golden replay that did not run whole) or the scored components carry
+            # no weight; folding on the remainder would silently redistribute the
+            # missing share, so the RPC refuses and the trial lands UNGRADEABLE.
+            logger.error(f"GradeTrial: {trial_id} - {verdict.reason}")
+            return pb2.GradeTrialResponse(success=False, error=verdict.reason or "")
         # The gated component, not the judge's raw aggregate, is what the wire grade and
         # the reasons carry — so the write-back happens before either is built.
         components.llm_judge_score = verdict.judge_component

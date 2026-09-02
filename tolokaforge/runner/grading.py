@@ -703,12 +703,18 @@ class RunnerTrialVerdict:
     gate, which is what the wire grade and the reasons string report — not the weighted average
     the judge's own aggregate returned. ``reason`` is the fold's own sentence where it counted
     nothing, which no component's reasons would otherwise state.
+
+    ``refusal`` is the fold's own discriminator: ``True`` when the fold declined to compose
+    a grade (a declared component produced no verdict, or the scored components carry no
+    weight), so the caller emits ``pb2.GradeTrialResponse(success=False, error=reason)``
+    instead of writing the ``0.0`` verdict into a real Grade.
     """
 
     judge_component: float
     score: float
     binary_pass: bool
     reason: str | None
+    refusal: bool
 
 
 def compose_runner_trial_verdict(
@@ -746,6 +752,7 @@ def compose_runner_trial_verdict(
         score=combined.score,
         binary_pass=combined.binary_pass and not (judge_gate_failed or trace_gate_failed),
         reason=combined.reason,
+        refusal=combined.refusal,
     )
 
 

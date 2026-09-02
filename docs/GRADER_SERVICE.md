@@ -321,6 +321,24 @@ The refusal is client-side (fires before any gRPC round-trip) so the
 misconfiguration surfaces without a network hop, and the trial books as
 ungradeable rather than as an agent failure.
 
+### A component the config declared that produced no verdict
+
+The grader-service composite dispatcher shares one fold rule with the
+runner: `resolve_uncounted_fold`
+(`tolokaforge/core/grading/combine_weights.py`) refuses the fold when a
+component the config declared arrives at the composed verdict without a
+score — the `FoldedGrade.refusal` flag is `True` and the reason names
+the missing component. The grader-side `_run_composite` reads the flag
+after `compose_runner_trial_verdict` and raises
+`GradingFailedError(verdict.reason)`; the `Grade` handler translates
+that raise into `GradeResponse(success = False)`. The wire shape is
+identical to the runner's `GradeTrial` refusal, so a trial's downstream
+booking (`Trajectory.grading_error`, `TrialOutcomeClass.UNGRADEABLE`,
+`ungradeable` count, non-zero exit) is the same whichever transport
+graded it. See [`docs/GRADING.md` § A component the config declared that
+produced no verdict](GRADING.md#a-component-the-config-declared-that-produced-no-verdict)
+for the shared contract and the failure modes it covers.
+
 ## Registering a downstream grader
 
 A downstream `pip install` adds a new grader by:

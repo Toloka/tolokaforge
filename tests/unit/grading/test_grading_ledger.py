@@ -39,7 +39,6 @@ from tolokaforge.runner.grading_ledger import (
     HASH_DISABLED_SKIP,
     JSONPATHS_KEY,
     LEDGER_KEYS,
-    NO_TIMELINE_EVENTS_SKIP,
     TRACE_ALTERNATIVES_KEY,
     TRACE_CONSTRAINT_KEY_BY_KIND,
     TRACE_CONSTRAINTS_KEY,
@@ -912,8 +911,15 @@ def test_every_transcript_rule_and_jsonpath_key_grades_together(runner_service, 
     assert response.grade.components.state_checks == pytest.approx(1.0)
 
 
-def test_degenerate_trial_records_the_transcript_skip_in_reasons(runner_service, mock_grpc_context):
-    """No messages and no tool history: score badly, never error the RPC."""
+def test_degenerate_trial_refuses_when_the_declared_transcript_rules_did_not_score(
+    runner_service, mock_grpc_context
+):
+    """No messages and no tool history leaves ``transcript_rules`` at the ``-1.0``
+    sentinel while the config declared it and weighted it. The fold refuses:
+    folding on nothing would surface a bare ``0.0`` on a component that never
+    produced a verdict. ``GradeTrial`` returns ``success=False`` with an error
+    naming the missing component so the trial lands ungradeable.
+    """
     grading = {
         "combine_method": "weighted",
         "weights": {"transcript_rules": 1.0},
@@ -923,13 +929,8 @@ def test_degenerate_trial_records_the_transcript_skip_in_reasons(runner_service,
 
     response = _grade(runner_service, mock_grpc_context, "ledger_degenerate:0", grading)
 
-    assert response.success is True, response.error
-    assert response.grade.binary_pass is False
-    assert response.grade.score == pytest.approx(0.0)
-    assert (
-        "transcript_rules.must_contain skipped: the trial's timeline carries no events"
-        in response.grade.reasons
-    )
+    assert response.success is False, response.error
+    assert "transcript_rules" in response.error, response.error
 
 
 def test_degenerate_trial_still_grades_a_declared_activity_floor(runner_service, mock_grpc_context):
@@ -1081,28 +1082,21 @@ def test_a_trace_checks_pack_grades_instead_of_erroring(runner_service, mock_grp
     ]
 
 
-def test_a_degenerate_trial_leaves_trace_checks_unscored(runner_service, mock_grpc_context):
-    """No messages and no tool history: the component is not scored, and the trial fails.
-
-    Scoring it would grade constraints against evidence the trial does not carry,
-    and passing it would let the one component the pack weights decide nothing.
+def test_a_degenerate_trial_refuses_when_the_declared_trace_checks_did_not_score(
+    runner_service, mock_grpc_context
+):
+    """No messages and no tool history leaves ``trace_checks`` at the ``-1.0``
+    sentinel while the pack declared and weighted it. Scoring against evidence
+    the trial does not carry would fabricate a verdict, and folding on nothing
+    else would let a declared component decide nothing. ``GradeTrial`` refuses
+    with an error naming the missing component so the trial lands ungradeable.
     """
     response = _grade(
         runner_service, mock_grpc_context, "ledger_trace_degenerate:0", _TRACE_CHECKS_GRADING
     )
 
-    assert response.success is True, response.error
-    assert response.grade.components.trace_checks == -1.0
-    assert list(response.grade.trace_checks) == []
-    assert response.grade.binary_pass is False
-    # The skip is asserted together with the unscored component: a component the
-    # runner silently declined to score is as opaque to the task author as one it
-    # never accounted for.
-    assert skip_note(TRACE_CONSTRAINTS_KEY, NO_TIMELINE_EVENTS_SKIP) in response.grade.reasons
-    assert (
-        skip_note(TRACE_CONSTRAINT_KEY_BY_KIND["all_of"], NO_TIMELINE_EVENTS_SKIP)
-        in response.grade.reasons
-    )
+    assert response.success is False, response.error
+    assert "trace_checks" in response.error, response.error
 
 
 @pytest.mark.parametrize(

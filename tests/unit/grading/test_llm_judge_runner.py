@@ -41,8 +41,14 @@ def test_combine_components_includes_llm_judge_when_score_set():
     assert score == pytest.approx(0.6)
 
 
-def test_combine_excludes_llm_judge_when_score_is_sentinel():
-    """An ERRORED judge leaves ``llm_judge_score`` at -1.0 — excluded, not 0.0."""
+def test_combine_excludes_llm_judge_when_declared_in_weights_without_a_config_section():
+    """``llm_judge`` in ``combine.weights`` without an ``llm_judge:`` config section is
+    not requested — ``component_requested`` returns ``False`` off the missing section,
+    so the fold walks over the state_checks slot alone and the ``-1.0`` sentinel on
+    ``llm_judge_score`` is inert. The paired
+    ``test_combine_refuses_llm_judge_when_configured_and_errored`` below covers the
+    matching case where the section IS declared and the judge scored nothing.
+    """
     components = {
         "hash_score": 0.8,
         "jsonpath_score": -1.0,
@@ -55,8 +61,33 @@ def test_combine_excludes_llm_judge_when_score_is_sentinel():
         "state_checks": {"hash_enabled": True},
     }
     score = combine_grade_components(components, cfg).score
-    # Only state_checks is active; the errored judge does NOT drag the score to 0.
     assert score == pytest.approx(0.8)
+
+
+def test_combine_refuses_llm_judge_when_configured_and_errored():
+    """A declared and configured ``llm_judge`` that scored the ``-1.0`` sentinel
+    (an ERRORED judge) refuses the fold. Folding on ``state_checks`` alone would
+    redistribute the judge's declared 1.0 share onto state_checks and surface a
+    trial that scored 1.0 on state_checks as a passing verdict — the exact
+    silent-redistribution defect this rule exists to remove.
+    """
+    components = {
+        "hash_score": 0.8,
+        "jsonpath_score": -1.0,
+        "transcript_score": -1.0,
+        "llm_judge_score": -1.0,
+    }
+    cfg = {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0, "llm_judge": 1.0},
+        "state_checks": {"hash_enabled": True},
+        "llm_judge": {"rubric": {"criteria": []}},
+    }
+    folded = combine_grade_components(components, cfg)
+    assert folded.refusal is True
+    assert folded.score == 0.0
+    assert folded.binary_pass is False
+    assert "llm_judge" in (folded.reason or "")
 
 
 def test_build_grade_reasons_includes_judge_text():

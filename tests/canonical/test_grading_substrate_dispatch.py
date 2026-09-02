@@ -611,6 +611,70 @@ def _reassemble_grade_from_composite(
         substrate.close()
 
 
+class _RaisingClient:
+    """An ``LLMClient`` stand-in whose every ``generate`` call raises.
+
+    The judge's ``ToolCallingLoop.run`` catches the raise and returns
+    ``JudgeStatus.ERRORED`` with no numeric score, so the fold's declared
+    ``llm_judge`` component reads as ``-1.0`` on the wire and the refusal
+    branch fires downstream.
+    """
+
+    def generate(
+        self,
+        system,  # noqa: ARG002
+        messages,  # noqa: ARG002
+        tools,  # noqa: ARG002
+        tool_choice="auto",  # noqa: ARG002
+        observation=None,  # noqa: ARG002
+    ) -> GenerationResult:
+        raise RuntimeError("scripted judge failure — provider unreachable")
+
+    def classify_loop_error(self, exc: Exception):
+        from tolokaforge.core.loop import classify_loop_error
+
+        return classify_loop_error(exc, ())
+
+
+def _install_raising_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Route the judge's ``LLMClient`` construction to a client that raises."""
+    monkeypatch.setattr(
+        "tolokaforge.core.grading.default_judge_model_provider.LLMClient",
+        lambda *args, **kwargs: _RaisingClient(),
+    )
+
+
+def test_grade_trial_refuses_when_a_declared_judge_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declared+configured ``llm_judge`` that errors refuses the fold.
+
+    The fixture has all four components in ``combine.weights`` and every
+    matching config section, so the judge is a declared component. With the
+    judge's LLM client raising on every call the judge returns
+    :attr:`JudgeStatus.ERRORED` with no numeric score; ``resolve_uncounted_fold``
+    reads ``llm_judge`` in ``requested`` but not in ``scored`` and refuses.
+    The runner's ``GradeTrial`` surfaces the refusal as
+    ``success=False`` with an error that names the missing component — the
+    trial lands ungradeable rather than passing on a redistributed weighted
+    mean.
+    """
+    with _running_runner() as (runner, _trial_context, _task_description, _channel):
+        _install_raising_client(monkeypatch)
+        response = runner.GradeTrial(
+            pb2.GradeTrialRequest(
+                trial_id=_TRIAL_ID,
+                llm_messages_json=json.dumps(_LLM_MESSAGES),
+            ),
+            _NullGrpcContext(),
+        )
+
+    error = response.error
+    grade = response.grade
+    assert response.success is False, f"errored judge must refuse RPC, got grade={grade}"
+    assert "llm_judge" in error, f"refusal must name the component: {error!r}"
+
+
 def test_composite_level_parity_between_in_process_and_live_callback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
