@@ -46,6 +46,73 @@ class TestRouteName:
     def test_a_provider_less_model_string_has_one_candidate(self) -> None:
         assert resolve_gateway_route("solo", frozenset({"solo"})) == "solo"
 
+    def test_an_exact_hit_reports_its_kind(self) -> None:
+        route = resolve_gateway_route(
+            "openrouter/anthropic/claude-sonnet-4.6",
+            frozenset({"openrouter/anthropic/claude-sonnet-4.6"}),
+        )
+        assert route.kind == "exact"
+
+
+class TestNamespaceWildcard:
+    """``<ns>/*`` routes a ``provider: <ns>`` model - opt-in, exact wins."""
+
+    catalog = frozenset({"openrouter/*", "anthropic/*"})
+
+    def test_off_by_default(self) -> None:
+        assert resolve_gateway_route("openrouter/minimax/minimax-m3", self.catalog) is None
+
+    def test_the_models_own_namespace_wildcard_routes_it_untranslated(self) -> None:
+        route = resolve_gateway_route(
+            "openrouter/minimax/minimax-m3",
+            self.catalog,
+            trust_namespace_wildcards=True,
+        )
+        assert route == "openrouter/minimax/minimax-m3"
+        assert route.kind == "wildcard"
+
+    def test_a_foreign_namespace_wildcard_is_not_a_route(self) -> None:
+        """``anthropic/*`` for an openrouter model is another upstream."""
+        assert (
+            resolve_gateway_route(
+                "openrouter/minimax/minimax-m3",
+                frozenset({"anthropic/*"}),
+                trust_namespace_wildcards=True,
+            )
+            is None
+        )
+
+    def test_an_exact_entry_wins_over_the_wildcard(self) -> None:
+        catalog = frozenset({"openrouter/*", "anthropic/claude-sonnet-4.6"})
+        route = resolve_gateway_route(
+            "openrouter/anthropic/claude-sonnet-4.6",
+            catalog,
+            trust_namespace_wildcards=True,
+        )
+        assert route == "anthropic/claude-sonnet-4.6"
+        assert route.kind == "exact"
+
+    def test_a_non_openrouter_namespace_works_the_same_way(self) -> None:
+        """The rule is generic: any provider namespace, e.g. a self-hosted vLLM."""
+        route = resolve_gateway_route(
+            "nebius-llmqa-vllm/qwen3-32b",
+            frozenset({"nebius-llmqa-vllm/*"}),
+            trust_namespace_wildcards=True,
+        )
+        assert route == "nebius-llmqa-vllm/qwen3-32b"
+        assert route.kind == "wildcard"
+
+    def test_a_bare_global_star_is_not_trusted(self) -> None:
+        """Only the namespace form carries meaning; ``*`` says nothing."""
+        assert (
+            resolve_gateway_route(
+                "openrouter/minimax/minimax-m3",
+                frozenset({"*"}),
+                trust_namespace_wildcards=True,
+            )
+            is None
+        )
+
 
 class TestAmbiguityIsRefused:
     """Two names for one model can be two different upstreams, so guessing is refused."""
@@ -72,6 +139,15 @@ class TestAmbiguityIsRefused:
             resolve_gateway_route("openrouter/anthropic/claude-sonnet-4.6", self.both, preference)
             == expected
         )
+
+    def test_a_preference_list_is_honoured_in_order(self) -> None:
+        """Multi-namespace deployments rank their routes; the first match wins."""
+        route = resolve_gateway_route(
+            "openrouter/anthropic/claude-sonnet-4.6",
+            self.both,
+            "gemini/,anthropic/,openrouter/",
+        )
+        assert route == "anthropic/claude-sonnet-4.6"
 
     def test_a_preference_matching_neither_still_raises(self) -> None:
         """Silently ignoring the preference would pick a serving path nobody asked for."""
@@ -104,3 +180,36 @@ class TestUnreadableIsNotAbsent:
     def test_an_empty_catalog_is_treated_as_no_information(self) -> None:
         """A gateway that answers with zero models is broken, not authoritative."""
         assert resolve_gateway_route("openrouter/x/y", frozenset()) is None
+
+
+class TestResolvedRouteSurvivesCopying:
+    """The route rides inside ProviderRawCall records, and dataclasses.asdict
+    DEEPCOPIES every one of them on the way into metrics.yaml - so a str
+    subclass that cannot reconstruct itself kills every routed run at the
+    first artifact write, whatever the wildcard flag says."""
+
+    def test_deepcopy_and_pickle_round_trip(self) -> None:
+        import copy
+        import pickle
+
+        from tolokaforge.core.llm.gateway_route import ResolvedGatewayRoute
+
+        route = ResolvedGatewayRoute("openrouter/minimax/minimax-m3", kind="wildcard")
+        for clone in (copy.copy(route), copy.deepcopy(route), pickle.loads(pickle.dumps(route))):
+            assert clone == "openrouter/minimax/minimax-m3"
+            assert clone.kind == "wildcard"
+
+    def test_a_call_record_carrying_a_route_serializes(self) -> None:
+        import dataclasses
+
+        from tolokaforge.core.llm.gateway_route import ResolvedGatewayRoute
+        from tolokaforge.core.llm.usage import ProviderRawCall
+
+        call = ProviderRawCall(
+            prompt_tokens=1,
+            completion_tokens=1,
+            gateway_route=ResolvedGatewayRoute("openrouter/x", kind="exact"),
+            gateway_route_kind="exact",
+        )
+        dumped = dataclasses.asdict(call)
+        assert dumped["gateway_route"] == "openrouter/x"

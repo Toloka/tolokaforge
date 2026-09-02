@@ -119,6 +119,7 @@ ENV_HEADERS = "LLM_PROXY_HEADERS"
 ENV_REQUEST_ID_HEADER = "LLM_PROXY_REQUEST_ID_HEADER"
 ENV_PROVIDERS = "LLM_PROXY_PROVIDERS"
 ENV_PREFERRED_ROUTE = "LLM_PROXY_PREFERRED_ROUTE"
+ENV_TRUST_WILDCARDS = "LLM_PROXY_TRUST_NAMESPACE_WILDCARDS"
 
 #: Providers routed when ``LLM_PROXY_PROVIDERS`` is unset.
 #:
@@ -170,6 +171,9 @@ class ProxyConfig:
     request_id_header: str | None = None
     providers: frozenset[str] | None = None
     preferred_route: str | None = None
+    # Whether a catalog entry of ``<ns>/*`` routes models whose own provider
+    # namespace is ``<ns>``. Off by default: exact-entry-only resolution.
+    trust_namespace_wildcards: bool = False
 
     def applies_to(self, provider: str) -> bool:
         """Return whether ``provider`` should be routed through the gateway.
@@ -306,6 +310,7 @@ def resolve_proxy_config(secrets: SecretManager | None = None) -> ProxyConfig | 
                 ENV_REQUEST_ID_HEADER,
                 ENV_PROVIDERS,
                 ENV_PREFERRED_ROUTE,
+                ENV_TRUST_WILDCARDS,
             )
             if (secrets.get_secret(name) or "").strip()
         )
@@ -324,4 +329,23 @@ def resolve_proxy_config(secrets: SecretManager | None = None) -> ProxyConfig | 
         request_id_header=(secrets.get_secret(ENV_REQUEST_ID_HEADER) or "").strip() or None,
         providers=_parse_providers(secrets.get_secret(ENV_PROVIDERS)),
         preferred_route=(secrets.get_secret(ENV_PREFERRED_ROUTE) or "").strip() or None,
+        trust_namespace_wildcards=_parse_trust_wildcards(secrets.get_secret(ENV_TRUST_WILDCARDS)),
     )
+
+
+def _parse_trust_wildcards(raw: str | None) -> bool:
+    """Strict boolean for ``LLM_PROXY_TRUST_NAMESPACE_WILDCARDS``.
+
+    Unset / blank is the conservative default (exact-entry-only routing).
+    Anything but a plain true/false is refused: a typo silently resolving
+    to False would quietly put runs back on the per-model direct fallback,
+    which is the drift this variable exists to eliminate.
+    """
+    value = (raw or "").strip().lower()
+    if not value:
+        return False
+    if value in ("true", "1", "yes"):
+        return True
+    if value in ("false", "0", "no"):
+        return False
+    raise ProxyConfigError(f"{ENV_TRUST_WILDCARDS} must be true or false, got {raw!r}.")

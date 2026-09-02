@@ -330,6 +330,9 @@ def run(channel: str, allowed_users: str | None, out_path: str, window_hours: fl
     catalog: list[str] | None = None
     # Distinct from None: None is a *fetched* answer meaning "no gateway info".
     gateway_models: list[str] | None = _UNFETCHED
+    # Read next to the catalog: the availability verdict has to be the one a run will
+    # honour, and the run reads the same policy from the same environment.
+    gateway_policy = gateway_catalog.GatewayPolicy()
     for message in messages:
         if not is_request(message, bot_id):
             continue
@@ -354,6 +357,7 @@ def run(channel: str, allowed_users: str | None, out_path: str, window_hours: fl
             # phrase OpenRouter cannot match, which is the only way a gateway-only model
             # (`azure_ai/...`) can be requested at all.
             gateway_models = gateway_catalog.fetch_configured_catalog()
+            gateway_policy = gateway_catalog.configured_policy()
         text = message.get("text", "")
         resolutions = model_resolver.resolve_all(text, catalog, ALIASES, gateway_models)
         if not resolutions:  # mention + "integrate" but no parseable model phrase
@@ -365,7 +369,7 @@ def run(channel: str, allowed_users: str | None, out_path: str, window_hours: fl
         # Gateway lookup for the reply: advisory for an OpenRouter-sourced model, and simply
         # confirmation for a gateway-sourced one (it came out of this catalog).
         availability = {
-            r.slug: gateway_catalog.lookup(r.slug, gateway_models)
+            r.slug: gateway_catalog.lookup(r.slug, gateway_models, gateway_policy)
             for r in resolutions
             if r.status == "resolved" and r.slug
         }
@@ -378,7 +382,9 @@ def run(channel: str, allowed_users: str | None, out_path: str, window_hours: fl
             resolutions,
             availability,
             requested_route,
-            simulator=gateway_catalog.lookup(gateway_catalog.USER_SIMULATOR_SLUG, gateway_models),
+            simulator=gateway_catalog.lookup(
+                gateway_catalog.USER_SIMULATOR_SLUG, gateway_models, gateway_policy
+            ),
         )
         reply = model_resolver.format_resolution_reply(
             requester,

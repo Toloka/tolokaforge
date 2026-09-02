@@ -27,6 +27,10 @@ from tolokaforge.secrets import manager as secrets_manager
 
 pytestmark = pytest.mark.unit
 
+#: A deployment that has turned wildcard trust on. Off is the engine default, and the
+#: poller inherits it, so every wildcard case has to say which one it is testing.
+_TRUSTING = gateway_catalog.GatewayPolicy(trust_namespace_wildcards=True)
+
 _CATALOG = [
     "anthropic/claude-sonnet-4-5",
     "azure_ai/cohere-command-a-plus-05-2026",
@@ -45,11 +49,6 @@ class TestLookup:
         assert found.route == "openrouter/anthropic/claude-opus-4.7"
         assert found.reachable
 
-    def test_the_prefixed_entry_wins_over_the_bare_one(self) -> None:
-        """Same order the engine tries, so the two never disagree."""
-        catalog = ["openrouter/a/b", "a/b"]
-        assert gateway_catalog.lookup("a/b", catalog).route == "openrouter/a/b"
-
     def test_bare_slug_entry_is_the_exact_match(self) -> None:
         found = gateway_catalog.lookup("azure_ai/cohere-command-a-plus-05-2026", _CATALOG)
         assert found.status == gateway_catalog.STATUS_EXACT
@@ -57,11 +56,48 @@ class TestLookup:
 
     def test_wildcard_is_reported_separately_from_exact(self) -> None:
         """A passthrough means 'probably', and the reply must not overstate it."""
-        found = gateway_catalog.lookup("x-ai/grok-4.5", _CATALOG)
+        found = gateway_catalog.lookup("x-ai/grok-4.5", ["openrouter/*"], _TRUSTING)
         assert found.status == gateway_catalog.STATUS_WILDCARD
-        assert found.route == "x-ai/grok-4.5"
+        assert found.route == "openrouter/x-ai/grok-4.5"
         assert found.reachable
         assert "passthrough" in gateway_catalog.describe(found)
+
+    def test_the_openrouter_passthrough_covers_the_addressed_name(self) -> None:
+        """An ``openrouter/*``-only gateway serves every model the run runs over OpenRouter,
+        addressed by its untranslated name - the case that made this lookup DOWNGRADE
+        explicit `via litellm` requests before."""
+        found = gateway_catalog.lookup("anthropic/claude-opus-4.9", ["openrouter/*"], _TRUSTING)
+        assert found.status == gateway_catalog.STATUS_WILDCARD
+        assert found.route == "openrouter/anthropic/claude-opus-4.9"
+
+    def test_a_wildcard_is_not_trusted_unless_the_deployment_says_so(self) -> None:
+        """The engine's default trusts no wildcard, so neither may the poller: promising
+        a route the run then refuses is the misattribution this lookup exists to avoid."""
+        found = gateway_catalog.lookup("x-ai/grok-4.5", ["openrouter/*"])
+        assert found.status == gateway_catalog.STATUS_ABSENT
+        assert not found.reachable
+
+    def test_a_foreign_namespace_wildcard_does_not_cover_the_model(self) -> None:
+        """`x-ai/*` forwards to xAI; the run addresses this model as `openrouter/...` and
+        the engine refuses to swap upstream. Reported reachable, the reply would have said
+        `via litellm` for a run that went to OpenRouter direct."""
+        found = gateway_catalog.lookup("x-ai/grok-4.5", _CATALOG, _TRUSTING)
+        assert found.status == gateway_catalog.STATUS_ABSENT
+        assert not found.reachable
+
+    def test_ambiguous_route_is_unknown_and_annotated(self, capsys) -> None:
+        """Both names served and no preference: the run raises rather than guessing, so the
+        poller must not promise the gateway either."""
+        found = gateway_catalog.lookup("a/b", ["openrouter/a/b", "a/b"])
+        assert found.status == gateway_catalog.STATUS_UNKNOWN
+        assert not found.reachable
+        assert "ambiguous" in capsys.readouterr().err
+
+    def test_a_preference_resolves_the_ambiguity_like_the_engine(self) -> None:
+        policy = gateway_catalog.GatewayPolicy(preferred_route="openrouter/")
+        found = gateway_catalog.lookup("a/b", ["openrouter/a/b", "a/b"], policy)
+        assert found.status == gateway_catalog.STATUS_EXACT
+        assert found.route == "openrouter/a/b"
 
     def test_absent_when_catalog_covers_nothing(self) -> None:
         found = gateway_catalog.lookup("x-ai/grok-4.5", ["anthropic/claude-sonnet-4-5"])
@@ -207,6 +243,37 @@ class TestTheConfiguredCatalogIsReadLikeARunReadsIt:
         # The reply blames the model ("could not confirm the gateway serves..."), so
         # without an annotation the real cause is one stderr line in a green job.
         assert "::warning title=Gateway configuration unusable::" in captured.out
+
+
+class TestTheConfiguredPolicyIsTheRunsPolicy:
+    """The lookup's verdict is only worth reporting if a run would honour it.
+
+    The engine reads the trust flag and the route preference from the environment; the
+    poller reads the same two, so a promise of `via litellm` matches what the run does.
+    """
+
+    def test_no_gateway_configured_is_the_engine_default(self, monkeypatch) -> None:
+        monkeypatch.delenv("LLM_PROXY_BASE_URL", raising=False)
+        monkeypatch.delenv("LLM_PROXY_TRUST_NAMESPACE_WILDCARDS", raising=False)
+        monkeypatch.delenv("LLM_PROXY_PREFERRED_ROUTE", raising=False)
+        policy = gateway_catalog.configured_policy()
+        assert policy.trust_namespace_wildcards is False
+        assert policy.preferred_route is None
+
+    def test_the_deployments_policy_is_picked_up(self, gateway, monkeypatch) -> None:
+        monkeypatch.setenv("LLM_PROXY_TRUST_NAMESPACE_WILDCARDS", "true")
+        monkeypatch.setenv("LLM_PROXY_PREFERRED_ROUTE", "openrouter/,nebius/")
+        policy = gateway_catalog.configured_policy()
+        assert policy.trust_namespace_wildcards is True
+        assert policy.preferred_route == "openrouter/,nebius/"
+
+    def test_a_malformed_policy_is_the_strict_default_not_a_crash(
+        self, gateway, monkeypatch
+    ) -> None:
+        """A poll must never fail on an operator's typo, and the fallback has to be the
+        strict reading: trusting a wildcard the engine will not is the misattribution."""
+        monkeypatch.setenv("LLM_PROXY_TRUST_NAMESPACE_WILDCARDS", "yes-please")
+        assert gateway_catalog.configured_policy().trust_namespace_wildcards is False
 
 
 class TestALocalEnvCannotAnswerARealPoll:
@@ -400,17 +467,34 @@ class TestPlanRows:
         assert "via *openrouter*" in posted[0]
 
     def test_explicit_gateway_route_reaches_the_plan(self, monkeypatch, tmp_path) -> None:
+        # Explicit entries, not a wildcard: a poll with no gateway policy in its environment
+        # trusts none (the engine's default), so a `x-ai/*` catalog would be DOWNGRADED here
+        # - the run would have gone to OpenRouter direct anyway.
         # The catalog covers the user simulator too: the integration run's gateway `.env` is
-        # job-wide, so a gateway serving only `x-ai/*` could not serve this run at all.
+        # job-wide, so a gateway serving only the candidate could not serve this run at all.
         plan, posted = self._plan(
             monkeypatch,
             tmp_path,
             "<@B1> integrate Grok 4.5 via litellm",
-            ["x-ai/*", gateway_catalog.USER_SIMULATOR_SLUG],
+            ["openrouter/x-ai/grok-4.5", gateway_catalog.USER_SIMULATOR_SLUG],
         )
         assert [row["route"] for row in plan] == ["litellm", "litellm"]
         # The reply must state the route it actually queued, not the default.
         assert "via *litellm*" in posted[0]
+
+    def test_untrusted_wildcard_downgrades_an_explicit_gateway_request(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A gateway whose only coverage is a passthrough the deployment does not trust: the
+        request is refused in the reply rather than queued as a run the engine sends direct."""
+        plan, posted = self._plan(
+            monkeypatch,
+            tmp_path,
+            "<@B1> integrate Grok 4.5 via litellm",
+            ["openrouter/*", gateway_catalog.USER_SIMULATOR_SLUG],
+        )
+        assert [row["route"] for row in plan] == ["openrouter", "openrouter"]
+        assert "could not confirm the gateway serves every model" in posted[0]
 
     def test_row_shape_is_the_workflow_contract(self, monkeypatch, tmp_path) -> None:
         plan, posted = self._plan(

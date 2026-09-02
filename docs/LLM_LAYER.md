@@ -877,9 +877,10 @@ posting to a route the gateway does not serve.
 | `LLM_PROXY_HEADERS` | JSON object of static headers added to every request, e.g. `{"X-Team-Id": "research"}`. Wins over the engine's own provider headers on a name collision. A value may reference a secret as `${secret:NAME}`, see below. |
 | `LLM_PROXY_REQUEST_ID_HEADER` | Header *name* that receives a fresh UUID4 per request. A static env var cannot express "new value per call". |
 | `LLM_PROXY_PROVIDERS` | Comma-separated provider allow-list, replacing the default. Read the routing table below before widening it. |
-| `LLM_PROXY_PREFERRED_ROUTE` | Namespace that wins when the gateway serves one model under several names, e.g. `openrouter/`. Without it an ambiguous lookup raises rather than guessing a serving path. |
+| `LLM_PROXY_PREFERRED_ROUTE` | Namespace(s) that win when the gateway serves one model under several names. A comma-separated list is honoured in order (`openrouter/,nebius/`), so multi-provider gateways can rank their routes. Without a matching entry an ambiguous lookup raises rather than guessing a serving path. |
+| `LLM_PROXY_TRUST_NAMESPACE_WILDCARDS` | `true`/`false` (default `false`). When true, a catalog entry of `<ns>/*` routes models whose own `provider` is `<ns>`, addressed by their untranslated name. Namespace-matched only - a foreign wildcard never routes. Exact entries always win. |
 
-All six resolve through `SecretManager`, so `.env`, the process environment,
+All seven resolve through `SecretManager`, so `.env`, the process environment,
 and the runner container's `TOLOKAFORGE_SECRETS_JSON` behave identically.
 A malformed value raises `ProxyConfigError` at the first `LLMClient`
 construction rather than running a whole evaluation with unattributed spend. Setting
@@ -1000,14 +1001,43 @@ per-client warning. On a gateway-only model that direct call fails; on any other
 runs unattributed. If a deployment cannot rename such a route, the exact-name entry
 has to be added alongside the alias.
 
-Wildcard entries (`openrouter/*`, `anthropic/*`) are deliberately **not** accepted as
-evidence: a wildcard says the gateway will forward the request, not that the model
+Wildcard entries (`openrouter/*`, `anthropic/*`) are **not** accepted as evidence by
+default: a wildcard says the gateway will forward the request, not that the model
 exists behind it. Measured on a live gateway, `anthropic/*` accepted a name that its
 Bedrock backing then rejected as invalid, while the very same wildcard also "covered"
-a nonexistent model. If routing every model through the gateway ever becomes the
-goal, the extension point is a *namespace-matched* wildcard (accept `openrouter/*`
-only for `provider: openrouter` configs, where the fallback is the same upstream the
-board is calibrated on), not looser matching.
+a nonexistent model. The opt-in (`LLM_PROXY_TRUST_NAMESPACE_WILDCARDS=true`)
+implements exactly the safe extension point that incident left room for: a
+*namespace-matched* wildcard - `<ns>/*` routes only `provider: <ns>` models, where
+the passthrough forwards to the same upstream the board is calibrated on, addressed
+by the untranslated model string. A foreign-namespace wildcard never routes, exact
+entries always win, and a wildcard-resolved call is recorded as such on the per-call
+usage (`gateway_route_kind: "wildcard"`), so a board audit can tell the serving
+paths apart.
+
+### Serving a NEW provider behind the gateway
+
+Wiring an additional upstream (a self-hosted vLLM fleet, a direct vendor
+account) into the gateway needs **no engine change**. The recipe:
+
+1. The gateway operator adds the catalog entries - exact names
+   (`nebius-llmqa-vllm/qwen3-32b`) or the namespace wildcard
+   (`nebius-llmqa-vllm/*`).
+2. The deployment allow-lists the provider: `LLM_PROXY_PROVIDERS=
+   openrouter,openai,nebius-llmqa-vllm` - deliberate fail-closed, so a new
+   catalog namespace never reroutes configs by itself.
+3. Configs name the provider as the FACT it is: `provider: nebius-llmqa-vllm`,
+   `name: qwen3-32b`. A resolved route forces the OpenAI-compatible dialect,
+   so litellm does not need to know the provider natively - which also means
+   such a provider works **only while the catalog is readable**: on the
+   unreadable-catalog path the call keeps the provider-native dialect and
+   fails loudly for a provider litellm cannot speak to directly.
+4. With several gateway namespaces in play, rank them:
+   `LLM_PROXY_PREFERRED_ROUTE=openrouter/,nebius-llmqa-vllm/`.
+5. Pricing and presets follow the normal registration path (they key off
+   `provider`/`name`, so nothing is lost by the gateway hop), and a new
+   serving path is a new calibration - never mix it with another path
+   inside one comparable set; the per-call `gateway_route` /
+   `gateway_route_kind` provenance is what audits the split.
 
 Preset resolution and pricing are unaffected: both key off `ModelConfig.provider` /
 `.name`, not off the wire name.
@@ -1106,11 +1136,16 @@ couplings described below:
   but verify it for reasoning models before trusting a run.
 
 What `_build_kwargs` does differs by path. **On a resolved route** it rewrites
-`model` to the gateway's route name, forces `custom_llm_provider="openai"`, and
-drops OpenRouter-only body fields (`extra_body.provider`). **On the
-unrouted / unreadable-catalog path** it sets only `api_base`, `api_key` and
-`extra_headers`; the model string keeps its `<provider>/<name>` shape, and
-OpenRouter's headers and provider pin still apply. Two distinct couplings hang off
+`model` to the gateway's route name and forces `custom_llm_provider="openai"`.
+**On the unrouted / unreadable-catalog path** it sets only `api_base`, `api_key`
+and `extra_headers`; the model string keeps its `<provider>/<name>` shape. The
+provider pin follows **one rule on both paths**: `extra_body.provider` survives
+exactly when the wire name's first segment is the model's own provider
+namespace - an `openrouter/...` route (or the untranslated `openrouter/<name>`
+string) forwards to the same upstream family the pin was written for, so the
+pin rides; a route into any other namespace is another upstream, so the pin is
+dropped with a warning rather than sent to a server that rejects or silently
+ignores it. Two distinct couplings hang off
 model naming, and only the second is to the formatted string:
 
 - Preset `match:` globs resolve off `ModelConfig.name` and the `providers:`
@@ -1126,8 +1161,13 @@ model naming, and only the second is to the formatted string:
 
 `ModelConfig.provider` is untouched either way, so OpenRouter's
 `HTTP-Referer` / `X-Title` headers still apply on top of the gateway; the
-`extra_body.provider` upstream pin applies only on the unrouted path (a resolved
-route drops it, since a non-OpenRouter upstream rejects it as an unknown field).
+`extra_body.provider` upstream pin follows the namespace rule above (kept
+whenever the wire name stays in the model's own provider namespace, resolved or
+not; dropped otherwise). A pinned model on a same-namespace route is only
+FAITHFULLY pinned if the gateway forwards the field to the upstream - which is
+gateway-version-dependent, so the live suite verifies the actually-serving
+upstream through the OpenRouter generation id rather than trusting the request
+shape (see below).
 On a header-name collision the gateway's configured header wins, since that is
 explicit operator configuration and the other is an engine default.
 
@@ -1149,10 +1189,14 @@ credential is present**, so a checkout without the secret is quiet:
 | `LLM_PROXY_INT_TEST_MODEL` | no | The model name **as the gateway routes it**. Required rather than defaulted: a wrong guess would exercise the gateway's fallback behaviour instead of this transport. Plain config — belongs in a workflow's `env:`. |
 | `LLM_PROXY_INT_TEST_BASE_URL` | depends | Gateway base URL; falls back to `LLM_PROXY_BASE_URL`. Keep it out of a public workflow file if the hostname is internal. |
 | `LLM_PROXY_INT_TEST_PROVIDER` | no | Optional, default `openai` — see the model-naming section above. |
+| `LLM_PROXY_INT_TEST_PINNED_MODEL` | no | Optional opt-in for the pinned-upstream check: an OpenRouter-namespace slug (`nvidia/nemotron-3-super-120b-a12b`). Both pinned vars must be set together. |
+| `LLM_PROXY_INT_TEST_PINNED_PROVIDER` | no | The exact OpenRouter provider name expected to serve the pinned call (`Together`). Needs `OPENROUTER_API_KEY` for the retroactive `/generation` lookup. |
 
-Three tests: one asserts the transport is applied and billed to the test key
+Four tests: one asserts the transport is applied and billed to the test key
 without spending, two make one small call each (a completion and a tool call,
-capped at 256 output tokens).
+capped at 256 output tokens), and the opt-in pinned-upstream check makes one
+provider-pinned call and verifies the actually-serving upstream through
+OpenRouter's `/generation` endpoint.
 
 **The gating is asymmetric on purpose.** No credential → skip, quietly, which is
 the state of any checkout without the secret. Credential present but a companion
