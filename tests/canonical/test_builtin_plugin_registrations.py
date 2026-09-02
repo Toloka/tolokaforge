@@ -23,7 +23,7 @@ from tolokaforge.core.conductor import (
     InMemoryConductor,
     InProcessConductor,
 )
-from tolokaforge.core.grading.bundle_store import LocalDiskBundleStore
+from tolokaforge.core.grading.bundle_store import LocalDiskBundleStore, S3BundleStore
 from tolokaforge.core.grading.grading_method import (
     CompositeGradingMethod,
     TestExecutionGradingMethod,
@@ -170,8 +170,15 @@ def test_grading_method_names_resolve_to_their_marker(name: str, expected_cls: t
     assert name == marker.NAME
 
 
-def test_bundle_store_name_resolves_to_its_class() -> None:
-    assert load_bundle_store("local_disk") is LocalDiskBundleStore
+@pytest.mark.parametrize(
+    ("name", "expected_cls"),
+    [
+        ("local_disk", LocalDiskBundleStore),
+        ("s3", S3BundleStore),
+    ],
+)
+def test_bundle_store_name_resolves_to_its_class(name: str, expected_cls: type) -> None:
+    assert load_bundle_store(name) is expected_cls
 
 
 def test_available_listings_match_the_builtin_set() -> None:
@@ -181,7 +188,7 @@ def test_available_listings_match_the_builtin_set() -> None:
     assert available_readiness_probes() == ["grpc", "http", "tcp"]
     assert available_turn_policies() == ["agent_only", "conversational"]
     assert available_grading_methods() == ["composite", "test_execution"]
-    assert available_bundle_stores() == ["local_disk"]
+    assert available_bundle_stores() == ["local_disk", "s3"]
 
 
 def test_raw_entry_point_probe_lists_runtime_backends() -> None:
@@ -208,4 +215,4 @@ def test_raw_entry_point_probe_lists_grading_methods() -> None:
 
 def test_raw_entry_point_probe_lists_bundle_stores() -> None:
     names = sorted(ep.name for ep in importlib.metadata.entry_points(group=BUNDLE_STORES_GROUP))
-    assert names == ["local_disk"]
+    assert names == ["local_disk", "s3"]

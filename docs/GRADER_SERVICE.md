@@ -647,6 +647,70 @@ top-level grader-name seam ADR-0038 shipped, already documented in
 A downstream package registering a new grader name lands there, not
 in any of the eight groups above.
 
+## Bundle store seam
+
+Offline grading operates on a **grade bundle** — a manifest-first,
+part-addressable directory whose canonical name is
+`sha256(manifest.json)`. See [docs/GRADE_BUNDLE.md](GRADE_BUNDLE.md) for
+the format itself. Two responsibilities are strictly separated: the
+producer (`tolokaforge.core.grading.bundle.serialize_grade_bundle`) owns
+the bytes; a `BundleStore` moves those bytes between a local directory
+and addressable storage. Every stored bundle is addressed uniformly by
+the URI scheme `bundle://<store-name>/<content-hash>`, and two puts of
+byte-identical bundles land at the same URI (content-addressable dedupe
+is implicit).
+
+The Protocol lives in `tolokaforge.core.grading.bundle_store`:
+
+```python
+class BundleStore(Protocol):
+    name: str
+    def put(self, bundle_dir: Path) -> str: ...
+    def get(self, uri: str, dest_dir: Path) -> Path: ...
+    def close(self) -> None: ...
+```
+
+Implementations are discovered through the `tolokaforge.bundle_stores`
+entry-point group and resolved with
+`plugin_registry.load_bundle_store(name)`. Two built-ins ship:
+
+- **`local_disk` — `LocalDiskBundleStore(root_dir=…)`.** Writes to
+  `<root_dir>/grade_bundles/<digest>/`, staging into a per-worker
+  `.<digest>.<uuid4>.tmp/` sibling and landing atomically via
+  `os.replace`. The per-worker suffix isolates concurrent puts of the
+  same digest so two workers never share a staging path. `get` refuses
+  a non-empty destination with `FileExistsError`.
+
+- **`s3` — `S3BundleStore(bucket=…, prefix="grade_bundles")`.** Uploads
+  each part under `<prefix>/<digest>/<rel>` in an S3-compatible bucket.
+  Every data part is uploaded first, then `manifest.json` LAST — a
+  crashed put leaves orphan parts but no manifest, so a subsequent `get`
+  fails cleanly with `BundleNotFoundError`. Idempotency is a
+  `head_object` on the manifest key: a second put of the same digest
+  returns the URI without re-uploading.
+
+`S3BundleStore` requires the optional extra `bundle-store-s3` (`uv add
+'tolokaforge[bundle-store-s3]'`). `boto3` is imported lazily inside the
+store's method bodies, so `import tolokaforge.core.grading.bundle_store`
+succeeds without `boto3` installed. Credentials come from the boto3
+default chain — environment variables, `~/.aws/credentials`, EC2 /
+IRSA — matching the credential model of every other AWS-facing surface
+in the codebase. To target an S3-compatible endpoint (MinIO, Ceph) or a
+non-default region, construct a boto3 client with `endpoint_url=` and
+`region_name=` and pass it as `client=` on the store.
+
+```python
+from pathlib import Path
+
+from tolokaforge.core.grading.bundle_store import (
+    LocalDiskBundleStore,
+    S3BundleStore,
+)
+
+local = LocalDiskBundleStore(root_dir=Path("/var/tolokaforge/bundles"))
+s3 = S3BundleStore(bucket="tolokaforge-bundles", prefix="grade_bundles")
+```
+
 ## Parity gate
 
 The `runner_rpc` and `grader_rpc` legs must produce byte-identical

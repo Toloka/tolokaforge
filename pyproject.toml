@@ -167,6 +167,12 @@ adapters = [
 all = [
     "tolokaforge[dx,browser,server,rag,office,adapters,runner]",
 ]
+# S3-compatible bundle store transport (``S3BundleStore``). boto3 is a
+# lazy import inside the store's method bodies, so the pure module loads
+# without it; install this extra when a caller instantiates ``S3BundleStore``.
+bundle-store-s3 = [
+    "boto3>=1.34,<2",
+]
 
 [project.urls]
 Homepage = "https://github.com/Toloka/tolokaforge"
@@ -309,12 +315,16 @@ exists = "tolokaforge.core.grading.trace_check_operator:exists"
 equals_binding = "tolokaforge.core.grading.trace_check_operator:equals_binding"
 contains_binding = "tolokaforge.core.grading.trace_check_operator:contains_binding"
 
-# Bundle-store Protocol (``tolokaforge/core/grading/bundle_store.py``). One
-# built-in ships today: ``local_disk`` writes the bundle directory under
-# ``<root_dir>/grade_bundles/<digest>/`` with atomic per-worker staging.
-# S3-compatible transport plugs behind the same Protocol as a follow-up.
+# Bundle-store Protocol (``tolokaforge/core/grading/bundle_store.py``). Two
+# built-ins ship: ``local_disk`` writes the bundle directory under
+# ``<root_dir>/grade_bundles/<digest>/`` with atomic per-worker staging;
+# ``s3`` uploads each part to an S3-compatible bucket under
+# ``<prefix>/<digest>/`` and requires the ``bundle-store-s3`` extra
+# (``uv add 'tolokaforge[bundle-store-s3]'``) — ``boto3`` is imported
+# lazily inside the method bodies so the bare module loads without it.
 [project.entry-points."tolokaforge.bundle_stores"]
 local_disk = "tolokaforge.core.grading.bundle_store:LocalDiskBundleStore"
+s3 = "tolokaforge.core.grading.bundle_store:S3BundleStore"
 
 [tool.hatch.build]
 exclude = [
@@ -656,6 +666,10 @@ dev = [
     "tolokaforge-adapter-terminal-bench",
     "dev-mcp",
     "automation",
+    # boto3 pulled in for the S3BundleStore stubber tests
+    # (tests/unit/grading/test_bundle_store_s3.py drives
+    # ``botocore.stub.Stubber`` against a real boto3 S3 client).
+    "boto3>=1.34,<2",
     # Terminal front-end deps live in [project.optional-dependencies].dx.
     # Dev tooling exercises the terminal front-end tests, so pull them in
     # here explicitly rather than relying on `[dx]` being installed.
