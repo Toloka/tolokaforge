@@ -177,11 +177,15 @@ from `self.results`:
 - `judge_errored_trials = sum(1 for t in self.results if t.grade is not None and t.grade.judge_status == JudgeStatus.ERRORED)`
   — the judge-level observable at
   [`grade.py:152`](../../tolokaforge/core/models/grade.py).
-- `synthesized_trials = sum(1 for t in self.results if t.grade is not None and t.grade.synthesized_by_termination_reason is not None)`
-  — trials whose `Grade` was synthesised by a `TrialGrader` auto-fail
-  branch (`ERROR` / `TIMEOUT` / `STUCK_DETECTED` / `EMPTY_COMPLETION`).
-  No evaluator ran on these trials; the marker is on
-  [`grade.py`](../../tolokaforge/core/models/grade.py).
+- `synthesized_trials = sum(1 for t in self.results if t.grade is not None and t.grade.synthesized_by_termination_reason is not None and classify_trial_outcome(t) == TrialOutcomeClass.MEASURED)`
+  — MEASURED-outcome trials whose `Grade` was synthesised by a
+  `TrialGrader` auto-fail branch
+  (`ERROR` / `TIMEOUT` / `STUCK_DETECTED` / `EMPTY_COMPLETION`). No
+  evaluator ran on these trials; the marker is on
+  [`grade.py`](../../tolokaforge/core/models/grade.py). The MEASURED
+  filter is what keeps the count aligned with `measured_trials` on a
+  mixed run — a HARNESS_ERROR-classified synth grade sits in neither
+  side of the `synthesized_trials == measured_trials` comparison.
 - `zero_coverage = total_trials > 0 and (measured_trials == 0 or synthesized_trials == measured_trials)`.
 - `zero_judge_graded = judge_errored_trials > 0 and judge_errored_trials == scored_trials`.
 
