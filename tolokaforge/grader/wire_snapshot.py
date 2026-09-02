@@ -17,10 +17,8 @@ threaded through as a passthrough so the caller has one struct with every
 non-trajectory wire field ready to hand to :meth:`GrpcGraderClient.grade`.
 
 The wire also carries two additive fields — ``bundle_manifest_json`` (13) and
-``bundle_parts_uri`` (14) — which are not projected from :class:`TrialSpec`
-and therefore not populated by this builder. They exist on the wire schema
-for future callers that carry a completed trial's
-:attr:`Trajectory.snapshot_status`; no in-tree caller populates them yet.
+``bundle_parts_uri`` (14) — which are not projected from :class:`TrialSpec`.
+This builder does not populate them; no in-tree caller populates them yet.
 """
 
 from __future__ import annotations

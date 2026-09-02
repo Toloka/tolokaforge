@@ -18,12 +18,11 @@ Fields 13 + 14 are additive proto3 strings — an unpopulated sender lands
 empty strings on both, which keeps a sender populating only fields 1–7
 round-tripping byte-identically:
 
-- ``bundle_manifest_json`` (13) — ``GradeBundleManifest`` JSON so the
-  grader-side dispatcher can build a ``SnapshotGradingSubstrate`` off
-  the trial's grade bundle instead of dialling ``runner_substrate_address``.
-- ``bundle_parts_uri`` (14) — the bundle-store URI
-  (``bundle://<store-name>/<content-hash>``) the grader hands to the
-  ``tolokaforge.bundle_stores`` seam to read the parts.
+- ``bundle_manifest_json`` (13) — ``GradeBundleManifest`` JSON. Empty
+  when the caller has no bundle; no in-tree caller populates it yet.
+- ``bundle_parts_uri`` (14) — bundle-store URI
+  (``bundle://<store-name>/<content-hash>``). Empty when the caller
+  has no bundle; no in-tree caller populates it yet.
 
 The post-policy agent system prompt already rides ``llm_messages_json`` as
 its leading ``role=system`` message; the grader recovers it via
@@ -81,10 +80,9 @@ def test_grade_request_proto_carries_the_nine_wire_v3_fields() -> None:
     test asserts the numbering the composite dispatcher and its client
     both rely on — moving ``task_description_json`` off field 6 would
     make a client's payload land in ``runner_substrate_address`` on the
-    grader. Fields 13 + 14 are additive proto3 strings the runner-side
-    producer populates when a trial has a grade bundle; the numbering
-    skips 8–12 so those slots stay free for future additions without
-    reshuffling.
+    grader. Fields 13 + 14 are additive proto3 strings; no in-tree
+    caller populates them yet. The numbering skips 8–12 so those slots
+    stay free for future additions without reshuffling.
     """
     descriptor = grader_pb2.GradeRequest.DESCRIPTOR
     got = {f.name: (f.number, f.cpp_type) for f in descriptor.fields}
