@@ -16,7 +16,10 @@ All notable changes to this project are documented in this file.
   UNGRADEABLE rather than passing on a silently redistributed weighted mean.
   `resolve_uncounted_fold` marks the refusal with `FoldedGrade.refusal = True`;
   the runner's `GradeTrial` and the grader-service dispatch both surface it
-  as `success = False` on the wire.
+  as `success = False` on the wire. `lot_ops_01` and `helpdesk_01` example
+  packs are now UNGRADEABLE on the core substrate (their `state_checks`
+  (RUNNER_ONLY) + `llm_judge` declarations require the runner substrate to
+  score); runner-side grading unchanged.
 - **loop**: empty completions (no text + no tool calls) now terminate with
   `TerminationReason.EMPTY_COMPLETION` (fail-loud) instead of silently
   appending an empty assistant message that Gemini and similar providers
