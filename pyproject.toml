@@ -309,6 +309,13 @@ exists = "tolokaforge.core.grading.trace_check_operator:exists"
 equals_binding = "tolokaforge.core.grading.trace_check_operator:equals_binding"
 contains_binding = "tolokaforge.core.grading.trace_check_operator:contains_binding"
 
+# Bundle-store Protocol (``tolokaforge/core/grading/bundle_store.py``). One
+# built-in ships today: ``local_disk`` writes the bundle directory under
+# ``<root_dir>/grade_bundles/<digest>/`` with atomic per-worker staging.
+# S3-compatible transport plugs behind the same Protocol as a follow-up.
+[project.entry-points."tolokaforge.bundle_stores"]
+local_disk = "tolokaforge.core.grading.bundle_store:LocalDiskBundleStore"
+
 [tool.hatch.build]
 exclude = [
     "tasks/**",
@@ -411,6 +418,7 @@ exclude = [
     "tolokaforge/core/actors/turn_policy.py",
     "tolokaforge/core/grading/agreement.py",
     "tolokaforge/core/grading/bundle.py",
+    "tolokaforge/core/grading/bundle_store.py",
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/config_validation.py",
     "tolokaforge/core/grading/corpus_curation.py",

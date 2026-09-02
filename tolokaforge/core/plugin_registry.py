@@ -13,8 +13,8 @@ External code discovers and loads alternative implementations of the
 :class:`~tolokaforge.core.grading.rubric_evaluator.RubricEvaluator`,
 :class:`~tolokaforge.core.grading.transcript_rule_matcher.TranscriptRuleMatcher`,
 :class:`~tolokaforge.core.grading.state_check_backend.StateCheckBackend`,
-and
-:data:`~tolokaforge.core.grading.trace_check_operator.TraceCheckOperator`
+:data:`~tolokaforge.core.grading.trace_check_operator.TraceCheckOperator`,
+and :class:`~tolokaforge.core.grading.bundle_store.BundleStore`
 Protocols through ``importlib.metadata`` entry-point groups — no in-tree
 edit, no monkey-patch. Each holistic seam resolves to a *factory callable*,
 mirroring the existing :data:`~tolokaforge.core.conductor.ConductorFactory`
@@ -30,6 +30,10 @@ so callers instantiate the returned class themselves (see ADR-0040).
 The trace-check-operator loader resolves directly to the operator callable
 — one operator per entry point, no factory wrapper, since the callable
 itself IS the seam contract.
+The bundle-store loader mirrors the grading-substrate shape: resolves to
+the store *class*, and the caller instantiates with topology-specific
+arguments (``root_dir=`` for local disk, ``bucket=``/``endpoint_url=`` for
+S3-compatible endpoints).
 
 The groups:
 
@@ -46,6 +50,7 @@ The groups:
 * ``tolokaforge.transcript_rule_matchers`` → :data:`TranscriptRuleMatcherFactory`
 * ``tolokaforge.state_check_backends`` → :data:`StateCheckBackendFactory`
 * ``tolokaforge.trace_check_operators`` → :data:`TraceCheckOperator`
+* ``tolokaforge.bundle_stores`` → ``type[BundleStore]``
 
 Discovery is lazy and cached per group; it enumerates ``ep.name`` /
 ``ep.dist`` **without** calling ``ep.load()``. This splits the fail-loud
@@ -87,6 +92,7 @@ if TYPE_CHECKING:
     from tolokaforge.core.actors.turn_policy import TurnPolicy
     from tolokaforge.core.compose_materialisation import LogCaptureConfig
     from tolokaforge.core.conductor import Conductor, ConductorContext
+    from tolokaforge.core.grading.bundle_store import BundleStore
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import SeedRef
     from tolokaforge.core.runtime import RuntimeBackend
@@ -121,6 +127,7 @@ __all__ = [
     "TurnPolicyContext",
     "TurnPolicyFactory",
     "UnknownImplementationError",
+    "available_bundle_stores",
     "available_conductors",
     "available_custom_check_executors",
     "available_grading_methods",
@@ -135,6 +142,7 @@ __all__ = [
     "available_trial_graders",
     "available_turn_policies",
     "discover_entry_points",
+    "load_bundle_store",
     "load_conductor",
     "load_custom_check_executor",
     "load_grading_method",
@@ -163,6 +171,7 @@ RUBRIC_EVALUATORS_GROUP = "tolokaforge.rubric_evaluators"
 TRANSCRIPT_RULE_MATCHERS_GROUP = "tolokaforge.transcript_rule_matchers"
 STATE_CHECK_BACKENDS_GROUP = "tolokaforge.state_check_backends"
 TRACE_CHECK_OPERATORS_GROUP = "tolokaforge.trace_check_operators"
+BUNDLE_STORES_GROUP = "tolokaforge.bundle_stores"
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +480,19 @@ def load_grading_method(name: str) -> type[GradingMethod]:
     return cast(type[GradingMethod], _load(GRADING_METHODS_GROUP, name))
 
 
+def load_bundle_store(name: str) -> type[BundleStore]:
+    """Resolve a registered bundle-store name to its implementation class.
+
+    Mirrors :func:`load_grading_substrate` — returns the store *class*, not
+    a factory. Bundle stores are constructed with topology-specific
+    arguments (``root_dir=`` for local, ``bucket=``/``endpoint_url=`` for
+    S3-compatible) that no shared context can generically supply, so the
+    caller instantiates the class it received. Fail-loud on unknown names
+    via :class:`UnknownImplementationError`.
+    """
+    return cast("type[BundleStore]", _load(BUNDLE_STORES_GROUP, name))
+
+
 def load_grading_substrate(name: str) -> type[GradingSubstrate]:
     """Resolve a registered grading-substrate name to its implementation class.
 
@@ -551,3 +573,8 @@ def available_state_check_backends() -> list[str]:
 def available_trace_check_operators() -> list[str]:
     """Sorted names registered in the ``tolokaforge.trace_check_operators`` group."""
     return sorted(discover_entry_points(TRACE_CHECK_OPERATORS_GROUP))
+
+
+def available_bundle_stores() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.bundle_stores`` group."""
+    return sorted(discover_entry_points(BUNDLE_STORES_GROUP))

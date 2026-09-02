@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.canonical._bundle_fixtures import LONG_SEGMENT_NAME, synthetic_inputs
 from tolokaforge.core.grading.bundle import (
     BUNDLE_SCHEMA_VERSION,
     GradeBundleManifest,
@@ -35,41 +36,8 @@ from tolokaforge.core.grading.bundle import (
 pytestmark = pytest.mark.canonical
 
 
-LONG_SEGMENT_NAME = "a_deeply_nested_subdir_with_a_very_long_leading_segment_name_that_exceeds_100_characters_easily"
-"""A directory segment > 100 chars — a PAX-default producer would inject
-extension headers here, tripping :func:`test_tar_carries_no_pax_headers`."""
-
-
-def _write_synthetic_filesystem(root: Path) -> None:
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "src").mkdir()
-    (root / "src" / "main.py").write_bytes(b"print('hello')\n")
-    (root / "README.md").write_bytes(b"# hello\n")
-    (root / ".git").mkdir()
-    (root / ".git" / "HEAD").write_bytes(b"ref: refs/heads/main\n")
-    long_dir = root / LONG_SEGMENT_NAME
-    long_dir.mkdir()
-    (long_dir / "leaf.py").write_bytes(b"# long-path member\n")
-
-
-def _synthetic_inputs(tmp_path: Path) -> dict[str, object]:
-    fs_root = tmp_path / "workspace"
-    _write_synthetic_filesystem(fs_root)
-    return {
-        "trial_id": "trial-round-trip-1",
-        "initial_state": {"tables": {"users": []}, "score": 0.123456789},
-        "final_state": {"tables": {"users": [{"id": 1, "name": "alice"}]}},
-        "final_state_stable": {"tables": {"users": [{"id": 1, "name": "alice"}]}},
-        "filesystem_root": fs_root,
-        "checks": {"greet_ok.py": b"def check(): return True\n"},
-        "kb": {"policy.md": b"# policy\n"},
-        "trajectory": {"llm_messages": [{"role": "user", "content": "hi"}]},
-        "grading_config": {"combine_method": "weighted", "weights": {"custom": 1.0}},
-    }
-
-
 def test_two_serialisations_produce_byte_identical_bytes(tmp_path: Path) -> None:
-    inputs = _synthetic_inputs(tmp_path)
+    inputs = synthetic_inputs(tmp_path)
     out_a = tmp_path / "bundle_a"
     out_b = tmp_path / "bundle_b"
 
@@ -92,7 +60,7 @@ def test_two_serialisations_produce_byte_identical_bytes(tmp_path: Path) -> None
 
 
 def test_producer_refuses_non_empty_out_dir(tmp_path: Path) -> None:
-    inputs = _synthetic_inputs(tmp_path)
+    inputs = synthetic_inputs(tmp_path)
     out_dir = tmp_path / "bundle"
     out_dir.mkdir()
     (out_dir / "stray.txt").write_bytes(b"pre-existing")
@@ -102,7 +70,7 @@ def test_producer_refuses_non_empty_out_dir(tmp_path: Path) -> None:
 
 
 def test_tar_carries_no_pax_headers(tmp_path: Path) -> None:
-    inputs = _synthetic_inputs(tmp_path)
+    inputs = synthetic_inputs(tmp_path)
     out_dir = tmp_path / "bundle"
     serialize_grade_bundle(out_dir, **inputs)
 
@@ -126,7 +94,7 @@ def test_tar_carries_no_pax_headers(tmp_path: Path) -> None:
 
 
 def test_filesystem_tar_respects_exclude_dirs(tmp_path: Path) -> None:
-    inputs = _synthetic_inputs(tmp_path)
+    inputs = synthetic_inputs(tmp_path)
     out_dir = tmp_path / "bundle"
     serialize_grade_bundle(out_dir, **inputs)
 
