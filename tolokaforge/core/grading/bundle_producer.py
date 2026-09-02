@@ -8,13 +8,18 @@ backend delegates to this module inside its
 :meth:`~tolokaforge.core.runtime.RuntimeBackend.build_grade_bundle`
 implementation.
 
-Purity: stdlib plus :mod:`tolokaforge.core.grading.bundle` only. The
-helper's inputs are typed structurally (``Any``) so the module stays
-decoupled from the runtime domain types the caller passes — a
+Purity: stdlib plus :mod:`tolokaforge.core.grading.bundle` only. All
+inputs are typed structurally (``Any``) — a
 :class:`~tolokaforge.core.grading.substrate.GradingSubstrate`
 implementation, a :class:`~tolokaforge.core.models.trajectory.Trajectory`,
 and a :class:`~tolokaforge.runner.models.TaskDescription`. Callers hold
 the concrete types; this module reads only the members it needs.
+A concrete ``GradingSubstrate`` runtime import would transitively reach
+``runner.models`` / ``grader.wire_snapshot`` via
+:mod:`tolokaforge.core.grading.substrate`'s TYPE_CHECKING imports of
+``judge`` / ``kb_search``, tripping the ``bundle-producer-purity``
+contract (``allow_indirect_imports = false``). Structural typing keeps
+the module decoupled and the contract green.
 
 No reach into ``tolokaforge.runner``, ``tolokaforge.grader``, or
 ``tolokaforge.core.grading.substrate_live`` — locked by the
@@ -49,17 +54,18 @@ def serialize_bundle_from_substrate(
 ) -> GradeBundleManifest:
     """Compose substrate reads + trajectory + task-description into a bundle.
 
-    Reads ``initial_state`` / ``final_state`` / ``final_state_stable`` and
-    ``filesystem_root`` from ``substrate`` (which must satisfy the
+    ``substrate`` must satisfy the
     :class:`~tolokaforge.core.grading.substrate.GradingSubstrate` Protocol
-    structurally). Decodes ``task_description.tool_artifacts`` (base64
-    ``dict[str, str]``) to ``dict[str, bytes]``. Serialises the trajectory
-    via ``trajectory.model_dump(mode="json")``. Emits ``task_description.grading``
+    structurally. Reads ``initial_state`` / ``final_state`` /
+    ``final_state_stable`` and ``filesystem_root`` from it. Decodes
+    ``task_description.tool_artifacts`` (base64 ``dict[str, str]``) to
+    ``dict[str, bytes]``. Serialises the trajectory via
+    ``trajectory.model_dump(mode="json")``. Emits ``task_description.grading``
     as ``grading_config`` (``{}`` when absent).
 
     ``kb`` is not populated — bundle format v1.0 carries raw KB bytes,
     which :class:`~tolokaforge.core.grading.substrate.SnapshotGradingSubstrate`
-    does not consume; an indexed KB extension is a separate future ticket.
+    does not consume.
 
     Raises :class:`ValueError` when ``substrate.filesystem_root()`` returns
     ``None`` — bundle format v1.0 requires ``filesystem.tar``, and every

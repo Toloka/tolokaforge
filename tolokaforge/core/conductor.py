@@ -384,6 +384,10 @@ class InMemoryConductor:
 def _bundle_dir_size_bytes(bundle_dir: Path) -> int:
     """Total on-disk bytes below ``bundle_dir``. Authoritative snapshot-mode
     size measurement (one ``stat`` per file over a bounded parts count).
+
+    Duplicated from ``bundle_producer.bundle_dir_size_bytes`` — the
+    ``grader-detach`` importlinter contract forbids
+    ``tolokaforge.core.conductor`` from reaching ``tolokaforge.core.grading``.
     """
     return sum(p.stat().st_size for p in bundle_dir.rglob("*") if p.is_file())
 
@@ -1045,42 +1049,59 @@ class InProcessConductor:
             return
         if trajectory.grade is None:
             return
-        store = snapshot.build_store()
+        try:
+            store = snapshot.build_store()
+        except Exception as exc:  # noqa: BLE001 — seam-contained
+            self.logger.error(
+                "Snapshot bundle store construction failed",
+                trial_id=setup.trial_id,
+                error=str(exc),
+            )
+            trajectory.snapshot_status = SnapshotStatus.produce_failed(f"store construction: {exc}")
+            return
         try:
             with tempfile.TemporaryDirectory(prefix="snapshot-bundle-") as scratch:
                 bundle_dir = Path(scratch) / "bundle"
-                self.runtime_backend.remember_trial_inputs(setup.trial_id, trajectory, spec.task)
                 try:
+                    self.runtime_backend.remember_trial_inputs(
+                        setup.trial_id, trajectory, spec.task
+                    )
                     self.runtime_backend.build_grade_bundle(setup.trial_id, out_dir=bundle_dir)
-                except Exception as exc:  # noqa: BLE001 — produce failure contained
+                    size_bytes = _bundle_dir_size_bytes(bundle_dir)
+                    cap_bytes = int(snapshot.max_bundle_mb * 1024 * 1024)
+                    if size_bytes > cap_bytes:
+                        self.logger.warning(
+                            "Snapshot bundle exceeds cap; falling back",
+                            trial_id=setup.trial_id,
+                            bundle_size_mb=round(size_bytes / 1024 / 1024, 3),
+                            cap_mb=snapshot.max_bundle_mb,
+                        )
+                        trajectory.snapshot_status = SnapshotStatus.oversize(
+                            bundle_size_bytes=size_bytes,
+                            cap_bytes=cap_bytes,
+                        )
+                        return
+                    uri = store.put(bundle_dir)
+                    trajectory.snapshot_status = SnapshotStatus.stored(
+                        uri=uri,
+                        bundle_size_bytes=size_bytes,
+                    )
+                except Exception as exc:  # noqa: BLE001 — seam-contained
                     self.logger.error(
-                        "Snapshot bundle produce failed",
+                        "Snapshot bundle failed",
                         trial_id=setup.trial_id,
                         error=str(exc),
                     )
                     trajectory.snapshot_status = SnapshotStatus.produce_failed(str(exc))
-                    return
-                size_bytes = _bundle_dir_size_bytes(bundle_dir)
-                cap_bytes = int(snapshot.max_bundle_mb * 1024 * 1024)
-                if size_bytes > cap_bytes:
-                    self.logger.warning(
-                        "Snapshot bundle exceeds cap; falling back",
-                        trial_id=setup.trial_id,
-                        bundle_size_mb=round(size_bytes / 1024 / 1024, 3),
-                        cap_mb=snapshot.max_bundle_mb,
-                    )
-                    trajectory.snapshot_status = SnapshotStatus.oversize(
-                        bundle_size_bytes=size_bytes,
-                        cap_bytes=cap_bytes,
-                    )
-                    return
-                uri = store.put(bundle_dir)
-                trajectory.snapshot_status = SnapshotStatus.stored(
-                    uri=uri,
-                    bundle_size_bytes=size_bytes,
-                )
         finally:
-            store.close()
+            try:
+                store.close()
+            except Exception as exc:  # noqa: BLE001 — teardown must survive
+                self.logger.warning(
+                    "Snapshot bundle store close failed",
+                    trial_id=setup.trial_id,
+                    error=str(exc),
+                )
 
     def _write_artifacts(
         self,

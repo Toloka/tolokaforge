@@ -12,7 +12,7 @@ by the seam so the run continues).
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -213,8 +213,7 @@ class TestProduceFailedOutcome:
 
 class TestUngradedOutcomeFactory:
     """The seam early-returns on ``trajectory.grade is None`` and does not
-    write UNGRADED — reserved for future grader-consumer wiring. Test the
-    factory here so its shape stays discoverable."""
+    write UNGRADED. Test the factory here so its shape stays discoverable."""
 
     def test_ungraded_factory_emits_enum(self) -> None:
         from tolokaforge.core.models import SnapshotStatus
@@ -223,3 +222,90 @@ class TestUngradedOutcomeFactory:
         assert status.outcome is SnapshotOutcome.UNGRADED
         assert status.uri is None
         assert status.reason is None
+
+
+class TestStoreFailedOutcome:
+    """The seam contains every failure between ``build_store()`` and
+    ``store.close()``: store construction failure, store.put failure, and
+    the close-time exception the outer finally survives. Each records
+    :attr:`SnapshotOutcome.PRODUCE_FAILED` on the trajectory and lets the
+    trial's normal completion path continue.
+    """
+
+    def test_produce_bundle_records_produce_failed_on_store_put_failure(
+        self, tmp_path: Path
+    ) -> None:
+        snapshot = SnapshotBundleConfig(
+            enabled=True,
+            store=LocalDiskBundleStoreConfig(root_dir=str(tmp_path)),
+        )
+        conductor = _make_conductor(snapshot=snapshot)
+
+        def fake_build(trial_id: str, *, out_dir: Path):
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "manifest.json").write_bytes(b'{"schema_version":"1.0"}')
+            return MagicMock()
+
+        conductor.runtime_backend.build_grade_bundle.side_effect = fake_build
+
+        fake_store = MagicMock()
+        fake_store.put.side_effect = OSError("ENOSPC")
+        with patch.object(SnapshotBundleConfig, "build_store", return_value=fake_store):
+            trajectory = _make_trajectory()
+            # Must not re-raise — the seam contains storage failures.
+            conductor._produce_grade_bundle(_make_spec(), _make_setup(), trajectory)
+
+        assert trajectory.snapshot_status is not None
+        assert trajectory.snapshot_status.outcome is SnapshotOutcome.PRODUCE_FAILED
+        assert "ENOSPC" in trajectory.snapshot_status.reason
+        fake_store.close.assert_called_once()
+
+    def test_produce_bundle_records_produce_failed_on_build_store_failure(
+        self, tmp_path: Path
+    ) -> None:
+        snapshot = SnapshotBundleConfig(
+            enabled=True,
+            store=LocalDiskBundleStoreConfig(root_dir=str(tmp_path)),
+        )
+        conductor = _make_conductor(snapshot=snapshot)
+        with patch.object(
+            SnapshotBundleConfig,
+            "build_store",
+            side_effect=ImportError("boto3 missing"),
+        ):
+            trajectory = _make_trajectory()
+            conductor._produce_grade_bundle(_make_spec(), _make_setup(), trajectory)
+
+        assert trajectory.snapshot_status is not None
+        assert trajectory.snapshot_status.outcome is SnapshotOutcome.PRODUCE_FAILED
+        assert "store construction" in trajectory.snapshot_status.reason
+        assert "boto3 missing" in trajectory.snapshot_status.reason
+        # No build_grade_bundle call — failure was before the substrate stashed inputs.
+        conductor.runtime_backend.build_grade_bundle.assert_not_called()
+
+    def test_produce_bundle_survives_store_close_failure(self, tmp_path: Path) -> None:
+        """A close-time exception must not mask the primary outcome."""
+        snapshot = SnapshotBundleConfig(
+            enabled=True,
+            store=LocalDiskBundleStoreConfig(root_dir=str(tmp_path)),
+        )
+        conductor = _make_conductor(snapshot=snapshot)
+
+        def fake_build(trial_id: str, *, out_dir: Path):
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "manifest.json").write_bytes(b'{"schema_version":"1.0"}')
+            return MagicMock()
+
+        conductor.runtime_backend.build_grade_bundle.side_effect = fake_build
+
+        fake_store = MagicMock()
+        fake_store.put.return_value = "bundle://local_disk/deadbeef"
+        fake_store.close.side_effect = RuntimeError("close boom")
+        with patch.object(SnapshotBundleConfig, "build_store", return_value=fake_store):
+            trajectory = _make_trajectory()
+            conductor._produce_grade_bundle(_make_spec(), _make_setup(), trajectory)
+
+        # Primary outcome (stored) is preserved; close failure is swallowed.
+        assert trajectory.snapshot_status is not None
+        assert trajectory.snapshot_status.outcome is SnapshotOutcome.STORED
+        fake_store.close.assert_called_once()

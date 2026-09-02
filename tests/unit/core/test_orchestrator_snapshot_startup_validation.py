@@ -132,4 +132,4 @@ class TestBackendCapabilityGate:
         orch._validate_snapshot_mode_compatibility(backend)
         backend.build_grade_bundle.assert_called_once()
         _args, kwargs = backend.build_grade_bundle.call_args
-        assert kwargs["out_dir"].exists() is False  # cleaned up in finally
+        assert kwargs["trial_id"] == "__snapshot_probe__"
