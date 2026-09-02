@@ -17,6 +17,7 @@ generate seam and a tool executor are faked, no over-mocking of the loop.
 import time
 
 import pytest
+from litellm.exceptions import RateLimitError
 
 from tolokaforge.core.llm.client import GenerationResult, LLMApiTimeoutError
 from tolokaforge.core.llm.usage import Usage
@@ -35,15 +36,22 @@ pytestmark = pytest.mark.unit
 
 
 class _ScriptedClient:
-    """Yields a fixed sequence of GenerationResults, one per generate call."""
+    """Yields a fixed sequence of GenerationResults, one per generate call.
 
-    def __init__(self, results: list[GenerationResult]) -> None:
+    An entry that is an ``Exception`` instance is raised on that call instead —
+    the retry-loop tests script provider failures this way.
+    """
+
+    def __init__(self, results: list[GenerationResult | Exception]) -> None:
         self._results = list(results)
         self.calls = 0
 
     def generate(self, system, messages, tools, tool_choice="auto", observation=None):
         self.calls += 1
-        return self._results.pop(0)
+        item = self._results.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
 class _RecordingExecutor:
@@ -83,17 +91,28 @@ def _classify_no_patterns(exc: Exception) -> TerminationDecision:
     return classify_loop_error(exc, ())
 
 
-def _loop(client, *, should_terminate, user_turn=None, max_turns=5, executor=None, sink=None):
+def _loop(
+    client,
+    *,
+    should_terminate,
+    user_turn=None,
+    max_turns=5,
+    executor=None,
+    sink=None,
+    config=None,
+    retry_sleep=None,
+):
     return ToolCallingLoop(
         llm_client=client,
         tool_executor=executor or _RecordingExecutor(),
         tool_schemas=[],
-        config=LoopConfig(max_turns=max_turns, episode_timeout_s=10_000),
+        config=config or LoopConfig(max_turns=max_turns, episode_timeout_s=10_000),
         metrics=sink or _CountingSink(),
         should_terminate=should_terminate,
         user_turn=user_turn,
         classify_error=_classify_no_patterns,
         logger=_logger(),
+        retry_sleep=retry_sleep or (lambda _s: None),
     )
 
 
@@ -311,6 +330,218 @@ def test_generation_error_is_classified_via_shared_classifier():
     assert outcome.status == TrialStatus.ERROR
     assert outcome.termination_reason == TerminationReason.API_TIMEOUT
     assert messages[-1].role == MessageRole.SYSTEM
+
+
+def test_empty_completion_terminates_before_appending():
+    """A generation with no text and no tool calls terminates the loop with
+    ``EMPTY_COMPLETION``, without ever appending the empty assistant message
+    that a subsequent request would send to the provider."""
+    client = _ScriptedClient(
+        [
+            GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=1)),
+            GenerationResult(text="unreached", usage=Usage(prompt_tokens=1)),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(client, should_terminate=_never_terminate, max_turns=5).run(
+        "sys", messages, time.time()
+    )
+
+    assert client.calls == 1
+    assert outcome.termination_reason == TerminationReason.EMPTY_COMPLETION
+    assert outcome.status == TrialStatus.FAILED
+    assert not any(
+        m.role == MessageRole.ASSISTANT and m.content == "" and not m.tool_calls for m in messages
+    )
+    assert messages[-1].role == MessageRole.SYSTEM
+    assert "empty completion" in messages[-1].content
+
+
+def test_empty_completion_still_records_generation_usage():
+    """The trial paid for the empty completion, so metrics record it — only the
+    assistant message is skipped."""
+    client = _ScriptedClient(
+        [GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=7))]
+    )
+    sink = _CountingSink()
+    messages: list[Message] = []
+    _loop(client, should_terminate=_never_terminate, sink=sink, max_turns=5).run(
+        "sys", messages, time.time()
+    )
+
+    assert sink.generations == 1
+    assert sink.prompt_tokens == 7
+
+
+def test_api_error_retry_recovers_on_second_attempt():
+    """Bounded retry: a transient API-error on turn 0 recovers on the retry,
+    the tool call executes, the trial completes without a SYSTEM error."""
+    sleeps: list[float] = []
+    executor = _RecordingExecutor()
+    client = _ScriptedClient(
+        [
+            RuntimeError("LLM API call failed: gemini rejected empty tail"),
+            GenerationResult(
+                text="ok",
+                tool_calls=[ToolCall(id="a", name="query", arguments={"q": 1})],
+                usage=Usage(prompt_tokens=5),
+            ),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        executor=executor,
+        config=LoopConfig(
+            max_turns=1, episode_timeout_s=10_000, api_error_retries=1, api_error_backoff_s=0.0
+        ),
+        retry_sleep=lambda s: sleeps.append(s),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 2
+    assert outcome.status == TrialStatus.COMPLETED
+    assert executor.executed == [("query", {"q": 1}, "a")]
+    assert not any(m.role == MessageRole.SYSTEM and "API error" in m.content for m in messages)
+    assert sleeps == [0.0]
+
+
+def test_api_error_retry_exhausts_and_fails_loud():
+    """Retry budget spent: after ``api_error_retries + 1`` attempts, the trial
+    terminates with the classified system message intact."""
+    client = _ScriptedClient(
+        [
+            RuntimeError("LLM API call failed: gemini rejected empty tail"),
+            RuntimeError("LLM API call failed: gemini rejected empty tail"),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(
+            max_turns=5, episode_timeout_s=10_000, api_error_retries=1, api_error_backoff_s=0.0
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 2
+    assert outcome.status == TrialStatus.ERROR
+    assert outcome.termination_reason == TerminationReason.API_ERROR
+    assert messages[-1].role == MessageRole.SYSTEM
+    assert messages[-1].content == (
+        "API error: LLM API call failed: gemini rejected empty tail. Dialogue terminated."
+    )
+
+
+def test_api_error_retry_does_not_mutate_messages_before_success():
+    """Invariant lock: a raised attempt leaves ``messages`` unchanged, so the
+    successful attempt's assistant message stands alone with no ghost entry
+    from the failed attempt above it."""
+    client = _ScriptedClient(
+        [
+            RuntimeError("LLM API call failed: gemini rejected empty tail"),
+            GenerationResult(text="recovered", usage=Usage(prompt_tokens=5)),
+        ]
+    )
+    messages: list[Message] = []
+    _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(
+            max_turns=1, episode_timeout_s=10_000, api_error_retries=1, api_error_backoff_s=0.0
+        ),
+    ).run("sys", messages, time.time())
+
+    assistant_messages = [m for m in messages if m.role == MessageRole.ASSISTANT]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0].content == "recovered"
+
+
+def test_rate_limit_stays_one_shot():
+    """Rate limits are not retried at the loop level — the client's own probe
+    controller owns 429 recovery, and retrying them here would double-count
+    the exclusion."""
+
+    def _classify_with_rate_limit(exc: Exception) -> TerminationDecision:
+        return classify_loop_error(exc, ())
+
+    wrapped_rate_limit = RuntimeError(
+        f"LLM API call failed: {RateLimitError(message='quota', llm_provider='openrouter', model='anthropic/claude')}"
+    )
+    wrapped_rate_limit.__cause__ = RateLimitError(
+        message="quota", llm_provider="openrouter", model="anthropic/claude"
+    )
+    client = _ScriptedClient([wrapped_rate_limit])
+    messages: list[Message] = []
+    outcome = ToolCallingLoop(
+        llm_client=client,
+        tool_executor=_RecordingExecutor(),
+        tool_schemas=[],
+        config=LoopConfig(
+            max_turns=5, episode_timeout_s=10_000, api_error_retries=5, api_error_backoff_s=0.0
+        ),
+        metrics=_CountingSink(),
+        should_terminate=_never_terminate,
+        classify_error=_classify_with_rate_limit,
+        logger=_logger(),
+        retry_sleep=lambda _s: None,
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 1
+    assert outcome.termination_reason == TerminationReason.RATE_LIMIT
+
+
+def test_empty_completion_not_retried():
+    """Even with a generous retry budget, an empty completion terminates on
+    the first turn — the wire-shape signal owns its own dedicated fail-loud
+    path."""
+    client = _ScriptedClient(
+        [GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=1))]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(
+            max_turns=5, episode_timeout_s=10_000, api_error_retries=5, api_error_backoff_s=0.0
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 1
+    assert outcome.termination_reason == TerminationReason.EMPTY_COMPLETION
+    assert outcome.status == TrialStatus.FAILED
+
+
+def test_api_error_retry_budget_resets_per_outer_turn():
+    """A successful turn 0 followed by an API-error turn 1 gets a fresh retry
+    budget: the counter resets at the start of every outer iteration, so a
+    future refactor that carried retry state across turns fails loud here."""
+    executor = _RecordingExecutor()
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="first",
+                tool_calls=[ToolCall(id="a", name="query", arguments={"q": 1})],
+                usage=Usage(prompt_tokens=5),
+            ),
+            RuntimeError("LLM API call failed: gemini rejected empty tail"),
+            GenerationResult(text="recovered", usage=Usage(prompt_tokens=5)),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        executor=executor,
+        config=LoopConfig(
+            max_turns=2, episode_timeout_s=10_000, api_error_retries=1, api_error_backoff_s=0.0
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 3
+    assert outcome.status == TrialStatus.COMPLETED
+    assert executor.executed == [("query", {"q": 1}, "a")]
+    assert not any(m.role == MessageRole.SYSTEM and "API error" in m.content for m in messages)
 
 
 def test_effective_system_prompt_captured_from_first_generation_only():

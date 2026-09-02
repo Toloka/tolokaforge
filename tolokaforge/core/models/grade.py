@@ -14,6 +14,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from tolokaforge.core.models.grade_components import GradeComponents
+from tolokaforge.core.models.trial_status import TerminationReason
 from tolokaforge.runner.models import CriterionResult, TraceChecksSummary, TraceConstraintResult
 
 __all__ = [
@@ -184,3 +185,15 @@ class Grade(BaseModel):
     # policy included / gated out. Serialized inline in ``grade.yaml``. See
     # docs/OUTPUT_FORMAT.md.
     judge_agent_prompt_included: bool | None = None
+    # Which trajectory ``TerminationReason`` a ``TrialGrader`` synthesised this
+    # grade from — populated only on the harness auto-fail branches
+    # (``ERROR``/``TIMEOUT``/``STUCK_DETECTED``/``EMPTY_COMPLETION``), where no
+    # evaluator ran and the grade is fabricated by the harness rather than
+    # composed from measured components. ``None`` on every grade produced by a
+    # real evaluator (the runner ``GradeTrial`` path, the grader-service ``Grade``
+    # RPC, the judge-backed path). A grade carrying this marker also carries all
+    # ``components`` fields ``None`` — nothing was measured — so downstream
+    # analytics can tell an auto-failed trial from one that measured a
+    # ``state_checks: 0.0`` verdict. Serialized inline in ``grade.yaml``. See
+    # docs/OUTPUT_FORMAT.md.
+    synthesized_by_termination_reason: TerminationReason | None = None

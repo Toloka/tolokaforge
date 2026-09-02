@@ -20,7 +20,10 @@ The conductor's job (per ``docs/CLOUD_RUNTIME_ARCHITECTURE.md`` §6.3) is to
      positive.
   3. ``TerminationReason.STUCK_DETECTED`` — auto-fail. A stuck agent fails
      even if the state hash happens to match the golden.
-  4. Otherwise — the runner's ``grade_trial`` gRPC computes state / rule /
+  4. ``TerminationReason.EMPTY_COMPLETION`` — auto-fail. The model returned
+     no text and no tool calls, so there is nothing to grade: dispatching to
+     the runner would score empty content against the golden.
+  5. Otherwise — the runner's ``grade_trial`` gRPC computes state / rule /
      judge components against the golden state and returns a raw dict that
      is parsed into :class:`Grade`. A grading run that could not produce a
      verdict raises :class:`GradingFailedError`; the verdict is the runner's
@@ -266,8 +269,11 @@ class RunnerRPCTrialGrader:
             return Grade(
                 binary_pass=False,
                 score=0.0,
-                components=GradeComponents(state_checks=0.0),
+                components=GradeComponents(),
                 reasons=f"Trial failed with status: {trajectory.status.value}",
+                synthesized_by_termination_reason=(
+                    trajectory.termination_reason or TerminationReason.ERROR
+                ),
             )
 
         if trajectory.termination_reason == TerminationReason.STUCK_DETECTED:
@@ -280,8 +286,24 @@ class RunnerRPCTrialGrader:
             return Grade(
                 binary_pass=False,
                 score=0.0,
-                components=GradeComponents(state_checks=0.0),
+                components=GradeComponents(),
                 reasons="Agent got stuck (repeated actions without progress)",
+                synthesized_by_termination_reason=TerminationReason.STUCK_DETECTED,
+            )
+
+        if trajectory.termination_reason == TerminationReason.EMPTY_COMPLETION:
+            self.logger.info(
+                "Trial ended with an empty completion - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Model returned an empty completion (no text, no tool calls)",
+                synthesized_by_termination_reason=TerminationReason.EMPTY_COMPLETION,
             )
 
         llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
@@ -611,8 +633,11 @@ class JudgeBackedTrialGrader:
             return Grade(
                 binary_pass=False,
                 score=0.0,
-                components=GradeComponents(llm_judge=0.0),
+                components=GradeComponents(),
                 reasons=f"Trial failed with status: {trajectory.status.value}",
+                synthesized_by_termination_reason=(
+                    trajectory.termination_reason or TerminationReason.ERROR
+                ),
             )
 
         if trajectory.termination_reason == TerminationReason.STUCK_DETECTED:
@@ -625,8 +650,24 @@ class JudgeBackedTrialGrader:
             return Grade(
                 binary_pass=False,
                 score=0.0,
-                components=GradeComponents(llm_judge=0.0),
+                components=GradeComponents(),
                 reasons="Agent got stuck (repeated actions without progress)",
+                synthesized_by_termination_reason=TerminationReason.STUCK_DETECTED,
+            )
+
+        if trajectory.termination_reason == TerminationReason.EMPTY_COMPLETION:
+            self.logger.info(
+                "Trial ended with an empty completion - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Model returned an empty completion (no text, no tool calls)",
+                synthesized_by_termination_reason=TerminationReason.EMPTY_COMPLETION,
             )
 
         grade = self.judge_fn(spec, trajectory, agent_system_prompt)
@@ -727,8 +768,11 @@ class GraderRPCTrialGrader:
             return Grade(
                 binary_pass=False,
                 score=0.0,
-                components=GradeComponents(state_checks=0.0),
+                components=GradeComponents(),
                 reasons=f"Trial failed with status: {trajectory.status.value}",
+                synthesized_by_termination_reason=(
+                    trajectory.termination_reason or TerminationReason.ERROR
+                ),
             )
 
         if trajectory.termination_reason == TerminationReason.STUCK_DETECTED:
@@ -741,8 +785,24 @@ class GraderRPCTrialGrader:
             return Grade(
                 binary_pass=False,
                 score=0.0,
-                components=GradeComponents(state_checks=0.0),
+                components=GradeComponents(),
                 reasons="Agent got stuck (repeated actions without progress)",
+                synthesized_by_termination_reason=TerminationReason.STUCK_DETECTED,
+            )
+
+        if trajectory.termination_reason == TerminationReason.EMPTY_COMPLETION:
+            self.logger.info(
+                "Trial ended with an empty completion - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Model returned an empty completion (no text, no tool calls)",
+                synthesized_by_termination_reason=TerminationReason.EMPTY_COMPLETION,
             )
 
         _refuse_hash_grading_on_grader_rpc(spec)
@@ -917,8 +977,11 @@ class QueueTrialGrader:
             return Grade(
                 binary_pass=False,
                 score=0.0,
-                components=GradeComponents(state_checks=0.0),
+                components=GradeComponents(),
                 reasons=f"Trial failed with status: {trajectory.status.value}",
+                synthesized_by_termination_reason=(
+                    trajectory.termination_reason or TerminationReason.ERROR
+                ),
             )
 
         if trajectory.termination_reason == TerminationReason.STUCK_DETECTED:
@@ -931,8 +994,24 @@ class QueueTrialGrader:
             return Grade(
                 binary_pass=False,
                 score=0.0,
-                components=GradeComponents(state_checks=0.0),
+                components=GradeComponents(),
                 reasons="Agent got stuck (repeated actions without progress)",
+                synthesized_by_termination_reason=TerminationReason.STUCK_DETECTED,
+            )
+
+        if trajectory.termination_reason == TerminationReason.EMPTY_COMPLETION:
+            self.logger.info(
+                "Trial ended with an empty completion - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Model returned an empty completion (no text, no tool calls)",
+                synthesized_by_termination_reason=TerminationReason.EMPTY_COMPLETION,
             )
 
         _refuse_hash_grading_on_grader_rpc(spec)

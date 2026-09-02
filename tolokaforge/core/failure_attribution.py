@@ -162,6 +162,7 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         TerminationReason.TIMEOUT,
         TerminationReason.RATE_LIMIT,
         TerminationReason.API_ERROR,
+        TerminationReason.EMPTY_COMPLETION,
         TerminationReason.ERROR,
     ):
         failure_class = "timeout_or_resource"
@@ -173,6 +174,27 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
                     trajectory.termination_reason.value if trajectory.termination_reason else None
                 ),
                 "status": trajectory.status.value,
+            }
+        )
+    elif (
+        trajectory.grade is not None
+        and trajectory.grade.synthesized_by_termination_reason is not None
+    ):
+        # A harness-synthesised auto-fail grade — the deterministic branches above
+        # already claim ``timeout_or_resource`` for the ERROR / TIMEOUT /
+        # EMPTY_COMPLETION reasons, so this branch fires on any synthesised trial
+        # whose ``termination_reason`` is not enumerated above (today only
+        # STUCK_DETECTED). The tool-log scan below settles on ``model_reasoning``
+        # by default, which would misattribute a harness-terminated trial to the
+        # model, so the synth marker takes precedence. Forward-compat: a future
+        # ``TerminationReason`` value ``TrialGrader`` synthesises from without
+        # an enumerated branch above lands here rather than falling through.
+        failure_class = "harness_autofail"
+        deterministic = True
+        evidence.append(
+            {
+                "kind": "synthesized_grade",
+                "termination_reason": (trajectory.grade.synthesized_by_termination_reason.value),
             }
         )
     else:
@@ -257,6 +279,12 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
                 )
 
     confidence = 1.0 if deterministic else 0.5
+    synthesized_reason = (
+        trajectory.grade.synthesized_by_termination_reason
+        if trajectory.grade is not None
+        and trajectory.grade.synthesized_by_termination_reason is not None
+        else None
+    )
     return {
         "task_id": trajectory.task_id,
         "trial_index": trajectory.trial_index,
@@ -274,6 +302,16 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         "deterministic": deterministic,
         "confidence": confidence,
         "evidence": evidence,
+        # First-class markers of a harness-synthesised auto-fail grade — a
+        # non-None ``synthesized_by_termination_reason`` names which
+        # ``TerminationReason`` the ``TrialGrader`` synthesised the grade from
+        # (no evaluator ran on this trial). Present-but-null on every real
+        # measured verdict so a downstream consumer can read
+        # ``record["synthesized"]`` unconditionally.
+        "synthesized": synthesized_reason is not None,
+        "synthesized_by_termination_reason": (
+            synthesized_reason.value if synthesized_reason is not None else None
+        ),
     }
 
 

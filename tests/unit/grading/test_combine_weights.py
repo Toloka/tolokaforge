@@ -76,37 +76,22 @@ def test_a_pack_whose_only_source_core_cannot_read_fails_naming_the_component() 
 
 
 def test_a_config_weighting_its_only_scored_component_to_zero_names_the_share() -> None:
-    """The weighted fold's other half: a scored component whose share cancels it.
+    """The weighted fold's zero-total-weight branch: a scored component whose share
+    cancels it. The single declared component earns a real verdict, and the fold
+    still refuses because folding on a zero-share scored component lets a scored
+    component decide nothing. The reason names the component and its share so the
+    author reads which line to change.
 
-    ``transcript_rules`` is scored and weighted ``0.0``, so the mean has nothing to average,
-    while ``state_checks`` is requested and produces no verdict because ``db_probes`` resolves
-    only runner-side. Both facts about the fold are named — the component that produced no
-    verdict and the share that cancels the one that did — because either alone leaves the
-    author guessing which line to change.
-
-    The two component assertions are what stop this from locking the empty-scored-set cell a
-    second time: with ``transcript_rules`` unscored the sum-to-zero clause is unreachable and
-    the reason below would come from the other branch entirely. The trial therefore carries an
-    assistant turn — a timeline with no events leaves ``transcript_rules`` unscored on either
-    substrate, which is that same unreachable cell.
+    A trial with an assistant turn keeps ``transcript_rules`` scored — a timeline
+    with no events leaves that component unscored, which is the empty-scored-set
+    cell already locked by :func:`test_a_pack_whose_only_source_core_cannot_read_fails_naming_the_component`.
     """
     grade = GradingEngine(
         GradingConfig(
             combine={
                 "method": "weighted",
-                "weights": {"state_checks": 1.0, "transcript_rules": 0.0},
+                "weights": {"transcript_rules": 0.0},
                 "pass_threshold": 0.7,
-            },
-            state_checks={
-                "db_probes": [
-                    {
-                        "name": "a_probe_only_the_runner_can_reach",
-                        "dsn": "postgresql://grader:grader_pw@app-db:5432/mfg",
-                        "query": "SELECT 1",
-                        "expect": [{"path": "$.row_count", "equals": 1, "description": "one row"}],
-                        "description": "a probe resolving inside the task's docker network",
-                    }
-                ]
             },
             transcript_rules={"max_turns": 5},
         )
@@ -122,9 +107,7 @@ def test_a_config_weighting_its_only_scored_component_to_zero_names_the_share() 
     )
 
     assert (grade.score, grade.binary_pass) == (0.0, False)
-    assert grade.components.state_checks is None
     assert grade.components.transcript_rules == 1.0
-    assert "state_checks" in grade.reasons, grade.reasons
     assert "transcript_rules=0.0" in grade.reasons, grade.reasons
 
 

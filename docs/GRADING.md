@@ -693,6 +693,91 @@ touch. A grading failure that a second attempt would have got past is therefore
 recorded ungradeable on the first: the price of never fabricating a verdict and
 never counting one attempt twice.
 
+#### A component the config declared that produced no verdict
+
+The same fail-loud shape covers any component the config declared and the trial
+did not score. `resolve_uncounted_fold`
+(`tolokaforge/core/grading/combine_weights.py`) refuses the fold when a
+component in `combine.weights` with its matching config section arrives with a
+score of `-1.0` (the "not evaluated" sentinel), and marks the verdict with
+`FoldedGrade.refusal = True`. The runner's `GradeTrial` reads that flag and
+returns `success = False` with a reason naming the missing component; the
+grader-service dispatch raises `GradingFailedError` with the same reason. The
+grader-service `Grade` handler translates that raise to
+`GradeResponse(success = False)`, so both substrates surface the same wire
+shape.
+
+Two failure modes reach this branch today:
+
+| mode | how the component ended up unscored |
+|---|---|
+| `llm_judge` declared and errored | the judge returned `JudgeStatus.ERRORED` with no numeric score (a provider outage, a rubric the judge could not parse, a submit_report the judge refused after retries), leaving `llm_judge_score` at `-1.0` |
+| `state_checks` declared and its golden replay errored | `_execute_hash_grading` recorded a per-action failure on `golden_replay.failures`; `HashGradingResult.hash_unscorable` reads `True`; the runner call site at `runner/service.py:_grade_trial_async` skips the `components.hash_score` write, leaving it at the `-1.0` not-evaluated sentinel; the composed `state_checks` slot is empty |
+
+Folding on the remaining components would silently redistribute the missing
+component's declared weight onto whatever else scored. A judge-errored trial
+that happened to score `state_checks: 1.0` beside a `-1.0` `llm_judge_score`
+would otherwise surface as `score=1.0, binary_pass=True`, indistinguishable
+from a trial the judge actually confirmed. A golden-replay-errored trial
+whose replay left partial state behind would otherwise hash equal to that
+partial world and score `hash_score: 0.0` — indistinguishable from a real
+hash mismatch the agent's actions produced, and the golden-path defect would
+be recorded only as a string appended to `reasons`. The refusal removes that
+ambiguity: the trial's downstream trace is the same one a
+state_checks-unanswerable trial already had — `Trajectory.grading_error`
+records the reason, `classify_trial_outcome` returns `UNGRADEABLE`, the trial
+reaches `measured_trials` while staying out of `scored_trials`, and the
+process exits non-zero once the run has otherwise completed.
+
+The refusal fires on the `-1.0` sentinel alone. A judge that scored `0.0` (or
+a required-criterion gate that zeroed the judge's aggregate) still folds in
+normally, because that zero is a real measured verdict rather than a missing
+one. A hash grade that ran whole and returned `hash_match=False` also folds
+in as a real `state_checks: 0.0` — the replay ran, the world it produced is
+the one the pack asked for, and the agent did not reach it.
+
+#### Harness auto-fail synthesis
+
+A trial the harness auto-fails before any evaluator runs — `TrialStatus.ERROR`
+/ `TrialStatus.TIMEOUT`, `TerminationReason.STUCK_DETECTED`,
+`TerminationReason.EMPTY_COMPLETION` — has no evaluator output to compose. The
+`TrialGrader` synthesises a `Grade` for it so the trial still reaches
+`measured_trials` (nothing was refused: the grader answered), but the grade
+is deliberately shaped to expose its provenance:
+
+- `Grade.components` is empty (`GradeComponents()`) — every component field
+  reads as `None`. Downstream analytics can tell an auto-failed trial from
+  one that measured a real `state_checks: 0.0`.
+- `Grade.synthesized_by_termination_reason` names which `TerminationReason`
+  the grader synthesised from — `TerminationReason.ERROR` for the
+  `ERROR`/`TIMEOUT` fallback (`trajectory.termination_reason` when the
+  trajectory carries one, otherwise `ERROR`), and the matching value on the
+  `STUCK_DETECTED` / `EMPTY_COMPLETION` branches.
+- `Grade.binary_pass` is `False` and `Grade.score` is `0.0` — the trial did
+  end unsuccessfully; the marker distinguishes _how_ it ended, not _whether_.
+
+The four registered `TrialGrader` subclasses — `RunnerRPCTrialGrader`,
+`JudgeBackedTrialGrader`, `GraderRPCTrialGrader`, `QueueTrialGrader` — apply
+the same shape on every auto-fail branch, so a downstream reader can
+discriminate on `synthesized_by_termination_reason` regardless of which
+grader ran.
+
+Two downstream properties depend on the marker:
+
+- `failure_attribution.py:attribute_failure` returns `failure_class:
+  harness_autofail` on any synth trial whose termination reason is not
+  otherwise enumerated in the deterministic elif chain (today only
+  `STUCK_DETECTED`). The default `model_reasoning` label from the tool-log
+  scan would misattribute a harness-terminated trial to the model, so the
+  synth marker takes precedence. Every
+  attribution record also carries `synthesized: bool` and
+  `synthesized_by_termination_reason: str | None` as first-class fields.
+- `GradingCompleteness.zero_coverage` fires when
+  `synthesized_trials == measured_trials` on a run that had trials to
+  measure — every "measurement" was harness-synthesised, so
+  `--fail-on-zero-coverage` exits non-zero. The extended formula is in
+  [ADR-0041 § Field derivations](adr/0041-zero-coverage-exit-signal.md).
+
 ### The event
 
 One flat `TraceEvent` type carries all four kinds — `assistant_message`,

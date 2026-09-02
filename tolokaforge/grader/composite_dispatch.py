@@ -306,6 +306,8 @@ class GraderCompositeDispatch:
             trace_result=trace_result,
             custom_reasons=custom_reasons,
         )
+        if verdict.refusal:
+            raise GradingFailedError(verdict.reason or "grading fold refused")
         return _build_grade(
             verdict_score=verdict.score,
             verdict_pass=verdict.binary_pass,

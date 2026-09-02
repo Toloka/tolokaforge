@@ -110,14 +110,13 @@ from tolokaforge.core.models.trajectory import (
     RateLimitProbeBucketMetrics,
     RateLimitProbeRoleMetrics,
     ReplyDefect,
-    TerminationReason,
     ToolCall,
     ToolUsage,
     Trajectory,
-    TrialStatus,
     UserReplyGuardEvent,
     UserReplyOutcome,
 )
+from tolokaforge.core.models.trial_status import TerminationReason, TrialStatus
 
 # Cross-package wire types re-exported so callers reach one module for
 # the whole recorded-tool-call + wire-schema vocabulary. Canonical
