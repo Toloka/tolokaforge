@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 4,
-  "bucket_b_count": 24,
+  "bucket_b_count": 25,
   "commits": [
     {
       "adapter_paths": [
@@ -2252,6 +2252,48 @@
         "examples/terminal_bench/run_airline_segmentation_harness_kimi.yaml",
         "examples/terminal_bench/run_billing_holds_harness_kimi.yaml",
         "tolokaforge/core/drivers/coding_harness.py"
+      ]
+    },
+    {
+      "adapter_paths": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/snapshots/models_wheel_replay/metric.json",
+        "tests/canonical/snapshots/tbench_echo_hello/task_config.json",
+        "tests/canonical/snapshots/tbench_echo_hello/task_description.json",
+        "tests/canonical/test_composition_runtime_protocols.py",
+        "tests/unit/test_terminal_bench.py",
+        "tolokaforge/adapters/native_harness_synthesis.py",
+        "tolokaforge/core/composition_runtime.py",
+        "tolokaforge/core/drivers/coding_harness.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/__init__.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py",
+        "tolokaforge_coding_harnesses/tests/canonical/test_pypi_ready.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_adapter_support.py"
+      ],
+      "bucket": "B",
+      "date": "2026-09-02",
+      "pr": null,
+      "reason": "15 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "0be3b6221e66953a2a3c7a0be46b9281d0eea832",
+      "subject": "fix(coding_harness): un-retire adapter_support mixin to coexist with ADR-0044",
+      "touched_files": [
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/compose_synthesis.py",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/snapshots/models_wheel_replay/metric.json",
+        "tests/canonical/snapshots/tbench_echo_hello/task_config.json",
+        "tests/canonical/snapshots/tbench_echo_hello/task_description.json",
+        "tests/canonical/test_composition_runtime_protocols.py",
+        "tests/unit/test_terminal_bench.py",
+        "tolokaforge/adapters/native_harness_synthesis.py",
+        "tolokaforge/core/composition_runtime.py",
+        "tolokaforge/core/drivers/coding_harness.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/__init__.py",
+        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py",
+        "tolokaforge_coding_harnesses/tests/canonical/test_pypi_ready.py",
+        "tolokaforge_coding_harnesses/tests/unit/test_adapter_support.py"
       ]
     },
     {
