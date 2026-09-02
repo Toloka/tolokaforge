@@ -535,6 +535,67 @@ queue = create_run_queue(
 )
 ```
 
+## Snapshot bundle mode
+
+The runner optionally produces a **grade bundle** at trial-end — a manifest-first, content-addressable, part-addressable directory carrying everything a grader needs to score the trial without a live runner. Bundles enable offline grading, cross-region replay, and third-party analysis; the format is documented in [`docs/GRADE_BUNDLE.md`](GRADE_BUNDLE.md).
+
+**Off by default.** Enable per-run via `RunConfig.grader.snapshot`:
+
+```yaml
+grader:
+  name: grader_rpc                 # transport (unchanged)
+  expose_substrate: true           # REQUIRED: snapshot mode composes reads via SubstrateService
+  snapshot:
+    enabled: true
+    max_bundle_mb: 32              # soft cap; over-cap bundles discarded + fallback
+    fallback_on_oversize: live_callback
+    store:
+      type: local_disk             # or `s3`
+      root_dir: /var/tolokaforge/grade_bundles
+```
+
+For S3-backed storage, install the optional extra and configure the store:
+
+```bash
+uv add tolokaforge[bundle-store-s3]
+```
+
+```yaml
+    store:
+      type: s3
+      bucket: my-grade-bundles
+      prefix: run-2026-08          # optional; default `grade_bundles`
+```
+
+**Lifecycle.** After grading each trial the conductor:
+1. Composes bundle inputs via `RuntimeBackend.build_grade_bundle(trial_id, *, out_dir)` — the backend reads state / filesystem / trajectory / grading config through its `LiveRunnerCallbackGradingSubstrate` and calls `serialize_grade_bundle(...)`.
+2. Walks the produced bundle's on-disk size.
+3. Either stores it (`BundleStore.put(bundle_dir) -> "bundle://<store>/<sha256(manifest.json)>"`) or discards it (over the `max_bundle_mb` cap).
+4. Records the outcome on `Trajectory.snapshot_status` (see below).
+
+The result lives on the trial's trajectory:
+
+```yaml
+snapshot_status:
+  outcome: stored                  # or oversize / produce_failed / ungraded
+  uri: bundle://local_disk/f1c2…   # present only when outcome == stored
+  bundle_size_bytes: 128394        # actual on-disk size after produce
+  cap_bytes: 33554432              # 32 MiB
+  reason: null                     # populated on outcome=produce_failed
+```
+
+**Startup validation.** `Orchestrator.__init__` refuses `snapshot.enabled=true` when:
+- the selected `RuntimeBackend` raises `NotImplementedError` from `build_grade_bundle` (opt-out signal), OR
+- `grader.expose_substrate=false` (snapshot mode composes reads via `SubstrateService` RPCs — the substrate must be exposed).
+
+Both refusals name the failing condition and terminate the run before any trial produces.
+
+**Backend support.** Shipped backends: `SharedStackRuntimeBackend` + `PerTrialRuntimeBackend` implement `build_grade_bundle`; `InMemoryRuntimeBackend` opts out. External `tolokaforge.runtime_backends` plugins either implement the hook or opt out with a `NotImplementedError` stub — the Protocol is `@runtime_checkable` and the startup gate probes the backend at run-start.
+
+**Storage.** `BundleStore` is a plug-in seam under the `tolokaforge.bundle_stores` entry-point group — see [`docs/GRADER_SERVICE.md`](GRADER_SERVICE.md) § Bundle store seam for the Protocol shape + URI format.
+
+**Consuming bundles.** Load a stored bundle with `load_grade_bundle(bundle_dir)`; grade offline with `SnapshotGradingSubstrate(bundle_view)`. Two Protocol methods have hard offline limits in bundle format v1.0: `db_probe` raises `SubstrateUnreachableError` naming the DSN ([#1438](https://github.com/Toloka/tolokaforge/issues/1438) tracks a v1.1 pre-materialised probes part); `knowledge_search` returns `None` ([#1439](https://github.com/Toloka/tolokaforge/issues/1439) tracks a v1.1 indexed KB).
+
 ## Output Artifacts
 
 Queue state + per-attempt artifacts are written under `run_dir`:
