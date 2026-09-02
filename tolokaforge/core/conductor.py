@@ -1034,10 +1034,14 @@ class InProcessConductor:
 
         Runs after :meth:`_grade` populated ``trajectory.grade`` and before
         :meth:`_write_artifacts` serialises the trajectory to disk, so
-        ``trajectory.snapshot_status`` lands on the artifact bundle. Never
-        raises — a produce failure records
+        ``trajectory.snapshot_status`` lands on the artifact bundle. Every
+        snapshot-mode failure — store construction, ``remember_trial_inputs``,
+        ``build_grade_bundle``, size walk, ``store.put`` — records
         :attr:`SnapshotOutcome.PRODUCE_FAILED` on the trajectory and the
-        trial continues its normal completion path.
+        trial continues its normal completion path. Only unrecoverable
+        tempfile lifecycle errors from
+        :class:`tempfile.TemporaryDirectory` (``mkdtemp`` on a full/missing
+        ``TMPDIR``; a persistent ``rmtree`` failure on exit) propagate.
 
         Ungraded trials (``trajectory.grade is None``) skip the producer
         and leave ``snapshot_status`` unset — snapshot mode records only
