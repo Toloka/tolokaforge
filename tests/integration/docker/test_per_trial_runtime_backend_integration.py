@@ -16,13 +16,17 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from tests.canonical._factories import make_task_description
 from tests.utils.docker_helpers import is_docker_daemon_available
+from tolokaforge.core.composition_runtime import ComposedEnvHandle
+from tolokaforge.core.docker_compose_materialiser import _DockerComposeStackHandle
 from tolokaforge.core.models import ModelConfig
-from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend, _LocalEnvHandle
+from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
+from tolokaforge.core.project_loader import _synthesise_composition_plan
 from tolokaforge.core.service_readiness import InMemoryServiceReadinessProbe, ServiceReadinessProbe
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 
@@ -47,8 +51,16 @@ _FIXTURE = (
 )
 
 
+def _stack_handle(env_handle: Any) -> _DockerComposeStackHandle:
+    assert isinstance(env_handle, ComposedEnvHandle)
+    stack_handle = env_handle.trial_stack_handles[0]
+    assert isinstance(stack_handle, _DockerComposeStackHandle)
+    return stack_handle
+
+
 def _make_trial_spec(trial_id: str) -> TrialSpec:
     manifest = EnvironmentManifest(compose_file=_FIXTURE)
+    _synthesise_composition_plan(manifest, {})
     return TrialSpec(
         trial_id=trial_id,
         run_id="local-runtime-integration",
@@ -80,11 +92,11 @@ class TestPerTrialRuntimeBackendLifecycle:
         backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
         spec = _make_trial_spec(trial_id="lifecycle:0")
         handle = backend.provision(spec)
+        stack = _stack_handle(handle)
         try:
-            assert isinstance(handle, _LocalEnvHandle)
             assert handle.trial_id == "lifecycle:0"
-            assert handle.compose is not None
-            assert handle.temp_dir.exists()
+            assert stack.compose is not None
+            assert stack.temp_dir.exists()
 
             endpoints = backend.endpoints(handle)
             assert endpoints.runner_url.startswith("http://")
@@ -94,9 +106,9 @@ class TestPerTrialRuntimeBackendLifecycle:
         finally:
             backend.teardown(handle)
 
-        # Post-teardown: temp dir removed, cache empty.
-        assert not handle.temp_dir.exists()
-        assert handle.trial_id not in backend._clients
+        # Post-teardown: temp dir removed, handle cache empty.
+        assert not stack.temp_dir.exists()
+        assert handle.trial_id not in backend._delegate._env_handles
 
     def test_per_trial_isolation_across_concurrent_instances(self) -> None:
         """Two concurrent trials get different compose projects and
@@ -114,9 +126,7 @@ class TestPerTrialRuntimeBackendLifecycle:
                 # Same container ports, different host-side host:port pairs.
                 assert ep_a.runner_url != ep_b.runner_url
                 assert ep_a.db_url != ep_b.db_url
-                assert isinstance(handle_a, _LocalEnvHandle)
-                assert isinstance(handle_b, _LocalEnvHandle)
-                assert handle_a.temp_dir != handle_b.temp_dir
+                assert _stack_handle(handle_a).temp_dir != _stack_handle(handle_b).temp_dir
             finally:
                 backend.teardown(handle_b)
         finally:
@@ -135,7 +145,6 @@ class TestPerTrialRuntimeBackendLifecycle:
         # docker-side leftover interfering.
         handle_second = backend.provision(spec)
         try:
-            assert isinstance(handle_second, _LocalEnvHandle)
-            assert handle_second.temp_dir != handle_first.temp_dir
+            assert _stack_handle(handle_second).temp_dir != _stack_handle(handle_first).temp_dir
         finally:
             backend.teardown(handle_second)

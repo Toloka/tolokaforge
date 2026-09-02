@@ -383,7 +383,7 @@ user_reply_guard_events:                              # [] on a trial no detecto
 | `first_user_message_source` | `"pinned"`, `"simulator"`, or `null` | set once the turn loop delivers message index 0 | Where the opening user turn came from. `pinned` — the task's `initial_user_message`, delivered verbatim with no simulator dispatch; `simulator` — a user-simulator dispatch wrote it. Partitions a run's trials into authored-opener and generated-opener without re-reading the task pack. `null` means the trial never bootstrapped (it failed first), or the bundle was written before the key existed. A bootstrap the reply guard *refused* is one way to reach the first of those: it leaves the source `null` **and** records a `user_reply_guard_events` entry at `message_index: 0` with `outcome: refused`, and that pair is the signature of a guard-refused opening. |
 | `user_reply_guard_events` | list of `{message_index, outcome, rejected[]}` | one entry per user turn the reply guard did not accept on its first generation | What a defective user turn cost. `[]` is the normal state — a turn accepted on its first generation records nothing. `outcome: delivered` means a later attempt passed the guard and the turn was delivered; `outcome: refused` means the attempt budget was spent, so no clean turn could be produced and the trial errored as a `harness_error`. `rejected` carries one `{detector, reason, excerpt}` per discarded attempt, in order, and is never empty — a turn that discarded nothing is recorded by the absence of an entry, not by an empty list. `detector` is the name the detector is registered under, and `excerpt` is the evidence that detector recorded, truncated to 200 characters — the matched phrase for `fourth_wall`, and for `scratchpad` the matched tag plus the text that follows it, because a bare think tag reads the same whether it leaked or was pasted. `message_index` is the position in `messages` the turn was **dispatched at** — for a turn whose accepted reply was a bare `###STOP###`, and for a refused turn, that position holds the loop's own SYSTEM message rather than a USER turn. |
 | `grading_error` | `str` or `null` | non-null when grading ran and refused to produce a verdict | The reason the grading substrate gave. Such a trial has no `grade.yaml` but keeps its own `status` / `termination_reason`, is counted in `total_trials` and `measured_trials`, and is excluded from `scored_trials`. `null` means grading either succeeded or was correctly not attempted — `grade.yaml`'s presence tells those two apart. |
-| `provision_stage` | `"provision"`, `"await_ready"`, `"reset_recipe"`, `"register_trial"`, or `null` | non-null iff `termination_reason == provision_error` | Which point of the provisioning lifecycle raised `ProvisionError`. `provision` — compose-up failed; `await_ready` — the readiness gate rejected the substrate; `reset_recipe` — the per-trial reset hook failed; `register_trial` — the runner-side arming step refused registration after `provision` + `await_ready` succeeded. The same value also lands on the per-trial [`metrics.yaml`](#provision-failure-bundle) as `error_stage`, so a reader of either artifact alone tells the four apart. `null` on every trial whose termination reason is not `provision_error`. |
+| `provision_stage` | `"materialise_run"`, `"provision"`, `"await_ready"`, `"reset_recipe"`, `"register_trial"`, `"cycle"`, or `null` | non-null iff `termination_reason == provision_error` | Which point of the provisioning lifecycle raised `ProvisionError`. `materialise_run` — the composition-plan validation refused the plan before any substrate work; `provision` — compose-up failed; `await_ready` — the readiness gate rejected the substrate; `reset_recipe` — the per-trial reset hook failed; `register_trial` — the runner-side arming step refused registration after `provision` + `await_ready` succeeded; `cycle` — a `ServiceLifecycleDispatcher` refused a between-trial cycle. The same value also lands on the per-trial [`metrics.yaml`](#provision-failure-bundle) as `error_stage`, so a reader of either artifact alone tells them apart. `null` on every trial whose termination reason is not `provision_error`. |
 
 ### `messages[*].reasoning.summary` — when populated
 
@@ -1015,14 +1015,16 @@ contains — on this path it is stamped and most of them are absent.
   vocabulary matches `trajectory.yaml`'s `termination_reason`; `error_reason`
   carries the underlying `ProvisionError` reason string; `error_stage` names
   the point of the provisioning lifecycle that raised, drawn from the closed
-  vocabulary `provision` / `await_ready` / `reset_recipe` / `register_trial`
+  vocabulary `materialise_run` / `provision` / `await_ready` / `reset_recipe`
+  / `register_trial` / `cycle`
   (`tolokaforge.core.models.trajectory.ProvisionStage`) — a reader tells
-  compose-up (`provision`), the readiness gate (`await_ready`), the per-trial
-  reset (`reset_recipe`), and the runner-side registration (`register_trial`)
-  apart without opening a log stream. `error_stage` is present on this bundle
-  and only on this bundle — a `metrics.yaml` from any other trial carries no
-  such key. `provisioning_duration_s` and `captured_service_logs` are absent
-  on this path.
+  plan-shape validation (`materialise_run`), compose-up (`provision`), the
+  readiness gate (`await_ready`), the per-trial reset (`reset_recipe`), the
+  runner-side registration (`register_trial`), and the between-trial service
+  dispatch (`cycle`) apart without opening a log stream. `error_stage` is
+  present on this bundle and only on this bundle — a `metrics.yaml` from any
+  other trial carries no such key. `provisioning_duration_s` and
+  `captured_service_logs` are absent on this path.
 * `grade.yaml` — **not written**. The trial body never ran, so there is no
   performance to score; a `0.0` would be indistinguishable from a task the model
   failed. The failure class and reason live in `metrics.yaml`'s `error` /

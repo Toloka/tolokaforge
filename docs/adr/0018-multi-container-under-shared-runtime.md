@@ -16,6 +16,7 @@
 - **Supersedes:** ADR-0009 (isolation surface only)
 - **Superseded by:** —
 - **Amended-by:** #581 (per-service network_access opt-out — 2026-07-22)
+- **Amended-by:** ADR-0044 (backend selection is now plan-shape-driven; §6 replaces the "task-driven" mechanism this amendment introduced)
 
 ## TL;DR
 
@@ -28,6 +29,14 @@ across trials had no path. This ADR decouples them by extending
 services get materialised **once per run** under shared semantics.
 
 ## Amendment — per-service isolation, task-driven backend selection
+
+> **Amended by ADR-0044 (§6):** the "task-driven backend selection"
+> mechanism described in this section is replaced by composer-driven
+> selection: the orchestrator always constructs
+> `SharedStackRuntimeBackend`, and the composer walks the resolved
+> composition plan. The per-service isolation vocabulary this
+> amendment introduced (`shared` / `reset` / `ephemeral`) survives
+> unchanged; only the "which backend gets picked" story is replaced.
 
 The originally-shipped whole-manifest `isolation` field
 (`per_trial` / `shared_ok`) is superseded. Isolation now lives per

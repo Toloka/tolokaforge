@@ -12,6 +12,9 @@ External code discovers and loads alternative implementations of the
 :class:`~tolokaforge.core.grading.rubric_evaluator.RubricEvaluator`,
 :class:`~tolokaforge.core.grading.transcript_rule_matcher.TranscriptRuleMatcher`,
 :class:`~tolokaforge.core.grading.state_check_backend.StateCheckBackend`,
+:class:`~tolokaforge.core.composition_runtime.ComposeMaterialiser`,
+:class:`~tolokaforge.core.composition_runtime.ServiceLifecycleDispatcher`,
+:class:`~tolokaforge.core.composition_runtime.SubstrateComposer`,
 and
 :data:`~tolokaforge.core.grading.trace_check_operator.TraceCheckOperator`
 Protocols through ``importlib.metadata`` entry-point groups — no in-tree
@@ -26,6 +29,11 @@ The grading-substrate loader resolves directly to the ``GradingSubstrate``
 implementation *class* — the substrate seam is constructed per-trial with
 topology-specific arguments the plug-in group cannot generically supply,
 so callers instantiate the returned class themselves (see ADR-0040).
+The three composition-plan adapter seams (ADR-0044) follow the same
+class-typed idiom: each loader returns the impl *class* itself, and the
+caller instantiates with the class's own optional injection seams
+(``docker_compose_factory``, ``subprocess_runner``, ``materialiser``,
+``dispatcher_registry``, ``runner_client_factory``, …).
 The trace-check-operator loader resolves directly to the operator callable
 — one operator per entry point, no factory wrapper, since the callable
 itself IS the seam contract.
@@ -37,6 +45,9 @@ The groups:
 * ``tolokaforge.conductors`` → :data:`~tolokaforge.core.conductor.ConductorFactory`
 * ``tolokaforge.service_readiness_probes`` → :data:`ReadinessProbeFactory`
 * ``tolokaforge.turn_policies`` → :data:`TurnPolicyFactory`
+* ``tolokaforge.compose_materialisers`` → ``type[ComposeMaterialiser]``
+* ``tolokaforge.service_lifecycle_dispatchers`` → ``type[ServiceLifecycleDispatcher]``
+* ``tolokaforge.substrate_composers`` → ``type[SubstrateComposer]``
 * ``tolokaforge.grading_substrates`` → ``type[GradingSubstrate]``
 * ``tolokaforge.custom_check_executors`` → :data:`CustomCheckExecutorFactory`
 * ``tolokaforge.judge_model_providers`` → :data:`JudgeModelProviderFactory`
@@ -83,6 +94,11 @@ if TYPE_CHECKING:
     from tolokaforge.core.actors.actor import Actor
     from tolokaforge.core.actors.turn_policy import TurnPolicy
     from tolokaforge.core.compose_materialisation import LogCaptureConfig
+    from tolokaforge.core.composition_runtime import (
+        ComposeMaterialiser,
+        ServiceLifecycleDispatcher,
+        SubstrateComposer,
+    )
     from tolokaforge.core.conductor import Conductor, ConductorContext
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import SeedRef
@@ -118,6 +134,7 @@ __all__ = [
     "TurnPolicyContext",
     "TurnPolicyFactory",
     "UnknownImplementationError",
+    "available_compose_materialisers",
     "available_conductors",
     "available_custom_check_executors",
     "available_grading_substrates",
@@ -125,12 +142,15 @@ __all__ = [
     "available_readiness_probes",
     "available_rubric_evaluators",
     "available_runtime_backends",
+    "available_service_lifecycle_dispatchers",
     "available_state_check_backends",
+    "available_substrate_composers",
     "available_trace_check_operators",
     "available_transcript_rule_matchers",
     "available_trial_graders",
     "available_turn_policies",
     "discover_entry_points",
+    "load_compose_materialiser",
     "load_conductor",
     "load_custom_check_executor",
     "load_grading_substrate",
@@ -138,7 +158,9 @@ __all__ = [
     "load_readiness_probe",
     "load_rubric_evaluator",
     "load_runtime_backend",
+    "load_service_lifecycle_dispatcher",
     "load_state_check_backend",
+    "load_substrate_composer",
     "load_trace_check_operator",
     "load_transcript_rule_matcher",
     "load_trial_grader",
@@ -157,6 +179,9 @@ RUBRIC_EVALUATORS_GROUP = "tolokaforge.rubric_evaluators"
 TRANSCRIPT_RULE_MATCHERS_GROUP = "tolokaforge.transcript_rule_matchers"
 STATE_CHECK_BACKENDS_GROUP = "tolokaforge.state_check_backends"
 TRACE_CHECK_OPERATORS_GROUP = "tolokaforge.trace_check_operators"
+COMPOSE_MATERIALISERS_GROUP = "tolokaforge.compose_materialisers"
+SERVICE_LIFECYCLE_DISPATCHERS_GROUP = "tolokaforge.service_lifecycle_dispatchers"
+SUBSTRATE_COMPOSERS_GROUP = "tolokaforge.substrate_composers"
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +259,17 @@ class RuntimeBackendBuildContext:
     (``tools.agent.<tool>.service``), whose wrappers ``docker exec`` from the
     runner into a sibling service. CLI without socket, or socket without CLI,
     are both useless — the two flags are one decision."""
+    per_trial_mode: bool = False
+    """The plan has no run-scope substrate — every task materialises per
+    trial from its own manifest at :meth:`RuntimeBackend.provision` time.
+    Set by the orchestrator when the resolved plan is fully trial-scoped
+    (``PlanShape.TRIAL_SCOPED_ONLY``) or when the operator coerced with
+    ``orchestrator.runtime="per_trial"``. Consumed by
+    :func:`shared_runtime_backend_factory` to pin the backend's per-trial
+    branch so its :meth:`connect` no-ops ``materialise_run`` and its
+    :meth:`provision` routes through ``composer.provision_trial``. Default
+    ``False`` preserves built-in-engine behaviour for packs that declare
+    no manifest."""
 
 
 @dataclass(frozen=True)
@@ -465,6 +501,38 @@ def load_grading_substrate(name: str) -> type[GradingSubstrate]:
     return cast(type[GradingSubstrate], _load(GRADING_SUBSTRATES_GROUP, name))
 
 
+def load_compose_materialiser(name: str) -> type[ComposeMaterialiser]:
+    """Resolve a registered compose-materialiser name to its impl class.
+
+    Returns the materialiser class itself, matching the ADR-0044 entry-point
+    contract; the caller instantiates it (arg-less for the default seams,
+    with an injected ``docker_compose_factory`` for tests). The
+    :class:`ComposeMaterialiser` Protocol is a TYPE_CHECKING-only forward
+    reference — importing it eagerly would pull the composition-plan
+    machinery into the runner subset, so the annotation stays lazy and the
+    cast target does too.
+    """
+    return cast("type[ComposeMaterialiser]", _load(COMPOSE_MATERIALISERS_GROUP, name))
+
+
+def load_service_lifecycle_dispatcher(name: str) -> type[ServiceLifecycleDispatcher]:
+    """Resolve a registered service-lifecycle-dispatcher name to its impl class.
+
+    One dispatcher class per :data:`~tolokaforge.runner.models.ServiceIsolation`
+    label. The registered name and the class's ``isolation`` ClassVar match by
+    contract (``shared`` / ``reset`` / ``ephemeral`` in the closed vocab today).
+    """
+    return cast(
+        "type[ServiceLifecycleDispatcher]",
+        _load(SERVICE_LIFECYCLE_DISPATCHERS_GROUP, name),
+    )
+
+
+def load_substrate_composer(name: str) -> type[SubstrateComposer]:
+    """Resolve a registered substrate-composer name to its impl class."""
+    return cast("type[SubstrateComposer]", _load(SUBSTRATE_COMPOSERS_GROUP, name))
+
+
 def available_runtime_backends() -> list[str]:
     """Sorted names registered in the ``tolokaforge.runtime_backends`` group."""
     return sorted(discover_entry_points(RUNTIME_BACKENDS_GROUP))
@@ -523,3 +591,18 @@ def available_state_check_backends() -> list[str]:
 def available_trace_check_operators() -> list[str]:
     """Sorted names registered in the ``tolokaforge.trace_check_operators`` group."""
     return sorted(discover_entry_points(TRACE_CHECK_OPERATORS_GROUP))
+
+
+def available_compose_materialisers() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.compose_materialisers`` group."""
+    return sorted(discover_entry_points(COMPOSE_MATERIALISERS_GROUP))
+
+
+def available_service_lifecycle_dispatchers() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.service_lifecycle_dispatchers`` group."""
+    return sorted(discover_entry_points(SERVICE_LIFECYCLE_DISPATCHERS_GROUP))
+
+
+def available_substrate_composers() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.substrate_composers`` group."""
+    return sorted(discover_entry_points(SUBSTRATE_COMPOSERS_GROUP))

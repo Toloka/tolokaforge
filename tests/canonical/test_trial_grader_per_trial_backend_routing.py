@@ -33,6 +33,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests.canonical._factories import make_trajectory, make_trial_spec
+from tolokaforge.core.composition_runtime import ComposedEnvHandle
 from tolokaforge.core.models import Grade, TerminationReason, TrialStatus
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.plugin_registry import TrialGraderContext
@@ -111,11 +112,18 @@ class TestPerTrialBackendRoutesThroughRunnerRPCGrader:
 
         fake_client = _FakePerTrialRunnerClient()
         backend = PerTrialRuntimeBackend()
-        # Inject a per-trial client and mark it connected, bypassing
-        # docker-compose provisioning + the gRPC health-check. The test is
-        # a wire-shape lock, not a real per-trial substrate exerciser.
-        backend._clients[trial_id] = fake_client  # type: ignore[assignment]
-        backend._connected_trials.add(trial_id)
+        # Inject a per-trial handle carrying the fake client, and mark
+        # the trial as already-connected — bypasses docker-compose
+        # provisioning + the gRPC health-check. The test is a wire-shape
+        # lock, not a real per-trial substrate exerciser.
+        env_handle = ComposedEnvHandle(
+            trial_id=trial_id,
+            trial_stack_handles=(),
+            trial_endpoints=None,
+            trial_runner_client=fake_client,  # type: ignore[arg-type]
+        )
+        backend._delegate._env_handles[trial_id] = env_handle
+        backend._delegate._connected_trials.add(trial_id)
 
         ctx = TrialGraderContext(
             runner_address=None,

@@ -10,7 +10,9 @@ capability names so the operator sees the exact gap.
 Vocabulary rule: every requested name must appear in
 :data:`CAPABILITY_REGISTRY`. Unknown names fail loud — the registry is
 the closed set of names the engine understands. Local-docker's advertised
-set is a subset of that vocabulary.
+set is a subset of that vocabulary — the three scope-mode names
+(``per_trial_stack``, ``shared_stack``, ``composed_stack``), the four
+reset-recipe names, and the two network-isolation names.
 """
 
 from __future__ import annotations
@@ -42,6 +44,14 @@ _LOCAL_DOCKER_BASELINE: tuple[CapabilitySpec, ...] = (
     CapabilitySpec(
         name="shared_stack",
         description="Backend materialises one substrate for the whole run.",
+    ),
+    CapabilitySpec(
+        name="composed_stack",
+        description=(
+            "Backend materialises stacks per plan scope — run-scope stays live "
+            "for the run, task-scope for the task, trial-scope per trial. "
+            "State contamination is scoped per stack, not run-wide."
+        ),
     ),
     CapabilitySpec(
         name="reset_recipes:sql_dump",

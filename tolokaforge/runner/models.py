@@ -2219,6 +2219,91 @@ class TaskIsolation(str, Enum):
     SHARED_OK = "shared_ok"
 
 
+StackScope = Literal["run", "task", "trial"]
+"""Per-stack lifecycle scope vocabulary (ADR-0044).
+
+* ``run`` — the stack is materialised once at :meth:`RuntimeBackend.connect`
+  and torn down at :meth:`close`. Its services persist across every trial in
+  the run. Grading substrate is stateless per-trial (engine services).
+* ``task`` — the stack is materialised once at the first :meth:`provision`
+  for a task and torn down when the task exits. Its services persist across
+  every repeat of that task.
+* ``trial`` — the stack is materialised on every :meth:`provision` and
+  torn down on every :meth:`teardown`. Its services are fully isolated per
+  trial. This is the ADR-0009 default when the manifest declares no scope.
+
+Consumed by :class:`SubstrateComposer` at compose-lifecycle bracket time.
+Extension is via `stack_scope` Literal widening (needs its own ADR) plus
+a new dispatcher registration for the scope's between-trial semantics.
+"""
+
+
+class PlanShape(str, Enum):
+    """Classification of an :class:`EnvironmentManifest` composition plan.
+
+    Consumed by :meth:`Orchestrator._construct_runtime_backend` to determine
+    how to instantiate the sole compose-mode backend. See ADR-0044 § 5.
+
+    * ``SINGLE_RUN`` — exactly one stack, ``stack_scope="run"``. Equivalent
+      to today's Case-B `SharedStackRuntimeBackend` behaviour.
+    * ``TASK_SCOPED_ONLY`` — every stack has ``stack_scope="task"``. No
+      run-scope engine substrate; task substrate materialised per task and
+      reused across the task's repeats.
+    * ``TRIAL_SCOPED_ONLY`` — every stack has ``stack_scope="trial"``.
+      Equivalent to today's `PerTrialRuntimeBackend` behaviour. This is the
+      shape ADR-0009 defaults to when the manifest declares no services.
+    * ``MULTI_SCOPE`` — the plan mixes at least two of the above scopes.
+      Canonical T-Bench balanced-10 shape: engine ``run`` + task ``trial``.
+    """
+
+    SINGLE_RUN = "single_run"
+    TASK_SCOPED_ONLY = "task_scoped_only"
+    TRIAL_SCOPED_ONLY = "trial_scoped_only"
+    MULTI_SCOPE = "multi_scope"
+
+
+class StackDecl(BaseModel):
+    """One compose file declared by an :class:`EnvironmentManifest`.
+
+    A composition plan is the ordered list of these on
+    :attr:`EnvironmentManifest.stacks`. Each declaration carries the
+    compose-file pointer, a stack_id unique within the plan, its lifecycle
+    scope, an optional runner-service pointer (exactly one stack in the
+    plan may set this — see ADR-0044 § 7 INV-12), and per-file input
+    substitutions.
+
+    Materialised by a :class:`ComposeMaterialiser` at the scope's bracket
+    (:meth:`connect` for ``run``, :meth:`provision` for ``task``/``trial``).
+    """
+
+    stack_id: str
+    """Identifier unique within the plan. Used as compose-project prefix
+    (see ADR-0044 § 5 INV-10 extension) and as key in the per-stack
+    ``services`` map."""
+
+    compose_file: Path
+    """Absolute path to the docker-compose file. Anchored to the file that
+    declared it — the project directory for project patches, the task
+    directory for task patches — by the loader before this decl is
+    constructed."""
+
+    stack_scope: StackScope
+    """Lifecycle scope. See :data:`StackScope`."""
+
+    runner_service: str | None = None
+    """Name of the compose service in ``compose_file`` that runs the agent.
+    Exactly one :class:`StackDecl` in a composition plan may set this —
+    the composer enforces this at plan resolve time. ``None`` on every
+    other stack in the plan."""
+
+    inputs: dict[str, str] = Field(default_factory=dict)
+    """Compose-file variable substitutions scoped to ``compose_file``.
+    Passed through to the runtime backend at compose-up time; the compose
+    file's ``${var}`` slots resolve against this mapping."""
+
+    model_config = {"extra": "forbid"}
+
+
 ServiceIsolation = Literal["shared", "reset", "ephemeral"]
 """Per-service isolation vocabulary.
 
@@ -2669,6 +2754,13 @@ class StackPatch(BaseModel):
     """Container port for the rag endpoint. ``None`` means inherit
     published-port auto-detect."""
 
+    stack_scope: StackScope | None = None
+    """Lifecycle scope for this stack. ``None`` in a patch means inherit;
+    :func:`tolokaforge.core.project_loader.resolve` synthesises the scope
+    from ADR-0009 default (empty services or any non-``shared`` service →
+    ``trial``; all-``shared`` → ``run``) when the merged patch leaves this
+    unset. See ADR-0044 § 3."""
+
     model_config = {"extra": "forbid"}
 
 
@@ -2780,6 +2872,34 @@ class EnvironmentPatch(BaseModel):
     not the replacement stack. Deep-merges over the project side
     entry-by-entry on non-replacement paths."""
 
+    stacks: dict[str, StackPatch] | None = None
+    """Multi-stack composition-plan surface (ADR-0044). Keyed by
+    ``stack_id``. Each :class:`StackPatch` value carries its own
+    ``compose_file`` + ``stack_scope`` + ``runner_service?`` + ``inputs``.
+    Coexists with the scalar :attr:`stack` field only as a representation
+    choice — a patch layer that sets ``stacks`` MUST NOT also set
+    ``stack.compose_file`` (see :meth:`_refuse_stack_and_stacks_together`);
+    the two are aliases of the same field. When the merged patch has neither
+    ``stacks`` nor ``stack.compose_file`` set, :func:`resolve` synthesises
+    a single-entry composition plan from the scalar-form fields, keeping
+    every pre-ADR-0044 task pack byte-identical."""
+
+    @model_validator(mode="after")
+    def _refuse_stack_and_stacks_together(self) -> EnvironmentPatch:
+        """Refuse a patch that sets both the scalar ``stack.compose_file``
+        AND the plural ``stacks`` block — they are aliases of the same
+        field. Merge semantics between the two representations are
+        undefined; the resolver deliberately does not attempt to merge
+        them. Callers author one or the other (see ADR-0044 § 3)."""
+        if self.stacks and self.stack is not None and self.stack.compose_file is not None:
+            raise ValueError(
+                "EnvironmentPatch: the scalar `stack.compose_file` and the "
+                "plural `stacks` block are aliases of the same field and cannot "
+                "both be set in the same patch layer. Author one or the other "
+                "(see ADR-0044 § 3)."
+            )
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def _accept_legacy_flat_stack_fields(cls, data: Any) -> Any:
@@ -2869,6 +2989,22 @@ class EnvironmentManifest(BaseModel):
     """Container port for the rag endpoint. ``None`` auto-detects the first
     published port."""
 
+    stacks: list[StackDecl] = Field(default_factory=list)
+    """Composition plan — the ordered list of stacks the manifest declares
+    (ADR-0044). Populated by :func:`tolokaforge.core.project_loader.resolve`
+    either from the merged :attr:`EnvironmentPatch.stacks` block OR
+    synthesised from the scalar :attr:`compose_file` legacy fields.
+
+    A manifest loaded from a pre-ADR-0044 patch surface (scalar
+    ``compose_file`` + no ``stacks`` block) produces a single-entry plan
+    whose ``stack_scope`` is inferred from :attr:`requires_per_trial`
+    (``True`` → ``trial``, ``False`` → ``run``). The legacy scalar fields
+    (:attr:`compose_file`, :attr:`runner_service`, etc.) mirror the sole
+    synthetic stack so every existing consumer keeps working unchanged.
+
+    Consumed by :class:`SubstrateComposer` to sequence per-scope
+    materialisation, and by :attr:`plan_shape` for backend selection."""
+
     model_config = {"extra": "forbid"}
 
     @property
@@ -2876,13 +3012,40 @@ class EnvironmentManifest(BaseModel):
         """True iff at least one service is labelled ``reset`` or
         ``ephemeral``, or the manifest declares no services at all.
 
-        Consumed by :meth:`Orchestrator._select_backend_from_tasks` to
-        pick :class:`PerTrialRuntimeBackend` for any run whose tasks
-        need per-trial substrate materialisation.
+        Consumed by :func:`project_loader.resolve` to infer the
+        synthesised stack's ``stack_scope`` for scalar-form manifests
+        (``True`` → ``trial``, ``False`` → ``run``).
         """
         if not self.services:
             return True
         return any(spec.isolation != "shared" for spec in self.services.values())
+
+    @property
+    def plan_shape(self) -> PlanShape:
+        """Classify the composition plan for backend selection (ADR-0044).
+
+        A single-stack ``run``-scope plan produces ``SINGLE_RUN``; a
+        single-stack ``trial``-scope plan produces ``TRIAL_SCOPED_ONLY``;
+        a single-stack ``task``-scope plan produces ``TASK_SCOPED_ONLY``;
+        a plan mixing at least two scopes produces ``MULTI_SCOPE``.
+
+        A manifest with no ``stacks`` (either explicitly-empty list or
+        legacy scalar-only that hasn't been through
+        :func:`~tolokaforge.core.project_loader.resolve`) falls back to
+        ``TRIAL_SCOPED_ONLY`` — the ADR-0009 default, matching today's
+        :attr:`requires_per_trial=True` behaviour.
+        """
+        if not self.stacks:
+            return PlanShape.TRIAL_SCOPED_ONLY
+        scopes = {decl.stack_scope for decl in self.stacks}
+        if len(scopes) > 1:
+            return PlanShape.MULTI_SCOPE
+        (only_scope,) = scopes
+        if only_scope == "run":
+            return PlanShape.SINGLE_RUN
+        if only_scope == "task":
+            return PlanShape.TASK_SCOPED_ONLY
+        return PlanShape.TRIAL_SCOPED_ONLY
 
     @property
     def restricted_services(self) -> frozenset[str]:
