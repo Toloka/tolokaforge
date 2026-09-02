@@ -307,14 +307,15 @@ class S3BundleStore:
         if self._manifest_present(client, digest):
             return build_bundle_uri(self.name, digest)
         manifest = json.loads(manifest_bytes)
-        for rel in sorted(manifest.get("parts", {})):
+        for rel in sorted(manifest["parts"]):
             if rel == _MANIFEST_FILENAME:
                 continue
-            client.put_object(
-                Bucket=self.bucket,
-                Key=self._key(digest, rel),
-                Body=(bundle_dir / rel).read_bytes(),
-            )
+            with (bundle_dir / rel).open("rb") as body:
+                client.put_object(
+                    Bucket=self.bucket,
+                    Key=self._key(digest, rel),
+                    Body=body,
+                )
         client.put_object(
             Bucket=self.bucket,
             Key=self._key(digest, _MANIFEST_FILENAME),
@@ -340,13 +341,15 @@ class S3BundleStore:
         )["Body"].read()
         (dest_dir / _MANIFEST_FILENAME).write_bytes(manifest_bytes)
         manifest = json.loads(manifest_bytes)
-        for rel in sorted(manifest.get("parts", {})):
+        for rel in sorted(manifest["parts"]):
             if rel == _MANIFEST_FILENAME:
                 continue
-            body = client.get_object(Bucket=self.bucket, Key=self._key(digest, rel))["Body"].read()
             target = dest_dir / rel
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(body)
+            response = client.get_object(Bucket=self.bucket, Key=self._key(digest, rel))
+            with target.open("wb") as out:
+                for chunk in response["Body"].iter_chunks(chunk_size=1024 * 1024):
+                    out.write(chunk)
         return dest_dir
 
     def close(self) -> None:

@@ -14,8 +14,11 @@ import pytest
 
 from tolokaforge.core.grading.bundle import serialize_grade_bundle
 from tolokaforge.core.grading.bundle_store import (
+    BundleNotFoundError,
     InvalidBundleURIError,
     LocalDiskBundleStore,
+    build_bundle_uri,
+    parse_bundle_uri,
 )
 
 pytestmark = pytest.mark.unit
@@ -97,3 +100,55 @@ def test_get_refuses_unknown_store_name(tmp_path: Path) -> None:
 
     with pytest.raises(InvalidBundleURIError, match="s3"):
         store.get(other_store_uri, dest)
+
+
+@pytest.mark.parametrize(
+    "malformed,match",
+    [
+        ("file:///tmp/x", "scheme"),
+        ("bundle:///" + "a" * 64, "netloc"),
+        ("bundle://local_disk/" + "a" * 64 + "?q=1", "query"),
+        ("bundle://local_disk/" + "a" * 64 + "#f", "fragment"),
+        ("bundle://local_disk/notenoughhex", "digest"),
+        ("bundle://local_disk/" + "Z" * 64, "digest"),
+    ],
+)
+def test_parse_bundle_uri_refuses_malformed(malformed: str, match: str) -> None:
+    with pytest.raises(InvalidBundleURIError, match=match):
+        parse_bundle_uri(malformed)
+
+
+@pytest.mark.parametrize(
+    "bad_name,bad_digest,match",
+    [
+        ("", "a" * 64, "store"),
+        ("has spaces", "a" * 64, "store"),
+        ("local_disk", "shorthex", "digest"),
+        ("local_disk", "Z" * 64, "digest"),
+    ],
+)
+def test_build_bundle_uri_refuses_malformed(bad_name: str, bad_digest: str, match: str) -> None:
+    with pytest.raises(InvalidBundleURIError, match=match):
+        build_bundle_uri(bad_name, bad_digest)
+
+
+def test_get_raises_bundle_not_found_for_unknown_digest(tmp_path: Path) -> None:
+    store = LocalDiskBundleStore(root_dir=tmp_path / "store")
+    dest = tmp_path / "dest"
+    missing_uri = build_bundle_uri("local_disk", "b" * 64)
+
+    with pytest.raises(BundleNotFoundError):
+        store.get(missing_uri, dest)
+
+
+def test_get_raises_bundle_not_found_for_partial_bundle(tmp_path: Path) -> None:
+    store_root = tmp_path / "store"
+    store = LocalDiskBundleStore(root_dir=store_root)
+    partial_dir = store_root / "grade_bundles" / ("c" * 64)
+    partial_dir.mkdir(parents=True)
+    (partial_dir / "final_state.json").write_text("{}")  # part exists, no manifest
+    dest = tmp_path / "dest"
+    partial_uri = build_bundle_uri("local_disk", "c" * 64)
+
+    with pytest.raises(BundleNotFoundError):
+        store.get(partial_uri, dest)

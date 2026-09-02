@@ -10,8 +10,8 @@ when ``boto3`` is not installed.
 
 from __future__ import annotations
 
-import importlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 boto3 = pytest.importorskip("boto3")
-from botocore.stub import Stubber  # noqa: E402
+from botocore.stub import ANY, Stubber  # noqa: E402
 
 from tolokaforge.core.grading.bundle import (  # noqa: E402
     manifest_digest,
@@ -62,19 +62,36 @@ def _key(digest: str, rel: str) -> str:
     return f"{PREFIX}/{digest}/{rel}"
 
 
-def test_lazy_boto3_import(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    original = sys.modules.get("boto3")
-    monkeypatch.setitem(sys.modules, "boto3", None)
-    try:
-        module = importlib.reload(importlib.import_module("tolokaforge.core.grading.bundle_store"))
-        bundle = _make_bundle(tmp_path / "bundle", tmp_path / "fs")
-        store = module.S3BundleStore(bucket="x")
-        with pytest.raises(RuntimeError, match="bundle-store-s3"):
-            store.put(bundle)
-    finally:
-        if original is not None:
-            sys.modules["boto3"] = original
-        importlib.reload(importlib.import_module("tolokaforge.core.grading.bundle_store"))
+def test_lazy_boto3_import(tmp_path: Path) -> None:
+    # Verify (a) bundle_store imports without boto3 present, and (b) instantiating
+    # S3BundleStore + calling put raises RuntimeError naming the install extra.
+    # Runs in a subprocess so sys.modules pollution can't leak into sibling tests
+    # (importlib.reload swaps class identities and breaks `pytest.raises` in
+    # downstream tests that captured the pre-reload class at collection time).
+    bundle = _make_bundle(tmp_path / "bundle", tmp_path / "fs")
+    script = (
+        "import sys\n"
+        "sys.modules['boto3'] = None\n"
+        "from tolokaforge.core.grading.bundle_store import S3BundleStore\n"
+        f"store = S3BundleStore(bucket='x')\n"
+        "try:\n"
+        f"    store.put({str(bundle)!r})\n"
+        "except RuntimeError as exc:\n"
+        "    assert 'bundle-store-s3' in str(exc), str(exc)\n"
+        "    print('OK')\n"
+        "else:\n"
+        "    raise AssertionError('put did not raise RuntimeError')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (
+        result.returncode == 0
+    ), f"subprocess failed:\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
+    assert "OK" in result.stdout
 
 
 def test_put_uploads_parts_then_manifest_last(tmp_path: Path) -> None:
@@ -100,7 +117,7 @@ def test_put_uploads_parts_then_manifest_last(tmp_path: Path) -> None:
             expected_params={
                 "Bucket": BUCKET,
                 "Key": _key(digest, rel),
-                "Body": (bundle / rel).read_bytes(),
+                "Body": ANY,
             },
         )
         call_order.append(rel)
@@ -216,3 +233,10 @@ class _StreamStub:
             return data
         chunk, self._data = self._data[:amt], self._data[amt:]
         return chunk
+
+    def iter_chunks(self, chunk_size: int = 1024) -> Any:
+        while True:
+            chunk = self.read(chunk_size)
+            if not chunk:
+                return
+            yield chunk
