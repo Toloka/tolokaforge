@@ -492,9 +492,9 @@ def test_rate_limit_stays_one_shot():
 
 
 def test_empty_completion_not_retried():
-    """Cross-check with Stage 1: even with a generous retry budget, an empty
-    completion terminates on the first turn — the wire-shape signal owns its
-    own dedicated fail-loud path."""
+    """Even with a generous retry budget, an empty completion terminates on
+    the first turn — the wire-shape signal owns its own dedicated fail-loud
+    path."""
     client = _ScriptedClient(
         [GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=1))]
     )
