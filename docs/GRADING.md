@@ -1763,7 +1763,7 @@ evaluated over the [trial event timeline](#trial-event-timeline). Where
 predicates, nested argument paths, counting, and a call's status or result.
 
 **Both substrates score it through one function.** `evaluate_trace_checks`
-(`tolokaforge/core/grading/trace_checks.py`) is called by the core engine's
+(`tolokaforge/core/grading/trace_checks/`) is called by the core engine's
 `grade_trajectory` and by the runner's `GradeTrial`, over the timeline each
 already builds, so the component score does not depend on which substrate graded
 the trial. The per-constraint verdicts cross the wire on `Grade.trace_checks`,

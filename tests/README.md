@@ -194,7 +194,7 @@ Compare output against committed golden snapshots in `snapshots/`.
   folding a listed numeric-string field by name on one of the two substrates, or an
   unmakeable binding comparison stopped failing the candidate it was read on — or
   its sentence stopped crossing the wire. For that last one, fix the reduction in
-  `tolokaforge/core/grading/trace_checks.py`; for the rest, fix the manifest entry in
+  `tolokaforge/core/grading/trace_checks/`; for the rest, fix the manifest entry in
   `tolokaforge/core/grading/key_manifest.py` or the drift it exposed; widening a
   frozen exemption set in the test module is the deliberate last resort.
   A **lock 15** failure is narrower: one ledger key's recording site was deleted,
