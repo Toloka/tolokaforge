@@ -32,6 +32,7 @@ from tolokaforge.runner import run_trial
 pytestmark = pytest.mark.canonical
 
 _AGENT = {"provider": "openai", "name": "gpt-4"}
+_USER = {"provider": "openai", "name": "gpt-4"}
 _RUN_TRIAL_CLI_CMD = [sys.executable, "-m", "tolokaforge.dx.cli.main", "run-trial"]
 
 
@@ -82,7 +83,7 @@ def _start_line(task: TaskConfig, **overrides: object) -> str:
         "v": 1,
         "type": "start",
         "task": task.model_dump(mode="json"),
-        "models": {"agent": _AGENT},
+        "models": {"agent": _AGENT, "user": _USER},
         "runtime": "in_memory",
         "conductor": "in_memory",
     }
@@ -119,7 +120,10 @@ def test_happy_path_matches_run_trial_library(flat_pack: Path) -> None:
 
     got = TrialResult.model_validate(envelope["result"])
     expected = run_trial(
-        task=task, models={"agent": _AGENT}, runtime="in_memory", conductor="in_memory"
+        task=task,
+        models={"agent": _AGENT, "user": _USER},
+        runtime="in_memory",
+        conductor="in_memory",
     )
     # start_ts / end_ts are per-run wall-clock; every other trajectory field
     # (grade included) is deterministic for the in_memory conductor, and
