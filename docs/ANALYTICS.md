@@ -219,6 +219,7 @@ Deterministic classes currently emitted:
 - `infrastructure`
 - `timeout_or_resource`
 - `provision_failure`
+- `harness_autofail`
 
 Fallback class:
 
@@ -232,15 +233,33 @@ deterministically for the same reason: the call that hit the fault reached no to
 and was never recorded, so there is no failed call for the tool-log scan to find
 and the fallback would blame the agent for a substrate fault.
 
+`harness_autofail` catches trials the harness auto-failed on a `TrialGrader`
+synth branch whose termination reason is not otherwise enumerated in the
+deterministic elif chain — today that is `STUCK_DETECTED` (the `TIMEOUT` /
+`EMPTY_COMPLETION` / `ERROR` / `RATE_LIMIT` / `API_ERROR` reasons keep their
+`timeout_or_resource` label because the enumerated branch catches them
+first). It is forward-compat: any future `TerminationReason` a `TrialGrader`
+synthesises from without an enumerated branch lands here rather than falling
+through to the tool-log scan and settling on `model_reasoning`. The trial
+was never measured by an evaluator, so blaming the model is the exact
+misattribution this class exists to end.
+
 Every attribution record also carries `outcome_class` (`measured` /
 `harness_error` / `infrastructure_abort` / `ungradeable`), so a reader of a single
 record can see whether the attempt counted, and the summary carries
 `by_outcome_class` for the same split run-wide.
 
-Evidence payloads include tool name/index, error strings, state-diff keys, and termination reasons when available.
+Evidence payloads include tool name/index, error strings, state-diff keys, termination reasons, and — on a synth trial — a `{kind: "synthesized_grade", termination_reason: <reason.value>}` entry.
 
 Every attribution record also carries `provision_stage` as a top-level field, taking one of `materialise_run` / `provision` / `await_ready` / `reset_recipe` / `register_trial` / `cycle` (the closed
 `tolokaforge.core.models.trajectory.ProvisionStage` vocabulary) when the trial's `termination_reason` is `provision_error`, and `null` otherwise. It is a first-class attribution field, not an entry inside `evidence`, because it answers "which point of the provisioning lifecycle failed" — the operator's question — rather than describing the evidence for the classification. Present-but-null off the provision path so a reader can access `record["provision_stage"]` unconditionally.
+
+Every attribution record also carries two first-class marker fields for harness-synthesised auto-fail grades:
+
+- `synthesized: bool` — `True` when the trial's `Grade` was fabricated on a `TrialGrader` auto-fail branch (no evaluator ran on the trial), `False` on every real measured verdict.
+- `synthesized_by_termination_reason: str | None` — the `TerminationReason` value name the grader synthesised from (`error` / `stuck_detected` / `empty_completion`), or `null` off the synth path.
+
+Present-but-null off the synth path so a reader can access `record["synthesized"]` unconditionally rather than gate on the presence of a marker key.
 
 ## Programmatic Analysis Example
 

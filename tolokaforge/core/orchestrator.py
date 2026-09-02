@@ -554,6 +554,7 @@ class GradingCompleteness:
     measured_trials: int = 0
     scored_trials: int = 0
     judge_errored_trials: int = 0
+    synthesized_trials: int = 0
 
     @property
     def ungradeable(self) -> int:
@@ -565,11 +566,19 @@ class GradingCompleteness:
 
     @property
     def zero_coverage(self) -> bool:
-        """No trial reached the agent measurement point on a run that had trials.
+        """No trial produced an agent-measured verdict on a run that had trials.
 
-        See ``docs/adr/0041-zero-coverage-exit-signal.md``.
+        Two triggers, both fail-loud on the CLI when
+        ``--fail-on-zero-coverage`` is set: nothing reached the measurement
+        point (``measured_trials == 0``), or every measurement was a
+        harness-synthesised auto-fail from
+        ``ERROR``/``TIMEOUT``/``STUCK_DETECTED``/``EMPTY_COMPLETION``
+        (``synthesized_trials == measured_trials``). See
+        ``docs/adr/0041-zero-coverage-exit-signal.md``.
         """
-        return self.total_attempts > 0 and self.measured_trials == 0
+        return self.total_attempts > 0 and (
+            self.measured_trials == 0 or self.synthesized_trials == self.measured_trials
+        )
 
     @property
     def zero_judge_graded(self) -> bool:
@@ -3199,6 +3208,12 @@ class Orchestrator:
                 for trajectory in self.results
                 if trajectory.grade is not None
                 and trajectory.grade.judge_status is JudgeStatus.ERRORED
+            ),
+            synthesized_trials=sum(
+                1
+                for trajectory in self.results
+                if trajectory.grade is not None
+                and trajectory.grade.synthesized_by_termination_reason is not None
             ),
         )
 

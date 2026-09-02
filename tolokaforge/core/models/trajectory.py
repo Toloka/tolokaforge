@@ -25,6 +25,7 @@ from pydantic import (
 from tolokaforge.core.llm.reasoning import StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 from tolokaforge.core.models.grade import Grade
+from tolokaforge.core.models.trial_status import TerminationReason, TrialStatus
 from tolokaforge.runner.models import RecordedToolCall
 
 __all__ = [
@@ -82,32 +83,6 @@ class MessageRole(str, Enum):
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
-
-
-class TrialStatus(str, Enum):
-    """Trial execution status"""
-
-    COMPLETED = "completed"
-    FAILED = "failed"
-    TIMEOUT = "timeout"
-    ERROR = "error"
-
-
-class TerminationReason(str, Enum):
-    """Reason why the dialogue was terminated"""
-
-    AGENT_DONE = "agent_done"  # Agent had no further action and no party could ask for one
-    USER_STOP = "user_stop"  # User signaled ###STOP###
-    STUCK_DETECTED = "stuck_detected"  # Stuck condition detected
-    TIMEOUT = "timeout"  # Episode timeout reached
-    MAX_TURNS = "max_turns"  # Maximum turns limit reached
-    ERROR = "error"  # Runtime error occurred
-    RATE_LIMIT = "rate_limit"  # API rate limit error
-    API_TIMEOUT = "api_timeout"  # API call timed out after retries
-    API_ERROR = "api_error"  # Other API errors
-    EMPTY_COMPLETION = "empty_completion"  # Provider returned no text and no tool calls
-    PROVISION_ERROR = "provision_error"  # Substrate provisioning failed before the trial body ran
-    TRIAL_LOST = "trial_lost"  # The substrate no longer holds the trial the engine was running
 
 
 class FirstUserMessageSource(str, Enum):

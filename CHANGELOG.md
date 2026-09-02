@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file.
 
 ### Fix
 
+- **grading**: harness-synthesised auto-fail grades on
+  `ERROR`/`TIMEOUT`/`STUCK_DETECTED`/`EMPTY_COMPLETION` trajectories now
+  carry a `synthesized_by_termination_reason` marker and empty
+  `GradeComponents()` instead of a fabricated `state_checks: 0.0`.
+  `GradingCompleteness.zero_coverage` fires on a run whose every measured
+  trial was auto-failed. `failure_attribution.json` records the marker via
+  new `synthesized` + `synthesized_by_termination_reason` fields, and
+  STUCK_DETECTED trials classify as `harness_autofail` instead of
+  `model_reasoning`.
 - **grading**: a golden replay whose per-action execution errored no longer
   composes a fabricated `hash_score: 0.0`; the runner reads
   `HashGradingResult.hash_unscorable`, leaves `components.hash_score` at the

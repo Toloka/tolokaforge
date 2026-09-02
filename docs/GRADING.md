@@ -736,6 +736,47 @@ one. A hash grade that ran whole and returned `hash_match=False` also folds
 in as a real `state_checks: 0.0` — the replay ran, the world it produced is
 the one the pack asked for, and the agent did not reach it.
 
+#### Harness auto-fail synthesis
+
+A trial the harness auto-fails before any evaluator runs — `TrialStatus.ERROR`
+/ `TrialStatus.TIMEOUT`, `TerminationReason.STUCK_DETECTED`,
+`TerminationReason.EMPTY_COMPLETION` — has no evaluator output to compose. The
+`TrialGrader` synthesises a `Grade` for it so the trial still reaches
+`measured_trials` (nothing was refused: the grader answered), but the grade
+is deliberately shaped to expose its provenance:
+
+- `Grade.components` is empty (`GradeComponents()`) — every component field
+  reads as `None`. Downstream analytics can tell an auto-failed trial from
+  one that measured a real `state_checks: 0.0`.
+- `Grade.synthesized_by_termination_reason` names which `TerminationReason`
+  the grader synthesised from — `TerminationReason.ERROR` for the
+  `ERROR`/`TIMEOUT` fallback (`trajectory.termination_reason` when the
+  trajectory carries one, otherwise `ERROR`), and the matching value on the
+  `STUCK_DETECTED` / `EMPTY_COMPLETION` branches.
+- `Grade.binary_pass` is `False` and `Grade.score` is `0.0` — the trial did
+  end unsuccessfully; the marker distinguishes _how_ it ended, not _whether_.
+
+The four registered `TrialGrader` subclasses — `RunnerRPCTrialGrader`,
+`JudgeBackedTrialGrader`, `GraderRPCTrialGrader`, `QueueTrialGrader` — apply
+the same shape on every auto-fail branch, so a downstream reader can
+discriminate on `synthesized_by_termination_reason` regardless of which
+grader ran.
+
+Two downstream properties depend on the marker:
+
+- `failure_attribution.py:attribute_failure` returns `failure_class:
+  harness_autofail` on any synth trial whose termination reason is not
+  otherwise enumerated in the deterministic elif chain (today that is
+  `STUCK_DETECTED` — previously misrouted to `model_reasoning`, blaming the
+  model in an artifact whose whole purpose is naming the right cause). Every
+  attribution record also carries `synthesized: bool` and
+  `synthesized_by_termination_reason: str | None` as first-class fields.
+- `GradingCompleteness.zero_coverage` fires when
+  `synthesized_trials == measured_trials` on a run that had trials to
+  measure — every "measurement" was harness-synthesised, so
+  `--fail-on-zero-coverage` exits non-zero. The extended formula is in
+  [ADR-0041 § Field derivations](adr/0041-zero-coverage-exit-signal.md).
+
 ### The event
 
 One flat `TraceEvent` type carries all four kinds — `assistant_message`,
