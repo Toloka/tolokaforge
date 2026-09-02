@@ -47,6 +47,7 @@ import yaml
 from google.protobuf import json_format
 
 from tolokaforge.core.grading import db_probes as db_probes_module
+from tolokaforge.core.grading.bundle import normalise_floats
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import StructuredLogger
@@ -633,7 +634,7 @@ def serialise_grade(grade: runner_pb2.Grade | grader_pb2.Grade) -> str:
         always_print_fields_with_no_presence=True,
     )
     normalised = _normalise_optional_components(projected)
-    normalised = _normalise_floats(normalised)
+    normalised = normalise_floats(normalised)
     return json.dumps(normalised, sort_keys=True, indent=2)
 
 
@@ -662,18 +663,6 @@ def _normalise_optional_components(projected: dict[str, Any]) -> dict[str, Any]:
     for field, default in _OPTIONAL_COMPONENT_DEFAULTS.items():
         components.setdefault(field, default)
     return projected
-
-
-def _normalise_floats(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {key: _normalise_floats(child) for key, child in value.items()}
-    if isinstance(value, list):
-        return [_normalise_floats(child) for child in value]
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, float):
-        return float(f"{value:.6g}")
-    return value
 
 
 REFRESH_BASELINES_OPTION = "--refresh-baselines"

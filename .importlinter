@@ -182,3 +182,27 @@ ignore_imports =
     tolokaforge.core.grading.substrate_client -> tolokaforge.runner.runner_pb2
     tolokaforge.core.grading.substrate_client -> tolokaforge.runner.runner_pb2_grpc
 allow_indirect_imports = true
+
+
+# Bundle-library purity (grade bundle format v1.0).
+#
+# ``core.grading.bundle`` ships the offline grade-bundle format library
+# (manifest schema v1.0 + reader + producer + `%.6g` float normaliser).
+# The bundle is the offline representation both the future snapshot
+# substrate and external downstream tools consume without a live runner;
+# a reach back into ``runner``, ``grader``, or the live substrate would
+# silently couple the format to the wire and defeat the "one canonical
+# offline bytes" invariant the manifest digest names the bundle by.
+# ``allow_indirect_imports = false`` mirrors ``composite-fold-purity`` /
+# ``filesystem-view-purity`` — a transitive path back into a forbidden
+# target trips the contract, not just a direct import.
+[importlinter:contract:bundle-library-purity]
+name = tolokaforge.core.grading.bundle is a pure library — no runner/grader/substrate_live reach
+type = forbidden
+source_modules =
+    tolokaforge.core.grading.bundle
+forbidden_modules =
+    tolokaforge.runner
+    tolokaforge.grader
+    tolokaforge.core.grading.substrate_live
+allow_indirect_imports = false
