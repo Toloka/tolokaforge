@@ -3214,6 +3214,7 @@ class Orchestrator:
                 for trajectory in self.results
                 if trajectory.grade is not None
                 and trajectory.grade.synthesized_by_termination_reason is not None
+                and classify_trial_outcome(trajectory) is TrialOutcomeClass.MEASURED
             ),
         )
 
