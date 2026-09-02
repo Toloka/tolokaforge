@@ -2119,6 +2119,40 @@ module boundary. `ToolCallingLoop` receives it via
 classifiers (`core/runner.py`'s user-simulator retry, `core/resume.py`) are
 separate and unaffected — `AllApiKeysExhaustedError` subclasses `RuntimeError`.
 
+### Bounded API-error retry
+
+`ToolCallingLoop.run` retries a classified `TerminationReason.API_ERROR` in
+place, without incrementing the outer turn counter. `LoopConfig.api_error_retries`
+bounds the retry budget (default `1` — one retry, then fail loud);
+`LoopConfig.api_error_backoff_s` is the sleep between attempts (default
+`1.0` s). Sleep is dispatched through `ToolCallingLoop.retry_sleep`, which
+defaults to `time.sleep` and is swapped for a no-op in unit tests.
+
+The retry class is `API_ERROR` only. `RATE_LIMIT`, `API_TIMEOUT`, `TRIAL_LOST`
+and `EMPTY_COMPLETION` stay one-shot terminal because each already owns a
+dedicated path — typed 429 handling in the `_build_retrying` /
+`_build_probe_retrying` outer controllers above, transport-timeout retry in
+`_call_completion_with_timeout_retry`, substrate re-registration in the runner
+protocol, and the provider-shape fail-loud at wire receipt (see
+`empty_assistant_filler` § *Provider-side empty completion*). Retrying them at
+the loop level would double-count the exclusion and confuse the denominator.
+
+The retry budget resets to zero at the start of every outer iteration, so a
+successful turn 0 followed by an API-error turn 1 gets a fresh budget. The
+`messages` mutation invariant on a failed attempt is what makes replay safe:
+`_run_turn` mutates `messages` only after `_generate` succeeds
+(`messages.append(self._assistant_message(...))` sits after the `_generate`
+call), so a raise before that line leaves `messages` unchanged and the retry
+attempts against the same prefix.
+
+Composition with the judge's own retry: `RubricJudge` runs a bounded retry loop
+around `submit_report` validation errors inside its `LLMJudge` shell; a bad
+provider response inside one rubric turn retries once at the loop level, and the
+outer judge loop retries `submit_report` semantics on top. The two retries are
+orthogonal — one covers wire-level API-error transience, the other covers
+grader-contract validation — so composing them does not double-count the
+budget.
+
 ### Probe telemetry recording sites
 
 Both sides of throughput are recorded by the two ends of the same pair of hooks

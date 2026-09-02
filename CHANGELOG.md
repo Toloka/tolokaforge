@@ -13,6 +13,13 @@ All notable changes to this project are documented in this file.
   additive on `Trajectory`; the failure-attribution table classifies it as
   `timeout_or_resource` (provider-side deterministic termination), and the
   runner-side graders auto-fail it without dispatching to `grade_trial`.
+- **loop**: transient `TerminationReason.API_ERROR` classifications are
+  retried once (bounded, hardcoded default via
+  `LoopConfig.api_error_retries=1` + `api_error_backoff_s=1.0`) before
+  terminating the trial. Rate limits, API timeouts, `TRIAL_LOST` and empty
+  completions remain one-shot. The retry budget resets at every outer
+  turn, and the `messages` list is unchanged on a failed attempt so the
+  retry attempts against the same prefix.
 
 ## v0.22.1 (2026-09-02)
 
