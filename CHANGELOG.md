@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.22.0 (2026-09-02)
+
+### Feat
+
+- **llm**: namespace-matched gateway wildcards, one provider-pin rule, route provenance (#1407)
+
+### Fix
+
+- **conductor**: skip Runner GetState RPC when task declares no json_db + demote no-target log (#1414)
+
 ## v0.21.4 (2026-08-28)
 
 ### Fix
