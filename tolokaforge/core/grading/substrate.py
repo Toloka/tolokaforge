@@ -69,10 +69,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from tolokaforge.core.grading.bundle import BundleIntegrityError, GradeBundleView
 from tolokaforge.core.grading.filesystem_view import read_agent_visible_filesystem
 
 if TYPE_CHECKING:
+    from tolokaforge.core.grading.bundle import GradeBundleView
     from tolokaforge.core.grading.judge import DBReader
     from tolokaforge.core.grading.kb_search import KnowledgeSearch
 
@@ -346,6 +346,18 @@ class InProcessGradingSubstrate:
 # ---------------------------------------------------------------------------
 
 
+_BUNDLE_MODULE = "tolokaforge.core.grading.bundle"
+"""Dotted name of the host-only bundle library.
+
+:meth:`SnapshotGradingSubstrate._read_part` compares
+``type(exc).__module__`` against this constant to translate
+``BundleError`` subclasses into :class:`SubstrateUnreachableError`
+without a static import — the bundle library is excluded from the
+runner subset (host-side producers/consumers only), and this shared-
+spine module ships in that subset.
+"""
+
+
 class _SnapshotDBReader:
     """Sync :class:`DBReader` view over a snapshot substrate's ``final_state``.
 
@@ -431,7 +443,14 @@ class SnapshotGradingSubstrate:
     def _read_part(self, rel_path: str) -> bytes:
         try:
             return self._bundle_view.open_part(rel_path)
-        except (BundleIntegrityError, OSError, KeyError) as exc:
+        except (OSError, KeyError) as exc:
+            raise SubstrateUnreachableError(
+                f"SnapshotGradingSubstrate cannot read part {rel_path!r} from "
+                f"{self._bundle_view.bundle_dir}: {type(exc).__name__}: {exc}"
+            ) from exc
+        except Exception as exc:
+            if type(exc).__module__ != _BUNDLE_MODULE:
+                raise
             raise SubstrateUnreachableError(
                 f"SnapshotGradingSubstrate cannot read part {rel_path!r} from "
                 f"{self._bundle_view.bundle_dir}: {type(exc).__name__}: {exc}"
