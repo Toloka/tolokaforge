@@ -131,6 +131,8 @@ def _task_description(task_id: str) -> TaskDescription:
 
 
 def _make_run_config(*, tmp_path: Path, workers: int = 1) -> RunConfig:
+    from tolokaforge.core.models.run_config import RunDefaultsConfig
+
     return RunConfig(
         models={"agent": ModelConfig(provider="openai", name="gpt-4")},
         orchestrator=OrchestratorConfig(
@@ -139,6 +141,11 @@ def _make_run_config(*, tmp_path: Path, workers: int = 1) -> RunConfig:
         ),
         compute=ComputeConfig(workers=workers),
         evaluation=EvaluationConfig(output_dir=str(tmp_path / "results" / "run")),
+        # Fail-loud user-simulator gate on the orchestrator side; give a
+        # non-Anthropic default so budget tests don't need per-test config.
+        defaults=RunDefaultsConfig(
+            user_simulator=ModelConfig(provider="openai", name="gpt-4-user-sim"),
+        ),
     )
 
 

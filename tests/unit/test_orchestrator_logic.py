@@ -36,7 +36,16 @@ pytestmark = pytest.mark.unit
 
 
 def _make_run_config(**overrides: Any) -> RunConfig:
-    """Build a minimal RunConfig for testing."""
+    """Build a minimal RunConfig for testing.
+
+    Sets ``defaults.user_simulator`` so tests that don't exercise a
+    specific user model still resolve one — the orchestrator fails
+    loud when neither ``models.user`` nor ``defaults.user_simulator``
+    is present (see
+    :meth:`Orchestrator._resolve_user_simulator_config`).
+    """
+    from tolokaforge.core.models.run_config import RunDefaultsConfig
+
     defaults: dict[str, Any] = {
         "models": {
             "agent": ModelConfig(provider="openai", name="gpt-4"),
@@ -47,6 +56,9 @@ def _make_run_config(**overrides: Any) -> RunConfig:
             auto_start_services=False,
         ),
         "evaluation": EvaluationConfig(output_dir="/tmp/test_output"),
+        "defaults": RunDefaultsConfig(
+            user_simulator=ModelConfig(provider="openai", name="gpt-4-user-sim"),
+        ),
     }
     defaults.update(overrides)
     return RunConfig(**defaults)

@@ -37,6 +37,17 @@ models:
     name: "anthropic/claude-sonnet-4.6"
     temperature: 0.0
 
+# Optional: fallback ModelConfigs for roles a run leaves unset in `models:`.
+# Only `user_simulator` is wired today. When `models.user` is absent the
+# orchestrator uses `defaults.user_simulator` if set, otherwise fails loud —
+# there is no hardcoded provider default, so a run always names the provider
+# it ships user turns to.
+defaults:
+  user_simulator:
+    provider: "openrouter"
+    name: "openai/gpt-5-mini"
+    temperature: 0.2
+
 orchestrator:
   workers: 4
   repeats: 5

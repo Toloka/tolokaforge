@@ -1055,6 +1055,21 @@ params bag; the lift makes coding-harness selection a first-class
 run-config concept that any adapter can accept."""
 
 
+class RunDefaultsConfig(BaseModel):
+    """Fallback ``ModelConfig``\\s for roles a run leaves unset in ``models``.
+
+    Only the user-simulator fallback is wired today. Set
+    ``defaults.user_simulator`` to name the model the orchestrator should
+    use when ``RunConfig.models["user"]`` is missing; leaving both unset
+    fails the run loud rather than silently routing user turns through
+    any hardcoded provider.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    user_simulator: ModelConfig | None = None
+
+
 class RunConfig(BaseModel):
     """Complete run configuration"""
 
@@ -1069,6 +1084,7 @@ class RunConfig(BaseModel):
     observability: ObservabilityConfig | None = None
     docker: DockerConfig | None = None
     grader: GraderConfig | None = None
+    defaults: RunDefaultsConfig | None = None
 
     @property
     def effective_workers(self) -> int:
