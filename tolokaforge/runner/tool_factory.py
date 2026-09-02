@@ -1174,6 +1174,30 @@ class DockerComposeExecToolWrapper(ToolWrapper):
             output += f"\n[exit code: {proc.returncode}]\n{proc.stderr}"
         return output
 
+    def _exec_sync_with_rc(self, command: str, timeout: float) -> tuple[int, str]:
+        """Run ``command`` and return ``(returncode, stdout+stderr_merged)``.
+
+        Sibling of :meth:`_exec_sync`. The two-arg-tuple return exposes the
+        returncode to callers that need to render it (e.g. the substrate's
+        test-suite RPC that ships the exit code on the wire) without gating on
+        it. rc=0 → merged output is just stdout; rc≠0 → stderr is appended
+        after stdout (no ``[exit code: N]`` annotation — the returncode
+        itself rides in the tuple).
+        """
+        if self._container is None:
+            raise ToolExecutionError(
+                self.name,
+                "docker_compose_exec tool executed before start() — container name unresolved",
+            )
+        proc = subprocess.run(
+            ["docker", "exec", "-i", self._container, "bash", "-c", command],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        merged = proc.stdout + (proc.stderr if proc.returncode != 0 else "")
+        return proc.returncode, merged
+
 
 # =============================================================================
 # Persistent Shell Tool Wrapper

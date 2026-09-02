@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 import grpc
 
+from tolokaforge.core.grading.substrate import RunTestSuiteResult
 from tolokaforge.core.grading.substrate_client import GrpcSubstrateClient
 
 if TYPE_CHECKING:
@@ -156,6 +157,18 @@ class LiveRunnerCallbackGradingSubstrate:
 
     def db_probe(self, dsn: str, query: str) -> list[dict[str, Any]]:
         return self._client.run_db_probe(dsn, query)
+
+    def run_test_suite(
+        self,
+        *,
+        script_path: str,
+        reward_path: str,
+        timeout_s: float,
+        reward_read_timeout_s: float,
+    ) -> RunTestSuiteResult:
+        return self._client.run_test_suite(
+            script_path, reward_path, timeout_s, reward_read_timeout_s
+        )
 
     def close(self) -> None:
         if self._closed:

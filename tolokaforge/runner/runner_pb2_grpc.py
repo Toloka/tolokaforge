@@ -471,6 +471,12 @@ class SubstrateServiceStub:
             response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.RunDbProbeResponse.FromString,
             _registered_method=True,
         )
+        self.RunTestSuite = channel.unary_unary(
+            "/tolokaforge.runner.SubstrateService/RunTestSuite",
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.RunTestSuiteRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.RunTestSuiteResponse.FromString,
+            _registered_method=True,
+        )
         self.SubstrateHealthCheck = channel.unary_unary(
             "/tolokaforge.runner.SubstrateService/SubstrateHealthCheck",
             request_serializer=tolokaforge_dot_runner_dot_runner__pb2.SubstrateHealthCheckRequest.SerializeToString,
@@ -565,6 +571,21 @@ class SubstrateServiceServicer:
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
 
+    def RunTestSuite(self, request, context):
+        """Execute a pack-declared test suite inside the trial's env container and
+        return its exit code, reward-file bytes, merged stdout/stderr, and two
+        first-class outcome flags (tool_absent, script_exec_error). The servicer
+        does NOT gate on exit_code — a script that exits non-zero but writes a
+        valid reward.txt is scored by the reward, matching the runner-side
+        pre-move contract. Symmetric with RunDbProbe: pack-authored side effects
+        (SQL that mutates state, verifier writes under /logs/verifier/) are a
+        pack authoring bug, not a substrate write, so the read-only invariant
+        holds by construction.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
     def SubstrateHealthCheck(self, request, context):
         """Substrate liveness + capacity signal. Distinct from RunnerService.
         HealthCheck (that endpoint reports RunnerService plumbing; this one
@@ -611,6 +632,11 @@ def add_SubstrateServiceServicer_to_server(servicer, server):
             servicer.RunDbProbe,
             request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.RunDbProbeRequest.FromString,
             response_serializer=tolokaforge_dot_runner_dot_runner__pb2.RunDbProbeResponse.SerializeToString,
+        ),
+        "RunTestSuite": grpc.unary_unary_rpc_method_handler(
+            servicer.RunTestSuite,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.RunTestSuiteRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.RunTestSuiteResponse.SerializeToString,
         ),
         "SubstrateHealthCheck": grpc.unary_unary_rpc_method_handler(
             servicer.SubstrateHealthCheck,
@@ -842,6 +868,36 @@ class SubstrateService:
             "/tolokaforge.runner.SubstrateService/RunDbProbe",
             tolokaforge_dot_runner_dot_runner__pb2.RunDbProbeRequest.SerializeToString,
             tolokaforge_dot_runner_dot_runner__pb2.RunDbProbeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def RunTestSuite(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/tolokaforge.runner.SubstrateService/RunTestSuite",
+            tolokaforge_dot_runner_dot_runner__pb2.RunTestSuiteRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.RunTestSuiteResponse.FromString,
             options,
             channel_credentials,
             insecure,

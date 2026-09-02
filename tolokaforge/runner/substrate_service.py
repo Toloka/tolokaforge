@@ -219,6 +219,96 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         return pb2.RunDbProbeResponse(rows_json=json.dumps(rows, default=str))
 
     # ------------------------------------------------------------------
+    # Test-suite execution
+    # ------------------------------------------------------------------
+
+    def RunTestSuite(  # noqa: N802
+        self,
+        request: pb2.RunTestSuiteRequest,
+        context: grpc.ServicerContext,
+    ) -> pb2.RunTestSuiteResponse:
+        """Execute a pack-declared verifier inside the trial's env container.
+
+        Two first-class outcomes ride the response rather than the gRPC
+        status: ``tool_absent`` (the trial completed but the adapter shipped
+        no exec-capable lifecycle tool — a pack-authoring issue) and
+        ``script_exec_error`` (the exec call raised, e.g. subprocess timeout —
+        the trial completed but the verifier crashed). Neither is an RPC
+        failure: the caller renders both as observable grade outcomes.
+
+        The reward file is read via ``cat {reward_path} 2>/dev/null || echo
+        0.0`` so an absent file yields ``b"0.0\\n"``. A raised exception
+        inside the reward-cat call is treated the same way (falls back to
+        ``b"0.0\\n"``) — a resilience upgrade over the pre-move runner-side
+        path, which would have propagated the exception through the async
+        bridge; observable only when the reward-cat call itself raises,
+        which the pre-move ``|| echo 0.0`` shell fallback made rare.
+
+        ``stdout`` is wire-capped at 65_536 bytes; the caller further
+        truncates for the grade's reasons string.
+        """
+        _DEFAULT_SCRIPT_TIMEOUT_S = 300.0
+        _DEFAULT_REWARD_READ_TIMEOUT_S = 10.0
+        _STDOUT_WIRE_CAP_BYTES = 65_536
+
+        trial_context = self._runner.trials.get(request.trial_id)
+        if trial_context is None:
+            context.set_code(grpc.StatusCode.NOT_FOUND)
+            context.set_details(f"Trial '{request.trial_id}' not registered")
+            return pb2.RunTestSuiteResponse()
+
+        from tolokaforge.runner.service import _first_docker_compose_exec_tool
+
+        bash_tool = _first_docker_compose_exec_tool(trial_context.agent_tools.values())
+        if bash_tool is None:
+            error_msg = (
+                "test-execution grading was requested (grading_method='test_execution') "
+                "but no exec-capable env tool was found in this trial. Include an "
+                "exec-capable lifecycle tool (e.g. DockerComposeExecToolWrapper) in "
+                "TaskDescription.agent_tools so the runner can execute the test suite "
+                "inside the trial environment."
+            )
+            return pb2.RunTestSuiteResponse(
+                tool_absent=True,
+                tool_absent_reason=error_msg,
+            )
+
+        script_timeout = request.timeout_s if request.timeout_s > 0.0 else _DEFAULT_SCRIPT_TIMEOUT_S
+        reward_read_timeout = (
+            request.reward_read_timeout_s
+            if request.reward_read_timeout_s > 0.0
+            else _DEFAULT_REWARD_READ_TIMEOUT_S
+        )
+
+        try:
+            exit_code, stdout = bash_tool._exec_sync_with_rc(
+                f"cd $(dirname {request.script_path}) && bash {request.script_path} 2>&1",
+                script_timeout,
+            )
+        except Exception as exc:
+            return pb2.RunTestSuiteResponse(
+                exit_code=-1,
+                reward_bytes=b"",
+                stdout="",
+                script_exec_error=f"{type(exc).__name__}: {exc}",
+            )
+
+        try:
+            _rc, reward_str = bash_tool._exec_sync_with_rc(
+                f"cat {request.reward_path} 2>/dev/null || echo 0.0",
+                reward_read_timeout,
+            )
+            reward_bytes = reward_str.encode()
+        except Exception:
+            reward_bytes = b"0.0\n"
+
+        return pb2.RunTestSuiteResponse(
+            exit_code=exit_code,
+            reward_bytes=reward_bytes,
+            stdout=stdout[:_STDOUT_WIRE_CAP_BYTES],
+        )
+
+    # ------------------------------------------------------------------
     # Health
     # ------------------------------------------------------------------
 

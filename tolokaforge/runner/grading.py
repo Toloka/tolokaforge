@@ -27,6 +27,7 @@ from typing import Any
 
 from tolokaforge.core.grading.checks_interface import CheckResult
 from tolokaforge.core.hash import canonical_number
+from tolokaforge.core.models.grade import Grade
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import (
     StateDiff,
@@ -242,4 +243,63 @@ def project_check_result_to_runner_wire(result: CheckResult) -> pb2.CustomCheckR
         score=result.score,
         message=result.message,
         details_json=details_json,
+    )
+
+
+def grade_to_runner_wire(grade: Grade) -> pb2.Grade:
+    """Encode a Pydantic :class:`Grade` to the wire ``pb2.Grade``.
+
+    Component scores are encoded with the runner-wire sentinel: ``None`` (tier
+    did not run) → ``-1.0`` for the four scalar components; ``trace_checks``
+    stays ``None`` when the tier did not run (proto3 optional presence), else
+    the scored value or ``-1.0`` when explicitly set to "not evaluated".
+
+    ``state_diff`` is JSON-encoded into ``state_diff_json`` — empty string
+    when absent. ``custom_checks_details`` maps to the wire's ``custom_checks``
+    repeated field; each entry's ``details`` dict is JSON-encoded into
+    ``details_json`` — empty when the detail carried no dict.
+
+    ``reasons`` is projected as a string: a dict-form (per-criterion reasons)
+    is JSON-encoded so the wire's string field always carries a scalar.
+    """
+    state_checks_wire = project_state_checks_to_runner_wire(grade.components.state_checks)
+    transcript_rules_wire = (
+        -1.0 if grade.components.transcript_rules is None else grade.components.transcript_rules
+    )
+    llm_judge_wire = -1.0 if grade.components.llm_judge is None else grade.components.llm_judge
+    custom_checks_wire = (
+        -1.0 if grade.components.custom_checks is None else grade.components.custom_checks
+    )
+    components_kwargs: dict[str, float] = {
+        "state_checks": state_checks_wire,
+        "transcript_rules": transcript_rules_wire,
+        "llm_judge": llm_judge_wire,
+        "custom_checks": custom_checks_wire,
+    }
+    if grade.components.trace_checks is not None:
+        components_kwargs["trace_checks"] = grade.components.trace_checks
+
+    custom_check_wire: list[pb2.CustomCheckResult] = []
+    for detail in grade.custom_checks_details or ():
+        details_json = json.dumps(detail.details) if detail.details else ""
+        custom_check_wire.append(
+            pb2.CustomCheckResult(
+                check_name=detail.check_name,
+                status=detail.status,
+                score=detail.score,
+                message=detail.message,
+                details_json=details_json,
+            )
+        )
+
+    reasons_wire = grade.reasons if isinstance(grade.reasons, str) else json.dumps(grade.reasons)
+    state_diff_json = json.dumps(grade.state_diff) if grade.state_diff else ""
+
+    return pb2.Grade(
+        binary_pass=grade.binary_pass,
+        score=grade.score,
+        components=pb2.GradeComponents(**components_kwargs),
+        reasons=reasons_wire,
+        state_diff_json=state_diff_json,
+        custom_checks=custom_check_wire,
     )
