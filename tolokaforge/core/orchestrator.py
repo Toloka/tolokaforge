@@ -2153,14 +2153,17 @@ class Orchestrator:
         task_dir = self.adapter.get_task_dir(task.task_id)
         source = grading_source_under_adapter(task, task_dir, adapter_type)
         if source.kind is GradingSourceKind.WITHHELD:
-            # A driver that overrode the description's grading owns the
-            # verdict without reading the pack's grading source — a
-            # coding-harness ``test_execution`` grade comes from the
-            # verifier the trial writes, not from a ``grading.yaml`` on
-            # disk. If the DECORATED description carries a fully-formed
-            # grading config, the pre-run source-file check has nothing
-            # to say.
-            if description.grading is not None:
+            # A driver whose ``decorate_task_description`` overrides
+            # ``grading`` owns the verdict without reading the pack's
+            # grading source. The coding-harness driver's
+            # ``test_execution`` grade comes from the verifier the
+            # trial writes, not from a ``grading.yaml`` on disk, so
+            # the pre-run source-file check has nothing to say. The
+            # engine-loop driver (default) grades from the pack's
+            # declared source, so the WITHHELD refusal still fires.
+            from tolokaforge.core.drivers.coding_harness import CodingHarnessDriver
+
+            if isinstance(self._get_driver(), CodingHarnessDriver):
                 return None
             return f"* {task.task_id} — {source.reason}"
         if source.path is None:
