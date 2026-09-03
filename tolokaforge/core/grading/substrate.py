@@ -66,6 +66,7 @@ import json
 import tarfile
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -79,11 +80,41 @@ if TYPE_CHECKING:
 __all__ = [
     "GradingSubstrate",
     "InProcessGradingSubstrate",
+    "RunTestSuiteResult",
     "SharedMountGradingSubstrate",
     "SnapshotGradingSubstrate",
     "SubstrateUnreachableError",
     "TrajectoryStorageGradingSubstrate",
 ]
+
+
+@dataclass(frozen=True)
+class RunTestSuiteResult:
+    """One :meth:`GradingSubstrate.run_test_suite` return.
+
+    Mirrors ``pb2.RunTestSuiteResponse`` field-for-field so a callback substrate
+    (in-process) and a wire substrate (live-callback over gRPC) return the same
+    shape. Two outcomes are first-class flags rather than exceptions:
+
+    - ``tool_absent`` — no exec-capable lifecycle tool in the trial's agent
+      tools. The trial DID complete; the pack asked for test-execution
+      grading but the adapter did not ship the tool. Callers translate this
+      to a ``GradeTrialResponse(success=False, error=tool_absent_reason)``.
+    - ``script_exec_error`` — the exec call itself raised (subprocess
+      timeout, OSError, ...). Populated with ``"{type_name}: {msg}"``; empty
+      when the script ran to completion regardless of ``exit_code``.
+
+    ``exit_code`` is informational: the caller does NOT gate on it. A script
+    that legitimately exits non-zero but writes a valid reward is scored by
+    the reward.
+    """
+
+    exit_code: int
+    reward_bytes: bytes
+    stdout: str
+    tool_absent: bool
+    tool_absent_reason: str
+    script_exec_error: str
 
 
 class SubstrateUnreachableError(Exception):
@@ -196,6 +227,38 @@ class GradingSubstrate(Protocol):
         """
         ...
 
+    def run_test_suite(
+        self,
+        *,
+        script_path: str,
+        reward_path: str,
+        timeout_s: float,
+        reward_read_timeout_s: float,
+    ) -> RunTestSuiteResult:
+        """Execute the pack-declared verifier and return its outcome.
+
+        Runs ``bash <script_path>`` inside the trial's env container from
+        the script's directory, then reads ``<reward_path>`` (with shell
+        fallback ``|| echo 0.0`` so an absent file yields ``b"0.0\\n"``).
+        The caller passes both timeouts (script + reward-cat) explicitly;
+        no defaults live on the substrate.
+
+        Two first-class outcomes ride in the result rather than raising:
+        ``tool_absent`` (no exec-capable lifecycle tool in the trial's
+        tools — an adapter authoring issue, not a substrate transport
+        failure) and ``script_exec_error`` (the exec call raised, e.g.
+        subprocess timeout — the trial completed but the verifier crashed).
+        Both are distinct from :class:`SubstrateUnreachableError`, which
+        this method raises only when the substrate itself is unreachable
+        (e.g. snapshot substrate — bundle format v1.0 carries no test
+        suite; grader-side gRPC transport failure).
+
+        ``exit_code`` is informational: callers do NOT gate on it. A
+        rc≠0 script that wrote a valid reward file is scored by the
+        reward.
+        """
+        ...
+
     def filesystem_state(self) -> dict[str, str] | None:
         """The agent-visible filesystem as ``{'/env/fs/agent-visible/<rel>': text}``,
         or ``None`` when the trial has no workspace tree.
@@ -267,6 +330,7 @@ class InProcessGradingSubstrate:
         final_state_factory: Callable[[], dict[str, Any]] | None = None,
         final_state_stable_factory: Callable[[], dict[str, Any]] | None = None,
         filesystem_state_factory: Callable[[], dict[str, str] | None] | None = None,
+        run_test_suite_impl: Callable[..., RunTestSuiteResult] | None = None,
     ) -> None:
         if final_state is not None and final_state_factory is not None:
             raise ValueError(
@@ -281,6 +345,7 @@ class InProcessGradingSubstrate:
         self._final_state_factory = final_state_factory
         self._final_state_stable_factory = final_state_stable_factory
         self._filesystem_state_factory = filesystem_state_factory
+        self._run_test_suite_impl = run_test_suite_impl
         self._final_state_stable_cache: dict[str, Any] | Any = _MISSING
         self._filesystem_state_cache: dict[str, str] | None | Any = _MISSING
         self._closed = False
@@ -334,6 +399,32 @@ class InProcessGradingSubstrate:
 
         rows = asyncio.run(_fetch_probe_rows(dsn, query))
         return json.loads(json.dumps(rows, default=str))
+
+    def run_test_suite(
+        self,
+        *,
+        script_path: str,
+        reward_path: str,
+        timeout_s: float,
+        reward_read_timeout_s: float,
+    ) -> RunTestSuiteResult:
+        # The impl callback is invoked with keyword arguments only. Callers
+        # bind trial-scoped state (e.g. ``trial_id``) via
+        # ``functools.partial(runner_helper, trial_id=<id>)`` at construction
+        # time — the kwargs delegation here keeps such partial binds from
+        # colliding with a positional value for the same argument.
+        if self._run_test_suite_impl is None:
+            raise SubstrateUnreachableError(
+                "InProcessGradingSubstrate.run_test_suite() called but "
+                "'run_test_suite_impl' was not supplied at construction — "
+                "test-execution grading requires an exec-capable callback."
+            )
+        return self._run_test_suite_impl(
+            script_path=script_path,
+            reward_path=reward_path,
+            timeout_s=timeout_s,
+            reward_read_timeout_s=reward_read_timeout_s,
+        )
 
     def close(self) -> None:
         # Nothing to release — the caller owns the DB reader, KB search,
@@ -500,6 +591,20 @@ class SnapshotGradingSubstrate:
             f"SnapshotGradingSubstrate cannot serve db_probes offline (dsn={dsn!r}). "
             f"This pack requires live_callback for grading; see docs/GRADER_SERVICE.md "
             f"§ substrate topology."
+        )
+
+    def run_test_suite(
+        self,
+        *,
+        script_path: str,
+        reward_path: str,  # noqa: ARG002
+        timeout_s: float,  # noqa: ARG002
+        reward_read_timeout_s: float,  # noqa: ARG002
+    ) -> RunTestSuiteResult:
+        raise SubstrateUnreachableError(
+            f"SnapshotGradingSubstrate cannot run a test suite offline "
+            f"(script_path={script_path!r}) — bundle format v1.0 carries no "
+            f"test-suite hook. Pack requires live_callback for grading."
         )
 
     def close(self) -> None:

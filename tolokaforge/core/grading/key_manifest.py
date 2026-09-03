@@ -674,13 +674,13 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
         core_field=None,
         runner_field="RunnerGradingConfig.grading_method",
-        runner_evaluator="tolokaforge.runner.service.RunnerServiceImpl._grade_via_test_execution",
+        runner_evaluator="tolokaforge.runner.service.RunnerServiceImpl._dispatch_via_grader_kind",
         reason=(
             "a runner-side dispatch selector with no grading.yaml counterpart, set by "
             "adapters (the terminal-bench adapter emits grading_method=test_execution). "
-            "The test_execution dispatch returns before the component phase, so it "
-            "bypasses key-level evaluation entirely — the declared reason the runtime "
-            "accounted-keys ledger does not apply to that dispatch mode"
+            "Non-composite kinds return before the component phase via the grader-kind "
+            "registry, so they bypass key-level evaluation entirely — the declared reason "
+            "the runtime accounted-keys ledger does not apply to those dispatch modes"
         ),
     ),
 )

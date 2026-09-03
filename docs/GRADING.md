@@ -173,32 +173,39 @@ written *only* inside an [`alternatives`](#alternative-paths) path is covered by
 holds for the block, not for that leaf (#772). The evaluator's side is unaffected: it
 records every kind the walk reached, wherever the constraint was written.
 
-`grading_method: test_execution` returns before the component phase, so the ledger
-does not apply to that dispatch mode — recorded as the `grading_method` entry's
-declared `reason`.
+Non-composite `grading_method` values return before the component phase, so the
+ledger does not apply to those dispatch modes — recorded as the `grading_method`
+entry's declared `reason`.
 
 ### Grading Method Dispatch
 
 `RunnerGradingConfig.grading_method` selects which runner-side dispatch a trial
-takes. The value is a bare string on the wire — the registered names live in
-the `tolokaforge.grading_methods` entry-point group and load through
-[`load_grading_method(name)`](../tolokaforge/core/plugin_registry.py). Two
-markers ship:
+takes. The value is a bare string on the wire — every shipped name registers in
+BOTH the marker registry (`tolokaforge.grading_methods`, loaded via
+[`load_grading_method(name)`](../tolokaforge/core/plugin_registry.py)) and the
+typed-kind registry (`tolokaforge.grader_kinds`, loaded via
+[`load_grader_kind(name)`](../tolokaforge/core/plugin_registry.py)). Two names
+ship:
 
 - `composite` — the default state-checks / transcript-rules / trace-checks /
   llm-judge / custom-checks fold. Omitting `grading_method` selects the same
-  dispatch — `None` and `"composite"` are equivalent on the wire.
-- `test_execution` — the reference-suite short-circuit. Requires an exec-capable
+  dispatch — `None` and `"composite"` are equivalent on the wire. The runner's
+  inline composite fold owns this path.
+- `test_execution` — the reference-suite kind. Requires an exec-capable
   lifecycle tool in `TaskDescription.agent_tools` (`DockerComposeExecToolWrapper`
-  today); the runner reads the reward off
-  `/logs/verifier/reward.txt`. Returns before the component phase, so the
-  ledger does not apply.
+  today); the kind reads through `substrate.run_test_suite(...)` and parses the
+  reward off `/logs/verifier/reward.txt`.
 
-A downstream adapter registers a new dispatch name with one entry-point line:
+Every non-composite name routes through the typed `GraderKind` seam at
+`RunnerServiceImpl._dispatch_via_grader_kind`. A downstream adapter registers a
+new dispatch name under BOTH entry-point groups:
 
 ```toml
 [project.entry-points."tolokaforge.grading_methods"]
 terminal_bench_native = "acme_adapter:TerminalBenchNativeGradingMethod"
+
+[project.entry-points."tolokaforge.grader_kinds"]
+terminal_bench_native = "acme_adapter:TerminalBenchNativeGraderKind"
 ```
 
 The marker class carries a `NAME: ClassVar[str]` — same shape as
@@ -207,9 +214,13 @@ The marker class carries a `NAME: ClassVar[str]` — same shape as
 grader grades a trial without a live runner in reach — see
 [docs/GRADER_SERVICE.md](GRADER_SERVICE.md) and
 [docs/GRADE_BUNDLE.md](GRADE_BUNDLE.md) for the substrate topology and
-bundle format).
-`RegisterTrial` refuses an unregistered name with an error listing both the
-offending key and `available_grading_methods()`, so a typo in a task pack
+bundle format). The kind class satisfies the `GraderKind` Protocol
+(`evaluate(*, substrate, task_config, kind_config, trial_id, agent_tools,
+logger) -> Grade | None`) — see
+[`tolokaforge/core/grading/kinds/`](../tolokaforge/core/grading/kinds/).
+`RegisterTrial` refuses a name missing from either group with an error listing
+both group names, the offending key, and the union of registered names — so a
+typo, or a downstream adapter that registered in only one of the two groups,
 surfaces before the trial spends any turns.
 
 ### Single-substrate keys
@@ -219,7 +230,7 @@ surfaces before the trial spends any turns.
 | `state_checks.hash.description` | `CONFIG_INPUT` | `CORE_ONLY` | field resolution | the runner's flattened hash block declares no description field, so there is nothing on that substrate for the key to resolve against — the wire carries the runner's hash verdict, not the reason text an author writes beside it | architectural |
 | `state_checks.db_probes` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the probe DSN resolves only inside the task's docker network, which the runner joins and the host-side core engine does not | architectural |
 | `llm_judge` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the rubric judge runs runner-side on the shared `ToolCallingLoop`; the core engine deliberately leaves the component unset | architectural |
-| `grading_method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | a runner-side dispatch selector with no `grading.yaml` counterpart; the dispatch returns before the component phase | architectural |
+| `grading_method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | a runner-side dispatch selector with no `grading.yaml` counterpart; non-composite kinds return before the component phase | architectural |
 
 Architectural entries can never be both substrates and carry no tracking issue.
 Every other row is drift and names the issue that closes it. The exemption sets

@@ -256,3 +256,39 @@ forbidden_modules =
     tolokaforge.grader
     tolokaforge.core.grading.substrate_live
 allow_indirect_imports = false
+
+
+# Grader-kinds purity.
+#
+# The typed grader-kind package (``tolokaforge.core.grading.kinds``) is a
+# pure library on the topology-neutral seam ADR-0040 draws: every kind
+# reads through :class:`GradingSubstrate` and folds into the shared
+# :class:`Grade` type. A DIRECT reach back into the runner-side grade RPC,
+# narrow runner-wire helpers, generated pb2 modules, the grader package,
+# or the live substrate would re-collapse the seam.
+#
+# ``allow_indirect_imports = true`` matches ``no-pb2-reach-from-core-grading``:
+# wire-level infrastructure (``core.plugin_registry`` → ``trial_grader``
+# → ``shared_stack_runtime`` → ``runner_pb2_grpc``) legitimately imports
+# ``pb2`` and is legitimately consumed transitively by ``core.grading``
+# modules; a strict-transitive fence would trip on those chains without
+# catching the pattern this contract exists to prevent — a module under
+# ``core.grading.kinds`` naming one of the forbidden targets in its own
+# imports. The direct-import check is what preserves the seam.
+#
+# ``tolokaforge.runner.models`` is intentionally NOT forbidden — kinds
+# validate their ``kind_config`` against Pydantic models declared there
+# under ``TYPE_CHECKING`` (e.g. ``RunnerGradingConfig``).
+[importlinter:contract:grader-kinds-purity]
+name = tolokaforge.core.grading.kinds is a pure library — no direct runner/grader/live-substrate reach
+type = forbidden
+source_modules =
+    tolokaforge.core.grading.kinds
+forbidden_modules =
+    tolokaforge.runner.service
+    tolokaforge.runner.grading
+    tolokaforge.runner.runner_pb2
+    tolokaforge.runner.runner_pb2_grpc
+    tolokaforge.grader
+    tolokaforge.core.grading.substrate_live
+allow_indirect_imports = true

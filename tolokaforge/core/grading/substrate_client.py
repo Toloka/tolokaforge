@@ -29,7 +29,10 @@ from typing import Any
 import grpc
 
 from tolokaforge.core.grading.kb_search import SearchHit
-from tolokaforge.core.grading.substrate import SubstrateUnreachableError
+from tolokaforge.core.grading.substrate import (
+    RunTestSuiteResult,
+    SubstrateUnreachableError,
+)
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc as pb2_grpc
 from tolokaforge.runner.db_client import TrialNotFoundError as DBTrialNotFoundError
@@ -176,6 +179,34 @@ class GrpcSubstrateClient:
                 f"SubstrateService returned a non-array rows_json: {decoded!r}"
             )
         return decoded
+
+    def run_test_suite(
+        self,
+        script_path: str,
+        reward_path: str,
+        timeout_s: float,
+        reward_read_timeout_s: float,
+    ) -> RunTestSuiteResult:
+        try:
+            response = self._stub.RunTestSuite(
+                pb2.RunTestSuiteRequest(
+                    trial_id=self._trial_id,
+                    script_path=script_path,
+                    reward_path=reward_path,
+                    timeout_s=timeout_s,
+                    reward_read_timeout_s=reward_read_timeout_s,
+                )
+            )
+        except grpc.RpcError as err:
+            raise SubstrateUnreachableError(str(err)) from err
+        return RunTestSuiteResult(
+            exit_code=response.exit_code,
+            reward_bytes=response.reward_bytes,
+            stdout=response.stdout,
+            tool_absent=response.tool_absent,
+            tool_absent_reason=response.tool_absent_reason,
+            script_exec_error=response.script_exec_error,
+        )
 
     def health_check(self) -> str:
         try:

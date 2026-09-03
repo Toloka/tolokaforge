@@ -1,4 +1,4 @@
-"""``GradingMethod`` — the runner-side dispatch-selector seam.
+"""``GradingMethod`` — the runner-side dispatch-selector marker seam.
 
 One entry-point group, one marker Protocol: **which grading dispatch does
 the runner run for this trial?** ``RunnerGradingConfig.grading_method``
@@ -10,17 +10,16 @@ seam narrative in ``docs/GRADER_SERVICE.md`` § Extension points.
 
 Two built-in markers ship: :class:`CompositeGradingMethod` (the default
 state-checks / transcript-rules / trace-checks / llm-judge / custom-checks
-fold) and :class:`TestExecutionGradingMethod` (the reference-suite
-short-circuit at :meth:`RunnerServiceImpl._grade_via_test_execution`).
-A downstream adapter registers its own dispatch name by one entry-point
-line — no framework PR — under the same
-``[project.entry-points."tolokaforge.grading_methods"]`` block.
+fold) and :class:`TestExecutionGradingMethod` (the reference-suite kind
+that reads through ``substrate.run_test_suite``). Every shipped name
+also registers in ``tolokaforge.grader_kinds`` (see
+:mod:`tolokaforge.core.grading.kinds`) so runtime dispatch routes through
+the typed ``GraderKind`` while ``RegisterTrial`` validates against both
+groups; a downstream adapter registers its own dispatch name under both
+groups (no framework PR).
 
 The Protocol carries a single class attribute — ``NAME`` — so the marker
-is the shape a discovery-time typecheck can enforce. Runtime dispatch
-today still branches on the wire string at
-``RunnerServiceImpl.GradeTrial``; the registry is a validation +
-discovery surface only.
+is the shape a discovery-time typecheck can enforce.
 """
 
 from __future__ import annotations
@@ -58,9 +57,11 @@ class CompositeGradingMethod:
 
 
 class TestExecutionGradingMethod:
-    """Marker for the reference-suite dispatch —
-    :meth:`RunnerServiceImpl._grade_via_test_execution` short-circuits to
-    an exec-capable lifecycle tool that runs the pack's own tests and
-    reads the reward off disk."""
+    """Marker for the reference-suite dispatch — the runner routes
+    ``grading_method='test_execution'`` through the typed
+    :class:`~tolokaforge.core.grading.kinds.TestExecutionGraderKind`,
+    which reads through ``substrate.run_test_suite(...)`` (running the
+    pack's own tests inside the env container and reading the reward file
+    it writes)."""
 
     NAME: ClassVar[str] = "test_execution"

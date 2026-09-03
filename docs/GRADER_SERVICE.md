@@ -619,17 +619,18 @@ Packs declaring `state_checks.db_probes` or judge criteria that need KB
 search grade correctly on `InProcess` / `LiveCallback`; snapshot mode
 routes those trials to a live-callback path in the caller.
 
-<a id="extension-points-the-eight-plug-in-groups"></a>
+<a id="extension-points-the-nine-plug-in-groups"></a>
 
-## Extension points — the eight plug-in groups
+## Extension points — the nine plug-in groups
 
-Eight `importlib.metadata` entry-point groups let a downstream package
+Nine `importlib.metadata` entry-point groups let a downstream package
 extend the grader without a framework change: one runner-side dispatch
-selector, one substrate group, and six sub-component seams. Each group
-has a matching loader on
+selector (paired with the typed-kind registry), one substrate group, and
+six sub-component seams. Each group has a matching loader on
 [`tolokaforge.core.plugin_registry`](../tolokaforge/core/plugin_registry.py):
 
-- `tolokaforge.grading_methods` — `load_grading_method(name)` returns the `GradingMethod` marker **class**. Names in this group are the values `RunnerGradingConfig.grading_method` accepts at `RegisterTrial`; the marker carries `NAME: ClassVar[str]` so a downstream typo in `pyproject.toml` fails at discovery. Runtime dispatch today branches on the wire string at `RunnerServiceImpl.GradeTrial`; this loader is a validation + discovery surface.
+- `tolokaforge.grading_methods` — `load_grading_method(name)` returns the `GradingMethod` marker **class**. Names in this group are the values `RunnerGradingConfig.grading_method` accepts at `RegisterTrial`; the marker carries `NAME: ClassVar[str]` so a downstream typo in `pyproject.toml` fails at discovery. Every shipped name also registers in `tolokaforge.grader_kinds` below — `RegisterTrial` validates the wire name against both groups.
+- `tolokaforge.grader_kinds` — `load_grader_kind(name)` returns the typed `GraderKind` **class**, whose `evaluate(*, substrate, task_config, kind_config, trial_id, agent_tools, logger) -> Grade | None` drives runtime dispatch for every non-composite name at `RunnerServiceImpl._dispatch_via_grader_kind`. Composite (or `None`) stays on the runner-side fold. Two built-ins ship: `composite` (a reference impl over `CompositeFold`) and `test_execution` (reads through `substrate.run_test_suite(...)`).
 - `tolokaforge.grading_substrates` — `load_grading_substrate(name)` returns the `GradingSubstrate` **class** (the caller instantiates it with per-trial arguments).
 - `tolokaforge.custom_check_executors` — `load_custom_check_executor(name)` returns a factory.
 - `tolokaforge.judge_model_providers` — `load_judge_model_provider(name)` returns a factory.
@@ -643,6 +644,9 @@ Copy-paste block for a downstream `pyproject.toml`:
 ```toml
 [project.entry-points."tolokaforge.grading_methods"]
 my_grading_method = "my_package:my_grading_method_marker"
+
+[project.entry-points."tolokaforge.grader_kinds"]
+my_grading_method = "my_package:MyGraderKind"
 
 [project.entry-points."tolokaforge.grading_substrates"]
 my_substrate = "my_package:my_substrate_class"
@@ -670,7 +674,7 @@ my_operator = "my_package:my_operator"
 shipped, already documented in
 [Registering a downstream grader](#registering-a-downstream-grader).
 A downstream package registering a new grader name lands there, not
-in any of the eight groups above.
+in any of the nine groups above.
 
 The bundle-transport seam `tolokaforge.bundle_stores` is documented in
 the [Bundle store seam](#bundle-store-seam) section below — it extends a

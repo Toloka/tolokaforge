@@ -625,6 +625,17 @@ service SubstrateService {
   // reads.
   rpc RunDbProbe(RunDbProbeRequest) returns (RunDbProbeResponse);
 
+  // Execute a pack-declared test suite inside the trial's env container and
+  // return its exit code, reward-file bytes, merged stdout/stderr, and two
+  // first-class outcome flags (tool_absent, script_exec_error). The servicer
+  // does NOT gate on exit_code — a script that exits non-zero but writes a
+  // valid reward.txt is scored by the reward, matching the runner-side
+  // pre-move contract. Symmetric with RunDbProbe: pack-authored side effects
+  // (SQL that mutates state, verifier writes under /logs/verifier/) are a
+  // pack authoring bug, not a substrate write, so the read-only invariant
+  // holds by construction.
+  rpc RunTestSuite(RunTestSuiteRequest) returns (RunTestSuiteResponse);
+
   // Substrate liveness + capacity signal. Distinct from RunnerService.
   // HealthCheck (that endpoint reports RunnerService plumbing; this one
   // reports the substrate seam and its active-trial count).
@@ -745,6 +756,59 @@ message RunDbProbeResponse {
   // UUID, bytes) coerce to str. Empty JSON array ("[]") when the query
   // matches no rows; the field is never absent.
   string rows_json = 1;
+}
+
+// -----------------------------------------------------------------------------
+// SubstrateService — test-suite execution
+// -----------------------------------------------------------------------------
+
+message RunTestSuiteRequest {
+  string trial_id = 1;
+  // Absolute POSIX path to the pack's verifier entry point inside the trial's
+  // env container. Executed as ``bash <script_path>`` from the script's
+  // directory (``cd $(dirname <script_path>) && bash <script_path> 2>&1``).
+  string script_path = 2;
+  // Absolute POSIX path to the reward file the verifier writes. Read AFTER
+  // the script exits, regardless of exit code.
+  string reward_path = 3;
+  // Wall-clock cap on the ``bash <script_path>`` call. 0.0 → use the
+  // servicer's default (300s, matching the pre-move runner path).
+  double timeout_s = 4;
+  // Wall-clock cap on the reward-file read. 0.0 → default 10s.
+  double reward_read_timeout_s = 5;
+}
+
+message RunTestSuiteResponse {
+  // Informational — the script's returncode. The kind does NOT gate on this
+  // (a rc≠0 script that wrote a valid reward still scores by the reward).
+  // Serves the reasons prose and future debug channels.
+  int32 exit_code = 1;
+  // Raw bytes of ``reward_path`` at exit. Servicer uses the shell command
+  // ``cat {reward_path} 2>/dev/null || echo 0.0`` so the fallback always
+  // produces "0.0\n" when the file is absent — the kind sees the same bytes
+  // pre- and post-move.
+  bytes reward_bytes = 2;
+  // stdout+stderr of the script, wire-capped at 65_536 bytes (the grader
+  // kind further truncates for the reasons string). The servicer is
+  // responsible for the wire cap; the kind is responsible for the reasons
+  // cap.
+  string stdout = 3;
+  // First-class "no exec-capable lifecycle tool available for this trial"
+  // outcome. Distinct from an RPC error — the trial DID complete, it's just
+  // ungradeable via test-execution. Callers map this to a wire
+  // ``GradeTrialResponse(success=False, error=tool_absent_reason)``.
+  bool tool_absent = 4;
+  // Actionable message when tool_absent=true, empty otherwise. Matches the
+  // pre-move runner error string verbatim so downstream tooling that greps
+  // for it keeps working.
+  string tool_absent_reason = 5;
+  // Populated iff the script call itself raised (subprocess timeout,
+  // OSError, or any Exception from the exec helper). Empty when the script
+  // ran to completion (regardless of exit_code). Callers map a populated
+  // ``script_exec_error`` to ``Grade(score=0.0, reasons="test.sh execution
+  // failed: {msg}")`` — no gRPC status is set (the trial completed; the
+  // script's failure is a first-class outcome the grade renders).
+  string script_exec_error = 6;
 }
 
 // -----------------------------------------------------------------------------
