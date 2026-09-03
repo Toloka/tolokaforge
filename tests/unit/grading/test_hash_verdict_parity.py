@@ -3,10 +3,11 @@
 Locks the invariant: whenever ``compute_stable_hash(trial) !=
 compute_stable_hash(golden)``, ``compute_state_diff(trial, golden)`` MUST
 report ``identical is False`` and its ``summary`` MUST NOT be ``"States
-match"``. Case (2) — same rows, different order — is the class the runner
-substrate historically dropped: the hash captures list order, the set-based
-diff does not, and an operator saw ``hash_score: 0.0`` beside a "States
-match" summary with no way to tell which verdict to trust.
+match"``. Case (2) — same rows, different order — is the class where
+``compute_stable_hash`` captures list order but the set-based diff does not.
+Without ``TableDiff.order_mismatch``, the pair would return ``hash_score:
+0.0`` beside a "States match" summary; this test locks the flag so the two
+verdicts cannot diverge.
 """
 
 from __future__ import annotations
@@ -137,8 +138,8 @@ def _related_table_pair(
 
     Rows are drawn unique-by-content so a shuffle produces an observably
     different list. Shuffle and mutate are drawn with equal probability; the
-    strategy shrinks toward the small shuffled-rows case, which is the class
-    the runner-side diff currently drops on.
+    strategy shrinks toward the small shuffled-rows case — the class
+    ``TableDiff.order_mismatch`` guards.
     """
     base = draw(
         st.lists(
