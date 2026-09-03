@@ -3704,7 +3704,12 @@ default, omitting the key inherits the project value, and a task sets
 `system_prompt: null` to reset a project-level custom prompt back to the default.
 An empty or whitespace-only string is rejected loudly at load. When absent, the
 judge runs with the byte-for-byte default prompt. The full custom text is recorded
-in the bundle's `task.yaml.grading_config`.
+in the bundle's `task.yaml.grading_config`, and the composed prompt the judge
+would have graded under is persisted verbatim in the bundle's
+[`prompts.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indexpromptsyaml) `judge_prompt`
+key — so `tolokaforge rejudge` prefers the recorded composed prompt over the
+current engine's default, falling back to the task.yaml body fragment only for
+pre-`judge_prompt` bundles. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#custom-judge-system-prompt).
 
 ### Gating the agent's policy out of the judge's evidence
 

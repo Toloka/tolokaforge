@@ -526,15 +526,28 @@ class LLMJudge:
 
     Construction-time config is *how to run the LLM judge* — the run-level
     ``model_config``, the turn / wall-time / retry budgets, ``disable_knowledge_search``
-    (withhold every KB-tagged tool from the judge's surface, per ADR-0019), an
-    optional ``custom_system_prompt`` (replace the default grading-stance body; the
-    marker contract is always appended), ``include_agent_system_prompt`` (embed the
+    (withhold every KB-tagged tool from the judge's surface, per ADR-0019), one of two
+    mutually exclusive prompt seams, ``include_agent_system_prompt`` (embed the
     agent's policy in the judge's opening-message evidence — default on; gate off for
     self-contained rubrics), an
     optionally injected ``llm_client`` (any :class:`JudgeModel` — tests pass a
     scripted client; production passes ``None`` and the judge builds one
     ``LLMClient(model_config)`` per :meth:`run`), and the logger. :meth:`run`
     carries only the per-trial evidence.
+
+    Two prompt seams, mutually exclusive:
+
+    * ``custom_system_prompt`` — a body fragment that replaces the default grading
+      stance; :func:`_compose_judge_system_prompt` appends the marker contract at
+      :meth:`run` time. The eval flow and legacy replay use this seam (they carry
+      the body, not the composed string).
+    * ``explicit_system_prompt`` — the already-composed prompt used verbatim in
+      place of the run-time composition. Bundle-native replay uses this seam so a
+      recorded ``prompts.yaml.judge_prompt`` (composed body + marker) reaches the
+      judge without a second marker being appended.
+
+    Passing both raises :class:`ValueError` at construction time — the two carry
+    distinct semantics, and mixing them can only be a caller bug.
     """
 
     def __init__(
@@ -546,16 +559,27 @@ class LLMJudge:
         submit_report_retries: int = DEFAULT_SUBMIT_REPORT_RETRIES,
         disable_knowledge_search: bool = False,
         custom_system_prompt: str | None = None,
+        explicit_system_prompt: str | None = None,
         include_agent_system_prompt: bool = True,
         llm_client: JudgeModel | None = None,
         logger: StructuredLogger | None = None,
     ) -> None:
+        if explicit_system_prompt is not None and custom_system_prompt is not None:
+            raise ValueError(
+                "LLMJudge accepts explicit_system_prompt (a composed prompt used "
+                "verbatim, no marker re-appended) OR custom_system_prompt (a body "
+                "fragment composed at run time with the marker contract appended); "
+                "these seams carry distinct semantics and passing both is a caller "
+                "bug — the bundle-native replay path uses the former, task.yaml "
+                "customization and --grading overrides use the latter."
+            )
         self._model_config = model_config
         self._max_turns = max_turns
         self._episode_timeout_s = episode_timeout_s
         self._submit_report_retries = submit_report_retries
         self._disable_knowledge_search = disable_knowledge_search
         self._custom_system_prompt = custom_system_prompt
+        self._explicit_system_prompt = explicit_system_prompt
         self._include_agent_system_prompt = include_agent_system_prompt
         self._llm_client = llm_client
         self._logger = logger
@@ -635,9 +659,12 @@ class LLMJudge:
             )
         ]
         rubric_brief = _build_rubric_brief(rubric)
-        system_prompt = (
-            f"{_compose_judge_system_prompt(self._custom_system_prompt)}\n\n{rubric_brief}"
+        base_prompt = (
+            self._explicit_system_prompt
+            if self._explicit_system_prompt is not None
+            else _compose_judge_system_prompt(self._custom_system_prompt)
         )
+        system_prompt = f"{base_prompt}\n\n{rubric_brief}"
 
         attempts = 0
         while True:

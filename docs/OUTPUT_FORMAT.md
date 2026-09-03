@@ -1521,17 +1521,29 @@ judge_model_source: override        # or "recorded"
 rubric_source: recorded             # or "override"
 knowledge_search_mode: recorded     # recorded | on | off
 knowledge_search_disabled: false
-custom_system_prompt: false         # whether a custom judge prompt was in effect
-custom_prompt_source: null          # "recorded" | "override" | null (default prompt)
+custom_system_prompt: false         # whether a legacy custom body fragment was in effect
+custom_prompt_source: null          # "recorded" | "override" | null (default prompt or bundle-recorded)
+judge_prompt_source: bundle         # "bundle" | null — bundle-recorded composed prompt path
 include_agent_system_prompt: true   # whether the agent policy was embedded in the judge's evidence
 agent_prompt_source: null           # "recorded" | "override" | null (defaulted to include)
 fidelity_mode: full                 # "full" (state_diff rebuilt) or "fallback" (old bundle, no state_diff)
 ```
 
+`judge_prompt_source` names how the judge's system prompt was resolved: `bundle`
+when replay used the composed prompt recorded in the bundle's
+[`prompts.yaml`](#trialstask_idtrial_indexpromptsyaml) `judge_prompt` key
+verbatim (no re-composition), or `null` when replay fell back to the legacy
+task.yaml / `--grading` customization path (which composes at run time). The
+two prompt sources are mutually exclusive: on a `bundle`-sourced trial
+`custom_system_prompt` is always `false` and `custom_prompt_source` is `null`;
+on a legacy-sourced trial `judge_prompt_source` is `null` and
+`custom_system_prompt` / `custom_prompt_source` name whether and where a body
+fragment was recorded (`recorded`) or supplied by override (`override`).
+
 `custom_system_prompt` / `custom_prompt_source` are resolved independently of the
-rubric: a `--grading` override replaces the prompt only when it carries its own
-`llm_judge.customization.system_prompt`, so a rubric-only override over a
-custom-prompted bundle reads `rubric_source: override` while
+rubric: a `--grading` override replaces the body fragment only when it carries
+its own `llm_judge.customization.system_prompt`, so a rubric-only override over a
+custom-prompted legacy bundle reads `rubric_source: override` while
 `custom_prompt_source: recorded`. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#custom-judge-system-prompt).
 
 `include_agent_system_prompt` / `agent_prompt_source` follow the same independent

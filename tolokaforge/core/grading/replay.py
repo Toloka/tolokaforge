@@ -153,10 +153,19 @@ class FidelityMode(str, Enum):
 
 
 class ProvenanceSource(str, Enum):
-    """Whether a resolved replay input came from the bundle or a CLI override."""
+    """Where a resolved replay input came from.
+
+    ``RECORDED`` is the bundle's task.yaml customization (a body fragment the
+    replay recomposes into the judge system prompt), ``OVERRIDE`` is a
+    ``--grading`` override (also a body fragment), and ``BUNDLE`` is the
+    ``prompts.yaml.judge_prompt`` string (a composed prompt used verbatim, no
+    re-composition). Only the judge-system-prompt seam distinguishes the three;
+    the other resolved-input seams use ``RECORDED`` / ``OVERRIDE`` alone.
+    """
 
     RECORDED = "recorded"
     OVERRIDE = "override"
+    BUNDLE = "bundle"
 
 
 class MissingReplayInputError(ValueError):
@@ -252,6 +261,15 @@ class ReplayProvenance(BaseModel):
     # rubric-only override never clears a recorded custom prompt.
     custom_system_prompt: bool
     custom_prompt_source: ProvenanceSource | None
+    # Where the composed judge system prompt was sourced from at replay time. Set
+    # to ``BUNDLE`` when the bundle's ``prompts.yaml.judge_prompt`` supplied the
+    # composed prompt verbatim (no re-composition); ``None`` when replay fell back
+    # to the legacy task.yaml / --grading customization path (which composes at
+    # run time). Bundle-branch trials leave ``custom_system_prompt=False`` and
+    # ``custom_prompt_source=None`` — the two seams are mutually exclusive, and
+    # the one-way ``_bundle_source_forbids_legacy_source`` validator below
+    # enforces "no bundle source AND legacy source together".
+    judge_prompt_source: ProvenanceSource | None = None
     # Whether the agent policy was embedded in the judge's evidence for this replay,
     # and where the decision came from — RECORDED (the bundle's task.yaml
     # customization) or OVERRIDE (a --grading override carrying it); None when
@@ -273,6 +291,32 @@ class ReplayProvenance(BaseModel):
                 "custom_system_prompt must be True exactly when custom_prompt_source "
                 f"is set (got custom_system_prompt={self.custom_system_prompt}, "
                 f"custom_prompt_source={self.custom_prompt_source})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _bundle_source_forbids_legacy_source(self) -> ReplayProvenance:
+        """A one-way implication, deliberately NOT a biconditional.
+
+        ``judge_prompt_source is BUNDLE`` ⟹ ``custom_prompt_source is None and
+        custom_system_prompt is False`` — a bundle-recorded composed prompt
+        supersedes both the task.yaml customization and the ``--grading`` override,
+        so stamping both a BUNDLE source and a legacy source is a caller bug.
+
+        The reverse implication does NOT hold. A legacy pre-Stage-2 bundle graded
+        under the engine default records ``judge_prompt_source=None,
+        custom_prompt_source=None, custom_system_prompt=False`` — the RHS holds
+        and the LHS does not. A biconditional would reject this shape and red
+        every default-prompt legacy replay.
+        """
+        if self.judge_prompt_source is ProvenanceSource.BUNDLE and (
+            self.custom_prompt_source is not None or self.custom_system_prompt
+        ):
+            raise ValueError(
+                "judge_prompt_source=BUNDLE forbids any legacy custom-prompt source "
+                "(the bundle-recorded prompt supersedes task.yaml customization and "
+                f"--grading overrides); got custom_prompt_source={self.custom_prompt_source}, "
+                f"custom_system_prompt={self.custom_system_prompt}"
             )
         return self
 
@@ -302,7 +346,14 @@ class ReplayInputs:
     state_diff: str | None
     judge_model_config: ModelConfig
     disable_knowledge_search: bool
+    # Mutually exclusive prompt seams, mirroring ``LLMJudge.__init__``. The bundle
+    # path (``_resolve_bundle_judge_prompt``) sets ``explicit_system_prompt`` and
+    # leaves ``custom_system_prompt`` at ``None``; the legacy path
+    # (``_resolve_custom_prompt``) sets ``custom_system_prompt`` and leaves
+    # ``explicit_system_prompt`` at ``None``. Both ``None`` means the engine
+    # default composition is in effect.
     custom_system_prompt: str | None
+    explicit_system_prompt: str | None
     include_agent_system_prompt: bool
     provenance: ReplayProvenance
     db_reader: DBReader | None = None
@@ -429,6 +480,36 @@ def _resolve_rubric(
         "no rubric: the bundle's task.yaml has no grading_config.llm_judge.rubric "
         "and no --grading override was supplied"
     )
+
+
+def _resolve_bundle_judge_prompt(
+    trial_dir: Path, prompts: dict[str, Any]
+) -> tuple[str | None, ProvenanceSource | None]:
+    """Recover the composed judge prompt the bundle recorded, if any.
+
+    Reads the ``judge_prompt`` key on the loaded ``prompts.yaml`` mapping. Returns
+    ``(prompt, ProvenanceSource.BUNDLE)`` when the key is present and holds a
+    non-empty string — the exact composed prompt (body + marker contract) the
+    original run's ``LLMJudgeConfig`` would have graded under, ready to feed
+    :class:`LLMJudge` verbatim through ``explicit_system_prompt``. Returns
+    ``(None, None)`` when the key is absent (a pre-Stage-2 bundle written before
+    the field existed) or is ``null`` (the bundle recorded no LLM judge) — the
+    caller then falls back to the legacy ``_resolve_custom_prompt`` path.
+
+    Raises :class:`MissingReplayInputError` when the key is present but does not
+    hold a non-empty string. The writer emits only strings or ``null``, so any
+    other value is a corrupted or hand-edited bundle, not a state to guess at.
+    """
+    if "judge_prompt" not in prompts:
+        return None, None
+    recorded = prompts["judge_prompt"]
+    if recorded is None:
+        return None, None
+    if not isinstance(recorded, str) or not recorded.strip():
+        raise MissingReplayInputError(
+            f"recorded judge_prompt in {trial_dir / 'prompts.yaml'} is blank or not a string"
+        )
+    return recorded, ProvenanceSource.BUNDLE
 
 
 def _resolve_custom_prompt(
@@ -592,9 +673,19 @@ def read_replay_inputs(
 
     rubric_override = grading_override.rubric if grading_override is not None else None
     rubric, rubric_source = _resolve_rubric(task, rubric_override)
-    custom_system_prompt, custom_prompt_source = _resolve_custom_prompt(
-        trial_dir, task, grading_override
-    )
+    explicit_system_prompt, judge_prompt_source = _resolve_bundle_judge_prompt(trial_dir, prompts)
+    if explicit_system_prompt is not None:
+        # Bundle-recorded composed prompt wins over any legacy customization: the
+        # recorded string is what the original run graded under, verbatim. Route
+        # it through ``LLMJudge.explicit_system_prompt`` so no second marker is
+        # appended, and leave ``custom_system_prompt`` untouched — the two seams
+        # are mutually exclusive.
+        custom_system_prompt: str | None = None
+        custom_prompt_source: ProvenanceSource | None = None
+    else:
+        custom_system_prompt, custom_prompt_source = _resolve_custom_prompt(
+            trial_dir, task, grading_override
+        )
     include_agent_system_prompt, agent_prompt_source = _resolve_include_agent_system_prompt(
         trial_dir, task, grading_override
     )
@@ -627,6 +718,7 @@ def read_replay_inputs(
         knowledge_search_disabled=disable_knowledge_search,
         custom_system_prompt=custom_system_prompt is not None,
         custom_prompt_source=custom_prompt_source,
+        judge_prompt_source=judge_prompt_source,
         include_agent_system_prompt=include_agent_system_prompt,
         agent_prompt_source=agent_prompt_source,
         fidelity_mode=fidelity_mode,
@@ -640,6 +732,7 @@ def read_replay_inputs(
         judge_model_config=judge_model_config,
         disable_knowledge_search=disable_knowledge_search,
         custom_system_prompt=custom_system_prompt,
+        explicit_system_prompt=explicit_system_prompt,
         include_agent_system_prompt=include_agent_system_prompt,
         db_reader=db_reader,
         kb_search=kb_search,
@@ -666,6 +759,7 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
         inputs.judge_model_config,
         disable_knowledge_search=inputs.disable_knowledge_search,
         custom_system_prompt=inputs.custom_system_prompt,
+        explicit_system_prompt=inputs.explicit_system_prompt,
         include_agent_system_prompt=inputs.include_agent_system_prompt,
         llm_client=judge_client,
     )
