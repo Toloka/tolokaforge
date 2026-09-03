@@ -121,6 +121,7 @@ class TestGroupedHelpLayout:
             "analyze",
             "browse",
             "curate",
+            "grade",
             "prepare",
             "reconcile",
             "rejudge",

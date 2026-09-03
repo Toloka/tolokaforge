@@ -105,6 +105,8 @@ An external tool that consumes a bundle needs no engine dependency:
 
 A pure-shell approximation using `jq`, `sha256sum`, and `tar` is possible and demonstrates the format is truly language-neutral. The Python reference reader is `tolokaforge.core.grading.bundle.load_grade_bundle`; consumers in other languages implement the same manifest walk.
 
+The shipped operator UI for offline regrade is `tolokaforge grade <uri>` (see [`docs/CLI.md`](CLI.md) § `tolokaforge grade` — offline regrade): it resolves the URI through a registered `BundleStore`, wraps the bundle in `SnapshotGradingSubstrate`, dispatches through the `tolokaforge.grader_kinds` registry, and writes `grade.json`. External consumers integrating a bespoke pipeline read the same seams directly — `load_bundle_store(name)` → `store.get(uri, tmp)` → `load_grade_bundle(tmp)` → `SnapshotGradingSubstrate(view)` — mirroring what the CLI does.
+
 ## Not covered in v1.0
 
 - Optional `provenance.json` sibling for engine-bump debugging (not covered by the manifest digest): [#1428](https://github.com/Toloka/tolokaforge/issues/1428).

@@ -264,6 +264,66 @@ Line history persists to `~/.tolokaforge_history` via `prompt_toolkit`'s `FileHi
 
 The REPL lives in the `[dx]` extras alongside Rich panels and banners (see [ADR-0019](adr/0019-front-end-plugin-namespace.md)). A headless-server install (`pip install tolokaforge`) does not pull `click-repl` or `prompt-toolkit` in; running the `tolokaforge` console script without the extras prints the install hint from the stdlib-only shim at `tolokaforge._entry:main`.
 
+## `tolokaforge grade` — offline regrade
+
+`tolokaforge grade <bundle-uri>` regrades a stored grade bundle without a live runner, dispatching a registered kind against a `SnapshotGradingSubstrate` view of the bundle and writing a canonical `grade.json` under `--out`. Every dependency is already shipped: the store registry (`tolokaforge.bundle_stores`), the bundle reader (`tolokaforge.core.grading.bundle.load_grade_bundle`), the snapshot substrate (`tolokaforge.core.grading.substrate.SnapshotGradingSubstrate`), and the kind registry (`tolokaforge.grader_kinds`).
+
+```bash
+tolokaforge grade bundle://local_disk/<digest> \
+    --grader-kind composite \
+    --grader-config /path/to/kind.yaml \
+    --store-config /path/to/store.yaml \
+    --out /tmp/regrade
+```
+
+### Flags
+
+| Flag | Argument | Default | Behaviour |
+|------|----------|---------|-----------|
+| `<bundle-uri>` | positional string | — | `bundle://<store-name>/<digest>`. Refused with `click.BadParameter` if the shape does not match `parse_bundle_uri` (scheme, netloc, 64 lowercase hex digest). |
+| `--grader-kind`, `-k` | string | — (required) | Name registered under `tolokaforge.grader_kinds`. Unknown → `click.BadParameter` naming the registered set. No default: composite needs pre-computed components today (see below), and every other kind lands on a different substrate profile. |
+| `--grader-config` | YAML file | none | Passed to `evaluate(kind_config=…)` verbatim as a `Mapping[str, Any]`. Empty file / omitted → `None`. The kind validates the shape internally (matches [`docs/GRADER_SERVICE.md`](GRADER_SERVICE.md) § Extension points). |
+| `--store-config` | YAML file | `LocalDiskBundleStore(root_dir=cwd)` | `BundleStoreBackend` discriminated union: `{type: local_disk, root_dir: …}` or `{type: s3, bucket: …, prefix: …}`. `extra="forbid"` catches typos. Absent → local-disk under the current directory. |
+| `--out` | directory | — (required) | Refuses a non-empty directory with `click.ClickException`. Created if absent. `grade.json` lands inside; no sidecars in this version. |
+
+### Store-config YAML shape
+
+```yaml
+# LocalDiskBundleStore(root_dir=/var/tolokaforge/bundles)
+type: local_disk
+root_dir: /var/tolokaforge/bundles
+```
+
+```yaml
+# S3BundleStore(bucket="my-bucket", prefix="run-2026")
+type: s3
+bucket: my-bucket
+prefix: run-2026
+```
+
+The URI's `<store-name>` component MUST match the loaded store's `name` attribute; a mismatch fails with `click.BadParameter("URI names store 'X' but --store-config selected 'Y'")`, exit `2`.
+
+### `grade.json`
+
+The verb writes `<--out>/grade.json` — `Grade.model_dump_json(indent=2, exclude_none=True)`. Distinct from a runner-side `grade.yaml` so CLI-produced regrades never shadow the live grade of the same trial.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | `grade.json` written. |
+| `1` | Kind refused (`GraderKindRefusedError`), substrate unreachable (`SubstrateUnreachableError`), grading itself failed (`GradingFailedError`), the kind returned `None`, or `--out` is not empty. No `grade.json` is written. |
+| `2` | Bad argument: unknown kind, malformed URI, malformed `--store-config` YAML, URI/store-name mismatch. |
+
+### Byte-parity commitment
+
+Live-grade vs CLI-regrade produce byte-identical `Grade` output **only for kinds whose substrate reads all succeed offline against `SnapshotGradingSubstrate`**. Two kinds have hard offline limits in bundle format v1.0:
+
+- `test_execution` — `SnapshotGradingSubstrate.run_test_suite` raises `SubstrateUnreachableError` naming "cannot run a test suite offline". A pack that grades on test execution is not regradeable in v1.0; the CLI reports it via a red line and exit `1`.
+- `composite` — the kind reads pre-computed `kind_config["components"]` as a dict of sub-component scores. Full CLI-driven composite regrade (dispatching each sub-component against the substrate before folding) needs sub-component dispatch, which is a follow-up. Today a caller wanting composite regrade supplies `--grader-config components: {state_checks: 0.9, transcript_rules: 1.0, …}` and the fold runs against those.
+
+Downstream kinds registered under `tolokaforge.grader_kinds` inherit these guarantees for the substrate methods they read; the substrate seam ([`docs/GRADER_SERVICE.md`](GRADER_SERVICE.md) § SubstrateService) is the contract.
+
 ## Dry run
 
 `tolokaforge run --dry-run` resolves the run config with full parity to a real run, loads the declared tasks via the adapter, renders the first three tasks' first-turn wire requests as Rich panels on stderr, and exits `0` without creating a run directory or issuing a single HTTP call to any provider.
@@ -376,7 +436,7 @@ Current mapping:
 
 | Section    | Commands                                     |
 |------------|----------------------------------------------|
-| Runs       | `analyze`, `browse`, `curate`, `prepare`, `reconcile`, `rejudge`, `retrace`, `run`, `status`, `worker` |
+| Runs       | `analyze`, `browse`, `curate`, `grade`, `prepare`, `reconcile`, `rejudge`, `retrace`, `run`, `status`, `worker` |
 | Tasks      | `validate`                                   |
 | Docker     | `docker`                                     |
 | Config     | `config`                                     |
@@ -390,6 +450,7 @@ Runs:
   analyze    Analyze a single trial trajectory.
   browse     Open a run's output directory in the OS default handler.
   curate     Write a judge-labelled corpus from recorded runs, spending...
+  grade      Regrade a bundle offline against SnapshotGradingSubstrate.
   prepare    Prepare a queue-backed run directory for distributed workers.
   reconcile  Check a pack's declared rubric migration against recorded...
   rejudge    Re-judge the rubric stage of recorded trials offline...
