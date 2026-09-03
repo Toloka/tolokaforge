@@ -201,24 +201,33 @@ def _records_might_match(record1: dict[str, Any], record2: dict[str, Any]) -> bo
     Check if two records might be the same entity with different values.
 
     Matches records by any shared field whose name ends with ``_id`` or is
-    exactly ``id``.  This is domain-agnostic — it works for any entity type
+    exactly ``id``. This is domain-agnostic — it works for any entity type
     (lot_id, sku_id, allocation_id, capa_id, equipment_id, etc.) without
     requiring a hardcoded list.
+
+    Iterates every shared id-suffixed field and returns True as soon as one
+    matches. A record whose surrogate ``id`` was reassigned by the substrate
+    still pairs with its golden counterpart when any co-recorded id (e.g.
+    ``customer_id``, ``order_id``) is stable — surrogate-id divergence on its
+    own does not fabricate a missing-plus-extra false diff. A field where
+    either side is null is skipped rather than treated as a mismatch: null
+    carries no identity signal.
     """
-    # Find all shared identifier-like fields (ending with _id or exactly "id")
     common_keys = set(record1.keys()) & set(record2.keys())
     id_fields = sorted(f for f in common_keys if f == "id" or f.endswith("_id"))
 
-    # Match on the first shared ID field (most specific). Compare via the same
-    # canonical form as the record hashing, so numeric-TYPE ids pair across
-    # representations (123 == 123.0 == Decimal("123")). A numeric-looking STRING
-    # id ("123") is NOT equated with the number 123 here: string folding is the
-    # opt-in per-field tier, off on this reason-only diff path.
+    # Compare via the same canonical form as record hashing, so numeric-TYPE
+    # ids pair across representations (123 == 123.0 == Decimal("123")). A
+    # numeric-looking STRING id ("123") is NOT equated with the number 123
+    # here: string folding is the opt-in per-field tier, off on this
+    # reason-only diff path.
     for field in id_fields:
-        if record1[field] is not None and record2[field] is not None:
-            return _make_hashable(record1[field]) == _make_hashable(record2[field])
+        if record1[field] is None or record2[field] is None:
+            continue
+        if _make_hashable(record1[field]) == _make_hashable(record2[field]):
+            return True
 
-    # Fallback: check if they share at least 50% of fields with same values
+    # Fallback: no id-field matched, share ≥ 50% of common fields' values.
     if not common_keys:
         return False
 
