@@ -83,6 +83,9 @@ def compute_state_diff(trial_state: dict[str, Any], golden_state: dict[str, Any]
                 f"{len(table_diff.extra)} extra, "
                 f"{len(table_diff.different)} different"
             )
+        elif table_diff.order_mismatch:
+            tables_diff[table_name] = table_diff
+            differences_found.append(f"{table_name}: rows in wrong order")
 
     # Build summary
     if differences_found:
@@ -116,12 +119,17 @@ def _compare_table_records(
     Uses a hash-based approach to identify matching records, then compares
     field values for records that might be the same but have differences.
 
+    A same-set-different-order table reports ``order_mismatch=True``: when the
+    set-based classification finds nothing missing / extra / different but the
+    ordered ``record_to_tuple`` sequences differ, the flag fires so the
+    runner-side diff cannot report "States match" while the hash disagrees.
+
     Args:
         trial_records: Records from trial state
         golden_records: Records from golden state
 
     Returns:
-        TableDiff with missing, extra, and different lists
+        TableDiff with missing, extra, different lists and order_mismatch flag
     """
     missing: list[dict[str, Any]] = []
     extra: list[dict[str, Any]] = []
@@ -174,7 +182,18 @@ def _compare_table_records(
         missing = [r for i, r in enumerate(missing) if i not in matched_missing]
         extra = [r for i, r in enumerate(extra) if i not in matched_extra]
 
-    return TableDiff(missing=missing, extra=extra, different=different)
+    # Order check fires only when the set-based classification found nothing:
+    # combined shapes are impossible by construction, so the summary vocabulary
+    # stays finite (absent / "rows in wrong order" / "N missing, M extra, K different").
+    order_mismatch = False
+    if not missing and not extra and not different:
+        trial_ordered = [record_to_tuple(r) for r in trial_records]
+        golden_ordered = [record_to_tuple(r) for r in golden_records]
+        order_mismatch = trial_ordered != golden_ordered
+
+    return TableDiff(
+        missing=missing, extra=extra, different=different, order_mismatch=order_mismatch
+    )
 
 
 def _records_might_match(record1: dict[str, Any], record2: dict[str, Any]) -> bool:

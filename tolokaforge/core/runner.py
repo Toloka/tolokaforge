@@ -338,6 +338,9 @@ class TrialRunner:
                     llm_client=self.agent_client,
                     tool_executor=self.tool_executor,
                     tool_schemas=self.tool_schemas,
+                    validation_schemas_by_tool=self.agent_client.sanitize_tools_for_execution(
+                        self.tool_schemas
+                    ),
                     config=LoopConfig(
                         max_turns=self.max_turns,
                         episode_timeout_s=self.episode_timeout_s,

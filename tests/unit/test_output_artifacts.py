@@ -176,10 +176,9 @@ def test_write_tools_schemas_lives_alongside_other_trial_artifacts(
 
 def test_write_prompts_creates_yaml_in_trial_dir(tmp_path: Path) -> None:
     """``prompts.yaml`` lands inside the trial bundle, alongside
-    ``trajectory.yaml``. Both prompt strings are persisted under the
-    same field names they used to occupy on ``Trajectory`` so external
-    tooling that knows ``system_prompt`` / ``user_system_prompt`` keeps
-    working."""
+    ``trajectory.yaml``. Three top-level keys — the agent prompt, the
+    user-simulator prompt, and the composed judge prompt — under the
+    field names external tooling knows."""
     writer = FileArtifactWriter()
     trial_dir = tmp_path / "trials" / "task_a" / "0"
 
@@ -187,6 +186,7 @@ def test_write_prompts_creates_yaml_in_trial_dir(tmp_path: Path) -> None:
         trial_dir,
         agent_prompt="You are an agent.",
         user_prompt="You are a user simulator.",
+        judge_prompt="You are a judge.",
     )
 
     target = trial_dir / "prompts.yaml"
@@ -194,24 +194,26 @@ def test_write_prompts_creates_yaml_in_trial_dir(tmp_path: Path) -> None:
     assert yaml.safe_load(target.read_text()) == {
         "system_prompt": "You are an agent.",
         "user_system_prompt": "You are a user simulator.",
+        "judge_prompt": "You are a judge.",
     }
 
 
 def test_write_prompts_handles_none(tmp_path: Path) -> None:
-    """Both prompts may be ``None`` — for non-LLM agents (no system
-    prompt) and scripted user simulators (no LLM-shaped user prompt).
-    Persist explicit ``None`` so consumers can distinguish *absent* from
-    *missing field*."""
+    """Every prompt may be ``None`` — for non-LLM agents (no system
+    prompt), scripted user simulators (no LLM-shaped user prompt), and
+    tasks with no LLM judge configured. Persist explicit ``None`` so
+    consumers distinguish *absent* from *missing field*."""
     writer = FileArtifactWriter()
     trial_dir = tmp_path / "trials" / "task_a" / "0"
 
-    writer.write_prompts(trial_dir, agent_prompt=None, user_prompt=None)
+    writer.write_prompts(trial_dir, agent_prompt=None, user_prompt=None, judge_prompt=None)
 
     target = trial_dir / "prompts.yaml"
     assert target.exists()
     assert yaml.safe_load(target.read_text()) == {
         "system_prompt": None,
         "user_system_prompt": None,
+        "judge_prompt": None,
     }
 
 
@@ -231,12 +233,16 @@ def test_write_prompts_overwrites_on_repeat_write(tmp_path: Path) -> None:
     writer = FileArtifactWriter()
     trial_dir = tmp_path / "trials" / "task_a" / "0"
 
-    writer.write_prompts(trial_dir, agent_prompt="first", user_prompt="u1")
-    writer.write_prompts(trial_dir, agent_prompt="second", user_prompt="u2")
+    writer.write_prompts(trial_dir, agent_prompt="first", user_prompt="u1", judge_prompt="j1")
+    writer.write_prompts(trial_dir, agent_prompt="second", user_prompt="u2", judge_prompt="j2")
 
     target = trial_dir / "prompts.yaml"
     data = yaml.safe_load(target.read_text())
-    assert data == {"system_prompt": "second", "user_system_prompt": "u2"}
+    assert data == {
+        "system_prompt": "second",
+        "user_system_prompt": "u2",
+        "judge_prompt": "j2",
+    }
 
 
 def test_write_prompts_lives_alongside_other_trial_artifacts(tmp_path: Path) -> None:

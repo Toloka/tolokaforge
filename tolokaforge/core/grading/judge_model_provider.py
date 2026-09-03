@@ -27,7 +27,7 @@ the reference impl through it.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from tolokaforge.core.loop import LoopLLMClient, TerminationDecision
 from tolokaforge.core.models import ModelConfig
@@ -44,16 +44,23 @@ class JudgeModel(LoopLLMClient, Protocol):
     """The LLM callable surface an :class:`LLMJudge` consumes.
 
     Inherits :class:`~tolokaforge.core.loop.LoopLLMClient` for the
-    ``.generate(...)`` seam the shared :class:`ToolCallingLoop` drives, and
-    adds :meth:`classify_loop_error` because ``LLMJudge.run`` binds
+    ``.generate(...)`` seam the shared :class:`ToolCallingLoop` drives, adds
+    :meth:`classify_loop_error` because ``LLMJudge.run`` binds
     ``client.classify_loop_error`` as the loop's ``classify_error=``
-    argument. A downstream provider fronts a different LLM engine by
-    implementing these two methods and nothing more;
-    :class:`~tolokaforge.core.llm.client.LLMClient` already satisfies the
-    composed shape structurally.
+    argument, and adds :meth:`sanitize_tools_for_execution` because
+    ``LLMJudge.run`` also builds the loop's ``validation_schemas_by_tool``
+    map from it (so the tool executor validates against the schema the
+    judge model was shown, not the schema the tool declares). A downstream
+    provider fronts a different LLM engine by implementing these three
+    methods; :class:`~tolokaforge.core.llm.client.LLMClient` already
+    satisfies the composed shape structurally.
     """
 
     def classify_loop_error(self, exc: Exception) -> TerminationDecision: ...
+
+    def sanitize_tools_for_execution(
+        self, tools: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]: ...
 
 
 @runtime_checkable

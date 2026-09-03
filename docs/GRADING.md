@@ -409,7 +409,10 @@ runner's `_execute_hash_grading` returns its verdict inside `HashGradingResult`,
 verdict is unrepresentable, so that producer's source needs no audit; the suite proves
 the derivation over both `hash_match` values, that constructing the model with an
 explicit `hash_score` is refused, and that the producer's declared return type keeps
-its verdict inside the model. The producer set is derived from the hash family's
+its verdict inside the model. The runner-side diff reports an order-mismatch verdict
+on the same-set-different-order class, so a `hash_score: 0.0` never sits beside a
+`state_diff` that reads as identical (see [§ Hash / diff verdict
+parity](#hash--diff-verdict-parity)). The producer set is derived from the hash family's
 declared evaluators and asserted as set equality against the union of the two frozen
 partitions, so a fourth producer forces a reviewable edit rather than landing with the
 guard green. What the source audit cannot see is a producer reached only *through* one
@@ -1626,6 +1629,29 @@ A tool reporting failure as a bare prose string — `"Error: invalid characters 
 expression"` — is detected on neither substrate by design: telling one from legitimate
 output needs substring matching over prose, which false-positives on any tool whose own
 output mentions the word (#855).
+
+### Hash / diff verdict parity
+
+The runner-side pair `compute_stable_hash` and `compute_state_diff` agree on identity:
+whenever the two hashes disagree, `compute_state_diff` reports `identical=False` and its
+`summary` names an offence. `hash_score: 0.0` never sits beside a `state_diff` that
+reads as identical, so an operator reading the record never has to choose which of two
+contradictory verdicts to trust.
+
+The set-diff vocabulary covers three shapes per table. A table that matches by set and
+by order is absent from `state_diff.tables`. A table whose rows differ by set contributes
+`"<table>: N missing, M extra, K different"` to the summary. A table whose rows form the
+same set but appear in a different order sets `TableDiff.order_mismatch=True` and
+contributes `"<table>: rows in wrong order"` — the flag fires only when nothing is
+missing, extra, or different, so combined shapes are impossible by construction.
+
+`compute_stable_hash` remains order-sensitive on list elements — the digest is persisted
+in db-service ETags and the `ResetTrialResponse.state_hash` / `GetStateResponse.stable_hash`
+wire fields, so its serialisation is frozen. The parity invariant therefore holds by
+widening the diff rather than by relaxing the hash. If a task's golden row order is
+coincidental (many tables order rows by insertion time, not by contract), a per-table
+`state_checks.ordered_tables` hint would let the hash ignore that order — tracked in
+[#1472](https://github.com/Toloka/tolokaforge/issues/1472).
 
 ### Best Practices
 
@@ -3678,7 +3704,12 @@ default, omitting the key inherits the project value, and a task sets
 `system_prompt: null` to reset a project-level custom prompt back to the default.
 An empty or whitespace-only string is rejected loudly at load. When absent, the
 judge runs with the byte-for-byte default prompt. The full custom text is recorded
-in the bundle's `task.yaml.grading_config`.
+in the bundle's `task.yaml.grading_config`, and the composed prompt the judge
+would have graded under is persisted verbatim in the bundle's
+[`prompts.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indexpromptsyaml) `judge_prompt`
+key — so `tolokaforge rejudge` prefers the recorded composed prompt over the
+current engine's default, falling back to the task.yaml body fragment only for
+pre-`judge_prompt` bundles. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#custom-judge-system-prompt).
 
 ### Gating the agent's policy out of the judge's evidence
 

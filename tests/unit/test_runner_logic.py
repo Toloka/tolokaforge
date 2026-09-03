@@ -42,7 +42,14 @@ class _EchoingUserToolExecutor:
     ``RecordedToolCall`` refuses a mock's attributes for ``status`` and ``output``.
     """
 
-    def execute(self, tool_name: str, arguments: dict | None = None, *, call_id: str) -> ToolResult:
+    def execute(
+        self,
+        tool_name: str,
+        arguments: dict | None = None,
+        *,
+        call_id: str,
+        validation_schema: dict | None = None,
+    ) -> ToolResult:
         return ToolResult(success=True, output=f"{tool_name} ran")
 
 
@@ -80,6 +87,11 @@ def _make_agent_client(responses: list[GenerationResult] | None = None) -> Magic
             cost_usd=0.01,
         )
     client.classify_loop_error.side_effect = lambda exc: classify_loop_error(exc, ())
+    # The loop reads this at construction to build ``validation_schemas_by_tool``.
+    # Returning ``None`` puts the loop in its no-override branch, so the executor
+    # call signature stays free of the ``validation_schema`` kwarg — matching what
+    # tests here assert on the ``execute`` mock.
+    client.sanitize_tools_for_execution.return_value = None
     return client
 
 

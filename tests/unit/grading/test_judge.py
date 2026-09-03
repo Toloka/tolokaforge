@@ -12,13 +12,15 @@ from __future__ import annotations
 import pytest
 
 from tolokaforge.core.grading.judge import (
-    _JUDGE_MARKER_CONTRACT,
-    _JUDGE_SYSTEM_PROMPT,
     LLMJudge,
     _build_opening_message,
-    _compose_judge_system_prompt,
 )
 from tolokaforge.core.grading.judge_result import JudgeStatus
+from tolokaforge.core.judge_prompt import (
+    _JUDGE_MARKER_CONTRACT,
+    _JUDGE_SYSTEM_PROMPT,
+    _compose_judge_system_prompt,
+)
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
@@ -104,6 +106,14 @@ class ScriptedClient:
         from tolokaforge.core.loop import classify_loop_error
 
         return classify_loop_error(exc, ())
+
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
+        """Return an empty map: judge fixtures drive scripted tool calls whose
+        arguments already conform to each tool's declared schema, so the
+        loop's per-tool ``.get()`` on the empty map yields ``None`` and the
+        executor falls back to the tool's own schema (the desired no-op).
+        """
+        return {}
 
 
 class FakeDBReader:
@@ -1069,6 +1079,9 @@ def test_judge_loop_crash_errors_not_scores():
             from tolokaforge.core.loop import classify_loop_error
 
             return classify_loop_error(exc, ())
+
+        def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
+            return {}
 
     result = _run_llm_judge(
         rubric=rubric,
