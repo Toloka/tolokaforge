@@ -324,6 +324,61 @@ Live-grade vs CLI-regrade produce byte-identical `Grade` output **only for kinds
 
 Downstream kinds registered under `tolokaforge.grader_kinds` inherit these guarantees for the substrate methods they read; the substrate seam ([`docs/GRADER_SERVICE.md`](GRADER_SERVICE.md) § SubstrateService) is the contract.
 
+### `tolokaforge grade-run` — batch across a completed run
+
+`tolokaforge grade-run <run-dir>` walks a completed run's trial subtree, filters trials whose `snapshot_status.outcome == stored` (recorded on `trajectory.yaml` per [`docs/RUNNER.md § Snapshot bundle mode`](RUNNER.md#snapshot-bundle-mode)), and dispatches each through the same `_regrade_bundle` seam as the single-trial verb. Serial in-process — no queue transport, no thread pool.
+
+```bash
+tolokaforge grade-run results/run_2026_09_04 \
+    --with-kind composite \
+    --grader-config /path/to/kind.yaml \
+    --store-config /path/to/store.yaml \
+    --out /tmp/regrades
+```
+
+#### Flags
+
+| Flag | Argument | Default | Behaviour |
+|------|----------|---------|-----------|
+| `<run-dir>` | positional directory | — | Must exist and contain a `trials/` subdirectory. `click.BadParameter` names the missing subdirectory otherwise. |
+| `--with-kind` | string | — (required) | Same validation as `grade --grader-kind`. Different flag name — reads more naturally on a batch verb ("regrade this whole run with kind X"). |
+| `--grader-config`, `--store-config`, `--out` | — | — | Identical semantics to `grade`. The store is constructed ONCE and reused across trials; the bundle materialises per-trial into a fresh `TemporaryDirectory`. |
+
+#### Discovery + classification
+
+`run_dir/trials/*/*/trajectory.yaml` — sorted for deterministic per-trial output ordering. Each `trajectory.yaml` reads through `Trajectory.model_validate(yaml.safe_load(...))` (fail-loud on schema drift). The classifier reads `trajectory.snapshot_status`:
+
+| `snapshot_status` state | Outcome |
+|--- |---|
+| `None` | skip: `no snapshot_status recorded (run predates snapshot mode?)` |
+| `outcome == ungraded` | skip: `trial ended before grading` |
+| `outcome == oversize` | skip: `bundle oversize (<size> > <cap>)` |
+| `outcome == produce_failed` | skip: the recorded reason |
+| `outcome == stored`, `uri is not None` | dispatch through `_regrade_bundle(uri, ...)` |
+| `outcome == stored`, `uri is None` | skip: `stored outcome carries no uri` (guardrail; producer never emits this) |
+
+#### Per-trial output layout
+
+Each dispatched trial writes `<--out>/<task>/<idx>/grade.json` — mirroring the source `<run-dir>/trials/<task>/<idx>/` position. Intermediate directories are created.
+
+#### Per-trial progress + census
+
+The verb prints one line per trial through the shared `_display.console`:
+
+- `regraded <task>/<idx> -> <path>` on success (green),
+- `skip <task>/<idx> - <reason>` on classifier-skip (yellow),
+- `failed <task>/<idx> - <reason>` on dispatch failure (red).
+
+A one-line census closes the run: `Regraded: discovered N, regraded X, skipped Y, failed Z`.
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Every dispatched trial produced a grade. Skips are non-error. |
+| `1` | At least one dispatched trial failed. The census names the count. |
+| `2` | Bad argument (missing `trials/` subdir, unknown kind, malformed `--store-config`, `--out` refusal). |
+
 ## Dry run
 
 `tolokaforge run --dry-run` resolves the run config with full parity to a real run, loads the declared tasks via the adapter, renders the first three tasks' first-turn wire requests as Rich panels on stderr, and exits `0` without creating a run directory or issuing a single HTTP call to any provider.
@@ -436,7 +491,7 @@ Current mapping:
 
 | Section    | Commands                                     |
 |------------|----------------------------------------------|
-| Runs       | `analyze`, `browse`, `curate`, `grade`, `prepare`, `reconcile`, `rejudge`, `retrace`, `run`, `status`, `worker` |
+| Runs       | `analyze`, `browse`, `curate`, `grade`, `grade-run`, `prepare`, `reconcile`, `rejudge`, `retrace`, `run`, `status`, `worker` |
 | Tasks      | `validate`                                   |
 | Docker     | `docker`                                     |
 | Config     | `config`                                     |
@@ -451,6 +506,7 @@ Runs:
   browse     Open a run's output directory in the OS default handler.
   curate     Write a judge-labelled corpus from recorded runs, spending...
   grade      Regrade a bundle offline against SnapshotGradingSubstrate.
+  grade-run  Regrade every stored-bundle trial under a completed run.
   prepare    Prepare a queue-backed run directory for distributed workers.
   reconcile  Check a pack's declared rubric migration against recorded...
   rejudge    Re-judge the rubric stage of recorded trials offline...

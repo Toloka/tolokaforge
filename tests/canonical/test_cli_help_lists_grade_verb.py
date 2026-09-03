@@ -1,16 +1,15 @@
-"""``tolokaforge --help`` surfaces the ``grade`` verb under Runs.
+"""``tolokaforge --help`` surfaces the ``grade`` + ``grade-run`` verbs under Runs.
 
 Structural lock on the CLI's public help surface:
 
-* the "Runs" section carries a row whose first token is ``grade``,
-* ``grade`` short-help mentions ``regrade`` and ``bundle`` (readers
-  scan short-help to pick the right verb),
-* ``_GroupedCommandsGroup.COMMAND_GROUPS["grade"] == "Runs"`` (a
-  rename without the map update raises ``RuntimeError`` at help time,
-  but this assertion pins the mapping directly).
-* ``"grade-run"`` is NOT yet in ``COMMAND_GROUPS`` — Stage 2 registers
-  only the single-trial verb; if Stage 3 is rolled back the surface is
-  left half-registered otherwise.
+* the "Runs" section carries rows whose first tokens are ``grade`` and
+  ``grade-run``,
+* ``grade`` short-help mentions ``regrade`` and ``bundle``; ``grade-run``
+  short-help mentions ``regrade`` and ``run`` (readers scan short-help
+  to pick the right verb),
+* ``_GroupedCommandsGroup.COMMAND_GROUPS`` maps both to ``"Runs"``
+  (a rename without the map update raises ``RuntimeError`` at help time;
+  these assertions pin the mapping directly).
 """
 
 from __future__ import annotations
@@ -46,7 +45,9 @@ def test_grade_verb_listed_under_runs_heading() -> None:
     assert result.exit_code == 0, result.stderr
 
     section = _runs_section(result.stdout)
-    assert "grade" in _command_names(section)
+    names = _command_names(section)
+    assert "grade" in names
+    assert "grade-run" in names
 
 
 def test_grade_short_help_mentions_regrade_and_bundle() -> None:
@@ -59,15 +60,18 @@ def test_grade_short_help_mentions_regrade_and_bundle() -> None:
     assert "bundle" in grade_line
 
 
-def test_grade_in_command_groups_under_runs() -> None:
+def test_grade_run_short_help_mentions_regrade_and_run() -> None:
+    result = CliRunner(mix_stderr=False).invoke(cli, ["--help"])
+    assert result.exit_code == 0, result.stderr
+
+    section = _runs_section(result.stdout)
+    grade_run_line = next(
+        line for line in section.splitlines() if line.strip().startswith("grade-run ")
+    )
+    assert "Regrade" in grade_run_line or "regrade" in grade_run_line
+    assert "run" in grade_run_line
+
+
+def test_grade_and_grade_run_in_command_groups_under_runs() -> None:
     assert _GroupedCommandsGroup.COMMAND_GROUPS["grade"] == "Runs"
-
-
-def test_grade_run_not_yet_registered() -> None:
-    """Stage 3 implements + registers ``grade-run`` in one commit.
-
-    Until then, the half-registration would leave ``tolokaforge --help``
-    with a broken row if ``grade-run`` were mapped but not implemented.
-    Locking absence here keeps the Stage 2 surface honest.
-    """
-    assert "grade-run" not in _GroupedCommandsGroup.COMMAND_GROUPS
+    assert _GroupedCommandsGroup.COMMAND_GROUPS["grade-run"] == "Runs"

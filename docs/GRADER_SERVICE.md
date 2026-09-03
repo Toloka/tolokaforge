@@ -745,7 +745,7 @@ local = LocalDiskBundleStore(root_dir=Path("/var/tolokaforge/bundles"))
 s3 = S3BundleStore(bucket="tolokaforge-bundles", prefix="grade_bundles")
 ```
 
-The shipped operator entry point for offline regrade is `tolokaforge grade <uri>` — it constructs a store from `--store-config` (`BundleStoreBackend` discriminated union above), calls `store.get(uri, tmp_dir)`, wraps the materialised bundle in `SnapshotGradingSubstrate`, dispatches a `--grader-kind`, and writes `grade.json`. See [`docs/CLI.md`](CLI.md) § `tolokaforge grade` — offline regrade for flags, exit codes, and byte-parity scope.
+The shipped operator entry point for offline regrade is `tolokaforge grade <uri>` — it constructs a store from `--store-config` (`BundleStoreBackend` discriminated union above), calls `store.get(uri, tmp_dir)`, wraps the materialised bundle in `SnapshotGradingSubstrate`, dispatches a `--grader-kind`, and writes `grade.json`. See [`docs/CLI.md`](CLI.md) § `tolokaforge grade` — offline regrade for flags, exit codes, and byte-parity scope. The batch counterpart is `tolokaforge grade-run <run-dir> --with-kind <k>`, which walks a run's `trials/<task>/<idx>/trajectory.yaml` subtree, filters trials whose `snapshot_status.outcome == stored`, and dispatches each through the same seam.
 
 ## Parity gate
 
