@@ -61,9 +61,6 @@ from tolokaforge.core.grading.rubric import (
     parse_submit_report,
 )
 from tolokaforge.core.judge_prompt import (
-    _JUDGE_MARKER_CONTRACT,  # noqa: F401 — re-exported for tests and callers.
-    _JUDGE_SYSTEM_PROMPT,  # noqa: F401 — re-exported.
-    _JUDGE_SYSTEM_PROMPT_BODY,  # noqa: F401 — re-exported.
     _compose_judge_system_prompt,
     effective_judge_system_prompt,
 )

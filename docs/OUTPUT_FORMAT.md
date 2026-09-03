@@ -182,11 +182,10 @@ Written via [`tolokaforge.core.budgets.write_limit_hit_marker`](../tolokaforge/c
   every message-trace open scroll past kilobytes of unchanging policy
   text. `prompts.yaml` keeps every prompt readable, re-greppable, and
   separable from the per-turn timeline they conditioned.
-* **Field names**: `system_prompt` and `user_system_prompt` mirror the
-  historical `Trajectory.system_prompt` / `Trajectory.user_system_prompt`
-  keys so analytics tools reading those names still work. `judge_prompt`
-  is the composed body + marker contract the trial's `LLMJudgeConfig`
-  would have graded under — see
+* **Field names**: `system_prompt` is the agent's system prompt,
+  `user_system_prompt` is the user-simulator's, and `judge_prompt` is the
+  composed body + marker contract the trial's `LLMJudgeConfig` would have
+  graded under — see
   [`docs/GRADING.md`](GRADING.md#customizing-the-judges-system-prompt)
   for how customization composes with the harness-owned marker contract.
 * **`judge_prompt` derivation**: computed from the trial's effective
@@ -1714,7 +1713,7 @@ evidence about us, and our own defects stay counted. See
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |
 | `task.yaml.user_actor` | — (struct-typed) | n/a | Mirrors `UserSimulatorConfig`; fields grow, removing one is a breaking change |
-| `prompts.yaml` | — | n/a | Three-key mapping (`system_prompt`, `user_system_prompt`, `judge_prompt`); the first two mirror the historical `Trajectory.system_prompt` / `Trajectory.user_system_prompt` names, and `judge_prompt` records the composed judge system prompt the trial's `LLMJudgeConfig` would have graded under |
+| `prompts.yaml` | — | n/a | Three-key mapping: `system_prompt` (agent), `user_system_prompt` (user simulator), and `judge_prompt` (composed judge system prompt the trial's `LLMJudgeConfig` would have graded under) |
 | `tools_schemas.yaml` | — | n/a | Format is the litellm tool-schema dict list, post-`schema_sanitizer` |
 | `tool_log.yaml` | — (struct-typed) | n/a | Format is the `RecordedToolCall` list; its presence is stamped by `metrics.yaml`'s `schema_version` |
 | `metrics.yaml` (`redaction` block) | — (struct-typed) | n/a | Optional; mirrors `RedactionStamp`. Absent unless a redacting artifact-write policy wrote the bundle, so its introduction bumps no version — a reader that does not know the key sees the bundles it always saw |

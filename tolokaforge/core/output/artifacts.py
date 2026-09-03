@@ -328,9 +328,6 @@ class TrialArtifactWriter(Protocol):
         the composed judge system prompt the trial's ``LLMJudgeConfig`` would
         have graded under (body + marker contract; see
         :func:`tolokaforge.core.grading.judge.effective_judge_system_prompt`).
-        The agent and user keys mirror the historical
-        ``Trajectory.system_prompt`` / ``Trajectory.user_system_prompt`` so
-        analytics tools that read those names keep working.
 
         Every key is always present; ``None`` means *the trial had no such
         prompt* (no agent policy, scripted user simulator, no LLM judge
@@ -458,10 +455,6 @@ class FileArtifactWriter:
         * ``judge_prompt`` — the composed judge system prompt (body + marker
           contract) the trial's ``LLMJudgeConfig`` would have graded under,
           from :func:`tolokaforge.core.grading.judge.effective_judge_system_prompt`.
-
-        The first two names mirror the historical ``Trajectory.system_prompt`` /
-        ``Trajectory.user_system_prompt`` so external readers don't have to
-        learn new names.
 
         Every argument may be ``None`` (no agent policy, scripted user
         simulator, no LLM judge configured for this trial). All three keys are

@@ -303,11 +303,12 @@ class ReplayProvenance(BaseModel):
         supersedes both the task.yaml customization and the ``--grading`` override,
         so stamping both a BUNDLE source and a legacy source is a caller bug.
 
-        The reverse implication does NOT hold. A legacy pre-Stage-2 bundle graded
-        under the engine default records ``judge_prompt_source=None,
-        custom_prompt_source=None, custom_system_prompt=False`` — the RHS holds
-        and the LHS does not. A biconditional would reject this shape and red
-        every default-prompt legacy replay.
+        The reverse implication does NOT hold. A bundle that predates the
+        ``judge_prompt`` key AND has no task-side customization records
+        ``judge_prompt_source=None, custom_prompt_source=None,
+        custom_system_prompt=False`` — the RHS holds and the LHS does not. A
+        biconditional would reject this shape and red every default-prompt
+        legacy replay.
         """
         if self.judge_prompt_source is ProvenanceSource.BUNDLE and (
             self.custom_prompt_source is not None or self.custom_system_prompt
@@ -492,9 +493,9 @@ def _resolve_bundle_judge_prompt(
     non-empty string — the exact composed prompt (body + marker contract) the
     original run's ``LLMJudgeConfig`` would have graded under, ready to feed
     :class:`LLMJudge` verbatim through ``explicit_system_prompt``. Returns
-    ``(None, None)`` when the key is absent (a pre-Stage-2 bundle written before
-    the field existed) or is ``null`` (the bundle recorded no LLM judge) — the
-    caller then falls back to the legacy ``_resolve_custom_prompt`` path.
+    ``(None, None)`` when the key is absent (a bundle that predates the
+    ``judge_prompt`` field) or is ``null`` (the bundle recorded no LLM judge) —
+    the caller then falls back to the legacy ``_resolve_custom_prompt`` path.
 
     Raises :class:`MissingReplayInputError` when the key is present but does not
     hold a non-empty string. The writer emits only strings or ``null``, so any

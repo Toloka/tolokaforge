@@ -12,13 +12,15 @@ from __future__ import annotations
 import pytest
 
 from tolokaforge.core.grading.judge import (
-    _JUDGE_MARKER_CONTRACT,
-    _JUDGE_SYSTEM_PROMPT,
     LLMJudge,
     _build_opening_message,
-    _compose_judge_system_prompt,
 )
 from tolokaforge.core.grading.judge_result import JudgeStatus
+from tolokaforge.core.judge_prompt import (
+    _JUDGE_MARKER_CONTRACT,
+    _JUDGE_SYSTEM_PROMPT,
+    _compose_judge_system_prompt,
+)
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall

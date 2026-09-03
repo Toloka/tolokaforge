@@ -4,8 +4,9 @@ The composed prompt (body + marker contract) is what the LLM judge runs under
 and what a trial bundle records in ``prompts.yaml`` under the ``judge_prompt``
 key. Three consumers share this composition — the judge itself
 (``tolokaforge.core.grading.judge.LLMJudge``), the trial bundle writer (via
-``InProcessConductor._write_artifacts``), and offline replay (Stage 3 in
-``docs/OUTPUT_FORMAT.md`` § replays) — so the constants and composition helpers
+``InProcessConductor._write_artifacts``), and offline replay (see
+``docs/OUTPUT_FORMAT.md`` § ``replays/{replay_id}/``) — so the constants
+and composition helpers
 live in a seam-neutral module rather than inside the judge implementation. That
 way the writer path can derive the recorded prompt without pulling
 ``LLMClient`` or judge tooling onto its import graph, and the orchestration

@@ -10,7 +10,7 @@ native replay reads the same string to reconstruct the judge's system prompt.
 
 Scenarios locked here:
 
-Bundle-write side (Stage 2):
+Bundle-write side:
     (1) ``customization=None`` (or no customization block at all) → ``judge_prompt``
         is byte-for-byte the engine default ``_JUDGE_SYSTEM_PROMPT``.
     (2) ``customization.system_prompt = "STRICT-VIBE"`` → ``judge_prompt`` begins
@@ -20,13 +20,13 @@ Bundle-write side (Stage 2):
     (3) Auto-fail trial with ``llm_judge`` block → ``judge_prompt`` still recorded
         (derived from the effective ``grading_config``, not from a judge invocation).
 
-Bundle-native replay side (Stage 3):
+Bundle-native replay side:
     (4) Recorded ``judge_prompt`` is reused byte-for-byte: no doubled marker,
         provenance stamped ``bundle``.
-    (5) Legacy bundle (no ``judge_prompt`` key) with recorded ``customization.
+    (5) Bundle with no ``judge_prompt`` key but a recorded ``customization.
         system_prompt``: replay falls through to the legacy resolver and composes
         at run time; provenance stamps ``custom_prompt_source == "recorded"``.
-    (6) Legacy bundle (no ``judge_prompt`` key) with no customisation anywhere:
+    (6) Bundle with no ``judge_prompt`` key and no customisation anywhere:
         replay grades under the engine default and stamps every prompt source
         ``None`` — the one-way ``BUNDLE ⟹ (no legacy source)`` implication on
         ``ReplayProvenance`` admits this shape (a biconditional would red it).
@@ -63,12 +63,7 @@ from tests.utils.conductor_phases import (
     make_setup,
     runner_stub,
 )
-from tolokaforge.core.grading.judge import (
-    _JUDGE_MARKER_CONTRACT,
-    _JUDGE_SYSTEM_PROMPT,
-    LLMJudge,
-    _compose_judge_system_prompt,
-)
+from tolokaforge.core.grading.judge import LLMJudge
 from tolokaforge.core.grading.replay import (
     FidelityMode,
     KnowledgeSearchMode,
@@ -76,6 +71,11 @@ from tolokaforge.core.grading.replay import (
     ReplayProvenance,
     read_replay_inputs,
     replay_trial,
+)
+from tolokaforge.core.judge_prompt import (
+    _JUDGE_MARKER_CONTRACT,
+    _JUDGE_SYSTEM_PROMPT,
+    _compose_judge_system_prompt,
 )
 from tolokaforge.core.models import (
     Grade,
@@ -272,7 +272,7 @@ def _write_replay_bundle(
     include_judge_prompt_key: bool = True,
 ) -> None:
     """Assemble a trial bundle the replay can read: trajectory + prompts + task +
-    grade. ``include_judge_prompt_key=False`` simulates a pre-Stage-2 bundle by
+    grade. ``include_judge_prompt_key=False`` simulates a pre-`judge_prompt` bundle by
     hand-writing a two-key ``prompts.yaml``. ``customization`` is a dict merged
     into ``grading_config.llm_judge`` — ``None`` omits the block entirely."""
     trial_dir.mkdir(parents=True, exist_ok=True)
@@ -289,7 +289,7 @@ def _write_replay_bundle(
             judge_prompt=judge_prompt,
         )
     else:
-        # Pre-Stage-2 bundle shape — hand-written to omit the ``judge_prompt``
+        # Pre-`judge_prompt` bundle shape — hand-written to omit the ``judge_prompt``
         # key entirely, so ``_resolve_bundle_judge_prompt`` sees an absent key
         # and falls through to the legacy resolver.
         (trial_dir / "prompts.yaml").write_text(
@@ -397,7 +397,7 @@ def test_bundle_recorded_judge_prompt_is_reused_verbatim_with_no_doubled_marker(
 def test_legacy_bundle_customized_body_falls_through_to_the_legacy_resolver(
     tmp_path: Path,
 ) -> None:
-    """A pre-Stage-2 bundle (no ``judge_prompt`` key) with a recorded
+    """A pre-`judge_prompt` bundle (no ``judge_prompt`` key) with a recorded
     ``customization.system_prompt`` falls through to the legacy composer: the
     body is composed at run time (marker appended once), and provenance stamps
     the legacy source.
@@ -430,7 +430,7 @@ def test_legacy_bundle_customized_body_falls_through_to_the_legacy_resolver(
 def test_legacy_bundle_with_no_customization_replays_under_the_engine_default(
     tmp_path: Path,
 ) -> None:
-    """A pre-Stage-2 bundle with NO recorded customisation anywhere replays
+    """A pre-`judge_prompt` bundle with NO recorded customisation anywhere replays
     under the engine default and stamps every prompt source ``None`` — the
     one-way ``BUNDLE ⟹ no-legacy-source`` implication on ``ReplayProvenance``
     admits this shape.
