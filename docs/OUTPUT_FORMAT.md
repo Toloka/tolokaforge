@@ -30,7 +30,7 @@ bumped and this document is updated in the same commit.
             ├── judge_trajectory.yaml       ← rubric-judge transcript (when an LLM judge ran; withheld under a redacting policy)
             ├── judge_inputs.yaml           ← rubric-judge structured inputs for replay (when an LLM judge ran; withheld under a redacting policy)
             ├── logs.yaml                   ← structured trial logs (through the redaction policy)
-            ├── prompts.yaml                ← agent + user-sim system prompts
+            ├── prompts.yaml                ← agent + user-sim + judge system prompts
             ├── tools_schemas.yaml          ← post-policy tool list (through the redaction policy)
             └── services/                   ← per-service compose logs (on trial-body or graded failure)
                 ├── {service}.log
@@ -170,27 +170,44 @@ Written via [`tolokaforge.core.budgets.write_limit_hit_marker`](../tolokaforge/c
 
 ## `trials/{task_id}/{trial_index}/prompts.yaml`
 
-* **Shape**: YAML mapping with two string-or-null keys.
+* **Shape**: YAML mapping with three string-or-null keys.
 * **Content**:
   ```yaml
-  system_prompt: "You are a helpful assistant..."     # agent system prompt
-  user_system_prompt: "You are a user interacting..."  # user simulator prompt
+  system_prompt: "You are a helpful assistant..."       # agent system prompt
+  user_system_prompt: "You are a user interacting..."   # user simulator prompt
+  judge_prompt: "You are a strict, evidence-based..."   # composed judge prompt
   ```
 * **Why a separate file**: domain-rich evals carry 15–20 KB of
   agent-side system prompt. Embedding that in `trajectory.yaml` made
   every message-trace open scroll past kilobytes of unchanging policy
-  text. `prompts.yaml` keeps them readable, re-greppable, and
+  text. `prompts.yaml` keeps every prompt readable, re-greppable, and
   separable from the per-turn timeline they conditioned.
-* **Field names**: identical to the historical
-  `Trajectory.system_prompt` / `Trajectory.user_system_prompt`. Only the
-  file moved; analytics tools that already read those names still work,
-  they just open `prompts.yaml` instead of `trajectory.yaml`.
+* **Field names**: `system_prompt` is the agent's system prompt,
+  `user_system_prompt` is the user-simulator's, and `judge_prompt` is the
+  composed body + marker contract the trial's `LLMJudgeConfig` would have
+  graded under — see
+  [`docs/GRADING.md`](GRADING.md#customizing-the-judges-system-prompt)
+  for how customization composes with the harness-owned marker contract.
+* **`judge_prompt` derivation**: computed from the trial's effective
+  `grading_config.llm_judge` at bundle-write time, not from an actual
+  judge invocation, so an auto-fail trial (`ERROR` / `TIMEOUT` /
+  `STUCK_DETECTED` / `EMPTY_COMPLETION`) that never called the judge
+  still records the contract it would have graded under. Same source of
+  truth as the judge's own composition
+  (`_compose_judge_system_prompt`), so the recorded string is
+  byte-for-byte what the judge ran under. The rubric-brief the judge
+  appends at run time is NOT persisted here — the rubric already lives
+  in `task.yaml.grading_config.llm_judge.rubric`.
 * **Null semantics**:
   - `system_prompt: null` — no agent system prompt was set (rare; some
     non-LLM agents).
   - `user_system_prompt: null` — scripted user simulator (no LLM-shaped
     prompt). Distinct from a missing-file case where the orchestrator
     didn't run to write_prompts at all.
+  - `judge_prompt: null` — the task has no `llm_judge` block configured
+    (deterministic-only grading). Distinct from an LLM-judged task
+    running under the engine default prompt, which records the full
+    default composition verbatim.
 * **Per-trial**: one file per trial, no dedup; same self-contained
   pattern as `tools_schemas.yaml`.
 * **Redaction**: a system prompt is rendered prose, so a key-name policy
@@ -1285,9 +1302,12 @@ layers.
   body (`grading.llm_judge.customization.system_prompt`). Tri-state: `null`
   when no judge ran, `false` when the judge used the default prompt, `true`
   when a custom prompt replaced the default body (the marker contract is always
-  appended regardless). The full custom text is not copied here — it lives in
-  `task.yaml.grading_config.llm_judge.customization`, one file over in the same
-  bundle. See [`docs/GRADING.md`](GRADING.md#customizing-the-judges-system-prompt).
+  appended regardless). The composed prompt itself is recorded in
+  [`prompts.yaml`](#trialstask_idtrial_indexpromptsyaml)'s `judge_prompt` key,
+  so a reviewer sees the exact text the judge ran under without opening
+  `task.yaml`. The bool remains a fast filter for analytics dashboards; the
+  string is the auditable evidence.
+  See [`docs/GRADING.md`](GRADING.md#customizing-the-judges-system-prompt).
 * `judge_agent_prompt_included` — whether the harness embedded the agent's policy /
   system prompt in the judge's opening-message evidence
   (`grading.llm_judge.customization.include_agent_system_prompt`). Tri-state: `null`
@@ -1500,17 +1520,29 @@ judge_model_source: override        # or "recorded"
 rubric_source: recorded             # or "override"
 knowledge_search_mode: recorded     # recorded | on | off
 knowledge_search_disabled: false
-custom_system_prompt: false         # whether a custom judge prompt was in effect
-custom_prompt_source: null          # "recorded" | "override" | null (default prompt)
+custom_system_prompt: false         # whether a legacy custom body fragment was in effect
+custom_prompt_source: null          # "recorded" | "override" | null (default prompt or bundle-recorded)
+judge_prompt_source: bundle         # "bundle" | null — bundle-recorded composed prompt path
 include_agent_system_prompt: true   # whether the agent policy was embedded in the judge's evidence
 agent_prompt_source: null           # "recorded" | "override" | null (defaulted to include)
 fidelity_mode: full                 # "full" (state_diff rebuilt) or "fallback" (old bundle, no state_diff)
 ```
 
+`judge_prompt_source` names how the judge's system prompt was resolved: `bundle`
+when replay used the composed prompt recorded in the bundle's
+[`prompts.yaml`](#trialstask_idtrial_indexpromptsyaml) `judge_prompt` key
+verbatim (no re-composition), or `null` when replay fell back to the legacy
+task.yaml / `--grading` customization path (which composes at run time). The
+two prompt sources are mutually exclusive: on a `bundle`-sourced trial
+`custom_system_prompt` is always `false` and `custom_prompt_source` is `null`;
+on a legacy-sourced trial `judge_prompt_source` is `null` and
+`custom_system_prompt` / `custom_prompt_source` name whether and where a body
+fragment was recorded (`recorded`) or supplied by override (`override`).
+
 `custom_system_prompt` / `custom_prompt_source` are resolved independently of the
-rubric: a `--grading` override replaces the prompt only when it carries its own
-`llm_judge.customization.system_prompt`, so a rubric-only override over a
-custom-prompted bundle reads `rubric_source: override` while
+rubric: a `--grading` override replaces the body fragment only when it carries
+its own `llm_judge.customization.system_prompt`, so a rubric-only override over a
+custom-prompted legacy bundle reads `rubric_source: override` while
 `custom_prompt_source: recorded`. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#custom-judge-system-prompt).
 
 `include_agent_system_prompt` / `agent_prompt_source` follow the same independent
@@ -1681,7 +1713,7 @@ evidence about us, and our own defects stay counted. See
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |
 | `task.yaml.user_actor` | — (struct-typed) | n/a | Mirrors `UserSimulatorConfig`; fields grow, removing one is a breaking change |
-| `prompts.yaml` | — | n/a | Two-key mapping; field names match the legacy `Trajectory.system_prompt` / `Trajectory.user_system_prompt` |
+| `prompts.yaml` | — | n/a | Three-key mapping: `system_prompt` (agent), `user_system_prompt` (user simulator), and `judge_prompt` (composed judge system prompt the trial's `LLMJudgeConfig` would have graded under) |
 | `tools_schemas.yaml` | — | n/a | Format is the litellm tool-schema dict list, post-`schema_sanitizer` |
 | `tool_log.yaml` | — (struct-typed) | n/a | Format is the `RecordedToolCall` list; its presence is stamped by `metrics.yaml`'s `schema_version` |
 | `metrics.yaml` (`redaction` block) | — (struct-typed) | n/a | Optional; mirrors `RedactionStamp`. Absent unless a redacting artifact-write policy wrote the bundle, so its introduction bumps no version — a reader that does not know the key sees the bundles it always saw |

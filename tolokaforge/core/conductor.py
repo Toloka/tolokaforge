@@ -33,6 +33,7 @@ from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.env_identity import describe_environment_identity
 from tolokaforge.core.env_state import EnvironmentState
+from tolokaforge.core.judge_prompt import effective_judge_system_prompt
 from tolokaforge.core.llm import LLMClient, UserSimulator, build_capabilities
 from tolokaforge.core.llm.presets import (
     resolve_effective_preset,
@@ -1054,14 +1055,20 @@ class InProcessConductor:
         )
         writer.write_tools_schemas(setup.trial_dir, sanitized)
 
-        # Persist the agent's effective (post-policy) system prompt and
-        # the user simulator's system prompt as ``prompts.yaml`` — kept
-        # separate from ``trajectory.yaml`` so the message trace stays
-        # easy to scan.
+        # Persist the agent's effective (post-policy) system prompt, the
+        # user simulator's system prompt, and the composed judge system
+        # prompt as ``prompts.yaml`` — kept separate from ``trajectory.yaml``
+        # so the message trace stays easy to scan. The judge prompt is derived
+        # from ``grading_config``, not from the judge itself, so an auto-fail
+        # trial that never invoked a judge still records the contract it
+        # would have graded under.
         writer.write_prompts(
             setup.trial_dir,
             agent_prompt=runner.effective_system_prompt,
             user_prompt=runner.user_system_prompt,
+            judge_prompt=effective_judge_system_prompt(
+                grading_config.llm_judge if grading_config else None
+            ),
         )
 
         # Same condition :meth:`_run_agent_loop` builds the simulator under: an

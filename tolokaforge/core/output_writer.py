@@ -207,12 +207,13 @@ class OutputWriter:
     def write_trajectory(self, trajectory: Trajectory):
         """Write trajectory.yaml — message trace + status + metrics only.
 
-        The agent's system prompt and user-simulator system prompt are
-        persisted separately as ``prompts.yaml`` (see
-        :meth:`FileArtifactWriter.write_prompts`); tool schemas live in
-        ``tools_schemas.yaml``. Keeping the trajectory lean means
-        analysts who scan the message trace don't have to scroll past
-        ~15-20 KB of system prompt text on every file open.
+        The agent's system prompt, the user-simulator prompt, and the
+        composed judge system prompt are persisted separately as
+        ``prompts.yaml`` (see :meth:`FileArtifactWriter.write_prompts`);
+        tool schemas live in ``tools_schemas.yaml``. Keeping the
+        trajectory lean means analysts who scan the message trace don't
+        have to scroll past ~15-20 KB of system prompt text on every
+        file open.
 
         ``simulator_schema_version`` stays here because it describes the
         *shape* of the message trace (when the simulator prompt was
