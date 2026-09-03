@@ -300,6 +300,9 @@ class _ScriptedClient:
 
         return classify_loop_error(exc, ())
 
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict] | None:
+        return None
+
 
 class _FakeDBServiceClient:
     """Deterministic DB stand-in that serves the pack's declared tables as

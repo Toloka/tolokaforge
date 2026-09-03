@@ -250,6 +250,9 @@ class _ScriptedClient:
 
         return classify_loop_error(exc, ())
 
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict] | None:
+        return None
+
 
 _JUDGE_MODEL = ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0)
 
@@ -634,6 +637,9 @@ class _RaisingClient:
         from tolokaforge.core.loop import classify_loop_error
 
         return classify_loop_error(exc, ())
+
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict] | None:
+        return None
 
 
 def _install_raising_client(monkeypatch: pytest.MonkeyPatch) -> None:

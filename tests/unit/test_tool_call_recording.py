@@ -178,9 +178,18 @@ class _CallIdWatchingExecutor(ToolExecutor):
         super().__init__(registry)
         self.call_ids: list[str] = []
 
-    def execute(self, tool_name: str, arguments: dict[str, Any], *, call_id: str) -> ToolResult:
+    def execute(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        call_id: str,
+        validation_schema: dict[str, Any] | None = None,
+    ) -> ToolResult:
         self.call_ids.append(call_id)
-        return super().execute(tool_name, arguments, call_id=call_id)
+        return super().execute(
+            tool_name, arguments, call_id=call_id, validation_schema=validation_schema
+        )
 
 
 class _ScriptedClient:
@@ -196,6 +205,13 @@ class _ScriptedClient:
 
     def classify_loop_error(self, exc: Exception) -> TerminationDecision:
         return classify_loop_error(exc, ())
+
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict] | None:
+        """Return ``None`` so the loop takes its no-override branch: arguments are
+        validated against each tool's own declared schema, which is what these
+        recording-shape tests fix as the reference behaviour.
+        """
+        return None
 
 
 class _CountingSink(MetricsSink):

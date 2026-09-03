@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file.
 ### Fix
 
 - **grading**: runner-side `compute_state_diff` reports an `order_mismatch` verdict on the same-set-different-order class, so `hash_score: 0.0` never sits beside a `state_diff` that reads as identical. `TableDiff` gains an additive `order_mismatch: bool = False` field (JSON-wire additive, older readers ignore the extra key); `StateDiff.identical` widens to include the flag (#1444).
+- **tools**: `ToolExecuting.execute` grows a keyword-only `validation_schema: dict[str, Any] | None = None` parameter — when supplied, `ToolExecutor.execute` validates arguments against it instead of the tool's own `get_schema()["function"]["parameters"]`. `ToolCallingLoop` gains a `validation_schemas_by_tool` field wired at both loop construction sites (agent runner + rubric judge) from `LLMClient.sanitize_tools_for_execution(tools)`, so the executor validates against the sanitized schema the model actually saw. Closes the `INVALID_ARGUMENTS`-misroute class where a Gemini-flattened `oneOf`+`discriminator` tool argument conformed to the model's shown surface but was rejected by the executor's validation against the original nested shape. `DockerRunnerAdapter.execute` names `validation_schema` explicitly and discards it; the runner-side gRPC path does no jsonschema validation (#976). General `**kwargs`-smuggling hazard tracked at #1474 (#1445).
 
 ## v0.22.2 (2026-09-02)
 

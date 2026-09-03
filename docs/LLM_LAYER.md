@@ -368,6 +368,18 @@ Three concrete sanitizers ship today:
   dict-map → array transform. See [`AGENTS.md`](../AGENTS.md) gotcha #21
   for the wire-level symptom.
 
+**Executor validates against the sanitized surface.** The parameters
+schema the model was shown for a tool is the schema
+[`ToolExecutor.execute`](../tolokaforge/tools/registry.py) validates the
+model's argument dict against — not the tool's original
+`get_schema()["function"]["parameters"]`. The seam is
+[`ToolCallingLoop.validation_schemas_by_tool`](../tolokaforge/core/loop.py),
+wired at construction from `LLMClient.sanitize_tools_for_execution(tools)`.
+This invariant applies wherever `ToolExecutor` runs (LLM-judge tool loop,
+harness CLI invocations that go through the loop, direct instantiations).
+The runner-side gRPC path does no jsonschema validation at all; closing
+that asymmetry is tracked at [#976](https://github.com/toloka/tolokaforge/issues/976).
+
 ### `StrictSchema` contract — preserve information by default, fail loudly on hazards
 
 The sanitiser is **position-aware**: it walks the JSON-Schema tree
