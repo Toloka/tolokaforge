@@ -156,10 +156,10 @@ def test_happy_path_rc_zero_with_reward_present() -> None:
 
 
 def test_rc_nonzero_with_reward_is_surfaced_by_reward_not_exit_code() -> None:
-    """Regression check: pre-move :meth:`_grade_via_test_execution` does NOT
-    gate on ``exit_code`` — a rc≠0 script that wrote a valid reward.txt is
-    still scored by the reward. The servicer must preserve this: ``exit_code``
-    rides on the wire but ``script_exec_error`` is empty."""
+    """The servicer does NOT gate on ``exit_code`` — a rc≠0 script that
+    wrote a valid reward.txt is still surfaced with the reward on the wire.
+    ``exit_code`` rides on the wire but ``script_exec_error`` is empty; the
+    kind consuming this result is responsible for scoring by the reward."""
     tool = _StubBashTool(
         responses=[
             (1, "FAIL: 1/42 tests"),
@@ -193,11 +193,10 @@ def test_tool_absent_is_first_class_outcome_not_rpc_error() -> None:
 
 def test_script_exec_exception_populates_error_field_without_grpc_internal() -> None:
     """A subprocess exception (TimeoutExpired, OSError, …) from the script
-    call populates ``script_exec_error``. Byte-parity target: pre-move
-    ``_grade_via_test_execution`` catches the exception and returns
-    ``success=True + Grade(0.0, "test.sh execution failed: {e}")``. Making
-    the RPC fail loud with INTERNAL would flip to ``success=False`` on the
-    wire — the servicer must NOT do that."""
+    call populates ``script_exec_error``. The RPC returns OK — a gRPC
+    ``INTERNAL`` status would flip the wire to ``success=False`` and lose
+    the observable grade outcome (``Grade(0.0, "test.sh execution failed:
+    {e}")``) the kind renders from this first-class field."""
     tool = _StubBashTool(
         responses=[
             subprocess.TimeoutExpired(cmd="bash test.sh", timeout=300.0),

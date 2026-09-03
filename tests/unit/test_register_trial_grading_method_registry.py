@@ -1,19 +1,19 @@
 """``RegisterTrial`` refuses an unregistered ``grading.grading_method``.
 
 The wire model accepts any string so a downstream adapter can register
-its own dispatch under ``tolokaforge.grading_methods`` without a
-framework PR (see ``tests/canonical/test_grading_methods_registry.py``).
-The safety net lives in ``RegisterTrial``: every value crossing the wire
-must resolve against the entry-point registry, and an unknown name is
-refused with a message naming both the offending key and the registered
-set — matching the fail-loud shape
-:func:`~tolokaforge.adapters.ensure_registered_adapter` sets for the
-adapter registry.
+its own dispatch under both ``tolokaforge.grading_methods`` and
+``tolokaforge.grader_kinds`` without a framework PR
+(see ``tests/canonical/test_grading_methods_registry.py`` +
+``tests/canonical/test_grader_kinds_registry.py``). The safety net lives
+in ``RegisterTrial``: every value crossing the wire must resolve against
+BOTH entry-point registries, and an unknown name — or one registered in
+only one of the two groups — is refused with a message naming both group
+names + the offending key + the union of registered names.
 
-The registered marker only asserts the name exists; runtime dispatch on
-:meth:`RunnerServiceImpl.GradeTrial` still branches on the wire string.
-An adapter that ships a marker but no matching branch would still hit
-the composite fold at grade time.
+Runtime dispatch on :meth:`RunnerServiceImpl.GradeTrial` routes every
+non-composite name through the typed ``GraderKind`` via
+:meth:`RunnerServiceImpl._dispatch_via_grader_kind`; composite (or
+``None``) stays on the runner-side fold.
 """
 
 from __future__ import annotations
@@ -96,3 +96,40 @@ def test_register_trial_accepts_none_grading_method(service: Any, mock_grpc_cont
     response = _register(service, mock_grpc_context, "none:0", _task(grading_method=None))
 
     assert response.success is True, response.error
+
+
+def test_register_trial_refuses_name_missing_from_grader_kinds_group(
+    service: Any, mock_grpc_context: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dual-lookup lock: a name registered in ``tolokaforge.grading_methods``
+    but MISSING from ``tolokaforge.grader_kinds`` fails at ``RegisterTrial``
+    with an error naming both group names + the union of registered names.
+    Exercises the D5 dual-registration invariant."""
+    from tolokaforge.core import plugin_registry as pr
+
+    original_discover = pr.discover_entry_points
+
+    def scoped_discover(group: str):
+        if group == pr.GRADER_KINDS_GROUP:
+            # Return a mapping missing 'test_execution' — simulates a
+            # downstream adapter that registered under grading_methods only.
+            return {
+                name: ep
+                for name, ep in original_discover(group).items()
+                if name != "test_execution"
+            }
+        return original_discover(group)
+
+    monkeypatch.setattr(pr, "_discovery_cache", {})
+    monkeypatch.setattr(pr, "discover_entry_points", scoped_discover)
+
+    response = _register(
+        service, mock_grpc_context, "dual_lookup:0", _task(grading_method="test_execution")
+    )
+
+    assert response.success is False
+    assert "test_execution" in response.error
+    assert "tolokaforge.grading_methods" in response.error
+    assert "tolokaforge.grader_kinds" in response.error
+    # Union of registered names still names 'composite' (present in both groups).
+    assert "composite" in response.error

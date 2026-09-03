@@ -2,8 +2,8 @@
 
 Reads the pack's reference test suite through
 :meth:`~tolokaforge.core.grading.substrate.GradingSubstrate.run_test_suite`,
-parses the reward file, and produces a :class:`Grade` matching the
-runner-side pre-move behaviour byte-for-byte across every outcome:
+parses the reward file, and produces a :class:`Grade` across three outcome
+shapes:
 
 - **Successful run (rc=0 OR rc≠0)** — the reward is parsed from
   ``result.reward_bytes`` (last line, ``float(...)``, clamped ``[0.0, 1.0]``,
@@ -12,19 +12,17 @@ runner-side pre-move behaviour byte-for-byte across every outcome:
   wrote a valid reward is scored by the reward.
 - **Script exec error** — the substrate's ``script_exec_error`` field is
   populated (subprocess timeout, OSError, ...); the kind returns
-  ``Grade(score=0.0, reasons=f"test.sh execution failed: {msg}")``, the
-  pre-move at :meth:`RunnerServiceImpl._grade_via_test_execution` shape.
+  ``Grade(score=0.0, reasons=f"test.sh execution failed: {msg}")``.
 - **Tool absent** — the substrate's ``tool_absent`` flag is set (the
   adapter shipped no exec-capable lifecycle tool); the kind raises
   :class:`GraderKindRefusedError` with the substrate's actionable message.
-  The dispatcher maps this to ``GradeTrialResponse(success=False,
-  error=exc.reason)``, byte-identical to pre-move.
+  The runner's dispatcher maps this to ``GradeTrialResponse(success=False,
+  error=exc.reason)``.
 
 Per-task configuration rides ``kind_config`` — validated into
-:class:`TestExecutionKindConfig` (``extra="forbid"``). Defaults preserve
-the pre-move paths (``/tests/test.sh`` script, ``/logs/verifier/reward.txt``
-reward, 300s script timeout, 10s reward-cat timeout, 2000-char output
-truncation).
+:class:`TestExecutionKindConfig` (``extra="forbid"``). Defaults are
+``/tests/test.sh`` (script), ``/logs/verifier/reward.txt`` (reward), 300s
+script timeout, 10s reward-cat timeout, 2000-char output truncation.
 """
 
 from __future__ import annotations

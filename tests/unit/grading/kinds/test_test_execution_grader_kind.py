@@ -1,14 +1,12 @@
-"""``TestExecutionGraderKind`` — outcome-cell byte-parity with the pre-move dispatch.
+"""``TestExecutionGraderKind`` — outcome-cell coverage.
 
-Locks every observable outcome cell of the reference-suite kind against
-the runner-side pre-move :meth:`RunnerServiceImpl._grade_via_test_execution`
-behaviour at ``tolokaforge/runner/service.py:2727-2808``:
+Locks every observable outcome cell of the reference-suite kind:
 
 - **Happy** (rc=0, reward parseable) → ``Grade(binary_pass, score=reward)``
   with the ``"test-execution reward: {r:.4f}\\n\\ntest output (truncated):\\n{out}"``
-  reasons format byte-identical to pre-move.
-- **rc≠0 + reward present** (regression check for r0's ``exit_code``
-  gate — pre-move never inspects returncode) → scored by reward.
+  reasons format.
+- **rc≠0 + reward present** → scored by reward. The kind does NOT gate on
+  ``exit_code``.
 - **Reward absent** — the servicer's shell fallback produces ``b"0.0\\n"``;
   the kind uses the same "test-execution reward" reasons format (NOT
   "execution failed").
@@ -18,9 +16,8 @@ behaviour at ``tolokaforge/runner/service.py:2727-2808``:
 - **Tool absent** — the substrate reports ``tool_absent=True``; the kind
   raises :class:`GraderKindRefusedError` with the substrate's message.
 - **Script exec error** — the substrate reports ``script_exec_error``;
-  the kind returns
-  ``Grade(score=0.0, reasons="test.sh execution failed: {msg}")``
-  byte-identical to pre-move at ``service.py:2777``.
+  the kind returns ``Grade(score=0.0, reasons="test.sh execution failed:
+  {msg}")``.
 - **``kind_config`` validation** — override reaches the substrate;
   ``extra="forbid"`` refuses unknown keys with ``ValidationError``.
 """
@@ -103,7 +100,7 @@ def _evaluate(
     )
 
 
-def test_happy_path_rc_zero_with_reward_parses_and_matches_pre_move_reasons() -> None:
+def test_happy_path_rc_zero_with_reward_parses_and_matches_reasons_format() -> None:
     substrate = _ScriptedSubstrate(
         _result(exit_code=0, reward_bytes=b"0.85\n", stdout="PASS: 42/42 tests"),
     )
@@ -119,10 +116,9 @@ def test_happy_path_rc_zero_with_reward_parses_and_matches_pre_move_reasons() ->
 
 
 def test_rc_nonzero_with_reward_is_scored_by_reward_not_exit_code() -> None:
-    """Regression lock — pre-move ``_grade_via_test_execution`` at
-    ``service.py:2758-2808`` never inspects ``returncode``. A ``rc≠0``
-    script that wrote a valid reward.txt is scored by the reward. This
-    test WOULD fail on an implementation that gated on ``exit_code``."""
+    """The kind must not gate on ``returncode``. A ``rc≠0`` script that
+    wrote a valid reward.txt is scored by the reward. This test WOULD
+    fail on an implementation that gated on ``exit_code``."""
     substrate = _ScriptedSubstrate(
         _result(exit_code=1, reward_bytes=b"0.7\n", stdout="FAIL: 1/42 tests"),
     )
@@ -185,10 +181,10 @@ def test_tool_absent_raises_grader_kind_refused_with_reason() -> None:
     assert exc_info.value.reason == reason
 
 
-def test_script_exec_error_returns_grade_with_pre_move_reasons_format() -> None:
-    """Byte-parity with pre-move at ``service.py:2777``:
-    ``Grade(0.0, "test.sh execution failed: {e}")``. The reasons string
-    is exactly this format — NOT the "test-execution reward" one."""
+def test_script_exec_error_returns_grade_with_execution_failed_reasons() -> None:
+    """A populated ``script_exec_error`` on the substrate result renders
+    exactly ``Grade(0.0, "test.sh execution failed: {msg}")`` — NOT the
+    "test-execution reward" reasons format."""
     substrate = _ScriptedSubstrate(
         _result(script_exec_error="TimeoutExpired: Command timed out after 300s"),
     )
@@ -226,7 +222,7 @@ def test_kind_config_overrides_reach_substrate_and_extra_keys_are_refused() -> N
         _evaluate(_ScriptedSubstrate(_result()), kind_config={"unknown_key": "x"})
 
 
-def test_kind_config_defaults_preserve_pre_move_paths() -> None:
+def test_kind_config_defaults_map_to_standard_verifier_paths() -> None:
     substrate = _ScriptedSubstrate(_result(reward_bytes=b"0.5\n"))
     _evaluate(substrate, kind_config=None)
     assert substrate.calls[-1] == {
