@@ -571,9 +571,9 @@ uv add tolokaforge[bundle-store-s3]
 1. Composes bundle inputs via `RuntimeBackend.build_grade_bundle(trial_id, *, out_dir)` — the backend reads state / filesystem / trajectory / grading config through its `LiveRunnerCallbackGradingSubstrate` and calls `serialize_grade_bundle(...)`.
 2. Walks the produced bundle's on-disk size.
 3. Either stores it (`BundleStore.put(bundle_dir) -> "bundle://<store>/<sha256(manifest.json)>"`) or discards it (over the `max_bundle_mb` cap).
-4. Records the outcome on `Trajectory.snapshot_status` (see below).
+4. Records the outcome on `Trajectory.snapshot_status` — persisted to `trials/<task_id>/<trial>/trajectory.yaml` under the `snapshot_status:` key by `FileArtifactWriter.write_trajectory` in the same write that lands the message trace (see below).
 
-The result lives on the trial's trajectory:
+The result lives on the trial's trajectory (as it appears on `trajectory.yaml`):
 
 ```yaml
 snapshot_status:

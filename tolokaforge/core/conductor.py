@@ -1033,10 +1033,13 @@ class InProcessConductor:
         """Trial-end snapshot producer seam. No-op unless ``grader.snapshot.enabled``.
 
         Runs after :meth:`_grade` populated ``trajectory.grade`` and before
-        :meth:`_write_artifacts` serialises the trajectory to disk, so
-        ``trajectory.snapshot_status`` lands on the artifact bundle. Every
-        snapshot-mode failure — store construction, ``remember_trial_inputs``,
-        ``build_grade_bundle``, size walk, ``store.put`` — records
+        :meth:`_write_artifacts` serialises the trajectory to disk, so the
+        assignment to ``trajectory.snapshot_status`` here rides the same
+        write as the message trace: :meth:`FileArtifactWriter.write_trajectory`
+        persists it under the ``snapshot_status:`` key on
+        ``trajectory.yaml``. Every snapshot-mode failure — store
+        construction, ``remember_trial_inputs``, ``build_grade_bundle``,
+        size walk, ``store.put`` — records
         :attr:`SnapshotOutcome.PRODUCE_FAILED` on the trajectory and the
         trial continues its normal completion path. Only unrecoverable
         tempfile lifecycle errors from

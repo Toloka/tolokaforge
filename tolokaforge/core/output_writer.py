@@ -222,6 +222,15 @@ class OutputWriter:
         ``grade.yaml`` because grading refused, so it lives in the bundle
         rather than only in the run's logs.
 
+        ``snapshot_status`` is the trial-end grade-bundle producer
+        outcome (see :class:`~tolokaforge.core.models.trajectory.SnapshotStatus`).
+        It rides on this file so a completed run's trial subtree carries
+        the URI + outcome of every stored bundle alongside the trial's
+        own artifacts — the on-disk channel batch consumers (e.g.
+        ``tolokaforge grade-run``) walk to discover regradeable trials.
+        ``null`` for a run that did not enable ``grader.snapshot`` or for
+        a trial that ended before grading.
+
         Args:
             trajectory: Trajectory object containing messages and metadata
         """
@@ -237,6 +246,11 @@ class OutputWriter:
             ),
             "provision_stage": trajectory.provision_stage,
             "grading_error": trajectory.grading_error,
+            "snapshot_status": (
+                trajectory.snapshot_status.model_dump(mode="json")
+                if trajectory.snapshot_status is not None
+                else None
+            ),
             "first_user_message_source": (
                 trajectory.first_user_message_source.value
                 if trajectory.first_user_message_source
