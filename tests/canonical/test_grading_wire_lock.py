@@ -208,10 +208,10 @@ predicate leaves: both readers would step over neither, agree on a short count, 
 
 # Every pack under the native example corpus that grades through the native adapter's
 # grading contract, all of which build. Pinned so a pack dropping out of the corpus
-# fails rather than silently shrinking the walk over it. ``coding_harness`` is a
-# harness pack graded by its trial verifier — it ships no ``project.yaml`` and no
-# grading source, so the census below cannot address it and this walk skips it.
-_NATIVE_PACK_COUNT = 29
+# fails rather than silently shrinking the walk over it. ``coding_harness`` ships
+# a placeholder ``grading.yaml`` — its trial verifier overrides at run time, but the
+# static file exists so the standard pre-run gate accepts it and this walk counts it.
+_NATIVE_PACK_COUNT = 30
 
 
 class _Direction(str, Enum):

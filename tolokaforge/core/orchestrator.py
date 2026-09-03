@@ -2148,10 +2148,20 @@ class Orchestrator:
         otherwise finds out while the trial's artifacts are written, with every
         token already spent.
         """
-        adapter_type = self._task_description(task.task_id).adapter_type
+        description = self._task_description(task.task_id)
+        adapter_type = description.adapter_type
         task_dir = self.adapter.get_task_dir(task.task_id)
         source = grading_source_under_adapter(task, task_dir, adapter_type)
         if source.kind is GradingSourceKind.WITHHELD:
+            # A driver that overrode the description's grading owns the
+            # verdict without reading the pack's grading source — a
+            # coding-harness ``test_execution`` grade comes from the
+            # verifier the trial writes, not from a ``grading.yaml`` on
+            # disk. If the DECORATED description carries a fully-formed
+            # grading config, the pre-run source-file check has nothing
+            # to say.
+            if description.grading is not None:
+                return None
             return f"* {task.task_id} — {source.reason}"
         if source.path is None:
             self._warn_grading_unchecked(task.task_id, "grading", source.reason)

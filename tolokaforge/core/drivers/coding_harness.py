@@ -667,13 +667,18 @@ class CodingHarnessDriver:
             layered_image=layered_image,
         )
         staged.compose_file.write_text(yaml.safe_dump(doc, sort_keys=False))
-        return StagedTaskLayers(
-            stack_requirements=[
+        stack_requirements: list[ComposeImageBuild] = []
+        if staged.base_build_service:
+            stack_requirements.append(
                 ComposeImageBuild(
                     compose_file=staged.compose_file, service=staged.base_build_service
-                ),
-                ComposeImageBuild(compose_file=staged.compose_file, service=staged.agent_service),
-            ],
+                )
+            )
+        stack_requirements.append(
+            ComposeImageBuild(compose_file=staged.compose_file, service=staged.agent_service)
+        )
+        return StagedTaskLayers(
+            stack_requirements=stack_requirements,
             provider_env_snapshot=dict(self.container_env),
         )
 
@@ -736,11 +741,16 @@ class CodingHarnessDriver:
         # baked into the Dockerfile by ``_write_install_dockerfile``). The
         # adapter picks the tag; the driver honours it — the two sides must
         # not derive it independently or the harness layer refuses to pull.
-        services[base_build_service] = {
-            "image": base_image,
-            "build": deepcopy(task_build),
-            "profiles": [_HARNESS_BUILD_PROFILE],
-        }
+        # Skipped when the staged environment declares no base_build_service
+        # (empty string): the tbench adapter's compose synthesis emits the
+        # base service into its two-stack plan directly and the pack's own
+        # build stage is already tagged under that route.
+        if base_build_service:
+            services[base_build_service] = {
+                "image": base_image,
+                "build": deepcopy(task_build),
+                "profiles": [_HARNESS_BUILD_PROFILE],
+            }
         services[RUNNER_SERVICE] = _runner_service_body(_DEFAULT_RUNNER_IMAGE)
         services[DB_SERVICE] = _db_service_body(_DEFAULT_DB_SERVICE_IMAGE)
         if self._gateway_handle is not None:

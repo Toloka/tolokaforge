@@ -276,6 +276,29 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
         self._environments[task_id] = env
         return env
 
+    def stage_task(self, task_id: str) -> "StagedTask | None":
+        """Hand a coding-harness driver the per-task staging root it layers onto.
+
+        Terminal-bench tasks always ship a compose file, so this never
+        returns ``None`` — every task stages. Under engine-loop mode
+        (no ``coding_harness`` on the run config) the driver never calls
+        this method, so the extra materialisation is only paid on the
+        harness path.
+        """
+        from tolokaforge.core.agent_driver import StagedTask
+
+        self._ensure_discovered()
+        env = self._environment(task_id)
+        return StagedTask(
+            task_id=task_id,
+            staging_dir=env.staging_dir,
+            compose_file=env.compose_file,
+            agent_service=env.agent_service,
+            base_image=f"tbench-{task_id}:{self.image_tag}",
+            base_build_service=env.base_build_service or "",
+            compose_project_prefix=PROJECT_PREFIX,
+        )
+
     # -- Docker stack requirements -------------------------------------------
 
     def docker_stack_requirements(self) -> DockerStackRequirements:
