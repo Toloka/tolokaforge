@@ -1,14 +1,17 @@
-"""Guard the "one fold definition, two dispatchers" invariant.
+"""Guard the "one fold definition, three sanctioned callers" invariant.
 
 Both the runner-side ``_grade_trial_async`` and the grader-side
 ``_run_composite`` reduce their component scores through
 :class:`~tolokaforge.core.grading.composite_fold.CompositeFold` — one class,
-one ``finalise`` method, and exactly two callers. A third caller of
+one ``finalise`` method. The composite grader-kind
+(:class:`tolokaforge.core.grading.kinds.composite.CompositeGraderKind`) is
+a third sanctioned caller — a topology-neutral fold wrapper that
+composite substrate reads can dispatch through. A fourth caller of
 ``finalise(``, or direct dispatcher calls to the two symbols
 ``finalise`` wraps, would silently re-collapse the seam.
 
 Text-level assertions rather than an AST pass — the goal is to catch a
-copy-paste of the fold into a third dispatcher, not to prove semantic
+copy-paste of the fold into an unsanctioned caller, not to prove semantic
 equivalence, and a text sweep is what a reviewer would run.
 """
 
@@ -26,6 +29,7 @@ _PACKAGE_ROOT = _REPO_ROOT / "tolokaforge"
 _FOLD_MODULE = _PACKAGE_ROOT / "core" / "grading" / "composite_fold.py"
 _RUNNER_SITE = _PACKAGE_ROOT / "runner" / "service.py"
 _GRADER_SITE = _PACKAGE_ROOT / "grader" / "composite_dispatch.py"
+_KIND_SITE = _PACKAGE_ROOT / "core" / "grading" / "kinds" / "composite.py"
 
 
 def _iter_package_python_files() -> list[Path]:
@@ -46,17 +50,18 @@ def test_composite_fold_class_is_defined_exactly_once_in_the_pure_module() -> No
     )
 
 
-def test_finalise_has_exactly_two_call_sites_outside_the_fold_module() -> None:
-    """One call site in the runner service, one in the grader dispatch — no other."""
+def test_finalise_has_exactly_three_call_sites_outside_the_fold_module() -> None:
+    """One call site each in the runner service, the grader dispatch, and the composite kind — no other."""
     call_pattern = re.compile(r"CompositeFold\.finalise\(")
     call_sites = [
         path
         for path in _iter_package_python_files()
         if path != _FOLD_MODULE and call_pattern.search(path.read_text(encoding="utf-8"))
     ]
-    assert sorted(call_sites) == sorted([_RUNNER_SITE, _GRADER_SITE]), (
-        f"Expected exactly two callers of CompositeFold.finalise( "
-        f"({_RUNNER_SITE.relative_to(_REPO_ROOT)}, {_GRADER_SITE.relative_to(_REPO_ROOT)}); "
+    expected = sorted([_RUNNER_SITE, _GRADER_SITE, _KIND_SITE])
+    assert sorted(call_sites) == expected, (
+        f"Expected exactly three callers of CompositeFold.finalise( "
+        f"({[p.relative_to(_REPO_ROOT) for p in expected]}); "
         f"found: {[p.relative_to(_REPO_ROOT) for p in call_sites]}"
     )
 
