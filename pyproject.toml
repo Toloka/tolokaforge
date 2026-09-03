@@ -228,6 +228,16 @@ conversational = "tolokaforge.core.actors.turn_policy:_conversational_policy_fac
 composite = "tolokaforge.core.grading.grading_method:CompositeGradingMethod"
 test_execution = "tolokaforge.core.grading.grading_method:TestExecutionGradingMethod"
 
+# Typed grader-kind Protocol registry. Every entry resolves to a class with a
+# kwargs-only ``evaluate(*, substrate, task_config, kind_config, trial_id,
+# agent_tools, logger) -> Grade | None``. Shares vocabulary with
+# ``tolokaforge.grading_methods`` (each shipped name registers in both groups);
+# a canonical test locks the shared name set. See
+# :mod:`tolokaforge.core.grading.kinds`.
+[project.entry-points."tolokaforge.grader_kinds"]
+composite = "tolokaforge.core.grading.kinds.composite:CompositeGraderKind"
+test_execution = "tolokaforge.core.grading.kinds.test_execution:TestExecutionGraderKind"
+
 # ADR-0040 § "The single design abstraction" — GradingSubstrate implementations
 # resolvable by name. Three implementations ship today (``in_process`` +
 # ``live_callback`` + ``snapshot``); ``trajectory_storage`` / ``shared_mount``

@@ -28,9 +28,11 @@ from tolokaforge.core.grading.grading_method import (
     CompositeGradingMethod,
     TestExecutionGradingMethod,
 )
+from tolokaforge.core.grading.kinds import CompositeGraderKind, TestExecutionGraderKind
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.plugin_registry import (
     BUNDLE_STORES_GROUP,
+    GRADER_KINDS_GROUP,
     GRADING_METHODS_GROUP,
     RUNTIME_BACKENDS_GROUP,
     SERVICE_READINESS_PROBES_GROUP,
@@ -40,6 +42,7 @@ from tolokaforge.core.plugin_registry import (
     TurnPolicyContext,
     available_bundle_stores,
     available_conductors,
+    available_grader_kinds,
     available_grading_methods,
     available_readiness_probes,
     available_runtime_backends,
@@ -47,6 +50,7 @@ from tolokaforge.core.plugin_registry import (
     available_turn_policies,
     load_bundle_store,
     load_conductor,
+    load_grader_kind,
     load_grading_method,
     load_readiness_probe,
     load_runtime_backend,
@@ -173,6 +177,19 @@ def test_grading_method_names_resolve_to_their_marker(name: str, expected_cls: t
 @pytest.mark.parametrize(
     ("name", "expected_cls"),
     [
+        ("composite", CompositeGraderKind),
+        ("test_execution", TestExecutionGraderKind),
+    ],
+)
+def test_grader_kind_names_resolve_to_their_class(name: str, expected_cls: type) -> None:
+    kind_cls = load_grader_kind(name)
+    assert kind_cls is expected_cls
+    assert name == kind_cls.NAME
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_cls"),
+    [
         ("local_disk", LocalDiskBundleStore),
         ("s3", S3BundleStore),
     ],
@@ -188,6 +205,7 @@ def test_available_listings_match_the_builtin_set() -> None:
     assert available_readiness_probes() == ["grpc", "http", "tcp"]
     assert available_turn_policies() == ["agent_only", "conversational"]
     assert available_grading_methods() == ["composite", "test_execution"]
+    assert available_grader_kinds() == ["composite", "test_execution"]
     assert available_bundle_stores() == ["local_disk", "s3"]
 
 
@@ -210,6 +228,11 @@ def test_raw_entry_point_probe_lists_turn_policies() -> None:
 
 def test_raw_entry_point_probe_lists_grading_methods() -> None:
     names = sorted(ep.name for ep in importlib.metadata.entry_points(group=GRADING_METHODS_GROUP))
+    assert names == ["composite", "test_execution"]
+
+
+def test_raw_entry_point_probe_lists_grader_kinds() -> None:
+    names = sorted(ep.name for ep in importlib.metadata.entry_points(group=GRADER_KINDS_GROUP))
     assert names == ["composite", "test_execution"]
 
 
