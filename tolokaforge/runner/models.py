@@ -3432,11 +3432,19 @@ class HealthCheckResponse(BaseModel):
 
 
 class TableDiff(BaseModel):
-    """Diff for a single table."""
+    """Diff for a single table.
+
+    ``order_mismatch`` fires exclusively on the same-set-different-order class:
+    the ordered ``record_to_tuple`` sequences differ while ``missing`` / ``extra``
+    / ``different`` are all empty. It stays ``False`` whenever any set-diff list
+    is non-empty, so the summary vocabulary is finite — a table is absent, in
+    wrong order, or set-different, never a combination.
+    """
 
     missing: list[dict[str, Any]] = Field(default_factory=list)
     extra: list[dict[str, Any]] = Field(default_factory=list)
     different: list[dict[str, Any]] = Field(default_factory=list)
+    order_mismatch: bool = False
 
     model_config = {"extra": "forbid"}
 
@@ -3453,7 +3461,12 @@ class StateDiff(BaseModel):
     def identical(self) -> bool:
         """Check if states are identical (no differences)."""
         for table_diff in self.tables.values():
-            if table_diff.missing or table_diff.extra or table_diff.different:
+            if (
+                table_diff.missing
+                or table_diff.extra
+                or table_diff.different
+                or table_diff.order_mismatch
+            ):
                 return False
         return True
 
