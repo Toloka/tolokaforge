@@ -79,9 +79,20 @@ def _grading_config(customization: JudgeCustomization | None) -> GradingConfig:
     )
 
 
-def _write_prompts_yaml(tmp_path: Path, customization: JudgeCustomization | None) -> dict:
+def _write_prompts_yaml(
+    tmp_path: Path,
+    customization: JudgeCustomization | None,
+    *,
+    status: TrialStatus = TrialStatus.COMPLETED,
+) -> dict:
     """Drive ``_write_artifacts`` end-to-end for one synthetic trial whose task
-    carries an ``LLMJudgeConfig``; return the loaded ``prompts.yaml``."""
+    carries an ``LLMJudgeConfig``; return the loaded ``prompts.yaml``.
+
+    ``status`` selects the trajectory's terminal state — ``COMPLETED`` for the
+    graded happy path, ``ERROR`` for the auto-fail short-circuit that never
+    invoked a judge. ``_write_artifacts`` derives the judge prompt from
+    ``grading_config`` regardless of status; the same bundle shape reaches
+    disk on both paths."""
     conductor = make_conductor(make_run_config(tmp_path / "results"), tmp_path, MagicMock())
     conductor.adapter.get_grading_config.return_value = _grading_config(customization)
 
@@ -93,7 +104,7 @@ def _write_prompts_yaml(tmp_path: Path, customization: JudgeCustomization | None
         trial_index=0,
         start_ts=now,
         end_ts=now,
-        status=TrialStatus.COMPLETED,
+        status=status,
         messages=[],
         metrics=Metrics(),
     )
@@ -142,3 +153,19 @@ def test_prompts_yaml_records_a_customized_judge_prompt_verbatim_with_the_marker
     assert data["judge_prompt"].startswith(body)
     assert data["judge_prompt"].endswith(_JUDGE_MARKER_CONTRACT)
     assert data["judge_prompt"] == _compose_judge_system_prompt(body)
+
+
+def test_prompts_yaml_records_the_judge_prompt_on_an_auto_fail_trial_that_never_invoked_the_judge(
+    tmp_path: Path,
+) -> None:
+    """An auto-fail trial (``TrialStatus.ERROR`` — the runner short-circuited
+    before grading, so the judge was never called) still records the composed
+    judge contract when the task carries an ``llm_judge`` block.
+
+    ``_write_artifacts`` derives the effective prompt from ``grading_config``,
+    not from the judge itself, so the bundle shape stays consistent across
+    every trial of a run: a rejudge once the underlying auto-fail cause is
+    fixed has the recorded contract to reconstruct against."""
+    data = _write_prompts_yaml(tmp_path, customization=None, status=TrialStatus.ERROR)
+
+    assert data["judge_prompt"] == _JUDGE_SYSTEM_PROMPT

@@ -17,7 +17,7 @@ for the per-trial YAML files that make up a trial bundle:
   under a redacting policy — the stamp in ``metrics.yaml`` names which)
 * ``logs.yaml`` — structured trial logs
 * ``tools_schemas.yaml`` — post-policy tool list, what the provider saw
-* ``prompts.yaml`` — per-trial agent + user-simulator system prompts
+* ``prompts.yaml`` — per-trial agent + user-simulator + judge system prompts
 
 Every mapping-shaped artifact — the task snapshot, the tool-call arguments in the
 message trace and in the record, the env snapshot, each tool schema, the verdict's
@@ -319,16 +319,22 @@ class TrialArtifactWriter(Protocol):
         trial_dir: Path,
         agent_prompt: str | None,
         user_prompt: str | None,
+        judge_prompt: str | None = None,
     ) -> None:
         """Write ``trial_dir/prompts.yaml`` from the per-trial system prompts.
 
-        Pulls the agent's effective system prompt (post-prompt-policy
-        enrichment) and the user simulator's system prompt out of
-        ``trajectory.yaml`` so the trajectory carries only the message
-        trace + status + metrics. Field names match the historical
-        ``Trajectory.system_prompt`` / ``Trajectory.user_system_prompt``
-        keys so analytics tools that already read those names keep
-        working — only the file moved.
+        Persists three top-level string-or-null keys — the agent's effective
+        system prompt (post-prompt-policy enrichment), the user simulator's, and
+        the composed judge system prompt the trial's ``LLMJudgeConfig`` would
+        have graded under (body + marker contract; see
+        :func:`tolokaforge.core.grading.judge.effective_judge_system_prompt`).
+        The agent and user keys mirror the historical
+        ``Trajectory.system_prompt`` / ``Trajectory.user_system_prompt`` so
+        analytics tools that read those names keep working.
+
+        Every key is always present; ``None`` means *the trial had no such
+        prompt* (no agent policy, scripted user simulator, no LLM judge
+        configured) — distinct from *the file was not written*.
         """
         ...
 
@@ -439,20 +445,28 @@ class FileArtifactWriter:
         trial_dir: Path,
         agent_prompt: str | None,
         user_prompt: str | None,
+        judge_prompt: str | None = None,
     ) -> None:
         """Write ``trial_dir/prompts.yaml`` from the per-trial prompts.
 
         ``trajectory.yaml`` carries only the message trace + status +
         metrics; the much larger system prompts (often 15–20 KB on
-        domain-rich evals) live here instead. Field names mirror the
-        historical ``Trajectory.system_prompt`` / ``Trajectory.user_system_prompt``
-        so external readers don't have to learn new names — the file
-        moved, the keys did not.
+        domain-rich evals) live here instead. Three top-level keys:
 
-        Both arguments may be ``None`` (no agent system prompt set, or
-        scripted user simulator with no LLM-shaped prompt). The keys are
-        always present so consumers can distinguish *absent* (``None``)
-        from *missing field* (file not yet written).
+        * ``system_prompt`` — the agent's effective (post-policy) prompt.
+        * ``user_system_prompt`` — the user simulator's prompt.
+        * ``judge_prompt`` — the composed judge system prompt (body + marker
+          contract) the trial's ``LLMJudgeConfig`` would have graded under,
+          from :func:`tolokaforge.core.grading.judge.effective_judge_system_prompt`.
+
+        The first two names mirror the historical ``Trajectory.system_prompt`` /
+        ``Trajectory.user_system_prompt`` so external readers don't have to
+        learn new names.
+
+        Every argument may be ``None`` (no agent policy, scripted user
+        simulator, no LLM judge configured for this trial). All three keys are
+        always present so consumers distinguish *absent* (``None``) from
+        *missing field* (file not yet written).
         """
         trial_dir = Path(trial_dir)
         trial_dir.mkdir(parents=True, exist_ok=True)
@@ -460,6 +474,7 @@ class FileArtifactWriter:
         payload = {
             "system_prompt": agent_prompt,
             "user_system_prompt": user_prompt,
+            "judge_prompt": judge_prompt,
         }
         with open(target, "w", encoding="utf-8") as f:
             yaml.safe_dump(
@@ -570,10 +585,12 @@ class InMemoryArtifactWriter:
         trial_dir: Path,
         agent_prompt: str | None,
         user_prompt: str | None,
+        judge_prompt: str | None = None,
     ) -> None:
         self._bundle(trial_dir).prompts = {
             "system_prompt": agent_prompt,
             "user_system_prompt": user_prompt,
+            "judge_prompt": judge_prompt,
         }
 
     # ------------------------------------------------------------------

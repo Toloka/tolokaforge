@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Feat
+
+- **grading**: trial bundle records the effective judge system prompt verbatim. `trials/{task_id}/{trial_index}/prompts.yaml` grows a third top-level key `judge_prompt: str | None` alongside the existing `system_prompt` and `user_system_prompt`, populated from `_compose_judge_system_prompt(customization.system_prompt)` for the trial's effective `LLMJudgeConfig` (or `null` when no LLM judge is configured). Analysts see the exact contract the judge would have graded under without trusting the current engine constant, and a rejudge can reconstruct against the recorded string. Auto-fail trials record the contract they would have graded under, so bundle shape stays consistent across every trial of a run. Migration: additive-with-default — the new key is always present in bundles this version and later write; older readers ignore unknown top-level YAML keys, so no reader-side break is possible. New public helper `tolokaforge.core.grading.judge.effective_judge_system_prompt(llm_judge_config)` exports the derivation for external tools (#1446).
+
 ### Fix
 
 - **grading**: runner-side `compute_state_diff` reports an `order_mismatch` verdict on the same-set-different-order class, so `hash_score: 0.0` never sits beside a `state_diff` that reads as identical. `TableDiff` gains an additive `order_mismatch: bool = False` field (JSON-wire additive, older readers ignore the extra key); `StateDiff.identical` widens to include the flag (#1444).
