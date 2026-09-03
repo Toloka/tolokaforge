@@ -6,13 +6,8 @@ model-emitted arguments) pair,
 accepts ``args`` iff ``args`` conforms to ``S``, where ``S`` is the parameters
 schema the model was shown for that tool (the output of
 ``capabilities.schema_sanitizer.sanitize(tools)``). When ``validation_schema``
-is omitted the executor keeps its current behaviour: validate against
+is omitted or ``None``, the executor validates against
 ``tool.get_schema()["function"]["parameters"]``.
-
-Cases 4a and 5a intentionally exercise the new ``validation_schema`` kwarg
-that Stage 2 lands. Until then they fail with
-``TypeError: unexpected keyword argument 'validation_schema'`` — the "red
-before green" side of the contract.
 """
 
 from __future__ import annotations
@@ -187,8 +182,6 @@ def test_case_4a_gemini_flatten_case_b_stray_sibling_with_override() -> None:
     """Case 4a (Case B with override): ticket branch plus a stray ``task_id``
     conforms to the sanitised surface (both siblings are unioned into one
     object schema). With override → SUCCESS.
-
-    Red until Stage 2 lands ``validation_schema=`` on ``ToolExecuting.execute``.
     """
     executor, sanitised_params = _make_oneof_executor()
 
@@ -212,8 +205,8 @@ def test_case_4a_gemini_flatten_case_b_stray_sibling_with_override() -> None:
 
 def test_case_4b_gemini_flatten_case_b_without_override_still_rejects() -> None:
     """Case 4b (Case B without override): the original nested oneOf schema
-    still rejects the flat args with the current stray-sibling failure. Locks
-    that the old-behaviour side of the contract survives Stage 2.
+    rejects the flat args on the stray sibling — the fallback path (no
+    override) validates against the tool's declared schema.
     """
     executor, _ = _make_oneof_executor()
 
@@ -239,8 +232,6 @@ def test_case_5a_gemini_flatten_case_c_branch_required_missing_with_override() -
     field, no branch-specific required. Conforms to the sanitised surface
     (which reduces ``required`` to the discriminator intersection). With
     override → SUCCESS.
-
-    Red until Stage 2 lands ``validation_schema=`` on ``ToolExecuting.execute``.
     """
     executor, sanitised_params = _make_oneof_executor()
 
@@ -257,7 +248,8 @@ def test_case_5a_gemini_flatten_case_c_branch_required_missing_with_override() -
 
 def test_case_5b_gemini_flatten_case_c_without_override_still_rejects() -> None:
     """Case 5b (Case C without override): the original nested oneOf schema
-    still rejects the args on branch-required. Locks the old-behaviour side.
+    rejects the args on branch-required — the fallback path validates against
+    the tool's declared schema.
     """
     executor, _ = _make_oneof_executor()
 
@@ -283,6 +275,44 @@ def test_case_6_sanitized_schema_still_enforces_its_own_invariants() -> None:
         {"item": {"kind": "other"}},
         call_id="c6",
         validation_schema=sanitised_params,
+    )
+
+    assert result.success is False
+    assert result.status is ToolExecutionStatus.INVALID_ARGUMENTS
+
+
+def test_case_7a_validation_schema_none_falls_back_to_tool_schema_pass() -> None:
+    """Case 7a: ``validation_schema=None`` explicit — the executor falls back
+    to the tool's own ``get_schema()["function"]["parameters"]``. Models the
+    :class:`ToolCallingLoop` state where ``validation_schemas_by_tool`` is set
+    but the current tool's name is missing from the map (``.get`` returns
+    ``None``); the fallback is intentional and this case documents it.
+    """
+    executor = _make_flat_executor()
+
+    result = executor.execute(
+        "flat_tool",
+        {"a": "x", "b": 1},
+        call_id="c7a",
+        validation_schema=None,
+    )
+
+    assert result.success is True
+    assert result.status is None
+
+
+def test_case_7b_validation_schema_none_falls_back_to_tool_schema_reject() -> None:
+    """Case 7b: same fallback path as 7a, but missing-required lands at the
+    tool's own schema — INVALID_ARGUMENTS. Locks that the fallback is not a
+    "no-op" — the tool's schema still gates the call.
+    """
+    executor = _make_flat_executor()
+
+    result = executor.execute(
+        "flat_tool",
+        {"a": "x"},
+        call_id="c7b",
+        validation_schema=None,
     )
 
     assert result.success is False
