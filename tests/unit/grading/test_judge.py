@@ -105,6 +105,14 @@ class ScriptedClient:
 
         return classify_loop_error(exc, ())
 
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
+        """Return an empty map: judge fixtures drive scripted tool calls whose
+        arguments already conform to each tool's declared schema, so the
+        loop's per-tool ``.get()`` on the empty map yields ``None`` and the
+        executor falls back to the tool's own schema (the desired no-op).
+        """
+        return {}
+
 
 class FakeDBReader:
     def __init__(self, state: dict | None = None):
@@ -1069,6 +1077,9 @@ def test_judge_loop_crash_errors_not_scores():
             from tolokaforge.core.loop import classify_loop_error
 
             return classify_loop_error(exc, ())
+
+        def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
+            return {}
 
     result = _run_llm_judge(
         rubric=rubric,

@@ -710,6 +710,27 @@ class LLMClient:
     def capabilities(self, value: ModelCapabilities) -> None:
         self._capabilities = value
 
+    def sanitize_tools_for_execution(
+        self, tools: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """Return ``{tool_name: parameters_schema}`` after running this client's
+        :class:`~tolokaforge.core.llm.schema_sanitizer.ToolSchemaSanitizer` over
+        ``tools``. The per-tool schema in the returned map is what the model
+        actually saw for that tool, and is the schema
+        :class:`~tolokaforge.tools.registry.ToolExecutor` validates argument
+        dicts against when
+        :attr:`~tolokaforge.core.loop.ToolCallingLoop.validation_schemas_by_tool`
+        is wired to this method's result. See
+        ``docs/LLM_LAYER.md`` § ``schema_sanitizer``.
+        """
+        sanitised = self.capabilities.schema_sanitizer.sanitize(tools)
+        return {
+            t["function"]["name"]: t["function"]["parameters"]
+            for t in sanitised
+            if isinstance(t.get("function"), dict)
+            and isinstance(t["function"].get("parameters"), dict)
+        }
+
     # ------------------------------------------------------------------
     # Rate-limit classification — per-provider, closes over the binding's
     # compiled patterns so downstream callers never reach for internals.

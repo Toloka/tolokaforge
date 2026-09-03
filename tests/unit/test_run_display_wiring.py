@@ -970,7 +970,14 @@ def _run_agent_loop_with(events: _RecordingEvents, *, call_observation: Any) -> 
     )
 
     class _NoopExecutor:
-        def execute(self, tool_name: str, arguments: Any) -> ToolResult:
+        def execute(
+            self,
+            tool_name: str,
+            arguments: Any,
+            *,
+            call_id: str = "",
+            validation_schema: dict[str, Any] | None = None,
+        ) -> ToolResult:
             return ToolResult(success=True, output="")
 
         def get_logs(self) -> list[dict[str, Any]]:

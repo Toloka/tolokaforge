@@ -60,7 +60,7 @@ class _RecordingExecutor:
     def __init__(self) -> None:
         self.executed: list[tuple[str, dict, str]] = []
 
-    def execute(self, tool_name, arguments, *, call_id):
+    def execute(self, tool_name, arguments, *, call_id, validation_schema=None):
         self.executed.append((tool_name, arguments, call_id))
         return ToolResult(success=True, output=f"ran {tool_name}")
 
@@ -244,7 +244,7 @@ class _FailingTransportExecutor:
         self._raise_on = raise_on
         self.attempted: list[str] = []
 
-    def execute(self, tool_name, arguments, *, call_id):
+    def execute(self, tool_name, arguments, *, call_id, validation_schema=None):
         self.attempted.append(call_id)
         if call_id == self._raise_on:
             raise RuntimeError("runner unreachable")
