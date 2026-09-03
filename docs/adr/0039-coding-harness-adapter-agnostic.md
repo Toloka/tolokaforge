@@ -1,6 +1,6 @@
 # 0039. Coding-harness as an adapter-agnostic run-config concept
 
-- **Status:** Accepted
+- **Status:** Accepted (with amendment 2026-08-27, see below)
 - **Date:** 2026-08-25
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
@@ -9,15 +9,47 @@
   - [ADR-0033](0033-external-harness-registry.md) — the `HarnessSpec` field
     list and the operator overlay. Unchanged here; this ADR consumes it.
   - [ADR-0034](0034-external-harness-plugin-discovery.md) — the entry-point
-    plug-in discovery contract. Unchanged; the mixin threads
+    plug-in discovery contract. Unchanged; the mode adopter threads
     `plugin_discovery` through so opt-in adapters compose the same three
     layers.
-  - [ADR-0036](0036-tolokaforge-coding-harnesses-split.md) — why the mixin
-    lives in `tolokaforge_coding_harnesses/` rather than in the engine.
+  - [ADR-0036](0036-tolokaforge-coding-harnesses-split.md) — why the
+    coding-harness surface lives in `tolokaforge_coding_harnesses/` rather
+    than in the engine.
   - [ADR-0037](0037-runtime-gateway-as-harness-data.md) — the two paths
     (`gateway_route` on the spec, `harness_presets_file` overlay) both
     survive the lift because they live on the spec, not on the entry
     point.
+  - [ADR-0041](0041-coding-harness-credential-gateway.md) — the
+    credential-shielded LLM gateway that the driver form of this design
+    hosts.
+
+## Amendment — 2026-08-27: `AgentDriver` Strategy replaces the mixin
+
+The initial shipped implementation of this ADR used a
+`CodingHarnessAdapterMixin` that adapters inherited alongside
+`BaseAdapter` to opt into harness mode, with a
+`supports_coding_harness = True` class-attr gate. The mixin approach
+proved to leak mode-specific state and mode branches into every adapter
+that opted in — the exact "adapter-agnostic" property this ADR's
+Consequences section named as the win. In the same milestone, the shape
+was refactored into a first-class `AgentDriver` Strategy
+([`tolokaforge/core/agent_driver.py`](../../tolokaforge/core/agent_driver.py)):
+`EngineLoopDriver` and `CodingHarnessDriver` own "how a trial runs";
+adapters expose `BaseAdapter.stage_task(task_id) -> StagedTask | None`
+and nothing else about harness mode. `CodingHarnessAdapterMixin` and
+its class-attr gate are retired.
+
+**Everywhere the Decision + Consequences sections below say "mixin":
+read "`AgentDriver` (specifically `CodingHarnessDriver`)".**
+Everywhere they say "`supports_coding_harness = True`": read
+"`BaseAdapter.stage_task` returns a real `StagedTask`". Everywhere they
+say "adapter inherits the mixin": read "adapter overrides
+`stage_task`". The problem statement, the analysis of the seams already
+in place, the six wire-artefact contracts, and the two shipped adopters
+are unchanged — the pluggability layer moved from a mixin inherited by
+each adapter into a Strategy the orchestrator holds. Design record for
+the shipped shape: same file, plus
+[ADR-0041 § "Three-layer split"](0041-coding-harness-credential-gateway.md).
 
 ## Context and Problem Statement
 
@@ -71,7 +103,7 @@ Three forces made the address wrong:
   under `evaluation.harness_adapter.params.{agent_harness,agent_model}`
   keep working; the lift happens at parse time with a
   `DeprecationWarning` per key naming the canonical location.
-- **Fail-loud gate.** A run declaring `models.agent.harness` against an
+- **Fail-loud gate.** A run declaring `models.agent.coding_harness` against an
   adapter that has not opted in refuses before any container work,
   naming both sides of the mismatch and the accepted set — the
   operator's next action is a one-line config edit.
@@ -130,7 +162,7 @@ Six helpers, plus the capability flag:
 
 | Helper | Contract |
 |---|---|
-| `supports_coding_harness: ClassVar[bool] = True` | Adapter capability flag. The orchestrator's config gate refuses `models.agent.harness` against any adapter whose flag reads `False` (the `BaseAdapter` default). |
+| `supports_coding_harness: ClassVar[bool] = True` | Adapter capability flag. The orchestrator's config gate refuses `models.agent.coding_harness` against any adapter whose flag reads `False` (the `BaseAdapter` default). |
 | `resolve_harness_spec(agent_harness, agent_model, provider_env=None, presets_file=None, plugin_discovery=True) -> HarnessSpec` | Composes the shipped catalog + operator overlay + installed plug-in bundles ([ADR-0033](0033-external-harness-registry.md) § "Registry composition"), then validates. Refuses unknown harness names and empty models. |
 | `build_harness_command(agent_harness, spec, instruction, model, provider_env=None, *, path_resolver=None) -> str` | Wraps `harness_command()`. Assembles the argv, model routing, provider-env, and (if declared) middleware-proxy preamble into one `bash -c`-shaped string. |
 | `emit_harness_metadata(agent_harness, spec, command, model) -> dict` | The four-key handshake the conductor branches on: `agent_harness`, `agent_harness_version`, `agent_harness_model`, `agent_harness_command`. |
@@ -205,8 +237,8 @@ is the removal record when it lands.
 ### Positive
 
 - **One address per decision.** A task pack switching harnesses (or
-  matrixing across them) edits `models.agent.harness` in one file. A
-  task pack switching adapters keeps `models.agent.harness` untouched.
+  matrixing across them) edits `models.agent.coding_harness` in one file. A
+  task pack switching adapters keeps `models.agent.coding_harness` untouched.
 - **Adapter opt-in is one inheritance line.** Any adapter that inherits
   `CodingHarnessAdapterMixin` alongside `BaseAdapter` gets the six
   helpers and the capability flag; no engine edit is required to

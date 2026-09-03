@@ -1,0 +1,34 @@
+# fix-billing-holds under opencode + claude-sonnet-4-6, routed through
+# opencode's shielded ``anthropic`` provider (not ``openrouter/...``).
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    coding_harness: "opencode"
+    temperature: 0.0
+    max_tokens: 4096
+
+compute:
+  workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
+  repeats: 1
+  strict_task_load: true
+  timeouts:
+    episode_s: 1800
+
+evaluation:
+  projects:
+    - "examples/terminal_bench"
+  tasks_glob: "fix-billing-holds/task.yaml"
+  output_dir: "results/terminal_bench/fix-billing-holds-opencode-harness"
+  harness_adapter:
+    type: "terminal_bench"
+    params:
+      terminal_bench_dir: "examples/terminal_bench"
+      task_ids: ["fix-billing-holds"]

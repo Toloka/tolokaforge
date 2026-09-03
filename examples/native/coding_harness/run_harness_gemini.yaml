@@ -1,0 +1,40 @@
+# gemini-cli via the shipped ``toloka_litellm`` gateway route (ADR-0037).
+# LiteLLM proxies Google's native ``generateContent`` REST at
+# ``{base}/gemini/v1beta/models/…``. The registry entry's
+# ``gateway_route.config_files`` writes the required
+# ``${HOME}/.gemini/settings.json`` ``selectedType: gateway`` pin — without
+# it gemini-cli 0.55.1 refuses headless mode with "Invalid auth method".
+# Operators without LiteLLM should not set ``gateway_route``; gemini-cli
+# then falls back to its unshielded direct-Google path (``credential_gateway:
+# null`` on the shipped entry; tracked in #1311).
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "google/gemini-2.5-flash"
+    coding_harness: "gemini-cli"
+    gateway_route: "toloka_litellm"
+    temperature: 0.0
+    max_tokens: 4096
+
+compute:
+  workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
+  repeats: 1
+  strict_task_load: true
+  timeouts:
+    episode_s: 900
+    turn_s: 240
+
+evaluation:
+  projects:
+    - "examples/native/coding_harness"
+  tasks_glob: "task.yaml"
+  output_dir: "results/native-coding-harness-gemini"
+  harness_adapter:
+    type: "native"

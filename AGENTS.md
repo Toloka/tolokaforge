@@ -59,7 +59,9 @@ Tolokaforge is an LLM tool-use benchmarking harness.
 - `expand_secret_refs` when a **non-secret** config string must carry a secret value: it resolves `${secret:NAME}` inside that string. This is the only sanctioned expansion mechanism: do not hand-roll a second reference dialect at a new call site, and do not move expansion into `get_secret` (that path also feeds the log-redaction set and the container serializer, which resolve every enumerable key, so it would apply this syntax to credentials that legitimately contain `$`). See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § "Values may reference secrets".
 - `SecretManager.export_to_environ(keys)` *only* when a subprocess (e.g. litellm SDK) demands `os.environ`; called inside the smallest possible scope, never sprinkled
 
-`tolokaforge run` calls `init_default()` once at startup. Inside the runner container, `init_default_from(...)` is reconstructed from `TOLOKAFORGE_SECRETS_JSON`. There is no other initialization path. The CI test [`tests/unit/secrets/test_no_raw_secret_access.py`](tests/unit/secrets/test_no_raw_secret_access.py) static-greps for these patterns; adding a new violation will fail CI.
+`tolokaforge run` calls `init_default()` once at startup. Inside the runner container, `init_default_from(...)` is reconstructed from `TOLOKAFORGE_SECRETS_JSON`. Inside the LLM gateway sidecar, the same `init_default_from` seam reconstructs a scoped manager carrying only the shielded upstream token from `TF_GATEWAY_UPSTREAM_TOKEN`. These are the only initialization paths. The CI test [`tests/unit/secrets/test_no_raw_secret_access.py`](tests/unit/secrets/test_no_raw_secret_access.py) static-greps for these patterns; adding a new violation will fail CI.
+
+**Coding-harness trial containers never receive real provider credentials.** The `CodingHarnessDriver` ([ADR-0041](docs/adr/0041-coding-harness-credential-gateway.md)) adds a `tolokaforge-llm-gateway` sidecar service to the trial's compose stack (running the shipped runner image with `python -m tolokaforge.runner.llm_gateway_serve`) that carries the real credential; the CLI's own service receives only a dummy token and a base URL pointing at the sidecar. The sidecar is registered as `bridged_services` so netpolicy attaches it to both the internal (CLI-reachable) and edge (has egress) networks under `no_internet` / `limited_internet`; the shielded upstream token is also listed as `stripped_container_secrets`, so `inject_runner_credentials` omits it from the runner container's `TOLOKAFORGE_SECRETS_JSON` payload — the credential lives in exactly one place in the trial stack. Any harness added to [`data/harnesses.yaml`](tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/data/harnesses.yaml) MUST populate its `credential_gateway` block OR appear on the `UNSHIELDED_HARNESSES` set in [`tests/unit/test_credential_gateway_schema.py`](tests/unit/test_credential_gateway_schema.py) with a tracked issue — there is no silent third path. See [`docs/SECURITY.md`](docs/SECURITY.md) for the full trust boundary.
 
 ## Setup and Commands
 
@@ -523,17 +525,23 @@ and [`docs/CODING_HARNESSES.md`](docs/CODING_HARNESSES.md).
    the package) ships in both the sdist and the wheel. Any PR touching
    `tolokaforge_coding_harnesses/pyproject.toml`, its `data/`, or the
    package's non-Python siblings must keep this test green.
-8. **Adapters opt into coding-harness mode by inheriting
-   `CodingHarnessAdapterMixin`.** The orchestrator's config-validation
-   gate refuses `models.agent.harness` against any adapter whose
-   `supports_coding_harness` class attr reads `False` (the `BaseAdapter`
-   default). The mixin sets it as a class-level default, so inheriting is
-   the whole opt-in — a bespoke boolean on an adapter class without the
-   mixin's six helpers is not it. New adapters that accept the harness
-   field MUST inherit
-   [`tolokaforge_coding_harnesses.CodingHarnessAdapterMixin`](tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py)
-   alongside `BaseAdapter`. Design record:
-   [ADR-0039](docs/adr/0039-coding-harness-adapter-agnostic.md).
+8. **Adapters host coding-harness runs by staging a per-trial container.**
+   Coding-harness mode is an
+   [`AgentDriver`](tolokaforge/core/agent_driver.py) Strategy — the
+   orchestrator selects `CodingHarnessDriver` from
+   `models.agent.coding_harness` and applies it around adapter output.
+   An adapter opts in by overriding
+   `BaseAdapter.stage_task(task_id) -> StagedTask | None` to materialise
+   a per-trial staging directory with a synthesised compose file the
+   driver layers the CLI install onto. The orchestrator refuses
+   `models.agent.coding_harness` against an adapter whose `stage_task`
+   returns `None`, naming the currently opted-in set (today: `native`,
+   `terminal_bench`). Adapters carry no coding-harness state — no
+   mode-only fields, no mode branches. Design record:
+   [ADR-0039](docs/adr/0039-coding-harness-adapter-agnostic.md) (driver
+   protocol) and
+   [ADR-0041](docs/adr/0041-coding-harness-credential-gateway.md)
+   (credential shield).
 
 **Adding a new harness:**
 

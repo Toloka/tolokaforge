@@ -1,0 +1,38 @@
+# Exercise the credential-shield sidecar against tbench fix-billing-holds
+# under claude-code. 30 pytest tests over a real fee-calc + data-migration
+# bug — an untouched pack scores 0/30, so any real score confirms the CLI
+# did work end-to-end through the shielded gateway.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "openrouter/anthropic/claude-sonnet-4-6"
+    coding_harness: "claude-code"
+    temperature: 0.0
+    max_tokens: 4096
+
+compute:
+  workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
+  repeats: 1
+  strict_task_load: true
+  timeouts:
+    # tbench task's own `[agent] timeout_sec` is 1800; the runner refuses a
+    # smaller budget rather than silently truncate.
+    episode_s: 1800
+
+evaluation:
+  projects:
+    - "examples/terminal_bench"
+  tasks_glob: "fix-billing-holds/task.yaml"
+  output_dir: "results/terminal_bench/fix-billing-holds-claude-code-harness"
+  harness_adapter:
+    type: "terminal_bench"
+    params:
+      terminal_bench_dir: "examples/terminal_bench"
+      task_ids: ["fix-billing-holds"]

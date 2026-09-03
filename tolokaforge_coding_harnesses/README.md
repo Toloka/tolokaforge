@@ -44,6 +44,7 @@ python3+pip, or curl+ca-certificates on demand.
 from tolokaforge_coding_harnesses import (
     HARNESSES,                   # dict[str, HarnessSpec] — the shipped registry
     HarnessSpec,                 # pydantic model — one entry
+    CredentialGateway,           # per-harness config for the credential shield
     harness_command,             # assembles the trial's shell command
     harness_model,               # canonical model name the CLI receives
     resolve_effective_registry,  # shipped + operator overlay + plug-in bundles
@@ -51,10 +52,6 @@ from tolokaforge_coding_harnesses import (
     HarnessFingerprint,          # records CLI version + spec on the artifact
     RuntimeGateway,              # gateway_route consumer surface (ADR-0037)
     ContainerFileInjector,       # deliver config_files into a running container
-    SkillDelivery,               # per-task skill bundle delivery
-    CodingHarnessAdapterMixin,   # adapter-side pattern: registry resolve, command,
-                                 # metadata, tool schema, test_execution grading,
-                                 # standalone install-script Dockerfile layer
 )
 ```
 
@@ -128,7 +125,14 @@ two paths ship with the exact same recipe:
   whole-replaces the `gemini-cli` entry.
 - **`gateway_route` on the spec** — what an external runtime reads when it
   attaches to a container it did not build and has to provision the same
-  files, envs and endpoints itself. Nothing in this repo consumes it.
+  files, envs and endpoints itself. `CodingHarnessDriver` also opts into
+  this path when a run config sets `models.agent.gateway_route` to a name
+  from `alternative_gateways`: the driver resolves the ADR-0037 tokens
+  against the operator's secrets, writes `config_files` into the trial
+  container verbatim, applies `model_alias_pattern` to the effective model,
+  and skips the `credential_gateway` sidecar (the two paths are mutually
+  exclusive). Absent that field, the driver stays on the shielded default
+  path unchanged.
 
 The two are siblings with different audiences.
 [ADR-0037](../docs/adr/0037-runtime-gateway-as-harness-data.md) is the design
@@ -160,55 +164,56 @@ private to your organisation (out-of-tree plug-in).
   [`src/tolokaforge_coding_harnesses/testing.py`](src/tolokaforge_coding_harnesses/testing.py)
   ships the `isolate_discovery` helper for plug-in test suites.
 
-## Adopting the mixin
+## Consumed by the engine's `CodingHarnessDriver`
 
-An adapter opts a task pack into coding-harness mode by inheriting
-[`CodingHarnessAdapterMixin`](src/tolokaforge_coding_harnesses/adapter_support.py)
-alongside `BaseAdapter`. Class shape:
+Engine-side, the `AgentDriver` Strategy
+([ADR-0039](../docs/adr/0039-coding-harness-adapter-agnostic.md)) owns
+"how a trial runs". The orchestrator selects `CodingHarnessDriver` from
+`models.agent.coding_harness`; the driver consumes the shipped
+`HarnessSpec` and drives the trial via one `docker exec` of the vendor
+CLI. Adapters carry no coding-harness state; they stage a per-trial
+container (`stage_task`) and the driver decorates it.
 
-```python
-from tolokaforge.adapters.base import BaseAdapter
-from tolokaforge_coding_harnesses import CodingHarnessAdapterMixin
+This package ships the data + primitives the driver consumes. It never
+imports the engine — the boundary invariant is enforced at
+[`tests/unit/test_package_boundary.py`](tests/unit/test_package_boundary.py).
 
+## Credentials — the shield
 
-class MyAdapter(CodingHarnessAdapterMixin, BaseAdapter):
-    ...
+Every shipped harness carries a `credential_gateway` block on its
+`HarnessSpec`:
+
+```yaml
+credential_gateway:
+  upstream_url: "https://openrouter.ai/api"
+  upstream_token_env_var: "OPENROUTER_API_KEY"     # SecretManager reads the real value
+  upstream_auth_header: "Authorization"
+  upstream_auth_template: "Bearer {token}"
+  dummy_token_env_var: "ANTHROPIC_API_KEY"         # env var the CLI reads
+  dummy_token_value: "sk-tolokaforge-shielded-dummy-not-a-real-key"
+  base_url_env_var: "ANTHROPIC_BASE_URL"           # points at the gateway
+  path_allowlist: [...]                            # what upstream paths are proxied
 ```
 
-The mixin sets `supports_coding_harness: ClassVar[bool] = True` — the
-capability flag the engine's config-validation gate reads. Adapters
-that do not inherit the mixin (or override the flag to `False`) refuse
-a run declaring `models.agent.harness` before any container work.
+`CodingHarnessDriver` reads it at `attach()`, adds a
+`tolokaforge-llm-gateway` sidecar service to the trial's compose stack
+carrying the real credential, and bakes the dummy value + the
+sidecar's compose-DNS URL (`http://tolokaforge-llm-gateway:8080`)
+into the CLI's own container env. The CLI never sees the real
+credential; the sidecar swaps in the correct auth header on every
+allow-listed request. See
+[ADR-0041](../docs/adr/0041-coding-harness-credential-gateway.md) and
+[docs/SECURITY.md](../docs/SECURITY.md) for the threat model.
 
-Six helpers ship on the mixin. Contracts (parameters live in the
-mixin's own docstrings — read those, not this table):
-
-| Helper | Contract |
-|---|---|
-| `resolve_harness_spec(agent_harness, agent_model, provider_env=None, presets_file=None, plugin_discovery=True)` | Resolves against the shipped catalog + operator overlay + installed plug-ins, then validates. Refuses unknown harness names and empty models. |
-| `build_harness_command(agent_harness, spec, instruction, model, provider_env=None, *, path_resolver=None)` | Assembles the `bash -c`-shaped command the trial exec runs. Threads argv, model routing, provider-env, and (when the spec declares it) the middleware-proxy preamble. |
-| `emit_harness_metadata(agent_harness, spec, command, model)` | Four-key handshake the conductor branches on: `agent_harness`, `agent_harness_version`, `agent_harness_model`, `agent_harness_command`. |
-| `emit_harness_tool_schema(*, service, compose_project_prefix, timeout_s, toolset="coding_harness")` | Payload for the runner's `bash` tool routed through `DockerComposeExecToolWrapper`. `timeout_s` must cover the whole trial. |
-| `emit_test_execution_grading()` | Payload for the runner's `RunnerGradingConfig`. Grades by reading `/logs/verifier/reward.txt`. |
-| `write_install_script_layer(context_dir, base_image, spec, middleware_proxy=False)` | Writes a standalone Dockerfile snippet + the shipped install script (and the middleware proxy when declared) into `context_dir`. Returns the Dockerfile's relative path. |
-
-**Payload dicts, not engine types.** `emit_harness_tool_schema` and
-`emit_test_execution_grading` return dicts. Adapters construct the
-engine types at the call site (`ToolSchema(**payload)`,
-`RunnerGradingConfig(**payload)`); pydantic v2 reconstructs nested
-types (`ToolSource` from `source={…}`) transparently. This preserves
-the boundary invariant — `tolokaforge_coding_harnesses/` imports no
-engine module.
-
-**Reference adopters.** The bundled
-[`NativeAdapter`](../tolokaforge/adapters/native.py) drives a native
-task pack via harness mode when `models.agent.harness` is set; the
-out-of-tree
-[`TerminalBenchAdapter`](../external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py)
-adopts the mixin with compose synthesis wrapped around
-`write_install_script_layer` from the compose context root. See
-[ADR-0039](../docs/adr/0039-coding-harness-adapter-agnostic.md) for the
-design record.
+**Adding a new harness:** populate `credential_gateway` with the
+vendor's real endpoint + env-var conventions. If the vendor uses a
+non-standard credential protocol (OAuth, workload identity) or its
+request paths are model-dynamic (see the gemini-cli exemption tracked
+in [#1311](https://github.com/Toloka/tolokaforge/issues/1311)), leave
+`credential_gateway: null` and add the harness name to
+`UNSHIELDED_HARNESSES` in
+[`tests/unit/test_credential_gateway_schema.py`](../tests/unit/test_credential_gateway_schema.py)
+with a tracking issue.
 
 ## Related docs
 
@@ -230,4 +235,6 @@ design record.
 - [ADR-0037](../docs/adr/0037-runtime-gateway-as-harness-data.md) — gateway
   routing as harness data.
 - [ADR-0039](../docs/adr/0039-coding-harness-adapter-agnostic.md) — the
-  adapter-agnostic lift and the mixin contract.
+  `AgentDriver` Strategy that consumes this package.
+- [ADR-0041](../docs/adr/0041-coding-harness-credential-gateway.md) —
+  the credential-shielded LLM gateway.

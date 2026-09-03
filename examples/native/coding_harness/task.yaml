@@ -25,3 +25,4 @@ environment_manifest:
   stack:
     compose_file: "./docker-compose.yaml"
     runner_service: "main"
+grading: "grading.yaml"

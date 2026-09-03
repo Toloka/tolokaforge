@@ -1,0 +1,34 @@
+# fix-airline-segmentation under kimi-code via the ``toloka_litellm`` gateway.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "moonshotai/kimi-k3"
+    coding_harness: "kimi-code"
+    gateway_route: "toloka_litellm"
+    temperature: 0.0
+    max_tokens: 4096
+
+compute:
+  workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
+  repeats: 1
+  strict_task_load: true
+  timeouts:
+    episode_s: 1800
+
+evaluation:
+  projects:
+    - "examples/terminal_bench"
+  tasks_glob: "fix-airline-segmentation/task.yaml"
+  output_dir: "results/terminal_bench/fix-airline-segmentation-kimi-code-harness"
+  harness_adapter:
+    type: "terminal_bench"
+    params:
+      terminal_bench_dir: "examples/terminal_bench"
+      task_ids: ["fix-airline-segmentation"]

@@ -33,13 +33,22 @@ All notable changes to this project are documented in this file.
 
 ## v0.21.3 (2026-08-28)
 
+### Security
+
+- **coding-harness**: trial containers never receive the real LLM provider credential. The `CodingHarnessDriver` adds a `tolokaforge-llm-gateway` sidecar service to each shielded trial's compose stack — the shipped `tolokaforge-runner:local` image running `python -m tolokaforge.runner.llm_gateway_serve` on port 8080. The sidecar holds the real credential (resolved once at bootstrap via `SecretManager`, redacted from logs); the CLI's own container carries only a dummy value + a base URL pointing at the sidecar. Docker DNS resolves the hostname on the shared internal network — no host-gateway hop, no dependence on the pack's declared `network_policy`. Two new `EnvironmentManifest` fields make it work under any policy: `bridged_services` (attaches the sidecar to both internal and edge netpolicy networks) and `stripped_container_secrets` (omits the shielded token from the runner container's `TOLOKAFORGE_SECRETS_JSON` payload so the credential lives in exactly one service in the trial stack). Enforced across every shipped harness except `gemini-cli` (its non-standard auth surface tracked in [#1311](https://github.com/Toloka/tolokaforge/issues/1311)); an operator escape hatch `models.agent.disable_credential_gateway: true` restores the pre-shield path for the rare CLI a proxied backend can't drive. See [ADR-0041](docs/adr/0041-coding-harness-credential-gateway.md) and [docs/SECURITY.md](docs/SECURITY.md).
+
 ### Feat
 
+- **coding-harnesses**: the `AgentDriver` Strategy — `EngineLoopDriver` (default, no-op) and `CodingHarnessDriver` (vendor CLI) — owns "how a trial runs". The orchestrator selects one per run from `models.agent.coding_harness`; the adapter carries no mode state, opting in solely by overriding `BaseAdapter.stage_task(task_id) -> StagedTask | None` to materialise a per-trial staging directory the driver layers onto. Adding a new mode (Harbor as an embedded library, a custom agent loop) is a new driver class with no adapter edit. See [ADR-0039](docs/adr/0039-coding-harness-adapter-agnostic.md).
 - **grading**: engine-repin-unblock — runner wire-model aliases, expected_hash refusal, trace_checks on_missing: withhold (#1315)
 
 ### Fix
 
 - **grader**: route RunnerRPCTrialGrader through runtime_backend for per-trial runtimes (#1328)
+
+### Refactor
+
+- **coding-harnesses**: `CodingHarnessAdapterMixin` (in `tolokaforge_coding_harnesses/adapter_support.py`) and `tolokaforge/adapters/native_harness_synthesis.py` retire. `NativeAdapter` and `TerminalBenchAdapter` drop their coding-harness mode fields (`agent_harness`, `agent_model`, `agent_harness_version`, `agent_provider_env`, `_resolved_registry`, `_harness_environments`) and their `ENGINE_LOOP` branches; all mode logic lives on the driver. Adapters expose `stage_task` and nothing else about coding harness.
 
 ## v0.21.2 (2026-08-26)
 

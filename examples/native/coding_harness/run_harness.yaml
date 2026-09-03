@@ -1,19 +1,21 @@
-# Native-adapter run config exercising `models.agent.harness` end-to-end.
+# Native-adapter run config exercising `models.agent.coding_harness` end-to-end.
 #
 # This is the exemplar of the adapter-agnostic shape the coding-harness lift
-# introduces: any task on any adapter that opts into `supports_coding_harness`
-# declares the CLI right next to the model, and the engine's turn loop is
-# replaced by one invocation of that CLI inside the trial container.
+# introduces: any task on any adapter declares the CLI right next to the
+# model, and the orchestrator's selected CodingHarnessDriver (see
+# tolokaforge.core.drivers.coding_harness) replaces the engine's turn loop
+# with one invocation of that CLI inside the trial container.
 #
-# The native adapter (this run's harness_adapter) inherits
-# `CodingHarnessAdapterMixin`, so the run config's `models.agent.harness`
-# survives the orchestrator's config-validation gate.
+# The native adapter stages this task's compose file
+# (`NativeAdapter.stage_task`) so the driver has a per-trial container to
+# layer the CLI install onto; the adapter itself carries no harness-mode
+# state.
 
 models:
   agent:
     provider: "openrouter"
     name: "openrouter/anthropic/claude-sonnet-4-6"
-    harness: "claude-code"
+    coding_harness: "claude-code"
     temperature: 0.0
     max_tokens: 4096
 

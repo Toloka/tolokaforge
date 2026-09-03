@@ -900,6 +900,48 @@ class TestCreateAdapter:
         assert reqs.to_core_stack_kwargs() == {}
 
 
+class TestSelectDriver:
+    """Orchestrator's write-side translation from ``models.agent.*`` to the
+    driver's ``HarnessSelection``. Guards the seam a review flagged as
+    untested — the config's ``coding_harness_version`` must land on
+    ``HarnessSelection.version_override`` when set and be absent (``None``)
+    when the config omits it. Without a direct test, a rename or a typo
+    in that translation step would sit silent."""
+
+    def test_coding_harness_version_threads_into_version_override(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        config = _make_run_config(
+            models={
+                "agent": ModelConfig(
+                    provider="openrouter",
+                    name="openrouter/anthropic/claude-sonnet-4-6",
+                    coding_harness="claude-code",
+                    coding_harness_version="9.9.9-fake",
+                ),
+            }
+        )
+        orch = Orchestrator(config)
+        driver = orch._select_driver(config)
+        assert driver.selection.version_override == "9.9.9-fake"  # type: ignore[attr-defined]
+
+    def test_coding_harness_version_absent_yields_none_override(self) -> None:
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        config = _make_run_config(
+            models={
+                "agent": ModelConfig(
+                    provider="openrouter",
+                    name="openrouter/anthropic/claude-sonnet-4-6",
+                    coding_harness="claude-code",
+                ),
+            }
+        )
+        orch = Orchestrator(config)
+        driver = orch._select_driver(config)
+        assert driver.selection.version_override is None  # type: ignore[attr-defined]
+
+
 # ===================================================================
 # Report grouping logic (trajectories grouped by task)
 # ===================================================================

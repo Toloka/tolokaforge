@@ -134,13 +134,13 @@ def test_a_harness_example_exists_and_is_fully_specified() -> None:
     harness_configs = []
     for config_path in _example_run_configs():
         config = RunConfig(**yaml.safe_load(config_path.read_text()))
-        # Canonical home post-lift is ``models.agent.harness``; the parse-time
+        # Canonical home post-lift is ``models.agent.coding_harness``; the parse-time
         # alias validator on ``RunConfig`` moves the legacy
         # ``evaluation.harness_adapter.params.agent_harness`` value here and
         # deletes the legacy key, so this single read covers both shipped
         # example shapes.
         agent_model_config = config.models.get("agent") if config.models else None
-        harness = (agent_model_config.harness if agent_model_config else None) or ENGINE_LOOP
+        harness = (agent_model_config.coding_harness if agent_model_config else None) or ENGINE_LOOP
         if harness != ENGINE_LOOP:
             harness_configs.append((config_path, config, harness))
 

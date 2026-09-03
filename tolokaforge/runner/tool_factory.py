@@ -1109,6 +1109,20 @@ def create_search_kb_schema() -> ToolSchemaModel:
 _COMPOSE_EXEC_DEFAULT_TIMEOUT_S = 120.0
 
 
+def _decode_partial_output(buf: bytes | str | None) -> str:
+    """Return a ``str`` for a partial-output buffer that may be bytes,
+    str, or ``None``. Used by the exec wrapper's timeout path: even under
+    ``Popen(text=True)``, ``subprocess.TimeoutExpired.stdout`` carries
+    raw bytes (decode only runs on a clean ``communicate()`` return), and
+    ``''.join`` / ``+=`` on the resulting mix would raise a ``TypeError``
+    that hides the CLI output the timeout branch exists to preserve."""
+    if buf is None:
+        return ""
+    if isinstance(buf, bytes):
+        return buf.decode("utf-8", errors="replace")
+    return buf
+
+
 class DockerComposeExecToolWrapper(ToolWrapper):
     """Execute a command inside an already-running compose service via ``docker exec``.
 
@@ -1163,15 +1177,45 @@ class DockerComposeExecToolWrapper(ToolWrapper):
                 self.name,
                 "docker_compose_exec tool executed before start() — container name unresolved",
             )
-        proc = subprocess.run(
+        # Popen + communicate(timeout=…) so a timeout kills the process AND
+        # surfaces whatever the CLI had already written. subprocess.run's
+        # capture_output path discards buffered stdout on TimeoutExpired,
+        # which turns a slow-agent run into an opaque "nothing happened".
+        proc = subprocess.Popen(
             ["docker", "exec", "-i", self._container, "bash", "-c", command],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
         )
-        output = proc.stdout
-        if proc.returncode != 0:
-            output += f"\n[exit code: {proc.returncode}]\n{proc.stderr}"
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            timed_out = False
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            # subprocess.TimeoutExpired.stdout/stderr carry the raw bytes
+            # the child had buffered when the deadline hit, even under
+            # text=True — Popen only decodes at the point of a clean
+            # communicate() return. _decode_partial_output normalises to
+            # str so the footer concatenation below is str+str, not
+            # str+bytes (a TypeError there would hide the CLI output the
+            # whole rewrite exists to preserve).
+            stdout = _decode_partial_output(exc.stdout)
+            stderr = _decode_partial_output(exc.stderr)
+            # communicate() after kill drains whatever else the child buffered.
+            try:
+                more_out, more_err = proc.communicate(timeout=5)
+                stdout += _decode_partial_output(more_out)
+                stderr += _decode_partial_output(more_err)
+            except subprocess.TimeoutExpired:
+                # Best-effort drain; the primary timeout is already surfaced
+                # in the wrapper's timed-out footer below.
+                pass
+            timed_out = True
+        output = stdout
+        if timed_out:
+            output += f"\n[timed out after {timeout}s; partial output preserved]\n{stderr}"
+        elif proc.returncode != 0:
+            output += f"\n[exit code: {proc.returncode}]\n{stderr}"
         return output
 
 

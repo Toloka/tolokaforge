@@ -35,6 +35,7 @@
   "category": "terminal",
   "description": "Create a file /tmp/hello.txt containing the text \"Hello, World!\".\n",
   "environment_manifest": {
+    "bridged_services": [],
     "compose_file": "<STAGING>/engine/docker-compose.engine.yaml",
     "db_port": null,
     "db_service": null,
@@ -76,7 +77,8 @@
         "stack_id": "task",
         "stack_scope": "trial"
       }
-    ]
+    ],
+    "stripped_container_secrets": []
   },
   "generated_at": null,
   "grading": {

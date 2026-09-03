@@ -19,6 +19,7 @@ from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Grade, GradingConfig, TaskConfig, Trajectory
 
 if TYPE_CHECKING:
+    from tolokaforge.core.agent_driver import StagedTask
     from tolokaforge.tools.registry import Tool
 
 logger = get_logger(__name__)
@@ -542,6 +543,24 @@ class BaseAdapter(ABC):
         a Docker socket, or a DinD sidecar override this.
         """
         return DockerStackRequirements()
+
+    def stage_task(self, task_id: str) -> "StagedTask | None":
+        """Return the per-task staging root a driver can layer onto.
+
+        Adapters that ship container-based tasks (a per-task compose file
+        + pack directory) override this to materialise a staging dir with
+        a synthesised compose file the driver can rewrite in place. See
+        :class:`~tolokaforge.core.agent_driver.StagedTask` for the fields
+        the driver reads.
+
+        The default returns ``None`` — this adapter has no container a
+        driver can target. The orchestrator refuses a run whose driver
+        needs staging (see
+        :meth:`~tolokaforge.core.agent_driver.AgentDriver.needs_container_stage`)
+        against an adapter that does not stage.
+        """
+        del task_id
+        return None
 
     def fingerprint(self) -> dict[str, Any] | None:
         """What this adapter reports about the resolved inputs it ran on.

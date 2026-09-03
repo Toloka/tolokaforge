@@ -114,6 +114,16 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         # trial starts — never at ``python -m tolokaforge.runner`` boot,
         # which is why the boot-time closure walk does not observe it.
         "tolokaforge/core/grading/tool_artifacts.py",
+        # Coding-harness credential-shield gateway sidecar. The
+        # ``CodingHarnessDriver`` bakes ``python -m
+        # tolokaforge.runner.llm_gateway_serve`` into the sidecar's
+        # compose ``command:`` (using the shipped ``tolokaforge-runner``
+        # image), so the module and its ``_GatewayHTTPServer`` dep must
+        # live in the runner subset. Neither is reached from the runner
+        # boot closure — the sidecar is a separate container the driver
+        # scripts against the orchestrator side.
+        "tolokaforge/runner/llm_gateway.py",
+        "tolokaforge/runner/llm_gateway_serve.py",
     }
 )
 

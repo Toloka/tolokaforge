@@ -1,0 +1,36 @@
+# Same native pack + task as run_harness.yaml — different vendor CLI.
+#
+# The point of this sibling config: prove that changing the coding-harness
+# CLI is a one-line edit ("claude-code" → "codex") with no other change to
+# the pack, the adapter, or the driver. The AgentDriver Strategy makes the
+# CLI a run-config axis, not an adapter axis.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "openrouter/openai/gpt-4o-mini"
+    coding_harness: "codex"
+    temperature: 0.0
+    max_tokens: 4096
+
+compute:
+  workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
+  repeats: 1
+  strict_task_load: true
+  timeouts:
+    episode_s: 900
+    turn_s: 240
+
+evaluation:
+  projects:
+    - "examples/native/coding_harness"
+  tasks_glob: "task.yaml"
+  output_dir: "results/native-coding-harness-codex"
+  harness_adapter:
+    type: "native"

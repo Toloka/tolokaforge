@@ -24,6 +24,7 @@ from tolokaforge.adapters._task_loader import (
     tool_inventory_under_adapter,
     validate_grading_yaml,
 )
+from tolokaforge.core.agent_driver import AgentDriver, EngineLoopDriver
 from tolokaforge.core.budgets import (
     BudgetHit,
     CompositeBudget,
@@ -104,6 +105,7 @@ from tolokaforge.runner.models import AdapterType, PlanShape, StackScope, TaskDe
 from tolokaforge.secrets import register_runtime_secret
 
 if TYPE_CHECKING:
+    from tolokaforge.core.agent_driver import StagedTask
     from tolokaforge.core.search.typesense_server import TypeSenseServerManager
     from tolokaforge.docker.stacks import TypeSenseAddress
 
@@ -197,21 +199,32 @@ def _actor_routes_a_compose_variant(task: Any, actor: ToolActor) -> bool:
     return False
 
 
-def _run_needs_docker_cli(adapter_type: str | None, tasks: list[Any]) -> bool:
+def _run_needs_docker_cli(
+    adapter_type: str | None,
+    tasks: list[Any],
+    needs_docker_cli: bool = False,
+) -> bool:
     """Return True iff the run needs the docker CLI baked into the runner image.
 
-    Two triggers today:
+    Three triggers today:
 
     - Terminal-bench tasks exec the docker CLI + compose plugin in the runner
       (against the host daemon via the mounted socket).
     - Any task that routes a shipped tool through the compose variant (see
       :func:`_tasks_use_compose_variant_tools`) — the runner ``docker exec``\\ s
       into the sibling service.
+    - The selected :class:`~tolokaforge.core.agent_driver.AgentDriver` needs
+      it (``needs_docker_cli``) — a coding-harness CLI's bash tool routes
+      through ``DockerComposeExecToolWrapper`` regardless of adapter (native,
+      terminal-bench, or any future opt-in), so the runner always
+      ``docker exec``\\ s from itself into the sibling task container.
 
     Detected before build so the slim default image ships without the CLI for
     every other run. Pure function for unit testing.
     """
     if adapter_type == AdapterType.TERMINAL_BENCH:
+        return True
+    if needs_docker_cli:
         return True
     return _tasks_use_compose_variant_tools(tasks)
 
@@ -636,6 +649,18 @@ class Orchestrator:
         self.results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
         self.adapter: BaseAdapter | None = None
+        # The selected AgentDriver Strategy — "how the agent produces turns
+        # during a trial". Lazily resolved by ``_get_driver()`` from
+        # ``self.config`` alone, so it never needs ``load_tasks()`` to have
+        # run; ``load_tasks()`` still populates it eagerly (right after the
+        # adapter) so its ``attach()`` compatibility check runs before any
+        # task work.
+        self._driver: AgentDriver | None = None
+        # Per-task staging root a container-needing driver layers onto,
+        # keyed by task_id. ``stage_task()`` writes to disk, so this cache
+        # keeps repeated resolution (description decoration, stack-build
+        # merge) from re-staging the same task.
+        self._staged: dict[str, StagedTask] = {}
         # Trial graders whose ``close()`` must fire at run teardown. Populated
         # by :meth:`_build_conductor`; drained in reverse order at the end of
         # :meth:`run` / :meth:`run_worker` so a broker + worker-pool grader
@@ -725,6 +750,68 @@ class Orchestrator:
         adapter_type = adapter_config.type if adapter_config else AdapterType.NATIVE.value
         return {adapter_type: payload}
 
+    def _select_driver(self, config: RunConfig) -> AgentDriver:
+        """Select the AgentDriver this run applies around adapter output.
+
+        ``models.agent.coding_harness`` set → a vendor coding-agent CLI
+        drives every trial (:class:`~tolokaforge.core.drivers.coding_harness.CodingHarnessDriver`).
+        Absent → the engine's own LLM turn loop
+        (:class:`~tolokaforge.core.agent_driver.EngineLoopDriver`), the default.
+
+        Pure function of *config* — no adapter or task state required — so
+        ``_get_driver()`` can resolve it without ``load_tasks()`` having run.
+        """
+        agent_model_config = config.models.get("agent") if config.models else None
+        if agent_model_config is None or agent_model_config.coding_harness is None:
+            return EngineLoopDriver()
+        from tolokaforge.core.drivers.coding_harness import CodingHarnessDriver, HarnessSelection
+
+        adapter_config = config.evaluation.harness_adapter
+        params = adapter_config.params if adapter_config else {}
+        return CodingHarnessDriver(
+            HarnessSelection(
+                agent_harness=agent_model_config.coding_harness,
+                agent_model=agent_model_config.name,
+                version_override=agent_model_config.coding_harness_version,
+                provider_env_declared=params.get("agent_provider_env") or {},
+                presets_file=params.get("harness_presets_file"),
+                plugin_discovery=not params.get("disable_harness_plugins", False),
+                disable_credential_gateway=agent_model_config.disable_credential_gateway,
+                gateway_route=agent_model_config.gateway_route,
+            )
+        )
+
+    def _get_driver(self) -> AgentDriver:
+        """The run's selected driver, resolved once and cached.
+
+        Callers that never ran ``load_tasks()`` (a narrow test seam that
+        hand-populates ``self.tasks``/``self.adapter``) still get the
+        correct driver here, since selection depends only on ``self.config``.
+        """
+        if self._driver is None:
+            self._driver = self._select_driver(self.config)
+        return self._driver
+
+    def _staged_for(self, task_id: str) -> "StagedTask | None":
+        """*task_id*'s staged compose root, materialised once and cached.
+
+        ``None`` when the active driver needs no container stage (the
+        engine loop) or when the adapter itself stages nothing for this
+        task (:meth:`~tolokaforge.adapters.base.BaseAdapter.stage_task`
+        returning ``None``).
+        """
+        if not self._get_driver().needs_container_stage():
+            return None
+        cached = self._staged.get(task_id)
+        if cached is not None:
+            return cached
+        if self.adapter is None:
+            raise RuntimeError("Task staging cannot run before the adapter is loaded.")
+        staged = self.adapter.stage_task(task_id)
+        if staged is not None:
+            self._staged[task_id] = staged
+        return staged
+
     def _create_adapter(self) -> BaseAdapter:
         """Create adapter based on configuration"""
         adapter_config = self.config.evaluation.harness_adapter
@@ -735,18 +822,6 @@ class Orchestrator:
         else:
             adapter_type = AdapterType.NATIVE
             params = {}
-
-        # Coding-harness selector: canonical home is ``models.agent.harness``
-        # (adapter-agnostic). Inject it into adapter params here so adapters
-        # that already read ``params["agent_harness"]`` keep working; the
-        # legacy ``harness_adapter.params.agent_harness`` shape is lifted to
-        # ``models.agent`` at parse time, so nothing else in this method sees
-        # the old location. ``models.agent.name`` doubles as the model the
-        # CLI receives — the same field the engine loop reads.
-        agent_model_config = self.config.models.get("agent") if self.config.models else None
-        if agent_model_config is not None and agent_model_config.harness is not None:
-            params.setdefault("agent_harness", agent_model_config.harness)
-            params.setdefault("agent_model", agent_model_config.name)
 
         # Add tasks_glob to params for both native and other adapters
         params["tasks_glob"] = self.config.evaluation.tasks_glob
@@ -964,6 +1039,21 @@ class Orchestrator:
                 runtime_backend=in_process_backend_shim,
             )
         )
+        # Per-trial runtime backends serve per-trial runner addresses that
+        # cannot be captured on the single ``runner_address`` field of the
+        # grader context. Their ``grade_trial(trial_id, ...)`` matches the
+        # signature the grader's ``runner_client`` calls, so drop the
+        # backend in as the client. Same duck-type; per-trial routing
+        # happens inside ``PerTrialRuntimeBackend._client_for(trial_id)``.
+        # The context's ``runner_address is None`` is the "per-trial"
+        # signal — ``getattr(runtime_backend, "runner_address", None)``
+        # returns ``None`` for those backends by design.
+        if (
+            not runner_address
+            and hasattr(runtime_backend, "grade_trial")
+            and hasattr(trial_grader, "runner_client")
+        ):
+            trial_grader.runner_client = runtime_backend  # type: ignore[assignment]
         # Drain any leftover from a prior aborted run on this orchestrator
         # instance before recording the fresh grader — a re-entered ``run()``
         # on the same instance must never close a stale grader from the
@@ -1016,6 +1106,9 @@ class Orchestrator:
             return cached
         description = self.adapter.to_task_description(task_id)
         ensure_registered_adapter(description.adapter_type)
+        description = self._get_driver().decorate_task_description(
+            description, staged=self._staged_for(task_id)
+        )
         self._task_desc_cache[task_id] = description
         return description
 
@@ -1343,7 +1436,11 @@ class Orchestrator:
                 seeds=self._project_seed_registry(),
                 log_capture=log_capture,
                 events=self._events,
-                mount_docker_socket=_run_needs_docker_cli(adapter_type, self.tasks),
+                mount_docker_socket=_run_needs_docker_cli(
+                    adapter_type,
+                    self.tasks,
+                    needs_docker_cli=self._get_driver().needs_docker_cli(),
+                ),
                 per_trial_mode=per_trial_mode,
             )
         )
@@ -1424,6 +1521,59 @@ class Orchestrator:
                     error=str(e),
                 )
                 continue
+
+    def _apply_driver_container_layers(self, stack_requirements: Any) -> None:
+        """Layer the selected driver's per-task container needs onto
+        *stack_requirements*, in place.
+
+        A container-staging driver (coding-harness mode) needs one
+        ``apply_container_layers`` call per task — writing the harness
+        install Dockerfile and rewriting the staged compose file in place
+        — before any declared image build runs. The driver's per-task
+        image builds *replace* the adapter's own builds on the same
+        ``(compose_file, agent_service)`` because the driver's rewrite
+        turned that service into a layered build ``FROM`` a companion
+        ``<agent>_base`` service; building it first would fail with a
+        pull-not-found on the base tag. The adapter's own build entries
+        that the driver superseded are dropped in place; ones the driver
+        did not touch stay.
+
+        No-op for the engine loop, or when the adapter declared no
+        requirements object at all.
+
+        Raises:
+            RuntimeError: A task fails to stage under a driver that needs
+                a container — ``attach()`` already proved the adapter
+                stages *some* task, so a task-specific ``None`` here means
+                that task's own compose declaration is missing.
+        """
+        driver = self._get_driver()
+        if stack_requirements is None or not driver.needs_container_stage():
+            return
+        superseded: set[tuple[Any, str]] = set()
+        driver_builds: list[Any] = []
+        for task in self.tasks:
+            staged = self._staged_for(task.task_id)
+            if staged is None:
+                raise RuntimeError(
+                    f"coding-harness driver active but stage_task({task.task_id!r}) "
+                    "returned None — every task must stage a compose file under "
+                    "this driver."
+                )
+            layers = driver.apply_container_layers(staged=staged)
+            driver_builds.extend(layers.stack_requirements)
+            # The driver rewrote ``agent_service`` on the staged compose
+            # to be a layered build; the adapter's engine-loop-shaped
+            # build on the same tuple no longer resolves and must not
+            # run before the base.
+            superseded.add((staged.compose_file, staged.agent_service))
+        adapter_builds = [
+            build
+            for build in stack_requirements.image_builds
+            if (getattr(build, "compose_file", None), getattr(build, "service", None))
+            not in superseded
+        ]
+        stack_requirements.image_builds = adapter_builds + driver_builds
 
     def _perform_declared_compose_image_builds(self, stack_requirements: Any) -> None:
         """Build adapter-declared compose images once per run, before any
@@ -1866,38 +2016,24 @@ class Orchestrator:
         if self.adapter is None:
             self.adapter = self._create_adapter()
 
-        # Coding-harness capability gate: refuse a run declaring
-        # ``models.agent.harness`` on an adapter that has not opted into the
-        # harness surface (``supports_coding_harness`` class attr from
-        # ``CodingHarnessAdapterMixin``). Fail here — before any container
-        # work — with a message that names the adapter and the harness slug
-        # so the operator sees which side of the pair does not match.
-        agent_model_config = self.config.models.get("agent") if self.config.models else None
-        if agent_model_config is not None and agent_model_config.harness is not None:
-            if not getattr(self.adapter, "supports_coding_harness", False):
-                adapter_type_name = (
-                    getattr(
-                        self.config.evaluation.harness_adapter,
-                        "type",
-                        "native",
-                    )
-                    if self.config.evaluation.harness_adapter
-                    else "native"
-                )
-                raise RuntimeError(
-                    f"models.agent.harness={agent_model_config.harness!r} but "
-                    f"adapter {adapter_type_name!r} does not opt into coding-"
-                    "harness mode. An adapter opts in by inheriting "
-                    "``tolokaforge_coding_harnesses.adapter_support."
-                    "CodingHarnessAdapterMixin`` (which sets "
-                    "``supports_coding_harness = True``). Either drop "
-                    "``models.agent.harness`` to run the engine's LLM loop, "
-                    "or switch to an adapter that supports the harness "
-                    "surface (currently: terminal_bench, native)."
-                )
-
         # Get task IDs from adapter
         task_ids = self.adapter.get_task_ids()
+
+        # Driver/adapter compatibility gate: a driver that needs a per-task
+        # container stage (coding-harness mode) requires the adapter to
+        # actually stage one. Probed against the first task, before any
+        # container work; ``attach`` raises naming the adapter and the
+        # compatible ones when the probe fails.
+        adapter_type_name = (
+            getattr(self.config.evaluation.harness_adapter, "type", "native")
+            if self.config.evaluation.harness_adapter
+            else "native"
+        )
+        driver = self._get_driver()
+        staged_ok = False
+        if driver.needs_container_stage() and task_ids:
+            staged_ok = self._staged_for(task_ids[0]) is not None
+        driver.attach(adapter_type_name, staged_ok=staged_ok)
 
         # Load each task
         strict = self.config.orchestrator.strict_task_load
@@ -1943,7 +2079,7 @@ class Orchestrator:
         offending = [
             task.task_id
             for task in self.tasks
-            if self.adapter.to_task_description(task.task_id).grading.llm_judge is not None
+            if self._task_description(task.task_id).grading.llm_judge is not None
         ]
         if offending:
             raise ValueError(
@@ -2022,10 +2158,23 @@ class Orchestrator:
         otherwise finds out while the trial's artifacts are written, with every
         token already spent.
         """
-        adapter_type = self._task_description(task.task_id).adapter_type
+        description = self._task_description(task.task_id)
+        adapter_type = description.adapter_type
         task_dir = self.adapter.get_task_dir(task.task_id)
         source = grading_source_under_adapter(task, task_dir, adapter_type)
         if source.kind is GradingSourceKind.WITHHELD:
+            # A driver whose ``decorate_task_description`` overrides
+            # ``grading`` owns the verdict without reading the pack's
+            # grading source. The coding-harness driver's
+            # ``test_execution`` grade comes from the verifier the
+            # trial writes, not from a ``grading.yaml`` on disk, so
+            # the pre-run source-file check has nothing to say. The
+            # engine-loop driver (default) grades from the pack's
+            # declared source, so the WITHHELD refusal still fires.
+            from tolokaforge.core.drivers.coding_harness import CodingHarnessDriver
+
+            if isinstance(self._get_driver(), CodingHarnessDriver):
+                return None
             return f"* {task.task_id} — {source.reason}"
         if source.path is None:
             self._warn_grading_unchecked(task.task_id, "grading", source.reason)
@@ -2219,6 +2368,7 @@ class Orchestrator:
                 stack_requirements = (
                     self.adapter.docker_stack_requirements() if self.adapter is not None else None
                 )
+                self._apply_driver_container_layers(stack_requirements)
                 core_stack_kwargs = (
                     stack_requirements.to_core_stack_kwargs() if stack_requirements else {}
                 )
@@ -2243,7 +2393,11 @@ class Orchestrator:
                     if self.config.evaluation.harness_adapter
                     else None
                 )
-                if _run_needs_docker_cli(adapter_type, self.tasks):
+                if _run_needs_docker_cli(
+                    adapter_type,
+                    self.tasks,
+                    needs_docker_cli=self._get_driver().needs_docker_cli(),
+                ):
                     self.logger.info(
                         "Docker CLI required in runner image "
                         "(terminal-bench adapter or compose-variant tools detected)"
@@ -2778,6 +2932,20 @@ class Orchestrator:
             return resolved_output_dir
         finally:
             self._close_trial_graders()
+            self._close_driver()
+
+    def _close_driver(self) -> None:
+        """Release whatever the run's :class:`AgentDriver` holds open.
+
+        A coding-harness driver may have launched a credential-shielding
+        gateway (a background HTTP server thread + port) at ``attach()``;
+        ``close()`` is a no-op for every other driver and idempotent
+        everywhere, so it is safe to call unconditionally at teardown.
+        """
+        try:
+            self._get_driver().close()
+        except Exception as exc:  # noqa: BLE001 — teardown must survive
+            self.logger.warning("Driver close() raised", error=str(exc))
 
     def _close_trial_graders(self) -> None:
         """Release every ``TrialGrader`` built during this orchestrator's
@@ -3033,6 +3201,7 @@ class Orchestrator:
             # teardown; each failure is logged rather than raised so the
             # outer flow still surfaces the original exception.
             self._close_trial_graders()
+            self._close_driver()
 
         self._publish_grading_completeness()
         summary = {

@@ -1,0 +1,38 @@
+# kimi-code via the shipped ``toloka_litellm`` gateway route (ADR-0037).
+# The registry entry declares ``gateway_route.gateway: toloka_litellm`` with
+# ``model_alias_pattern: "{model}-moonshotai-pinned"`` — LiteLLM enforces
+# first-party Moonshot AI serving on its side so this trial does not degrade
+# through OpenRouter's INT4-quantized ``novita`` route. Operators without
+# LiteLLM should not set ``gateway_route`` at all; the driver falls back
+# to the shielded ``credential_gateway`` sidecar path.
+
+models:
+  agent:
+    provider: "openrouter"
+    name: "moonshotai/kimi-k3"
+    coding_harness: "kimi-code"
+    gateway_route: "toloka_litellm"
+    temperature: 0.0
+    max_tokens: 4096
+
+compute:
+  workers: 1
+
+storage:
+  queue:
+    backend: sqlite
+
+orchestrator:
+  repeats: 1
+  strict_task_load: true
+  timeouts:
+    episode_s: 900
+    turn_s: 240
+
+evaluation:
+  projects:
+    - "examples/native/coding_harness"
+  tasks_glob: "task.yaml"
+  output_dir: "results/native-coding-harness-kimi"
+  harness_adapter:
+    type: "native"

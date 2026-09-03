@@ -102,38 +102,47 @@ def enforce_network_policy(
     runner_service: str,
     allowlist: list[str],
     restricted_services: frozenset[str] = frozenset(),
+    bridged_services: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Return a compose doc rewritten to enforce ``policy``.
 
     ``full_internet`` returns ``compose_doc`` unchanged (same object);
-    ``allowlist`` and ``restricted_services`` are ignored. ``no_internet``
-    returns a deep copy in which every service **not named in
-    ``restricted_services``** joins the injected
+    ``allowlist``, ``restricted_services``, and ``bridged_services`` are
+    all ignored. ``no_internet`` returns a deep copy in which every
+    service **not named in ``restricted_services``** joins the injected
     :data:`NETPOLICY_INTERNAL_NETWORK` (``internal: true`` — no egress),
     any task-declared network is forced ``internal: true`` too, and
-    ``runner_service`` additionally joins the non-internal
-    :data:`NETPOLICY_EDGE_NETWORK`; ``allowlist`` is ignored.
+    ``runner_service`` **plus every name in ``bridged_services``**
+    additionally joins the non-internal :data:`NETPOLICY_EDGE_NETWORK`;
+    ``allowlist`` is ignored.
 
     ``limited_internet`` returns a deep copy that keeps the same internal/edge
     topology but additionally injects the :data:`NETPOLICY_PROXY_SERVICE`
-    forward proxy (on both networks) and points every non-restricted
-    application service's ``HTTP(S)_PROXY`` at it; restricted services get
-    neither the injected-net attach nor the proxy env — they see only the
-    networks their compose entry declares. The runner keeps direct edge egress
-    and is not proxied. The proxy's squid config — which encodes ``allowlist``
-    — is written separately by :func:`apply_network_policy_to_compose_file` /
+    forward proxy (on both networks) and points every non-restricted,
+    non-bridged application service's ``HTTP(S)_PROXY`` at it; restricted
+    services get neither the injected-net attach nor the proxy env — they see
+    only the networks their compose entry declares. The runner and any
+    ``bridged_services`` keep direct edge egress and are not proxied. The
+    proxy's squid config — which encodes ``allowlist`` — is written
+    separately by :func:`apply_network_policy_to_compose_file` /
     :func:`render_squid_config`; this function only rewrites topology.
 
     ``runner_service`` is guaranteed present in ``services``, and never
     contained in ``restricted_services``, by :class:`EnvironmentManifest`
-    validation.
+    validation. ``bridged_services`` names may or may not be present in
+    ``services`` — a name not in ``services`` is a silent no-op, because
+    a caller like the coding-harness driver adds its sidecar to the
+    compose in the same rewrite pass and passes the manifest through
+    unchanged; the sidecar's presence is checked at the driver level.
     """
     if policy is NetworkPolicy.FULL_INTERNET:
         return compose_doc
     doc = copy.deepcopy(compose_doc)
     if policy is NetworkPolicy.LIMITED_INTERNET:
-        return _enforce_limited_internet(doc, runner_service, allowlist, restricted_services)
-    return _enforce_no_internet(doc, runner_service, restricted_services)
+        return _enforce_limited_internet(
+            doc, runner_service, allowlist, restricted_services, bridged_services
+        )
+    return _enforce_no_internet(doc, runner_service, restricted_services, bridged_services)
 
 
 def _inject_isolation_networks(doc: dict[str, Any]) -> None:
@@ -151,7 +160,10 @@ def _inject_isolation_networks(doc: dict[str, Any]) -> None:
 
 
 def _enforce_no_internet(
-    doc: dict[str, Any], runner_service: str, restricted_services: frozenset[str]
+    doc: dict[str, Any],
+    runner_service: str,
+    restricted_services: frozenset[str],
+    bridged_services: frozenset[str],
 ) -> dict[str, Any]:
     _inject_isolation_networks(doc)
     services: dict[str, Any] = doc["services"]
@@ -159,7 +171,7 @@ def _enforce_no_internet(
         if service_name in restricted_services:
             continue
         attachments = [NETPOLICY_INTERNAL_NETWORK]
-        if service_name == runner_service:
+        if service_name == runner_service or service_name in bridged_services:
             attachments.append(NETPOLICY_EDGE_NETWORK)
         service["networks"] = _merge_service_networks(service.get("networks"), attachments)
     return doc
@@ -170,6 +182,7 @@ def _enforce_limited_internet(
     runner_service: str,
     allowlist: list[str],
     restricted_services: frozenset[str],
+    bridged_services: frozenset[str],
 ) -> dict[str, Any]:
     if not allowlist:
         raise ValueError(
@@ -183,7 +196,7 @@ def _enforce_limited_internet(
     for service_name, service in services.items():
         if service_name in restricted_services:
             continue
-        if service_name == runner_service:
+        if service_name == runner_service or service_name in bridged_services:
             service["networks"] = _merge_service_networks(
                 service.get("networks"), [NETPOLICY_INTERNAL_NETWORK, NETPOLICY_EDGE_NETWORK]
             )
@@ -228,19 +241,72 @@ def _merge_service_env(existing: Any, values: Mapping[str, str]) -> Any:
     same object, so an anchored ``environment:`` mapping shared between
     services would carry an in-place update into every service aliasing it.
     Callers assign the return value onto the one service they mean.
+
+    List-shape handling drops any prior ``KEY=…`` entry whose ``KEY`` is in
+    ``values`` before appending the new entries. Docker's last-wins semantics
+    for env lists would otherwise leave a duplicate leftover that reads as a
+    bug to a compose-file auditor, and the mapping branch's ``{**a, **b}``
+    already has the clean-overwrite semantics we want here.
     """
     if isinstance(existing, list):
-        return [*existing, *(f"{key}={value}" for key, value in values.items())]
+        override_keys = set(values.keys())
+        filtered = [
+            entry
+            for entry in existing
+            if not (isinstance(entry, str) and entry.split("=", 1)[0] in override_keys)
+        ]
+        return [*filtered, *(f"{key}={value}" for key, value in values.items())]
     if isinstance(existing, Mapping):
         return {**existing, **values}
     return dict(values)
 
 
 def _merge_proxy_env(existing: Any, proxy_url: str, no_proxy: str) -> Any:
-    """Add the proxy env vars to a service-level ``environment:`` value."""
+    """Add the proxy env vars to a service-level ``environment:`` value.
+
+    Any ``NO_PROXY`` / ``no_proxy`` value already carried by ``existing`` is
+    unioned into the merged value (comma-separated, order-preserving with
+    dedup) rather than overwritten. A caller upstream — the coding-harness
+    driver's credential shield, for example — can pre-declare a hostname it
+    needs to bypass the squid forward proxy for (its gateway sidecar,
+    reachable direct over the shared netpolicy internal network), and the
+    netpolicy enforcement respects it here.
+    """
+    caller_no_proxy = _extract_no_proxy(existing)
+    merged_no_proxy = _union_no_proxy(caller_no_proxy, no_proxy)
     values = dict.fromkeys(_PROXY_ENV_KEYS, proxy_url)
-    values.update(dict.fromkeys(_NO_PROXY_KEYS, no_proxy))
+    values.update(dict.fromkeys(_NO_PROXY_KEYS, merged_no_proxy))
     return _merge_service_env(existing, values)
+
+
+def _extract_no_proxy(existing: Any) -> str:
+    """Read whatever NO_PROXY value ``existing`` already carries (mapping or
+    ``KEY=value`` list shape). Returns an empty string when absent."""
+    if isinstance(existing, Mapping):
+        for key in _NO_PROXY_KEYS:
+            value = existing.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return ""
+    if isinstance(existing, list):
+        for entry in existing:
+            if not isinstance(entry, str) or "=" not in entry:
+                continue
+            key, _, value = entry.partition("=")
+            if key in _NO_PROXY_KEYS and value:
+                return value
+    return ""
+
+
+def _union_no_proxy(caller: str, netpolicy: str) -> str:
+    """Order-preserving union of two comma-separated no_proxy strings."""
+    seen: dict[str, None] = {}
+    for source in (caller, netpolicy):
+        for token in source.split(","):
+            trimmed = token.strip()
+            if trimmed and trimmed not in seen:
+                seen[trimmed] = None
+    return ",".join(seen)
 
 
 def render_squid_config(allowlist: list[str], service_names: list[str]) -> str:
@@ -322,6 +388,7 @@ def apply_network_policy_to_compose_file(
     runner_service: str,
     allowlist: list[str],
     restricted_services: frozenset[str] = frozenset(),
+    bridged_services: frozenset[str] = frozenset(),
 ) -> None:
     """Read ``compose_file``, apply :func:`enforce_network_policy`, and write
     the result back in place. ``full_internet`` leaves the file byte-identical
@@ -334,7 +401,7 @@ def apply_network_policy_to_compose_file(
     with compose_file.open() as f:
         doc = yaml.safe_load(f)
     transformed = enforce_network_policy(
-        doc, policy, runner_service, allowlist, restricted_services
+        doc, policy, runner_service, allowlist, restricted_services, bridged_services
     )
     if transformed is doc:
         return
@@ -445,7 +512,11 @@ def _refuse_credential_exposure(services: Mapping[str, Any], compose_file: Path)
             )
 
 
-def inject_runner_credentials(compose_file: Path, runner_service: str) -> None:
+def inject_runner_credentials(
+    compose_file: Path,
+    runner_service: str,
+    stripped_keys: frozenset[str] = frozenset(),
+) -> None:
     """Give ``runner_service`` the host's credential payload, in place.
 
     The task-declared stack's runner runs the same in-container LLM-as-judge
@@ -484,7 +555,7 @@ def inject_runner_credentials(compose_file: Path, runner_service: str) -> None:
             f"runner_service {runner_service!r} is not declared in the compose file "
             f"{compose_file.name!r}; declared services are {sorted(services)!r}."
         )
-    payload = container_secrets_env()
+    payload = container_secrets_env(stripped=stripped_keys)
     if not payload:
         return
     escaped = {key: compose_escaped(value) for key, value in payload.items()}
