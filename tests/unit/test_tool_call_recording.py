@@ -206,12 +206,12 @@ class _ScriptedClient:
     def classify_loop_error(self, exc: Exception) -> TerminationDecision:
         return classify_loop_error(exc, ())
 
-    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict] | None:
-        """Return ``None`` so the loop takes its no-override branch: arguments are
-        validated against each tool's own declared schema, which is what these
-        recording-shape tests fix as the reference behaviour.
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
+        """Return an empty map: the loop's per-tool ``.get()`` yields ``None``,
+        so arguments are validated against each tool's own declared schema —
+        the reference behaviour these recording-shape tests pin.
         """
-        return None
+        return {}
 
 
 class _CountingSink(MetricsSink):

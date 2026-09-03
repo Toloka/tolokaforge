@@ -250,8 +250,8 @@ class _ScriptedClient:
 
         return classify_loop_error(exc, ())
 
-    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict] | None:
-        return None
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
+        return {}
 
 
 _JUDGE_MODEL = ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0)
@@ -638,8 +638,8 @@ class _RaisingClient:
 
         return classify_loop_error(exc, ())
 
-    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict] | None:
-        return None
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
+        return {}
 
 
 def _install_raising_client(monkeypatch: pytest.MonkeyPatch) -> None:

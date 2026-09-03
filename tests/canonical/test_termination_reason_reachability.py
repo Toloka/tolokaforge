@@ -156,8 +156,8 @@ class _ScriptedAgent:
     def classify_loop_error(self, exc: Exception) -> TerminationDecision:
         return classify_loop_error(exc, ())
 
-    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict] | None:
-        return None
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
+        return {}
 
 
 def _text(body: str) -> GenerationResult:

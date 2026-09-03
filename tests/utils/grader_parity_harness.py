@@ -300,8 +300,8 @@ class _ScriptedClient:
 
         return classify_loop_error(exc, ())
 
-    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict] | None:
-        return None
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
+        return {}
 
 
 class _FakeDBServiceClient:

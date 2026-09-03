@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -303,7 +303,7 @@ class ToolCallingLoop:
     # schema. When the whole field is ``None``, no schema is passed and the
     # executor validates against the tool's declared schema — the path taken by
     # tests that construct the loop without an LLM in scope.
-    validation_schemas_by_tool: Mapping[str, dict[str, Any]] | None = None
+    validation_schemas_by_tool: dict[str, dict[str, Any]] | None = None
     # Bounded API-error retry sleep seam. Parallels ``LLMClient._retry_sleep``:
     # tests bind a no-op so the loop's retry backoff is instant. See
     # :attr:`LoopConfig.api_error_backoff_s` for the wait, and the retry class

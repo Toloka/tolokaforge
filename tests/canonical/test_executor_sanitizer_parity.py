@@ -27,8 +27,8 @@ locally with:
 The local extensions live in this module rather than in the shared file
 because the shared file drives snapshot tests
 (``test_sanitizer_contract_snapshot``) whose baselines are keyed by preset
-name and tool count; extending them here keeps this stage's landing
-snapshot-free.
+name and tool count; extending them here avoids regenerating those
+baselines.
 """
 
 from __future__ import annotations

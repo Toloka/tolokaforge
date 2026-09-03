@@ -378,7 +378,7 @@ wired at construction from `LLMClient.sanitize_tools_for_execution(tools)`.
 This invariant applies wherever `ToolExecutor` runs (LLM-judge tool loop,
 harness CLI invocations that go through the loop, direct instantiations).
 The runner-side gRPC path does no jsonschema validation at all; closing
-that asymmetry is tracked at [#976](https://github.com/toloka/tolokaforge/issues/976).
+that asymmetry is tracked at [#976](https://github.com/Toloka/tolokaforge/issues/976).
 
 ### `StrictSchema` contract — preserve information by default, fail loudly on hazards
 
