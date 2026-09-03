@@ -258,7 +258,7 @@ forbidden_modules =
 allow_indirect_imports = false
 
 
-# Grader-kinds purity (issue #1358).
+# Grader-kinds purity.
 #
 # The typed grader-kind package (``tolokaforge.core.grading.kinds``) is a
 # pure library on the topology-neutral seam ADR-0040 draws: every kind

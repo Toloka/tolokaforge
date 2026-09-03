@@ -290,7 +290,7 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
                 exit_code=-1,
                 reward_bytes=b"",
                 stdout="",
-                script_exec_error=f"{type(exc).__name__}: {exc}",
+                script_exec_error=str(exc),
             )
 
         try:
@@ -299,7 +299,16 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
                 reward_read_timeout,
             )
             reward_bytes = reward_str.encode()
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # Reward-cat is a diagnostic read; the fallback bytes match the shell
+            # ``|| echo 0.0`` path so the kind renders the same "0.0" reward.
+            logger.warning(
+                "SubstrateService.RunTestSuite: reward-cat raised for trial %r: "
+                "%s: %s; falling back to b'0.0\\n'",
+                request.trial_id,
+                type(exc).__name__,
+                exc,
+            )
             reward_bytes = b"0.0\n"
 
         return pb2.RunTestSuiteResponse(

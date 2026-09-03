@@ -134,7 +134,7 @@ def test_script_exec_error_maps_to_success_true_with_execution_failed_reasons(
             stdout="",
             tool_absent=False,
             tool_absent_reason="",
-            script_exec_error="TimeoutExpired: bash test.sh timed out after 300s",
+            script_exec_error="Command 'bash test.sh' timed out after 300.0 seconds",
         ),
     )
 
@@ -144,7 +144,7 @@ def test_script_exec_error_maps_to_success_true_with_execution_failed_reasons(
     assert response.grade.binary_pass is False
     assert response.grade.score == pytest.approx(0.0)
     assert response.grade.reasons == (
-        "test.sh execution failed: TimeoutExpired: bash test.sh timed out after 300s"
+        "test.sh execution failed: Command 'bash test.sh' timed out after 300.0 seconds"
     )
 
 

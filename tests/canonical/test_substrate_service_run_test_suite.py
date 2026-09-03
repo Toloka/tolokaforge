@@ -158,11 +158,16 @@ def test_happy_path_rc_zero_with_reward_present() -> None:
 def test_rc_nonzero_with_reward_is_surfaced_by_reward_not_exit_code() -> None:
     """The servicer does NOT gate on ``exit_code`` — a rc≠0 script that
     wrote a valid reward.txt is still surfaced with the reward on the wire.
-    ``exit_code`` rides on the wire but ``script_exec_error`` is empty; the
-    kind consuming this result is responsible for scoring by the reward."""
+    ``exit_code`` rides on the wire but ``script_exec_error`` is empty.
+
+    The stub emits the ``\\n[exit code: N]\\n{stderr}`` suffix the real
+    :meth:`DockerComposeExecToolWrapper._exec_sync_with_rc` appends on
+    rc≠0, so the wire stdout preserves the exit-code marker — the same
+    suffix a reader would see in ``Grade.reasons`` when the kind renders
+    the merged stdout in its "test output (truncated):" block."""
     tool = _StubBashTool(
         responses=[
-            (1, "FAIL: 1/42 tests"),
+            (1, "FAIL: 1/42 tests\n[exit code: 1]\n"),
             (0, "0.5\n"),
         ]
     )
@@ -171,7 +176,7 @@ def test_rc_nonzero_with_reward_is_surfaced_by_reward_not_exit_code() -> None:
 
     assert response.exit_code == 1
     assert response.reward_bytes == b"0.5\n"
-    assert response.stdout == "FAIL: 1/42 tests"
+    assert response.stdout == "FAIL: 1/42 tests\n[exit code: 1]\n"
     assert response.script_exec_error == ""
 
 
@@ -205,7 +210,10 @@ def test_script_exec_exception_populates_error_field_without_grpc_internal() -> 
     with _running_servicer(agent_tools={"bash_env": tool}) as (stub, _runner):
         response = stub.RunTestSuite(_request())
 
-    assert response.script_exec_error.startswith("TimeoutExpired:")
+    assert response.script_exec_error == str(
+        subprocess.TimeoutExpired(cmd="bash test.sh", timeout=300.0)
+    )
+    assert "TimeoutExpired" not in response.script_exec_error
     assert response.exit_code == -1
     assert response.reward_bytes == b""
     assert response.stdout == ""

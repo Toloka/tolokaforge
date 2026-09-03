@@ -184,9 +184,12 @@ def test_tool_absent_raises_grader_kind_refused_with_reason() -> None:
 def test_script_exec_error_returns_grade_with_execution_failed_reasons() -> None:
     """A populated ``script_exec_error`` on the substrate result renders
     exactly ``Grade(0.0, "test.sh execution failed: {msg}")`` — NOT the
-    "test-execution reward" reasons format."""
+    "test-execution reward" reasons format. ``script_exec_error`` carries
+    ``str(exception)`` verbatim (no class-name prefix) so the reasons
+    string matches the ``{e}`` interpolation shape the wire consumer
+    expects."""
     substrate = _ScriptedSubstrate(
-        _result(script_exec_error="TimeoutExpired: Command timed out after 300s"),
+        _result(script_exec_error="Command 'bash test.sh' timed out after 300.0 seconds"),
     )
     grade = _evaluate(substrate)
 
@@ -195,7 +198,7 @@ def test_script_exec_error_returns_grade_with_execution_failed_reasons() -> None
     assert grade.score == pytest.approx(0.0)
     assert grade.components.custom_checks == pytest.approx(0.0)
     assert grade.reasons == (
-        "test.sh execution failed: TimeoutExpired: Command timed out after 300s"
+        "test.sh execution failed: Command 'bash test.sh' timed out after 300.0 seconds"
     )
 
 

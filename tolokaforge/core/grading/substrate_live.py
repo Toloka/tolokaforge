@@ -167,7 +167,10 @@ class LiveRunnerCallbackGradingSubstrate:
         reward_read_timeout_s: float,
     ) -> RunTestSuiteResult:
         return self._client.run_test_suite(
-            script_path, reward_path, timeout_s, reward_read_timeout_s
+            script_path=script_path,
+            reward_path=reward_path,
+            timeout_s=timeout_s,
+            reward_read_timeout_s=reward_read_timeout_s,
         )
 
     def close(self) -> None:

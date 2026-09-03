@@ -1722,7 +1722,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 stdout="",
                 tool_absent=False,
                 tool_absent_reason="",
-                script_exec_error=f"{type(exc).__name__}: {exc}",
+                script_exec_error=str(exc),
             )
 
         try:
@@ -1731,7 +1731,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 reward_read_timeout_s,
             )
             reward_bytes = reward_str.encode()
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # Reward-cat is a diagnostic read; the fallback bytes match the shell
+            # ``|| echo 0.0`` path so the kind renders the same "0.0" reward.
+            logger.warning(
+                "RunnerServiceImpl._run_test_suite_via_agent_tools: reward-cat raised "
+                "for trial %r: %s: %s; falling back to b'0.0\\n'",
+                trial_id,
+                type(exc).__name__,
+                exc,
+            )
             reward_bytes = b"0.0\n"
 
         return RunTestSuiteResult(

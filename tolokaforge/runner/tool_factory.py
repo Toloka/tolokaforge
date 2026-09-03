@@ -1180,9 +1180,10 @@ class DockerComposeExecToolWrapper(ToolWrapper):
         Sibling of :meth:`_exec_sync`. The two-arg-tuple return exposes the
         returncode to callers that need to render it (e.g. the substrate's
         test-suite RPC that ships the exit code on the wire) without gating on
-        it. rc=0 → merged output is just stdout; rc≠0 → stderr is appended
-        after stdout (no ``[exit code: N]`` annotation — the returncode
-        itself rides in the tuple).
+        it. rc=0 → merged output is just stdout; rc≠0 → the same
+        ``\\n[exit code: N]\\n{stderr}`` suffix :meth:`_exec_sync` uses is
+        appended so callers that render the merged string in a grade's reasons
+        block see the exit-code marker in the same place.
         """
         if self._container is None:
             raise ToolExecutionError(
@@ -1195,7 +1196,9 @@ class DockerComposeExecToolWrapper(ToolWrapper):
             text=True,
             timeout=timeout,
         )
-        merged = proc.stdout + (proc.stderr if proc.returncode != 0 else "")
+        merged = proc.stdout
+        if proc.returncode != 0:
+            merged += f"\n[exit code: {proc.returncode}]\n{proc.stderr}"
         return proc.returncode, merged
 
 
