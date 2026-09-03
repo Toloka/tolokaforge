@@ -2,16 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## v0.22.3 (2026-09-03)
 
 ### Feat
 
-- **grading**: trial bundle records the effective judge system prompt verbatim, and `tolokaforge rejudge` reuses it. `trials/{task_id}/{trial_index}/prompts.yaml` grows a third top-level key `judge_prompt: str | None` alongside the existing `system_prompt` and `user_system_prompt`, populated from `_compose_judge_system_prompt(customization.system_prompt)` for the trial's effective `LLMJudgeConfig` (or `null` when no LLM judge is configured). Analysts see the exact contract the judge would have graded under without trusting the current engine constant, and auto-fail trials record the contract they would have graded under (derived from `grading_config`, not from a judge invocation), so bundle shape stays consistent across every trial of a run. Replay now prefers the bundle-recorded composed prompt over the current engine's constant: `LLMJudge` grows a mutually-exclusive `explicit_system_prompt: str | None` construction kwarg used verbatim in place of the run-time composition (`ValueError` at construction time if both prompt seams are set), and `ProvenanceSource.BUNDLE` on `replay_provenance.yaml`'s new `judge_prompt_source` key stamps trials replayed under the recorded prompt. `ReplayProvenance` gains a one-way `judge_prompt_source is BUNDLE ⟹ no legacy custom-prompt source` validator (deliberately not a biconditional, so legacy default-prompt trials still validate). Pre-`judge_prompt` bundles fall through to the existing `_resolve_custom_prompt` path unchanged. Migrations: `prompts.yaml.judge_prompt` and `replay_provenance.yaml.judge_prompt_source` are both additive-with-default — the new keys are always present in artifacts this version and later write; older readers ignore unknown top-level YAML keys, so no reader-side break is possible. No wire change (the `JudgeReport` proto stays at its two bool flags). New public helper `tolokaforge.core.grading.judge.effective_judge_system_prompt(llm_judge_config)` exports the derivation for external tools (#1446).
+- **grading**: engine-eval-hardening — hash/diff parity + schema-executor parity + bundle-native judge replay (M#43) (#1481)
 
 ### Fix
 
-- **grading**: runner-side `compute_state_diff` reports an `order_mismatch` verdict on the same-set-different-order class, so `hash_score: 0.0` never sits beside a `state_diff` that reads as identical. `TableDiff` gains an additive `order_mismatch: bool = False` field (JSON-wire additive, older readers ignore the extra key); `StateDiff.identical` widens to include the flag (#1444).
-- **tools**: `ToolExecuting.execute` grows a keyword-only `validation_schema: dict[str, Any] | None = None` parameter — when supplied, `ToolExecutor.execute` validates arguments against it instead of the tool's own `get_schema()["function"]["parameters"]`. `ToolCallingLoop` gains a `validation_schemas_by_tool` field wired at both loop construction sites (agent runner + rubric judge) from `LLMClient.sanitize_tools_for_execution(tools)`, so the executor validates against the sanitized schema the model actually saw. Closes the `INVALID_ARGUMENTS`-misroute class where a Gemini-flattened `oneOf`+`discriminator` tool argument conformed to the model's shown surface but was rejected by the executor's validation against the original nested shape. `DockerRunnerAdapter.execute` names `validation_schema` explicitly and discards it; the runner-side gRPC path does no jsonschema validation (#976). General `**kwargs`-smuggling hazard tracked at #1474 (#1445).
+- **tests**: unstick pre-existing test-smoke failures on main (#1475)
 
 ## v0.22.2 (2026-09-02)
 
