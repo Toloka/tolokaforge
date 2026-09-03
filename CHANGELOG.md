@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.22.4 (2026-09-03)
+
+### Fix
+
+- **grading**: surrogate-id-aware row pairing on _records_might_match (#1483)
+
 ## v0.22.3 (2026-09-03)
 
 ### Feat
