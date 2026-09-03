@@ -1,11 +1,11 @@
 """Surrogate-id-aware row pairing contract for the runner-side state diff.
 
-Locks the invariant: two rows that share ANY id-suffixed field with equal
-values pair as ``different`` (a row whose surrogate ``id`` was reassigned
-by the substrate), not as a ``missing`` + ``extra`` pair. Prior behaviour
-returned False on the first non-null id-field mismatch, which fabricated a
-false diff whenever the alphabetically-first shared id-field was the
-substrate-generated surrogate.
+Locks the invariant: two rows pair as ``different`` (one paired entry with
+a field diff) rather than ``missing`` + ``extra`` (two unpaired entries)
+whenever ANY shared ``_id``-suffixed field carries equal values. A row whose
+substrate-generated surrogate ``id`` was reassigned still pairs with its
+golden counterpart when a co-recorded business id (``customer_id``,
+``order_id``, ``sku_id``, …) is stable.
 
 Sibling to ``test_hash_verdict_parity``: both lock the runner-side diff's
 verdict shape, this one on the row-pairing branch.
@@ -26,11 +26,11 @@ def test_surrogate_id_swap_pairs_via_shared_business_id() -> None:
     """A row whose ``id`` was reassigned but whose ``order_id`` is stable
     pairs as ``different``, not as a missing+extra false diff.
 
-    The prior implementation checked shared id-suffixed fields in sorted
-    order and returned on the first non-null pair. Here the sorted order
-    is ``["id", "order_id"]``; ``id`` differs (1 vs 42) and the old code
-    returned False, so the two rows landed in ``missing`` and ``extra``.
-    Correct behaviour: keep iterating and accept the ``order_id`` match.
+    The values are chosen so the sorted id-field order is ``["id",
+    "order_id"]`` and the mismatching field (``id``) is examined first.
+    Reaching ``order_id`` and accepting its match is the invariant this
+    test locks — an implementation that stops at the first non-null pair
+    would fail here.
     """
     golden = {"id": 1, "order_id": "ord-A", "amount": 100}
     trial = {"id": 42, "order_id": "ord-A", "amount": 100}
@@ -101,3 +101,27 @@ def test_any_shared_id_field_can_carry_the_match(id_field: str) -> None:
     trial: dict[str, Any] = {"id": 42, id_field: "shared"}
 
     assert _records_might_match(golden, trial) is True
+
+
+def test_every_id_field_null_on_at_least_one_side_falls_to_threshold() -> None:
+    """When every shared id-suffixed field has ``None`` on at least one side,
+    the null-skip path exhausts the id iteration cleanly and the fallback
+    threshold decides. Locks that a regression swapping ``continue`` for a
+    return does not sneak past the id-match test suite."""
+    golden = {"id": None, "customer_id": None, "amount": 100, "note": "same"}
+    trial = {"id": 42, "customer_id": "cust-X", "amount": 100, "note": "same"}
+
+    # Every id-field pair has at least one None → skipped. Common fields:
+    # {id, customer_id, amount, note}. Equal: {amount, note} = 2. 2 >= 4 * 0.5.
+    assert _records_might_match(golden, trial) is True
+
+
+def test_every_id_field_null_below_threshold_returns_false() -> None:
+    """Companion to the null-skip case: when the fallback threshold also
+    rejects, the pairing returns False rather than silently pairing on the
+    null id-fields."""
+    golden = {"id": None, "customer_id": None, "amount": 100, "note": "alpha"}
+    trial = {"id": 42, "customer_id": "cust-X", "amount": 999, "note": "beta"}
+
+    # Every id-field pair skipped. Common fields: 4. Equal: 0. 0 < 2.0 → False.
+    assert _records_might_match(golden, trial) is False
