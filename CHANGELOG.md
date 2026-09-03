@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Fix
+
+- **grading**: runner-side `compute_state_diff` reports an `order_mismatch` verdict on the same-set-different-order class, so `hash_score: 0.0` never sits beside a `state_diff` that reads as identical. `TableDiff` gains an additive `order_mismatch: bool = False` field (JSON-wire additive, older readers ignore the extra key); `StateDiff.identical` widens to include the flag (#1444).
+
 ## v0.22.2 (2026-09-02)
 
 ### Feat
