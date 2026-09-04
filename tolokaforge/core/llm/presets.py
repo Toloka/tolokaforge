@@ -1051,6 +1051,7 @@ def build_capabilities(
     api_call_retries = cfg.get("api_call_retries")
     api_call_wall_timeout_s = cfg.get("api_call_wall_timeout_s")
     empty_retry_count = cfg.get("empty_retry_count")
+    tool_output_max_chars = cfg.get("tool_output_max_chars")
     openrouter_defaults_cfg = cfg.get("openrouter_defaults")
 
     return ModelCapabilities(
@@ -1069,6 +1070,9 @@ def build_capabilities(
             float(api_call_wall_timeout_s) if api_call_wall_timeout_s is not None else None
         ),
         empty_retry_count=int(empty_retry_count) if empty_retry_count is not None else 0,
+        tool_output_max_chars=(
+            int(tool_output_max_chars) if tool_output_max_chars is not None else None
+        ),
         openrouter_defaults=(
             OpenRouterConfig(**openrouter_defaults_cfg) if openrouter_defaults_cfg else None
         ),

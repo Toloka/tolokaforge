@@ -19,6 +19,15 @@ it would send a request whose tail is an empty ``role=model`` turn on the next
 iteration and providers such as Gemini reject that as an API error rather than
 pass it through.
 
+The loop also owns a defensive bound on tool-output size that lands in the
+message history: when ``LoopConfig.tool_output_max_chars`` is set,
+:meth:`ToolCallingLoop._execute_tool_calls` middle-elides the ``role=tool``
+message ``content`` via
+:func:`~tolokaforge.core.tool_output_truncation.keep_head_and_tail` before the
+message is appended, so accumulated context stays predictable across turns.
+The recorder and the grader still see the full text — the cap sits below the
+recorder's :func:`resolve_tool_output` read.
+
 * :class:`LoopLLMClient` — the provider-agnostic generate seam (the agent's
   :class:`~tolokaforge.core.llm.client.LLMClient` already satisfies it).
 * :class:`TerminationPolicy` — a callback ``(result, turn, messages) ->
@@ -68,6 +77,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.run_display_events import LLMCallObservation
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
+from tolokaforge.core.tool_output_truncation import keep_head_and_tail
 from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
 
@@ -110,6 +120,13 @@ class LoopConfig:
     ``API_TIMEOUT`` and ``TRIAL_LOST`` stay one-shot terminal because each owns
     a dedicated path (typed 429 handling, transport-timeout retry, substrate
     re-registration) and retrying them here would double-count them.
+
+    ``tool_output_max_chars`` caps the ``role=tool`` message ``content`` at
+    that many chars via
+    :func:`~tolokaforge.core.tool_output_truncation.keep_head_and_tail` before
+    the message is appended; ``None`` (the default) threads tool output
+    through verbatim. The cap is a defensive backstop above any per-tool
+    truncation the tool applies to its own output.
     """
 
     max_turns: int = 50
@@ -117,6 +134,7 @@ class LoopConfig:
     api_error_retries: int = 1
     api_error_backoff_s: float = 1.0
     empty_retry_count: int = 0
+    tool_output_max_chars: int | None = None
 
 
 @dataclass(frozen=True)
@@ -561,19 +579,46 @@ class ToolCallingLoop:
             else:
                 self.logger.warning("Tool execution failed", tool=tc.name, error=tool_result.error)
 
+            raw_content = (
+                tool_result.output
+                if tool_result.success
+                else f"Error: {resolve_tool_output(tool_result)}"
+            )
+            content = self._cap_tool_message_content(tc.name, raw_content)
+
             messages.append(
                 Message(
                     role=MessageRole.TOOL,
-                    content=(
-                        tool_result.output
-                        if tool_result.success
-                        else f"Error: {resolve_tool_output(tool_result)}"
-                    ),
+                    content=content,
                     content_blocks=(tool_result.content_blocks if tool_result.success else None),
                     tool_call_id=tc.id,
                     ts=_now(),
                 )
             )
+
+    def _cap_tool_message_content(self, tool_name: str, raw: str) -> str:
+        """Apply the loop's tool-output cap to a ``role=tool`` message content.
+
+        Runs :func:`keep_head_and_tail` when
+        :attr:`LoopConfig.tool_output_max_chars` is set; a ``None`` cap threads
+        the content verbatim. The recorder read at
+        :meth:`_execute_tool_calls` runs earlier against the untruncated tool
+        result, so the trial's ordered record and the grader inputs are
+        unaffected by the cap.
+        """
+        cap = self.config.tool_output_max_chars
+        if cap is None:
+            return raw
+        capped, omitted = keep_head_and_tail(raw, cap)
+        if omitted:
+            self.logger.info(
+                "Capped tool output before append",
+                tool=tool_name,
+                cap_chars=cap,
+                omitted_chars=omitted,
+                original_chars=len(raw),
+            )
+        return capped
 
     def _maybe_recover_arguments(self, tc: Any, assistant_text: str) -> None:
         if self.normalize_tool_arguments is None:
