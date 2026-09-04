@@ -26,7 +26,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from tolokaforge.core.compose_materialisation import LogCaptureConfig
 from tolokaforge.core.models.task_config import SeedRef
@@ -185,6 +185,35 @@ class ComposedEnvHandle:
     trial_stack_handles: tuple[StackHandle, ...]
     trial_endpoints: EnvEndpoints | None
     trial_runner_client: RunnerClient | None
+
+    @property
+    def compose(self) -> Any:
+        """Return the sole trial stack's private compose object.
+
+        Convenience for the single-stack path — a caller that already knows
+        the trial owns exactly one stack (the common case for
+        :class:`PerTrialRuntimeBackend`) reads ``handle.compose`` instead
+        of ``handle.trial_stack_handles[0].compose``. Raises when the
+        trial owns zero or more than one stack, so a multi-stack trial's
+        caller cannot silently pick the first stack's compose and skip
+        the rest.
+
+        The return type is the materialiser's private compose object
+        (``testcontainers.compose.DockerCompose`` for the built-in
+        materialiser); consumers reach into materialiser-specific state
+        at their own risk. This mirrors the pre-composition-plan
+        ``EnvHandle.compose`` convenience and preserves byte-parity for
+        scalar-form (single-stack) callers.
+        """
+        if len(self.trial_stack_handles) != 1:
+            raise RuntimeError(
+                f"ComposedEnvHandle.compose: this trial owns "
+                f"{len(self.trial_stack_handles)} stack(s); the "
+                "``compose`` convenience is single-stack only. Iterate "
+                "``trial_stack_handles`` explicitly to pick the stack "
+                "you want."
+            )
+        return self.trial_stack_handles[0].compose  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
