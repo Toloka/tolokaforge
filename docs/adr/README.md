@@ -76,3 +76,4 @@ Note: number 0043 is intentionally skipped — reserved for a draft that never l
 | [0041](0041-zero-coverage-exit-signal.md) | Zero-coverage exit signal on `run_state.json` | Accepted |
 | [0042](0042-adapter-blind-authoring-gate.md) | Adapter-blind authoring gate — three new `BaseAdapter` hooks + `SkipKind` split | Accepted |
 | [0044](0044-composition-plan-runtime.md) | Composition-plan runtime — redesigned `SharedStackRuntimeBackend` with per-stack lifecycle scopes and detachable adapters | Proposed |
+| [0045](0045-content-loop-heuristic-deleted.md) | StuckDetector runs one heuristic — repeated identical result | Accepted |

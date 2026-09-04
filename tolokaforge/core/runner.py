@@ -826,9 +826,9 @@ class TrialRunner:
         Stuck sets ``metrics.stuck_detected`` as a side effect, which is why it
         lives here rather than in the policy.
         """
-        del result, turn
+        del result, turn, messages
         if self.stuck_detector and self.stuck_detector.is_stuck(
-            messages, self.tool_call_recorder.recorded_for(ToolExecutorIdentity.AGENT)
+            self.tool_call_recorder.recorded_for(ToolExecutorIdentity.AGENT)
         ):
             self.metrics.stuck_detected = True
             self.logger.warning("Stuck condition detected")

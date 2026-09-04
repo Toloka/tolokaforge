@@ -332,10 +332,10 @@ lets Flash 3.5 sustain longer thinking chains than it could pre-fix —
 this is the operational side-effect.
 
 **Harness response**: nothing detects this pattern. The stuck detector
-reads two conditions — the identical tool call issued over and over, and
-repeated phrasing — and a run of reasoning-only calls at the `max_tokens`
-ceiling is neither: it is typed evidence (`finish_reason`, reasoning-only
-output), not a turn count. Open issue
+reads one condition — the identical tool call producing the identical
+result over and over — and a run of reasoning-only calls at the
+`max_tokens` ceiling is neither: it is typed evidence (`finish_reason`,
+reasoning-only output), not a turn count. Open issue
 [#1142](https://github.com/Toloka/tolokaforge/issues/1142)
 carries it.
 
