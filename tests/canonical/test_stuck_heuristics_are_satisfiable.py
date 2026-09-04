@@ -26,10 +26,6 @@ produced. No predicate is called directly and no detector is mocked, because
 what is in question is whether a real dialogue can reach the condition — not
 whether the condition evaluates as written.
 
-Attribution is by input shape rather than by neutralising siblings: the
-repeated-call agent emits no prose for the content heuristic to read, and the
-prose agents emit no tool calls for the repeated-call heuristic to count.
-
 The last lock runs the other way round. An agent that talks without acting is
 the ordinary shape of a conversational task — the agent finishes, the user
 thanks it, the agent answers — and it terminates ``max_turns``. Making that
@@ -104,10 +100,11 @@ def _usage() -> Usage:
 def _script_repeated_tool_call(turn: int) -> GenerationResult:
     """The identical call every turn, and no prose at all.
 
-    The empty text is what keeps the attribution clean: with no trigrams to
-    count, only the repeated-call heuristic can be what fires. The ids differ
-    per turn because they are episode-unique; the signature the heuristic reads
-    is the tool name and its arguments.
+    The tool executor answers this call from an empty registry and returns a
+    constant failure-text output, so the recorded signature
+    ``(tool_name, arguments, sha256(output))`` is byte-identical across every
+    turn — the shape the detector counts. The ids differ per turn because they
+    are episode-unique; the identity the heuristic reads is name + args + output.
     """
     return GenerationResult(
         text="",
@@ -116,24 +113,8 @@ def _script_repeated_tool_call(turn: int) -> GenerationResult:
     )
 
 
-def _script_looping_content(turn: int) -> GenerationResult:
-    """One phrase, repeated twelve times inside a single message.
-
-    That is what the content heuristic actually detects: repetition *within* one
-    message, never repetition across turns (#1141). The input is chosen to match
-    the heuristic as it behaves, so this locks that the condition is reachable —
-    it does not endorse the condition, and #1141's fix will replace this case.
-    """
-    del turn
-    return GenerationResult(
-        text=" ".join(["let me try that again"] * 12),
-        tool_calls=[],
-        usage=_usage(),
-    )
-
-
-# Ten sentences sharing no trigram, cycled so no two messages inside the content
-# heuristic's ten-message window are alike: this agent talks, and only talks.
+# Ten sentences sharing no trigram, cycled so a talking-only agent has no
+# ambient repetition an accidental future heuristic could latch onto.
 _VARIED_PROSE = (
     "the quick brown fox jumps over lazy dogs",
     "alice went through mirror into wonderland today",
@@ -161,7 +142,6 @@ def _script_varied_prose(turn: int) -> GenerationResult:
 # against the detector's own predicates, so this table cannot fall behind it.
 _DRIVING_CASES: dict[str, Callable[[int], GenerationResult]] = {
     "_has_repeated_tool_calls": _script_repeated_tool_call,
-    "_has_looping_content": _script_looping_content,
 }
 
 
