@@ -1049,6 +1049,7 @@ def build_capabilities(
     api_call_timeout_s = cfg.get("api_call_timeout_s")
     api_call_retries = cfg.get("api_call_retries")
     api_call_wall_timeout_s = cfg.get("api_call_wall_timeout_s")
+    empty_retry_count = cfg.get("empty_retry_count")
 
     return ModelCapabilities(
         schema_sanitizer=schema,
@@ -1065,6 +1066,7 @@ def build_capabilities(
         api_call_wall_timeout_s=(
             float(api_call_wall_timeout_s) if api_call_wall_timeout_s is not None else None
         ),
+        empty_retry_count=int(empty_retry_count) if empty_retry_count is not None else 0,
     )
 
 

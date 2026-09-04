@@ -112,3 +112,15 @@ class ModelCapabilities:
     ``None`` falls back to the env var ``TOLOKAFORGE_LLM_API_CALL_RETRIES``
     or the global default.
     """
+
+    empty_retry_count: int = 0
+    """Resample budget for a provider-side empty completion.
+
+    On a returned ``result.text == "" and not result.tool_calls`` shape the
+    engine resamples up to ``empty_retry_count`` times without appending the
+    empty assistant message and without advancing the outer turn counter; on
+    the ``(N + 1)``-th empty result the trial terminates with
+    ``TerminationReason.EMPTY_COMPLETION``. The default ``0`` matches the
+    one-shot terminal behaviour for presets that do not opt in. Metrics record
+    every resampled generation because the trial paid for each call.
+    """

@@ -1700,10 +1700,16 @@ A generation that comes back with both `text == ""` and `tool_calls == []`
 is a *provider-side empty completion*: the request round-tripped and the
 provider chose to return nothing. `ToolCallingLoop._run_turn` recognises
 that shape immediately after `_generate` — before the assistant message
-would be appended — and terminates the trial with
-`TerminationReason.EMPTY_COMPLETION` and `TrialStatus.FAILED`. The empty
-assistant message is not appended, and the metrics sink still records the
-generation because the trial paid for the call.
+would be appended — and resamples up to `capabilities.empty_retry_count`
+times without appending the empty message and without advancing the outer
+turn counter; on the `(N + 1)`-th empty result it terminates the trial with
+`TerminationReason.EMPTY_COMPLETION` and `TrialStatus.FAILED`. The metrics
+sink records every generation, resampled ones included, because the trial
+paid for each call. The default `empty_retry_count = 0` keeps the preset
+one-shot terminal for models that do not opt in. Presets that observably
+recover on a resample opt in through `empty_retry_count: <N>` on the model
+preset overlay; a `LoopConfig(empty_retry_count=N)` flows from
+`capabilities.empty_retry_count` at `runner.py` construction time.
 
 The distinction from `empty_assistant_filler` above is where the empty
 content lives. `empty_assistant_filler` handles empty **content the loop
@@ -1713,10 +1719,13 @@ and Moonshot direct reject a request whose assistant turn has empty
 non-empty filler string. `EMPTY_COMPLETION` handles empty **content the
 provider produced**: appending it would send a request whose tail is a
 `role=model` turn with empty `content` and no `tool_calls` on the next
-iteration, and Gemini rejects that as an API error. The engine consumes
-this one wire-shape observation directly rather than routing it through
-`classify_loop_error` so post-run analysis can tell "the model produced
-nothing" apart from the API-error class that used to swallow it.
+iteration, and Gemini rejects that as an API error. The Gemini-legal-tail
+invariant holds across resamples because the empty assistant message is
+still not appended on any of them; only the recovered non-empty result
+lands on `messages`. The engine consumes this one wire-shape observation
+directly rather than routing it through `classify_loop_error` so post-run
+analysis can tell "the model produced nothing" apart from the API-error
+class that would otherwise absorb it.
 
 ## `response_policy`
 
@@ -2140,14 +2149,21 @@ bounds the retry budget (default `1` — one retry, then fail loud);
 `1.0` s). Sleep is dispatched through `ToolCallingLoop.retry_sleep`, which
 defaults to `time.sleep` and is swapped for a no-op in unit tests.
 
-The retry class is `API_ERROR` only. `RATE_LIMIT`, `API_TIMEOUT`, `TRIAL_LOST`
-and `EMPTY_COMPLETION` stay one-shot terminal because each already owns a
-dedicated path — typed 429 handling in the `_build_retrying` /
-`_build_probe_retrying` outer controllers above, transport-timeout retry in
+The retry class at this layer is `API_ERROR` only. `RATE_LIMIT`, `API_TIMEOUT`
+and `TRIAL_LOST` stay one-shot terminal because each already owns a dedicated
+path — typed 429 handling in the `_build_retrying` / `_build_probe_retrying`
+outer controllers above, transport-timeout retry in
 `_call_completion_with_timeout_retry`, substrate re-registration in the runner
-protocol, and the provider-shape fail-loud at wire receipt (see
-`empty_assistant_filler` § *Provider-side empty completion*). Retrying them at
-the loop level would double-count the exclusion and confuse the denominator.
+protocol. Retrying them at the loop level would double-count the exclusion and
+confuse the denominator.
+
+The empty-completion retry is a separate class that lives in
+`_run_turn` under its own budget on `LoopConfig.empty_retry_count`. The two
+retry classes are orthogonal: the API-error retry replays a *raised
+exception*, and the empty-completion retry resamples a *returned empty-shape
+result* (see § *Provider-side empty completion* above for the resample
+mechanics and the Gemini-legal-tail invariant). Each owns a dedicated
+`LoopConfig` field so a preset can tune them independently.
 
 The retry budget resets to zero at the start of every outer iteration, so a
 successful turn 0 followed by an API-error turn 1 gets a fresh budget. The
