@@ -343,6 +343,9 @@ class TestResolveMaxTurns:
 
     def test_both_unset_falls_back_to_engine_default(self) -> None:
         assert resolve_max_turns(None, None) == DEFAULT_MAX_TURNS == 50
+        # Explicit-None third arg is identical to the 2-arg call — verify
+        # the widening did not add a subtle branch.
+        assert resolve_max_turns(None, None, None) == DEFAULT_MAX_TURNS == 50
 
     def test_run_cap_clamps_higher_task_value(self) -> None:
         assert resolve_max_turns(100, 30) == 30
@@ -368,8 +371,11 @@ class TestResolveMaxTurns:
     def test_task_and_run_both_still_min(self) -> None:
         assert resolve_max_turns(45, 60, 90) == 45
 
-    def test_no_capability_default_falls_back_to_framework_50(self) -> None:
-        assert resolve_max_turns(None, None, None) == DEFAULT_MAX_TURNS == 50
+    def test_capabilities_default_below_engine_default_wins_on_task_unset(self) -> None:
+        # Locks that the capability slot is a VALUE default, not a floor over
+        # DEFAULT_MAX_TURNS — a future refactor that silently changed
+        # `base = max(cap_default, DEFAULT_MAX_TURNS)` would fail here.
+        assert resolve_max_turns(None, None, 20) == 20
 
 
 # ---------------------------------------------------------------------------
