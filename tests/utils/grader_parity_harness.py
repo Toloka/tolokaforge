@@ -537,6 +537,38 @@ def _build_grade_dispatch(pack: ParityPack, *, substrate_address: str) -> GradeD
     )
 
 
+class _ParityHarnessSnapshotSubstrate(SnapshotGradingSubstrate):
+    """:class:`SnapshotGradingSubstrate` variant the parity gate reads through.
+
+    Parity packs model a stationary trial with **no agent workspace tree**;
+    the pack directory only carries YAML fixtures. Bundle format v1.0
+    refuses a ``None`` ``filesystem_root`` at
+    :func:`serialize_bundle_from_substrate` (``bundle_producer.py:75-80``),
+    so the harness passes ``pack.directory`` at bundle-production time and
+    ``filesystem.tar`` picks up the pack's YAML files. That inflates the
+    Snapshot substrate's :meth:`filesystem_root` above the Lane A baseline:
+    :class:`~tolokaforge.core.grading.substrate_live.LiveRunnerCallbackGradingSubstrate`
+    returns ``None`` for a parity pack (empty workspace + non-existent
+    root), which suppresses the judge's ``read_file`` registration at
+    ``judge.py:500-503``, while the base :class:`SnapshotGradingSubstrate`
+    extracts the tar to a tmpdir and returns a non-``None`` root.
+
+    Overriding :meth:`filesystem_root` to ``None`` at the parity seam
+    restores byte-parity: parity packs semantically have no workspace, and
+    the harness's live-callback leg encodes that as ``None``. Production
+    grade-bundle consumers still see the base behaviour — this subclass is
+    a test seam only, registered via
+    :attr:`GraderCompositeDispatch._substrate_cls` inside
+    :func:`run_via_snapshot_rpc`.
+
+    A future bundle format v1.1 with an explicit "no workspace" encoding
+    would remove this seam; tracked as a Lane B follow-up.
+    """
+
+    def filesystem_root(self) -> Path | None:  # type: ignore[override]
+        return None
+
+
 _TRAJECTORY_FIXED_TS = datetime(2026, 1, 1, tzinfo=UTC)
 """Deterministic timestamp for the two :class:`Trajectory` datetime fields
 the snapshot leg synthesises. Pinning both ``start_ts`` and ``end_ts`` keeps
@@ -805,8 +837,8 @@ def run_via_snapshot_rpc(
         def _substrate_factory(
             _address: str,  # noqa: ARG001
             _trial_id: str,  # noqa: ARG001
-        ) -> SnapshotGradingSubstrate:
-            return SnapshotGradingSubstrate(load_grade_bundle(bundle_dir))
+        ) -> _ParityHarnessSnapshotSubstrate:
+            return _ParityHarnessSnapshotSubstrate(load_grade_bundle(bundle_dir))
 
         dispatch = _build_grade_dispatch(pack, substrate_address=ctx.substrate_address)
         composite = GraderCompositeDispatch(
