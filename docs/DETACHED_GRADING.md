@@ -71,8 +71,8 @@ An actionable error names both preconditions.
 After a snapshot-mode run finishes, every trial's `trajectory.yaml` carries a `snapshot_status:` block:
 
 ```yaml
-# results/run_2026-09-04T13-42-11/trials/task_a/0/trajectory.yaml
-task_id: task_a
+# <output_dir>/run_<timestamp>/trials/<task_id>/<trial_index>/trajectory.yaml
+task_id: reconcile_ledger
 trial_index: 0
 ...
 snapshot_status:
@@ -147,11 +147,11 @@ The verb resolves the URI via the `tolokaforge.bundle_stores` registry, wraps th
 
 ```bash
 uv run tolokaforge grade-run \
-    /var/tolokaforge/results/run_2026-09-04T13-42-11 \
+    ./results/custom_checks_example/run_2026-09-04T13-42-11 \
     --with-kind composite \
-    --grader-config kind_config.yaml \
+    --grader-config components.yaml \
     --store-config store.yaml \
-    --out /var/tolokaforge/regrades/2026-09-04
+    --out ./regrades/2026-09-04
 ```
 
 `grade-run` walks `<run-dir>/trials/*/*/trajectory.yaml`, filters trials where `snapshot_status.outcome == stored`, and dispatches each through the same in-process pipeline as the single-trial verb. Output lands at `<out>/<task>/<idx>/grade.json` mirroring the source layout.
@@ -159,11 +159,11 @@ uv run tolokaforge grade-run \
 **Per-trial console output** (via the shared display):
 
 ```
-regraded task_a/0 → /var/tolokaforge/regrades/2026-09-04/task_a/0/grade.json
-skip     task_a/1 — bundle oversize (40000000 > 33554432)
-skip     task_b/0 — no snapshot_status recorded (run predates snapshot mode?)
-skip     task_c/0 — trial ended before grading
-failed   task_c/1 — Substrate unreachable: SnapshotGradingSubstrate cannot serve db_probes offline (dsn=…)
+regraded reconcile_ledger/0 → ./regrades/2026-09-04/reconcile_ledger/0/grade.json
+skip     reconcile_ledger/1 — bundle oversize (40000000 > 33554432)
+skip     reconcile_ledger/2 — no snapshot_status recorded (run predates snapshot mode?)
+skip     reconcile_ledger/3 — trial ended before grading
+failed   reconcile_ledger/4 — Substrate unreachable: SnapshotGradingSubstrate cannot serve db_probes offline (dsn=…)
 
 Regraded: discovered 5, regraded 1, skipped 3, failed 1
 ```
