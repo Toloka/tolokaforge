@@ -231,14 +231,6 @@ def _baseline_components(pack: ParityPack) -> dict[str, float]:
     return {str(k): float(v) for k, v in components.items()}
 
 
-_NON_JUDGE_COMPONENT_FIELDS: tuple[str, ...] = (
-    "state_checks",
-    "transcript_rules",
-    "trace_checks",
-    "custom_checks",
-)
-
-
 @pytest.mark.parametrize("pack_id", _DETERMINISTIC_PACK_IDS, ids=list(_DETERMINISTIC_PACK_IDS))
 def test_reference_pack_parity_deterministic_tier(
     pack_id: str,
@@ -290,58 +282,35 @@ def test_reference_pack_parity_wire_shape_tier(
     pack_id: str,
     parity_stack: StackHandle,  # noqa: ARG001 — fixture usage; compose stack must be up
 ) -> None:
-    """Each judge pack keylessly errors the judge and preserves non-judge components.
+    """Each judge pack keylessly errors the judge and refuses the fold.
 
     Runs against a stack with no LLM keys in the container env: the judge
     dispatch construction succeeds (LLMClient accepts an empty key chain),
     the loop's first ``.generate()`` call raises an auth error inside
-    litellm, and :class:`LLMJudge.run` catches it into a fail-loud
-    ``JudgeStatus.ERRORED`` result. Byte-parity on ``judge_status`` and
-    ``JUDGE ERRORED`` in ``reasons`` proves the wire shape; byte-parity on
-    non-judge components against the baseline proves those seams still
-    produced the same output the canonical lane records.
+    litellm, and :class:`LLMJudge.run` catches it into a
+    ``JudgeStatus.ERRORED`` result. ``resolve_uncounted_fold`` then refuses
+    the composition — silently redistributing the weight the errored judge
+    was meant to carry across the surviving components would fabricate a
+    grade the operator cannot reconcile.
 
-    Refuses ``success=false``: on a judge-using pack that would mean the
-    grader gave up before completing composite dispatch, which is a
-    regression distinct from the intentional errored-judge outcome and one
-    this gate exists to catch.
+    The wire returns ``GradeResponse(success=false)`` whose ``error``
+    carries the ``produced no verdict`` refusal fragment. This gate locks
+    that behaviour end-to-end over the real gRPC wire.
     """
-    from tolokaforge.grader import grader_pb2
-
     pack = load_parity_pack(_BASELINES_ROOT / pack_id)
     _register_pack_trial(pack)
     response = _call_grade_over_wire(pack)
 
-    assert response.success, (
-        f"wire-shape tier pack {pack_id!r} came back success=false — the grader "
-        f"gave up before completing composite dispatch, which is a regression "
-        f"distinct from the intentional errored-judge outcome. error={response.error!r}"
+    assert not response.success, (
+        f"wire-shape tier pack {pack_id!r} came back success=true — the grader "
+        f"composed a grade for a judge-errored trial instead of refusing the "
+        f"fold. grade={response.grade!r}"
     )
-    assert (
-        not response.no_verdict
-    ), f"wire-shape tier pack {pack_id!r} reported no_verdict on a judge-using trial"
-    grade = response.grade
-    assert grade.judge_status == grader_pb2.JUDGE_STATUS_ERRORED, (
-        f"wire-shape tier pack {pack_id!r} did not report a keyless-judge ERRORED "
-        f"outcome (judge_status={grade.judge_status}); the runner container may "
-        f"be carrying an unexpected LLM key or the judge dispatch was skipped"
+    assert "produced no verdict" in (response.error or ""), (
+        f"wire-shape tier pack {pack_id!r} refused as expected but the error "
+        f"message does not carry the fold-refusal fragment "
+        f"'produced no verdict': {response.error!r}"
     )
-    assert "JUDGE ERRORED" in grade.reasons, (
-        f"wire-shape tier pack {pack_id!r} judge_status is ERRORED but reasons "
-        f"lack the 'JUDGE ERRORED' segment: {grade.reasons!r}"
-    )
-
-    baseline_components = _baseline_components(pack)
-    serialised = serialise_grade(grade)
-    wire_components = json.loads(serialised).get("components") or {}
-    for field in _NON_JUDGE_COMPONENT_FIELDS:
-        if field not in baseline_components:
-            continue
-        assert wire_components.get(field) == baseline_components[field], (
-            f"wire-shape tier pack {pack_id!r} non-judge component "
-            f"{field!r} diverged from the committed baseline: "
-            f"wire={wire_components.get(field)!r} baseline={baseline_components[field]!r}"
-        )
 
 
 def test_hash_refusal_end_to_end(
