@@ -17,6 +17,7 @@ import pytest
 
 from tolokaforge.core.grading.trace_timeline import TraceEventKind, build_trial_timeline
 from tolokaforge.core.llm import GenerationResult
+from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.loop import (
@@ -198,6 +199,7 @@ class _ScriptedClient:
     def __init__(self, results: list[GenerationResult]) -> None:
         self._results = list(results)
         self.calls = 0
+        self.capabilities = ModelCapabilities()
 
     def generate(self, system, messages, tools, tool_choice="auto", observation=None):
         self.calls += 1

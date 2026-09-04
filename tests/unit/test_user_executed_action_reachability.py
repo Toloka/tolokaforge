@@ -35,6 +35,7 @@ from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.llm import GenerationResult
+from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
 from tolokaforge.core.models import (
@@ -62,6 +63,7 @@ class _ScriptedAgent:
 
     def __init__(self, texts: tuple[str, ...]) -> None:
         self._texts = list(texts)
+        self.capabilities = ModelCapabilities()
 
     def generate(self, system, messages, tools, tool_choice="auto", observation=None):
         return GenerationResult(text=self._texts.pop(0), usage=Usage(prompt_tokens=1))
