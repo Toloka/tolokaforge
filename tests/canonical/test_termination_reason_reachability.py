@@ -49,6 +49,7 @@ from tolokaforge.core.failure_attribution import (
     TrialOutcomeClass,
     classify_trial_outcome,
 )
+from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.client import (
     GenerationResult,
     LLMApiTimeoutError,
@@ -139,6 +140,7 @@ class _ScriptedAgent:
 
     def __init__(self, *items: GenerationResult | Exception) -> None:
         self._items = list(items)
+        self.capabilities = ModelCapabilities()
 
     def generate(
         self,

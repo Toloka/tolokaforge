@@ -344,6 +344,7 @@ class TrialRunner:
                     config=LoopConfig(
                         max_turns=self.max_turns,
                         episode_timeout_s=self.episode_timeout_s,
+                        empty_retry_count=self.agent_client.capabilities.empty_retry_count,
                     ),
                     metrics=_AgentMetricsSink(
                         self.metrics,

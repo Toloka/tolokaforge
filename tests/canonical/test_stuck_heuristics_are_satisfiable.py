@@ -47,6 +47,7 @@ from typing import Any
 import pytest
 import yaml
 
+from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.client import GenerationResult, UserSimulator
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
@@ -76,6 +77,7 @@ class _ScriptedTurns:
     def __init__(self, script: Callable[[int], GenerationResult]) -> None:
         self._script = script
         self._turn = 0
+        self.capabilities = ModelCapabilities()
 
     def generate(
         self,

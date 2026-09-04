@@ -491,10 +491,11 @@ def test_rate_limit_stays_one_shot():
     assert outcome.termination_reason == TerminationReason.RATE_LIMIT
 
 
-def test_empty_completion_not_retried():
-    """Even with a generous retry budget, an empty completion terminates on
-    the first turn — the wire-shape signal owns its own dedicated fail-loud
-    path."""
+def test_empty_completion_not_retried_by_api_error_budget():
+    """The API-error retry budget does not cover empty completions: even with a
+    generous ``api_error_retries``, an empty completion terminates on the first
+    turn when ``empty_retry_count == 0``. The two retry classes are orthogonal —
+    the empty-completion budget lives in a dedicated ``LoopConfig`` field."""
     client = _ScriptedClient(
         [GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=1))]
     )
@@ -503,13 +504,125 @@ def test_empty_completion_not_retried():
         client,
         should_terminate=_never_terminate,
         config=LoopConfig(
-            max_turns=5, episode_timeout_s=10_000, api_error_retries=5, api_error_backoff_s=0.0
+            max_turns=5,
+            episode_timeout_s=10_000,
+            api_error_retries=5,
+            api_error_backoff_s=0.0,
+            empty_retry_count=0,
         ),
     ).run("sys", messages, time.time())
 
     assert client.calls == 1
     assert outcome.termination_reason == TerminationReason.EMPTY_COMPLETION
     assert outcome.status == TrialStatus.FAILED
+
+
+def test_empty_completion_retries_up_to_configured_count_then_succeeds():
+    """With ``empty_retry_count=1``, the first empty resamples once and the
+    second sample's text lands as the assistant message. No ghost empty
+    assistant entry is appended. Both generations bill the metrics sink because
+    the trial paid for both calls."""
+    client = _ScriptedClient(
+        [
+            GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=3)),
+            GenerationResult(text="recovered", usage=Usage(prompt_tokens=5)),
+        ]
+    )
+    sink = _CountingSink()
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        sink=sink,
+        config=LoopConfig(
+            max_turns=1,
+            episode_timeout_s=10_000,
+            empty_retry_count=1,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 2
+    assert sink.generations == 2
+    assert sink.prompt_tokens == 8
+    assert outcome.termination_reason != TerminationReason.EMPTY_COMPLETION
+    assert outcome.status == TrialStatus.COMPLETED
+    assistant_messages = [m for m in messages if m.role == MessageRole.ASSISTANT]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0].content == "recovered"
+    assert not any(
+        m.role == MessageRole.ASSISTANT and m.content == "" and not m.tool_calls for m in messages
+    )
+
+
+def test_empty_completion_retry_exhausts_and_terminates():
+    """With ``empty_retry_count=N``, ``N + 1`` consecutive empty completions
+    exhaust the budget and terminate with ``EMPTY_COMPLETION``. Every resampled
+    empty still bills the metrics sink; exactly one SYSTEM message closes out
+    the loop with the empty-completion phrasing."""
+    retry_count = 2
+    client = _ScriptedClient(
+        [
+            GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=1))
+            for _ in range(retry_count + 1)
+        ]
+    )
+    sink = _CountingSink()
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        sink=sink,
+        config=LoopConfig(
+            max_turns=5,
+            episode_timeout_s=10_000,
+            empty_retry_count=retry_count,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == retry_count + 1
+    assert sink.generations == retry_count + 1
+    assert outcome.termination_reason == TerminationReason.EMPTY_COMPLETION
+    assert outcome.status == TrialStatus.FAILED
+    assert messages[-1].role == MessageRole.SYSTEM
+    assert "empty completion" in messages[-1].content
+    system_messages = [m for m in messages if m.role == MessageRole.SYSTEM]
+    assert len(system_messages) == 1
+
+
+def test_empty_completion_retry_does_not_advance_turn_counter():
+    """Resamples happen within the same outer turn. With ``max_turns=1`` and
+    ``empty_retry_count=2`` the loop absorbs two empties on turn 0 and executes
+    the recovered tool call also on turn 0, so a single outer iteration consumes
+    three generations. A subsequent generation would live in turn 1, which does
+    not fit under ``max_turns=1`` — this test locks that resamples do not
+    themselves count against the outer turn budget."""
+    executor = _RecordingExecutor()
+    client = _ScriptedClient(
+        [
+            GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=1)),
+            GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=1)),
+            GenerationResult(
+                text="ok",
+                tool_calls=[ToolCall(id="a", name="query", arguments={"q": 1})],
+                usage=Usage(prompt_tokens=5),
+            ),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        executor=executor,
+        config=LoopConfig(
+            max_turns=1,
+            episode_timeout_s=10_000,
+            empty_retry_count=2,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 3
+    assert executor.executed == [("query", {"q": 1}, "a")]
+    assert outcome.termination_reason == TerminationReason.MAX_TURNS
 
 
 def test_api_error_retry_budget_resets_per_outer_turn():
