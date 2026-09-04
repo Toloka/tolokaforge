@@ -10,7 +10,7 @@ independently over user config and preset default:
   is present at all (a bool has no ``None`` sentinel); the preset default
   fills the gap.
 
-The critic Finding-2 lock lives in
+The field-by-field merge lock lives in
 ``test_partial_user_openrouter_config_keeps_preset_provider_pin``: a
 plain ``or`` short-circuit (``user_or or preset_or``) would let a partial
 user config (``allow_fallbacks: false`` only) shadow the preset's pin,
@@ -123,7 +123,7 @@ def test_user_openrouter_config_wins_over_capabilities_default() -> None:
 
 
 def test_partial_user_openrouter_config_keeps_preset_provider_pin() -> None:
-    """Critic Finding-2 lock: user set ONLY ``allow_fallbacks`` → preset's
+    """User set ONLY ``allow_fallbacks`` → preset's
     ``provider_order`` still lands on the wire, with the user's
     ``allow_fallbacks``. A regression to ``user or preset`` short-circuits
     to the empty-``provider_order`` user config and drops the pin entirely,

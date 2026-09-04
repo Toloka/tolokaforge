@@ -13,8 +13,8 @@ resample budget:
 * ``anthropic_claude_opus_5`` — Opus 5 empty-completions observed on
   ``fix-inventory-availability-reconciliation`` (4/4 on the same
   T-Bench balanced-10). Anthropic direct is not reachable via
-  OpenRouter's provider fan-out, so only Fix A (the empty-completion
-  resample) applies here.
+  OpenRouter's provider fan-out, so only the empty-completion resample
+  applies here (the ``openrouter_defaults`` pin is Moonshot-specific).
 
 Every other preset carries the default ``empty_retry_count == 0`` —
 adding a resample budget doubles reasoning spend on the failing sample,

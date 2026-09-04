@@ -109,9 +109,9 @@ presets:
   #     T-Bench balanced-10, issue #1491). One resample recovers the
   #     stochastic empty without doubling reasoning spend twice. Anthropic
   #     direct is not reachable via OpenRouter's provider fan-out, so the
-  #     openrouter_defaults pin (Fix B on the sibling ``moonshot_kimi_k3``
-  #     preset) does not apply here — the empty is a reasoning-only turn,
-  #     not a lossy third-party mirror.
+  #     openrouter_defaults pin that ships on the sibling
+  #     ``moonshot_kimi_k3`` preset does not apply here — the empty is a
+  #     reasoning-only turn, not a lossy third-party mirror.
   anthropic_claude_opus_5:
     match:
       - "anthropic/claude-opus-5*"
