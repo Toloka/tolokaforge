@@ -431,6 +431,12 @@ truthy, registers `add_SubstrateServiceServicer_to_server` on the same
 started with the flag off returns `UNIMPLEMENTED` for any
 `SubstrateService/*` call.
 
+The three opt-in defaults that keep snapshot mode off out of the box —
+`GraderConfig.expose_substrate=False`, `GraderConfig.snapshot=None`, and
+`SnapshotBundleConfig.enabled=False` — are locked mechanically by
+`tests/canonical/test_grader_defaults.py`. A PR flipping any of the
+three fails that canonical test unless it also edits the lock file.
+
 The eight RPCs:
 
 | RPC | What it returns |
