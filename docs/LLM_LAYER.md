@@ -1866,6 +1866,45 @@ the loop-layer behaviour and the helper contract are pinned by
 and
 [`tests/unit/test_tool_output_truncation.py`](../tests/unit/test_tool_output_truncation.py).
 
+### Per-model turn-budget default
+
+`ModelCapabilities.default_max_turns: int | None` is the preset-level value
+default for the per-trial turn budget when the task did not declare its own
+`TaskConfig.max_turns`. Different models converge to a done state in
+different numbers of steps on the same task: a model whose per-turn edit
+style is more granular (more per-turn tool calls, smaller diffs per call)
+exhausts a given absolute budget on a task that a coarser-grained model
+completes in fewer turns. A first-class preset knob for the per-trial base
+budget is a general-harness improvement rather than a per-model workaround.
+`None` (the default) leaves the engine-wide fallback
+`DEFAULT_MAX_TURNS = 50` in place for presets that do not name the key.
+
+The conductor's
+[`resolve_max_turns`](../tolokaforge/core/conductor.py) composes three
+inputs into the effective per-trial budget:
+
+* `TaskConfig.max_turns` — task-declared. When set, it is authoritative for
+  the task's own semantics.
+* `OrchestratorConfig.max_turns` — the operator's run-level ceiling. Always
+  applies as a `min(base, run_cap)` clamp when set.
+* `ModelCapabilities.default_max_turns` — the preset-level value default.
+  Consulted only when the task did not pin its own budget; it supplies the
+  base value that the operator's cap then ceilings.
+
+Precedence:
+
+1. Task pinned `max_turns` → effective = `min(task_max_turns, run_cap)` when
+   both set, else `task_max_turns`.
+2. Task did not pin `max_turns` → base = `default_max_turns` when set, else
+   `DEFAULT_MAX_TURNS = 50`; effective = `min(base, run_cap)` when the run
+   cap is set, else `base`.
+
+Preset routing is pinned by
+[`tests/canonical/test_default_max_turns_preset_routing.py`](../tests/canonical/test_default_max_turns_preset_routing.py);
+the precedence body is pinned by
+[`tests/unit/test_conductor.py`](../tests/unit/test_conductor.py)
+(`TestResolveMaxTurns`).
+
 ## `response_policy`
 
 Tool-call argument post-processing.
