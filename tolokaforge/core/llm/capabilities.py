@@ -126,6 +126,21 @@ class ModelCapabilities:
     every resampled generation because the trial paid for each call.
     """
 
+    tool_output_max_chars: int | None = None
+    """Loop-layer cap on the ``role=tool`` message content, in chars.
+
+    When set, ``ToolCallingLoop._execute_tool_calls`` middle-elides the
+    ``Message.content`` string via
+    :func:`~tolokaforge.core.tool_output_truncation.keep_head_and_tail` before
+    the tool message is appended, so accumulated context stays predictable
+    across long-running trials. The trial's
+    :class:`~tolokaforge.core.models.ToolCallRecorder` and the grader inputs
+    still read the full text via ``resolve_tool_output(tool_result)`` upstream
+    of the cap. ``Message.content_blocks`` is unaffected: multimodal payloads
+    are fixed-size per call and would break if partially clipped. ``None``
+    (the default) leaves every tool message threaded through verbatim.
+    """
+
     openrouter_defaults: OpenRouterConfig | None = None
     """Preset-level default for :attr:`ModelConfig.openrouter`.
 

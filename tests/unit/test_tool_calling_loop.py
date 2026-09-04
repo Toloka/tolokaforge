@@ -669,3 +669,170 @@ def test_effective_system_prompt_captured_from_first_generation_only():
         "sys", messages, time.time()
     )
     assert outcome.captured_effective_system_prompt == "FIRST"
+
+
+class _ScriptedOutputExecutor:
+    """Yields a fixed sequence of ``ToolResult`` payloads, one per execute call.
+
+    The loop-layer cap tests need control over the executed output — a bare
+    ``_RecordingExecutor`` returns a synthesized "ran <name>" string that is
+    short by design. This fake plays back caller-supplied results without
+    otherwise altering the ToolExecutor contract.
+    """
+
+    def __init__(self, results: list[ToolResult]) -> None:
+        self._results = list(results)
+        self.executed: list[tuple[str, dict, str]] = []
+
+    def execute(self, tool_name, arguments, *, call_id, validation_schema=None):
+        self.executed.append((tool_name, arguments, call_id))
+        return self._results.pop(0)
+
+
+class _RecordingRecorder:
+    """Minimal ``ToolCallRecorder``-shaped fake — captures the ``output`` kwarg.
+
+    The loop-layer cap must not touch the recorder's view of the tool call:
+    the trial's ordered record and the grader inputs read the full text
+    upstream of the truncation.
+    """
+
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+
+    def record(
+        self,
+        *,
+        call_id,
+        tool_name,
+        arguments,
+        executor,
+        status,
+        output,
+        latency_seconds,
+    ) -> None:
+        self.records.append(
+            {
+                "call_id": call_id,
+                "tool_name": tool_name,
+                "output": output,
+            }
+        )
+
+    @property
+    def recorded(self) -> tuple:
+        return tuple(self.records)
+
+
+def _one_tool_call_then_stop(name: str = "read_file") -> _ScriptedClient:
+    """Two-generation script: one tool call, then a text-only reply that stops
+    the loop by ``max_turns=1``-exhaustion.
+    """
+    return _ScriptedClient(
+        [
+            GenerationResult(
+                text="",
+                tool_calls=[ToolCall(id="t1", name=name, arguments={"path": "x"})],
+                usage=Usage(prompt_tokens=1),
+            ),
+        ]
+    )
+
+
+def _run_capped_tool_output_loop(
+    tool_result: ToolResult,
+    cap: int | None,
+    *,
+    recorder: _RecordingRecorder | None = None,
+) -> tuple[list[Message], _ScriptedOutputExecutor]:
+    executor = _ScriptedOutputExecutor([tool_result])
+    client = _one_tool_call_then_stop()
+    messages: list[Message] = []
+    loop = ToolCallingLoop(
+        llm_client=client,
+        tool_executor=executor,
+        tool_schemas=[],
+        config=LoopConfig(
+            max_turns=1,
+            episode_timeout_s=10_000,
+            tool_output_max_chars=cap,
+        ),
+        metrics=_CountingSink(),
+        should_terminate=_never_terminate,
+        classify_error=_classify_no_patterns,
+        logger=_logger(),
+        recorder=recorder,
+        retry_sleep=lambda _s: None,
+    )
+    loop.run("sys", messages, time.time())
+    return messages, executor
+
+
+def _only_tool_message(messages: list[Message]) -> Message:
+    tool_messages = [m for m in messages if m.role == MessageRole.TOOL]
+    assert len(tool_messages) == 1, "expected exactly one tool message"
+    return tool_messages[0]
+
+
+def test_tool_output_capped_at_loop_layer_when_capability_set():
+    """The ``role=tool`` message content is middle-elided with the shared
+    marker when ``LoopConfig.tool_output_max_chars`` is set; the recorder still
+    sees the full untruncated text."""
+    recorder = _RecordingRecorder()
+    huge = "X" * 40_000
+    messages, _ = _run_capped_tool_output_loop(
+        ToolResult(success=True, output=huge),
+        cap=16_000,
+        recorder=recorder,
+    )
+    tool_message = _only_tool_message(messages)
+    assert len(tool_message.content) < 40_000
+    assert "\n...[24000 chars omitted]...\n" in tool_message.content
+    assert tool_message.content.startswith("X" * 8_000)
+    assert tool_message.content.endswith("X" * 8_000)
+    assert tool_message.content_blocks is None
+    assert len(recorder.records) == 1
+    assert recorder.records[0]["output"] == huge
+
+
+def test_tool_output_not_capped_when_capability_none():
+    """Default ``tool_output_max_chars=None`` threads the tool output through
+    unchanged — the pre-opt-in baseline for every preset."""
+    huge = "Y" * 40_000
+    messages, _ = _run_capped_tool_output_loop(
+        ToolResult(success=True, output=huge),
+        cap=None,
+    )
+    tool_message = _only_tool_message(messages)
+    assert tool_message.content == huge
+    assert "chars omitted" not in tool_message.content
+
+
+def test_tool_output_content_blocks_left_untouched_when_capped():
+    """Only ``Message.content`` is capped — ``content_blocks`` (multimodal
+    payloads) pass through as-is."""
+    blocks = [{"type": "image", "data": "sentinel"}]
+    huge = "Z" * 40_000
+    messages, _ = _run_capped_tool_output_loop(
+        ToolResult(success=True, output=huge, content_blocks=blocks),
+        cap=16_000,
+    )
+    tool_message = _only_tool_message(messages)
+    assert tool_message.content_blocks == blocks
+    assert len(tool_message.content) < 40_000
+    assert "chars omitted" in tool_message.content
+
+
+def test_tool_output_error_path_also_capped():
+    """The ``Error: ...`` branch flows through the same cap — a runaway error
+    string cannot silently blow past the loop's guarantee."""
+    huge_error = "E" * 40_000
+    messages, _ = _run_capped_tool_output_loop(
+        ToolResult(success=False, output="", error=huge_error),
+        cap=16_000,
+    )
+    tool_message = _only_tool_message(messages)
+    assert tool_message.content.startswith("Error: ")
+    assert len(tool_message.content) < 40_000 + len("Error: ")
+    assert "chars omitted" in tool_message.content
+    assert tool_message.content_blocks is None
