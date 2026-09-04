@@ -447,6 +447,12 @@ truthy, registers `add_SubstrateServiceServicer_to_server` on the same
 started with the flag off returns `UNIMPLEMENTED` for any
 `SubstrateService/*` call.
 
+The three opt-in defaults that keep snapshot mode off out of the box —
+`GraderConfig.expose_substrate=False`, `GraderConfig.snapshot=None`, and
+`SnapshotBundleConfig.enabled=False` — are locked mechanically by
+`tests/canonical/test_grader_defaults.py`. A PR flipping any of the
+three fails that canonical test unless it also edits the lock file.
+
 The eight RPCs:
 
 | RPC | What it returns |
@@ -765,12 +771,32 @@ The shipped operator entry point for offline regrade is `tolokaforge grade <uri>
 
 ## Parity gate
 
-The `runner_rpc` and `grader_rpc` legs must produce byte-identical
-`Grade` output for every combination of grading components a task
-declares — except the two accepted, documented divergences (KB
-passthrough for the judge; hash grading refused). A canonical parity
-gate at `tests/canonical/test_grader_parity_reference.py` locks that
-invariant against a growing corpus of reference packs.
+The parity gate covers three substrate topologies over the same
+10-pack corpus:
+
+- **Lane A** — `runner_rpc` (`InProcessGradingSubstrate` inside the
+  runner) vs `grader_rpc` (`LiveRunnerCallbackGradingSubstrate` dialling
+  the runner's `SubstrateService` gRPC). Both wire `Grade` messages
+  byte-match the committed baseline.
+- **Lane B** — `grader_rpc + snapshot=on`
+  (`SnapshotGradingSubstrate` over a produced grade bundle). Byte-parity
+  against the same baseline for the eight snapshot-gradable packs;
+  `state_checks_db_probes_only` surfaces `SubstrateUnreachableError`
+  in the Grade's `reasons` text (the state-check backend catches per
+  probe), and `hash_and_all_four` raises `GradingFailedError` with the
+  same hash-refusal fragment Lane A pins.
+- **Lane C** — three sequential in-process replays against the same
+  frozen bundle bytes produce byte-identical `Grade` output. The
+  regrade-parity property.
+
+Together the three lanes lock: (1) the two shipped substrate topologies
+produce byte-identical Grades; (2) the offline replay substrate reads
+the same story off a bundle; (3) regrade is deterministic across
+sequential dispatches. Except the two accepted, documented divergences
+(KB passthrough for the judge; hash grading refused), every combination
+of grading components a task declares grades identically. The canonical
+gate at `tests/canonical/test_grader_parity_reference.py` locks all
+three lanes against a growing corpus of reference packs.
 
 **Harness.** `tests/utils/grader_parity_harness.py` boots an in-process
 `RunnerServiceImpl` + `SubstrateServicer` and drives each leg against

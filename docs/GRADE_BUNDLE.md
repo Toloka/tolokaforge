@@ -86,6 +86,8 @@ Because parts' digests live inside the manifest, changing any part changes its m
 
 The manifest itself does NOT contain its own name (that would be recursive). Consumers compute the name over the manifest bytes on read.
 
+Regrade parity across replays — three sequential in-process `SnapshotGradingSubstrate` dispatches against the same bundle bytes produce byte-identical `Grade` output — is locked by `test_regrade_parity_snapshot_replays` in the canonical parity gate.
+
 ## Schema-version compatibility
 
 Readers refuse unknown MAJOR versions and accept unknown MINOR versions.
