@@ -172,6 +172,12 @@ class LogRouter(BaseModel):
     def model_post_init(self, __context: Any) -> None:
         """Initialize private attributes after model creation."""
         self._logger = logging.getLogger(f"container.{self.container_name}")
+        # Pin the per-container logger's level to the configured routing
+        # level so records are not filtered out by an ancestor's effective
+        # level (root defaults to WARNING). Without this, INFO container
+        # log lines are dropped before reaching the LiveRunDisplay's
+        # ``_LogSink``, and the component-tail buffer stays empty.
+        self._logger.setLevel(self.log_level)
 
     @classmethod
     def for_container(
