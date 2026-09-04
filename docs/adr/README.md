@@ -77,3 +77,4 @@ Note: number 0043 is intentionally skipped — reserved for a draft that never l
 | [0042](0042-adapter-blind-authoring-gate.md) | Adapter-blind authoring gate — three new `BaseAdapter` hooks + `SkipKind` split | Accepted |
 | [0043](0043-detached-mode-grader-and-typed-grader-kinds.md) | Detached-mode grader, typed grader kinds, adapter grading contract | Accepted |
 | [0044](0044-composition-plan-runtime.md) | Composition-plan runtime — redesigned `SharedStackRuntimeBackend` with per-stack lifecycle scopes and detachable adapters | Proposed |
+| [0045](0045-content-loop-heuristic-deleted.md) | StuckDetector runs one heuristic — repeated identical result | Accepted |
