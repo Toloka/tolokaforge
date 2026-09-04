@@ -717,6 +717,39 @@ presets:
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
 
+  # Gemini 3.1 Pro Preview — model-specific overlay carrying the generic
+  # ``gemini`` policy trio (reasoning_codec + schema_sanitizer +
+  # response_policy) PLUS one Pro-observed turn-budget default the shared
+  # preset does not carry. Different models converge in different numbers
+  # of steps on the same task; a Pro-lineage per-turn edit style is more
+  # granular than the framework baseline, so the same absolute budget
+  # exhausts earlier on tasks a coarser-grained model completes in fewer
+  # turns. Live evidence: 8/8 gemini-3.1-pro-preview T-Bench balanced-10
+  # failures on the 2026-09-04 head-to-head hit
+  # ``termination_reason: max_turns`` at exactly turn 60 with trajectories
+  # mid-productive at the cutoff. 90 is the conservative lift over the
+  # 50-turn engine default (issue #1493's suggested lower bound);
+  # operators raise it further via preset overlay when observed
+  # convergence warrants it.
+  #
+  # ``TaskConfig.max_turns`` still wins for tasks that pin their own
+  # budget (the loop-cap authority the task author declared).
+  # ``OrchestratorConfig.max_turns`` still ceilings the resolved value
+  # (the operator's clamp). This default only fills in on the
+  # task-unset + run-cap-unset-or-above-90 path.
+  #
+  # Exact match globs only, listed BEFORE the generic ``gemini`` glob so
+  # no sibling Gemini route (2.5, 3-flash, 3.5-flash, 3.6-flash, 3.7-flash)
+  # inherits the bump.
+  gemini_31_pro_preview:
+    match:
+      - "google/gemini-3.1-pro-preview"
+      - "openrouter/google/gemini-3.1-pro-preview"
+    reasoning_codec: gemini
+    schema_sanitizer: gemini
+    response_policy: array_dict_map
+    default_max_turns: 90
+
   # Google Gemini family (3.x preview + 3.x GA + 2.5 backstop).
   # ``GeminiReasoningCodec`` decodes Gemini's OpenRouter
   # ``provider_specific_fields.reasoning_details`` envelope: handles

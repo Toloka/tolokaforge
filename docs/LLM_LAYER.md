@@ -1905,6 +1905,21 @@ the precedence body is pinned by
 [`tests/unit/test_conductor.py`](../tests/unit/test_conductor.py)
 (`TestResolveMaxTurns`).
 
+The `gemini_31_pro_preview` preset opts in at
+`default_max_turns: 90`. Gemini 3.1 Pro's per-turn edit style is more
+granular than the framework baseline, so the same absolute budget
+exhausts earlier on tasks a coarser-grained model completes in fewer
+turns; 90 is the conservative lift over the 50-turn framework default.
+The overlay carries the generic `gemini` policy trio (`reasoning_codec`,
+`schema_sanitizer`, `response_policy`) verbatim, so the preset's only
+functional divergence from the shared `gemini` route is the turn-budget
+default. Exact-match globs (`google/gemini-3.1-pro-preview` and its
+OpenRouter-prefixed variant) sit BEFORE the generic `gemini` block in
+[`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)
+so first-match-wins picks up the overlay; adjacent Pro slugs (2.5, 3.0,
+3.1 GA) and every Flash lineage member continue to route through the
+generic `gemini` preset and inherit the framework default.
+
 ## `response_policy`
 
 Tool-call argument post-processing.
