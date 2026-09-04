@@ -60,6 +60,10 @@ from tolokaforge.core.grading.rubric import (
     build_submit_report_tool,
     parse_submit_report,
 )
+from tolokaforge.core.judge_prompt import (
+    _compose_judge_system_prompt,
+    effective_judge_system_prompt,
+)
 from tolokaforge.core.llm.client import GenerationResult, LLMClient
 from tolokaforge.core.logging import StructuredLogger, get_logger
 from tolokaforge.core.loop import (
@@ -238,55 +242,6 @@ def _answer_terminating_submit_report(
 # ---------------------------------------------------------------------------
 # Prompt construction (narrow input surface, by construction)
 # ---------------------------------------------------------------------------
-
-#: The judge's grading stance. A custom ``system_prompt`` replaces this body; the
-#: marker contract below is always appended, so a custom voice can never break
-#: ``submit_report`` validation.
-_JUDGE_SYSTEM_PROMPT_BODY = (
-    "You are a strict, evidence-based grading judge. You evaluate an AI agent's "
-    "work against a rubric of independent criteria. Each criterion is "
-    "self-contained: its text states everything that must be checked. Grade each "
-    "criterion exactly as written — nothing more, nothing less. Do not import "
-    "outside expectations, and do not excuse a failure for reasons the criterion "
-    "does not name. Read each rubric carefully, check the real conversation and "
-    "tool calls and don't overthink your decision. Apply criteria - make "
-    "decision. Your main evidence is the agent's transcript and, when provided, a "
-    "database state diff shown below, plus any read-only tools you are given. If "
-    "the transcript and diff settle every criterion, call submit_report without "
-    "using tools. Use the read-only tools only for evidence the provided context "
-    "does not settle — for example absence or invariant checks, or full final "
-    "values not shown in the transcript. Never guess and it's better to call the "
-    "tool if you are not sure. A criterion passes only on positive evidence that "
-    "the described behavior occurred as stated. If the behavior a criterion "
-    "describes never occurred in the trajectory, the criterion FAILS — unless the "
-    "criterion's own text explicitly states that it passes when the situation "
-    "never arises."
-)
-
-#: The enforced output contract — the marker form ``parse_submit_report`` validates.
-#: Appended to every judge system prompt (default or custom); the sole source of
-#: the marker sentence.
-_JUDGE_MARKER_CONTRACT = (
-    "For every criterion, write the evidence-based justification "
-    "first and commit the verdict after it; end each justification with a final "
-    "line 'VERDICT: MET' or 'VERDICT: NOT MET' (binary) / 'SCORE: <value in "
-    "[0,1]>' (graded), and make that criterion's verdict field match it. When you "
-    "have judged every criterion, call submit_report exactly once."
-)
-
-_JUDGE_SYSTEM_PROMPT = f"{_JUDGE_SYSTEM_PROMPT_BODY} {_JUDGE_MARKER_CONTRACT}"
-
-
-def _compose_judge_system_prompt(custom_system_prompt: str | None) -> str:
-    """Compose the judge system prompt, always ending with the marker contract.
-
-    ``None`` yields the byte-for-byte default prompt; a custom body replaces the
-    default grading stance while the marker contract stays appended, so
-    ``submit_report`` validation can never be silently broken.
-    """
-    if custom_system_prompt is None:
-        return _JUDGE_SYSTEM_PROMPT
-    return f"{custom_system_prompt.strip()}\n\n{_JUDGE_MARKER_CONTRACT}"
 
 
 def _format_transcript(transcript: list[dict[str, Any]]) -> str:
@@ -568,15 +523,28 @@ class LLMJudge:
 
     Construction-time config is *how to run the LLM judge* — the run-level
     ``model_config``, the turn / wall-time / retry budgets, ``disable_knowledge_search``
-    (withhold every KB-tagged tool from the judge's surface, per ADR-0019), an
-    optional ``custom_system_prompt`` (replace the default grading-stance body; the
-    marker contract is always appended), ``include_agent_system_prompt`` (embed the
+    (withhold every KB-tagged tool from the judge's surface, per ADR-0019), one of two
+    mutually exclusive prompt seams, ``include_agent_system_prompt`` (embed the
     agent's policy in the judge's opening-message evidence — default on; gate off for
     self-contained rubrics), an
     optionally injected ``llm_client`` (any :class:`JudgeModel` — tests pass a
     scripted client; production passes ``None`` and the judge builds one
     ``LLMClient(model_config)`` per :meth:`run`), and the logger. :meth:`run`
     carries only the per-trial evidence.
+
+    Two prompt seams, mutually exclusive:
+
+    * ``custom_system_prompt`` — a body fragment that replaces the default grading
+      stance; :func:`_compose_judge_system_prompt` appends the marker contract at
+      :meth:`run` time. The eval flow and legacy replay use this seam (they carry
+      the body, not the composed string).
+    * ``explicit_system_prompt`` — the already-composed prompt used verbatim in
+      place of the run-time composition. Bundle-native replay uses this seam so a
+      recorded ``prompts.yaml.judge_prompt`` (composed body + marker) reaches the
+      judge without a second marker being appended.
+
+    Passing both raises :class:`ValueError` at construction time — the two carry
+    distinct semantics, and mixing them can only be a caller bug.
     """
 
     def __init__(
@@ -588,16 +556,27 @@ class LLMJudge:
         submit_report_retries: int = DEFAULT_SUBMIT_REPORT_RETRIES,
         disable_knowledge_search: bool = False,
         custom_system_prompt: str | None = None,
+        explicit_system_prompt: str | None = None,
         include_agent_system_prompt: bool = True,
         llm_client: JudgeModel | None = None,
         logger: StructuredLogger | None = None,
     ) -> None:
+        if explicit_system_prompt is not None and custom_system_prompt is not None:
+            raise ValueError(
+                "LLMJudge accepts explicit_system_prompt (a composed prompt used "
+                "verbatim, no marker re-appended) OR custom_system_prompt (a body "
+                "fragment composed at run time with the marker contract appended); "
+                "these seams carry distinct semantics and passing both is a caller "
+                "bug — the bundle-native replay path uses the former, task.yaml "
+                "customization and --grading overrides use the latter."
+            )
         self._model_config = model_config
         self._max_turns = max_turns
         self._episode_timeout_s = episode_timeout_s
         self._submit_report_retries = submit_report_retries
         self._disable_knowledge_search = disable_knowledge_search
         self._custom_system_prompt = custom_system_prompt
+        self._explicit_system_prompt = explicit_system_prompt
         self._include_agent_system_prompt = include_agent_system_prompt
         self._llm_client = llm_client
         self._logger = logger
@@ -654,6 +633,7 @@ class LLMJudge:
             llm_client=client,
             tool_executor=tool_executor,
             tool_schemas=tool_schemas,
+            validation_schemas_by_tool=client.sanitize_tools_for_execution(tool_schemas),
             # Bounded by max_turns + wall-time (episode_timeout_s). There is no
             # per-turn loop timeout; the per-call LLM timeout lives in LLMClient.
             config=LoopConfig(max_turns=self._max_turns, episode_timeout_s=self._episode_timeout_s),
@@ -676,9 +656,12 @@ class LLMJudge:
             )
         ]
         rubric_brief = _build_rubric_brief(rubric)
-        system_prompt = (
-            f"{_compose_judge_system_prompt(self._custom_system_prompt)}\n\n{rubric_brief}"
+        base_prompt = (
+            self._explicit_system_prompt
+            if self._explicit_system_prompt is not None
+            else _compose_judge_system_prompt(self._custom_system_prompt)
         )
+        system_prompt = f"{base_prompt}\n\n{rubric_brief}"
 
         attempts = 0
         while True:
@@ -985,5 +968,6 @@ __all__ = [
     "JudgeCallLog",
     "LLMJudge",
     "InMemoryJudge",
+    "effective_judge_system_prompt",
     "model_config_from_ref",
 ]

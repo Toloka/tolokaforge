@@ -29,6 +29,8 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 
 ## Index
 
+Note: number 0043 is intentionally skipped — reserved for a draft that never landed on `main` (`HybridRuntimeBackend` as a distinct class). Superseded before merge by ADR-0044. See closed Milestone 40 (#1363) for the draft's history.
+
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions in ADRs | Accepted |
@@ -74,3 +76,4 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0041](0041-zero-coverage-exit-signal.md) | Zero-coverage exit signal on `run_state.json` | Accepted |
 | [0042](0042-adapter-blind-authoring-gate.md) | Adapter-blind authoring gate — three new `BaseAdapter` hooks + `SkipKind` split | Accepted |
 | [0043](0043-detached-mode-grader-and-typed-grader-kinds.md) | Detached-mode grader, typed grader kinds, adapter grading contract | Accepted |
+| [0044](0044-composition-plan-runtime.md) | Composition-plan runtime — redesigned `SharedStackRuntimeBackend` with per-stack lifecycle scopes and detachable adapters | Proposed |

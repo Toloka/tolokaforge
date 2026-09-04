@@ -220,6 +220,7 @@ class TrialVerdict:
     score: float
     binary_pass: bool
     reason: str | None
+    refusal: bool = False
 
 
 def compose_trial_verdict(
@@ -257,6 +258,7 @@ def compose_trial_verdict(
         score=combined.score,
         binary_pass=combined.binary_pass and not (judge_gate_failed or trace_gate_failed),
         reason=combined.reason,
+        refusal=combined.refusal,
     )
 
 
@@ -411,6 +413,7 @@ class CompositeFoldResult:
     state_checks_component: float | None
     inert_weight_reason: str | None
     reasons: str
+    refusal: bool = False
 
 
 class CompositeFold:
@@ -510,4 +513,5 @@ class CompositeFold:
             state_checks_component=state_slot.component,
             inert_weight_reason=state_slot.inert_weight_reason,
             reasons=" | ".join(segment for segment in segments if segment),
+            refusal=verdict.refusal,
         )

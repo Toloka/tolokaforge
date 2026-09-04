@@ -6,6 +6,12 @@ and weights, so the core grading engine and the runner reach the same verdict fo
 configuration that counted nothing rather than each falling back to its own
 arithmetic default. Kept beside :mod:`combine_method`, which decides the
 aggregation once there is something to aggregate.
+
+Two refusal branches carry :attr:`FoldedGrade.refusal`: a component the config
+declared that produced no verdict, and a fold whose scored components carry no
+weight. Both refuse the fold rather than let the aggregation silently redistribute
+the missing share; the caller reads :attr:`FoldedGrade.refusal` to know it must not
+compose a grade for the trial.
 """
 
 from __future__ import annotations
@@ -31,6 +37,12 @@ _NOTHING_ASKED = (
 
 _PRODUCED_NO_VERDICT = "{names} produced no verdict"
 
+_DECLARED_BUT_UNSCORED = (
+    "{names} declared in the grading config produced no verdict; folding on the remaining "
+    "components would silently redistribute the weight they were meant to carry, so the "
+    "trial is refused rather than composed on a missing measurement"
+)
+
 _WEIGHTS_SUM_TO_ZERO = (
     "combine.method: weighted averages the scored components by combine.weights and theirs "
     "sum to zero ({shares}), so there is nothing to average"
@@ -53,11 +65,20 @@ class FoldedGrade:
     ``reason`` is ``None`` for every verdict an aggregation produced: those are already
     described by the components' own reasons. It is populated only where the fold decided
     without reading a score, because nothing else in the grade would then say why.
+
+    ``refusal`` is ``True`` on every branch where the fold declined to compose a grade
+    — a declared component produced no verdict, or the scored components carry no
+    weight — and ``False`` for a real verdict, aggregation-produced or the free pass a
+    deliberately non-scoring pack earns. The runner and the grader-service dispatch
+    both discriminate on this flag: a refused fold surfaces as a fail-loud
+    ``success=False`` on the wire, never as a redistributed weighted mean composed
+    across a missing measurement.
     """
 
     score: float
     binary_pass: bool
     reason: str | None = None
+    refusal: bool = False
 
 
 def require_component_weight(name: str, weights: Mapping[str, float]) -> float:
@@ -83,11 +104,14 @@ def resolve_uncounted_fold(
     """The verdict for a configuration no weighted component was scored under.
 
     ``None`` where the fold has something to aggregate and the caller's own aggregation
-    decides. Two answers otherwise. A config asking for nothing *and* weighting nothing
+    decides. Three answers otherwise. A config asking for nothing *and* weighting nothing
     passes: nothing was asked for, so nothing is owed — the deliberately non-scoring pack.
-    A config that asked for something, or weighted something, and counted none of it fails,
-    with a reason naming what it asked for, because a bare ``0.0`` beside components that
-    all read as passing is the defect this rule exists to remove.
+    A component the config declared that produced no verdict refuses the fold, naming the
+    missing component, because folding on the remainder would silently redistribute the
+    weight the missing component was meant to carry. A config that asked for something,
+    or weighted something, and counted none of it refuses too, with a reason naming what
+    it asked for, because a bare ``0.0`` beside components that all read as passing is
+    the defect this rule exists to remove.
 
     The zero-total-weight half is ``weighted``-only: ``all`` and ``any`` aggregate the
     component *set* and never read a weight, so a share of ``0.0`` under them is an inert
@@ -100,6 +124,14 @@ def resolve_uncounted_fold(
     """
     if not requested and not weights:
         return FoldedGrade(score=1.0, binary_pass=True, reason=_NOTHING_ASKED)
+    unevaluated = sorted(set(requested) - set(scored))
+    if unevaluated:
+        return FoldedGrade(
+            score=0.0,
+            binary_pass=False,
+            reason=_DECLARED_BUT_UNSCORED.format(names=", ".join(unevaluated)),
+            refusal=True,
+        )
     if not _carries_no_weight(scored=scored, weights=weights, method=method):
         return None
     return FoldedGrade(
@@ -110,6 +142,7 @@ def resolve_uncounted_fold(
                 _why_nothing_counted(scored=scored, requested=requested, weights=weights)
             )
         ),
+        refusal=True,
     )
 
 

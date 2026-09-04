@@ -8,7 +8,13 @@ the same machinery.
 The engine is deliberately behaviour-light: it owns turn structure (episode
 timeout, generate, accumulate, append assistant, terminate, execute tools,
 optional user turn, error classification, max-turns), and delegates every
-*policy* decision to pluggable seams:
+*policy* decision to pluggable seams. A provider-shaped *empty completion* —
+``result.text == "" and not result.tool_calls`` — is the one wire-shape
+observation the engine consumes directly: it terminates the trial with
+:attr:`TerminationReason.EMPTY_COMPLETION` before the empty assistant message
+is appended, because appending it would send a request whose tail is an empty
+``role=model`` turn on the next iteration and providers such as Gemini reject
+that as an API error rather than pass it through.
 
 * :class:`LoopLLMClient` — the provider-agnostic generate seam (the agent's
   :class:`~tolokaforge.core.llm.client.LLMClient` already satisfies it).
@@ -89,10 +95,20 @@ class LoopConfig:
     There is deliberately no per-turn timeout: per-turn LLM timeouts are handled
     inside :class:`~tolokaforge.core.llm.client.LLMClient` (``api_call_timeout_s``
     + bounded retry), so episode wall-time is the only loop-level time bound.
+
+    ``api_error_retries`` and ``api_error_backoff_s`` set the loop-level bounded
+    retry that fires only on :attr:`TerminationReason.API_ERROR` — a transient
+    provider fault the classifier could not attribute to a typed reason.
+    ``RATE_LIMIT``, ``API_TIMEOUT``, ``TRIAL_LOST`` and ``EMPTY_COMPLETION`` stay
+    one-shot terminal because each owns a dedicated path (typed 429 handling,
+    transport-timeout retry, substrate re-registration, provider-shape
+    fail-loud) and retrying them here would double-count them.
     """
 
     max_turns: int = 50
     episode_timeout_s: int = 1200
+    api_error_retries: int = 1
+    api_error_backoff_s: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -279,6 +295,20 @@ class ToolCallingLoop:
         None
     )
     call_observation: LLMCallObservation | None = None
+    # Per-tool ``parameters`` schema the model was shown for this loop's tools,
+    # keyed by tool name. Wired at construction from
+    # :meth:`LLMClient.sanitize_tools_for_execution`. When present, the executor
+    # validates arguments against the schema for each call's tool; a call whose
+    # tool name is absent from the map falls back to the tool's own declared
+    # schema. When the whole field is ``None``, no schema is passed and the
+    # executor validates against the tool's declared schema — the path taken by
+    # tests that construct the loop without an LLM in scope.
+    validation_schemas_by_tool: dict[str, dict[str, Any]] | None = None
+    # Bounded API-error retry sleep seam. Parallels ``LLMClient._retry_sleep``:
+    # tests bind a no-op so the loop's retry backoff is instant. See
+    # :attr:`LoopConfig.api_error_backoff_s` for the wait, and the retry class
+    # rules in the config docstring for which classified reasons trigger it.
+    retry_sleep: Callable[[float], None] = time.sleep
     # The episode's id assigner. Injected rather than owned: a trial's second
     # actor executes tool calls outside this loop and must draw from the same
     # sequence, while a rubric judge's loop takes the default and disambiguates
@@ -300,28 +330,13 @@ class ToolCallingLoop:
         termination_reason: TerminationReason | None = None
 
         for turn in range(self.config.max_turns):
-            timeout_decision = self._check_episode_timeout(start_time)
-            if timeout_decision is not None:
-                status = timeout_decision.status or status
-                termination_reason = timeout_decision.reason
-                messages.append(self._system_message(timeout_decision.system_message))
+            outcome = self._attempt_turn(turn, system_prompt, messages, start_time)
+            if isinstance(outcome, TerminationDecision):
+                messages.append(self._system_message(outcome.system_message))
+                status = outcome.status or status
+                termination_reason = outcome.reason
                 break
-
-            try:
-                turn_status, turn_reason, stop = self._run_turn(turn, system_prompt, messages)
-            except Exception as exc:  # noqa: BLE001 — classified, then surfaced via status
-                self.logger.error(
-                    "Error during turn execution",
-                    turn=turn,
-                    error=str(exc),
-                    error_type=type(exc).__name__,
-                )
-                decision = self.classify_error(exc)
-                messages.append(self._system_message(decision.system_message))
-                status = decision.status or TrialStatus.ERROR
-                termination_reason = decision.reason
-                break
-
+            turn_status, turn_reason, stop = outcome
             if turn_status is not None:
                 status = turn_status
             if stop:
@@ -341,6 +356,57 @@ class ToolCallingLoop:
             captured_effective_system_prompt=self._captured_effective_prompt,
         )
 
+    def _attempt_turn(
+        self,
+        turn: int,
+        system_prompt: str,
+        messages: list[Message],
+        start_time: float,
+    ) -> TerminationDecision | tuple[TrialStatus | None, TerminationReason | None, bool]:
+        """Run one turn with the bounded API-error retry budget.
+
+        Returns the turn's ``(status_override, reason, stop)`` triple when the
+        attempt produced a result the outer loop should consume. Returns a
+        :class:`TerminationDecision` when the outer loop must stop — either
+        because the episode wall-time budget is spent, or because a classified
+        exception cannot be recovered by another attempt.
+
+        The API-error retry budget resets to zero on every call, so a
+        successful turn followed by an API-error turn gets a fresh budget.
+        Only :attr:`TerminationReason.API_ERROR` triggers a retry: rate limits,
+        API timeouts, trial-lost and empty completions stay one-shot terminal.
+        """
+        api_error_attempts = 0
+        while True:
+            timeout_decision = self._check_episode_timeout(start_time)
+            if timeout_decision is not None:
+                return timeout_decision
+            try:
+                return self._run_turn(turn, system_prompt, messages)
+            except Exception as exc:  # noqa: BLE001 — classified, then surfaced via status
+                self.logger.error(
+                    "Error during turn execution",
+                    turn=turn,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+                decision = self.classify_error(exc)
+                if (
+                    decision.reason is TerminationReason.API_ERROR
+                    and api_error_attempts < self.config.api_error_retries
+                ):
+                    api_error_attempts += 1
+                    self.logger.info(
+                        "Retrying turn after classified API error",
+                        turn=turn,
+                        attempt=api_error_attempts,
+                        max_attempts=self.config.api_error_retries + 1,
+                        backoff_s=self.config.api_error_backoff_s,
+                    )
+                    self.retry_sleep(self.config.api_error_backoff_s)
+                    continue
+                return decision
+
     def _run_turn(
         self, turn: int, system_prompt: str, messages: list[Message]
     ) -> tuple[TrialStatus | None, TerminationReason | None, bool]:
@@ -355,6 +421,16 @@ class ToolCallingLoop:
         self._capture_effective_prompt(result)
         self.metrics.record_generation(result)
         self._log_generation(turn, result)
+
+        if not result.text and not result.tool_calls:
+            messages.append(
+                self._system_message(
+                    "Model returned an empty completion (no text, no tool calls); "
+                    "trial terminated to keep the next request provider-legal."
+                )
+            )
+            return TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, True
+
         messages.append(self._assistant_message(result))
 
         decision = self.should_terminate(result, turn, messages)
@@ -429,7 +505,15 @@ class ToolCallingLoop:
         for tc in result.tool_calls:
             self._maybe_recover_arguments(tc, result.text)
             tool_start = time.time()
-            tool_result = self.tool_executor.execute(tc.name, tc.arguments, call_id=tc.id)
+            if self.validation_schemas_by_tool is None:
+                tool_result = self.tool_executor.execute(tc.name, tc.arguments, call_id=tc.id)
+            else:
+                tool_result = self.tool_executor.execute(
+                    tc.name,
+                    tc.arguments,
+                    call_id=tc.id,
+                    validation_schema=self.validation_schemas_by_tool.get(tc.name),
+                )
             tool_duration = time.time() - tool_start
             self.metrics.record_tool_call()
 

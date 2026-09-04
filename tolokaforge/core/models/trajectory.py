@@ -25,6 +25,7 @@ from pydantic import (
 from tolokaforge.core.llm.reasoning import StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 from tolokaforge.core.models.grade import Grade
+from tolokaforge.core.models.trial_status import TerminationReason, TrialStatus
 from tolokaforge.runner.models import RecordedToolCall
 
 __all__ = [
@@ -43,18 +44,30 @@ __all__ = [
     "ToolCall",
     "ToolUsage",
     "Trajectory",
-    "TrialStatus",
     "UserReplyGuardEvent",
     "UserReplyOutcome",
 ]
 
 
-ProvisionStage = Literal["provision", "await_ready", "reset_recipe", "register_trial"]
-"""The four points a :class:`~tolokaforge.core.runtime.ProvisionError` can
-be raised at, as a closed vocabulary. The provisioner declares which lifecycle
-step failed — compose-up (``provision``), the readiness gate (``await_ready``),
-the per-trial reset hook (``reset_recipe``), or the runner-side registration
-that arms the trial (``register_trial``) — and the value survives verbatim onto
+ProvisionStage = Literal[
+    "materialise_run",
+    "provision",
+    "await_ready",
+    "reset_recipe",
+    "register_trial",
+    "cycle",
+]
+"""The six points a :class:`~tolokaforge.core.runtime.ProvisionError` can be
+raised at, as a closed vocabulary. The provisioner declares which lifecycle
+step failed — plan-shape validation at run start
+(``materialise_run``, raised by
+:class:`~tolokaforge.core.composition_runtime.SubstrateComposer` when the
+composition plan violates INV-12), compose-up (``provision``), the readiness
+gate (``await_ready``), the per-trial reset hook (``reset_recipe``), the
+runner-side registration that arms the trial (``register_trial``), or the
+between-trials service dispatch (``cycle``) that a
+:class:`~tolokaforge.core.composition_runtime.ServiceLifecycleDispatcher`
+raises — and the value survives verbatim onto
 :attr:`Trajectory.provision_stage` and the per-trial ``metrics.yaml``
 ``error_stage`` key.
 
@@ -71,31 +84,6 @@ class MessageRole(str, Enum):
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
-
-
-class TrialStatus(str, Enum):
-    """Trial execution status"""
-
-    COMPLETED = "completed"
-    FAILED = "failed"
-    TIMEOUT = "timeout"
-    ERROR = "error"
-
-
-class TerminationReason(str, Enum):
-    """Reason why the dialogue was terminated"""
-
-    AGENT_DONE = "agent_done"  # Agent had no further action and no party could ask for one
-    USER_STOP = "user_stop"  # User signaled ###STOP###
-    STUCK_DETECTED = "stuck_detected"  # Stuck condition detected
-    TIMEOUT = "timeout"  # Episode timeout reached
-    MAX_TURNS = "max_turns"  # Maximum turns limit reached
-    ERROR = "error"  # Runtime error occurred
-    RATE_LIMIT = "rate_limit"  # API rate limit error
-    API_TIMEOUT = "api_timeout"  # API call timed out after retries
-    API_ERROR = "api_error"  # Other API errors
-    PROVISION_ERROR = "provision_error"  # Substrate provisioning failed before the trial body ran
-    TRIAL_LOST = "trial_lost"  # The substrate no longer holds the trial the engine was running
 
 
 class FirstUserMessageSource(str, Enum):
@@ -675,8 +663,8 @@ class Trajectory(BaseModel):
     # Non-``None`` iff ``termination_reason == PROVISION_ERROR``; ``None`` on
     # every other trial including bundles the executor writes for a failure
     # whose stage the raise site did not name (the closed set at
-    # ``ProvisionStage`` is exhaustive today, so this is a defensive default,
-    # not a documented gap).
+    # ``ProvisionStage`` is exhaustive over the raise sites, so this is a
+    # defensive default, not a documented gap).
     provision_stage: ProvisionStage | None = None
     # Grade-bundle produce outcome for this trial. ``None`` iff snapshot
     # mode is disabled for the run OR the trial ended before grading.

@@ -21,7 +21,7 @@ __all__ = [
     "minimum_engine_version",
 ]
 
-__version__: Final[str] = "1.3.0"
+__version__: Final[str] = "1.4.0"
 """PEP 440 version of the models wheel itself."""
 
 __api_version__: Final[int] = 1

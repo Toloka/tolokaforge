@@ -65,6 +65,7 @@ from tolokaforge.core.grading.golden_replay import (
 from tolokaforge.core.grading.state_checks import StateChecker
 from tolokaforge.runner.models import (
     GoldenAction,
+    HashComparisonBasis,
     HashGradingResult,
     RunnerStateChecksConfig,
     TaskDescription,
@@ -934,3 +935,49 @@ async def test_the_runner_records_a_golden_action_whose_answer_it_cannot_read(
     reasons = _reasons_for(result)
     assert "GOLDEN REPLAY ERRORS:" in reasons, reasons
     assert "[0] confirm_payment raised TypeError:" in reasons, reasons
+
+
+def test_hash_unscorable_is_true_when_golden_replay_recorded_a_failure() -> None:
+    """A replay that recorded any failure leaves the hash verdict unscorable.
+
+    The world the hash reads is the partial state one broken golden action left behind, so
+    a hash score composed against it grades the trial against a state no author asked for.
+    :attr:`HashGradingResult.hash_unscorable` is what the runner call site reads before
+    writing :attr:`hash_score` into the runner components — ``True`` here keeps the
+    ``-1.0`` not-evaluated sentinel and the fold's declared-but-unscored refusal fires
+    downstream.
+    """
+    unscorable = HashGradingResult(
+        hash_match=False,
+        basis=HashComparisonBasis.GOLDEN_REPLAY,
+        golden_replay=GoldenReplayRecord(
+            authored=1,
+            failures=(
+                FailedGoldenAction(
+                    index=0,
+                    name="confirm_payment",
+                    kind=GoldenActionFailure.RAISED,
+                    error="the tool raised",
+                ),
+            ),
+        ),
+    )
+
+    assert unscorable.hash_unscorable is True
+
+
+def test_hash_unscorable_is_false_when_golden_replay_ran_whole() -> None:
+    """The control: a replay that recorded no failures leaves the hash verdict scorable.
+
+    Without this the runner call site would skip the ``hash_score`` write on every
+    hash-graded trial, and every hash pack would land ungradeable — a rule that fires on
+    both cells cannot discriminate between them.
+    """
+    scorable = HashGradingResult(
+        hash_match=True,
+        basis=HashComparisonBasis.GOLDEN_REPLAY,
+        golden_replay=GoldenReplayRecord(authored=2),
+    )
+
+    assert scorable.hash_unscorable is False
+    assert scorable.hash_score == 1.0

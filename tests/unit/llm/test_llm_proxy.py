@@ -593,3 +593,35 @@ class TestGatewayQuotaRejection:
         assert client._current_key_index == 2
         assert os.environ.get("OPENROUTER_API_KEY") == "k3"
         assert "All API keys exhausted" in message
+
+
+class TestTrustWildcardsFlag:
+    def test_default_is_off(self, install_secrets) -> None:
+        install_secrets({"LLM_PROXY_BASE_URL": "https://gateway.example.com"})
+        assert resolve_proxy_config().trust_namespace_wildcards is False
+
+    @pytest.mark.parametrize("value", ["true", "TRUE", "1", "yes"])
+    def test_truthy_values(self, install_secrets, value: str) -> None:
+        install_secrets(
+            {
+                "LLM_PROXY_BASE_URL": "https://gateway.example.com",
+                "LLM_PROXY_TRUST_NAMESPACE_WILDCARDS": value,
+            }
+        )
+        assert resolve_proxy_config().trust_namespace_wildcards is True
+
+    def test_garbage_is_refused(self, install_secrets) -> None:
+        install_secrets(
+            {
+                "LLM_PROXY_BASE_URL": "https://gateway.example.com",
+                "LLM_PROXY_TRUST_NAMESPACE_WILDCARDS": "openrouter",
+            }
+        )
+        with pytest.raises(ProxyConfigError):
+            resolve_proxy_config()
+
+    def test_set_without_a_base_url_is_an_orphan(self, install_secrets) -> None:
+        """A companion without the on-switch means a typo, never silent direct."""
+        install_secrets({"LLM_PROXY_TRUST_NAMESPACE_WILDCARDS": "true"})
+        with pytest.raises(ProxyConfigError):
+            resolve_proxy_config()

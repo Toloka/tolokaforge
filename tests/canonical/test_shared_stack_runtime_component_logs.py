@@ -1,15 +1,17 @@
-"""Canonical tests locking ``SharedStackRuntimeBackend``'s task-declared
-compose stack ``LogRouter`` wiring.
+"""Canonical tests locking log-router wiring on
+:class:`SharedStackRuntimeBackend`'s env_manifest path.
 
-Every container the task-declared compose stack brings up must have a
-``LogRouter`` attached whose ``component_id`` matches what the display
+Every container the run-scope compose stack brings up carries a
+:class:`LogRouter` on the private ``_DockerComposeStackHandle`` the
+materialiser produces (post-refactor: the router set lives on the
+handle, not on the backend). The component id matches what the display
 publishes for engine services (``engine/docker.service/<service>``).
-Router teardown must precede ``shutdown_compose`` so the streaming
-thread stops before its underlying docker log stream is severed.
+Router teardown must precede compose shutdown so the streaming thread
+stops before its underlying docker log stream is severed.
 
-Built-in-shared-stack mode (``env_manifest`` is ``None``) never enters
-``_materialise_manifest``, so ``close()`` must handle an empty router
-list as a no-op.
+Built-in-stack mode (``env_manifest`` is ``None``) never materialises
+the run substrate, so ``close()`` must be a no-op for the run-scope
+router set.
 """
 
 from __future__ import annotations
@@ -21,15 +23,23 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tolokaforge.core.docker_compose_materialiser import _DockerComposeStackHandle
+from tolokaforge.core.project_loader import _synthesise_composition_plan
 from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
-from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest
+from tolokaforge.core.trial import EnvironmentManifest
 from tolokaforge.docker.logging import LogRouterError
+from tolokaforge.runner.models import ServiceSpec
 
 pytestmark = pytest.mark.canonical
 
 
 def _make_manifest(tmp_path: Path) -> EnvironmentManifest:
-    """Author a minimal valid manifest whose compose file exists on disk."""
+    """Author a minimal valid manifest whose compose file exists on disk.
+
+    All services labelled ``shared`` so ``_synthesise_composition_plan``
+    infers the SINGLE_RUN plan shape (one run-scope stack owning the
+    runner) the component-logs contract exercises.
+    """
     compose_file = tmp_path / "environment.compose.yaml"
     compose_file.write_text(
         "services:\n"
@@ -42,14 +52,23 @@ def _make_manifest(tmp_path: Path) -> EnvironmentManifest:
         "    ports:\n"
         '      - "8000"\n'
     )
-    return EnvironmentManifest(compose_file=compose_file, runner_service="runner")
+    manifest = EnvironmentManifest(
+        compose_file=compose_file,
+        runner_service="runner",
+        services={
+            "runner": ServiceSpec(isolation="shared"),
+            "db-service": ServiceSpec(isolation="shared"),
+        },
+    )
+    _synthesise_composition_plan(manifest, {})
+    return manifest
 
 
 class _FakeComposeContainer:
     """Minimal ``ComposeContainer`` stand-in for ``.get_containers()``.
 
-    Only exposes the attributes ``SharedStackRuntimeBackend`` reads when
-    constructing a ``LogRouter`` per container.
+    Only exposes the attributes the materialiser reads when constructing
+    a :class:`LogRouter` per container.
     """
 
     def __init__(
@@ -63,12 +82,10 @@ class _FakeComposeContainer:
 class _RecordingRouter:
     """Spy ``LogRouter`` that records lifecycle timestamps.
 
-    Stands in for the real router so the test can assert both construction
-    (component id per container) and teardown ordering (every router stops
-    before ``shutdown_compose``).
+    Stands in for the real router so the test can assert both
+    construction (component id per container) and teardown ordering
+    (every router stops before compose shutdown).
     """
-
-    instances: list[_RecordingRouter] = []
 
     def __init__(
         self,
@@ -101,36 +118,19 @@ class _RecordingRouter:
             self._events.append(("router.stop", self.container_name, self.stop_ts))
 
 
-def _patch_materialise(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    compose: MagicMock,
-    endpoints: EnvEndpoints,
-    runner_endpoint: tuple[str, int] | None = ("localhost", 60051),
-) -> None:
-    """Patch the compose-materialisation seams so ``connect()`` runs without docker."""
-    from tolokaforge.core import shared_stack_runtime as module
-
-    monkeypatch.setattr(module, "DockerCompose", lambda **_: compose)
-    monkeypatch.setattr(module, "copy_compose_context", lambda src, dst: None)
-    monkeypatch.setattr(module, "apply_network_policy_to_compose_file", lambda *a, **k: None)
-    monkeypatch.setattr(module, "inject_runner_credentials", lambda *a, **k: None)
-    monkeypatch.setattr(module, "resolve_runner_endpoint", lambda *a, **k: runner_endpoint)
-    monkeypatch.setattr(module, "resolve_env_endpoints", lambda *a, **k: endpoints)
-    monkeypatch.setattr(module, "GrpcRunnerClient", lambda **_: MagicMock())
-
-
 def _install_recording_router(
     monkeypatch: pytest.MonkeyPatch,
     events: list[tuple[str, str, float]] | None = None,
     fail_for_service: str | None = None,
 ) -> list[_RecordingRouter]:
-    """Install ``_RecordingRouter`` in place of the real ``LogRouter``.
+    """Install :class:`_RecordingRouter` in place of the real
+    ``LogRouter`` on the materialiser module.
 
-    Optionally raises a ``LogRouterError`` when constructing a router for
-    ``fail_for_service`` — used to lock the log-and-continue contract.
+    Optionally raises a :class:`LogRouterError` when constructing a
+    router for ``fail_for_service`` — used to lock the log-and-continue
+    contract.
     """
-    from tolokaforge.core import shared_stack_runtime as module
+    from tolokaforge.core import docker_compose_materialiser as module
 
     created: list[_RecordingRouter] = []
 
@@ -148,33 +148,85 @@ def _install_recording_router(
     return created
 
 
+def _install_fake_compose_factory(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_compose: MagicMock,
+) -> None:
+    """Route the materialiser's docker-compose factory through a fake so
+    the test never touches a real docker daemon."""
+    from tolokaforge.core import docker_compose_materialiser as module
+
+    monkeypatch.setattr(module, "DockerCompose", lambda **_: fake_compose)
+
+
+def _patch_resolvers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the materialiser's endpoint resolvers at the test's
+    published-port stub. The default port sentinel ``60051`` mirrors
+    what the pre-refactor tests used."""
+    from tolokaforge.core import docker_compose_materialiser as module
+
+    monkeypatch.setattr(module, "resolve_host_port", lambda *_a, **_kw: ("localhost", 60051))
+
+
+def _connect_run_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: EnvironmentManifest,
+    fake_compose: MagicMock,
+) -> SharedStackRuntimeBackend:
+    """Wire the backend end-to-end for a run-scope-materialise scenario.
+
+    Returns a backend whose ``connect()`` succeeds against a stubbed
+    docker daemon; the composer's runner-client factory is replaced with
+    a MagicMock so the run-scope client connect is a no-op.
+    """
+    from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
+    from tolokaforge.core.docker_compose_materialiser import DockerComposeMaterialiser
+
+    _install_fake_compose_factory(monkeypatch, fake_compose)
+    _patch_resolvers(monkeypatch)
+    composer = DefaultSubstrateComposer(
+        materialiser=DockerComposeMaterialiser(docker_compose_factory=lambda **_: fake_compose),
+        runner_client_factory=lambda _addr, _events: MagicMock(),
+    )
+    backend = SharedStackRuntimeBackend(
+        env_manifest=manifest,
+        run_id="run-x",
+        composer=composer,
+    )
+    return backend
+
+
+def _run_scope_handle(backend: SharedStackRuntimeBackend) -> _DockerComposeStackHandle:
+    """Return the sole run-scope :class:`_DockerComposeStackHandle` after connect()."""
+    assert backend._run_substrate is not None
+    handle = backend._run_substrate.run_stack_handles[0]
+    assert isinstance(handle, _DockerComposeStackHandle)
+    return handle
+
+
 def test_materialise_attaches_one_router_per_container(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Every compose container gets a ``LogRouter`` whose component id
     matches ``engine/docker.service/<service>`` — same namespace the
-    built-in stack uses, so a task compose declaring a ``runner`` service
-    lands on the same row regardless of the deployment mode."""
+    built-in stack uses, so a task compose declaring a ``runner``
+    service lands on the same row regardless of the deployment mode.
+    """
     manifest = _make_manifest(tmp_path)
-    backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
 
     fake_compose = MagicMock()
     fake_compose.get_containers.return_value = [
         _FakeComposeContainer(ID="cid-runner", Name="proj-runner-1", Service="runner"),
         _FakeComposeContainer(ID="cid-db", Name="proj-db-1", Service="db-service"),
     ]
-    endpoints = EnvEndpoints(
-        db_url="http://localhost:65432",
-        rag_url=None,
-        runner_url="http://localhost:60051",
-    )
-    _patch_materialise(monkeypatch, compose=fake_compose, endpoints=endpoints)
     created = _install_recording_router(monkeypatch)
+    backend = _connect_run_scope(monkeypatch, manifest, fake_compose)
 
     backend.connect()
 
     assert len(created) == 2
-    assert len(backend._compose_log_routers) == 2
+    handle = _run_scope_handle(backend)
+    assert len(handle.log_routers) == 2
     by_component = {r.component_id: r for r in created}
     assert set(by_component.keys()) == {
         "engine/docker.service/runner",
@@ -188,30 +240,26 @@ def test_materialise_attaches_one_router_per_container(
 def test_close_stops_routers_before_shutdown_compose(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Teardown order: every router's ``stop`` timestamp precedes
-    ``shutdown_compose``'s call timestamp."""
+    """Teardown order: every router's ``stop`` timestamp precedes the
+    materialiser's ``shutdown_compose`` call timestamp."""
     manifest = _make_manifest(tmp_path)
-    backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
 
     fake_compose = MagicMock()
     fake_compose.get_containers.return_value = [
         _FakeComposeContainer(ID="cid-runner", Name="proj-runner-1", Service="runner"),
         _FakeComposeContainer(ID="cid-db", Name="proj-db-1", Service="db-service"),
     ]
-    endpoints = EnvEndpoints(db_url="http://x", rag_url=None, runner_url="http://y")
     events: list[tuple[str, str, float]] = []
-    _patch_materialise(monkeypatch, compose=fake_compose, endpoints=endpoints)
     created = _install_recording_router(monkeypatch, events=events)
 
+    from tolokaforge.core import docker_compose_materialiser as module
+
     shutdown_ts: list[float] = []
+    monkeypatch.setattr(
+        module, "shutdown_compose", lambda _compose: shutdown_ts.append(time.monotonic())
+    )
 
-    def recording_shutdown(_compose: Any) -> None:
-        shutdown_ts.append(time.monotonic())
-
-    from tolokaforge.core import shared_stack_runtime as module
-
-    monkeypatch.setattr(module, "shutdown_compose", recording_shutdown)
-
+    backend = _connect_run_scope(monkeypatch, manifest, fake_compose)
     backend.connect()
     backend.close()
 
@@ -223,33 +271,26 @@ def test_close_stops_routers_before_shutdown_compose(
         assert (
             router.stop_ts < shutdown_ts[0]
         ), f"router {router.container_name!r} stopped after shutdown_compose"
-    # State cleared so a follow-up close() is a no-op.
-    assert backend._compose_log_routers == []
+    assert backend._run_substrate is None
 
 
-def test_close_is_noop_when_router_list_empty(
+def test_close_is_noop_when_no_run_substrate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Built-in-shared-stack mode never materialises the manifest — the
-    router list stays empty. ``close()`` must handle that as a no-op and
-    must not attempt to call ``.stop()`` on nothing."""
-    # Built-in mode: no env_manifest, so _materialise_manifest is never called.
+    """Built-in-stack mode never materialises the run substrate — the
+    router set is empty by construction. ``close()`` must handle that
+    without touching the composer's ``teardown_run``."""
+    del monkeypatch  # not used; the two scenarios are structural
     backend = SharedStackRuntimeBackend()
-    assert backend._compose_log_routers == []
 
-    # A second close() after the first must also be a no-op — locks
-    # idempotency of the router-teardown block.
     backend.close()
-    backend.close()
-    assert backend._compose_log_routers == []
+    backend.close()  # second call must not raise either
 
-    # Also cover the env_manifest branch when close() runs before
-    # connect() (no materialisation happened yet).
     manifest = _make_manifest(tmp_path)
     deferred = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
-    assert deferred._compose_log_routers == []
+    assert deferred._run_substrate is None
     deferred.close()
-    assert deferred._compose_log_routers == []
+    assert deferred._run_substrate is None
 
 
 def test_materialise_logs_and_continues_on_router_failure(
@@ -261,25 +302,24 @@ def test_materialise_logs_and_continues_on_router_failure(
     provisioning — the compose stack is already up. Other routers are
     still built and the failure is logged."""
     manifest = _make_manifest(tmp_path)
-    backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
 
     fake_compose = MagicMock()
     fake_compose.get_containers.return_value = [
         _FakeComposeContainer(ID="cid-runner", Name="proj-runner-1", Service="runner"),
         _FakeComposeContainer(ID="cid-db", Name="proj-db-1", Service="db-service"),
     ]
-    endpoints = EnvEndpoints(db_url="http://x", rag_url=None, runner_url="http://y")
-    _patch_materialise(monkeypatch, compose=fake_compose, endpoints=endpoints)
     created = _install_recording_router(monkeypatch, fail_for_service="runner")
+    backend = _connect_run_scope(monkeypatch, manifest, fake_compose)
 
     with caplog.at_level("ERROR"):
         backend.connect()
 
-    # runner router raised at construction → not present. db-service router
-    # was still built.
+    # runner router raised at construction → not present. db-service
+    # router was still built.
     assert len(created) == 1
     assert created[0].component_id == "engine/docker.service/db-service"
-    assert backend._compose_log_routers == [created[0]]
+    handle = _run_scope_handle(backend)
+    assert handle.log_routers == (created[0],)
     assert any(
         "failed to attach log router" in record.getMessage().lower() for record in caplog.records
     )
@@ -290,16 +330,14 @@ def test_container_without_id_is_skipped(monkeypatch: pytest.MonkeyPatch, tmp_pa
     (there is no docker container id to stream from); the wiring loop
     skips it silently rather than raising."""
     manifest = _make_manifest(tmp_path)
-    backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
 
     fake_compose = MagicMock()
     fake_compose.get_containers.return_value = [
         _FakeComposeContainer(ID="", Name="proj-runner-1", Service="runner"),
         _FakeComposeContainer(ID="cid-db", Name="proj-db-1", Service="db-service"),
     ]
-    endpoints = EnvEndpoints(db_url="http://x", rag_url=None, runner_url="http://y")
-    _patch_materialise(monkeypatch, compose=fake_compose, endpoints=endpoints)
     created = _install_recording_router(monkeypatch)
+    backend = _connect_run_scope(monkeypatch, manifest, fake_compose)
 
     backend.connect()
 
@@ -309,32 +347,23 @@ def test_container_without_id_is_skipped(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 def test_close_swallows_router_stop_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A router-stop error must not mask compose teardown — the same
-    fail-safe discipline the existing ``try/finally`` uses for the
-    runner-client close."""
+    fail-safe discipline the materialiser applies internally."""
     manifest = _make_manifest(tmp_path)
-    backend = SharedStackRuntimeBackend(env_manifest=manifest, run_id="run-x")
 
     fake_compose = MagicMock()
     fake_compose.get_containers.return_value = [
         _FakeComposeContainer(ID="cid-runner", Name="proj-runner-1", Service="runner"),
     ]
-    endpoints = EnvEndpoints(db_url="http://x", rag_url=None, runner_url="http://y")
-    _patch_materialise(monkeypatch, compose=fake_compose, endpoints=endpoints)
     created = _install_recording_router(monkeypatch)
 
-    from tolokaforge.core import shared_stack_runtime as module
+    from tolokaforge.core import docker_compose_materialiser as module
 
     shutdown_calls: list[bool] = []
-    monkeypatch.setattr(
-        module,
-        "shutdown_compose",
-        lambda _compose: shutdown_calls.append(True),
-    )
+    monkeypatch.setattr(module, "shutdown_compose", lambda _compose: shutdown_calls.append(True))
 
+    backend = _connect_run_scope(monkeypatch, manifest, fake_compose)
     backend.connect()
 
-    # Poison the sole router's stop() to raise; compose teardown must
-    # still run and the router list must still be cleared.
     def raising_stop(timeout_s: float = 5.0) -> None:  # noqa: ARG001
         raise RuntimeError("router stop boom")
 
@@ -343,4 +372,4 @@ def test_close_swallows_router_stop_errors(monkeypatch: pytest.MonkeyPatch, tmp_
     backend.close()
 
     assert shutdown_calls == [True]
-    assert backend._compose_log_routers == []
+    assert backend._run_substrate is None

@@ -45,7 +45,12 @@ from tenacity.wait import wait_base
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyGuard
 from tolokaforge.core.llm.capabilities import ModelCapabilities
-from tolokaforge.core.llm.gateway_route import fetch_gateway_catalog, resolve_gateway_route
+from tolokaforge.core.llm.gateway_route import (
+    ResolvedGatewayRoute,
+    RouteKind,
+    fetch_gateway_catalog,
+    resolve_gateway_route,
+)
 from tolokaforge.core.llm.litellm_params import allowed_openai_params
 from tolokaforge.core.llm.params_policy import RuleAction
 from tolokaforge.core.llm.presets import build_capabilities
@@ -613,7 +618,11 @@ class LLMClient:
         # A gateway that does not serve this model must not intercept it: fall back
         # to the direct provider rather than post a name it cannot route.
         # docs/LLM_LAYER.md § Speaking to the gateway.
-        self._gateway_route: str | None = None
+        self._gateway_route: ResolvedGatewayRoute | None = None
+        self._gateway_route_kind: RouteKind | None = None
+        # Declared here rather than created on the first pin drop, so the flag stays
+        # inside the client's attribute set. See the drop site in _call_with_retry.
+        self._pin_drop_warned: bool = False
         if self._proxy is not None:
             catalog = fetch_gateway_catalog(self._proxy)
             if catalog is None:
@@ -628,8 +637,20 @@ class LLMClient:
                 # A readable catalog is never empty here: the fetch maps an empty
                 # answer to None, so resolver-None below can only mean "omitted".
                 self._gateway_route = resolve_gateway_route(
-                    self.model_name, catalog, self._proxy.preferred_route
+                    self.model_name,
+                    catalog,
+                    self._proxy.preferred_route,
+                    trust_namespace_wildcards=self._proxy.trust_namespace_wildcards,
                 )
+                self._gateway_route_kind = (
+                    self._gateway_route.kind if self._gateway_route is not None else None
+                )
+                if self._gateway_route_kind == "wildcard":
+                    self.logger.info(
+                        "Gateway route resolved via the model namespace wildcard",
+                        base_url=self._proxy.base_url,
+                        model=self.model_name,
+                    )
                 if self._gateway_route is None:
                     self.logger.warning(
                         "Gateway does not serve this model; calling the provider directly",
@@ -688,6 +709,27 @@ class LLMClient:
     @capabilities.setter
     def capabilities(self, value: ModelCapabilities) -> None:
         self._capabilities = value
+
+    def sanitize_tools_for_execution(
+        self, tools: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """Return ``{tool_name: parameters_schema}`` after running this client's
+        :class:`~tolokaforge.core.llm.schema_sanitizer.ToolSchemaSanitizer` over
+        ``tools``. The per-tool schema in the returned map is what the model
+        actually saw for that tool, and is the schema
+        :class:`~tolokaforge.tools.registry.ToolExecutor` validates argument
+        dicts against when
+        :attr:`~tolokaforge.core.loop.ToolCallingLoop.validation_schemas_by_tool`
+        is wired to this method's result. See
+        ``docs/LLM_LAYER.md`` § ``schema_sanitizer``.
+        """
+        sanitised = self.capabilities.schema_sanitizer.sanitize(tools)
+        return {
+            t["function"]["name"]: t["function"]["parameters"]
+            for t in sanitised
+            if isinstance(t.get("function"), dict)
+            and isinstance(t["function"].get("parameters"), dict)
+        }
 
     # ------------------------------------------------------------------
     # Rate-limit classification — per-provider, closes over the binding's
@@ -1843,11 +1885,29 @@ class LLMClient:
             if route is not None:
                 kwargs["model"] = route
                 kwargs["custom_llm_provider"] = "openai"
-                # Same class as the usage extension the dialect switch removes: an
-                # OpenRouter-only body field a non-OpenRouter upstream rejects.
+            # ONE rule for the provider pin on BOTH gateway paths (resolved route
+            # and unreadable catalog): ``extra_body.provider`` survives the hop
+            # exactly when the wire name's first segment IS the model's own
+            # provider namespace - the upstream behind such a route is the same
+            # family the pin was written for, and honours it. A route into any
+            # other namespace is another upstream, which rejects the field or,
+            # worse, silently ignores it. docs/LLM_LAYER.md § Speaking to the
+            # gateway.
+            wire_model = str(kwargs.get("model", self.model_name))
+            if wire_model.split("/", 1)[0] != self.provider.split("/", 1)[0]:
                 extra_body = kwargs.get("extra_body")
-                if isinstance(extra_body, dict):
-                    extra_body.pop("provider", None)
+                if isinstance(extra_body, dict) and "provider" in extra_body:
+                    extra_body.pop("provider")
+                    if not self._pin_drop_warned:
+                        # Once per client, not per call: a full eval makes
+                        # thousands of calls and the fact does not change.
+                        self._pin_drop_warned = True
+                        self.logger.warning(
+                            "Dropping the OpenRouter provider pin: the gateway route "
+                            "targets another namespace, whose upstream rejects it",
+                            route=wire_model,
+                            provider=self.provider,
+                        )
                     if not extra_body:
                         kwargs.pop("extra_body")
             kwargs["api_base"] = self._proxy.base_url
@@ -2179,6 +2239,10 @@ class LLMClient:
             latency_s=latency_s,
             cost_usd=cost_usd,
             cost_source=cost_source,
+            # Plain str on purpose: the artifact carries data, not the resolver's
+            # str subclass (asdict deepcopies every call record).
+            gateway_route=str(self._gateway_route) if self._gateway_route is not None else None,
+            gateway_route_kind=self._gateway_route_kind,
         )
 
         return GenerationResult(

@@ -87,6 +87,10 @@ jobs:
       # this list and integrate-model.yml's before adding a third reference: an unresolved
       # one makes the gateway reject the request.
       LLM_PROXY_SUNDAY_ORDER_ID: ${{ secrets.LLM_PROXY_SUNDAY_ORDER_ID }}
+      # The poller reads the catalog with the same routing policy a run uses,
+      # so its wildcard-coverage verdicts match what the run will honour.
+      LLM_PROXY_TRUST_NAMESPACE_WILDCARDS: ${{ vars.LLM_PROXY_TRUST_NAMESPACE_WILDCARDS }}
+      LLM_PROXY_PREFERRED_ROUTE: ${{ vars.LLM_PROXY_PREFERRED_ROUTE }}
       LLM_PROXY_GATEWAY_RUNNER_KEY: ${{ secrets.LLM_PROXY_GATEWAY_RUNNER_KEY }}
     steps:
       - uses: actions/checkout@v4

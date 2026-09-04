@@ -44,12 +44,12 @@ _UNGRADEABLE = TrialOutcomeClass.UNGRADEABLE
 # the handful of pairs a reader expects, any default looks like any other, so a
 # test restricted to them proves the table's scope and never its truth.
 #
-# The two columns disagree in four reachable cells — ``(error, api_error)``,
-# ``(error, error)``, ``(error, trial_lost)`` and ``(timeout, timeout)`` are
-# retried *and* counted — and that is the design, not a defect: whether an
-# attempt is worth repeating and whether it measured the agent are different
-# questions. Deriving either column from the other is what this table exists to
-# prevent.
+# The two columns disagree in six reachable cells — ``(error, api_error)``,
+# ``(error, error)``, ``(error, trial_lost)``, ``(timeout, timeout)``,
+# ``(timeout, empty_completion)`` and ``(error, empty_completion)`` are retried
+# *and* counted — and that is the design, not a defect: whether an attempt is
+# worth repeating and whether it measured the agent are different questions.
+# Deriving either column from the other is what this table exists to prevent.
 _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeClass, bool], ...] = (
     (TrialStatus.COMPLETED, TerminationReason.AGENT_DONE, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.USER_STOP, _MEASURED, False),
@@ -60,6 +60,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.COMPLETED, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.COMPLETED, TerminationReason.API_TIMEOUT, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.API_ERROR, _MEASURED, True),
+    (TrialStatus.COMPLETED, TerminationReason.EMPTY_COMPLETION, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.TRIAL_LOST, _HARNESS, False),
     (TrialStatus.COMPLETED, None, _MEASURED, False),
@@ -72,6 +73,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.FAILED, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.FAILED, TerminationReason.API_TIMEOUT, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.API_ERROR, _MEASURED, True),
+    (TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.TRIAL_LOST, _HARNESS, False),
     (TrialStatus.FAILED, None, _HARNESS, False),
@@ -84,6 +86,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.TIMEOUT, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.API_TIMEOUT, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.API_ERROR, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.EMPTY_COMPLETION, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.TIMEOUT, TerminationReason.TRIAL_LOST, _HARNESS, True),
     (TrialStatus.TIMEOUT, None, _HARNESS, True),
@@ -96,6 +99,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.ERROR, TerminationReason.RATE_LIMIT, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.API_TIMEOUT, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.API_ERROR, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.EMPTY_COMPLETION, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.ERROR, TerminationReason.TRIAL_LOST, _HARNESS, True),
     (TrialStatus.ERROR, None, _HARNESS, True),
@@ -182,7 +186,7 @@ class TestOutcomeClassificationCrossProduct:
             for ungradeable in (False, True)
         }
         assert cells == expected
-        assert len(_OUTCOME_CELLS) == len(expected) == 96
+        assert len(_OUTCOME_CELLS) == len(expected) == 104
 
     def test_the_class_column_exhausts_the_declared_vocabulary(self) -> None:
         """The table is hand-maintained and the enum is declared in production,
@@ -212,6 +216,16 @@ class TestOutcomeClassificationCrossProduct:
             if classify_trial_outcome(_cell_trajectory(TrialStatus.ERROR, reason)) is not _ABORT
         }
         assert counted == set(TerminationReason) - EXCLUDED_TYPED_REASONS
+
+    def test_empty_completion_stays_in_the_measured_denominator(self) -> None:
+        """A trial whose provider returned nothing is a measurement of the
+        model, not evidence the substrate broke, so it stays in the denominator.
+        The guard names the mechanism: adding ``EMPTY_COMPLETION`` to the
+        excluded set here would silently drop it from
+        ``measured_trials`` without failing
+        ``test_an_unrecognised_reason_would_be_counted`` (which locks the shape
+        of the derivation, not which reasons appear on either side)."""
+        assert TerminationReason.EMPTY_COMPLETION not in EXCLUDED_TYPED_REASONS
 
 
 class TestRetryabilityIsIndependentOfCountability:
@@ -330,6 +344,26 @@ def test_provision_error_classification():
     summary = summarize_failure_attributions([attribution])
     assert summary["total_failed_attempts"] == 1
     assert summary["by_failure_class"]["provision_failure"] == 1
+
+
+def test_an_empty_completion_is_attributed_to_a_provider_side_resource_event() -> None:
+    """The misattribution this reason exists to end, one artifact over: an
+    empty-completion trial has no failed tool call to scan — the model produced
+    nothing — so without its own branch it falls through to ``model_reasoning``
+    at confidence 0.5, blaming the agent for what was a provider-side event
+    (both ``text`` and ``tool_calls`` empty in the wire response)."""
+    traj = _base_trajectory()
+    traj.status = TrialStatus.FAILED
+    traj.termination_reason = TerminationReason.EMPTY_COMPLETION
+
+    attribution = attribute_failure(traj)
+
+    assert attribution["failure_class"] == "timeout_or_resource"
+    assert attribution["deterministic"] is True
+    assert attribution["confidence"] == 1.0
+    assert attribution["evidence"] == [
+        {"kind": "termination_reason", "value": "empty_completion", "status": "failed"}
+    ]
 
 
 def test_a_lost_trial_is_attributed_to_the_substrate_not_to_the_model() -> None:
@@ -560,3 +594,88 @@ def test_missing_write_file_tool_when_grading_expected_files():
     missing_tool_evidence = [ev for ev in attribution["evidence"] if ev["kind"] == "missing_tool"]
     assert len(missing_tool_evidence) == 1
     assert missing_tool_evidence[0]["tool"] == "write_file"
+
+
+def _synth_trajectory(
+    marker: TerminationReason, termination: TerminationReason | None
+) -> Trajectory:
+    """A trajectory carrying a harness-synthesised auto-fail grade.
+
+    ``termination`` is the trajectory's own ``termination_reason`` (what the
+    ``TrialGrader`` observed); ``marker`` is the value that lands on
+    :attr:`Grade.synthesized_by_termination_reason`. The two are decoupled so
+    the STUCK case (whose termination reason is enumerated, but whose marker
+    is set to STUCK_DETECTED by the grader) can be exercised beside the
+    ERROR-fallback case (termination is None; marker is ERROR).
+    """
+    traj = _base_trajectory()
+    traj.status = TrialStatus.COMPLETED if termination is not None else TrialStatus.ERROR
+    traj.termination_reason = termination
+    assert traj.grade is not None
+    traj.grade.synthesized_by_termination_reason = marker
+    return traj
+
+
+def test_a_stuck_detected_synth_grade_is_attributed_to_harness_autofail() -> None:
+    """A STUCK_DETECTED synth-marker grade classifies as ``harness_autofail``.
+
+    STUCK_DETECTED is not in the ``timeout_or_resource`` enumerated set, so the
+    tool-log scan below would otherwise settle on ``model_reasoning`` for a
+    synth trial with an empty tool log — which would blame the model for a
+    trial the harness itself terminated. The ``harness_autofail`` branch fires
+    on any synth-marker grade the deterministic elif chain does not, marks it
+    deterministic, and carries the reason as evidence.
+    """
+    traj = _synth_trajectory(
+        marker=TerminationReason.STUCK_DETECTED,
+        termination=TerminationReason.STUCK_DETECTED,
+    )
+
+    attribution = attribute_failure(traj)
+
+    assert attribution["failure_class"] == "harness_autofail"
+    assert attribution["deterministic"] is True
+    assert attribution["confidence"] == 1.0
+    assert attribution["synthesized"] is True
+    assert attribution["synthesized_by_termination_reason"] == "stuck_detected"
+    synth_evidence = [ev for ev in attribution["evidence"] if ev["kind"] == "synthesized_grade"]
+    assert synth_evidence == [{"kind": "synthesized_grade", "termination_reason": "stuck_detected"}]
+
+
+def test_a_synth_grade_over_an_enumerated_termination_reason_keeps_its_class() -> None:
+    """A synth grade whose ``TerminationReason`` is in the ``timeout_or_resource``
+    branch (EMPTY_COMPLETION, ERROR, TIMEOUT) keeps that class — the marker
+    fields ride alongside without changing the failure_class the enumerated
+    branch already catches. Otherwise a downstream consumer aggregating on
+    ``failure_class`` would see EMPTY_COMPLETION migrate from
+    ``timeout_or_resource`` to ``harness_autofail`` under a synth grade,
+    which is a wire shift the ``harness_autofail`` extension does not intend.
+    """
+    traj = _synth_trajectory(
+        marker=TerminationReason.EMPTY_COMPLETION,
+        termination=TerminationReason.EMPTY_COMPLETION,
+    )
+
+    attribution = attribute_failure(traj)
+
+    assert attribution["failure_class"] == "timeout_or_resource"
+    assert attribution["deterministic"] is True
+    assert attribution["synthesized"] is True
+    assert attribution["synthesized_by_termination_reason"] == "empty_completion"
+
+
+def test_a_real_measured_grade_is_not_marked_synthesized() -> None:
+    """The control: the two new fields default off on every grade a real
+    evaluator produced.
+
+    Without this the fields could default ``True``/populated and every downstream
+    consumer would read every trial as harness-synthesised.
+    """
+    traj = _base_trajectory()
+    traj.status = TrialStatus.TIMEOUT
+    traj.termination_reason = TerminationReason.TIMEOUT
+
+    attribution = attribute_failure(traj)
+
+    assert attribution["synthesized"] is False
+    assert attribution["synthesized_by_termination_reason"] is None

@@ -1,13 +1,14 @@
-"""Load + resolve + backend-selection wiring for the shipped
+"""Load + resolve + backend construction wiring for the shipped
 ``examples/native/multi_service_postgres_reset`` pack.
 
 Proves the reset seam is wired from disk to backend construction: the
 project loads and verifies the ``postgres_baseline`` seed digest, the
 default environment resolves to a manifest that labels ``app-db``
-``reset``, and the task-driven selector routes the run onto
-:class:`PerTrialRuntimeBackend` with the seed in its registry. No Docker
-and no LLM key — this is the pure load/resolve/select contract; the
-end-to-end recipe firing is covered by the sibling integration test.
+``reset``, and the orchestrator constructs a
+:class:`SharedStackRuntimeBackend` with the seed in its registry. No
+Docker and no LLM key — this is the pure load/resolve/construct
+contract; the end-to-end recipe firing is covered by the sibling
+integration test.
 """
 
 from __future__ import annotations
@@ -24,8 +25,8 @@ from tolokaforge.core.models import (
     RunConfig,
 )
 from tolokaforge.core.orchestrator import Orchestrator
-from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.project_loader import load_project_config, resolve
+from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 from tolokaforge.runner.models import TaskDescription
 
 pytestmark = pytest.mark.canonical
@@ -72,9 +73,9 @@ def test_default_environment_resolves_app_db_reset() -> None:
 
 def test_backend_selector_routes_pack_to_per_trial() -> None:
     """A run whose task inherits this project's default environment has a
-    ``reset`` service, so backend selection picks
-    :class:`PerTrialRuntimeBackend` with ``postgres_baseline`` in its
-    seed registry."""
+    ``reset`` service, so the orchestrator constructs
+    :class:`SharedStackRuntimeBackend` with ``postgres_baseline`` in its
+    seed registry — the composer sequences the per-trial reset recipe."""
     project = load_project_config(_PROJECT_YAML)
     manifest = resolve(project.default_environment, None)
     assert manifest is not None
@@ -95,12 +96,10 @@ def test_backend_selector_routes_pack_to_per_trial() -> None:
     orch.adapter = MagicMock()
     orch.adapter.to_task_description.side_effect = lambda tid: task_desc
 
-    assert orch._select_backend_from_tasks() == "per_trial"
-
     backend = orch._construct_runtime_backend(
         runner_address="sentinel:50051",
         env_manifest=None,
         run_id="reset-pack-smoke",
     )
-    assert isinstance(backend, PerTrialRuntimeBackend)
+    assert isinstance(backend, SharedStackRuntimeBackend)
     assert "postgres_baseline" in backend.seeds

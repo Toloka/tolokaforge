@@ -305,6 +305,8 @@ class GraderCompositeDispatch:
             judge_errored=judge_status is JudgeStatus.ERRORED,
         )
         components.llm_judge_score = fold_result.judge_component
+        if fold_result.refusal:
+            raise GradingFailedError(fold_result.verdict_reason or "grading fold refused")
         return _build_grade(
             fold_result=fold_result,
             components=components,

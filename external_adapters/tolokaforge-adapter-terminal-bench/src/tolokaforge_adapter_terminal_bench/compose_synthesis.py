@@ -1,20 +1,35 @@
-"""Synthesise an engine-provisionable compose file from a terminal-bench task.
+"""Synthesise the two compose files a terminal-bench trial provisions.
 
 Terminal-bench tasks author their ``docker-compose.yaml`` for terminal-bench's
 own provisioner, which injects a ``T_BENCH_*`` variable set (plus ``CPUS`` /
 ``MEMORY``) at up-time. The tolokaforge engine never sets those, so
 provisioning would fail at compose parse or leave the container name
 unresolved. This module resolves the adapter-owned variable set at synthesis
-time, pins the agent-service image, replaces the log bind-mounts with
-relative mounts against the staging directory, and injects the engine's
-``runner`` + ``db-service`` alongside the task's own services — so the
-emitted compose file is a self-contained trial substrate the engine's
-per-trial runtime can bring up unchanged.
+time, pins the agent-service image, and replaces the log bind-mounts with
+relative mounts against the staging directory.
+
+The output is a two-stack composition plan (ADR-0044 § 5 ``MULTI_SCOPE``):
+
+* an **engine** stack, ``stack_scope="run"``, whose compose file declares just
+  the engine's ``runner`` + ``db-service`` — brought up once at run start and
+  held live for every trial;
+* a **task** stack, ``stack_scope="trial"``, whose compose file declares the
+  agent service plus any task-authored siblings (and the harness ``-base``
+  build-only service under harness mode) — materialised fresh per trial.
+
+Splitting the plan keeps the runner's gRPC socket stable across the run while
+each trial gets a fresh task substrate. Every service in the task compose
+that actually runs is stamped with ``container_name:
+tbench_${TOLOKAFORGE_TRIAL_SLUG}_<service>`` so a task-authored sibling can
+never carry a fixed name that collides with the previous trial's teardown
+(the run-scope engine services keep compose's own project-scoped naming —
+their scope carries no trial slug).
 
 Under harness mode the agent image is split in two: the task's own build
-becomes a build-only ``-base`` service, and the agent service builds a thin
-layer on top that installs the requested coding-harness CLI. Both images are
-declared to the orchestrator's pre-build seam, base first.
+becomes a build-only ``-base`` service on the task stack, and the agent
+service builds a thin layer on top that installs the requested coding-harness
+CLI. Both images are declared to the orchestrator's pre-build seam, base
+first.
 
 The module runs no subprocess. Both adapter surfaces that call it
 (``get_task`` and ``to_task_description``) stay daemon-free, which the
@@ -64,7 +79,13 @@ AGENT_SERVICE_DEFAULT = "main"
 PROJECT_PREFIX = "tbench_"
 
 _SYNTHESISED_COMPOSE_FILENAME = "docker-compose.tolokaforge.yaml"
-_INJECTED_SERVICE_NAMES = ("runner", "db-service")
+_ENGINE_COMPOSE_FILENAME = "docker-compose.engine.yaml"
+_ENGINE_STAGING_DIRNAME = "engine"
+_ENGINE_STACK_ID = "engine"
+_TASK_STACK_ID = "task"
+_ENGINE_RUNNER_SERVICE = "runner"
+_ENGINE_DB_SERVICE = "db-service"
+_INJECTED_SERVICE_NAMES = (_ENGINE_RUNNER_SERVICE, _ENGINE_DB_SERVICE)
 _TOLOKAFORGE_TRIAL_SLUG_PLACEHOLDER = "${TOLOKAFORGE_TRIAL_SLUG}"
 
 _HARNESS_STAGING_DIR = "_harness"
@@ -82,16 +103,33 @@ _SUBSTITUTION_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}")
 
 @dataclass(frozen=True)
 class MaterialisedEnvironment:
-    """A task's engine-ready environment materialised on disk."""
+    """A task's engine-ready environment materialised on disk.
+
+    Carries the two compose files the two-stack plan brings up: the
+    trial-scope task compose (``compose_file``) and the run-scope engine
+    compose (``engine_compose_file``). Both surfaces of the adapter that
+    consume this object (``get_task`` and ``to_task_description``) build the
+    plan against the same pair.
+    """
 
     compose_file: Path
-    """Absolute path to the synthesised ``docker-compose.tolokaforge.yaml``."""
+    """Absolute path to the synthesised task-stack ``docker-compose.tolokaforge.yaml``
+    — declares the agent service, task-authored siblings, and the harness
+    ``-base`` build-only service under harness mode. Materialised per trial."""
+
+    engine_compose_file: Path
+    """Absolute path to the shared engine-stack ``docker-compose.engine.yaml``
+    — declares just ``runner`` + ``db-service``. Bytes are deterministic from
+    ``runner_image`` + ``db_service_image`` so every task in a run points at
+    the same content (their engine folder is deduplicated by digest), which
+    is what :func:`Orchestrator._extract_run_env_manifest`'s per-scope INV-1
+    cross-task agreement check requires."""
 
     agent_service: str
     """The compose service the bash tool execs into."""
 
     staging_dir: Path
-    """Absolute path to the staging directory the compose file lives in."""
+    """Absolute path to the staging directory the task compose file lives in."""
 
     base_build_service: str | None = None
     """Compose service that builds the un-layered task image, when the
@@ -228,7 +266,7 @@ def materialise_task_environment(
     staging_dir = (staging_root / f"{meta.task_id}-{digest}").resolve()
     _write_staging(meta.task_dir, staging_dir)
 
-    synthesised, base_build_service = _build_synthesised_compose(
+    task_doc, engine_doc, base_build_service = _build_synthesised_compose(
         original=original,
         meta=meta,
         agent_service=agent_service,
@@ -269,14 +307,38 @@ def materialise_task_environment(
                 )
             )
     compose_file = staging_dir / _SYNTHESISED_COMPOSE_FILENAME
-    compose_file.write_text(yaml.safe_dump(synthesised, sort_keys=False))
+    compose_file.write_text(yaml.safe_dump(task_doc, sort_keys=False))
+
+    engine_compose_file = _write_engine_stack(staging_root, engine_doc)
 
     return MaterialisedEnvironment(
         compose_file=compose_file.resolve(),
+        engine_compose_file=engine_compose_file,
         agent_service=agent_service,
         staging_dir=staging_dir,
         base_build_service=base_build_service,
     )
+
+
+def _write_engine_stack(staging_root: Path, engine_doc: dict[str, Any]) -> Path:
+    """Materialise the run-scope engine compose under a digest-named
+    subdirectory of ``staging_root`` and return its resolved path.
+
+    The digest hashes the emitted bytes; tasks whose engine services share
+    the same ``runner_image`` + ``db_service_image`` produce identical bytes
+    and land on the same file, so every task in a run pointing at the same
+    engine parameters lands on the same absolute path. Writes only when the
+    file is not already there — concurrent adapter instantiations reading
+    identical parameters see the same bytes and skip the second write.
+    """
+    engine_bytes = yaml.safe_dump(engine_doc, sort_keys=False)
+    digest = hashlib.sha256(engine_bytes.encode("utf-8")).hexdigest()[:16]
+    engine_dir = (staging_root / f"{_ENGINE_STAGING_DIRNAME}-{digest}").resolve()
+    engine_dir.mkdir(parents=True, exist_ok=True)
+    engine_compose_file = engine_dir / _ENGINE_COMPOSE_FILENAME
+    if not engine_compose_file.exists():
+        engine_compose_file.write_text(engine_bytes)
+    return engine_compose_file
 
 
 def _load_compose(path: Path) -> dict[str, Any]:
@@ -502,19 +564,23 @@ def _build_synthesised_compose(
     provider_env_keys: Sequence[str],
     runner_image: str,
     db_service_image: str,
-) -> tuple[dict[str, Any], str | None]:
-    """Synthesised compose document, plus the base-build service name.
+) -> tuple[dict[str, Any], dict[str, Any], str | None]:
+    """Synthesised task-stack + engine-stack compose docs, plus the
+    base-build service name.
 
-    The second element is the service the orchestrator must build *before*
-    the agent service — non-``None`` only when a harness layer sits on top of
-    a locally-built task image.
+    The two-stack split (ADR-0044 § 5): the run-scope engine stack owns
+    ``runner`` + ``db-service``; the trial-scope task stack owns the agent
+    service, task-authored siblings, and (under harness mode) the ``-base``
+    build-only service. The third element is the service the orchestrator
+    must build *before* the agent service — non-``None`` only when a harness
+    layer sits on top of a locally-built task image.
     """
     base_image = _agent_image(meta.task_id, image_registry, image_tag)
     if harness_spec is None:
         agent_image = base_image
     else:
         agent_image = f"{base_image}-{agent_harness}-{harness_spec.version}"
-    agent_container_name = f"{PROJECT_PREFIX}{_TOLOKAFORGE_TRIAL_SLUG_PLACEHOLDER}_{agent_service}"
+    agent_container_name = _trial_scoped_container_name(agent_service)
 
     resolved_vars = {
         "T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME": agent_image,
@@ -527,9 +593,9 @@ def _build_synthesised_compose(
         "CPUS": str(meta.cpus),
         "MEMORY": f"{meta.memory_mb}M",
     }
-    doc = _substitute_tree(deepcopy(original), resolved_vars)
+    task_doc = _substitute_tree(deepcopy(original), resolved_vars)
 
-    services: dict[str, Any] = doc["services"]
+    services: dict[str, Any] = task_doc["services"]
     agent_body: dict[str, Any] = services[agent_service]
     task_build = agent_body.get("build")
     agent_body["image"] = agent_image
@@ -560,9 +626,49 @@ def _build_synthesised_compose(
             services[base_service] = _harness_base_service_body(base_image, task_build)
             base_build_service = base_service
 
-    services["runner"] = _runner_service_body(runner_image, agent_service)
-    services["db-service"] = _db_service_body(db_service_image)
-    return doc, base_build_service
+    _stamp_trial_container_names(services)
+
+    engine_doc = _engine_compose_doc(runner_image, db_service_image)
+    return task_doc, engine_doc, base_build_service
+
+
+def _trial_scoped_container_name(service_name: str) -> str:
+    """Container name interpolating ``${TOLOKAFORGE_TRIAL_SLUG}`` for a
+    trial-scope service.
+
+    Compose resolves the placeholder from the per-trial ``.env`` the
+    composer writes at ``provision_trial`` time, so each trial's container
+    for the same service gets a distinct name — a task-authored sibling
+    that would otherwise carry a fixed ``container_name:`` from its own
+    compose file cannot collide with the previous trial's leftover on the
+    same host.
+    """
+    return f"{PROJECT_PREFIX}{_TOLOKAFORGE_TRIAL_SLUG_PLACEHOLDER}_{service_name}"
+
+
+def _stamp_trial_container_names(task_services: dict[str, Any]) -> None:
+    """Set ``container_name`` on every task-stack service in place.
+
+    Applied to *every* declared service, including task-authored siblings
+    and the harness ``-base`` build-only entry. The build-only service is
+    profile-gated so it never brings a container up — the write is inert
+    there and buys uniform behaviour for the ones that do run.
+    """
+    for name, body in task_services.items():
+        if not isinstance(body, dict):
+            continue
+        body["container_name"] = _trial_scoped_container_name(name)
+
+
+def _engine_compose_doc(runner_image: str, db_service_image: str) -> dict[str, Any]:
+    """Run-scope engine compose document — deterministic in its inputs so
+    every task in the run points at byte-identical content."""
+    return {
+        "services": {
+            _ENGINE_RUNNER_SERVICE: _runner_service_body(runner_image),
+            _ENGINE_DB_SERVICE: _db_service_body(db_service_image),
+        }
+    }
 
 
 def _substitute_tree(node: Any, values: dict[str, str]) -> Any:
@@ -622,7 +728,15 @@ def _harness_base_service_body(base_image: str, task_build: Any) -> dict[str, An
     }
 
 
-def _runner_service_body(runner_image: str, agent_service: str) -> dict[str, Any]:
+def _runner_service_body(runner_image: str) -> dict[str, Any]:
+    """Engine-stack runner service.
+
+    ``depends_on`` names ``db-service`` only — the agent service lives on the
+    trial-scope task stack (a separate compose project), so a compose
+    dependency across projects would neither compile nor resolve. The runner
+    reaches the agent container by explicit name via ``docker exec`` from
+    the runner-side wrapper, not via a compose dependency graph.
+    """
     return {
         "image": runner_image,
         "ports": ["50051"],
@@ -635,7 +749,6 @@ def _runner_service_body(runner_image: str, agent_service: str) -> dict[str, Any
             "start_period": "3s",
         },
         "depends_on": {
-            agent_service: {"condition": "service_started"},
             "db-service": {"condition": "service_healthy"},
         },
     }

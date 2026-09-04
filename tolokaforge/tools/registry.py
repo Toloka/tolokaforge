@@ -346,7 +346,14 @@ class ToolExecuting(Protocol):
     for the one condition that does so.
     """
 
-    def execute(self, tool_name: str, arguments: dict[str, Any], *, call_id: str) -> ToolResult: ...
+    def execute(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        call_id: str,
+        validation_schema: dict[str, Any] | None = None,
+    ) -> ToolResult: ...
 
 
 class ToolExecutor:
@@ -362,7 +369,14 @@ class ToolExecutor:
         self.registry = registry
         self.env_client = env_client
 
-    def execute(self, tool_name: str, arguments: dict[str, Any], *, call_id: str) -> ToolResult:
+    def execute(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        call_id: str,
+        validation_schema: dict[str, Any] | None = None,
+    ) -> ToolResult:
         """
         Execute a tool with validation
 
@@ -378,6 +392,20 @@ class ToolExecutor:
             call_id: The trial's episode-unique tool-call id, carried by the
                 caller onto the trial's tool-call record so the call can be
                 joined to the tool result it produced
+            validation_schema: The parameters schema the model was shown for
+                this tool — the output of
+                ``capabilities.schema_sanitizer.sanitize(tools)`` at the loop's
+                construction site. When supplied, ``arguments`` are validated
+                against it instead of the tool's own
+                ``get_schema()["function"]["parameters"]``. The sanitizer is
+                lossy for provider-specific rewrites (Gemini's
+                ``oneOf``+``discriminator`` flatten) and the model emits args
+                that conform to what it saw, so validating against the tool's
+                original schema misroutes those args to
+                ``ToolExecutionStatus.INVALID_ARGUMENTS``. ``None`` falls back
+                to the tool's own schema — used by paths that construct
+                arguments without an LLM in the loop (see
+                :meth:`TrialRunner.run_harness`).
 
         Returns:
             ToolResult with output and metadata
@@ -397,8 +425,11 @@ class ToolExecutor:
 
         # Validate arguments against schema
         try:
-            schema = tool.get_schema()
-            parameters = schema.get("function", {}).get("parameters")
+            if validation_schema is not None:
+                parameters = validation_schema
+            else:
+                schema = tool.get_schema()
+                parameters = schema.get("function", {}).get("parameters")
 
             # Handle Nova/AWS Bedrock argument wrapping
             # Nova may send {'input': {...}} or {'input': '{"json": "string"}'}

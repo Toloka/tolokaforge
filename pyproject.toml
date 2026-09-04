@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tolokaforge"
-version = "0.21.4"
+version = "0.22.5"
 description = "Tolokaforge - LLM Tool-Use Benchmarking Harness"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -238,6 +238,24 @@ test_execution = "tolokaforge.core.grading.grading_method:TestExecutionGradingMe
 composite = "tolokaforge.core.grading.kinds.composite:CompositeGraderKind"
 test_execution = "tolokaforge.core.grading.kinds.test_execution:TestExecutionGraderKind"
 
+# ADR-0044 composition-plan adapter Protocols
+# (``tolokaforge/core/composition_runtime.py``). Each entry point resolves
+# directly to the impl class — the class is arg-less-constructible, so the
+# caller instantiates the returned class with its own optional injection
+# seams. A downstream K8s / Modal materialiser, a snapshot-based dispatcher
+# under a future isolation label, or an alternative composer registers
+# alongside these built-ins without a framework PR.
+[project.entry-points."tolokaforge.compose_materialisers"]
+docker_compose = "tolokaforge.core.docker_compose_materialiser:DockerComposeMaterialiser"
+
+[project.entry-points."tolokaforge.service_lifecycle_dispatchers"]
+shared = "tolokaforge.core.service_lifecycle_dispatchers:SharedDispatcher"
+reset = "tolokaforge.core.service_lifecycle_dispatchers:ResetDispatcher"
+ephemeral = "tolokaforge.core.service_lifecycle_dispatchers:EphemeralDispatcher"
+
+[project.entry-points."tolokaforge.substrate_composers"]
+default = "tolokaforge.core.default_substrate_composer:DefaultSubstrateComposer"
+
 # ADR-0040 § "The single design abstraction" — GradingSubstrate implementations
 # resolvable by name. Three implementations ship today (``in_process`` +
 # ``live_callback`` + ``snapshot``); ``trajectory_storage`` / ``shared_mount``
@@ -422,6 +440,7 @@ only-include = [
     "tolokaforge/core/_runner_subset.py",
     "tolokaforge/core/deprecations.py",
     "tolokaforge/core/hash.py",
+    "tolokaforge/core/judge_prompt.py",
     "tolokaforge/core/logging.py",
     "tolokaforge/core/loop.py",
     "tolokaforge/core/model_data.py",
@@ -644,6 +663,7 @@ dev = [
     "pytest-cov>=4.0.0",
     "pytest-docker>=2.0.0",
     "pytest-xdist>=3.5.0",
+    "hypothesis>=6.100,<7",
     "psutil>=5.9.0",
     "black==26.3.1",
     "ruff==0.14.4",

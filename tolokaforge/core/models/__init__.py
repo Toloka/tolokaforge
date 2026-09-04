@@ -80,6 +80,7 @@ from tolokaforge.core.models.run_config import (
     TimeoutConfig,
     TracingConfig,
     TypeSenseConfig,
+    require_user_simulator_config,
     validate_rate_limit_probe_budget,
 )
 from tolokaforge.core.models.task_config import (
@@ -118,14 +119,13 @@ from tolokaforge.core.models.trajectory import (
     ReplyDefect,
     SnapshotOutcome,
     SnapshotStatus,
-    TerminationReason,
     ToolCall,
     ToolUsage,
     Trajectory,
-    TrialStatus,
     UserReplyGuardEvent,
     UserReplyOutcome,
 )
+from tolokaforge.core.models.trial_status import TerminationReason, TrialStatus
 
 # Cross-package wire types re-exported so callers reach one module for
 # the whole recorded-tool-call + wire-schema vocabulary. Canonical
@@ -248,6 +248,7 @@ __all__ = [
     "RunConfig",
     "RunDefaults",
     "S3BundleStoreConfig",
+    "require_user_simulator_config",
     "S3StorageConfig",
     "SnapshotBundleConfig",
     "StorageBackend",

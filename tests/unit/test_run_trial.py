@@ -26,6 +26,7 @@ from tolokaforge.core.runtime import InMemoryRuntimeBackend
 pytestmark = pytest.mark.unit
 
 _AGENT = {"provider": "openai", "name": "gpt-4"}
+_USER = {"provider": "openrouter", "name": "anthropic/claude-sonnet-4.6"}
 
 
 class _FakeAdapter:
@@ -105,7 +106,7 @@ class TestUnknownImplementationErrors:
 
 
 # ---------------------------------------------------------------------------
-# (c) auto selection — mirrors _select_backend_from_tasks
+# (c) auto selection — task-driven per-trial signal for the run_trial subprocess seam
 # ---------------------------------------------------------------------------
 
 
@@ -163,7 +164,7 @@ class TestOutputDirSeam:
         monkeypatch.setattr(run_trial_mod, "load_conductor", capture_conductor)
         result = run_trial(
             task=make_task_config(task_id="task-1"),
-            models={"agent": _AGENT},
+            models={"agent": _AGENT, "user": _USER},
             runtime="in_memory",
             output_dir=output_dir,
         )
@@ -235,7 +236,7 @@ class TestBackendLifecycle:
 
         run_trial(
             task=make_task_config(task_id="task-1"),
-            models={"agent": _AGENT},
+            models={"agent": _AGENT, "user": _USER},
             runtime="in_memory",
         )
 
@@ -250,7 +251,7 @@ class TestBackendLifecycle:
         with pytest.raises(RuntimeError, match="conductor blew up"):
             run_trial(
                 task=make_task_config(task_id="task-1"),
-                models={"agent": _AGENT},
+                models={"agent": _AGENT, "user": _USER},
                 runtime="in_memory",
             )
 

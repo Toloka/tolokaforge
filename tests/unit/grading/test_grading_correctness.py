@@ -470,6 +470,43 @@ class TestLLMJudgePlaceholderStatus:
         assert score == 0.0, f"{spec.name} configured but unevaluated scored {score}, not 0.0"
         assert binary_pass is False, f"{spec.name} configured with nothing evaluated must not pass"
 
+    def test_combine_refuses_when_a_declared_component_did_not_score(self):
+        """A declared component that produced no verdict refuses the fold rather than
+        silently redistributing its weight onto the remaining scored components.
+
+        The judge-errored scenario: ``llm_judge`` in weights and section, but
+        ``llm_judge_score`` at the ``-1.0`` sentinel because the judge errored.
+        A trial that scored ``state_checks`` at ``1.0`` beside an unscored
+        ``llm_judge`` must not surface as pass=True with score=1.0; the fold
+        refuses, and the caller reads ``refusal=True`` to know a Grade cannot
+        be composed for the trial.
+        """
+        components = {
+            "hash_match": True,
+            "hash_score": 1.0,
+            "jsonpath_score": -1.0,
+            "transcript_score": -1.0,
+            "trace_checks_score": -1.0,
+            "llm_judge_score": -1.0,
+            "custom_checks_score": -1.0,
+        }
+        grading_config = {
+            "combine_method": "weighted",
+            "weights": {"state_checks": 0.5, "llm_judge": 0.5},
+            "pass_threshold": 1.0,
+            "state_checks": _MINIMAL_CONFIG_SECTIONS["state_checks"],
+            "llm_judge": _MINIMAL_CONFIG_SECTIONS["llm_judge"],
+        }
+
+        folded = combine_grade_components(components, grading_config)
+
+        assert folded.refusal is True, "declared-but-unscored component must set refusal"
+        assert folded.binary_pass is False, "a refused fold cannot pass"
+        assert folded.score == 0.0, "a refused fold scores 0.0, never a redistributed mean"
+        assert folded.reason is not None
+        reason = folded.reason
+        assert "llm_judge" in reason, f"the refusal reason must name it: {reason!r}"
+
     def test_combine_grade_components_passes_when_nothing_configured(self):
         """
         Verify combine_grade_components passes when no grading is configured at all.

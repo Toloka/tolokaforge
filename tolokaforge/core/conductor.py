@@ -33,6 +33,7 @@ from tolokaforge.adapters import BaseAdapter
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.env_identity import describe_environment_identity
 from tolokaforge.core.env_state import EnvironmentState
+from tolokaforge.core.judge_prompt import effective_judge_system_prompt
 from tolokaforge.core.llm import LLMClient, UserSimulator, build_capabilities
 from tolokaforge.core.llm.presets import (
     resolve_effective_preset,
@@ -65,6 +66,7 @@ from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.system_prompt import build_system_prompt
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialResult, TrialSpec
 from tolokaforge.core.trial_grader import GradingFailedError, TrialGrader
+from tolokaforge.runner.models import provisions_database
 
 if TYPE_CHECKING:
     from tolokaforge.core.logging import StructuredLogger
@@ -903,10 +905,14 @@ class InProcessConductor:
         service and stash it on ``trajectory.final_env_state``.
 
         The Runner's ``GetState`` RPC syncs the subprocess state to
-        db-service before reading, so this read covers every adapter.
-        ``adapter_env.data`` (from :meth:`BaseAdapter.create_environment`)
-        is a snapshot from before the trial ran; it is used as a fallback
-        only when the Runner-side read fails.
+        db-service before reading, so this read covers every adapter whose
+        task provisions a database on the runner side (tables, schemas, or
+        unstable_fields — see :func:`~tolokaforge.runner.models.provisions_database`).
+        Tasks that provision none of those get a matching skip: ``RegisterTrial``
+        never initialised the DB Service for them, so the RPC has no target and
+        only ``adapter_env.data`` — the pre-trial snapshot from
+        :meth:`BaseAdapter.create_environment` — is available for the
+        final-state stash.
 
         When the trial's task carries an ``environment_manifest`` (a
         Project-layer / multi-container substrate), the resolved
@@ -915,26 +921,27 @@ class InProcessConductor:
         the trial. Manifest-less trials keep the JSON-DB-only shape.
         """
         runner_state: dict[str, Any] | None = None
-        try:
-            state_result = self.runtime_backend.get_state(setup.trial_id)
-            if state_result.get("success") and state_result.get("state_json"):
-                import json as _json
+        if provisions_database(spec.task.initial_state):
+            try:
+                state_result = self.runtime_backend.get_state(setup.trial_id)
+                if state_result.get("success") and state_result.get("state_json"):
+                    import json as _json
 
-                decoded = _json.loads(state_result["state_json"])
-                if isinstance(decoded, dict) and decoded:
-                    runner_state = decoded
+                    decoded = _json.loads(state_result["state_json"])
+                    if isinstance(decoded, dict) and decoded:
+                        runner_state = decoded
+                    else:
+                        self.logger.debug("Runner DB state empty, falling back to adapter env data")
                 else:
-                    self.logger.debug("Runner DB state empty, falling back to adapter env data")
-            else:
-                self.logger.debug(
-                    "Failed to fetch Runner DB state, falling back to adapter env data",
-                    error=state_result.get("error"),
+                    self.logger.debug(
+                        "Failed to fetch Runner DB state, falling back to adapter env data",
+                        error=state_result.get("error"),
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    "Could not fetch state from Runner, using adapter env data",
+                    error=str(e),
                 )
-        except Exception as e:
-            self.logger.warning(
-                "Could not fetch state from Runner, using adapter env data",
-                error=str(e),
-            )
 
         if runner_state is not None:
             setup.env_state.db_state = runner_state
@@ -1149,14 +1156,20 @@ class InProcessConductor:
         )
         writer.write_tools_schemas(setup.trial_dir, sanitized)
 
-        # Persist the agent's effective (post-policy) system prompt and
-        # the user simulator's system prompt as ``prompts.yaml`` — kept
-        # separate from ``trajectory.yaml`` so the message trace stays
-        # easy to scan.
+        # Persist the agent's effective (post-policy) system prompt, the
+        # user simulator's system prompt, and the composed judge system
+        # prompt as ``prompts.yaml`` — kept separate from ``trajectory.yaml``
+        # so the message trace stays easy to scan. The judge prompt is derived
+        # from ``grading_config``, not from the judge itself, so an auto-fail
+        # trial that never invoked a judge still records the contract it
+        # would have graded under.
         writer.write_prompts(
             setup.trial_dir,
             agent_prompt=runner.effective_system_prompt,
             user_prompt=runner.user_system_prompt,
+            judge_prompt=effective_judge_system_prompt(
+                grading_config.llm_judge if grading_config else None
+            ),
         )
 
         # Same condition :meth:`_run_agent_loop` builds the simulator under: an

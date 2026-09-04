@@ -82,6 +82,7 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
     "tolokaforge/core/_runner_subset.py",
     "tolokaforge/core/deprecations.py",
     "tolokaforge/core/hash.py",
+    "tolokaforge/core/judge_prompt.py",
     "tolokaforge/core/logging.py",
     "tolokaforge/core/loop.py",
     "tolokaforge/core/model_data.py",

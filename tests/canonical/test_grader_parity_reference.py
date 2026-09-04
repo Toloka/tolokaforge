@@ -475,25 +475,22 @@ def test_regression_sim_leg_divergence_names_the_component(
     """A leg-scoped scoring bug on ``grade_trace_checks`` surfaces at that seam.
 
     Runs the runner leg with production :func:`grade_trace_checks`, then
-    monkeypatches the composite module's binding to a stub that scores
-    ``0.0`` and runs the grader leg. The two serialisations then diverge
-    only on the ``trace_checks`` component score — proving the parity gate
-    would name that seam on a real between-legs code divergence, not just
-    on a baseline mutation.
+    monkeypatches the composite module's binding to a stub whose result leaves
+    ``trace_checks`` unscored while the config still declares it. The grader
+    leg's fold refuses the trial (``resolve_uncounted_fold`` catches the
+    declared-but-unscored shape) and the parity harness sees a
+    :class:`GradingFailedError` naming the missing component — the same
+    seam-named signal a between-legs code divergence produces, now surfacing
+    fail-loud through the refusal path rather than through a score diff.
     """
     pack = load_parity_pack(_BASELINES_ROOT / "all_four_no_hash")
-    runner_grade = run_via_runner_rpc(pack, monkeypatch=monkeypatch)
-    runner_serialised = serialise_grade(runner_grade)
+    run_via_runner_rpc(pack, monkeypatch=monkeypatch)
 
     monkeypatch.setattr(
         "tolokaforge.core.grading.composite.grade_trace_checks",
         _fake_grade_trace_checks,
     )
-    grader_grade = run_via_grader_rpc(pack, monkeypatch=monkeypatch)
-    grader_serialised = serialise_grade(grader_grade)
-
-    diverging = components_diff(runner_serialised, grader_serialised)
-    assert diverging == ["trace_checks"], diverging
+    assert_grader_rpc_refuses(pack, "trace_checks", monkeypatch=monkeypatch)
 
 
 @pytest.mark.parametrize(
@@ -735,8 +732,9 @@ def _fake_grade_trace_checks(*_args: Any, **_kwargs: Any) -> TraceChecksResult:
 
     Returns an empty :class:`TraceChecksResult` — its ``score`` defaults to
     ``-1.0`` (the "not evaluated" sentinel) and ``constraints`` is empty, so
-    the composite dispatcher folds a missing ``trace_checks`` slot alongside
-    a production runner leg that scored the same constraint at ``1.0``.
+    the composite dispatcher meets the declared-but-unscored shape on the
+    ``trace_checks`` slot alongside a production runner leg that scored the
+    same constraint at ``1.0``.
     """
     return TraceChecksResult()
 

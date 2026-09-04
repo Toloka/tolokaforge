@@ -398,7 +398,6 @@ cli.add_command(grade_run)
 
 
 # Default user model configuration
-DEFAULT_USER_MODEL = "anthropic/claude-sonnet-4.6"
 DEFAULT_USER_MODEL_PROVIDER = "openrouter"
 DEFAULT_USER_MODEL_TEMPERATURE = 0.2
 

@@ -238,6 +238,8 @@ jobs:
           PROXY_API_KEY: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_API_KEY }}
           # A VARIABLE, not a secret: see the note in slack-integrate.yml.
           PROXY_HEADERS: ${{ vars.LLM_PROXY_HEADERS }}
+          PROXY_TRUST_WILDCARDS: ${{ vars.LLM_PROXY_TRUST_NAMESPACE_WILDCARDS }}
+          PROXY_PREFERRED_ROUTE: ${{ vars.LLM_PROXY_PREFERRED_ROUTE }}
         # OPENROUTER_API_KEY is always written: it is what the non-gateway route uses, and the
         # OpenRouter pricing/catalog HTTP calls need it on either route. LLM_PROXY_* is added
         # only when the gateway route was requested AND configured -- writing a base URL without
@@ -268,6 +270,14 @@ jobs:
                     ;;
                 esac
                 printf '%s\n' "LLM_PROXY_HEADERS=$PROXY_HEADERS" >> .env
+              fi
+              # Deployment routing policy rides along or the run cannot honour
+              # what the poller's catalog lookup promised (wildcard coverage).
+              if [ -n "$PROXY_TRUST_WILDCARDS" ]; then
+                printf '%s\n' "LLM_PROXY_TRUST_NAMESPACE_WILDCARDS=$PROXY_TRUST_WILDCARDS" >> .env
+              fi
+              if [ -n "$PROXY_PREFERRED_ROUTE" ]; then
+                printf '%s\n' "LLM_PROXY_PREFERRED_ROUTE=$PROXY_PREFERRED_ROUTE" >> .env
               fi
               echo "every openrouter/openai call in this run (candidate + user simulator) goes through the LLM gateway"
             else

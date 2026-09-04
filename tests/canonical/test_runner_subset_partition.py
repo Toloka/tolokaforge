@@ -113,6 +113,13 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         # ``db_probes`` backends call them on the grading path.
         "tolokaforge/core/grading/db_probes.py",
         "tolokaforge/core/grading/jsonpath_evaluators.py",
+        # Seam-neutral judge-prompt composition helpers (body + marker
+        # contract, ``effective_judge_system_prompt``). Reached at grade
+        # time from ``core.grading.judge`` (runner-side, via the lazy
+        # dispatch above) and at bundle-write time from
+        # ``core.conductor`` (orchestrator-side, host-only). Boot-time
+        # closure never observes it.
+        "tolokaforge/core/judge_prompt.py",
         # Shared tool-artifact extraction helper. ``RunnerServiceImpl``
         # reaches it via a function-local import at ``RegisterTrial`` time
         # (``runner/service.py::_extract_tool_artifacts``) so a task packing

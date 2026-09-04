@@ -368,6 +368,18 @@ Three concrete sanitizers ship today:
   dict-map → array transform. See [`AGENTS.md`](../AGENTS.md) gotcha #21
   for the wire-level symptom.
 
+**Executor validates against the sanitized surface.** The parameters
+schema the model was shown for a tool is the schema
+[`ToolExecutor.execute`](../tolokaforge/tools/registry.py) validates the
+model's argument dict against — not the tool's original
+`get_schema()["function"]["parameters"]`. The seam is
+[`ToolCallingLoop.validation_schemas_by_tool`](../tolokaforge/core/loop.py),
+wired at construction from `LLMClient.sanitize_tools_for_execution(tools)`.
+This invariant applies wherever `ToolExecutor` runs (LLM-judge tool loop,
+harness CLI invocations that go through the loop, direct instantiations).
+The runner-side gRPC path does no jsonschema validation at all; closing
+that asymmetry is tracked at [#976](https://github.com/Toloka/tolokaforge/issues/976).
+
 ### `StrictSchema` contract — preserve information by default, fail loudly on hazards
 
 The sanitiser is **position-aware**: it walks the JSON-Schema tree
@@ -877,9 +889,10 @@ posting to a route the gateway does not serve.
 | `LLM_PROXY_HEADERS` | JSON object of static headers added to every request, e.g. `{"X-Team-Id": "research"}`. Wins over the engine's own provider headers on a name collision. A value may reference a secret as `${secret:NAME}`, see below. |
 | `LLM_PROXY_REQUEST_ID_HEADER` | Header *name* that receives a fresh UUID4 per request. A static env var cannot express "new value per call". |
 | `LLM_PROXY_PROVIDERS` | Comma-separated provider allow-list, replacing the default. Read the routing table below before widening it. |
-| `LLM_PROXY_PREFERRED_ROUTE` | Namespace that wins when the gateway serves one model under several names, e.g. `openrouter/`. Without it an ambiguous lookup raises rather than guessing a serving path. |
+| `LLM_PROXY_PREFERRED_ROUTE` | Namespace(s) that win when the gateway serves one model under several names. A comma-separated list is honoured in order (`openrouter/,nebius/`), so multi-provider gateways can rank their routes. Without a matching entry an ambiguous lookup raises rather than guessing a serving path. |
+| `LLM_PROXY_TRUST_NAMESPACE_WILDCARDS` | `true`/`false` (default `false`). When true, a catalog entry of `<ns>/*` routes models whose own `provider` is `<ns>`, addressed by their untranslated name. Namespace-matched only - a foreign wildcard never routes. Exact entries always win. |
 
-All six resolve through `SecretManager`, so `.env`, the process environment,
+All seven resolve through `SecretManager`, so `.env`, the process environment,
 and the runner container's `TOLOKAFORGE_SECRETS_JSON` behave identically.
 A malformed value raises `ProxyConfigError` at the first `LLMClient`
 construction rather than running a whole evaluation with unattributed spend. Setting
@@ -1000,14 +1013,43 @@ per-client warning. On a gateway-only model that direct call fails; on any other
 runs unattributed. If a deployment cannot rename such a route, the exact-name entry
 has to be added alongside the alias.
 
-Wildcard entries (`openrouter/*`, `anthropic/*`) are deliberately **not** accepted as
-evidence: a wildcard says the gateway will forward the request, not that the model
+Wildcard entries (`openrouter/*`, `anthropic/*`) are **not** accepted as evidence by
+default: a wildcard says the gateway will forward the request, not that the model
 exists behind it. Measured on a live gateway, `anthropic/*` accepted a name that its
 Bedrock backing then rejected as invalid, while the very same wildcard also "covered"
-a nonexistent model. If routing every model through the gateway ever becomes the
-goal, the extension point is a *namespace-matched* wildcard (accept `openrouter/*`
-only for `provider: openrouter` configs, where the fallback is the same upstream the
-board is calibrated on), not looser matching.
+a nonexistent model. The opt-in (`LLM_PROXY_TRUST_NAMESPACE_WILDCARDS=true`)
+implements exactly the safe extension point that incident left room for: a
+*namespace-matched* wildcard - `<ns>/*` routes only `provider: <ns>` models, where
+the passthrough forwards to the same upstream the board is calibrated on, addressed
+by the untranslated model string. A foreign-namespace wildcard never routes, exact
+entries always win, and a wildcard-resolved call is recorded as such on the per-call
+usage (`gateway_route_kind: "wildcard"`), so a board audit can tell the serving
+paths apart.
+
+### Serving a NEW provider behind the gateway
+
+Wiring an additional upstream (a self-hosted vLLM fleet, a direct vendor
+account) into the gateway needs **no engine change**. The recipe:
+
+1. The gateway operator adds the catalog entries - exact names
+   (`nebius-llmqa-vllm/qwen3-32b`) or the namespace wildcard
+   (`nebius-llmqa-vllm/*`).
+2. The deployment allow-lists the provider: `LLM_PROXY_PROVIDERS=
+   openrouter,openai,nebius-llmqa-vllm` - deliberate fail-closed, so a new
+   catalog namespace never reroutes configs by itself.
+3. Configs name the provider as the FACT it is: `provider: nebius-llmqa-vllm`,
+   `name: qwen3-32b`. A resolved route forces the OpenAI-compatible dialect,
+   so litellm does not need to know the provider natively - which also means
+   such a provider works **only while the catalog is readable**: on the
+   unreadable-catalog path the call keeps the provider-native dialect and
+   fails loudly for a provider litellm cannot speak to directly.
+4. With several gateway namespaces in play, rank them:
+   `LLM_PROXY_PREFERRED_ROUTE=openrouter/,nebius-llmqa-vllm/`.
+5. Pricing and presets follow the normal registration path (they key off
+   `provider`/`name`, so nothing is lost by the gateway hop), and a new
+   serving path is a new calibration - never mix it with another path
+   inside one comparable set; the per-call `gateway_route` /
+   `gateway_route_kind` provenance is what audits the split.
 
 Preset resolution and pricing are unaffected: both key off `ModelConfig.provider` /
 `.name`, not off the wire name.
@@ -1106,11 +1148,16 @@ couplings described below:
   but verify it for reasoning models before trusting a run.
 
 What `_build_kwargs` does differs by path. **On a resolved route** it rewrites
-`model` to the gateway's route name, forces `custom_llm_provider="openai"`, and
-drops OpenRouter-only body fields (`extra_body.provider`). **On the
-unrouted / unreadable-catalog path** it sets only `api_base`, `api_key` and
-`extra_headers`; the model string keeps its `<provider>/<name>` shape, and
-OpenRouter's headers and provider pin still apply. Two distinct couplings hang off
+`model` to the gateway's route name and forces `custom_llm_provider="openai"`.
+**On the unrouted / unreadable-catalog path** it sets only `api_base`, `api_key`
+and `extra_headers`; the model string keeps its `<provider>/<name>` shape. The
+provider pin follows **one rule on both paths**: `extra_body.provider` survives
+exactly when the wire name's first segment is the model's own provider
+namespace - an `openrouter/...` route (or the untranslated `openrouter/<name>`
+string) forwards to the same upstream family the pin was written for, so the
+pin rides; a route into any other namespace is another upstream, so the pin is
+dropped with a warning rather than sent to a server that rejects or silently
+ignores it. Two distinct couplings hang off
 model naming, and only the second is to the formatted string:
 
 - Preset `match:` globs resolve off `ModelConfig.name` and the `providers:`
@@ -1126,8 +1173,13 @@ model naming, and only the second is to the formatted string:
 
 `ModelConfig.provider` is untouched either way, so OpenRouter's
 `HTTP-Referer` / `X-Title` headers still apply on top of the gateway; the
-`extra_body.provider` upstream pin applies only on the unrouted path (a resolved
-route drops it, since a non-OpenRouter upstream rejects it as an unknown field).
+`extra_body.provider` upstream pin follows the namespace rule above (kept
+whenever the wire name stays in the model's own provider namespace, resolved or
+not; dropped otherwise). A pinned model on a same-namespace route is only
+FAITHFULLY pinned if the gateway forwards the field to the upstream - which is
+gateway-version-dependent, so the live suite verifies the actually-serving
+upstream through the OpenRouter generation id rather than trusting the request
+shape (see below).
 On a header-name collision the gateway's configured header wins, since that is
 explicit operator configuration and the other is an engine default.
 
@@ -1149,10 +1201,14 @@ credential is present**, so a checkout without the secret is quiet:
 | `LLM_PROXY_INT_TEST_MODEL` | no | The model name **as the gateway routes it**. Required rather than defaulted: a wrong guess would exercise the gateway's fallback behaviour instead of this transport. Plain config — belongs in a workflow's `env:`. |
 | `LLM_PROXY_INT_TEST_BASE_URL` | depends | Gateway base URL; falls back to `LLM_PROXY_BASE_URL`. Keep it out of a public workflow file if the hostname is internal. |
 | `LLM_PROXY_INT_TEST_PROVIDER` | no | Optional, default `openai` — see the model-naming section above. |
+| `LLM_PROXY_INT_TEST_PINNED_MODEL` | no | Optional opt-in for the pinned-upstream check: an OpenRouter-namespace slug (`nvidia/nemotron-3-super-120b-a12b`). Both pinned vars must be set together. |
+| `LLM_PROXY_INT_TEST_PINNED_PROVIDER` | no | The exact OpenRouter provider name expected to serve the pinned call (`Together`). Needs `OPENROUTER_API_KEY` for the retroactive `/generation` lookup. |
 
-Three tests: one asserts the transport is applied and billed to the test key
+Four tests: one asserts the transport is applied and billed to the test key
 without spending, two make one small call each (a completion and a tool call,
-capped at 256 output tokens).
+capped at 256 output tokens), and the opt-in pinned-upstream check makes one
+provider-pinned call and verifies the actually-serving upstream through
+OpenRouter's `/generation` endpoint.
 
 **The gating is asymmetric on purpose.** No credential → skip, quietly, which is
 the state of any checkout without the secret. Credential present but a companion
@@ -1638,6 +1694,30 @@ as a compatibility surface — user overlay syntax and the
 `resolve_policy_names` fingerprint). Routing pinned by
 [`tests/canonical/test_message_assembly_filler_routing.py`](../tests/canonical/test_message_assembly_filler_routing.py).
 
+### Provider-side empty completion
+
+A generation that comes back with both `text == ""` and `tool_calls == []`
+is a *provider-side empty completion*: the request round-tripped and the
+provider chose to return nothing. `ToolCallingLoop._run_turn` recognises
+that shape immediately after `_generate` — before the assistant message
+would be appended — and terminates the trial with
+`TerminationReason.EMPTY_COMPLETION` and `TrialStatus.FAILED`. The empty
+assistant message is not appended, and the metrics sink still records the
+generation because the trial paid for the call.
+
+The distinction from `empty_assistant_filler` above is where the empty
+content lives. `empty_assistant_filler` handles empty **content the loop
+is about to send back to the provider on a tool-call turn** — Bedrock/Nova
+and Moonshot direct reject a request whose assistant turn has empty
+`content` alongside `tool_calls`, so those provider families opt in to a
+non-empty filler string. `EMPTY_COMPLETION` handles empty **content the
+provider produced**: appending it would send a request whose tail is a
+`role=model` turn with empty `content` and no `tool_calls` on the next
+iteration, and Gemini rejects that as an API error. The engine consumes
+this one wire-shape observation directly rather than routing it through
+`classify_loop_error` so post-run analysis can tell "the model produced
+nothing" apart from the API-error class that used to swallow it.
+
 ## `response_policy`
 
 Tool-call argument post-processing.
@@ -2050,6 +2130,40 @@ module boundary. `ToolCallingLoop` receives it via
 `classify_error=llm_client.classify_loop_error`. The remaining text-matching
 classifiers (`core/runner.py`'s user-simulator retry, `core/resume.py`) are
 separate and unaffected — `AllApiKeysExhaustedError` subclasses `RuntimeError`.
+
+### Bounded API-error retry
+
+`ToolCallingLoop.run` retries a classified `TerminationReason.API_ERROR` in
+place, without incrementing the outer turn counter. `LoopConfig.api_error_retries`
+bounds the retry budget (default `1` — one retry, then fail loud);
+`LoopConfig.api_error_backoff_s` is the sleep between attempts (default
+`1.0` s). Sleep is dispatched through `ToolCallingLoop.retry_sleep`, which
+defaults to `time.sleep` and is swapped for a no-op in unit tests.
+
+The retry class is `API_ERROR` only. `RATE_LIMIT`, `API_TIMEOUT`, `TRIAL_LOST`
+and `EMPTY_COMPLETION` stay one-shot terminal because each already owns a
+dedicated path — typed 429 handling in the `_build_retrying` /
+`_build_probe_retrying` outer controllers above, transport-timeout retry in
+`_call_completion_with_timeout_retry`, substrate re-registration in the runner
+protocol, and the provider-shape fail-loud at wire receipt (see
+`empty_assistant_filler` § *Provider-side empty completion*). Retrying them at
+the loop level would double-count the exclusion and confuse the denominator.
+
+The retry budget resets to zero at the start of every outer iteration, so a
+successful turn 0 followed by an API-error turn 1 gets a fresh budget. The
+`messages` mutation invariant on a failed attempt is what makes replay safe:
+`_run_turn` mutates `messages` only after `_generate` succeeds
+(`messages.append(self._assistant_message(...))` sits after the `_generate`
+call), so a raise before that line leaves `messages` unchanged and the retry
+attempts against the same prefix.
+
+Composition with the judge's own retry: `RubricJudge` runs a bounded retry loop
+around `submit_report` validation errors inside its `LLMJudge` shell; a bad
+provider response inside one rubric turn retries once at the loop level, and the
+outer judge loop retries `submit_report` semantics on top. The two retries are
+orthogonal — one covers wire-level API-error transience, the other covers
+grader-contract validation — so composing them does not double-count the
+budget.
 
 ### Probe telemetry recording sites
 

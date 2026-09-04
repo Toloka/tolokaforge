@@ -215,7 +215,7 @@ class TestProvisionTearsDownCleanlyOnRecipeFailure:
         # No new container or network survived the failed provision.
         assert _docker_container_ids() <= before_containers
         assert _docker_network_ids() <= before_networks
-        assert spec.trial_id not in backend._clients
+        assert spec.trial_id not in backend._delegate._env_handles
 
 
 def _docker_container_ids() -> set[str]:

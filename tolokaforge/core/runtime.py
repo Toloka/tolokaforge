@@ -61,10 +61,15 @@ class IsolationMode(str, Enum):
       trial in the run. Cross-trial state contamination is structural.
     * ``PER_TRIAL_STACK`` — one substrate materialisation per trial.
       Concurrent trials are fully isolated.
+    * ``COMPOSED_STACK`` — the composition plan spans more than one scope
+      (task-scope-only or multi-scope). The composer materialises run-scope
+      stacks at connect-time and trial-scope stacks at provision-time; state
+      contamination is scoped per stack, not run-wide.
     """
 
     SHARED_STACK = "shared_stack"
     PER_TRIAL_STACK = "per_trial_stack"
+    COMPOSED_STACK = "composed_stack"
 
 
 # ---------------------------------------------------------------------------
@@ -535,7 +540,7 @@ class InMemoryRuntimeBackend:
     isolation_mode: IsolationMode = IsolationMode.SHARED_STACK
     """Test fixture keeps the shared-stack posture by default so tests that
     inject it against tasks with no isolation requirement continue to work.
-    Tests exercising the per-trial-required-but-shared-provided branch of
+    Tests exercising the per-trial short-circuit at the top of
     :meth:`Orchestrator._verify_isolation_compatibility` can override the
     attribute on the instance."""
 

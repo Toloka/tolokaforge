@@ -534,18 +534,22 @@ class OrchestratorConfig(BaseModel):
     field is explicitly set."""
 
     runtime: str | None = None
-    """Deprecated operator override for backend selection.
+    """Deprecated plan-shape coercion knob.
 
-    Backend selection is task-driven — the orchestrator picks
-    :class:`PerTrialRuntimeBackend` when any task's manifest requires
-    per-trial materialisation, otherwise :class:`SharedStackRuntimeBackend`.
-    Setting this field bypasses that signal and emits a
+    Backend selection is composer-driven — the orchestrator always
+    constructs :class:`SharedStackRuntimeBackend` and the composer
+    sequences the resolved plan's per-scope substrate. ``"shared"``
+    coerces every task's plan-shape to run-scope; ``"per_trial"``
+    coerces every task's plan-shape to trial-scope. Multi-stack
+    packs are refused under either coercion — declare stack-scope
+    explicitly instead. Setting this field emits a
     ``DeprecationWarning``. Retired in a future release.
 
-    Any name registered in the ``tolokaforge.runtime_backends`` entry-point
-    group is accepted (built-in ``shared`` / ``per_trial`` / ``in_memory``, or
-    a plug-in's name); the name is resolved against the registry at run start,
-    which raises an actionable error listing the known names on a typo.
+    Any other name registered in the ``tolokaforge.runtime_backends``
+    entry-point group is accepted as a legit backend swap (only
+    ``in_memory`` in-tree today); the name is resolved against the
+    registry at run start, which raises an actionable error listing
+    the known names on a typo.
 
     Legacy value ``docker`` is accepted as an alias for ``shared`` with
     the same deprecation warning; drop both from configs going forward.
@@ -568,8 +572,8 @@ class OrchestratorConfig(BaseModel):
             value = DOCKER_RUNTIME_ALIAS_TARGET
         warnings.warn(
             "OrchestratorConfig.runtime is deprecated; backend selection is "
-            "now task-driven (any task requiring per-trial isolation forces "
-            "PerTrialRuntimeBackend, otherwise SharedStackRuntimeBackend). "
+            "now composer-driven and the override coerces plan shape "
+            "(`shared` → run-scope, `per_trial` → trial-scope), not backend. "
             "Drop `orchestrator.runtime` from the run config. Retired in a "
             "future release.",
             DeprecationWarning,
@@ -1157,6 +1161,29 @@ _HARNESS_ADAPTER_PARAMS_ALIASES: tuple[tuple[str, str], ...] = (
 field pairs. Both once lived in a ``terminal_bench``-adapter-specific
 params bag; the lift makes coding-harness selection a first-class
 run-config concept that any adapter can accept."""
+
+
+def require_user_simulator_config(user_config: ModelConfig | None) -> ModelConfig:
+    """Return ``user_config`` or raise if it is missing.
+
+    Callers that dispatch a user simulator (``Orchestrator.run``,
+    ``Orchestrator.run_worker``, the library entry ``core.run_trial``)
+    fail loud here when ``RunConfig.models["user"]`` is unset, so a run
+    always names the provider it ships user turns to. There is
+    deliberately no hardcoded default: a project that wants a shared
+    fallback declares it under ``project.run_defaults.models.user`` and
+    lets the project loader merge it into every run config.
+    """
+    if user_config is not None:
+        return user_config
+    raise ValueError(
+        "No user-simulator model configured. Set `models.user` on the run "
+        "config to the provider/name the user turns should run against. "
+        "Projects can declare a project-wide fallback under "
+        "`project.run_defaults.models.user` and the loader will merge it "
+        "in. Example: `models: {user: {provider: openrouter, "
+        "name: openai/gpt-5}}`."
+    )
 
 
 class RunConfig(BaseModel):

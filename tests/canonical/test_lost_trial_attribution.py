@@ -90,6 +90,9 @@ class _CallingAgent:
     def classify_loop_error(self, exc: Exception) -> TerminationDecision:
         return classify_loop_error(exc, ())
 
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
+        return {}
+
 
 def _calling_simulator() -> MagicMock:
     """The user's LLM, replaced by an opening turn that calls a tool."""

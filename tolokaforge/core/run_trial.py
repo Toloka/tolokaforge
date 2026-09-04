@@ -37,6 +37,7 @@ from tolokaforge.core.models import (
     RunConfig,
     TaskConfig,
     TimeoutConfig,
+    require_user_simulator_config,
 )
 from tolokaforge.core.orchestrator import _tasks_use_compose_variant_tools
 from tolokaforge.core.output.artifacts import FileArtifactWriter, InMemoryArtifactWriter
@@ -54,14 +55,6 @@ from tolokaforge.runner.models import TaskDescription
 
 _RUN_ID = "run_trial"
 _PRELOADED_TASKS_GLOB = "**/task.yaml"
-
-# Mirrors the orchestrator's default user model (orchestrator.py) so a
-# library call that omits ``user`` drives the same simulator as a batch run.
-_DEFAULT_USER_MODEL = ModelConfig(
-    provider="openrouter",
-    name="anthropic/claude-sonnet-4.6",
-    temperature=0.2,
-)
 
 
 class _RunTrialModels(BaseModel):
@@ -156,9 +149,13 @@ def run_trial(
     trial_grader = load_trial_grader(grader)(
         TrialGraderContext(runner_address=runner_address, logger=logger)
     )
+    # Resolve the conductor factory before validating the user-simulator config
+    # so an unknown ``conductor`` name surfaces the registry error rather than
+    # the (fail-loud but less actionable) missing-user-model error.
+    conductor_factory = load_conductor(conductor)
 
     agent_client = LLMClient(resolved_models.agent, rate_limit_probe=rate_limit_probe)
-    user_config = resolved_models.user or _DEFAULT_USER_MODEL
+    user_config = require_user_simulator_config(resolved_models.user)
     judge_config = resolved_models.judge
 
     output_path = Path(output_dir) if output_dir is not None else Path(_RUN_ID)
@@ -171,7 +168,7 @@ def run_trial(
         rate_limit_probe,
     )
 
-    conductor_impl = load_conductor(conductor)(
+    conductor_impl = conductor_factory(
         ConductorContext(
             adapter=adapter,
             artifact_writer=artifact_writer,
@@ -251,9 +248,11 @@ def _build_single_task_adapter(task: TaskConfig) -> BaseAdapter:
 def _resolve_runtime_name(runtime: str, task_desc: TaskDescription) -> str:
     """Map ``runtime`` to a registry name, intercepting the reserved ``"auto"``.
 
-    ``"auto"`` mirrors the orchestrator's ``_select_backend_from_tasks``: a task
-    whose resolved manifest requires per-trial isolation picks ``"per_trial"``,
-    otherwise ``"shared"``. Any explicit name passes straight through.
+    ``"auto"`` picks per-trial substrate when the task's manifest requires it,
+    otherwise the shared-stack path. This mirrors the single-trial subprocess
+    seam's contract; the orchestrator's own selection is composer-driven and
+    routes both paths through :class:`SharedStackRuntimeBackend`. Any explicit
+    name passes straight through.
     """
     if runtime != "auto":
         return runtime

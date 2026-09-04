@@ -1,4 +1,4 @@
-"""Built-in entry-point registrations for the four swappable seams.
+"""Built-in entry-point registrations for the swappable seams.
 
 Snapshots the registration table tolokaforge ships in its own ``pyproject.toml``:
 the built-in names resolve through the fail-loud loader to factories that build
@@ -18,11 +18,17 @@ from unittest.mock import MagicMock
 import pytest
 
 from tolokaforge.core.actors.turn_policy import AgentOnlyTurnPolicy, ConversationalTurnPolicy
+from tolokaforge.core.composition_runtime import (
+    ComposeMaterialiser,
+    SubstrateComposer,
+)
 from tolokaforge.core.conductor import (
     ConductorContext,
     InMemoryConductor,
     InProcessConductor,
 )
+from tolokaforge.core.default_substrate_composer import DefaultSubstrateComposer
+from tolokaforge.core.docker_compose_materialiser import DockerComposeMaterialiser
 from tolokaforge.core.grading.bundle_store import LocalDiskBundleStore, S3BundleStore
 from tolokaforge.core.grading.grading_method import (
     CompositeGradingMethod,
@@ -32,32 +38,47 @@ from tolokaforge.core.grading.kinds import CompositeGraderKind, TestExecutionGra
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.plugin_registry import (
     BUNDLE_STORES_GROUP,
+    COMPOSE_MATERIALISERS_GROUP,
     GRADER_KINDS_GROUP,
     GRADING_METHODS_GROUP,
     RUNTIME_BACKENDS_GROUP,
+    SERVICE_LIFECYCLE_DISPATCHERS_GROUP,
     SERVICE_READINESS_PROBES_GROUP,
+    SUBSTRATE_COMPOSERS_GROUP,
     TURN_POLICIES_GROUP,
     RuntimeBackendBuildContext,
     TrialGraderContext,
     TurnPolicyContext,
+    UnknownImplementationError,
     available_bundle_stores,
+    available_compose_materialisers,
     available_conductors,
     available_grader_kinds,
     available_grading_methods,
     available_readiness_probes,
     available_runtime_backends,
+    available_service_lifecycle_dispatchers,
+    available_substrate_composers,
     available_trial_graders,
     available_turn_policies,
     load_bundle_store,
+    load_compose_materialiser,
     load_conductor,
     load_grader_kind,
     load_grading_method,
     load_readiness_probe,
     load_runtime_backend,
+    load_service_lifecycle_dispatcher,
+    load_substrate_composer,
     load_trial_grader,
     load_turn_policy,
 )
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
+from tolokaforge.core.service_lifecycle_dispatchers import (
+    EphemeralDispatcher,
+    ResetDispatcher,
+    SharedDispatcher,
+)
 from tolokaforge.core.service_readiness import (
     GrpcReadinessProbe,
     HttpReadinessProbe,
@@ -207,6 +228,9 @@ def test_available_listings_match_the_builtin_set() -> None:
     assert available_grading_methods() == ["composite", "test_execution"]
     assert available_grader_kinds() == ["composite", "test_execution"]
     assert available_bundle_stores() == ["local_disk", "s3"]
+    assert available_compose_materialisers() == ["docker_compose"]
+    assert available_service_lifecycle_dispatchers() == ["ephemeral", "reset", "shared"]
+    assert available_substrate_composers() == ["default"]
 
 
 def test_raw_entry_point_probe_lists_runtime_backends() -> None:
@@ -239,3 +263,79 @@ def test_raw_entry_point_probe_lists_grader_kinds() -> None:
 def test_raw_entry_point_probe_lists_bundle_stores() -> None:
     names = sorted(ep.name for ep in importlib.metadata.entry_points(group=BUNDLE_STORES_GROUP))
     assert names == ["local_disk", "s3"]
+
+
+def test_raw_entry_point_probe_lists_compose_materialisers() -> None:
+    names = sorted(
+        ep.name for ep in importlib.metadata.entry_points(group=COMPOSE_MATERIALISERS_GROUP)
+    )
+    assert names == ["docker_compose"]
+
+
+def test_raw_entry_point_probe_lists_service_lifecycle_dispatchers() -> None:
+    names = sorted(
+        ep.name for ep in importlib.metadata.entry_points(group=SERVICE_LIFECYCLE_DISPATCHERS_GROUP)
+    )
+    assert names == ["ephemeral", "reset", "shared"]
+
+
+def test_raw_entry_point_probe_lists_substrate_composers() -> None:
+    names = sorted(
+        ep.name for ep in importlib.metadata.entry_points(group=SUBSTRATE_COMPOSERS_GROUP)
+    )
+    assert names == ["default"]
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_cls"),
+    [("docker_compose", DockerComposeMaterialiser)],
+)
+def test_compose_materialiser_names_resolve_to_their_class(name: str, expected_cls: type) -> None:
+    cls = load_compose_materialiser(name)
+    assert cls is expected_cls
+    instance = cls()
+    assert isinstance(instance, ComposeMaterialiser)
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_cls"),
+    [
+        ("shared", SharedDispatcher),
+        ("reset", ResetDispatcher),
+        ("ephemeral", EphemeralDispatcher),
+    ],
+)
+def test_service_lifecycle_dispatcher_names_resolve_to_their_class(
+    name: str, expected_cls: type
+) -> None:
+    cls = load_service_lifecycle_dispatcher(name)
+    assert cls is expected_cls
+    instance = cls()
+    # ``isolation`` is a ClassVar naming the label the dispatcher owns; the
+    # ADR-0044 registry pairs the entry-point name with that label.
+    assert instance.isolation == name
+    assert callable(instance.cycle)
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_cls"),
+    [("default", DefaultSubstrateComposer)],
+)
+def test_substrate_composer_names_resolve_to_their_class(name: str, expected_cls: type) -> None:
+    cls = load_substrate_composer(name)
+    assert cls is expected_cls
+    instance = cls()
+    assert isinstance(instance, SubstrateComposer)
+
+
+@pytest.mark.parametrize(
+    "loader",
+    [
+        load_compose_materialiser,
+        load_service_lifecycle_dispatcher,
+        load_substrate_composer,
+    ],
+)
+def test_composition_seam_unknown_name_raises(loader) -> None:
+    with pytest.raises(UnknownImplementationError):
+        loader("this_name_is_not_registered")

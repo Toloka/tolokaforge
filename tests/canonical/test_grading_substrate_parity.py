@@ -188,11 +188,9 @@ from tolokaforge.runner import service as runner_service_module
 from tolokaforge.runner.grading_ledger import (
     LEDGER_KEYS,
     LLM_JUDGE_KEY,
-    NO_JUDGE_MESSAGES_SKIP,
     accountable_author_keys,
     populated_ledger_keys,
     runner_dump_path,
-    skip_note,
     skip_note_prefix,
 )
 from tolokaforge.runner.models import (
@@ -3742,14 +3740,16 @@ def test_every_ledger_keys_recording_site_is_driven(
     _assert_the_site_reported(author_key, grading_config, response)
 
 
-def test_a_judge_with_no_transcript_messages_records_its_skip(
+def test_a_judge_with_no_transcript_messages_refuses_the_declared_component(
     runner_service, mock_grpc_context, monkeypatch
 ):
     """The judge's other branch, kept beside the sweep rather than in it.
 
     Every sweep row carries one manifest-derived expectation; this trial populates
-    ``llm_judge`` and legitimately skips it, which is the one shape that expectation
-    cannot describe. Its note is what tells a task author the rubric scored nothing.
+    ``llm_judge`` and the judge legitimately does not run because the trial carries
+    no transcript. ``llm_judge`` is a declared component that produced no verdict,
+    so the fold refuses the trial rather than composing a grade whose weighted
+    mean would silently redistribute the judge's share onto whatever else scored.
     """
     grading_config, response = _drive_llm_judge(
         runner_service,
@@ -3759,12 +3759,9 @@ def test_a_judge_with_no_transcript_messages_records_its_skip(
         transcript="",
     )
 
-    assert response.success is True, response.error
     assert LLM_JUDGE_KEY in populated_ledger_keys(grading_config)
-    assert skip_note(LLM_JUDGE_KEY, NO_JUDGE_MESSAGES_SKIP) in response.grade.reasons, (
-        "a judge-configured trial with no transcript to judge must say so on the "
-        f"grade: {response.grade.reasons!r}"
-    )
+    assert response.success is False, response.error
+    assert "llm_judge" in response.error, response.error
 
 
 # Fault injections. Without them lock 15 is a gate nobody has seen fail, so each
@@ -3865,10 +3862,18 @@ def test_the_site_lock_rejects_an_evaluator_that_stopped_accounting(
         _assert_the_site_reported(author_key, grading_config, response)
 
 
-def test_the_site_lock_rejects_an_evaluated_record_over_an_evaluation_that_did_not_run(
+def test_the_fold_refuses_an_evaluated_record_over_an_evaluation_that_did_not_run(
     test_data_dir, runner_service, mock_grpc_context, monkeypatch
 ):
-    """Claim 4: real accounting filed EVALUATED while the component stayed unscored."""
+    """Claim 4: real accounting filed EVALUATED while the component stayed unscored.
+
+    ``resolve_uncounted_fold`` catches this shape structurally: the config declared
+    ``transcript_rules`` and the component arrived at the composed verdict at the
+    ``-1.0`` unscored sentinel, so the fold refuses the trial before the site-lock
+    audit runs. The RPC surfaces the refusal as ``success=False`` naming the missing
+    component — a stronger defence than the site-lock's own assertion, which the
+    fold has now made structurally unreachable for this shape.
+    """
     real = default_transcript_rule_matcher_module.evaluate_transcript_rules
 
     def hollow(*args: Any, **kwargs: Any) -> Any:
@@ -3876,7 +3881,7 @@ def test_the_site_lock_rejects_an_evaluated_record_over_an_evaluation_that_did_n
 
     monkeypatch.setattr(default_transcript_rule_matcher_module, "evaluate_transcript_rules", hollow)
 
-    grading_config, response = _drive_parity_pack(
+    _grading_config, response = _drive_parity_pack(
         _INJECTION_TRANSCRIPT,
         test_data_dir,
         runner_service,
@@ -3884,13 +3889,8 @@ def test_the_site_lock_rejects_an_evaluated_record_over_an_evaluation_that_did_n
         trial_id=_ledger_trial_id("hollow", _INJECTION_TRANSCRIPT),
     )
 
-    assert response.success is True, response.error
-    assert skip_note_prefix(_INJECTION_TRANSCRIPT) not in response.grade.reasons, (
-        "the key must still be recorded as evaluated, or claim 3 would fire here "
-        "and claim 4 would go unmeasured"
-    )
-    with pytest.raises(AssertionError, match="unscored sentinel"):
-        _assert_the_site_reported(_INJECTION_TRANSCRIPT, grading_config, response)
+    assert response.success is False, response.error
+    assert "transcript_rules" in response.error, response.error
 
 
 def test_the_site_lock_rejects_hash_accounting_that_files_nothing(

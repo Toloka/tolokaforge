@@ -26,6 +26,50 @@ All notable changes to this project are documented in this file.
 
 - `grading_method` reserved names `hash`, `transcript`, `llm` — never emitted, never dispatched. Task packs using these values fail loud at `RegisterTrial` with a message naming the registered set. Use `composite` (or leave `grading_method` unset).
 
+## v0.22.5 (2026-09-04)
+
+### Fix
+
+- **runtime**: composition-plan integration-test rewiring + Bucket B (#1423 follow-up, closes #335) (#1488)
+
+## v0.22.4 (2026-09-03)
+
+### Fix
+
+- **grading**: surrogate-id-aware row pairing on _records_might_match (#1483)
+
+## v0.22.3 (2026-09-03)
+
+### Feat
+
+- **grading**: engine-eval-hardening — hash/diff parity + schema-executor parity + bundle-native judge replay (M#43) (#1481)
+
+### Fix
+
+- **tests**: unstick pre-existing test-smoke failures on main (#1475)
+
+## v0.22.2 (2026-09-02)
+
+### Feat
+
+- **grading**: engine-eval-repin-blockers — widened fail-loud contract (M#42) (#1471)
+
+### Fix
+
+- **orchestrator**: user-simulator config fails loud instead of silent Anthropic fallback (#1451)
+
+## v0.22.1 (2026-09-02)
+
+## v0.22.0 (2026-09-02)
+
+### Feat
+
+- **llm**: namespace-matched gateway wildcards, one provider-pin rule, route provenance (#1407)
+
+### Fix
+
+- **conductor**: skip Runner GetState RPC when task declares no json_db + demote no-target log (#1414)
+
 ## v0.21.4 (2026-08-28)
 
 ### Fix

@@ -36,10 +36,16 @@ pytestmark = pytest.mark.unit
 
 
 def _make_run_config(**overrides: Any) -> RunConfig:
-    """Build a minimal RunConfig for testing."""
+    """Build a minimal RunConfig for testing.
+
+    Populates both ``models.agent`` and ``models.user`` — the orchestrator
+    fails loud on any run that leaves ``models.user`` unset (see
+    :func:`~tolokaforge.core.models.run_config.require_user_simulator_config`).
+    """
     defaults: dict[str, Any] = {
         "models": {
             "agent": ModelConfig(provider="openai", name="gpt-4"),
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
         },
         "orchestrator": OrchestratorConfig(
             workers=1,
