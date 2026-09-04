@@ -308,12 +308,14 @@ class TestTheOvershootIsPartOfTheInvariant:
         config = _run_config(probe=probe)
         assert config.orchestrator.rate_limit_probe.turn_wall_ceiling_s < 14400
 
+        agent_client = MagicMock()
+        agent_client.capabilities.default_max_turns = None
         conductor = InProcessConductor(
             adapter=MagicMock(),
             artifact_writer=MagicMock(),
             config=config,
             logger=get_logger("probe-overshoot", strict=False),
-            agent_client=MagicMock(),
+            agent_client=agent_client,
             runtime_backend=MagicMock(),
             trial_grader=MagicMock(),
             output_dir=tmp_path,
@@ -339,12 +341,14 @@ class TestBudgetInvariantAgainstTheEffectiveTimeout:
     """The conductor re-checks after ``min(task.trial_seconds, run episode_s)``."""
 
     def _conductor(self, config: RunConfig, tmp_path: Path) -> InProcessConductor:
+        agent_client = MagicMock()
+        agent_client.capabilities.default_max_turns = None
         return InProcessConductor(
             adapter=MagicMock(),
             artifact_writer=MagicMock(),
             config=config,
             logger=get_logger("probe-wiring", strict=False),
-            agent_client=MagicMock(),
+            agent_client=agent_client,
             runtime_backend=MagicMock(),
             trial_grader=MagicMock(),
             output_dir=tmp_path,

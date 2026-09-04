@@ -1,14 +1,23 @@
-"""Unit guard for the ``gemini`` preset's match-glob routing.
+"""Unit guard for the ``gemini`` preset family's match-glob routing.
 
 Asserts every Google Gemini model identifier under integration-test
-coverage is routed through the named ``gemini`` preset rather than
-falling through to ``default``.
+coverage is routed through the named preset that owns it:
 
-The first-match-wins discipline matters here: the ``gemini:`` block
-must sit AFTER any preset whose match globs could shadow it. None
-exist today (no other preset matches ``google/*`` or ``*gemini*``),
-but if a future preset is added with overlapping globs, this test
-catches the silent reroute.
+* ``gemini_31_pro_preview`` — the model-specific overlay for
+  ``google/gemini-3.1-pro-preview`` (and its OpenRouter-prefixed
+  variant). Carries the generic ``gemini`` policy trio verbatim plus
+  ``default_max_turns: 90``. Exact-match globs only.
+* ``gemini_35_flash_recursive`` / ``gemini_36_flash_recursive`` /
+  ``gemini_37_flash_recursive`` — Flash-lineage overlays for the
+  recursive-schema fix. Exact-match globs only.
+* ``gemini`` — the generic fallback that captures every other Gemini
+  identifier (family globs).
+
+The first-match-wins discipline matters here: each model-specific
+overlay must sit BEFORE the generic ``gemini:`` block, and the
+generic block must sit AFTER any preset whose match globs could
+shadow it. If a future preset is added with overlapping globs, this
+test catches the silent reroute.
 """
 
 from __future__ import annotations
@@ -23,7 +32,6 @@ pytestmark = pytest.mark.canonical
 _GEMINI_MODELS = (
     # Both variants under live integration test (see registry.py).
     "google/gemini-3-flash-preview",
-    "google/gemini-3.1-pro-preview",
     # Older family members — the preset must capture them too so we
     # don't leave stale fallthrough on existing eval configs.
     "google/gemini-3.0-flash",
@@ -32,6 +40,12 @@ _GEMINI_MODELS = (
     "google/gemini-2.5-flash",
     # OpenRouter-flavoured prefix (litellm sometimes sees the doubled form).
     "openrouter/google/gemini-3-flash-preview",
+)
+
+
+_GEMINI_31_PRO_PREVIEW_MODELS = (
+    "google/gemini-3.1-pro-preview",
+    "openrouter/google/gemini-3.1-pro-preview",
 )
 
 
@@ -44,6 +58,22 @@ def test_gemini_models_route_to_gemini_preset(model: str) -> None:
         "If a new preset was added with overlapping match globs, restore "
         "first-match-wins by moving the ``gemini:`` block earlier in "
         "model_presets.yaml."
+    )
+
+
+@pytest.mark.parametrize("model", _GEMINI_31_PRO_PREVIEW_MODELS)
+def test_gemini_31_pro_preview_routes_to_dedicated_preset(model: str) -> None:
+    """The exact ``google/gemini-3.1-pro-preview`` slug (bundled and
+    OpenRouter-prefixed) resolves to the dedicated overlay, not the
+    generic ``gemini`` preset. The overlay sits BEFORE the generic block
+    in ``model_presets.yaml`` so first-match-wins picks it up.
+    """
+    name = resolve_effective_preset(model, "openrouter")
+    assert name == "gemini_31_pro_preview", (
+        f"Expected {model!r} to route to 'gemini_31_pro_preview' preset, "
+        f"got {name!r}. Restore first-match-wins by keeping the "
+        "``gemini_31_pro_preview:`` block BEFORE the generic ``gemini:`` "
+        "block in model_presets.yaml."
     )
 
 

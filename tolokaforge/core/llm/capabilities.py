@@ -141,6 +141,22 @@ class ModelCapabilities:
     (the default) leaves every tool message threaded through verbatim.
     """
 
+    default_max_turns: int | None = None
+    """Preset-level default for the per-trial turn budget when the task
+    did not declare its own ``TaskConfig.max_turns``.
+
+    Different models converge in different numbers of steps on the same
+    task — a coarser-grained model completes in fewer turns than one whose
+    per-turn edit style is more granular. This slot fills the gap when
+    neither the task nor the operator's run config set a budget: the
+    conductor's ``resolve_max_turns`` reads it as the value default before
+    the engine-wide fallback ``DEFAULT_MAX_TURNS = 50`` applies.
+    ``TaskConfig.max_turns`` still wins when set, and
+    ``OrchestratorConfig.max_turns`` still ceilings the resolved value.
+    ``None`` (the default) leaves the engine-wide fallback in place — every
+    preset that does not name the key inherits it.
+    """
+
     openrouter_defaults: OpenRouterConfig | None = None
     """Preset-level default for :attr:`ModelConfig.openrouter`.
 
