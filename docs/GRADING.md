@@ -743,7 +743,8 @@ the one the pack asked for, and the agent did not reach it.
 
 A trial the harness auto-fails before any evaluator runs — `TrialStatus.ERROR`
 / `TrialStatus.TIMEOUT`, `TerminationReason.STUCK_DETECTED`,
-`TerminationReason.EMPTY_COMPLETION` — has no evaluator output to compose. The
+`TerminationReason.EMPTY_COMPLETION`,
+`TerminationReason.CONTEXT_WINDOW_EXCEEDED` — has no evaluator output to compose. The
 `TrialGrader` synthesises a `Grade` for it so the trial still reaches
 `measured_trials` (nothing was refused: the grader answered), but the grade
 is deliberately shaped to expose its provenance:
@@ -755,7 +756,7 @@ is deliberately shaped to expose its provenance:
   the grader synthesised from — `TerminationReason.ERROR` for the
   `ERROR`/`TIMEOUT` fallback (`trajectory.termination_reason` when the
   trajectory carries one, otherwise `ERROR`), and the matching value on the
-  `STUCK_DETECTED` / `EMPTY_COMPLETION` branches.
+  `STUCK_DETECTED` / `EMPTY_COMPLETION` / `CONTEXT_WINDOW_EXCEEDED` branches.
 - `Grade.binary_pass` is `False` and `Grade.score` is `0.0` — the trial did
   end unsuccessfully; the marker distinguishes _how_ it ended, not _whether_.
 

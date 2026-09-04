@@ -157,6 +157,29 @@ class ModelCapabilities:
     preset that does not name the key inherits it.
     """
 
+    max_context_tokens: int | None = None
+    """Preset-declared provider max input tokens.
+
+    Paired with :attr:`context_watermark` to gate the loop's pre-turn
+    summarize check: when the previous generation's ``Usage.prompt_tokens +
+    context_watermark >= max_context_tokens``, the loop invokes its
+    :class:`~tolokaforge.core.summarize_policy.SummarizePolicy` and rewrites
+    the wire message history. ``None`` disables both the pre-turn watermark
+    check and the reactive summarize on a
+    :class:`~litellm.exceptions.ContextWindowExceededError`; the trial's
+    behaviour on those events matches the pre-opt-in path (a reactive
+    context-window error still terminates via the typed classifier, with
+    :attr:`~tolokaforge.core.models.TerminationReason.CONTEXT_WINDOW_EXCEEDED`).
+    """
+
+    context_watermark: int | None = None
+    """Free-token threshold that arms the pre-turn summarize check.
+
+    ``None`` disables the check even when :attr:`max_context_tokens` is set —
+    a preset can declare its context size for other uses without opting into
+    summarize. See :attr:`max_context_tokens` for the arithmetic.
+    """
+
     openrouter_defaults: OpenRouterConfig | None = None
     """Preset-level default for :attr:`ModelConfig.openrouter`.
 

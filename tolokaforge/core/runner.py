@@ -45,6 +45,7 @@ from tolokaforge.core.run_display_events import (
     RunDisplayEvents,
 )
 from tolokaforge.core.stuck import StuckDetector
+from tolokaforge.core.summarize_policy import LLMSummarizer, SummarizePolicy
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
 from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
@@ -334,6 +335,18 @@ class TrialRunner:
                 )
                 self._seed_first_user_message(task_config, policy, initial_user_message)
 
+                agent_metrics_sink = _AgentMetricsSink(
+                    self.metrics,
+                    events=self._events,
+                    trial_id=trial_id,
+                )
+                capabilities = self.agent_client.capabilities
+                summarize_policy: SummarizePolicy | None = None
+                if (
+                    capabilities.max_context_tokens is not None
+                    and capabilities.context_watermark is not None
+                ):
+                    summarize_policy = LLMSummarizer(self.agent_client, agent_metrics_sink)
                 outcome = ToolCallingLoop(
                     llm_client=self.agent_client,
                     tool_executor=self.tool_executor,
@@ -344,14 +357,13 @@ class TrialRunner:
                     config=LoopConfig(
                         max_turns=self.max_turns,
                         episode_timeout_s=self.episode_timeout_s,
-                        empty_retry_count=self.agent_client.capabilities.empty_retry_count,
-                        tool_output_max_chars=self.agent_client.capabilities.tool_output_max_chars,
+                        empty_retry_count=capabilities.empty_retry_count,
+                        tool_output_max_chars=capabilities.tool_output_max_chars,
+                        max_context_tokens=capabilities.max_context_tokens,
+                        context_watermark=capabilities.context_watermark,
+                        summarize_policy=summarize_policy,
                     ),
-                    metrics=_AgentMetricsSink(
-                        self.metrics,
-                        events=self._events,
-                        trial_id=trial_id,
-                    ),
+                    metrics=agent_metrics_sink,
                     should_terminate=self._agent_termination,
                     user_turn=lambda messages: self._policy_user_turn(policy, messages),
                     recorder=self.tool_call_recorder,
@@ -1038,6 +1050,7 @@ class _AgentMetricsSink(MetricsSink):
         self._metrics = metrics
         self._events = events
         self._trial_id = trial_id
+        self._last_prompt_tokens: int | None = None
 
     def record_generation(self, result: GenerationResult) -> None:
         self._metrics.api_calls += 1
@@ -1049,6 +1062,7 @@ class _AgentMetricsSink(MetricsSink):
                 self._metrics.cost_usd = result.cost_usd
             else:
                 self._metrics.cost_usd += result.cost_usd
+        self._last_prompt_tokens = result.usage.prompt_tokens
         self._events.trial_progress(
             trial_id=self._trial_id,
             prompt_tokens_delta=result.usage.prompt_tokens,
@@ -1058,3 +1072,7 @@ class _AgentMetricsSink(MetricsSink):
 
     def record_tool_call(self) -> None:
         self._metrics.tool_calls += 1
+
+    @property
+    def last_prompt_tokens(self) -> int | None:
+        return self._last_prompt_tokens

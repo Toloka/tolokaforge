@@ -655,6 +655,9 @@ class TestTrialRunnerRun:
 
         agent = MagicMock()
         agent.generate.side_effect = make_response
+        agent.capabilities = ModelCapabilities()
+        agent.classify_loop_error.side_effect = lambda exc: classify_loop_error(exc, ())
+        agent.sanitize_tools_for_execution.return_value = None
 
         user_sim = MagicMock()
         user_sim.reply.return_value = GenerationResult(
