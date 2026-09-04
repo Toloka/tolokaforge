@@ -11,6 +11,8 @@ pytestmark = pytest.mark.unit
 # What the cases below that are not about the repeated-call threshold run at.
 _THRESHOLD_NOT_UNDER_TEST = 10
 
+_BASH_ARGS = {"command": "pytest -x tests/foo.py"}
+
 
 def _assistant_msg(content: str, tool_calls: list[ToolCall] | None = None) -> Message:
     """Create an assistant message with optional tool calls."""
@@ -132,6 +134,49 @@ class TestRepeatedToolCalls:
             _tool_log("search", {"q": "a"}),
         ]
         assert detector._has_repeated_tool_calls(logs) is False
+
+
+# ---------------------------------------------------------------------------
+# Result-aware identity: same (name, args) with different outputs is progress
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestResultAwareRepetition:
+    """The identity a repeated call is counted under includes its recorded output.
+
+    Same tool + same args + *different* result bytes across turns is progress,
+    not a stall: the model got new information every turn. Same tool + same args
+    + same result bytes across turns is the shape the detector is for.
+    """
+
+    def test_same_args_different_output_is_not_stuck(self) -> None:
+        """Fix-and-verify: identical ``pytest -x`` command, evolving stdout each turn."""
+        detector = StuckDetector(max_repeated_tool_calls=5)
+        logs = [
+            recorded_call(
+                "bash",
+                sequence=i,
+                arguments=_BASH_ARGS,
+                output=f"FAILED tests/foo.py::test_case[{i}] AssertionError: seq {i}",
+            )
+            for i in range(6)
+        ]
+        assert detector.is_stuck([], logs) is False
+
+    def test_same_args_same_output_still_stuck(self) -> None:
+        """Byte-identical call and result over N turns is still the stall shape."""
+        detector = StuckDetector(max_repeated_tool_calls=5)
+        logs = [
+            recorded_call(
+                "bash",
+                sequence=i,
+                arguments=_BASH_ARGS,
+                output="FAILED tests/foo.py::test_case AssertionError",
+            )
+            for i in range(6)
+        ]
+        assert detector.is_stuck([], logs) is True
 
 
 # ---------------------------------------------------------------------------

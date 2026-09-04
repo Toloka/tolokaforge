@@ -1,5 +1,6 @@
 """Stuck detection heuristics"""
 
+import hashlib
 from collections import Counter
 from collections.abc import Sequence
 
@@ -38,20 +39,27 @@ class StuckDetector:
         return False
 
     def _has_repeated_tool_calls(self, tool_calls: Sequence[RecordedToolCall]) -> bool:
-        """Check for repeated identical tool calls"""
+        """Fire when the same tool call produced the same bytes back over and over.
+
+        Identity is ``(tool_name, arguments, sha256(output))``: same tool + same
+        args + same result-bytes across ``max_repeated_tool_calls`` turns is
+        no progress. Same tool + same args with *different* result bytes is
+        progress — the model got new information every turn — and does not
+        fire. Hashing the output bounds the per-call signature to O(1) memory,
+        so a long trial over ``pytest``-sized outputs (10-100 KB) cannot blow
+        up the Counter.
+        """
         if len(tool_calls) < self.max_repeated_tool_calls:
             return False
 
-        # Look at last N tool calls
         recent_calls = tool_calls[-self.max_repeated_tool_calls :]
 
-        # Create signature for each call (tool + args)
         signatures = []
         for call in recent_calls:
-            sig = f"{call.tool_name}:{str(call.arguments)}"
+            output_digest = hashlib.sha256(call.output.encode("utf-8")).hexdigest()
+            sig = f"{call.tool_name}:{str(call.arguments)}:{output_digest}"
             signatures.append(sig)
 
-        # Check if same signature appears too many times
         counts = Counter(signatures)
         most_common_count = counts.most_common(1)[0][1] if counts else 0
 
