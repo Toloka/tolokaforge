@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.22.5 (2026-09-04)
+
+### Fix
+
+- **runtime**: composition-plan integration-test rewiring + Bucket B (#1423 follow-up, closes #335) (#1488)
+
 ## v0.22.4 (2026-09-03)
 
 ### Fix
