@@ -1,6 +1,6 @@
 # Adapter Interface Contract
 
-This document defines the extension contract for adding new adapter backends.
+This document defines the extension contract for adding new adapter backends. For the accepted-record on the `AdapterGradingContract` structural Protocol and the three capability flags on `BaseAdapter` (`requires_docker_cli_in_runner`, `grades_from_task_grading_file`, `syncs_adapter_env_to_state`), see [ADR-0043 — Detached-mode grader, typed grader kinds, adapter grading contract](adr/0043-detached-mode-grader-and-typed-grader-kinds.md).
 
 ## Plugin Registration
 

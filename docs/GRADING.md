@@ -18,6 +18,20 @@ weighted mean, the weakest of them or the strongest, as the pack declares. See
 [Score Combination](#score-combination) for the three rules and
 [REFERENCE.md](REFERENCE.md) for the `grading.yaml` schema.
 
+**Grading kind is a plug-in seam.** `task.grading.grading_method` selects the
+kind — the typed evaluator that drives grading above the substrate.
+`tolokaforge.grader_kinds` is the entry-point group; every registered kind
+implements the `GraderKind` Protocol with kwargs-only
+`evaluate(*, substrate, task_config, kind_config, trial_id, agent_tools, logger) -> Grade | None`.
+Two built-ins ship: `composite` (the five-dimension fold this document describes) and
+`test_execution` (bash test suite reading `/logs/verifier/reward.txt` — dispatched via
+`SubstrateService.RunTestSuite`; refuses actionably on a snapshot substrate because
+bundle format v1.0 carries no test-suite hook). `judge_only` is preserved as a compat
+alias for the equivalent `composite + weights: {llm_judge: 1.0}` registry lookup —
+external surface unchanged. For the accepted-record naming the substrate / kind /
+transport product and the operator regrade CLI, see
+[ADR-0043](adr/0043-detached-mode-grader-and-typed-grader-kinds.md).
+
 ---
 
 ## Substrate Parity

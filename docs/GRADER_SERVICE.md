@@ -8,10 +8,26 @@ plus an LLM judge, a host-side judge callable that runs the rubric
 directly, a dedicated grader-service RPC bound to its own address, or a
 queue-backed transport that decouples throughput from grader latency.
 
-This document describes the seam as it stands after the grader-detachment
-milestone, points at the four registered built-ins, and shows how a
-downstream package can register its own grader without touching engine
-code. For the design record, see [ADR-0038](adr/0038-grader-detachment.md).
+This document describes the seam as it stands, points at the four
+registered built-ins, and shows how a downstream package can register its
+own grader without touching engine code.
+
+The three axes of grading — substrate topology, transport, and grading
+kind — are independent. `grader.name` picks the transport (this
+document's four built-ins). `grader.snapshot.enabled` picks whether the
+trial's state materialises as a bundle (opt-in, default `False`).
+`task.grading.grading_method` picks the kind — the typed evaluator
+that reads the substrate ([`GRADING.md § Grading method dispatch`](GRADING.md#grading-method-dispatch)).
+The composite dispatch above the substrate does not know which of the
+eight combinations is running.
+
+For the design record: [ADR-0038 — Grader detachment](adr/0038-grader-detachment.md)
+established the plug-in seam; [ADR-0040 — Standalone-grader substrate](adr/0040-standalone-grader.md)
+introduced the `GradingSubstrate` Protocol behind which every topology
+runs; [ADR-0043 — Detached-mode grader, typed grader kinds, adapter grading contract](adr/0043-detached-mode-grader-and-typed-grader-kinds.md)
+is the accepted-record for the third substrate (offline / replay via
+snapshot), the typed grader-kind registry, the adapter grading contract,
+and the operator regrade CLI.
 
 ## The seam
 
