@@ -29,6 +29,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from tolokaforge.core.grading.composite_fold import CompositeFold
+from tolokaforge.core.grading.kinds._protocol import GraderKindRefusedError
 from tolokaforge.core.models.grade import Grade
 from tolokaforge.core.models.grade_components import GradeComponents
 
@@ -84,6 +85,8 @@ class CompositeGraderKind:
             judge_gate_failed=False,
             trace_gate_failed=False,
         )
+        if result.refusal:
+            raise GraderKindRefusedError(result.verdict_reason or "composite fold refused")
         return Grade(
             binary_pass=result.binary_pass,
             score=result.score,

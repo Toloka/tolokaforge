@@ -174,15 +174,43 @@ Exit `0` iff no dispatched trial failed. Skips are non-error.
 
 ## Example — end-to-end walk-through
 
-### `run_config.yaml` (produces bundles under `./results/grade_bundles/`):
+Uses the shipped `examples/native/custom_checks/` reference pack. Requires an
+LLM provider key in `.env`.
+
+### 1. Copy the pack's run config and add the `grader.snapshot` block
+
+The shipped `examples/native/custom_checks/run_config.yaml` grades live and
+does not stash a bundle. Copy it, then add the two-line `grader:` block that
+opts the run into snapshot mode:
 
 ```yaml
-task_selector: examples/native/refund/task_a.yaml
-runner_grading:
-  grading_method: composite
-grader:
-  name: grader_rpc
-  expose_substrate: true
+# my_run_config.yaml — the shipped example plus snapshot mode.
+models:
+  agent:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.0
+    max_tokens: 4096
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 6
+  queue_backend: sqlite
+
+evaluation:
+  projects:
+    - "examples/native/custom_checks/dataset"
+  tasks_glob: "**/task.yaml"
+  output_dir: "results/custom_checks_example"
+
+grader:                          # NEW — opts the run into snapshot mode
+  name: grader_rpc               # any transport works
+  expose_substrate: true         # REQUIRED with snapshot
   snapshot:
     enabled: true
     max_bundle_mb: 32.0
@@ -190,50 +218,67 @@ grader:
     store:
       type: local_disk
       root_dir: ./results/grade_bundles
-models:
-  agent: {name: claude-sonnet-5, provider: anthropic}
-  judge: {name: gpt-4.1-mini, provider: openrouter}
 ```
 
-### 1. Run the trial:
+`grading_method: composite` is the shipped default on
+`RunnerGradingConfig` in the task pack's `grading.yaml`, so no per-task
+change is needed for the reference pack.
+
+### 2. Run the trial:
 
 ```bash
-uv run tolokaforge run --config run_config.yaml
+scripts/with_env.sh uv run tolokaforge run --config my_run_config.yaml
 ```
 
-### 2. Inspect the produced bundle:
+### 3. Inspect the produced bundle:
 
 ```bash
-$ cat results/run_2026-09-04*/trials/refund/0/trajectory.yaml | yq '.snapshot_status'
+$ yq '.snapshot_status' \
+    results/custom_checks_example/run_*/trials/reconcile_ledger/0/trajectory.yaml
 outcome: stored
 uri: bundle://local_disk/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 bundle_size_bytes: 42317
 
 $ ls results/grade_bundles/e3b0c442*/
-manifest.json  initial_state.json  final_state.json  filesystem.tar  trajectory.json  grading_config.json
+manifest.json  initial_state.json  final_state.json  final_state_stable.json
+filesystem.tar  trajectory.json  grading_config.json  checks/
 ```
 
-### 3. Regrade later (LLM keys required if the kind touches a judge):
+### 4. Regrade later (LLM keys required if the kind touches a judge):
 
 ```bash
-$ cat > store.yaml <<EOF
+$ cat > store.yaml <<'EOF'
 type: local_disk
 root_dir: ./results/grade_bundles
 EOF
 
-$ uv run tolokaforge grade \
+$ scripts/with_env.sh uv run tolokaforge grade \
     bundle://local_disk/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
     --grader-kind composite \
+    --grader-config components.yaml \
     --store-config store.yaml \
     --out ./regrades/first-pass
 
 regraded bundle://local_disk/e3b0c442… → ./regrades/first-pass/grade.json
 
-$ cat ./regrades/first-pass/grade.json | jq '.score, .binary_pass, .reasons'
+$ jq '.score, .binary_pass, .reasons' ./regrades/first-pass/grade.json
 0.87
 true
-"State checks: 1.00 (users match) | Judge score: 0.85 (met 4 of 5 criteria)"
+"custom_checks: 0.87 (reconcile_ledger matched)"
 ```
+
+Note that `composite` currently needs a pre-computed `components:` map in
+`--grader-config` (see § Known limits below and [#1465](https://github.com/Toloka/tolokaforge/issues/1465)); a `components.yaml` for the run above:
+
+```yaml
+components:
+  custom_checks: 0.87
+```
+
+The primary composite path — the runner-side `_grade_trial_async` fold that
+ran during step 2 — is unchanged. CLI-driven end-to-end composite regrade
+(dispatching each sub-component against the substrate before folding) is
+[#1465](https://github.com/Toloka/tolokaforge/issues/1465).
 
 ## Known limits (bundle format v1.0)
 
