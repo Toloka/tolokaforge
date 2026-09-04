@@ -1,37 +1,37 @@
-"""Stage 6 unit tests — ``AnthropicEphemeralCache`` + client wiring (P8).
+"""Unit tests for :class:`AnthropicEphemeralCache` and its client wiring.
 
 Guards the contract that Anthropic-family presets emit ``cache_control:
-{type: ephemeral}`` markers on the system prompt + tools array *before* the
-request leaves :class:`~tolokaforge.core.llm.client.LLMClient`. Without the
-marker every Claude turn re-bills the 18 k-token system prompt + 8 k-token
-tool schemas — Part 4.R4 of
-[`plans/eval_output_new_diagnosis.md`](../../../plans/eval_output_new_diagnosis.md)
-and Stage 6 of
-[`plans/llm_reasoning_and_observability_fix.md`](../../../plans/llm_reasoning_and_observability_fix.md)
-cover the full evidence trail.
+{type: ephemeral}`` markers on the system prompt + tools array before the
+request leaves :class:`~tolokaforge.core.llm.client.LLMClient`, and that the
+policy's ``apply_messages`` hook runs on the wire-shape messages returned by
+``_convert_messages``.
 
 Two groups:
 
 * Pure policy-level tests against
-  :class:`tolokaforge.core.llm.cache_policy.AnthropicEphemeralCache` exercising
-  the canonical litellm content-block shape on every input variant
-  (string, list-of-blocks, empty, None, idempotency, tools).
+  :class:`tolokaforge.core.llm.cache_policy.AnthropicEphemeralCache` and
+  :class:`~tolokaforge.core.llm.cache_policy.NoCache` exercising the
+  canonical litellm content-block shape on every input variant (string,
+  list-of-blocks, empty, None, idempotency, tools) and the
+  ``apply_messages`` passthrough contract.
 
 * Client-level tests that patch ``litellm.completion`` and assert the
   request payload — Anthropic presets produce content-blocks + ``cache_control``,
   non-Anthropic presets pass the system prompt through as a plain string with
-  no ``cache_control`` anywhere.
+  no ``cache_control`` anywhere, and the ``apply_messages`` hook runs on
+  the exact wire list ``litellm.completion`` receives.
 """
 
 from __future__ import annotations
 
+import copy
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from tolokaforge.core.llm.cache_policy import AnthropicEphemeralCache, NoCache
 from tolokaforge.core.llm.client import LLMClient
-from tolokaforge.core.models import Message, MessageRole, ModelConfig
+from tolokaforge.core.models import Message, MessageRole, ModelConfig, ToolCall
 
 pytestmark = pytest.mark.unit
 
@@ -60,7 +60,8 @@ class TestAnthropicEphemeralCachePolicy:
         ]
         # Tools passthrough (None in, None out)
         assert tools is None
-        # Messages are unchanged — Stage 6 only caches system + tools.
+        # ``apply`` returns messages verbatim; message-block marking is the
+        # separate ``apply_messages`` hook.
         assert messages == [{"role": "user", "content": "hi"}]
 
     def test_tools_array_marker_on_last_entry_only(self) -> None:
@@ -172,6 +173,149 @@ class TestAnthropicEphemeralCachePolicy:
         assert sys_out == sys_in
         assert tools_out is tools_in
         assert msgs_out is msgs_in
+
+    def test_apply_messages_nocache_returns_input_identity(self) -> None:
+        """``NoCache.apply_messages`` is a pure passthrough — same object identity."""
+        policy = NoCache()
+        msgs: list[dict] = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        assert policy.apply_messages(msgs) is msgs
+
+    def test_apply_messages_marks_last_user_message_when_tail_is_user(self) -> None:
+        policy = AnthropicEphemeralCache()
+        out = policy.apply_messages([{"role": "user", "content": "task"}])
+        assert out == [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "task",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            }
+        ]
+
+    def test_apply_messages_marks_tail_tool_and_last_user_when_distinct(self) -> None:
+        policy = AnthropicEphemeralCache()
+        msgs = [
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": "thinking", "tool_calls": [{"id": "t1"}]},
+            {"role": "tool", "content": "output", "tool_call_id": "t1"},
+        ]
+        out = policy.apply_messages(msgs)
+        # Message 0 (user "task") marked on wrapped content-block.
+        assert out[0]["content"] == [
+            {"type": "text", "text": "task", "cache_control": {"type": "ephemeral"}}
+        ]
+        # Message 1 (assistant) untouched: no cache_control anywhere.
+        assert out[1] == msgs[1]
+        # Message 2 (tool "output") marked on wrapped content-block.
+        assert out[2]["content"] == [
+            {"type": "text", "text": "output", "cache_control": {"type": "ephemeral"}}
+        ]
+        assert out[2]["tool_call_id"] == "t1"
+
+    def test_apply_messages_skips_assistant_only_between_user_and_tool(self) -> None:
+        policy = AnthropicEphemeralCache()
+        msgs = [
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": "step 1", "tool_calls": [{"id": "a"}]},
+            {"role": "assistant", "content": "step 2", "tool_calls": [{"id": "b"}]},
+            {"role": "tool", "content": "result", "tool_call_id": "b"},
+        ]
+        out = policy.apply_messages(msgs)
+        for assistant_msg in (out[1], out[2]):
+            assert "cache_control" not in assistant_msg
+            assert assistant_msg["content"] == msgs[msgs.index(assistant_msg)]["content"]
+            for tc in assistant_msg["tool_calls"]:
+                assert "cache_control" not in tc
+
+    def test_apply_messages_tail_assistant_falls_through_to_last_user_only(self) -> None:
+        policy = AnthropicEphemeralCache()
+        msgs = [
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": "answer"},
+        ]
+        out = policy.apply_messages(msgs)
+        assert out[0]["content"] == [
+            {"type": "text", "text": "task", "cache_control": {"type": "ephemeral"}}
+        ]
+        # Tail assistant untouched — no marker, no wrapping.
+        assert out[1] == {"role": "assistant", "content": "answer"}
+
+    def test_apply_messages_empty_list_noop(self) -> None:
+        policy = AnthropicEphemeralCache()
+        msgs: list[dict] = []
+        assert policy.apply_messages(msgs) is msgs
+
+    def test_apply_messages_no_user_returns_tail_only(self) -> None:
+        """Single ``role: tool`` message: tail marked, no user to fall back to."""
+        policy = AnthropicEphemeralCache()
+        out = policy.apply_messages([{"role": "tool", "content": "hi", "tool_call_id": "t"}])
+        assert out == [
+            {
+                "role": "tool",
+                "content": [{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}],
+                "tool_call_id": "t",
+            }
+        ]
+
+    def test_apply_messages_str_content_wraps_to_content_block_list(self) -> None:
+        policy = AnthropicEphemeralCache()
+        out = policy.apply_messages([{"role": "user", "content": "hi"}])
+        content = out[0]["content"]
+        assert isinstance(content, list)
+        assert content == [{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}]
+
+    def test_apply_messages_existing_content_blocks_marks_last_block(self) -> None:
+        policy = AnthropicEphemeralCache()
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "a"},
+                    {"type": "text", "text": "b"},
+                ],
+            }
+        ]
+        out = policy.apply_messages(msgs)
+        assert out[0]["content"][0] == {"type": "text", "text": "a"}
+        assert out[0]["content"][1] == {
+            "type": "text",
+            "text": "b",
+            "cache_control": {"type": "ephemeral"},
+        }
+
+    def test_apply_messages_does_not_mutate_caller_inputs(self) -> None:
+        policy = AnthropicEphemeralCache()
+        msgs = [
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "tool", "content": [{"type": "text", "text": "output"}], "tool_call_id": "t"},
+        ]
+        snapshot = copy.deepcopy(msgs)
+        policy.apply_messages(msgs)
+        assert msgs == snapshot
+
+    def test_apply_messages_idempotent_on_marked_input(self) -> None:
+        policy = AnthropicEphemeralCache()
+        msgs = [
+            {"role": "user", "content": "task"},
+            {"role": "tool", "content": "output", "tool_call_id": "t"},
+        ]
+        once = policy.apply_messages(msgs)
+        twice = policy.apply_messages(once)
+        assert once == twice
+
+    def test_apply_messages_empty_content_skipped(self) -> None:
+        """Empty tail content: anchor stays in position but carries no marker."""
+        policy = AnthropicEphemeralCache()
+        out = policy.apply_messages([{"role": "user", "content": ""}])
+        assert out == [{"role": "user", "content": ""}]
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +429,137 @@ class TestLLMClientCachePolicyWiring:
         assert isinstance(system_msg["content"], list)
         assert system_msg["content"][-1]["cache_control"] == {"type": "ephemeral"}
         assert kwargs["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_apply_messages_wired_after_convert_messages(self) -> None:
+        """The wire hook runs on the exact list returned by ``_convert_messages``.
+
+        Spies on the real ``AnthropicEphemeralCache.apply_messages`` so the
+        existing content-blocks + cache_control end-to-end assertion (see
+        :meth:`test_anthropic_request_carries_content_blocks_and_cache_control`)
+        keeps its guarantees while we also observe the call and its return.
+        """
+        client = LLMClient(ModelConfig(provider="openrouter", name="anthropic/claude-opus-4.7"))
+        policy = client.capabilities.cache_policy
+        assert isinstance(policy, AnthropicEphemeralCache)
+        real_apply_messages = policy.apply_messages
+        real_convert = client._convert_messages
+        captured: dict[str, list[dict]] = {}
+
+        def convert_capturing(system, messages):  # type: ignore[no-untyped-def]
+            out = real_convert(system, messages)
+            captured["wire"] = out
+            return out
+
+        def apply_capturing(msgs):  # type: ignore[no-untyped-def]
+            captured["passed"] = msgs
+            result = real_apply_messages(msgs)
+            captured["returned"] = result
+            return result
+
+        with (
+            patch("tolokaforge.core.llm.client.completion") as mock_completion,
+            patch.object(policy, "apply_messages", side_effect=apply_capturing) as mock_apply,
+            patch.object(client, "_convert_messages", side_effect=convert_capturing),
+        ):
+            mock_completion.return_value = _mock_completion_response()
+            client.generate(
+                system="You help.",
+                messages=[Message(role=MessageRole.USER, content="hi")],
+                tools=self._single_tool(),
+            )
+            assert mock_apply.call_count == 1
+            # Input identity: the hook sees the exact list ``_convert_messages`` returned.
+            assert captured["passed"] is captured["wire"]
+            # Output identity: the hook's return is what ``litellm.completion`` sees.
+            assert mock_completion.call_args.kwargs["messages"] is captured["returned"]
+
+    @staticmethod
+    def _cache_control_count(kwargs: dict) -> int:
+        """Count ``cache_control`` markers across the whole request payload."""
+        count = 0
+        for msg in kwargs.get("messages", []):
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and "cache_control" in block:
+                        count += 1
+        for tool in kwargs.get("tools", []) or []:
+            if "cache_control" in tool:
+                count += 1
+        return count
+
+    def test_anthropic_request_marks_last_user_and_last_message_on_multi_turn(self) -> None:
+        client = LLMClient(ModelConfig(provider="openrouter", name="anthropic/claude-opus-4.7"))
+        tc1 = ToolCall(id="a", name="get_time", arguments={})
+        tc2 = ToolCall(id="b", name="get_time", arguments={})
+        messages = [
+            Message(role=MessageRole.USER, content="task"),
+            Message(role=MessageRole.ASSISTANT, content="thinking", tool_calls=[tc1, tc2]),
+            Message(role=MessageRole.TOOL, content="result-a", tool_call_id="a"),
+            Message(role=MessageRole.TOOL, content="result-b", tool_call_id="b"),
+        ]
+
+        with patch("tolokaforge.core.llm.client.completion") as mock_completion:
+            mock_completion.return_value = _mock_completion_response()
+            client.generate(system="Sys.", messages=messages, tools=self._single_tool())
+            kwargs = mock_completion.call_args.kwargs
+
+        wire = kwargs["messages"]
+        assert [m["role"] for m in wire] == ["system", "user", "assistant", "tool", "tool"]
+        # First user (wire index 1) marked on wrapped content-block.
+        assert wire[1]["content"] == [
+            {"type": "text", "text": "task", "cache_control": {"type": "ephemeral"}}
+        ]
+        # Tail tool (wire index -1) marked on wrapped content-block.
+        assert wire[-1]["content"] == [
+            {"type": "text", "text": "result-b", "cache_control": {"type": "ephemeral"}}
+        ]
+        # Assistant (wire index 2) untouched: no cache_control on content or tool_calls.
+        assert "cache_control" not in wire[2]
+        assert wire[2]["content"] == "thinking"
+        for tc in wire[2]["tool_calls"]:
+            assert "cache_control" not in tc
+        # Preceding tool (wire index 3) is not an anchor — no marker.
+        assert wire[3]["content"] == "result-a"
+        # 4-breakpoint budget: system + tools + user + tail_tool.
+        assert self._cache_control_count(kwargs) == 4
+
+    def test_anthropic_request_marks_single_user_turn_as_tail_anchor(self) -> None:
+        """One user turn: that message IS the tail anchor. No second user to mark."""
+        client = LLMClient(ModelConfig(provider="openrouter", name="anthropic/claude-opus-4.7"))
+        with patch("tolokaforge.core.llm.client.completion") as mock_completion:
+            mock_completion.return_value = _mock_completion_response()
+            client.generate(
+                system="Sys.",
+                messages=[Message(role=MessageRole.USER, content="hi")],
+                tools=self._single_tool(),
+            )
+            kwargs = mock_completion.call_args.kwargs
+
+        wire = kwargs["messages"]
+        assert wire[1]["content"] == [
+            {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}
+        ]
+        # Under the 4-cap: system + tools + tail user = 3 markers.
+        assert self._cache_control_count(kwargs) == 3
+
+    def test_openai_request_still_carries_zero_message_markers(self) -> None:
+        """Multi-turn non-Anthropic request: no ``cache_control`` anywhere."""
+        client = LLMClient(ModelConfig(provider="openrouter", name="openai/gpt-4o"))
+        tc = ToolCall(id="a", name="get_time", arguments={})
+        messages = [
+            Message(role=MessageRole.USER, content="task"),
+            Message(role=MessageRole.ASSISTANT, content="thinking", tool_calls=[tc]),
+            Message(role=MessageRole.TOOL, content="result", tool_call_id="a"),
+        ]
+        with patch("tolokaforge.core.llm.client.completion") as mock_completion:
+            mock_completion.return_value = _mock_completion_response()
+            client.generate(system="Sys.", messages=messages, tools=self._single_tool())
+            kwargs = mock_completion.call_args.kwargs
+
+        assert self._cache_control_count(kwargs) == 0
+        # System still a plain string, not wrapped into content-blocks.
+        assert kwargs["messages"][0]["content"] == "Sys."
 
     def test_effective_system_prompt_remains_concatenated_string(self) -> None:
         """``GenerationResult.effective_system_prompt`` must stay a str for

@@ -267,7 +267,7 @@ The extractor never raises — missing attributes default to `0`, so
 observability degrades gracefully when a provider returns a partial
 usage block.
 
-### Dual-path Anthropic cache counters (Stage 6 follow-up)
+### Dual-path Anthropic cache counters
 
 Anthropic cache counters are surfaced under two different usage paths
 depending on provider routing. `UsageExtractor` reads both and normalises
@@ -1362,11 +1362,17 @@ for auditability".
 
 ## `cache_policy`
 
-Explicit prompt-caching marker injection. The policy is invoked inside
-[`LLMClient.generate`](../tolokaforge/core/llm/client.py) **after** prompt
-enrichment + tool-schema sanitisation, **before** `_convert_messages` —
-so the sanitizer never sees a `cache_control` key, and the wire-level request
-carries the marker on the final cacheable prefix.
+Explicit prompt-caching marker injection. The policy runs in two phases
+inside [`LLMClient.generate`](../tolokaforge/core/llm/client.py):
+
+1. `apply` runs **after** prompt enrichment + tool-schema sanitisation and
+   **before** `_convert_messages`, so the sanitizer never sees a
+   `cache_control` key and the wire-level system + tools carry markers on
+   their final cacheable prefix.
+2. `apply_messages` runs on the wire-shape messages **after**
+   `_convert_messages` populates them (inside `_build_kwargs`), since
+   message-block marker attachment needs the exact list
+   `litellm.completion` will receive.
 
 ```python
 class CachePolicy(Protocol):
@@ -1376,23 +1382,30 @@ class CachePolicy(Protocol):
         tools: list[dict] | None,
         messages: list[dict],
     ) -> tuple[str | list[dict] | None, list[dict] | None, list[dict]]: ...
+
+    def apply_messages(
+        self, wire_messages: list[dict]
+    ) -> list[dict]: ...
 ```
 
 Two concrete policies ship today.
 
 | Policy | Default for | Effect |
 |---|---|---|
-| `NoCache` | `default` / `openai_gpt5` / `xai_grok` / `qwen` / `aws_nova` | Pure passthrough — inputs returned verbatim. |
-| `AnthropicEphemeralCache` | `anthropic` / `anthropic_claude_4_7` | Marks the **last** system content-block + **last** tools entry with `cache_control: {type: ephemeral}` (5-minute TTL, Anthropic default). |
+| `NoCache` | `default` / `openai_gpt5` / `xai_grok` / `qwen` / `aws_nova` | Pure passthrough on both hooks — inputs returned verbatim. |
+| `AnthropicEphemeralCache` | `anthropic` / `anthropic_claude_4_7` | `apply` marks the **last** system content-block + **last** tools entry with `cache_control: {type: ephemeral}` (5-minute TTL, Anthropic default). `apply_messages` marks up to two message positions: the tail message (when its role is `user` or `tool`) and the most-recent `user` message distinct from the tail. |
 
-### `AnthropicEphemeralCache` contract (Stage 6, fixes P8)
+### `AnthropicEphemeralCache` contract
 
-Per Part 4.R4 of
-[`plans/eval_output_new_diagnosis.md`](../plans/eval_output_new_diagnosis.md:390),
-every Claude turn pre-Stage-6 re-billed the 18 k-token system prompt + 8 k-token
-tool schemas because we never emitted a `cache_control` hint. Observable via
-zero `Metrics.usage.cache_read_input_tokens` on any second call with an
-identical system prompt.
+The policy attaches Anthropic's ephemeral (5-minute TTL) `cache_control`
+markers on three attach sites — system, tools, and up to two message
+positions — so a second request with the same cacheable prefix reads from
+the Anthropic cache. Observable via non-zero
+`Metrics.usage.cache_read_input_tokens` on the second call.
+
+**4-breakpoint budget.** Anthropic's Messages API caps at 4 `cache_control`
+markers per request. The policy uses at most:
+system (1) + tools (1) + messages (up to 2) = **4** — exactly at the ceiling.
 
 `AnthropicEphemeralCache.apply`:
 
@@ -1407,21 +1420,47 @@ identical system prompt.
 * Tools: when non-empty, marks the **last** entry with `cache_control` —
   this caches the whole tools-array prefix. Also replaces any caller-supplied
   `cache_control` on the last entry (idempotent).
-* Messages are returned unchanged — Stage 6 caches system + tools only.
-  Message-level caching is deferred (see Residual risk in the Stage 6
-  report).
 * Operates on shallow copies — caller dicts are never mutated.
-* The 5 m TTL is the Anthropic default; Stage 6 exposes no TTL knob.
+* The 5 m TTL is the Anthropic default; the policy exposes no TTL knob.
+
+`AnthropicEphemeralCache.apply_messages` selects up to two message anchors
+by walking the wire-shape list backward:
+
+* **Tail anchor.** The last message, if its role is `user` or `tool`. These
+  are the two roles litellm's Anthropic adapter routes onto user-side
+  content blocks that accept `cache_control` verbatim.
+* **Last-user anchor.** The most-recent `role: user` message distinct from
+  the tail. In coding-agent trajectories the initial task message rarely
+  changes, so this becomes a long-lived anchor that every subsequent turn's
+  request re-marks at the same position — Anthropic's cache lookup hits
+  the identical hash and reads the cached prefix.
+
+`assistant` messages are skipped: they carry `tool_calls` alongside
+`content` and litellm's adapter merges those into Anthropic's
+content-blocks list in a version-sensitive way. `system` is already marked
+upstream by `apply`. Empty-content anchors keep their position but no
+marker is attached — Anthropic rejects an empty `text` block.
+
+Marker attachment on a message: a string `content` becomes
+`[{"type": "text", "text": <s>, "cache_control": {"type": "ephemeral"}}]`;
+an already-list `content` gains `cache_control` on the last block only
+(prior markers on that block are replaced, not stacked). Anchor messages
+are shallow-copied so the caller's list and inner dicts stay untouched.
 
 ### Example — Anthropic request transformation
 
-Input to `apply`:
+Input trajectory sent through `LLMClient.generate`:
 
 ```python
 system = "You are a helpful assistant."
 tools = [
     {"type": "function", "function": {"name": "a", "parameters": {}}},
     {"type": "function", "function": {"name": "b", "parameters": {}}},
+]
+messages = [
+    Message(role=USER, content="task"),
+    Message(role=ASSISTANT, content="thinking", tool_calls=[tc]),
+    Message(role=TOOL, content="result", tool_call_id=tc.id),
 ]
 ```
 
@@ -1434,7 +1473,16 @@ Output sent to `litellm.completion`:
         {"type": "text", "text": "You are a helpful assistant.",
          "cache_control": {"type": "ephemeral"}},
     ]},
-    # ... user / assistant turns unchanged
+    {"role": "user", "content": [
+        {"type": "text", "text": "task",
+         "cache_control": {"type": "ephemeral"}},
+    ]},
+    {"role": "assistant", "content": "thinking",
+     "tool_calls": [{"id": "...", "type": "function", "function": {...}}]},
+    {"role": "tool", "tool_call_id": "...", "content": [
+        {"type": "text", "text": "result",
+         "cache_control": {"type": "ephemeral"}},
+    ]},
   ],
   "tools": [
     {"type": "function", "function": {"name": "a", "parameters": {}}},
@@ -1444,9 +1492,10 @@ Output sent to `litellm.completion`:
 }
 ```
 
-LiteLLM forwards the content-blocks list untouched to the Anthropic provider —
-this is the canonical Messages-API shape for prompt caching (verified against
-context7).
+Four `cache_control` markers total: system + tools + first user + tail
+tool_result. LiteLLM forwards the content-blocks list untouched to the
+Anthropic provider — this is the canonical Messages-API shape for prompt
+caching.
 
 ### `effective_system_prompt` on `GenerationResult`
 
@@ -1460,11 +1509,12 @@ list-of-blocks back to text.
 
 ### User-visible configuration
 
-`cache_policy` is preset-driven, not user-overridable via `ModelConfig.capabilities`
-in Stage 6. To disable caching for an ablation study, override the preset in
+`cache_policy` is preset-driven, not user-overridable via
+`ModelConfig.capabilities`. To disable caching for an ablation study,
+override the preset in
 [`tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml:22)
 with `cache_policy: none`. The override path contract is documented in
-`docs/ADD_NEW_MODEL.md` (Stage 8).
+`docs/ADD_NEW_MODEL.md`.
 
 ## `prompt_policy`
 
