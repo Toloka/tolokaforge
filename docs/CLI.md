@@ -266,6 +266,8 @@ The REPL lives in the `[dx]` extras alongside Rich panels and banners (see [ADR-
 
 ## `tolokaforge grade` — offline regrade
 
+**Operator guide:** [`docs/DETACHED_GRADING.md`](DETACHED_GRADING.md) covers the produce-then-grade two-step end-to-end (config sample, disk layout, invocations, exit codes, known bundle-v1.0 limits, and how to register a custom kind). This section is the CLI-flag reference.
+
 `tolokaforge grade <bundle-uri>` regrades a stored grade bundle without a live runner, dispatching a registered kind against a `SnapshotGradingSubstrate` view of the bundle and writing a canonical `grade.json` under `--out`. Every dependency is already shipped: the store registry (`tolokaforge.bundle_stores`), the bundle reader (`tolokaforge.core.grading.bundle.load_grade_bundle`), the snapshot substrate (`tolokaforge.core.grading.substrate.SnapshotGradingSubstrate`), and the kind registry (`tolokaforge.grader_kinds`).
 
 ```bash
