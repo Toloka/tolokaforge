@@ -1,10 +1,10 @@
-"""``tolokaforge grade-run`` end-to-end through the real Stage 1 writer.
+"""``tolokaforge grade-run`` end-to-end through the real trajectory writer.
 
-Directly locks Stage 1 as a prerequisite. The fixture writes every
-``trajectory.yaml`` via :meth:`FileArtifactWriter.write_trajectory`
-(the shipped writer, not hand-crafted YAML) so a regression that drops
-``snapshot_status`` from the writer would flip every classification to
-"no snapshot_status recorded" and break this test.
+Every ``trajectory.yaml`` in this test is emitted via
+:meth:`FileArtifactWriter.write_trajectory` (the shipped writer, not
+hand-crafted YAML) so a regression that drops ``snapshot_status`` from
+the writer flips every classification to "no snapshot_status recorded"
+and this test breaks.
 
 Three trials cover the discovery matrix:
 
@@ -114,6 +114,13 @@ def test_grade_run_dispatches_only_stored_trials(
         SnapshotStatus.oversize(bundle_size_bytes=40_000_000, cap_bytes=33_554_432),
     )
     _write_trajectory(run_dir, "task_b", "0", None)
+    _write_trajectory(run_dir, "task_c", "0", SnapshotStatus.ungraded())
+    _write_trajectory(
+        run_dir,
+        "task_c",
+        "1",
+        SnapshotStatus.produce_failed("substrate crashed while producing bundle"),
+    )
 
     out_dir = tmp_path / "regrades"
 
@@ -139,6 +146,8 @@ def test_grade_run_dispatches_only_stored_trials(
 
     assert not (out_dir / "task_a" / "1" / "grade.json").exists()
     assert not (out_dir / "task_b" / "0" / "grade.json").exists()
+    assert not (out_dir / "task_c" / "0" / "grade.json").exists()
+    assert not (out_dir / "task_c" / "1" / "grade.json").exists()
 
     combined = result.stderr + result.stdout
     assert "regraded" in combined
@@ -146,9 +155,13 @@ def test_grade_run_dispatches_only_stored_trials(
     assert "task_a/0" in combined
     assert "task_a/1" in combined
     assert "task_b/0" in combined
+    assert "task_c/0" in combined
+    assert "task_c/1" in combined
     assert "bundle oversize" in combined
     assert "no snapshot_status recorded" in combined
-    assert "discovered 3" in combined
+    assert "trial ended before grading" in combined
+    assert "substrate crashed while producing bundle" in combined
+    assert "discovered 5" in combined
     assert "regraded 1" in combined
-    assert "skipped 2" in combined
+    assert "skipped 4" in combined
     assert "failed 0" in combined

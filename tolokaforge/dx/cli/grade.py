@@ -13,10 +13,13 @@ a completed run's trial subtree, filters trials whose
 single-trial helper — the whole verb sits on the shared
 :func:`_regrade_bundle` seam.
 
-Every dependency is already shipped: the store registry (#1355), the
-reader / view (#1354), the snapshot substrate (#1353), the kind
-registry (#1358), and the Stage 1 writer that persists
-``snapshot_status`` on ``trajectory.yaml`` (#1359).
+Every seam this verb composes is a stable surface: the
+``tolokaforge.bundle_stores`` store registry, the
+:func:`load_grade_bundle` reader and its :class:`GradeBundleView`,
+:class:`SnapshotGradingSubstrate`, the ``tolokaforge.grader_kinds`` kind
+registry, and the ``snapshot_status`` field
+:meth:`FileArtifactWriter.write_trajectory` persists on
+``trajectory.yaml``.
 
 **Byte-parity commitment.** Live-grade vs CLI-regrade byte-parity holds
 only for kinds whose substrate reads all succeed offline against
@@ -90,7 +93,10 @@ _LOGGER_NAME = "tolokaforge.dx.grade"
 def _load_kind_config(path: Path | None) -> Mapping[str, Any] | None:
     if path is None:
         return None
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise click.BadParameter(f"--grader-config at {path} is not valid YAML: {exc}") from exc
     if raw is None:
         return None
     if not isinstance(raw, dict):
@@ -113,6 +119,11 @@ def _load_store(store_config_path: Path | None) -> BundleStore:
         return LocalDiskBundleStore(root_dir=Path.cwd())
     try:
         raw = yaml.safe_load(store_config_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise click.BadParameter(
+            f"--store-config at {store_config_path} is not valid YAML: {exc}"
+        ) from exc
+    try:
         backend = TypeAdapter(BundleStoreBackend).validate_python(raw)
     except ValidationError as exc:
         raise click.BadParameter(

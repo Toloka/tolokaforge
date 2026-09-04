@@ -1,7 +1,7 @@
 """``tolokaforge grade-run`` — an empty ``trials/`` subtree exits 0.
 
 An empty-set batch is a legitimate answer, not an error. The census
-census reads ``discovered 0`` so the operator can distinguish this from
+reads ``discovered 0`` so the operator can distinguish this from
 "every trial succeeded" without reading further.
 """
 
