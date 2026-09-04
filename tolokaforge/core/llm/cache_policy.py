@@ -85,19 +85,34 @@ class NoCache:
 class AnthropicEphemeralCache:
     """Attach ``cache_control: {type: ephemeral}`` markers to Anthropic requests.
 
-    Litellm canonical Anthropic prompt-caching shape:
+    Litellm canonical Anthropic prompt-caching shape — three attach sites,
+    all under Anthropic's 4-breakpoint per-request budget:
 
     * ``system`` becomes a list of ``{"type": "text", "text": ..., ...}``
-      content-blocks; the **last** block carries ``cache_control``.
+      content-blocks; the **last** block carries ``cache_control`` (1
+      breakpoint).
     * The **last** entry of ``tools`` carries ``cache_control`` — this caches
-      the whole tool-schemas array prefix.
-    * ``apply_messages`` receives the wire-shape messages and returns them
-      unchanged.
+      the whole tool-schemas array prefix (1 breakpoint).
+    * ``apply_messages`` marks up to **two** message positions (2
+      breakpoints): the tail message when its role is ``user`` or ``tool``,
+      and the most-recent ``role: user`` message distinct from the tail.
+      ``assistant`` and ``system`` messages are skipped — ``system`` is
+      already marked upstream and ``assistant`` messages carry
+      ``tool_calls`` alongside ``content`` in a shape litellm's Anthropic
+      adapter merges in version-sensitive ways. Empty / ``None`` content
+      is a no-op on the anchor: the message stays in place but no marker
+      is attached (Anthropic rejects an empty ``text`` block).
 
-    The marker is the Anthropic 5-minute-TTL ephemeral default. The apply
-    methods are idempotent (re-marking already-marked content replaces the
-    marker rather than stacking) and operate on shallow copies so caller
-    inputs stay untouched.
+    Anchor selection rationale. The tail anchor recharges the cache
+    write-through per turn; the last-user anchor is stable across turns
+    in coding-agent trajectories (the initial task message rarely changes),
+    so every subsequent turn's request re-marks the same position and
+    Anthropic's cache lookup hits.
+
+    The marker is the Anthropic 5-minute-TTL ephemeral default. All three
+    attach sites are idempotent (re-marking replaces the ``cache_control``
+    field, never stacks) and operate on shallow copies so caller inputs
+    stay untouched.
 
     Raises ``TypeError`` if ``system`` is neither ``str`` nor ``list`` nor
     ``None`` — surface failures rather than silently drop caching.
@@ -118,7 +133,56 @@ class AnthropicEphemeralCache:
         return self._apply_system(system), self._apply_tools(tools), messages
 
     def apply_messages(self, wire_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return wire_messages
+        if not wire_messages:
+            return wire_messages
+
+        anchors: list[int] = []
+        tail_idx = len(wire_messages) - 1
+        tail_role = wire_messages[tail_idx].get("role")
+        if tail_role in ("user", "tool"):
+            anchors.append(tail_idx)
+
+        # Walk backward for the most-recent role: user distinct from tail.
+        scan_from = tail_idx - 1 if tail_role == "user" else tail_idx
+        for i in range(scan_from, -1, -1):
+            if i in anchors:
+                continue
+            if wire_messages[i].get("role") == "user":
+                anchors.append(i)
+                break
+
+        if not anchors:
+            return wire_messages
+
+        out = list(wire_messages)
+        for idx in anchors:
+            out[idx] = self._mark_message(out[idx])
+        return out
+
+    def _mark_message(self, msg: dict[str, Any]) -> dict[str, Any]:
+        new_msg = dict(msg)
+        content = new_msg.get("content")
+        if isinstance(content, str):
+            if not content:
+                # Empty text block would be rejected by Anthropic; anchor
+                # stays in position but carries no marker.
+                return new_msg
+            new_msg["content"] = [
+                {
+                    "type": "text",
+                    "text": content,
+                    "cache_control": dict(self._MARKER),
+                }
+            ]
+            return new_msg
+        if isinstance(content, list) and content:
+            new_content = [dict(b) for b in content]
+            last = dict(new_content[-1])
+            last["cache_control"] = dict(self._MARKER)
+            new_content[-1] = last
+            new_msg["content"] = new_content
+            return new_msg
+        return new_msg
 
     def _apply_system(
         self, system: str | list[dict[str, Any]] | None
