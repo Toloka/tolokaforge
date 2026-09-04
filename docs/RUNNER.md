@@ -537,7 +537,7 @@ queue = create_run_queue(
 
 ## Snapshot bundle mode
 
-The runner optionally produces a **grade bundle** at trial-end — a manifest-first, content-addressable, part-addressable directory carrying everything a grader needs to score the trial without a live runner. Bundles enable offline grading, cross-region replay, and third-party analysis; the format is documented in [`docs/GRADE_BUNDLE.md`](GRADE_BUNDLE.md).
+The runner optionally produces a **grade bundle** at trial-end — a manifest-first, content-addressable, part-addressable directory carrying everything a grader needs to score the trial without a live runner. Bundles enable offline grading, cross-region replay, and third-party analysis; the format is documented in [`docs/GRADE_BUNDLE.md`](GRADE_BUNDLE.md). For the accepted-record naming the substrate / kind / transport product this mode sits inside, see [ADR-0043](adr/0043-detached-mode-grader-and-typed-grader-kinds.md).
 
 **Off by default.** Enable per-run via `RunConfig.grader.snapshot`:
 

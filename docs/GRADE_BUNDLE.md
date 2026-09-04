@@ -2,6 +2,8 @@
 
 The **grade bundle** is a self-contained, part-addressable artifact holding everything the grader needs to score a trial: initial state, final state, filesystem snapshot, agent trajectory, custom checks, knowledge base, and the grading configuration itself. Bundles are portable across storage locations, bit-extractable by external tools, and content-addressable — the same trial serialised twice produces byte-identical bytes with matching digest.
 
+For the accepted-record naming this format as one axis of the substrate / kind / transport product and the operator regrade CLI that consumes it, see [ADR-0043 — Detached-mode grader, typed grader kinds, adapter grading contract](adr/0043-detached-mode-grader-and-typed-grader-kinds.md). Regrade parity across sequential replays against the same frozen bundle bytes is locked mechanically by `tests/canonical/test_grader_parity_reference.py::test_regrade_parity_snapshot_replays`.
+
 ## Purpose
 
 The bundle is the wire between the runner (which produces trial artifacts) and any grader consumer (in-process, standalone service, trajectory-storage-backed, or a third-party analysis tool). Consumers parse the manifest, verify per-part digests, and read only the parts they need. There is no engine dependency: `manifest.json` + a POSIX filesystem + `jq` + `sha256sum` + `tar` are enough to consume a bundle end-to-end.
