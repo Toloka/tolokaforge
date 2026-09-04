@@ -1753,6 +1753,69 @@ directly rather than routing it through `classify_loop_error` so post-run
 analysis can tell "the model produced nothing" apart from the API-error
 class that would otherwise absorb it.
 
+### Tool-output truncation
+
+`ModelCapabilities.tool_output_max_chars: int | None` is the loop-layer cap
+on the `content` a `role=tool` message carries into the next prompt. When
+it is set, `ToolCallingLoop._execute_tool_calls` middle-elides the content
+via `keep_head_and_tail` from
+[`tolokaforge/core/tool_output_truncation.py`](../tolokaforge/core/tool_output_truncation.py:1)
+before the tool message is appended, so accumulated context stays
+predictable across trials whose tools return unbounded strings (browser
+tool DOM dumps, database result sets, RAG hit lists, task-pack MCP tool
+output). Reasoning-heavy models are the norm; a first-class engine policy
+for bounding tool-output size that lands on the message history is a
+general improvement rather than a per-model workaround. `None` (the
+default) threads every tool message through verbatim — the pre-opt-in
+baseline for presets that do not name the key.
+
+The cap sits **below** the trial's recorder and the grader. The recorder
+call inside `_execute_tool_calls` reads the full text through
+`resolve_tool_output(tool_result)` before the truncation runs, so the
+trial's ordered tool-call record and the grader inputs carry the
+untruncated tool output regardless of the cap. Only the string the model
+sees on the next prompt is capped.
+
+The marker splices between the preserved head and tail:
+
+```
+\n...[{N} chars omitted]...\n
+```
+
+`{N}` is the number of chars removed. Head and tail are each
+`tool_output_max_chars // 2` chars long, taken verbatim from the input —
+so a compilation output whose first failure is at the top and whose final
+error is at the bottom keeps both edges (the two most common tool-output
+patterns). Only `Message.content` is capped: `Message.content_blocks`
+(multimodal payloads like browser-tool screenshots) passes through
+untouched, because a fixed-size per-call image would break if partially
+clipped. The `Error: ...` branch — a failed tool call whose message text
+prefixes `Error:` for the model — flows through the same cap, so a
+runaway error string cannot silently blow past the guarantee.
+
+The cap is a **defensive backstop** above per-tool truncation, not a
+replacement. `persistent_shell` and `str_replace_editor` truncate their
+own output at 16 KB chars inside the tool, with a tool-authored marker
+that names actionable recovery intent (`"[…output truncated…]" — re-run
+with a narrower selector`). A per-tool cap owns intent the loop cannot
+supply, so the two layers compose: the tool's own truncation runs first,
+and the loop cap absorbs whatever text still reaches the message-append
+site. Tools that do not cap themselves (browser DOM, RAG search, MCP tool
+output) rely on the loop cap alone. A future tool whose per-call cap
+exceeds the loop's would see a double-truncation shape — the outer cap
+wins and the inner marker survives in whichever half retained it.
+
+`LoopConfig.tool_output_max_chars` flows from
+`ModelCapabilities.tool_output_max_chars` at
+[`runner.py`](../tolokaforge/core/runner.py:1) construction time, so a
+preset that names the key applies uniformly to every trial that runs on
+that model. Preset routing is pinned by
+[`tests/canonical/test_tool_output_max_chars_preset_routing.py`](../tests/canonical/test_tool_output_max_chars_preset_routing.py);
+the loop-layer behaviour and the helper contract are pinned by
+[`tests/unit/test_tool_calling_loop.py`](../tests/unit/test_tool_calling_loop.py)
+and
+[`tests/unit/test_tool_output_truncation.py`](../tests/unit/test_tool_output_truncation.py).
+
 ## `response_policy`
 
 Tool-call argument post-processing.

@@ -528,6 +528,22 @@ presets:
   # higher via preset overlay when a model's reasoning-budget miss rate
   # warrants doubling reasoning spend.
   #
+  # ``tool_output_max_chars: 32768`` is the third defence — a
+  # loop-layer cap on the ``role=tool`` message content the engine
+  # threads into the next prompt. Large tool outputs (file scans, RAG
+  # hits, DB dumps, browser DOM, MCP tool payloads) accumulate as raw
+  # ``Message.content`` on every subsequent turn and can push the prompt
+  # into the reasoning-budget-exhaustion zone that ``empty_retry_count``
+  # and the provider pin cannot recover from — the fault is upstream of
+  # both, in accumulated context size rather than in one call. The cap
+  # middle-elides tool output that exceeds 32 KB chars (~8 K tokens on
+  # English text, 4× the 16 KB per-call caps ``persistent_shell`` and
+  # ``str_replace_editor`` already apply to their own output) with a
+  # marker so a bash trace that already fits under the per-tool cap
+  # passes through untouched and only unbounded tool sources are
+  # bounded. The trial's recorder and the grader still read the full
+  # untruncated text upstream of the cap.
+  #
   # K2.x is DELIBERATELY NOT in this preset. The
   # ``openrouter_dict_stringify_recovery`` preset above covers K2.6 and
   # K2.7-code but ships ``message_assembly_policy`` unset (→ ``null``);
@@ -550,6 +566,7 @@ presets:
       provider_order: [moonshotai]
       allow_fallbacks: false
     empty_retry_count: 1
+    tool_output_max_chars: 32768
 
   # thinkingmachines/inkling — model-specific overlay landed via auto-resolve
   # (Slack-requested integration, PR #719). Exact-match globs only; no generic

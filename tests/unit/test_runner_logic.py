@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tolokaforge.core.llm import GenerationResult
+from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import classify_loop_error
 from tolokaforge.core.models import (
@@ -87,6 +88,10 @@ def _make_agent_client(responses: list[GenerationResult] | None = None) -> Magic
             cost_usd=0.01,
         )
     client.classify_loop_error.side_effect = lambda exc: classify_loop_error(exc, ())
+    # Real ModelCapabilities value so the runner's numeric-knob reads (empty_retry_count,
+    # tool_output_max_chars, api_call_timeout_s, api_call_retries) return honest defaults
+    # instead of MagicMock instances that break None-comparisons downstream in LoopConfig.
+    client.capabilities = ModelCapabilities()
     # The loop reads this at construction to build ``validation_schemas_by_tool``.
     # Returning ``None`` puts the loop in its no-override branch, so the executor
     # call signature stays free of the ``validation_schema`` kwarg — matching what
