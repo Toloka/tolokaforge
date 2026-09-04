@@ -185,6 +185,7 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
         config = MagicMock()
         config.orchestrator.timeouts.episode_s = episode_s
+        config.orchestrator.max_turns = None
         # A real config value: the turn-loop branch validates the probe budget
         # against the episode budget, and a MagicMock reads as enabled.
         config.orchestrator.rate_limit_probe = RateLimitProbeConfig()
@@ -194,6 +195,7 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         grader = _RecordingGrader()
         agent_client = MagicMock()
         agent_client.capabilities.schema_sanitizer.sanitize.side_effect = lambda s: s
+        agent_client.capabilities.default_max_turns = None
         agent_client.classify_loop_error.side_effect = lambda exc: classify_loop_error(exc, ())
 
         conductor = InProcessConductor(

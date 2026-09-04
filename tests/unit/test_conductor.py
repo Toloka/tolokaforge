@@ -343,6 +343,9 @@ class TestResolveMaxTurns:
 
     def test_both_unset_falls_back_to_engine_default(self) -> None:
         assert resolve_max_turns(None, None) == DEFAULT_MAX_TURNS == 50
+        # Explicit-None third arg is identical to the 2-arg call — verify
+        # the widening did not add a subtle branch.
+        assert resolve_max_turns(None, None, None) == DEFAULT_MAX_TURNS == 50
 
     def test_run_cap_clamps_higher_task_value(self) -> None:
         assert resolve_max_turns(100, 30) == 30
@@ -355,6 +358,24 @@ class TestResolveMaxTurns:
 
     def test_tighter_of_two_set_values_wins(self) -> None:
         assert resolve_max_turns(100, 200) == 100
+
+    def test_capability_default_used_when_task_and_run_cap_none(self) -> None:
+        assert resolve_max_turns(None, None, 90) == 90
+
+    def test_run_cap_still_ceilings_capabilities_default(self) -> None:
+        assert resolve_max_turns(None, 60, 90) == 60
+
+    def test_task_explicit_wins_over_capability_default(self) -> None:
+        assert resolve_max_turns(45, None, 90) == 45
+
+    def test_task_and_run_both_still_min(self) -> None:
+        assert resolve_max_turns(45, 60, 90) == 45
+
+    def test_capabilities_default_below_engine_default_wins_on_task_unset(self) -> None:
+        # Locks that the capability slot is a VALUE default, not a floor over
+        # DEFAULT_MAX_TURNS — a future refactor that silently changed
+        # `base = max(cap_default, DEFAULT_MAX_TURNS)` would fail here.
+        assert resolve_max_turns(None, None, 20) == 20
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +436,7 @@ class TestTrialToolSurfacePartition:
         agent_client = MagicMock()
         agent_client.config = ModelConfig(provider="openai", name="gpt-4")
         agent_client.capabilities.schema_sanitizer.sanitize.side_effect = lambda s: s
+        agent_client.capabilities.default_max_turns = None
 
         return InProcessConductor(
             adapter=adapter,

@@ -86,22 +86,40 @@ __all__ = [
 DEFAULT_MAX_TURNS = 50
 
 
-def resolve_max_turns(task_max_turns: int | None, run_cap: int | None) -> int:
-    """Coalesce the task-declared budget and the optional run-level cap into a
-    concrete per-trial turn budget.
+def resolve_max_turns(
+    task_max_turns: int | None,
+    run_cap: int | None,
+    capabilities_default_max_turns: int | None = None,
+) -> int:
+    """Coalesce the task-declared budget, the operator's run-level cap, and the
+    preset-level per-model default into a concrete per-trial turn budget.
 
-    The run cap is an optional operator-side clamp; the task value is
-    authoritative for the task's own semantics. When both are set the effective
-    budget is the tighter of the two. When neither is set the engine default
-    (:data:`DEFAULT_MAX_TURNS`) applies.
+    Precedence:
+
+    * When the task pinned :attr:`TaskConfig.max_turns`, that value is
+      authoritative for the task's own semantics; the operator's ``run_cap``
+      still ceilings it (returns the tighter of the two).
+    * When the task did not pin its own budget, the base value is
+      ``capabilities_default_max_turns`` when set, otherwise the engine-wide
+      fallback :data:`DEFAULT_MAX_TURNS`. The operator's ``run_cap`` still
+      ceilings that base value.
+
+    ``capabilities_default_max_turns`` is threaded from
+    :attr:`ModelCapabilities.default_max_turns` — a preset-level value default
+    that fills the gap when neither the task nor the run config declared one.
     """
-    if task_max_turns is None and run_cap is None:
-        return DEFAULT_MAX_TURNS
-    if task_max_turns is None:
-        return run_cap
+    if task_max_turns is not None:
+        if run_cap is None:
+            return task_max_turns
+        return min(task_max_turns, run_cap)
+    base = (
+        capabilities_default_max_turns
+        if capabilities_default_max_turns is not None
+        else DEFAULT_MAX_TURNS
+    )
     if run_cap is None:
-        return task_max_turns
-    return min(task_max_turns, run_cap)
+        return base
+    return min(base, run_cap)
 
 
 # ---------------------------------------------------------------------------
@@ -729,7 +747,11 @@ class InProcessConductor:
 
         system_prompt = self._build_system_prompt(task, setup.tool_schemas, setup.task_dir)
 
-        max_turns = resolve_max_turns(task.max_turns, self.config.orchestrator.max_turns)
+        max_turns = resolve_max_turns(
+            task.max_turns,
+            self.config.orchestrator.max_turns,
+            self.agent_client.capabilities.default_max_turns,
+        )
 
         # Scale turn budget for complex multi-app mobile tasks only when task max_turns
         # is not explicitly pinned.
