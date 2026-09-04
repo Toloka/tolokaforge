@@ -1873,6 +1873,29 @@ behaviour). Loop and preset-routing behaviour are pinned by
 and
 [`tests/unit/test_failure_attribution.py`](../tests/unit/test_failure_attribution.py).
 
+**Preset opt-ins.** Two shipped presets declare the capability today:
+
+* `moonshot_kimi_k3` — `max_context_tokens: 128000`,
+  `context_watermark: 8000`. Kimi K3's documented 128 K window is the
+  provider ceiling; the 8 K free-token watermark is ~6 % headroom sized
+  for one reasoning turn plus its tool-call reply. Reasoning-heavy
+  multi-turn trajectories on tool-rich packs exhaust the window before
+  the turn budget does, and the preset's earlier defences
+  (`empty_retry_count`, `tool_output_max_chars`, provider pin) attack
+  the growth rate rather than the reset-when-full case.
+* `anthropic_claude_4_7` (Opus + Sonnet) — `max_context_tokens:
+  200000`, `context_watermark: 12000`. Claude 4.7's documented 200 K
+  window fills on signed-thinking-heavy trajectories even under the
+  `anthropic_ephemeral` cache (cache read savings do not shrink the
+  prompt). 12 K free tokens is ~6 % headroom sized for one
+  adaptive-thinking turn (8 K default extended-thinking budget + 4 K
+  reply).
+
+Preset routing pinned by
+[`tests/canonical/test_context_window_preset_routing.py`](../tests/canonical/test_context_window_preset_routing.py).
+Every other shipped preset resolves to both slots `None`; new opt-ins
+land alongside the run data that justified the chosen watermark.
+
 ### Tool-output truncation
 
 `ModelCapabilities.tool_output_max_chars: int | None` is the loop-layer cap

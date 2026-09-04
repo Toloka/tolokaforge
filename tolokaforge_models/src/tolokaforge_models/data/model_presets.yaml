@@ -70,6 +70,18 @@ presets:
   # ``reasoning_effort`` and requires the canonical litellm ``thinking=``
   # kwarg + explicit ``budget_tokens``. Listed BEFORE the generic
   # ``anthropic`` preset so first-match-wins routing picks it up.
+  #
+  # ``max_context_tokens: 200000`` + ``context_watermark: 12000`` arm the
+  # loop's context-window summarize seam. Claude 4.7's documented 200 K
+  # window still fills on reasoning-heavy multi-turn trajectories: each
+  # turn carries the accumulated tool history plus signed thinking blocks
+  # (the ``anthropic_ephemeral`` cache manages read cost but not prompt
+  # size), and the 8 K default extended-thinking budget stacks per turn.
+  # Once the previous generation's ``prompt_tokens + 12000 >= 200000``
+  # the loop summarizes and continues; 12 K free tokens is ~6 % headroom
+  # sized for one adaptive-thinking turn (~8 K budget + ~4 K reply). The
+  # recorded ``Trajectory.messages`` keeps the full pre-summarize view
+  # for grading. See ``docs/LLM_LAYER.md § Context-window handoff``.
   anthropic_claude_4_7:
     match:
       - "anthropic/claude-opus-4.7*"
@@ -79,6 +91,8 @@ presets:
     content_policy: anthropic
     reasoning_codec: anthropic
     cache_policy: anthropic_ephemeral
+    max_context_tokens: 200000
+    context_watermark: 12000
     params:
       supports_seed: false
       reasoning_via_thinking_kwarg: true
@@ -554,6 +568,23 @@ presets:
   # siblings clustered). No glob overlap: ``moonshotai/kimi-k3`` does
   # not match ``*kimi-k2*`` (K2 slugs carry a dot before the version:
   # ``kimi-k2.6``, ``kimi-k2.7-code``).
+  #
+  # ``max_context_tokens: 128000`` + ``context_watermark: 8000`` are the
+  # fourth defence — a first-class engine seam for context-window
+  # summarize + handoff. Kimi K3's documented 128 K window is generous by
+  # 2026 baseline, but reasoning-heavy multi-turn trajectories on
+  # tool-rich packs exhaust it well before the turn budget does: each
+  # turn keeps the full history plus signed thinking blocks plus tool
+  # outputs (already loop-capped at 32 KB chars, but still additive across
+  # dozens of turns). Once the previous generation's
+  # ``prompt_tokens + 8000 >= 128000`` the loop asks its
+  # ``SummarizePolicy`` to compress the recorded history and rewrites the
+  # wire message list to ``[first_user_message, summary_as_user_turn]``,
+  # so the trial continues instead of terminating on
+  # ``ContextWindowExceededError``. The recorded ``Trajectory.messages``
+  # keeps the full pre-summarize view for grading. 8 K free tokens is
+  # ~6 % headroom — enough for a normal-sized reasoning turn plus its
+  # tool-call reply. See ``docs/LLM_LAYER.md § Context-window handoff``.
   moonshot_kimi_k3:
     match:
       - "moonshotai/kimi-k3*"
@@ -567,6 +598,8 @@ presets:
       allow_fallbacks: false
     empty_retry_count: 1
     tool_output_max_chars: 32768
+    max_context_tokens: 128000
+    context_watermark: 8000
 
   # thinkingmachines/inkling — model-specific overlay landed via auto-resolve
   # (Slack-requested integration, PR #719). Exact-match globs only; no generic
