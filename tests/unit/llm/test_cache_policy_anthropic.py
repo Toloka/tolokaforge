@@ -1,26 +1,25 @@
-"""Stage 6 unit tests — ``AnthropicEphemeralCache`` + client wiring (P8).
+"""Unit tests for :class:`AnthropicEphemeralCache` and its client wiring.
 
 Guards the contract that Anthropic-family presets emit ``cache_control:
-{type: ephemeral}`` markers on the system prompt + tools array *before* the
-request leaves :class:`~tolokaforge.core.llm.client.LLMClient`. Without the
-marker every Claude turn re-bills the 18 k-token system prompt + 8 k-token
-tool schemas — Part 4.R4 of
-[`plans/eval_output_new_diagnosis.md`](../../../plans/eval_output_new_diagnosis.md)
-and Stage 6 of
-[`plans/llm_reasoning_and_observability_fix.md`](../../../plans/llm_reasoning_and_observability_fix.md)
-cover the full evidence trail.
+{type: ephemeral}`` markers on the system prompt + tools array before the
+request leaves :class:`~tolokaforge.core.llm.client.LLMClient`, and that the
+policy's ``apply_messages`` hook runs on the wire-shape messages returned by
+``_convert_messages``.
 
 Two groups:
 
 * Pure policy-level tests against
-  :class:`tolokaforge.core.llm.cache_policy.AnthropicEphemeralCache` exercising
-  the canonical litellm content-block shape on every input variant
-  (string, list-of-blocks, empty, None, idempotency, tools).
+  :class:`tolokaforge.core.llm.cache_policy.AnthropicEphemeralCache` and
+  :class:`~tolokaforge.core.llm.cache_policy.NoCache` exercising the
+  canonical litellm content-block shape on every input variant (string,
+  list-of-blocks, empty, None, idempotency, tools) and the
+  ``apply_messages`` passthrough contract.
 
 * Client-level tests that patch ``litellm.completion`` and assert the
   request payload — Anthropic presets produce content-blocks + ``cache_control``,
   non-Anthropic presets pass the system prompt through as a plain string with
-  no ``cache_control`` anywhere.
+  no ``cache_control`` anywhere, and the ``apply_messages`` hook runs on
+  the exact wire list ``litellm.completion`` receives.
 """
 
 from __future__ import annotations
@@ -173,6 +172,15 @@ class TestAnthropicEphemeralCachePolicy:
         assert tools_out is tools_in
         assert msgs_out is msgs_in
 
+    def test_apply_messages_nocache_returns_input_identity(self) -> None:
+        """``NoCache.apply_messages`` is a pure passthrough — same object identity."""
+        policy = NoCache()
+        msgs: list[dict] = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        assert policy.apply_messages(msgs) is msgs
+
 
 # ---------------------------------------------------------------------------
 # LLMClient wiring — cache policy runs inside generate() for Anthropic presets
@@ -285,6 +293,44 @@ class TestLLMClientCachePolicyWiring:
         assert isinstance(system_msg["content"], list)
         assert system_msg["content"][-1]["cache_control"] == {"type": "ephemeral"}
         assert kwargs["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_apply_messages_wired_after_convert_messages(self) -> None:
+        """The wire hook runs on the exact list returned by ``_convert_messages``.
+
+        Wraps the real ``AnthropicEphemeralCache.apply_messages`` in a
+        ``MagicMock`` so the existing content-blocks + cache_control end-to-end
+        assertion (see
+        :meth:`test_anthropic_request_carries_content_blocks_and_cache_control`)
+        keeps its guarantees while we also observe the call.
+        """
+        client = LLMClient(ModelConfig(provider="openrouter", name="anthropic/claude-opus-4.7"))
+        policy = client.capabilities.cache_policy
+        assert isinstance(policy, AnthropicEphemeralCache)
+        real_apply_messages = policy.apply_messages
+        real_convert = client._convert_messages
+        captured: dict[str, list[dict]] = {}
+
+        def convert_capturing(system, messages):  # type: ignore[no-untyped-def]
+            out = real_convert(system, messages)
+            captured["wire"] = out
+            return out
+
+        with (
+            patch("tolokaforge.core.llm.client.completion") as mock_completion,
+            patch.object(policy, "apply_messages", wraps=real_apply_messages) as mock_apply,
+            patch.object(client, "_convert_messages", side_effect=convert_capturing),
+        ):
+            mock_completion.return_value = _mock_completion_response()
+            client.generate(
+                system="You help.",
+                messages=[Message(role=MessageRole.USER, content="hi")],
+                tools=self._single_tool(),
+            )
+            assert mock_apply.call_count == 1
+            passed = mock_apply.call_args.args[0]
+            assert passed is captured["wire"]
+            # And the wire hook's return value is what litellm.completion sees.
+            assert mock_completion.call_args.kwargs["messages"] is passed
 
     def test_effective_system_prompt_remains_concatenated_string(self) -> None:
         """``GenerationResult.effective_system_prompt`` must stay a str for

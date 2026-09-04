@@ -1769,11 +1769,12 @@ class LLMClient:
                     schema_sanitizer=type(self.capabilities.schema_sanitizer).__name__,
                 )
 
-        # Apply cache policy after prompt enrichment + tool sanitization,
-        # BEFORE _convert_messages — this way the cache marker is the last
-        # thing added to the wire-level request and the sanitiser never sees
-        # a ``cache_control`` key it doesn't understand. Stage 6 only caches
-        # system + tools; message-level caching is deferred (empty list).
+        # Cache policy runs in two phases: ``apply`` decorates system + tools
+        # BEFORE ``_convert_messages`` so the schema sanitiser never sees a
+        # ``cache_control`` key it doesn't understand; ``apply_messages`` runs
+        # on the wire-shape messages AFTER ``_convert_messages`` in
+        # :meth:`_build_kwargs`, since message-block marker attachment needs
+        # the exact shape ``litellm.completion`` will receive.
         cached_system, cached_tools, _ = self.capabilities.cache_policy.apply(
             system, sanitized_tools, []
         )
@@ -1858,7 +1859,9 @@ class LLMClient:
             if tool_choice and action != RuleAction.DROP:
                 kwargs["tool_choice"] = tool_choice
 
-        kwargs["messages"] = self._convert_messages(system, messages)
+        kwargs["messages"] = self.capabilities.cache_policy.apply_messages(
+            self._convert_messages(system, messages)
+        )
 
         if self.provider.startswith("openrouter"):
             extra_headers = dict(self._openrouter_headers)
