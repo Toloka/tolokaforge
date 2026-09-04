@@ -400,11 +400,15 @@ class DefaultSubstrateComposer:
             return env_handle.trial_runner_client
         if run_sub.runner_client is not None:
             return run_sub.runner_client
-        raise RuntimeError(
-            f"DefaultSubstrateComposer.runner_client_for: neither run-scope nor "
-            f"trial-scope stack owns a runner client for run={run_sub.run_id!r} "
-            f"trial={env_handle.trial_id!r}; the composition plan declared no "
-            "runner_service."
+        raise ProvisionError(
+            stage="provision",
+            trial_id=env_handle.trial_id,
+            reason=(
+                "DefaultSubstrateComposer.runner_client_for: neither run-scope "
+                f"nor trial-scope stack owns a runner client for run="
+                f"{run_sub.run_id!r} trial={env_handle.trial_id!r}; the "
+                "composition plan declared no runner_service."
+            ),
         )
 
     def endpoints_for(self, run_sub: RunSubstrate, env_handle: ComposedEnvHandle) -> EnvEndpoints:
@@ -412,11 +416,15 @@ class DefaultSubstrateComposer:
             return env_handle.trial_endpoints
         if run_sub.endpoints is not None:
             return run_sub.endpoints
-        raise RuntimeError(
-            f"DefaultSubstrateComposer.endpoints_for: neither run-scope nor "
-            f"trial-scope stack owns env endpoints for run={run_sub.run_id!r} "
-            f"trial={env_handle.trial_id!r}; the composition plan declared no "
-            "runner_service."
+        raise ProvisionError(
+            stage="provision",
+            trial_id=env_handle.trial_id,
+            reason=(
+                "DefaultSubstrateComposer.endpoints_for: neither run-scope nor "
+                f"trial-scope stack owns env endpoints for run={run_sub.run_id!r} "
+                f"trial={env_handle.trial_id!r}; the composition plan declared "
+                "no runner_service."
+            ),
         )
 
     # ------------------------------------------------------------------

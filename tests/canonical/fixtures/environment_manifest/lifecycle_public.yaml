@@ -1,21 +1,19 @@
 services:
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: tolokaforge
-      POSTGRES_PASSWORD: tolokaforge
-      POSTGRES_DB: tolokaforge
-    ports:
-      - "5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tolokaforge"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
   default:
     image: nginx:alpine
     ports:
       - "50051"
     depends_on:
-      db:
+      db-service:
         condition: service_healthy
+
+  db-service:
+    image: nginx:alpine
+    ports:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:80/"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s

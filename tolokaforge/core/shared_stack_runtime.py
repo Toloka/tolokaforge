@@ -1228,6 +1228,16 @@ class SharedStackRuntimeBackend:
         # An absent manifest travels into the composer, which raises the
         # canonical ProvisionError with stage="provision" via
         # ``_require_manifest`` — the backend does not pre-empt that refusal.
+        if manifest is not None and not manifest.stacks and manifest.compose_file is not None:
+            # Scalar-form manifest that has not been through
+            # ``project_loader.resolve``: synthesise the composition plan
+            # in place so ``composer.provision_trial`` sees at least one
+            # StackDecl. Preserves byte-identical behaviour for pre-ADR-0044
+            # task packs whose adapters (or tests) construct manifests
+            # directly rather than through the loader.
+            from tolokaforge.core.project_loader import _synthesise_composition_plan
+
+            _synthesise_composition_plan(manifest, {})
         plan = list(manifest.stacks) if manifest is not None else []
         env_handle = self.composer.provision_trial(
             plan=plan,
