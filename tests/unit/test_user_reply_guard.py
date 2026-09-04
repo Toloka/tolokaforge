@@ -38,6 +38,7 @@ from tolokaforge.core.actors.reply_guard import (
 from tolokaforge.core.actors.scratchpad import ScratchpadDetector
 from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
 from tolokaforge.core.llm import GenerationResult, UserSimulator
+from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
 from tolokaforge.core.models import (
@@ -461,6 +462,7 @@ class _ScriptedAgentClient:
     def __init__(self, texts: list[str]) -> None:
         self.texts = texts
         self.calls = 0
+        self.capabilities = ModelCapabilities()
 
     def generate(
         self,

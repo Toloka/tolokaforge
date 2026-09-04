@@ -104,6 +104,14 @@ presets:
   #     json.loads-decodes a top-level string arg whose first char is ``{``/``[``
   #     back to the native container (scalar strings like ``table`` untouched).
   #     Reprobe went 5/5 on the fix-target.
+  #   * ``empty_retry_count: 1`` — Opus 5 empty-completions observed on
+  #     ``fix-inventory-availability-reconciliation`` (4/4 on the 2026-09-04
+  #     T-Bench balanced-10, issue #1491). One resample recovers the
+  #     stochastic empty without doubling reasoning spend twice. Anthropic
+  #     direct is not reachable via OpenRouter's provider fan-out, so the
+  #     openrouter_defaults pin that ships on the sibling
+  #     ``moonshot_kimi_k3`` preset does not apply here — the empty is a
+  #     reasoning-only turn, not a lossy third-party mirror.
   anthropic_claude_opus_5:
     match:
       - "anthropic/claude-opus-5*"
@@ -112,6 +120,7 @@ presets:
     reasoning_codec: anthropic
     cache_policy: anthropic_ephemeral
     response_policy: json_coerce
+    empty_retry_count: 1
     params:
       supports_seed: false
 
@@ -499,6 +508,26 @@ presets:
   # same single-space rewrite for the equivalent Bedrock symptom, so this
   # is precedent, not novelty.
   #
+  # The ``openrouter_defaults`` pin is the second defence against empty
+  # completions: OpenRouter's default fan-out to third-party mirrors
+  # (Sail Research, DeepInfra, Nebius, …) returned empty content in
+  # 15/25 kimi_k3 trials on the 2026-09-04 T-Bench balanced-10 (issue
+  # #1491). ``provider_order: [moonshotai]`` + ``allow_fallbacks: false``
+  # restricts the request to Moonshot direct so the filler policy above
+  # reaches the endpoint it was written for. The user's
+  # ``ModelConfig.openrouter`` block wins per-field; when ``provider_order``
+  # is left unset by the operator the preset default lands on the wire.
+  #
+  # ``empty_retry_count: 1`` covers the reasoning-only class Moonshot
+  # direct still surfaces after the pin lands: K3 legitimately returns
+  # ``content: null`` when the reasoning stage consumes its output
+  # budget (``native_finish_reason: "length"`` on the failing traces),
+  # and a resample against the same messages typically produces a
+  # non-empty completion because the next sample does not exhaust
+  # reasoning. One retry is the conservative default; operators tune it
+  # higher via preset overlay when a model's reasoning-budget miss rate
+  # warrants doubling reasoning spend.
+  #
   # K2.x is DELIBERATELY NOT in this preset. The
   # ``openrouter_dict_stringify_recovery`` preset above covers K2.6 and
   # K2.7-code but ships ``message_assembly_policy`` unset (→ ``null``);
@@ -517,6 +546,10 @@ presets:
       name: nova
       params:
         empty_assistant_filler: " "
+    openrouter_defaults:
+      provider_order: [moonshotai]
+      allow_fallbacks: false
+    empty_retry_count: 1
 
   # thinkingmachines/inkling — model-specific overlay landed via auto-resolve
   # (Slack-requested integration, PR #719). Exact-match globs only; no generic

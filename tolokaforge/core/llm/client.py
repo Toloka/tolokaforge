@@ -1870,11 +1870,25 @@ class LLMClient:
                 "custom_llm_provider",
                 self._provider_binding.custom_llm_provider or self.provider.split("/")[0],
             )
-            or_cfg = self.config.openrouter
-            if or_cfg and or_cfg.provider_order:
+            user_or = self.config.openrouter
+            preset_or = self.capabilities.openrouter_defaults
+            provider_order: list[str] | None
+            if user_or is not None and user_or.provider_order:
+                provider_order = list(user_or.provider_order)
+            elif preset_or is not None and preset_or.provider_order:
+                provider_order = list(preset_or.provider_order)
+            else:
+                provider_order = None
+            if user_or is not None:
+                allow_fallbacks = user_or.allow_fallbacks
+            elif preset_or is not None:
+                allow_fallbacks = preset_or.allow_fallbacks
+            else:
+                allow_fallbacks = True
+            if provider_order:
                 kwargs.setdefault("extra_body", {})["provider"] = {
-                    "order": list(or_cfg.provider_order),
-                    "allow_fallbacks": or_cfg.allow_fallbacks,
+                    "order": provider_order,
+                    "allow_fallbacks": allow_fallbacks,
                 }
 
         if self._proxy is not None:

@@ -10,11 +10,14 @@ timeout, generate, accumulate, append assistant, terminate, execute tools,
 optional user turn, error classification, max-turns), and delegates every
 *policy* decision to pluggable seams. A provider-shaped *empty completion* —
 ``result.text == "" and not result.tool_calls`` — is the one wire-shape
-observation the engine consumes directly: it terminates the trial with
-:attr:`TerminationReason.EMPTY_COMPLETION` before the empty assistant message
-is appended, because appending it would send a request whose tail is an empty
-``role=model`` turn on the next iteration and providers such as Gemini reject
-that as an API error rather than pass it through.
+observation the engine consumes directly: it resamples up to
+``LoopConfig.empty_retry_count`` times without appending the empty assistant
+message, and on the ``(N + 1)``-th empty result terminates the trial with
+:attr:`TerminationReason.EMPTY_COMPLETION`. The Gemini-legal-tail invariant is
+preserved end-to-end because the empty message is never appended — appending
+it would send a request whose tail is an empty ``role=model`` turn on the next
+iteration and providers such as Gemini reject that as an API error rather than
+pass it through.
 
 * :class:`LoopLLMClient` — the provider-agnostic generate seam (the agent's
   :class:`~tolokaforge.core.llm.client.LLMClient` already satisfies it).
@@ -99,16 +102,21 @@ class LoopConfig:
     ``api_error_retries`` and ``api_error_backoff_s`` set the loop-level bounded
     retry that fires only on :attr:`TerminationReason.API_ERROR` — a transient
     provider fault the classifier could not attribute to a typed reason.
-    ``RATE_LIMIT``, ``API_TIMEOUT``, ``TRIAL_LOST`` and ``EMPTY_COMPLETION`` stay
-    one-shot terminal because each owns a dedicated path (typed 429 handling,
-    transport-timeout retry, substrate re-registration, provider-shape
-    fail-loud) and retrying them here would double-count them.
+    ``empty_retry_count`` sets the resample budget for a returned empty
+    completion; the two retry classes are orthogonal — the API-error retry
+    replays a raised exception, and the empty-completion retry resamples a
+    returned empty-shape result without appending the empty assistant message
+    and without advancing the outer turn counter. ``RATE_LIMIT``,
+    ``API_TIMEOUT`` and ``TRIAL_LOST`` stay one-shot terminal because each owns
+    a dedicated path (typed 429 handling, transport-timeout retry, substrate
+    re-registration) and retrying them here would double-count them.
     """
 
     max_turns: int = 50
     episode_timeout_s: int = 1200
     api_error_retries: int = 1
     api_error_backoff_s: float = 1.0
+    empty_retry_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -373,8 +381,13 @@ class ToolCallingLoop:
 
         The API-error retry budget resets to zero on every call, so a
         successful turn followed by an API-error turn gets a fresh budget.
-        Only :attr:`TerminationReason.API_ERROR` triggers a retry: rate limits,
-        API timeouts, trial-lost and empty completions stay one-shot terminal.
+        Only :attr:`TerminationReason.API_ERROR` triggers a retry at this
+        layer: rate limits, API timeouts and trial-lost stay one-shot
+        terminal. Empty completions are resampled inside :meth:`_run_turn`
+        under a separate budget (:attr:`LoopConfig.empty_retry_count`) so the
+        two retry classes stay orthogonal — the API-error retry replays a
+        raised exception, and the empty-completion retry resamples a returned
+        empty-shape result.
         """
         api_error_attempts = 0
         while True:
@@ -416,20 +429,33 @@ class ToolCallingLoop:
         ``status_override`` promotes the trial status. Raised exceptions are
         classified by the caller.
         """
-        result = self._generate(turn, system_prompt, messages)
-        self._assign_call_ids(result)
-        self._capture_effective_prompt(result)
-        self.metrics.record_generation(result)
-        self._log_generation(turn, result)
+        empty_attempts = 0
+        while True:
+            result = self._generate(turn, system_prompt, messages)
+            self._assign_call_ids(result)
+            self._capture_effective_prompt(result)
+            self.metrics.record_generation(result)
+            self._log_generation(turn, result)
 
-        if not result.text and not result.tool_calls:
-            messages.append(
-                self._system_message(
-                    "Model returned an empty completion (no text, no tool calls); "
-                    "trial terminated to keep the next request provider-legal."
+            if result.text or result.tool_calls:
+                break
+
+            if empty_attempts >= self.config.empty_retry_count:
+                messages.append(
+                    self._system_message(
+                        "Model returned an empty completion (no text, no tool calls); "
+                        "trial terminated to keep the next request provider-legal."
+                    )
                 )
+                return TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, True
+
+            empty_attempts += 1
+            self.logger.info(
+                "Resampling after provider-side empty completion",
+                turn=turn,
+                attempt=empty_attempts,
+                max_attempts=self.config.empty_retry_count + 1,
             )
-            return TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, True
 
         messages.append(self._assistant_message(result))
 
