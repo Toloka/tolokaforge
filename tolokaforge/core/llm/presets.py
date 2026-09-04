@@ -72,6 +72,7 @@ from tolokaforge.core.model_data import (
     bundled_presets_path,
     load_policy_registrations,
 )
+from tolokaforge.core.models.model_config import OpenRouterConfig
 
 __all__ = [
     "build_capabilities",
@@ -1050,6 +1051,7 @@ def build_capabilities(
     api_call_retries = cfg.get("api_call_retries")
     api_call_wall_timeout_s = cfg.get("api_call_wall_timeout_s")
     empty_retry_count = cfg.get("empty_retry_count")
+    openrouter_defaults_cfg = cfg.get("openrouter_defaults")
 
     return ModelCapabilities(
         schema_sanitizer=schema,
@@ -1067,6 +1069,9 @@ def build_capabilities(
             float(api_call_wall_timeout_s) if api_call_wall_timeout_s is not None else None
         ),
         empty_retry_count=int(empty_retry_count) if empty_retry_count is not None else 0,
+        openrouter_defaults=(
+            OpenRouterConfig(**openrouter_defaults_cfg) if openrouter_defaults_cfg else None
+        ),
     )
 
 

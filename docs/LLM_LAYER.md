@@ -1183,6 +1183,32 @@ shape (see below).
 On a header-name collision the gateway's configured header wins, since that is
 explicit operator configuration and the other is an engine default.
 
+### Preset-level `openrouter_defaults`
+
+`ModelCapabilities.openrouter_defaults: OpenRouterConfig | None` is the
+preset-level default for `ModelConfig.openrouter`: when a preset declares a
+provider pin it does not need every operator to re-declare it per run.
+`_build_kwargs` resolves the effective routing **field-by-field** — `user or
+preset` short-circuits are wrong here, because an `OpenRouterConfig` with only
+`allow_fallbacks` set is truthy and would silently drop the preset's
+`provider_order`:
+
+- `provider_order` — user's list when non-empty; else the preset default; else
+  no pin lands.
+- `allow_fallbacks` — user's value when the `openrouter:` block is present at
+  all (a bool has no `None` sentinel); else the preset default; else `True`.
+
+The gateway pin-drop rule above applies unchanged to preset-sourced pins: a
+route into another provider namespace still drops the pin, once per client,
+with the same warning. `moonshot_kimi_k3` is the shipped opt-in — its
+`openrouter_defaults: {provider_order: [moonshotai], allow_fallbacks: false}`
+restricts the request to Moonshot direct so its `message_assembly_policy`
+filler reaches the endpoint it was written for. Preset routing pinned by
+[`tests/canonical/test_openrouter_defaults_routing.py`](../tests/canonical/test_openrouter_defaults_routing.py);
+the field-by-field merge and the critic-verified partial-user-config lock live
+in
+[`tests/unit/llm/test_openrouter_defaults_merge.py`](../tests/unit/llm/test_openrouter_defaults_merge.py).
+
 ### Verifying a gateway from CI
 
 [`tests/integration/llm/test_gateway_live.py`](../tests/integration/llm/test_gateway_live.py)

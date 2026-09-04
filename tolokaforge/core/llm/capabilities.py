@@ -27,6 +27,7 @@ from tolokaforge.core.llm.prompt_policy import NoPromptEnrichment, SystemPromptP
 from tolokaforge.core.llm.reasoning_codec import NoReasoningCodec, ReasoningCodec
 from tolokaforge.core.llm.response_policy import ResponsePolicy, StandardResponse
 from tolokaforge.core.llm.schema_sanitizer import PassthroughSchema, ToolSchemaSanitizer
+from tolokaforge.core.models.model_config import OpenRouterConfig
 
 __all__ = ["ModelCapabilities"]
 
@@ -123,4 +124,18 @@ class ModelCapabilities:
     ``TerminationReason.EMPTY_COMPLETION``. The default ``0`` matches the
     one-shot terminal behaviour for presets that do not opt in. Metrics record
     every resampled generation because the trial paid for each call.
+    """
+
+    openrouter_defaults: OpenRouterConfig | None = None
+    """Preset-level default for :attr:`ModelConfig.openrouter`.
+
+    ``LLMClient._build_kwargs`` resolves the effective OpenRouter routing
+    field-by-field: the user's :attr:`ModelConfig.openrouter` value wins
+    per-field when explicitly set (``provider_order`` non-``None``,
+    ``allow_fallbacks`` present on the block), and the preset default fills
+    the gap. Both unset — the default here plus no user block — leaves
+    ``extra_body.provider`` off the wire, matching the pre-opt-in behaviour.
+    The gateway pin-drop rule at :meth:`LLMClient._build_kwargs` applies
+    identically to preset-sourced pins and user-sourced pins: a route into
+    another provider namespace still drops the pin.
     """

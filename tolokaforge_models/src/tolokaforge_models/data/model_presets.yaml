@@ -499,6 +499,16 @@ presets:
   # same single-space rewrite for the equivalent Bedrock symptom, so this
   # is precedent, not novelty.
   #
+  # The ``openrouter_defaults`` pin is the second defence against empty
+  # completions: OpenRouter's default fan-out to third-party mirrors
+  # (Sail Research, DeepInfra, Nebius, …) returned empty content in
+  # 15/25 kimi_k3 trials on the 2026-09-04 T-Bench balanced-10 (issue
+  # #1491). ``provider_order: [moonshotai]`` + ``allow_fallbacks: false``
+  # restricts the request to Moonshot direct so the filler policy above
+  # reaches the endpoint it was written for. The user's
+  # ``ModelConfig.openrouter`` block wins per-field; when ``provider_order``
+  # is left unset by the operator the preset default lands on the wire.
+  #
   # K2.x is DELIBERATELY NOT in this preset. The
   # ``openrouter_dict_stringify_recovery`` preset above covers K2.6 and
   # K2.7-code but ships ``message_assembly_policy`` unset (→ ``null``);
@@ -517,6 +527,9 @@ presets:
       name: nova
       params:
         empty_assistant_filler: " "
+    openrouter_defaults:
+      provider_order: [moonshotai]
+      allow_fallbacks: false
 
   # thinkingmachines/inkling — model-specific overlay landed via auto-resolve
   # (Slack-requested integration, PR #719). Exact-match globs only; no generic
