@@ -728,7 +728,7 @@ presets:
   # failures on the 2026-09-04 head-to-head hit
   # ``termination_reason: max_turns`` at exactly turn 60 with trajectories
   # mid-productive at the cutoff. 90 is the conservative lift over the
-  # 50-turn engine default (issue #1493's suggested lower bound);
+  # 50-turn engine default;
   # operators raise it further via preset overlay when observed
   # convergence warrants it.
   #

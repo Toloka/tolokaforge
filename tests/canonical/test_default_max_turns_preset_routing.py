@@ -10,8 +10,7 @@ the per-trial turn budget:
   evidence: 8/8 T-Bench balanced-10 head-to-head failures on the
   2026-09-04 sweep hit ``termination_reason: max_turns`` at exactly
   turn 60 with mid-productive trajectories at the cutoff. 90 is the
-  conservative lift over the 50-turn engine default (issue #1493's
-  suggested lower bound).
+  conservative lift over the 50-turn engine default.
 
 The :attr:`ModelCapabilities.default_max_turns` slot fills the gap when
 neither the task's ``TaskConfig.max_turns`` nor the operator's
