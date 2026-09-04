@@ -69,6 +69,9 @@ def compute_state_diff(trial_state: dict[str, Any], golden_state: dict[str, Any]
                 f"{len(table_diff.extra)} extra, "
                 f"{len(table_diff.different)} different"
             )
+        elif table_diff.order_mismatch:
+            tables_diff[table_name] = table_diff
+            differences_found.append(f"{table_name}: rows in wrong order")
 
     # Build summary
     if differences_found:
@@ -118,6 +121,11 @@ def _compare_table_records(
         """Convert record to hashable tuple for comparison."""
         return tuple(sorted((k, _make_hashable(v)) for k, v in record.items()))
 
+    # Ordered sequences drive the order-mismatch check below. Set-diff still
+    # dominates: any missing/extra/different suppresses the order-mismatch flag.
+    trial_ordered = [record_to_tuple(r) for r in trial_records]
+    golden_ordered = [record_to_tuple(r) for r in golden_records]
+
     trial_tuples = {record_to_tuple(r): r for r in trial_records}
     golden_tuples = {record_to_tuple(r): r for r in golden_records}
 
@@ -160,7 +168,15 @@ def _compare_table_records(
         missing = [r for i, r in enumerate(missing) if i not in matched_missing]
         extra = [r for i, r in enumerate(extra) if i not in matched_extra]
 
-    return TableDiff(missing=missing, extra=extra, different=different)
+    # Order-mismatch fires only when set-diff shows nothing (same set, different
+    # order in the underlying sequence). Any set-diff dominates.
+    order_mismatch = False
+    if not missing and not extra and not different:
+        order_mismatch = trial_ordered != golden_ordered
+
+    return TableDiff(
+        missing=missing, extra=extra, different=different, order_mismatch=order_mismatch
+    )
 
 
 def _records_might_match(record1: dict[str, Any], record2: dict[str, Any]) -> bool:
@@ -168,24 +184,33 @@ def _records_might_match(record1: dict[str, Any], record2: dict[str, Any]) -> bo
     Check if two records might be the same entity with different values.
 
     Matches records by any shared field whose name ends with ``_id`` or is
-    exactly ``id``.  This is domain-agnostic — it works for any entity type
+    exactly ``id``. This is domain-agnostic — it works for any entity type
     (lot_id, sku_id, allocation_id, capa_id, equipment_id, etc.) without
     requiring a hardcoded list.
+
+    Iterates every shared id-suffixed field and returns True as soon as one
+    matches. A record whose surrogate ``id`` was reassigned by the substrate
+    still pairs with its golden counterpart when any co-recorded id (e.g.
+    ``customer_id``, ``order_id``) is stable — surrogate-id divergence on its
+    own does not fabricate a missing-plus-extra false diff. A field where
+    either side is null is skipped rather than treated as a mismatch: null
+    carries no identity signal.
     """
-    # Find all shared identifier-like fields (ending with _id or exactly "id")
     common_keys = set(record1.keys()) & set(record2.keys())
     id_fields = sorted(f for f in common_keys if f == "id" or f.endswith("_id"))
 
-    # Match on the first shared ID field (most specific). Compare via the same
-    # canonical form as the record hashing, so numeric-TYPE ids pair across
-    # representations (123 == 123.0 == Decimal("123")). A numeric-looking STRING
-    # id ("123") is NOT equated with the number 123 here: string folding is the
-    # opt-in per-field tier, off on this reason-only diff path.
+    # Compare via the same canonical form as record hashing, so numeric-TYPE
+    # ids pair across representations (123 == 123.0 == Decimal("123")). A
+    # numeric-looking STRING id ("123") is NOT equated with the number 123
+    # here: string folding is the opt-in per-field tier, off on this
+    # reason-only diff path.
     for field in id_fields:
-        if record1[field] is not None and record2[field] is not None:
-            return _make_hashable(record1[field]) == _make_hashable(record2[field])
+        if record1[field] is None or record2[field] is None:
+            continue
+        if _make_hashable(record1[field]) == _make_hashable(record2[field]):
+            return True
 
-    # Fallback: check if they share at least 50% of fields with same values
+    # Fallback: no id-field matched, share ≥ 50% of common fields' values.
     if not common_keys:
         return False
 

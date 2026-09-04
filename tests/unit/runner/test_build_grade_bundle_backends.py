@@ -122,6 +122,10 @@ class TestSharedStackRuntimeBackendImpl:
 
 class TestPerTrialRuntimeBackendImpl:
     def test_build_grade_bundle_composes_substrate_reads(self, tmp_path: Path) -> None:
+        # PerTrialRuntimeBackend is a thin delegate wrapper over
+        # SharedStackRuntimeBackend (composition-plan rewrite, ADR-0044).
+        # The build_grade_bundle path lives on the delegate; we assert the
+        # delegate composes reads correctly.
         backend = PerTrialRuntimeBackend()
         trajectory = MagicMock()
         task_description = MagicMock()
@@ -129,19 +133,17 @@ class TestPerTrialRuntimeBackendImpl:
 
         fake_client = MagicMock()
         fake_client.runner_address = "per-trial-runner:50051"
-        # _client_for calls connect() on first use; assign directly and mark connected.
-        backend._clients["trial-1"] = fake_client
-        backend._connected_trials.add("trial-1")
+        backend._delegate.runner_client = fake_client
 
         expected_manifest = object()
         fake_substrate_instance = MagicMock()
         with (
             patch(
-                "tolokaforge.core.per_trial_runtime.LiveRunnerCallbackGradingSubstrate",
+                "tolokaforge.core.shared_stack_runtime.LiveRunnerCallbackGradingSubstrate",
                 return_value=fake_substrate_instance,
             ) as fake_substrate_cls,
             patch(
-                "tolokaforge.core.per_trial_runtime.serialize_bundle_from_substrate",
+                "tolokaforge.core.shared_stack_runtime.serialize_bundle_from_substrate",
                 return_value=expected_manifest,
             ) as fake_serialise,
         ):
@@ -155,6 +157,13 @@ class TestPerTrialRuntimeBackendImpl:
     def test_cleanup_trial_clears_pending_inputs(self) -> None:
         backend = PerTrialRuntimeBackend()
         backend.remember_trial_inputs("trial-1", MagicMock(), MagicMock())
+        backend._delegate.runner_client = MagicMock()
+        backend._delegate.runner_client.cleanup_trial.return_value = {
+            "success": True,
+            "error": None,
+        }
         backend.cleanup_trial("trial-1")
-        assert "trial-1" not in backend._pending_trajectories
-        assert "trial-1" not in backend._pending_task_descriptions
+        # Snapshot-producer state lives on the delegate (SharedStackRuntimeBackend);
+        # PerTrialRuntimeBackend delegates through.
+        assert "trial-1" not in backend._delegate._pending_trajectories
+        assert "trial-1" not in backend._delegate._pending_task_descriptions
