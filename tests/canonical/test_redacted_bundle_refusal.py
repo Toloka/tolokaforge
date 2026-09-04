@@ -106,6 +106,8 @@ EXEMPT: dict[str, str] = {
     "browse": "opens a run directory in the OS handler; reads nothing itself",
     "config": "inspects and edits configuration; reads no trial bundle",
     "docker": "manages images and service stacks; reads no trial bundle",
+    "grade": "regrades a grade-bundle-v1.0 artifact by URI; reads no recorded trial bundle",
+    "grade-run": "batches grade-bundle-v1.0 regrades under a run directory; reads no recorded trial bundle",
     "prepare": "lays out a queue-backed run directory before any trial exists",
     "repl": "interactive shell; grades nothing on its own",
     "run": "executes trials and writes bundles; never reads one back to grade it",
