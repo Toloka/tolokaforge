@@ -126,6 +126,28 @@ class ModelCapabilities:
     every resampled generation because the trial paid for each call.
     """
 
+    output_length_retry_count: int = 0
+    """Resample budget for a content-carrying max-tokens truncation.
+
+    On a returned ``GenerationResult`` with content and
+    ``finish_reason == "length"`` (litellm's post-mapped value for a provider
+    that truncated the response at ``max_tokens``), the engine appends a
+    ``role=user`` feedback turn advising the model that its previous response
+    was cut off and asking it to split the next action into smaller pieces,
+    then resamples up to ``output_length_retry_count`` times without
+    appending the truncated assistant message and without advancing the outer
+    turn counter. On budget exhaustion the loop appends the last truncated
+    response as the assistant turn and continues — the seam is strictly
+    recoverable and never a new terminal reason.
+
+    Orthogonal to :attr:`empty_retry_count` (which fires on empty-shape
+    results with no content and terminates on exhaustion) and to the
+    loop-level API-error retry: each retry class owns a distinct trigger and
+    a dedicated budget. The default ``0`` accepts the truncated response as
+    the assistant turn unchanged. Metrics record every resampled generation
+    because the trial paid for each call.
+    """
+
     tool_output_max_chars: int | None = None
     """Loop-layer cap on the ``role=tool`` message content, in chars.
 

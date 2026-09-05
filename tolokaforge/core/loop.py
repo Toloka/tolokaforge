@@ -116,13 +116,19 @@ class LoopConfig:
     retry that fires only on :attr:`TerminationReason.API_ERROR` — a transient
     provider fault the classifier could not attribute to a typed reason.
     ``empty_retry_count`` sets the resample budget for a returned empty
-    completion; the two retry classes are orthogonal — the API-error retry
-    replays a raised exception, and the empty-completion retry resamples a
-    returned empty-shape result without appending the empty assistant message
-    and without advancing the outer turn counter. ``RATE_LIMIT``,
-    ``API_TIMEOUT`` and ``TRIAL_LOST`` stay one-shot terminal because each owns
-    a dedicated path (typed 429 handling, transport-timeout retry, substrate
-    re-registration) and retrying them here would double-count them.
+    completion; ``output_length_retry_count`` sets the resample budget for a
+    content-carrying max-tokens truncation. The three retry classes are
+    orthogonal — the API-error retry replays a raised exception, the
+    empty-completion retry resamples a returned empty-shape result without
+    appending the empty assistant message and without advancing the outer turn
+    counter, and the output-length retry appends a ``role=user`` feedback turn
+    and resamples a truncated content-carrying result under its own budget
+    before falling through to accept-and-continue. Each owns a dedicated
+    ``LoopConfig`` field and each fires on a distinct trigger.
+    ``RATE_LIMIT``, ``API_TIMEOUT`` and ``TRIAL_LOST`` stay one-shot terminal
+    because each owns a dedicated path (typed 429 handling, transport-timeout
+    retry, substrate re-registration) and retrying them here would
+    double-count them.
 
     ``tool_output_max_chars`` caps the ``role=tool`` message ``content`` at
     that many chars via
@@ -145,6 +151,7 @@ class LoopConfig:
     api_error_retries: int = 1
     api_error_backoff_s: float = 1.0
     empty_retry_count: int = 0
+    output_length_retry_count: int = 0
     tool_output_max_chars: int | None = None
     max_context_tokens: int | None = None
     context_watermark: int | None = None
@@ -447,11 +454,16 @@ class ToolCallingLoop:
         successful turn followed by an API-error turn gets a fresh budget.
         Only :attr:`TerminationReason.API_ERROR` triggers a retry at this
         layer: rate limits, API timeouts and trial-lost stay one-shot
-        terminal. Empty completions are resampled inside :meth:`_run_turn`
-        under a separate budget (:attr:`LoopConfig.empty_retry_count`) so the
-        two retry classes stay orthogonal — the API-error retry replays a
-        raised exception, and the empty-completion retry resamples a returned
-        empty-shape result.
+        terminal. Empty completions and content-carrying max-tokens
+        truncations are resampled inside :meth:`_run_turn` under their own
+        budgets (:attr:`LoopConfig.empty_retry_count` and
+        :attr:`LoopConfig.output_length_retry_count`), so the three retry
+        classes stay orthogonal — the API-error retry replays a raised
+        exception, the empty-completion retry resamples a returned
+        empty-shape result, and the output-length retry appends a
+        ``role=user`` feedback turn and resamples a returned truncated
+        content-carrying result before falling through to
+        accept-and-continue.
         """
         api_error_attempts = 0
         while True:
@@ -499,6 +511,7 @@ class ToolCallingLoop:
             return summarize_decision.status, summarize_decision.reason, True
 
         empty_attempts = 0
+        output_length_attempts = 0
         while True:
             try:
                 result = self._generate(turn, system_prompt)
@@ -532,6 +545,31 @@ class ToolCallingLoop:
             self._log_generation(turn, result)
 
             if result.text or result.tool_calls:
+                if (
+                    result.finish_reason == "length"
+                    and output_length_attempts < self.config.output_length_retry_count
+                ):
+                    output_length_attempts += 1
+                    self._append_both(
+                        messages,
+                        Message(
+                            role=MessageRole.USER,
+                            content=(
+                                "The previous response was truncated at max_tokens "
+                                "(finish_reason: length). Please split the next "
+                                "action into smaller pieces (fewer tool calls per "
+                                "turn, shorter text) and try again."
+                            ),
+                            ts=_now(),
+                        ),
+                    )
+                    self.logger.info(
+                        "Resampling after truncated completion",
+                        turn=turn,
+                        attempt=output_length_attempts,
+                        max_attempts=self.config.output_length_retry_count + 1,
+                    )
+                    continue
                 break
 
             if empty_attempts >= self.config.empty_retry_count:
