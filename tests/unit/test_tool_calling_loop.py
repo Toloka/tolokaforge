@@ -40,14 +40,20 @@ class _ScriptedClient:
 
     An entry that is an ``Exception`` instance is raised on that call instead —
     the retry-loop tests script provider failures this way.
+
+    ``messages_history`` snapshots the wire ``messages`` argument on each call
+    so a test can pin what actually reached the provider on the second call
+    (a copy is taken because the loop mutates the underlying list in place).
     """
 
     def __init__(self, results: list[GenerationResult | Exception]) -> None:
         self._results = list(results)
         self.calls = 0
+        self.messages_history: list[list[Message]] = []
 
     def generate(self, system, messages, tools, tool_choice="auto", observation=None):
         self.calls += 1
+        self.messages_history.append(list(messages))
         item = self._results.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -617,6 +623,197 @@ def test_empty_completion_retry_does_not_advance_turn_counter():
             max_turns=1,
             episode_timeout_s=10_000,
             empty_retry_count=2,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 3
+    assert executor.executed == [("query", {"q": 1}, "a")]
+    assert outcome.termination_reason == TerminationReason.MAX_TURNS
+
+
+def test_length_truncated_completion_not_retried_when_opt_out():
+    """With ``output_length_retry_count=0`` (the default) a content-carrying
+    result with ``finish_reason="length"`` lands as the assistant turn
+    unchanged and the loop advances. No feedback marker is inserted — this
+    locks the default-off invariant against silent drift into a global
+    retry-with-feedback default (which would double reasoning spend on every
+    truncation across every preset)."""
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="partial",
+                usage=Usage(prompt_tokens=3),
+                finish_reason="length",
+            ),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        max_turns=1,
+        config=LoopConfig(
+            max_turns=1,
+            episode_timeout_s=10_000,
+            output_length_retry_count=0,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 1
+    assistant_messages = [m for m in messages if m.role == MessageRole.ASSISTANT]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0].content == "partial"
+    assert not any(
+        m.role == MessageRole.USER and "truncated at max_tokens" in (m.content or "")
+        for m in messages
+    )
+    assert outcome.termination_reason == TerminationReason.MAX_TURNS
+
+
+def test_length_truncated_completion_resamples_and_recovers():
+    """With ``output_length_retry_count=1`` the first truncated response is
+    discarded, a ``role=user`` truncation-feedback turn is appended to both
+    the recorded history and the wire history, and the second (untruncated)
+    sample lands as the assistant turn. Locks the recovery shape and pins
+    that the feedback actually reaches the wire on the retry call."""
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="partial",
+                usage=Usage(prompt_tokens=3),
+                finish_reason="length",
+            ),
+            GenerationResult(
+                text="recovered",
+                usage=Usage(prompt_tokens=5),
+                finish_reason="stop",
+            ),
+        ]
+    )
+    sink = _CountingSink()
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        sink=sink,
+        config=LoopConfig(
+            max_turns=1,
+            episode_timeout_s=10_000,
+            output_length_retry_count=1,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 2
+    # (c) both generations bill the metrics sink because the trial paid.
+    assert sink.generations == 2
+
+    # (a) exactly one user-feedback turn with the truncation phrasing.
+    feedback_turns = [
+        m
+        for m in messages
+        if m.role == MessageRole.USER and "truncated at max_tokens" in (m.content or "")
+    ]
+    assert len(feedback_turns) == 1
+
+    # (b) the truncated assistant message was NOT appended.
+    assert not any(m.role == MessageRole.ASSISTANT and m.content == "partial" for m in messages)
+    assistant_messages = [m for m in messages if m.role == MessageRole.ASSISTANT]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0].content == "recovered"
+
+    # (d) wire-level lock: the SECOND generate call's messages list ends with
+    # the truncation-feedback user turn — the retry with feedback actually
+    # reaches the provider, not just the recorded trajectory.
+    second_call_messages = client.messages_history[1]
+    tail = second_call_messages[-1]
+    assert tail.role == MessageRole.USER
+    assert "truncated at max_tokens" in (tail.content or "")
+
+    assert outcome.termination_reason == TerminationReason.MAX_TURNS
+
+
+def test_length_truncated_completion_exhausts_and_accepts_last_response():
+    """With ``output_length_retry_count=1``, two consecutive truncated
+    responses exhaust the budget: exactly one feedback turn was inserted
+    (before the second attempt) and the second truncated response lands as
+    the assistant turn with its partial content preserved. The loop
+    continues normally — no new terminal, no ``EMPTY_COMPLETION`` — the
+    exhaustion path is strictly recoverable."""
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="partial-1",
+                usage=Usage(prompt_tokens=3),
+                finish_reason="length",
+            ),
+            GenerationResult(
+                text="partial-2",
+                usage=Usage(prompt_tokens=3),
+                finish_reason="length",
+            ),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(
+            max_turns=1,
+            episode_timeout_s=10_000,
+            output_length_retry_count=1,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 2
+    assert outcome.termination_reason == TerminationReason.MAX_TURNS
+    assert outcome.status == TrialStatus.COMPLETED
+    assistant_messages = [m for m in messages if m.role == MessageRole.ASSISTANT]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0].content == "partial-2"
+    feedback_turns = [
+        m
+        for m in messages
+        if m.role == MessageRole.USER and "truncated at max_tokens" in (m.content or "")
+    ]
+    assert len(feedback_turns) == 1
+
+
+def test_length_retry_does_not_advance_turn_counter():
+    """Resamples happen within the same outer turn. With ``max_turns=1`` and
+    ``output_length_retry_count=2`` the loop absorbs two truncated resamples
+    on turn 0 and executes the recovered tool call also on turn 0, so a
+    single outer iteration consumes three generations. Mirrors the shape of
+    ``test_empty_completion_retry_does_not_advance_turn_counter``."""
+    executor = _RecordingExecutor()
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="partial-1",
+                usage=Usage(prompt_tokens=1),
+                finish_reason="length",
+            ),
+            GenerationResult(
+                text="partial-2",
+                usage=Usage(prompt_tokens=1),
+                finish_reason="length",
+            ),
+            GenerationResult(
+                text="ok",
+                tool_calls=[ToolCall(id="a", name="query", arguments={"q": 1})],
+                usage=Usage(prompt_tokens=5),
+                finish_reason="tool_calls",
+            ),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        executor=executor,
+        config=LoopConfig(
+            max_turns=1,
+            episode_timeout_s=10_000,
+            output_length_retry_count=2,
         ),
     ).run("sys", messages, time.time())
 

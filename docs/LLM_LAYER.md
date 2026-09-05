@@ -1803,6 +1803,68 @@ directly rather than routing it through `classify_loop_error` so post-run
 analysis can tell "the model produced nothing" apart from the API-error
 class that would otherwise absorb it.
 
+### Output-length retry
+
+A generation that comes back with content and `finish_reason == "length"`
+is a *max-tokens truncation*: the model produced tokens but the provider
+cut the response at its output budget. `ToolCallingLoop._run_turn` reads
+this signal directly from `GenerationResult.finish_reason` — sourced in
+`_assemble_result` from `choice.finish_reason`, which litellm post-maps
+every current provider's max-tokens reason (native OpenAI `"length"`,
+Gemini `MAX_TOKENS`, Anthropic `max_tokens`) to the OpenAI-compatible
+string `"length"`. When `capabilities.output_length_retry_count > 0`, the
+loop discards the truncated response, appends a `role=user` feedback turn
+advising the model that its previous reply was truncated at `max_tokens`
+and asking it to split the next action into smaller pieces, and resamples
+without appending the truncated assistant message and without advancing
+the outer turn counter. On budget exhaustion the loop falls through to
+accept-and-continue — the last (still-truncated) response lands as the
+assistant turn and the trial continues — so the seam is strictly
+recoverable and never a new terminal reason. The metrics sink records
+every resampled generation because the trial paid for each call. The
+default `output_length_retry_count = 0` accepts the truncated response
+as the assistant turn unchanged — the seam is opt-in per preset.
+
+The feedback turn is `MessageRole.USER` — not `MessageRole.SYSTEM` — and
+this is load-bearing. Every other inline marker `_run_turn` inserts via
+`_append_both` (the empty-completion terminal message, the
+`TerminationDecision` system message, the summarize marker, the
+`MAX_TURNS` marker) either terminates the loop or advances the outer
+turn, so litellm's Anthropic-adapter convention of hoisting an inline
+`role=system` message into the top-level `system` parameter of the next
+request is inert for them. The output-length retry is the first
+`_run_turn` path that inserts a marker *and continues the loop*, so a
+`role=system` feedback turn here would be hoisted into the initial
+system prompt on the resample rather than landing mid-conversation —
+defeating the seam's intent. The `role=user` shape stays positional on
+every adapter and mirrors the tool-response pattern that is already
+provider-safe on Anthropic / OpenAI / Gemini / Bedrock. A future edit
+that reshapes the feedback turn "for consistency" with the other markers
+must preserve this constraint or move all four seams onto a shared
+positional shape.
+
+Orthogonal to `empty_retry_count` (which fires on empty-shape results
+with no content and terminates on exhaustion) and to the loop-level
+API-error retry (which replays a raised exception). Each retry class
+owns a distinct trigger — content-carrying truncation, empty-shape
+completion, raised transient exception — and a dedicated `LoopConfig`
+field so a preset can tune them independently. The strictly-empty branch
+of `_run_turn` still handles a `finish_reason == "length"` result whose
+content is empty (reasoning-budget exhaustion) via `empty_retry_count`,
+because the output-length branch nests *inside* the outer
+content-carrying gate.
+
+`LoopConfig.output_length_retry_count` flows from
+`capabilities.output_length_retry_count` at
+[`runner.py`](../tolokaforge/core/runner.py) construction time. No
+preset opts in today; canonical
+[`tests/canonical/test_output_length_retry_count_preset_routing.py`](../tests/canonical/test_output_length_retry_count_preset_routing.py)
+enumerates every currently-registered preset and pins the default. An
+observed-evidence opt-in for a specific preset lands in a follow-up PR
+with the per-workload truncation rate recorded in the preset comment
+(the discipline `empty_retry_count`'s `moonshot_kimi_k3` /
+`anthropic_claude_opus_5` opt-ins follow).
+
 ### Context-window handoff
 
 `ModelCapabilities.max_context_tokens: int | None` and
@@ -2443,13 +2505,18 @@ outer controllers above, transport-timeout retry in
 protocol. Retrying them at the loop level would double-count the exclusion and
 confuse the denominator.
 
-The empty-completion retry is a separate class that lives in
-`_run_turn` under its own budget on `LoopConfig.empty_retry_count`. The two
-retry classes are orthogonal: the API-error retry replays a *raised
-exception*, and the empty-completion retry resamples a *returned empty-shape
-result* (see § *Provider-side empty completion* above for the resample
-mechanics and the Gemini-legal-tail invariant). Each owns a dedicated
-`LoopConfig` field so a preset can tune them independently.
+The empty-completion retry and the output-length retry are two separate
+classes that live in `_run_turn`, each under its own budget on
+`LoopConfig.empty_retry_count` and `LoopConfig.output_length_retry_count`.
+The three retry classes are orthogonal — each fires on a distinct
+trigger: the API-error retry replays a *raised exception*, the
+empty-completion retry resamples a *returned empty-shape result* (see §
+*Provider-side empty completion* above for the resample mechanics and
+the Gemini-legal-tail invariant), and the output-length retry appends a
+`role=user` feedback turn and resamples a *returned content-carrying
+truncation* under its own budget before falling through to
+accept-and-continue (see § *Output-length retry* above). Each owns a
+dedicated `LoopConfig` field so a preset can tune them independently.
 
 `TerminationReason.CONTEXT_WINDOW_EXCEEDED` is a third wire-shape reason
 (parallel to `EMPTY_COMPLETION`), not routed through the API-error retry.
