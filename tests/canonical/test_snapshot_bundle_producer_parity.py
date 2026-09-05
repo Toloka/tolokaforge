@@ -219,7 +219,7 @@ class _RefuseOnDbRead:
         self.final_state_stable_calls += 1
         raise AssertionError("final_state_stable() must not be called on a fs-only trial")
 
-    def close(self) -> None:  # noqa: D401
+    def close(self) -> None:
         pass
 
 
@@ -269,3 +269,44 @@ def test_fs_only_bundle_carries_empty_db_state_parts(tmp_path: Path) -> None:
         assert snapshot.final_state_stable() == {}
     finally:
         snapshot.close()
+
+
+# ---------------------------------------------------------------------------
+# Drift guard: the producer-side ``_task_provisions_db`` mirror must agree
+# with the runner-side ``provisions_database`` on every field that decides
+# DB provisioning. Adding a new provisioning field (say ``views``) to
+# ``RunnerInitialStateConfig`` + ``provisions_database`` without updating the
+# mirror would silently mis-classify DB-backed trials as fs-only and bundle
+# ``{}`` for the DB parts — a byte-corruption bug no other test catches.
+# The mirror duplication is deliberate (``bundle-producer-purity`` importlinter
+# contract forbids reaching into ``tolokaforge.runner`` from the producer); this
+# test enforces the agreement across the boundary.
+# ---------------------------------------------------------------------------
+
+
+def test_producer_predicate_matches_runner_predicate() -> None:
+    from tolokaforge.core.grading.bundle_producer import _task_provisions_db
+    from tolokaforge.runner.models import (
+        RunnerInitialStateConfig,
+        TableSchema,
+        UnstableFieldSpec,
+        provisions_database,
+    )
+
+    cases: list[dict] = [
+        {},
+        {"tables": {"users": []}},
+        {"schemas": [TableSchema(table_name="users", fields={"id": "integer"})]},
+        {"unstable_fields": [UnstableFieldSpec(table_name="users", field_name="id")]},
+        {"filesystem": {"/work/note.md": "hi"}},  # filesystem alone does NOT provision DB
+    ]
+
+    class _StubTD:
+        def __init__(self, initial_state: RunnerInitialStateConfig) -> None:
+            self.initial_state = initial_state
+
+    for kwargs in cases:
+        cfg = RunnerInitialStateConfig(**kwargs)
+        assert _task_provisions_db(_StubTD(cfg)) == provisions_database(
+            cfg
+        ), f"predicate drift for {kwargs}"
