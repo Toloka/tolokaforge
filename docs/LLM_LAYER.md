@@ -1860,10 +1860,10 @@ content-carrying gate.
 preset opts in today; canonical
 [`tests/canonical/test_output_length_retry_count_preset_routing.py`](../tests/canonical/test_output_length_retry_count_preset_routing.py)
 enumerates every currently-registered preset and pins the default. An
-observed-evidence opt-in for a specific preset lands in a follow-up PR
-with the per-workload truncation rate recorded in the preset comment
-(the discipline `empty_retry_count`'s `moonshot_kimi_k3` /
-`anthropic_claude_opus_5` opt-ins follow).
+observed-evidence opt-in for a specific preset requires the per-workload
+truncation rate recorded in the preset comment (matching the discipline
+`empty_retry_count`'s `moonshot_kimi_k3` / `anthropic_claude_opus_5`
+opt-ins use).
 
 ### Context-window handoff
 

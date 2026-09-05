@@ -822,6 +822,41 @@ def test_length_retry_does_not_advance_turn_counter():
     assert outcome.termination_reason == TerminationReason.MAX_TURNS
 
 
+def test_length_finish_reason_with_empty_content_uses_empty_path():
+    """A ``finish_reason=='length'`` result with no text / no tool_calls
+    routes through the empty-completion branch, not the length-retry branch.
+    Locks the disjoint-path invariant against a future refactor that flattens
+    the current nesting under ``if result.text or result.tool_calls:``."""
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="",
+                usage=Usage(prompt_tokens=1),
+                finish_reason="length",
+            ),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        config=LoopConfig(
+            max_turns=1,
+            episode_timeout_s=10_000,
+            empty_retry_count=0,
+            output_length_retry_count=1,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 1
+    assert outcome.termination_reason == TerminationReason.EMPTY_COMPLETION
+    # Length-retry did NOT fire — no user feedback marker was inserted.
+    assert not any(
+        m.role == MessageRole.USER and "truncated at max_tokens" in (m.content or "")
+        for m in messages
+    )
+
+
 def test_api_error_retry_budget_resets_per_outer_turn():
     """A successful turn 0 followed by an API-error turn 1 gets a fresh retry
     budget: the counter resets at the start of every outer iteration, so a
