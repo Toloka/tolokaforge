@@ -102,10 +102,9 @@ PARSER_ERROR_RAW_ARGS_EXCERPT_MAX_CHARS = 500
 @dataclass(frozen=True)
 class ParserError:
     """Sidecar record of one un-parseable ``tool_call.function.arguments``
-    string. Ephemeral in-process value object per the AGENTS.md type table —
-    never crosses a wire boundary and never serialised into ``Trajectory`` or
-    task artefacts, so a frozen dataclass fits and ``ReplyDefect`` (Pydantic)
-    is the wrong shape.
+    string. Ephemeral in-process value; never crosses a wire boundary and
+    never serialised into ``Trajectory`` or task artefacts, so a frozen
+    dataclass fits and ``ReplyDefect`` (Pydantic) is the wrong shape.
 
     ``raw_arguments`` is the original ``tc.function.arguments`` string
     (verbatim, so the retry feedback can quote it back), bounded by

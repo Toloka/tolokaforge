@@ -160,9 +160,8 @@ class ModelCapabilities:
     On budget exhaustion the loop falls through to accept-and-continue: the
     ``{}``-coerced assistant response lands and either the tool executor
     surfaces an ``INVALID_ARGUMENTS`` tool_result (for tools with a real
-    schema) or the tool runs against empty args (for no-arg tools) —
-    reproducing today's behaviour byte-for-byte. The seam is strictly
-    recoverable and never a new terminal reason.
+    schema) or the tool runs against empty args (for no-arg tools). The
+    seam is strictly recoverable and never a new terminal reason.
 
     Orthogonal to :attr:`empty_retry_count` (empty-shape completion,
     terminates on exhaustion), :attr:`output_length_retry_count`
