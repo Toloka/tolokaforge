@@ -530,6 +530,7 @@ class GenerationResult:
         reasoning: StructuredReasoning | None = None,
         effective_system_prompt: str | None = None,
         openrouter_generation_id: str | None = None,
+        finish_reason: str | None = None,
     ):
         self.text = text
         self.tool_calls = tool_calls or []
@@ -548,6 +549,14 @@ class GenerationResult:
         # on ``usage.calls[-1]`` — carried here so the turn loop can stamp it
         # onto the assistant message without reaching into the usage record.
         self.openrouter_generation_id = openrouter_generation_id
+        # litellm's post-mapped ``choice.finish_reason`` (e.g. ``"stop"``,
+        # ``"length"``, ``"tool_calls"``). ``"length"`` on a content-carrying
+        # result means the provider truncated the response at ``max_tokens``
+        # — the engine loop's output-length retry seam reads it to decide
+        # whether to resample with feedback (see
+        # :attr:`ModelCapabilities.output_length_retry_count`). ``None`` when
+        # the response carries no finish_reason at all.
+        self.finish_reason = finish_reason
         # Defects of the attempts discarded before this reply was accepted.
         # Stamped only by ``UserSimulator._llm_reply``; every other producer
         # of a result leaves it empty.
@@ -2274,6 +2283,10 @@ class LLMClient:
             # that returned no usage block contributes no call record, and the
             # routing decision is still worth recording for that turn.
             openrouter_generation_id=extract_openrouter_generation_id(response),
+            # litellm post-maps every current provider's max-tokens truncation
+            # to the OpenAI-compatible ``"length"`` on this field; a response
+            # that carries no finish_reason at all lands as ``None``.
+            finish_reason=getattr(choice, "finish_reason", None),
         )
 
     # ------------------------------------------------------------------
