@@ -56,8 +56,15 @@ def serialize_bundle_from_substrate(
 
     ``substrate`` must satisfy the
     :class:`~tolokaforge.core.grading.substrate.GradingSubstrate` Protocol
-    structurally. Reads ``initial_state`` / ``final_state`` /
-    ``final_state_stable`` and ``filesystem_root`` from it. Decodes
+    structurally. Reads ``filesystem_root`` from it, plus ``initial_state``
+    / ``final_state`` / ``final_state_stable`` **when
+    ``task_description.initial_state`` provisions a DB**
+    (``tables``/``schemas``/``unstable_fields`` non-empty). Filesystem-only
+    trials — where the runner skipped ``db_client.init_trial`` at
+    ``RegisterTrial`` — bundle the three DB parts as ``{}`` instead;
+    a call would raise ``DBTrialNotFoundError`` because the DB service was
+    never seeded, and the empty-state fold is byte-symmetric with the
+    LIVE grader lane's per-caller degradation. Decodes
     ``task_description.tool_artifacts`` (base64 ``dict[str, str]``) to
     ``dict[str, bytes]``. Serialises the trajectory via
     ``trajectory.model_dump(mode="json")``. Emits ``task_description.grading``
@@ -84,17 +91,50 @@ def serialize_bundle_from_substrate(
     }
     grading = task_description.grading
     grading_config = grading.model_dump(mode="json") if grading is not None else {}
+    if _task_provisions_db(task_description):
+        initial_state = substrate.initial_state()
+        final_state = substrate.final_state()
+        final_state_stable = substrate.final_state_stable()
+    else:
+        # Filesystem-only trial — no DB service was seeded at RegisterTrial,
+        # so the substrate's DB reads would raise DBTrialNotFoundError.
+        # Symmetric with the LIVE grader's per-caller degradation at
+        # JsonpathStateCheckBackend.query (default_state_check_backends.py).
+        initial_state = {}
+        final_state = {}
+        final_state_stable = {}
     return serialize_grade_bundle(
         out_dir,
         trial_id=trial_id,
-        initial_state=substrate.initial_state(),
-        final_state=substrate.final_state(),
-        final_state_stable=substrate.final_state_stable(),
+        initial_state=initial_state,
+        final_state=final_state,
+        final_state_stable=final_state_stable,
         filesystem_root=filesystem_root,
         checks=tool_artifacts or None,
         kb=None,
         trajectory=trajectory.model_dump(mode="json"),
         grading_config=grading_config,
+    )
+
+
+def _task_provisions_db(task_description: Any) -> bool:
+    """Mirror of ``tolokaforge.runner.models.provisions_database`` reached
+    structurally to preserve the ``bundle-producer-purity`` contract.
+
+    A trial's DB service is seeded at ``RegisterTrial`` iff
+    ``initial_state`` declares ``tables``, ``schemas``, or
+    ``unstable_fields``. When none of the three is set, the runner skips
+    ``db_client.init_trial`` and the substrate's ``ReadFinalDBState[Stable]``
+    RPCs would refuse with ``DBTrialNotFoundError`` — the producer skips
+    the DB reads instead.
+    """
+    initial_state = getattr(task_description, "initial_state", None)
+    if initial_state is None:
+        return False
+    return bool(
+        getattr(initial_state, "tables", None)
+        or getattr(initial_state, "schemas", None)
+        or getattr(initial_state, "unstable_fields", None)
     )
 
 
