@@ -191,7 +191,8 @@ Written via [`tolokaforge.core.budgets.write_limit_hit_marker`](../tolokaforge/c
 * **`judge_prompt` derivation**: computed from the trial's effective
   `grading_config.llm_judge` at bundle-write time, not from an actual
   judge invocation, so an auto-fail trial (`ERROR` / `TIMEOUT` /
-  `STUCK_DETECTED` / `EMPTY_COMPLETION`) that never called the judge
+  `STUCK_DETECTED` / `EMPTY_COMPLETION` / `CONTEXT_WINDOW_EXCEEDED`)
+  that never called the judge
   still records the contract it would have graded under. Same source of
   truth as the judge's own composition
   (`_compose_judge_system_prompt`), so the recorded string is
@@ -1184,11 +1185,12 @@ judge_custom_prompt: false      # null (no judge) | false (default prompt) | tru
 judge_agent_prompt_included: true  # null (no judge) | false (agent policy gated out) | true (included)
 synthesized_by_termination_reason: null  # null on every grade produced by a real evaluator;
                                 # named ``TerminationReason`` (e.g. ``stuck_detected``,
-                                # ``empty_completion``, ``error``) when a ``TrialGrader``
-                                # auto-fail branch synthesised the grade — no evaluator
-                                # ran on the trial, ``components`` is empty and this field
-                                # names which reason the harness synthesised from. See
-                                # docs/GRADING.md § Harness auto-fail synthesis.
+                                # ``empty_completion``, ``context_window_exceeded``,
+                                # ``error``) when a ``TrialGrader`` auto-fail branch
+                                # synthesised the grade — no evaluator ran on the trial,
+                                # ``components`` is empty and this field names which reason
+                                # the harness synthesised from. See docs/GRADING.md
+                                # § Harness auto-fail synthesis.
 ```
 
 Score scale: `0.0` ≤ `score` ≤ `1.0`. `binary_pass` is the harness-level

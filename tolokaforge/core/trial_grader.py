@@ -23,7 +23,12 @@ The conductor's job (per ``docs/CLOUD_RUNTIME_ARCHITECTURE.md`` §6.3) is to
   4. ``TerminationReason.EMPTY_COMPLETION`` — auto-fail. The model returned
      no text and no tool calls, so there is nothing to grade: dispatching to
      the runner would score empty content against the golden.
-  5. Otherwise — the runner's ``grade_trial`` gRPC computes state / rule /
+  5. ``TerminationReason.CONTEXT_WINDOW_EXCEEDED`` — auto-fail. The wire
+     history exceeded the provider's max input tokens and no summarize
+     recovery was possible; the transcript is truncated by definition, so
+     dispatching to the runner would score a mid-trial cutoff against the
+     golden.
+  6. Otherwise — the runner's ``grade_trial`` gRPC computes state / rule /
      judge components against the golden state and returns a raw dict that
      is parsed into :class:`Grade`. A grading run that could not produce a
      verdict raises :class:`GradingFailedError`; the verdict is the runner's
@@ -304,6 +309,21 @@ class RunnerRPCTrialGrader:
                 components=GradeComponents(),
                 reasons="Model returned an empty completion (no text, no tool calls)",
                 synthesized_by_termination_reason=TerminationReason.EMPTY_COMPLETION,
+            )
+
+        if trajectory.termination_reason == TerminationReason.CONTEXT_WINDOW_EXCEEDED:
+            self.logger.info(
+                "Trial ended with a context-window overflow - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Wire history exceeded the provider's max input tokens and no summarize recovery was possible",
+                synthesized_by_termination_reason=TerminationReason.CONTEXT_WINDOW_EXCEEDED,
             )
 
         llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
@@ -670,6 +690,21 @@ class JudgeBackedTrialGrader:
                 synthesized_by_termination_reason=TerminationReason.EMPTY_COMPLETION,
             )
 
+        if trajectory.termination_reason == TerminationReason.CONTEXT_WINDOW_EXCEEDED:
+            self.logger.info(
+                "Trial ended with a context-window overflow - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Wire history exceeded the provider's max input tokens and no summarize recovery was possible",
+                synthesized_by_termination_reason=TerminationReason.CONTEXT_WINDOW_EXCEEDED,
+            )
+
         grade = self.judge_fn(spec, trajectory, agent_system_prompt)
         if grade is None:
             self.logger.info(
@@ -803,6 +838,21 @@ class GraderRPCTrialGrader:
                 components=GradeComponents(),
                 reasons="Model returned an empty completion (no text, no tool calls)",
                 synthesized_by_termination_reason=TerminationReason.EMPTY_COMPLETION,
+            )
+
+        if trajectory.termination_reason == TerminationReason.CONTEXT_WINDOW_EXCEEDED:
+            self.logger.info(
+                "Trial ended with a context-window overflow - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Wire history exceeded the provider's max input tokens and no summarize recovery was possible",
+                synthesized_by_termination_reason=TerminationReason.CONTEXT_WINDOW_EXCEEDED,
             )
 
         _refuse_hash_grading_on_grader_rpc(spec)
@@ -1012,6 +1062,21 @@ class QueueTrialGrader:
                 components=GradeComponents(),
                 reasons="Model returned an empty completion (no text, no tool calls)",
                 synthesized_by_termination_reason=TerminationReason.EMPTY_COMPLETION,
+            )
+
+        if trajectory.termination_reason == TerminationReason.CONTEXT_WINDOW_EXCEEDED:
+            self.logger.info(
+                "Trial ended with a context-window overflow - automatic fail",
+                task_id=task_id,
+                trial_index=trial_idx,
+                termination_reason=trajectory.termination_reason.value,
+            )
+            return Grade(
+                binary_pass=False,
+                score=0.0,
+                components=GradeComponents(),
+                reasons="Wire history exceeded the provider's max input tokens and no summarize recovery was possible",
+                synthesized_by_termination_reason=TerminationReason.CONTEXT_WINDOW_EXCEEDED,
             )
 
         _refuse_hash_grading_on_grader_rpc(spec)

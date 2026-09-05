@@ -507,6 +507,20 @@ Retries are exhausted before any of this is recorded, so a trial that eventually
 succeeded contributes one measured result, not one per attempt. See
 [`docs/GRADING.md`](GRADING.md:1) § Infrastructure aborts produce no grade.
 
+Engine-loop trials on presets that declare `context_watermark` +
+`max_context_tokens` emit a `role: system` message shaped
+`"Context summarized before turn N (...); wire history reset."` when the
+loop's context-window seam fires (see
+[`docs/LLM_LAYER.md`](LLM_LAYER.md:1) § Context-window handoff). Grading
+reads through it — it is a `role: system` message and per G3/N3 in
+[`docs/GRADING.md`](GRADING.md:1) is not an event. `Trajectory.messages`
+still carries the full pre-summarize view, so the grader's timeline
+builder is unaffected; only the wire prompt on subsequent turns sees the
+compacted view. A trial that hits the context wall with no recovery
+terminates with `TerminationReason.CONTEXT_WINDOW_EXCEEDED` and
+`TrialStatus.FAILED`; `TrialGrader` auto-fails it without dispatching
+to the runner grader.
+
 ## Programmatic Queue Access
 
 ```python
