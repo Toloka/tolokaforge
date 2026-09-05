@@ -1094,9 +1094,43 @@ def test_reactive_context_window_exceeded_triggers_summarize_when_opted_in():
     assert [m.content for m in second_wire[:2]] == ["the original task", "reactive-recap"]
 
 
+def test_reactive_retry_after_summarize_still_context_exceeded():
+    """When summarize succeeded but the post-summarize retry `_generate`
+    also raises ``ContextWindowExceededError``, the loop terminates loud-fail
+    with the typed reason. Bounds the retry topology — no iterated summarize."""
+    from litellm.exceptions import ContextWindowExceededError
+
+    summarizer = _ScriptedSummarizer(["recap-worked-but-still-too-big"])
+    sink = _WatermarkSink([5])
+    client = _RecordingClient(
+        [
+            ContextWindowExceededError("input too large", "anthropic/claude", "anthropic"),
+            ContextWindowExceededError("still too large", "anthropic/claude", "anthropic"),
+        ]
+    )
+    messages: list[Message] = [_first_user()]
+    outcome = _summarize_loop(
+        client,
+        sink=sink,
+        summarizer=summarizer,
+        config=_summarize_config(
+            max_context_tokens=1000,
+            context_watermark=100,
+            summarize_policy=summarizer,
+            max_turns=1,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert outcome.termination_reason is TerminationReason.CONTEXT_WINDOW_EXCEEDED
+    assert outcome.status is TrialStatus.FAILED
+    assert summarizer.calls == 1
+    assert client.calls == 2
+
+
 def test_reactive_context_window_exceeded_terminates_when_not_opted_in():
-    """Without summarize opted in, the raise reaches the classifier's new
-    typed branch and terminates with the typed reason."""
+    """Without summarize opted in, the raise reaches the classifier's
+    typed ``ContextWindowExceededError`` branch and terminates with
+    that typed reason."""
     from litellm.exceptions import ContextWindowExceededError
 
     client = _ScriptedClient(
@@ -1243,8 +1277,8 @@ def test_summarize_records_full_history_in_trajectory_messages():
 def test_classify_loop_error_typed_context_window_exceeded():
     """The classifier's typed branch matches
     ``ContextWindowExceededError`` before the ``"API" in error_str``
-    substring fallback. Closes the pre-existing classifier gap
-    (previously the exception was absorbed into generic ``ERROR``)."""
+    substring fallback and routes to
+    ``TerminationReason.CONTEXT_WINDOW_EXCEEDED`` / ``TrialStatus.FAILED``."""
     from litellm.exceptions import ContextWindowExceededError
 
     exc = ContextWindowExceededError("input too large", "anthropic/claude", "anthropic")

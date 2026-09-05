@@ -30,7 +30,6 @@ Summarize is one attempt: the loop does not summarize the summary.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Protocol
 
 from tolokaforge.core.llm.client import GenerationResult
@@ -97,7 +96,6 @@ class SummarizePolicy(Protocol):
     def summarize(self, system_prompt: str, messages: list[Message]) -> str: ...
 
 
-@dataclass(frozen=True)
 class NoSummarize:
     """No-op :class:`SummarizePolicy`.
 
