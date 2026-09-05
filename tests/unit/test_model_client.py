@@ -282,6 +282,30 @@ class TestParseToolArguments:
         assert isinstance(result["actions"], list)
         assert result["actions"][0]["type"] == "click"
 
+    def test_try_parse_tool_arguments_returns_reason_on_exhaustion(self) -> None:
+        """``_try_parse_tool_arguments`` ingests the same raw shapes as its
+        wrapper but reports whether every parser exhausted. Locks the seam
+        the loop's parser-error retry reads on ``GenerationResult.parser_errors``:
+        exhausted → ``({}, "Unable to parse...")``, recovered / native-dict /
+        provider-sent-no-args → ``({...}, None)``."""
+        client = _make_client()
+
+        parsed, reason = client._try_parse_tool_arguments("search", '{"a": ]')
+        assert parsed == {}
+        assert reason == "Unable to parse with JSON/YAML fallbacks"
+
+        parsed, reason = client._try_parse_tool_arguments("search", '{"q": 1}')
+        assert parsed == {"q": 1}
+        assert reason is None
+
+        parsed, reason = client._try_parse_tool_arguments("search", None)
+        assert parsed == {}
+        assert reason is None
+
+        parsed, reason = client._try_parse_tool_arguments("search", "[1, 2, 3]")
+        assert parsed == {}
+        assert reason is None
+
 
 # ===================================================================
 # _tool_block_format and supports_tool_image_blocks
