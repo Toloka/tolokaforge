@@ -163,6 +163,7 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         TerminationReason.RATE_LIMIT,
         TerminationReason.API_ERROR,
         TerminationReason.EMPTY_COMPLETION,
+        TerminationReason.CONTEXT_WINDOW_EXCEEDED,
         TerminationReason.ERROR,
     ):
         failure_class = "timeout_or_resource"

@@ -1803,6 +1803,99 @@ directly rather than routing it through `classify_loop_error` so post-run
 analysis can tell "the model produced nothing" apart from the API-error
 class that would otherwise absorb it.
 
+### Context-window handoff
+
+`ModelCapabilities.max_context_tokens: int | None` and
+`ModelCapabilities.context_watermark: int | None` arm a first-class engine
+seam: when the previous generation's `Usage.prompt_tokens +
+context_watermark >= max_context_tokens`, `ToolCallingLoop._run_turn`
+invokes its `SummarizePolicy` (see
+[`tolokaforge/core/summarize_policy.py`](../tolokaforge/core/summarize_policy.py))
+before the next `_generate` call and rewrites the wire message list to
+`[first_user_message, Message(USER, content=recap)]`. The recorded
+`Trajectory.messages` list keeps the full pre-summarize view — the grader's
+timeline builder reads that, and every existing timeline construction rule
+still holds. Both `None` disable the pre-turn watermark check; a preset
+that declares only `max_context_tokens` (for other uses) but not
+`context_watermark` never fires summarize either.
+
+The reactive path catches `litellm.exceptions.ContextWindowExceededError`
+inside the same turn: with summarize armed, the loop calls the policy and
+retries `_generate` once inline; without it, the exception reaches
+`classify_loop_error`, which routes it to a typed
+`TerminationReason.CONTEXT_WINDOW_EXCEEDED` rather than the generic
+`ERROR` bucket.
+
+Three loud-fail terminals all map to
+`TerminationReason.CONTEXT_WINDOW_EXCEEDED` and `TrialStatus.FAILED`:
+
+* The summarize policy returned an empty recap (`SummarizerFailedError`).
+* The summarize policy's own `generate` raised
+  `ContextWindowExceededError` — the pre-summarize history alone
+  exceeds the window.
+* The post-summarize `_generate` retry raised
+  `ContextWindowExceededError` — the compacted wire prompt still
+  exceeds the window.
+
+The engine does not iterate summarize: one summarize is one summarize.
+
+`LoopConfig.max_context_tokens`, `LoopConfig.context_watermark` and
+`LoopConfig.summarize_policy` flow from `ModelCapabilities` at
+[`runner.py`](../tolokaforge/core/runner.py) construction time. The
+default `SummarizePolicy` implementation `LLMSummarizer` reuses the
+trial's own `LLMClient` — the same reasoning model that produced the
+history summarizes it. The summarize `generate` call is billed through
+the shared `MetricsSink` so its `Usage` and `cost_usd` land in the
+trial's `Metrics` alongside the agent's turns; the `MetricsSink`
+Protocol exposes `last_prompt_tokens: int | None` for the pre-turn
+watermark check and defaults to `None` for subclasses that do not
+override.
+
+Composes above the turn budget: a summarize event does not reset the
+turn counter, and the `_maybe_summarize` hook fires at the top of every
+turn before `_generate`. A summarize on turn `N` records a `role: system`
+message `"Context summarized before turn N (...); wire history reset."`
+in `Trajectory.messages`; per `docs/GRADING.md` G3/N3 that message is not
+an event and the grader threads through it. Grading reads
+`Trajectory.messages` (the recorded view), so the pre-summarize timeline
+survives end-to-end. Only the wire prompt on subsequent turns sees the
+compacted view.
+
+Compatibility surface: the two `ModelCapabilities` slots and the three
+`LoopConfig` fields are additive with `None`/no-op defaults, so a preset
+that does not name them inherits current behaviour byte-for-byte. The
+new `TerminationReason.CONTEXT_WINDOW_EXCEEDED` enum value counts against
+the measured denominator (not excluded — a summarize-opted preset that
+failed here failed on a measurable in-scope condition; a non-opted
+preset had no recovery path so its failure is the model's real long-tail
+behaviour). Loop and preset-routing behaviour are pinned by
+[`tests/unit/test_tool_calling_loop.py`](../tests/unit/test_tool_calling_loop.py)
+and
+[`tests/unit/test_failure_attribution.py`](../tests/unit/test_failure_attribution.py).
+
+**Preset opt-ins.** Two shipped presets declare the capability today:
+
+* `moonshot_kimi_k3` — `max_context_tokens: 128000`,
+  `context_watermark: 8000`. Kimi K3's documented 128 K window is the
+  provider ceiling; the 8 K free-token watermark is ~6 % headroom sized
+  for one reasoning turn plus its tool-call reply. Reasoning-heavy
+  multi-turn trajectories on tool-rich packs exhaust the window before
+  the turn budget does, and the preset's earlier defences
+  (`empty_retry_count`, `tool_output_max_chars`, provider pin) attack
+  the growth rate rather than the reset-when-full case.
+* `anthropic_claude_4_7` (Opus + Sonnet) — `max_context_tokens:
+  200000`, `context_watermark: 12000`. Claude 4.7's documented 200 K
+  window fills on signed-thinking-heavy trajectories even under the
+  `anthropic_ephemeral` cache (cache read savings do not shrink the
+  prompt). 12 K free tokens is ~6 % headroom sized for one
+  adaptive-thinking turn (8 K default extended-thinking budget + 4 K
+  reply).
+
+Preset routing pinned by
+[`tests/canonical/test_context_window_preset_routing.py`](../tests/canonical/test_context_window_preset_routing.py).
+Every other shipped preset resolves to both slots `None`; new opt-ins
+land alongside the run data that justified the chosen watermark.
+
 ### Tool-output truncation
 
 `ModelCapabilities.tool_output_max_chars: int | None` is the loop-layer cap
@@ -2357,6 +2450,13 @@ exception*, and the empty-completion retry resamples a *returned empty-shape
 result* (see § *Provider-side empty completion* above for the resample
 mechanics and the Gemini-legal-tail invariant). Each owns a dedicated
 `LoopConfig` field so a preset can tune them independently.
+
+`TerminationReason.CONTEXT_WINDOW_EXCEEDED` is a third wire-shape reason
+(parallel to `EMPTY_COMPLETION`), not routed through the API-error retry.
+It fires when the provider returns
+`litellm.exceptions.ContextWindowExceededError`, and — with the summarize
+seam armed — after one loud-fail summarize+retry attempt. See §
+*Context-window handoff* above.
 
 The retry budget resets to zero at the start of every outer iteration, so a
 successful turn 0 followed by an API-error turn 1 gets a fresh budget. The

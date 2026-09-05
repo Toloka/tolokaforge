@@ -1053,6 +1053,8 @@ def build_capabilities(
     empty_retry_count = cfg.get("empty_retry_count")
     tool_output_max_chars = cfg.get("tool_output_max_chars")
     default_max_turns = cfg.get("default_max_turns")
+    max_context_tokens = cfg.get("max_context_tokens")
+    context_watermark = cfg.get("context_watermark")
     openrouter_defaults_cfg = cfg.get("openrouter_defaults")
 
     return ModelCapabilities(
@@ -1075,6 +1077,8 @@ def build_capabilities(
             int(tool_output_max_chars) if tool_output_max_chars is not None else None
         ),
         default_max_turns=(int(default_max_turns) if default_max_turns is not None else None),
+        max_context_tokens=(int(max_context_tokens) if max_context_tokens is not None else None),
+        context_watermark=(int(context_watermark) if context_watermark is not None else None),
         openrouter_defaults=(
             OpenRouterConfig(**openrouter_defaults_cfg) if openrouter_defaults_cfg else None
         ),

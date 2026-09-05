@@ -59,6 +59,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+import litellm.exceptions
+
 from tolokaforge.core.llm.client import (
     GenerationResult,
     LLMApiTimeoutError,
@@ -76,6 +78,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.run_display_events import LLMCallObservation
+from tolokaforge.core.summarize_policy import SummarizePolicy, SummarizerFailedError
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
 from tolokaforge.core.tool_output_truncation import keep_head_and_tail
 from tolokaforge.runner.protocol import TrialNotRegisteredError
@@ -127,6 +130,14 @@ class LoopConfig:
     the message is appended; ``None`` (the default) threads tool output
     through verbatim. The cap is a defensive backstop above any per-tool
     truncation the tool applies to its own output.
+
+    ``max_context_tokens``, ``context_watermark`` and ``summarize_policy``
+    arm the context-window summarize seam (see
+    :mod:`tolokaforge.core.summarize_policy`). The pre-turn watermark check
+    fires only when **all three** are set and
+    ``MetricsSink.last_prompt_tokens + context_watermark >=
+    max_context_tokens``; any ``None`` leaves the loop's pre-opt-in
+    behaviour intact.
     """
 
     max_turns: int = 50
@@ -135,6 +146,9 @@ class LoopConfig:
     api_error_backoff_s: float = 1.0
     empty_retry_count: int = 0
     tool_output_max_chars: int | None = None
+    max_context_tokens: int | None = None
+    context_watermark: int | None = None
+    summarize_policy: SummarizePolicy | None = None
 
 
 @dataclass(frozen=True)
@@ -196,11 +210,20 @@ class MetricsSink(Protocol):
 
     Parameterised so the agent threads its trial ``Metrics`` while a future
     judge threads its own accounting object.
+
+    ``last_prompt_tokens`` exposes the ``prompt_tokens`` charged on the most
+    recent ``record_generation`` call. The engine reads it to arm the
+    pre-turn summarize check; a subclass that never overrides inherits
+    ``None`` and never trips the check.
     """
 
     def record_generation(self, result: GenerationResult) -> None: ...
 
     def record_tool_call(self) -> None: ...
+
+    @property
+    def last_prompt_tokens(self) -> int | None:
+        return None
 
 
 ErrorClassifier = Callable[[Exception], TerminationDecision]
@@ -243,6 +266,12 @@ def classify_loop_error(
             reason=TerminationReason.TRIAL_LOST,
             system_message=f"{error_str} Dialogue terminated.",
             status=TrialStatus.ERROR,
+        )
+    if isinstance(exc, litellm.exceptions.ContextWindowExceededError):
+        return TerminationDecision(
+            reason=TerminationReason.CONTEXT_WINDOW_EXCEEDED,
+            system_message=f"Context window exceeded: {error_str}. Dialogue terminated.",
+            status=TrialStatus.FAILED,
         )
     if isinstance(exc, LLMApiTimeoutError):
         return TerminationDecision(
@@ -344,6 +373,11 @@ class ToolCallingLoop:
     # Captured from the first generation's effective system prompt.
     _captured_effective_prompt: str | None = field(default=None, init=False)
     _captured: bool = field(default=False, init=False)
+    # Wire message list sent to the provider. Distinct from the caller-owned
+    # ``messages`` (which becomes ``Trajectory.messages``) so a summarize event
+    # can rewrite the wire view while the recorded history keeps the full
+    # pre-summarize timeline for grading.
+    _wire_messages: list[Message] = field(default_factory=list, init=False)
 
     def run(self, system_prompt: str, messages: list[Message], start_time: float) -> LoopOutcome:
         """Run the turn loop, mutating ``messages`` in place.
@@ -354,11 +388,12 @@ class ToolCallingLoop:
         """
         status = TrialStatus.COMPLETED
         termination_reason: TerminationReason | None = None
+        self._wire_messages = list(messages)
 
         for turn in range(self.config.max_turns):
             outcome = self._attempt_turn(turn, system_prompt, messages, start_time)
             if isinstance(outcome, TerminationDecision):
-                messages.append(self._system_message(outcome.system_message))
+                self._append_both(messages, self._system_message(outcome.system_message))
                 status = outcome.status or status
                 termination_reason = outcome.reason
                 break
@@ -370,10 +405,11 @@ class ToolCallingLoop:
                 break
         else:
             termination_reason = TerminationReason.MAX_TURNS
-            messages.append(
+            self._append_both(
+                messages,
                 self._system_message(
                     f"Maximum turns ({self.config.max_turns}) reached. Dialogue terminated."
-                )
+                ),
             )
 
         return LoopOutcome(
@@ -381,6 +417,16 @@ class ToolCallingLoop:
             termination_reason=termination_reason,
             captured_effective_system_prompt=self._captured_effective_prompt,
         )
+
+    def _append_both(self, messages: list[Message], message: Message) -> None:
+        """Append to the caller-owned recorded list and the wire list.
+
+        A summarize event rewrites ``_wire_messages`` but leaves ``messages``
+        alone, so grading reads the full pre-summarize history via
+        ``Trajectory.messages``.
+        """
+        messages.append(message)
+        self._wire_messages.append(message)
 
     def _attempt_turn(
         self,
@@ -447,9 +493,39 @@ class ToolCallingLoop:
         ``status_override`` promotes the trial status. Raised exceptions are
         classified by the caller.
         """
+        summarize_decision = self._maybe_summarize(turn, system_prompt, messages)
+        if summarize_decision is not None:
+            self._append_both(messages, self._system_message(summarize_decision.system_message))
+            return summarize_decision.status, summarize_decision.reason, True
+
         empty_attempts = 0
         while True:
-            result = self._generate(turn, system_prompt, messages)
+            try:
+                result = self._generate(turn, system_prompt)
+            except litellm.exceptions.ContextWindowExceededError:
+                reactive_decision = self._maybe_reactive_summarize(turn, system_prompt, messages)
+                if reactive_decision is not None:
+                    self._append_both(
+                        messages, self._system_message(reactive_decision.system_message)
+                    )
+                    return reactive_decision.status, reactive_decision.reason, True
+                if not self._summarize_armed():
+                    raise
+                try:
+                    result = self._generate(turn, system_prompt)
+                except litellm.exceptions.ContextWindowExceededError as retry_exc:
+                    self._append_both(
+                        messages,
+                        self._system_message(
+                            "Context window exceeded on the post-summarize retry: "
+                            f"{retry_exc}. Dialogue terminated."
+                        ),
+                    )
+                    return (
+                        TrialStatus.FAILED,
+                        TerminationReason.CONTEXT_WINDOW_EXCEEDED,
+                        True,
+                    )
             self._assign_call_ids(result)
             self._capture_effective_prompt(result)
             self.metrics.record_generation(result)
@@ -459,11 +535,12 @@ class ToolCallingLoop:
                 break
 
             if empty_attempts >= self.config.empty_retry_count:
-                messages.append(
+                self._append_both(
+                    messages,
                     self._system_message(
                         "Model returned an empty completion (no text, no tool calls); "
                         "trial terminated to keep the next request provider-legal."
-                    )
+                    ),
                 )
                 return TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, True
 
@@ -475,11 +552,11 @@ class ToolCallingLoop:
                 max_attempts=self.config.empty_retry_count + 1,
             )
 
-        messages.append(self._assistant_message(result))
+        self._append_both(messages, self._assistant_message(result))
 
         decision = self.should_terminate(result, turn, messages)
         if decision is not None:
-            messages.append(self._system_message(decision.system_message))
+            self._append_both(messages, self._system_message(decision.system_message))
             return decision.status, decision.reason, True
 
         if result.tool_calls:
@@ -487,6 +564,105 @@ class ToolCallingLoop:
             return None, None, False
 
         return self._advance_user_turn(messages)
+
+    def _summarize_armed(self) -> bool:
+        return (
+            self.config.max_context_tokens is not None
+            and self.config.context_watermark is not None
+            and self.config.summarize_policy is not None
+        )
+
+    def _maybe_summarize(
+        self, turn: int, system_prompt: str, messages: list[Message]
+    ) -> TerminationDecision | None:
+        """Rewrite ``_wire_messages`` when the previous turn crossed the watermark.
+
+        Returns a :class:`TerminationDecision` when summarize was fired and
+        failed loud (empty recap, or the summarize call itself raised
+        :class:`~litellm.exceptions.ContextWindowExceededError`). Returns
+        ``None`` when summarize was not armed, when the watermark was not
+        crossed, or when summarize succeeded and the loop should continue.
+        """
+        if not self._summarize_armed():
+            return None
+        last = self.metrics.last_prompt_tokens
+        if last is None:
+            return None
+        watermark = self.config.context_watermark
+        max_ctx = self.config.max_context_tokens
+        if last + watermark < max_ctx:
+            return None
+        return self._perform_summarize(
+            turn=turn,
+            system_prompt=system_prompt,
+            messages=messages,
+            trigger=(
+                f"pre-turn watermark (prev prompt_tokens={last}, watermark={watermark}, "
+                f"max_context={max_ctx})"
+            ),
+        )
+
+    def _maybe_reactive_summarize(
+        self, turn: int, system_prompt: str, messages: list[Message]
+    ) -> TerminationDecision | None:
+        """Summarize in response to a raised
+        :class:`~litellm.exceptions.ContextWindowExceededError`.
+
+        Returns a :class:`TerminationDecision` on loud-fail, or ``None`` when
+        the caller should retry ``_generate`` once inline. Returns ``None``
+        with no side effect when summarize is not armed — the caller
+        propagates the exception so the classifier handles it.
+        """
+        if not self._summarize_armed():
+            return None
+        return self._perform_summarize(
+            turn=turn,
+            system_prompt=system_prompt,
+            messages=messages,
+            trigger="reactive context_window_exceeded",
+        )
+
+    def _perform_summarize(
+        self,
+        *,
+        turn: int,
+        system_prompt: str,
+        messages: list[Message],
+        trigger: str,
+    ) -> TerminationDecision | None:
+        assert self.config.summarize_policy is not None  # gated by _summarize_armed
+        policy = self.config.summarize_policy
+        self.logger.info("Summarizing wire history", turn=turn, trigger=trigger)
+        try:
+            recap = policy.summarize(system_prompt, list(messages))
+        except litellm.exceptions.ContextWindowExceededError as exc:
+            return TerminationDecision(
+                reason=TerminationReason.CONTEXT_WINDOW_EXCEEDED,
+                system_message=(
+                    "Summarize call itself exceeded the context window "
+                    f"({trigger}): {exc}. Dialogue terminated."
+                ),
+                status=TrialStatus.FAILED,
+            )
+        except SummarizerFailedError as exc:
+            return TerminationDecision(
+                reason=TerminationReason.CONTEXT_WINDOW_EXCEEDED,
+                system_message=(
+                    f"Summarize policy produced no recap ({trigger}): {exc}. Dialogue terminated."
+                ),
+                status=TrialStatus.FAILED,
+            )
+        first_user_message = self._wire_messages[0]
+        self._wire_messages = [
+            first_user_message,
+            Message(role=MessageRole.USER, content=recap, ts=_now()),
+        ]
+        marker = self._system_message(
+            f"Context summarized before turn {turn} ({trigger}); wire history reset."
+        )
+        self._wire_messages.append(marker)
+        messages.append(marker)
+        return None
 
     def _assign_call_ids(self, result: GenerationResult) -> None:
         """Give every parsed call the episode-unique id, before anything reads it.
@@ -513,13 +689,13 @@ class ToolCallingLoop:
             assigned.append(call.model_copy(update={"id": key}))
         result.tool_calls = assigned
 
-    def _generate(self, turn: int, system_prompt: str, messages: list[Message]) -> GenerationResult:
+    def _generate(self, turn: int, system_prompt: str) -> GenerationResult:
         self.logger.debug("Requesting agent response", turn=turn)
         if self.request_limiter is not None:
             self.request_limiter.acquire()
         return self.llm_client.generate(
             system=system_prompt,
-            messages=messages,
+            messages=self._wire_messages,
             tools=self.tool_schemas,
             tool_choice="auto",
             observation=self.call_observation,
@@ -538,11 +714,11 @@ class ToolCallingLoop:
 
         outcome = self.user_turn(messages)
         if outcome.termination is not None:
-            messages.append(self._system_message(outcome.termination.system_message))
+            self._append_both(messages, self._system_message(outcome.termination.system_message))
             return outcome.termination.status, outcome.termination.reason, True
 
         if outcome.message is not None:
-            messages.append(outcome.message)
+            self._append_both(messages, outcome.message)
         return None, None, False
 
     def _execute_tool_calls(self, result: GenerationResult, messages: list[Message]) -> None:
@@ -586,14 +762,15 @@ class ToolCallingLoop:
             )
             content = self._cap_tool_message_content(tc.name, raw_content)
 
-            messages.append(
+            self._append_both(
+                messages,
                 Message(
                     role=MessageRole.TOOL,
                     content=content,
                     content_blocks=(tool_result.content_blocks if tool_result.success else None),
                     tool_call_id=tc.id,
                     ts=_now(),
-                )
+                ),
             )
 
     def _cap_tool_message_content(self, tool_name: str, raw: str) -> str:

@@ -39,7 +39,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from litellm.exceptions import RateLimitError
+from litellm.exceptions import ContextWindowExceededError, RateLimitError
 
 from tests.canonical._factories import make_task_config, make_trajectory, make_trial_spec
 from tests.canonical.test_lost_trial_attribution import drive_lost_trial
@@ -231,6 +231,7 @@ def observed_outcomes() -> frozenset[tuple[TrialStatus, TerminationReason]]:
         _run_trial(RuntimeError("OpenAI returned 500")),
         _run_trial(RuntimeError("something the classifier cannot name")),
         _run_trial(GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=1))),
+        _run_trial(ContextWindowExceededError("input too large", "anthropic/claude", "anthropic")),
         _provision_failure_trajectory(),
         drive_lost_trial()[0],
     ]
