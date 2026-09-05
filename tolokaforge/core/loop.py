@@ -8,16 +8,24 @@ the same machinery.
 The engine is deliberately behaviour-light: it owns turn structure (episode
 timeout, generate, accumulate, append assistant, terminate, execute tools,
 optional user turn, error classification, max-turns), and delegates every
-*policy* decision to pluggable seams. A provider-shaped *empty completion* —
-``result.text == "" and not result.tool_calls`` — is the one wire-shape
-observation the engine consumes directly: it resamples up to
+*policy* decision to pluggable seams. The engine consumes three wire-shape
+observations directly: the provider-shaped *empty completion* —
+``result.text == "" and not result.tool_calls`` — resamples up to
 ``LoopConfig.empty_retry_count`` times without appending the empty assistant
 message, and on the ``(N + 1)``-th empty result terminates the trial with
-:attr:`TerminationReason.EMPTY_COMPLETION`. The Gemini-legal-tail invariant is
+:attr:`TerminationReason.EMPTY_COMPLETION` (the Gemini-legal-tail invariant is
 preserved end-to-end because the empty message is never appended — appending
-it would send a request whose tail is an empty ``role=model`` turn on the next
-iteration and providers such as Gemini reject that as an API error rather than
-pass it through.
+it would send a request whose tail is an empty ``role=model`` turn on the
+next iteration and providers such as Gemini reject that as an API error
+rather than pass it through); the content-carrying *max-tokens truncation* —
+``result.finish_reason == "length"`` on a content-carrying result —
+resamples with a ``role=user`` feedback turn under
+``LoopConfig.output_length_retry_count`` before falling through to
+accept-and-continue; and the *un-parseable tool_call arguments* —
+``result.parser_errors`` non-empty — resamples with a ``role=user``
+feedback turn naming the failing tools and quoting the raw arguments under
+``LoopConfig.parser_error_retry_count`` before falling through to accept the
+``{}``-coerced response.
 
 The loop also owns a defensive bound on tool-output size that lands in the
 message history: when ``LoopConfig.tool_output_max_chars`` is set,
@@ -64,6 +72,7 @@ import litellm.exceptions
 from tolokaforge.core.llm.client import (
     GenerationResult,
     LLMApiTimeoutError,
+    ParserError,
     is_typed_rate_limit_exception,
     matches_rate_limit_text,
 )
@@ -117,18 +126,22 @@ class LoopConfig:
     provider fault the classifier could not attribute to a typed reason.
     ``empty_retry_count`` sets the resample budget for a returned empty
     completion; ``output_length_retry_count`` sets the resample budget for a
-    content-carrying max-tokens truncation. The three retry classes are
-    orthogonal — the API-error retry replays a raised exception, the
-    empty-completion retry resamples a returned empty-shape result without
-    appending the empty assistant message and without advancing the outer turn
-    counter, and the output-length retry appends a ``role=user`` feedback turn
-    and resamples a truncated content-carrying result under its own budget
-    before falling through to accept-and-continue. Each owns a dedicated
-    ``LoopConfig`` field and each fires on a distinct trigger.
-    ``RATE_LIMIT``, ``API_TIMEOUT`` and ``TRIAL_LOST`` stay one-shot terminal
-    because each owns a dedicated path (typed 429 handling, transport-timeout
-    retry, substrate re-registration) and retrying them here would
-    double-count them.
+    content-carrying max-tokens truncation; ``parser_error_retry_count`` sets
+    the resample budget for a response whose ``tool_call.function.arguments``
+    string could not be decoded. The four retry classes are orthogonal — the
+    API-error retry replays a raised exception, the empty-completion retry
+    resamples a returned empty-shape result without appending the empty
+    assistant message and without advancing the outer turn counter, the
+    output-length retry appends a ``role=user`` feedback turn and resamples a
+    truncated content-carrying result under its own budget before falling
+    through to accept-and-continue, and the parser-error retry appends a
+    ``role=user`` feedback turn naming the failing tools and resamples under
+    its own budget before falling through to accept the ``{}``-coerced
+    response. Each owns a dedicated ``LoopConfig`` field and each fires on a
+    distinct trigger. ``RATE_LIMIT``, ``API_TIMEOUT`` and ``TRIAL_LOST`` stay
+    one-shot terminal because each owns a dedicated path (typed 429 handling,
+    transport-timeout retry, substrate re-registration) and retrying them
+    here would double-count them.
 
     ``tool_output_max_chars`` caps the ``role=tool`` message ``content`` at
     that many chars via
@@ -152,6 +165,7 @@ class LoopConfig:
     api_error_backoff_s: float = 1.0
     empty_retry_count: int = 0
     output_length_retry_count: int = 0
+    parser_error_retry_count: int = 0
     tool_output_max_chars: int | None = None
     max_context_tokens: int | None = None
     context_watermark: int | None = None
@@ -454,16 +468,20 @@ class ToolCallingLoop:
         successful turn followed by an API-error turn gets a fresh budget.
         Only :attr:`TerminationReason.API_ERROR` triggers a retry at this
         layer: rate limits, API timeouts and trial-lost stay one-shot
-        terminal. Empty completions and content-carrying max-tokens
-        truncations are resampled inside :meth:`_run_turn` under their own
-        budgets (:attr:`LoopConfig.empty_retry_count` and
-        :attr:`LoopConfig.output_length_retry_count`), so the three retry
+        terminal. Empty completions, content-carrying max-tokens truncations
+        and un-parseable tool_call arguments are resampled inside
+        :meth:`_run_turn` under their own budgets
+        (:attr:`LoopConfig.empty_retry_count`,
+        :attr:`LoopConfig.output_length_retry_count` and
+        :attr:`LoopConfig.parser_error_retry_count`), so the four retry
         classes stay orthogonal — the API-error retry replays a raised
         exception, the empty-completion retry resamples a returned
-        empty-shape result, and the output-length retry appends a
-        ``role=user`` feedback turn and resamples a returned truncated
-        content-carrying result before falling through to
-        accept-and-continue.
+        empty-shape result, the output-length retry appends a ``role=user``
+        feedback turn and resamples a returned truncated content-carrying
+        result before falling through to accept-and-continue, and the
+        parser-error retry appends a ``role=user`` feedback turn naming the
+        failing tools and resamples before falling through to accept the
+        ``{}``-coerced response.
         """
         api_error_attempts = 0
         while True:
@@ -512,6 +530,7 @@ class ToolCallingLoop:
 
         empty_attempts = 0
         output_length_attempts = 0
+        parser_error_attempts = 0
         while True:
             try:
                 result = self._generate(turn, system_prompt)
@@ -545,6 +564,27 @@ class ToolCallingLoop:
             self._log_generation(turn, result)
 
             if result.text or result.tool_calls:
+                if (
+                    result.parser_errors
+                    and parser_error_attempts < self.config.parser_error_retry_count
+                ):
+                    parser_error_attempts += 1
+                    self._append_both(
+                        messages,
+                        Message(
+                            role=MessageRole.USER,
+                            content=self._format_parser_error_feedback(result.parser_errors),
+                            ts=_now(),
+                        ),
+                    )
+                    self.logger.info(
+                        "Resampling after tool_call argument parse errors",
+                        turn=turn,
+                        attempt=parser_error_attempts,
+                        max_attempts=self.config.parser_error_retry_count + 1,
+                        tool_names=[e.tool_name for e in result.parser_errors],
+                    )
+                    continue
                 if (
                     result.finish_reason == "length"
                     and output_length_attempts < self.config.output_length_retry_count
@@ -901,3 +941,24 @@ class ToolCallingLoop:
     @staticmethod
     def _system_message(content: str) -> Message:
         return Message(role=MessageRole.SYSTEM, content=content, ts=_now())
+
+    @staticmethod
+    def _format_parser_error_feedback(errors: tuple[ParserError, ...]) -> str:
+        """Render the ``role=user`` feedback body for the parser-error retry.
+
+        Lists every failing tool_call so a multi-error response does not
+        silently drop one of the parse failures — the model would otherwise
+        re-emit whichever one it did not see. Kept as a static method so a
+        unit test can call it directly with a synthesised
+        :class:`ParserError` tuple.
+        """
+        lines = [
+            "The previous response had tool_call argument parse errors and could not be executed:"
+        ]
+        for e in errors:
+            lines.append(f"- tool={e.tool_name!r}: {e.reason}. Raw arguments: {e.raw_arguments!r}")
+        lines.append(
+            "Please fix these issues and provide valid JSON arguments "
+            "for each tool call, then try again."
+        )
+        return "\n".join(lines)

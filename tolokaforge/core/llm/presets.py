@@ -1052,6 +1052,7 @@ def build_capabilities(
     api_call_wall_timeout_s = cfg.get("api_call_wall_timeout_s")
     empty_retry_count = cfg.get("empty_retry_count")
     output_length_retry_count = cfg.get("output_length_retry_count")
+    parser_error_retry_count = cfg.get("parser_error_retry_count")
     tool_output_max_chars = cfg.get("tool_output_max_chars")
     default_max_turns = cfg.get("default_max_turns")
     max_context_tokens = cfg.get("max_context_tokens")
@@ -1076,6 +1077,9 @@ def build_capabilities(
         empty_retry_count=int(empty_retry_count) if empty_retry_count is not None else 0,
         output_length_retry_count=(
             int(output_length_retry_count) if output_length_retry_count is not None else 0
+        ),
+        parser_error_retry_count=(
+            int(parser_error_retry_count) if parser_error_retry_count is not None else 0
         ),
         tool_output_max_chars=(
             int(tool_output_max_chars) if tool_output_max_chars is not None else None

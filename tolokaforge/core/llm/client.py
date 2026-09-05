@@ -17,6 +17,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -85,8 +86,38 @@ __all__ = [
     "GenerationResult",
     "LLMApiTimeoutError",
     "LLMClient",
+    "ParserError",
     "UserSimulator",
 ]
+
+# Bound on the raw-arguments excerpt carried by ``ParserError.raw_arguments``.
+# A malformed tool_call args payload has enough surrounding context at 500
+# chars for the model to locate its syntactic issue on the resample. Distinct
+# from ``REPLY_DEFECT_EXCERPT_MAX_CHARS`` (200): that constant caps a
+# substring-match excerpt around a suspicious span, this one caps the whole
+# malformed payload — different use cases, tuned independently.
+PARSER_ERROR_RAW_ARGS_EXCERPT_MAX_CHARS = 500
+
+
+@dataclass(frozen=True)
+class ParserError:
+    """Sidecar record of one un-parseable ``tool_call.function.arguments``
+    string. Ephemeral in-process value object per the AGENTS.md type table —
+    never crosses a wire boundary and never serialised into ``Trajectory`` or
+    task artefacts, so a frozen dataclass fits and ``ReplyDefect`` (Pydantic)
+    is the wrong shape.
+
+    ``raw_arguments`` is the original ``tc.function.arguments`` string
+    (verbatim, so the retry feedback can quote it back), bounded by
+    :data:`PARSER_ERROR_RAW_ARGS_EXCERPT_MAX_CHARS`. ``reason`` is the parse
+    failure phrase — the exception message from the last failing parser or
+    ``"Unable to parse with JSON/YAML fallbacks"`` when every fallback
+    exhausted.
+    """
+
+    tool_name: str
+    raw_arguments: str
+    reason: str
 
 
 _module_logger = get_logger("llm_client_cost")
@@ -561,6 +592,14 @@ class GenerationResult:
         # Stamped only by ``UserSimulator._llm_reply``; every other producer
         # of a result leaves it empty.
         self.guard_rejections: tuple[ReplyDefect, ...] = ()
+        # One ``ParserError`` per ``tool_call.function.arguments`` string that
+        # ``_try_parse_tool_arguments`` could not decode. Stamped by
+        # ``LLMClient._assemble_result`` alongside the ``{}`` coercion the
+        # tolerant parser applies. Read by ``ToolCallingLoop._run_turn``'s
+        # parser-error retry seam to decide whether to discard the response,
+        # append ``role=user`` parse-error feedback naming the failing tools,
+        # and resample under ``LoopConfig.parser_error_retry_count``.
+        self.parser_errors: tuple[ParserError, ...] = ()
         # True iff ``UserSimulator._llm_reply`` substituted the fixed filler
         # for a tool-call-only reply with no text. Callers whose downstream
         # semantics depend on the model having written the text (the
@@ -1081,8 +1120,25 @@ class LLMClient:
 
         return repaired
 
-    def _parse_tool_arguments(self, tool_name: str, raw_args: Any) -> dict[str, Any]:
-        """Parse model-emitted tool arguments with tolerant fallbacks."""
+    def _try_parse_tool_arguments(
+        self, tool_name: str, raw_args: Any
+    ) -> tuple[dict[str, Any], str | None]:
+        """Parse model-emitted tool arguments with tolerant fallbacks and
+        report whether every parser exhausted.
+
+        Returns ``(parsed, error_reason)``. ``error_reason`` is ``None`` on
+        any recovery branch that yielded a dict (including the "provider
+        legitimately sent no args" branch: ``None`` / empty string / non-str)
+        and on the shape-mismatch branch (JSON parsed but yielded a list or
+        scalar rather than a dict — a shape issue rather than a parse
+        failure). It is a short human phrase (``"Unable to parse with
+        JSON/YAML fallbacks"``) only when every parser in the JSON / YAML /
+        repair-JSON / repair-YAML ladder failed to yield any dict.
+
+        Read by :meth:`_assemble_result` to populate
+        :attr:`GenerationResult.parser_errors` alongside the tolerant ``{}``
+        coercion the engine's parser-error retry seam consumes.
+        """
 
         def _normalize(parsed_args: dict[str, Any]) -> dict[str, Any]:
             normalized = dict(parsed_args)
@@ -1105,17 +1161,17 @@ class LLMClient:
             return normalized
 
         if isinstance(raw_args, dict):
-            return _normalize(raw_args)
+            return _normalize(raw_args), None
         if raw_args is None or not isinstance(raw_args, str):
-            return {}
+            return {}, None
 
         args_str = raw_args.strip()
         if not args_str:
-            return {}
+            return {}, None
 
         try:
             parsed = json.loads(args_str)
-            return _normalize(parsed) if isinstance(parsed, dict) else {}
+            return (_normalize(parsed) if isinstance(parsed, dict) else {}), None
         except json.JSONDecodeError:
             pass
 
@@ -1123,7 +1179,7 @@ class LLMClient:
             parsed = yaml.safe_load(args_str)
             if isinstance(parsed, dict):
                 self.logger.warning("Recovered malformed tool arguments", tool=tool_name)
-                return _normalize(parsed)
+                return _normalize(parsed), None
         except Exception:
             pass
 
@@ -1134,7 +1190,7 @@ class LLMClient:
                 parsed = parser(repaired)
                 if isinstance(parsed, dict):
                     self.logger.warning("Recovered malformed tool arguments", tool=tool_name)
-                    return _normalize(parsed)
+                    return _normalize(parsed), None
             except Exception:
                 continue
 
@@ -1143,7 +1199,19 @@ class LLMClient:
             tool=tool_name,
             error="Unable to parse with JSON/YAML fallbacks",
         )
-        return {}
+        return {}, "Unable to parse with JSON/YAML fallbacks"
+
+    def _parse_tool_arguments(self, tool_name: str, raw_args: Any) -> dict[str, Any]:
+        """Tolerant parse of model-emitted tool arguments.
+
+        Thin wrapper over :meth:`_try_parse_tool_arguments` that discards the
+        parse-error phrase. Existing callers that only need the ``{}``-coerced
+        dict use this signature; :meth:`_assemble_result` calls the ``_try``
+        variant directly to stamp
+        :attr:`GenerationResult.parser_errors`.
+        """
+        parsed, _ = self._try_parse_tool_arguments(tool_name, raw_args)
+        return parsed
 
     # ------------------------------------------------------------------
     # Tool content adaptation
@@ -2218,9 +2286,21 @@ class LLMClient:
         # tool-call argument set the model emits.
         param_types_by_tool = _root_param_types_by_tool(sanitized_tools)
 
+        parser_errors_list: list[ParserError] = []
         if hasattr(message, "tool_calls") and message.tool_calls:
             for tc in message.tool_calls:
-                arguments = self._parse_tool_arguments(tc.function.name, tc.function.arguments)
+                raw = tc.function.arguments
+                arguments, parse_reason = self._try_parse_tool_arguments(tc.function.name, raw)
+                if parse_reason is not None:
+                    raw_str = raw if isinstance(raw, str) else str(raw)
+                    excerpt = raw_str[:PARSER_ERROR_RAW_ARGS_EXCERPT_MAX_CHARS]
+                    parser_errors_list.append(
+                        ParserError(
+                            tool_name=tc.function.name,
+                            raw_arguments=excerpt,
+                            reason=parse_reason,
+                        )
+                    )
                 arguments = self.capabilities.response_policy.parse_arguments(
                     arguments,
                     param_types=param_types_by_tool.get(tc.function.name),
@@ -2271,7 +2351,7 @@ class LLMClient:
             gateway_route_kind=self._gateway_route_kind,
         )
 
-        return GenerationResult(
+        result = GenerationResult(
             text=text,
             tool_calls=tool_calls,
             usage=usage,
@@ -2288,6 +2368,12 @@ class LLMClient:
             # that carries no finish_reason at all lands as ``None``.
             finish_reason=getattr(choice, "finish_reason", None),
         )
+        # Attribute-post-init idiom matches ``guard_rejections`` and
+        # ``filler_substituted``. Any other producer of a ``GenerationResult``
+        # (mock generator, inline test constructions) inherits the ``()``
+        # default and the seam is inert.
+        result.parser_errors = tuple(parser_errors_list)
+        return result
 
     # ------------------------------------------------------------------
     # Mock generator (offline tests)

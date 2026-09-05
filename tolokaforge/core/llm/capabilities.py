@@ -148,6 +148,31 @@ class ModelCapabilities:
     because the trial paid for each call.
     """
 
+    parser_error_retry_count: int = 0
+    """Resample budget for a response whose ``tool_call.function.arguments``
+    string could not be decoded by :meth:`LLMClient._try_parse_tool_arguments`.
+
+    On a returned ``GenerationResult`` with non-empty ``parser_errors``, the
+    engine appends a ``role=user`` feedback turn naming the failing tools,
+    quoting the raw arguments excerpt, and reporting the parse reason, then
+    resamples up to ``parser_error_retry_count`` times without appending the
+    discarded assistant message and without advancing the outer turn counter.
+    On budget exhaustion the loop falls through to accept-and-continue: the
+    ``{}``-coerced assistant response lands and either the tool executor
+    surfaces an ``INVALID_ARGUMENTS`` tool_result (for tools with a real
+    schema) or the tool runs against empty args (for no-arg tools) —
+    reproducing today's behaviour byte-for-byte. The seam is strictly
+    recoverable and never a new terminal reason.
+
+    Orthogonal to :attr:`empty_retry_count` (empty-shape completion,
+    terminates on exhaustion), :attr:`output_length_retry_count`
+    (content-carrying max-tokens truncation), and the loop-level API-error
+    retry (raised exception). Each retry class owns a distinct trigger and a
+    dedicated budget. The default ``0`` accepts the ``{}``-coerced response
+    as the assistant turn unchanged — the seam is opt-in per preset. Metrics
+    record every resampled generation because the trial paid for each call.
+    """
+
     tool_output_max_chars: int | None = None
     """Loop-layer cap on the ``role=tool`` message content, in chars.
 
