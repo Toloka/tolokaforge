@@ -19,7 +19,7 @@ import time
 import pytest
 from litellm.exceptions import RateLimitError
 
-from tolokaforge.core.llm.client import GenerationResult, LLMApiTimeoutError
+from tolokaforge.core.llm.client import GenerationResult, LLMApiTimeoutError, ParserError
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.loop import (
@@ -855,6 +855,325 @@ def test_length_finish_reason_with_empty_content_uses_empty_path():
         m.role == MessageRole.USER and "truncated at max_tokens" in (m.content or "")
         for m in messages
     )
+
+
+def _result_with_parser_errors(
+    *,
+    text: str = "call",
+    tool_calls: list[ToolCall],
+    parser_errors: tuple[ParserError, ...],
+    prompt_tokens: int = 3,
+) -> GenerationResult:
+    """Build a scripted ``GenerationResult`` with a ``parser_errors`` sidecar
+    populated the way ``LLMClient._assemble_result`` populates it."""
+    result = GenerationResult(
+        text=text,
+        tool_calls=tool_calls,
+        usage=Usage(prompt_tokens=prompt_tokens),
+    )
+    result.parser_errors = parser_errors
+    return result
+
+
+def test_parser_error_not_retried_when_opt_out():
+    """With ``parser_error_retry_count=0`` (the default) a response carrying
+    ``parser_errors`` lands as the assistant turn unchanged and the loop
+    advances normally — the ``{}``-coerced tool_call is handed to the
+    executor. No user-feedback marker is inserted. Locks the default-off
+    invariant against silent drift."""
+    executor = _RecordingExecutor()
+    client = _ScriptedClient(
+        [
+            _result_with_parser_errors(
+                text="broken",
+                tool_calls=[ToolCall(id="a", name="query", arguments={})],
+                parser_errors=(
+                    ParserError(
+                        tool_name="query",
+                        raw_arguments='{"broken',
+                        reason="Unable to parse with JSON/YAML fallbacks",
+                    ),
+                ),
+            ),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        executor=executor,
+        config=LoopConfig(
+            max_turns=1,
+            episode_timeout_s=10_000,
+            parser_error_retry_count=0,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 1
+    assistant_messages = [m for m in messages if m.role == MessageRole.ASSISTANT]
+    assert len(assistant_messages) == 1
+    assert executor.executed == [("query", {}, "a")]
+    assert not any(
+        m.role == MessageRole.USER and "tool_call argument parse errors" in (m.content or "")
+        for m in messages
+    )
+    assert outcome.termination_reason == TerminationReason.MAX_TURNS
+
+
+def test_parser_error_resamples_and_recovers():
+    """With ``parser_error_retry_count=1``, the first response has non-empty
+    ``parser_errors`` and is discarded; a ``role=user`` parse-error feedback
+    turn is appended to both the recorded history and the wire history; the
+    second (parser-clean) sample is executed. Locks the recovery shape and
+    pins that the feedback actually reaches the wire on the retry call."""
+    executor = _RecordingExecutor()
+    sink = _CountingSink()
+    client = _ScriptedClient(
+        [
+            _result_with_parser_errors(
+                text="broken",
+                tool_calls=[ToolCall(id="a", name="query", arguments={})],
+                parser_errors=(
+                    ParserError(
+                        tool_name="query",
+                        raw_arguments='{"broken',
+                        reason="Unable to parse with JSON/YAML fallbacks",
+                    ),
+                ),
+            ),
+            GenerationResult(
+                text="ok",
+                tool_calls=[ToolCall(id="b", name="query", arguments={"q": 1})],
+                usage=Usage(prompt_tokens=5),
+            ),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        executor=executor,
+        sink=sink,
+        config=LoopConfig(
+            max_turns=1,
+            episode_timeout_s=10_000,
+            parser_error_retry_count=1,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 2
+    assert sink.generations == 2  # (c) both generations bill the metrics sink.
+
+    # (a) exactly one user-feedback turn carrying the parser-error phrasing,
+    # the failing tool name, the raw args snippet, and the reason.
+    feedback_turns = [
+        m
+        for m in messages
+        if m.role == MessageRole.USER and "tool_call argument parse errors" in (m.content or "")
+    ]
+    assert len(feedback_turns) == 1
+    feedback_content = feedback_turns[0].content or ""
+    assert "'query'" in feedback_content
+    assert '{"broken' in feedback_content
+    assert "Unable to parse with JSON/YAML fallbacks" in feedback_content
+
+    # (b) the discarded assistant message (with the failed tool_call) is NOT
+    # in the recorded history.
+    assert not any(m.role == MessageRole.ASSISTANT and m.content == "broken" for m in messages)
+    assistant_messages = [m for m in messages if m.role == MessageRole.ASSISTANT]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0].content == "ok"
+
+    # (d) wire-level lock: the SECOND generate call's messages list ends with
+    # the parser-error feedback user turn — the retry with feedback actually
+    # reaches the provider, not just the recorded trajectory.
+    second_call_messages = client.messages_history[1]
+    tail = second_call_messages[-1]
+    assert tail.role == MessageRole.USER
+    assert "tool_call argument parse errors" in (tail.content or "")
+
+    # (e) the recovered tool_call was executed with the recovered args.
+    assert executor.executed == [("query", {"q": 1}, "b")]
+
+    assert outcome.termination_reason == TerminationReason.MAX_TURNS
+
+
+def test_parser_error_exhausts_and_accepts_last_response():
+    """With ``parser_error_retry_count=1``, two consecutive responses both
+    carry ``parser_errors``: the budget exhausts on the second one, the
+    second response DOES land as the assistant turn (its ``{}``-coerced
+    tool_calls preserved), and the executor runs it against the empty args.
+    The loop continues normally — no new terminal — the exhaustion path is
+    strictly recoverable."""
+    executor = _RecordingExecutor()
+    client = _ScriptedClient(
+        [
+            _result_with_parser_errors(
+                text="broken-1",
+                tool_calls=[ToolCall(id="a", name="query", arguments={})],
+                parser_errors=(
+                    ParserError(
+                        tool_name="query",
+                        raw_arguments='{"broken-1',
+                        reason="Unable to parse with JSON/YAML fallbacks",
+                    ),
+                ),
+            ),
+            _result_with_parser_errors(
+                text="broken-2",
+                tool_calls=[ToolCall(id="b", name="query", arguments={})],
+                parser_errors=(
+                    ParserError(
+                        tool_name="query",
+                        raw_arguments='{"broken-2',
+                        reason="Unable to parse with JSON/YAML fallbacks",
+                    ),
+                ),
+            ),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        executor=executor,
+        config=LoopConfig(
+            max_turns=1,
+            episode_timeout_s=10_000,
+            parser_error_retry_count=1,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 2
+    assert outcome.termination_reason == TerminationReason.MAX_TURNS
+    assert outcome.status == TrialStatus.COMPLETED
+
+    assistant_messages = [m for m in messages if m.role == MessageRole.ASSISTANT]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0].content == "broken-2"
+
+    feedback_turns = [
+        m
+        for m in messages
+        if m.role == MessageRole.USER and "tool_call argument parse errors" in (m.content or "")
+    ]
+    assert len(feedback_turns) == 1
+
+    assert executor.executed == [("query", {}, "b")]
+
+
+def test_parser_error_retry_does_not_advance_turn_counter():
+    """Resamples happen within the same outer turn. With ``max_turns=1`` and
+    ``parser_error_retry_count=2`` the loop absorbs two parse-error resamples
+    on turn 0 and executes the recovered tool call also on turn 0 (three
+    generations, one outer turn — mirrors the sibling retry-class tests)."""
+    executor = _RecordingExecutor()
+    client = _ScriptedClient(
+        [
+            _result_with_parser_errors(
+                text="broken-1",
+                tool_calls=[ToolCall(id="a", name="query", arguments={})],
+                parser_errors=(
+                    ParserError(
+                        tool_name="query",
+                        raw_arguments='{"broken-1',
+                        reason="Unable to parse with JSON/YAML fallbacks",
+                    ),
+                ),
+            ),
+            _result_with_parser_errors(
+                text="broken-2",
+                tool_calls=[ToolCall(id="b", name="query", arguments={})],
+                parser_errors=(
+                    ParserError(
+                        tool_name="query",
+                        raw_arguments='{"broken-2',
+                        reason="Unable to parse with JSON/YAML fallbacks",
+                    ),
+                ),
+            ),
+            GenerationResult(
+                text="ok",
+                tool_calls=[ToolCall(id="c", name="query", arguments={"q": 1})],
+                usage=Usage(prompt_tokens=5),
+            ),
+        ]
+    )
+    messages: list[Message] = []
+    outcome = _loop(
+        client,
+        should_terminate=_never_terminate,
+        executor=executor,
+        config=LoopConfig(
+            max_turns=1,
+            episode_timeout_s=10_000,
+            parser_error_retry_count=2,
+        ),
+    ).run("sys", messages, time.time())
+
+    assert client.calls == 3
+    assert executor.executed == [("query", {"q": 1}, "c")]
+    assert outcome.termination_reason == TerminationReason.MAX_TURNS
+
+
+def test_parser_error_feedback_content_lists_all_failing_tools():
+    """A single response with TWO parser errors: assert the feedback turn
+    names BOTH tools and BOTH reasons — a multi-tool failure must not
+    silently drop one, or the model would re-emit whichever it did not see.
+    Locks the multi-error formatting contract of
+    ``_format_parser_error_feedback``."""
+    executor = _RecordingExecutor()
+    client = _ScriptedClient(
+        [
+            _result_with_parser_errors(
+                text="two broken",
+                tool_calls=[
+                    ToolCall(id="a", name="query", arguments={}),
+                    ToolCall(id="b", name="search", arguments={}),
+                ],
+                parser_errors=(
+                    ParserError(
+                        tool_name="query",
+                        raw_arguments='{"q":',
+                        reason="Unable to parse with JSON/YAML fallbacks",
+                    ),
+                    ParserError(
+                        tool_name="search",
+                        raw_arguments='{"term":',
+                        reason="Unable to parse with JSON/YAML fallbacks",
+                    ),
+                ),
+            ),
+            GenerationResult(
+                text="ok",
+                tool_calls=[ToolCall(id="c", name="query", arguments={"q": 1})],
+                usage=Usage(prompt_tokens=5),
+            ),
+        ]
+    )
+    messages: list[Message] = []
+    _loop(
+        client,
+        should_terminate=_never_terminate,
+        executor=executor,
+        config=LoopConfig(
+            max_turns=1,
+            episode_timeout_s=10_000,
+            parser_error_retry_count=1,
+        ),
+    ).run("sys", messages, time.time())
+
+    feedback_turns = [
+        m
+        for m in messages
+        if m.role == MessageRole.USER and "tool_call argument parse errors" in (m.content or "")
+    ]
+    assert len(feedback_turns) == 1
+    content = feedback_turns[0].content or ""
+    assert "'query'" in content
+    assert "'search'" in content
+    assert '{"q":' in content
+    assert '{"term":' in content
 
 
 def test_api_error_retry_budget_resets_per_outer_turn():

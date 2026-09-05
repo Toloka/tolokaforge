@@ -1865,6 +1865,66 @@ truncation rate recorded in the preset comment (matching the discipline
 `empty_retry_count`'s `moonshot_kimi_k3` / `anthropic_claude_opus_5`
 opt-ins use).
 
+### Parser-error retry
+
+A generation whose `tool_call.function.arguments` string cannot be decoded
+by `LLMClient._try_parse_tool_arguments`'s JSON / YAML / repair-JSON /
+repair-YAML ladder is structurally malformed: the model produced a
+tool_call, but its serialised arguments are not a dict any parser accepted.
+`_assemble_result` records one `ParserError(tool_name, raw_arguments,
+reason)` per failing call on the sidecar tuple `GenerationResult.parser_errors`
+alongside the tolerant `{}` coercion the parser applies. The raw arguments
+excerpt is bounded by `PARSER_ERROR_RAW_ARGS_EXCERPT_MAX_CHARS` (500 chars)
+so a long garbage payload does not inflate the feedback turn.
+
+When `capabilities.parser_error_retry_count > 0`, the loop discards the
+assistant response, appends a `role=user` feedback turn naming the failing
+tools, quoting the raw arguments excerpt, and reporting the parse reason,
+and resamples without appending the discarded assistant message and without
+advancing the outer turn counter. On budget exhaustion the loop falls
+through to accept-and-continue — the last (still-malformed) response lands
+as the assistant turn with its `{}`-coerced tool_calls preserved, and the
+executor either surfaces an `INVALID_ARGUMENTS` tool_result (for tools with
+a real schema that rejects `{}`) or runs the tool against empty args (for
+no-arg tools). The seam is strictly recoverable and never a new terminal
+reason. The metrics sink records every resampled generation because the
+trial paid for each call. The default `parser_error_retry_count = 0`
+accepts the `{}`-coerced response as the assistant turn unchanged — the
+seam is opt-in per preset.
+
+The feedback turn is `MessageRole.USER` — not `MessageRole.SYSTEM` — for
+the same load-bearing reason § *Output-length retry* documents above: this
+is the second `_run_turn` path that inserts a marker via `_append_both` AND
+continues the loop, so a `role=system` marker would be hoisted into the
+initial system prompt by litellm's Anthropic-adapter convention rather
+than landing mid-conversation, defeating the seam's intent. The `role=user`
+shape stays positional on every adapter and mirrors both the tool-response
+pattern and the output-length-retry pattern already provider-safe there.
+
+Orthogonal to `empty_retry_count` (empty-shape completion, terminates on
+exhaustion), `output_length_retry_count` (content-carrying max-tokens
+truncation), and the loop-level API-error retry (raised transient
+exception). Each retry class owns a distinct trigger — structurally
+malformed args, empty-shape completion, content-carrying truncation,
+raised transient exception — and a dedicated `LoopConfig` field so a
+preset can tune them independently. The parser-error branch nests
+*inside* the outer `if result.text or result.tool_calls:` gate and fires
+*before* the output-length branch, so a response that carries both
+signals (parser errors AND `finish_reason == "length"`) resamples under
+the parser-error budget first — the malformed args are the stronger
+signal because the response is structurally broken, not just cut off.
+
+`LoopConfig.parser_error_retry_count` flows from
+`capabilities.parser_error_retry_count` at
+[`runner.py`](../tolokaforge/core/runner.py) construction time. No
+preset opts in today; canonical
+[`tests/canonical/test_parser_error_retry_count_preset_routing.py`](../tests/canonical/test_parser_error_retry_count_preset_routing.py)
+enumerates every currently-registered preset and pins the default. An
+observed-evidence opt-in for a specific preset requires the per-workload
+parse-error rate recorded in the preset comment (matching the discipline
+`empty_retry_count`'s `moonshot_kimi_k3` / `anthropic_claude_opus_5`
+opt-ins use).
+
 ### Context-window handoff
 
 `ModelCapabilities.max_context_tokens: int | None` and
@@ -2505,18 +2565,24 @@ outer controllers above, transport-timeout retry in
 protocol. Retrying them at the loop level would double-count the exclusion and
 confuse the denominator.
 
-The empty-completion retry and the output-length retry are two separate
-classes that live in `_run_turn`, each under its own budget on
-`LoopConfig.empty_retry_count` and `LoopConfig.output_length_retry_count`.
-The three retry classes are orthogonal — each fires on a distinct
-trigger: the API-error retry replays a *raised exception*, the
-empty-completion retry resamples a *returned empty-shape result* (see §
-*Provider-side empty completion* above for the resample mechanics and
-the Gemini-legal-tail invariant), and the output-length retry appends a
-`role=user` feedback turn and resamples a *returned content-carrying
-truncation* under its own budget before falling through to
-accept-and-continue (see § *Output-length retry* above). Each owns a
-dedicated `LoopConfig` field so a preset can tune them independently.
+The empty-completion retry, the output-length retry and the parser-error
+retry are three separate classes that live in `_run_turn`, each under its
+own budget on `LoopConfig.empty_retry_count`,
+`LoopConfig.output_length_retry_count` and
+`LoopConfig.parser_error_retry_count`. The four retry classes are
+orthogonal — each fires on a distinct trigger: the API-error retry
+replays a *raised exception*, the empty-completion retry resamples a
+*returned empty-shape result* (see § *Provider-side empty completion*
+above for the resample mechanics and the Gemini-legal-tail invariant),
+the output-length retry appends a `role=user` feedback turn and
+resamples a *returned content-carrying truncation* under its own budget
+before falling through to accept-and-continue (see § *Output-length
+retry* above), and the parser-error retry appends a `role=user` feedback
+turn naming the failing tools and resamples a *returned response with
+un-parseable tool_call arguments* under its own budget before falling
+through to accept the `{}`-coerced response (see § *Parser-error retry*
+above). Each owns a dedicated `LoopConfig` field so a preset can tune
+them independently.
 
 `TerminationReason.CONTEXT_WINDOW_EXCEEDED` is a third wire-shape reason
 (parallel to `EMPTY_COMPLETION`), not routed through the API-error retry.

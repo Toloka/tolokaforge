@@ -359,6 +359,7 @@ class TrialRunner:
                         episode_timeout_s=self.episode_timeout_s,
                         empty_retry_count=capabilities.empty_retry_count,
                         output_length_retry_count=capabilities.output_length_retry_count,
+                        parser_error_retry_count=capabilities.parser_error_retry_count,
                         tool_output_max_chars=capabilities.tool_output_max_chars,
                         max_context_tokens=capabilities.max_context_tokens,
                         context_watermark=capabilities.context_watermark,
