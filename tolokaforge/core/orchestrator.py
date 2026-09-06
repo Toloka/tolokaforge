@@ -1320,6 +1320,13 @@ class Orchestrator:
         races the port-publish — it dials a socket already listening
         from the host.
 
+        TCP-level probe (not gRPC) because the runner service does not
+        implement the standard ``grpc.health.v1.Health/Check`` interface
+        — its own health check lives on ``RunnerService.HealthCheck``.
+        Port reachability is what closes the compose-vs-host-publish gap
+        anyway; gRPC-level health is covered by the client-side connect
+        retry.
+
         Budget is the operator-configured ``orchestrator.runtime_connect``
         (env-var-overridable). A refusal here raises an actionable
         ``RuntimeError`` naming the resolved host:port and the knob to
@@ -1330,7 +1337,7 @@ class Orchestrator:
         host, port_str = runner_address.rsplit(":", 1)
         port = int(port_str)
         try:
-            HealthProbe.grpc(
+            HealthProbe.tcp(
                 host=host,
                 port=port,
                 timeout_s=timeout_s,
