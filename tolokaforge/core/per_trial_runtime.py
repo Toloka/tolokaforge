@@ -99,7 +99,11 @@ class PerTrialRuntimeBackend:
 
     # ---- Run-level lifecycle ----
 
-    def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
+    def connect(
+        self,
+        timeout: float | None = None,
+        retry_interval: float | None = None,
+    ) -> None:
         return self._delegate.connect(timeout=timeout, retry_interval=retry_interval)
 
     def close(self) -> None:
@@ -229,6 +233,8 @@ def per_trial_runtime_backend_factory(
         seeds=ctx.seeds,
         log_capture=ctx.log_capture,
         mount_docker_socket=ctx.mount_docker_socket,
+        connect_timeout=ctx.connect_timeout_s,
+        connect_retry_interval=ctx.connect_retry_interval_s,
     )
 
 

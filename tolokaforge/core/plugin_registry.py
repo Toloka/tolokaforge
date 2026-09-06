@@ -292,6 +292,18 @@ class RuntimeBackendBuildContext:
     :meth:`provision` routes through ``composer.provision_trial``. Default
     ``False`` preserves built-in-engine behaviour for packs that declare
     no manifest."""
+    connect_timeout_s: float = 30.0
+    """Runner health-check budget on connect, seconds. Resolved by the
+    orchestrator from ``env TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S →
+    OrchestratorConfig.runtime_connect.timeout_s → this default``. Passed
+    into the backend so the primary ``connect()`` call (no args) picks it
+    up via the instance attribute (see
+    :class:`~tolokaforge.core.shared_stack_runtime.SharedStackRuntimeBackend`)."""
+    connect_retry_interval_s: float = 1.0
+    """Interval between health-check attempts during connect, seconds.
+    Same resolution as :attr:`connect_timeout_s` via
+    ``TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S`` and
+    ``OrchestratorConfig.runtime_connect.retry_interval_s``."""
 
 
 @dataclass(frozen=True)

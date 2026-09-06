@@ -44,6 +44,7 @@ from tenacity.wait import wait_base
 
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyGuard
+from tolokaforge.core.env_var import parse_env_non_negative_int, parse_env_positive_float
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.gateway_route import (
     ResolvedGatewayRoute,
@@ -892,9 +893,10 @@ class LLMClient:
         override) → ``self.capabilities.api_call_timeout_s`` (per-model
         preset) → :data:`DEFAULT_API_CALL_TIMEOUT_S`.
         """
-        env_value = self._parse_env_positive_float(
+        env_value = parse_env_positive_float(
             "TOLOKAFORGE_LLM_API_CALL_TIMEOUT_S",
             default=None,
+            logger=self.logger,
         )
         if env_value is not None:
             return env_value
@@ -909,9 +911,10 @@ class LLMClient:
         override) → ``self.capabilities.api_call_retries`` (per-model
         preset) → :data:`DEFAULT_API_TIMEOUT_RETRIES`.
         """
-        env_value = self._parse_env_non_negative_int(
+        env_value = parse_env_non_negative_int(
             "TOLOKAFORGE_LLM_API_CALL_RETRIES",
             default=None,
+            logger=self.logger,
         )
         if env_value is not None:
             return env_value
@@ -930,9 +933,10 @@ class LLMClient:
         default) — the call is then bounded only by the per-read
         ``api_call_timeout_s``.
         """
-        env_value = self._parse_env_positive_float(
+        env_value = parse_env_positive_float(
             "TOLOKAFORGE_LLM_API_CALL_WALL_TIMEOUT_S",
             default=None,
+            logger=self.logger,
         )
         if env_value is not None:
             return env_value
@@ -969,36 +973,6 @@ class LLMClient:
             model=self.model_name,
         )
         return configured
-
-    def _parse_env_positive_float(self, name: str, default: float | None) -> float | None:
-        raw = os.getenv(name)
-        if raw is None:
-            return default
-        try:
-            value = float(raw)
-            if value <= 0:
-                raise ValueError("must be positive")
-            return value
-        except ValueError:
-            self.logger.warning(
-                "Invalid env-var float; ignoring", env_var=name, value=raw, default=default
-            )
-            return default
-
-    def _parse_env_non_negative_int(self, name: str, default: int | None) -> int | None:
-        raw = os.getenv(name)
-        if raw is None:
-            return default
-        try:
-            value = int(raw)
-            if value < 0:
-                raise ValueError("must be non-negative")
-            return value
-        except ValueError:
-            self.logger.warning(
-                "Invalid env-var int; ignoring", env_var=name, value=raw, default=default
-            )
-            return default
 
     def _configure_openrouter_headers(self) -> dict[str, str]:
         """Ensure OpenRouter requests include the required headers."""

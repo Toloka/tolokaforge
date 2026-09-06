@@ -1094,7 +1094,11 @@ class SharedStackRuntimeBackend:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
+    def connect(
+        self,
+        timeout: float | None = None,
+        retry_interval: float | None = None,
+    ) -> None:
         """Connect to the Runner service with health-check retry.
 
         In built-in-stack mode this delegates straight to the injected
@@ -1106,7 +1110,12 @@ class SharedStackRuntimeBackend:
 
         Args:
             timeout: Maximum time to wait for healthy service (seconds).
+                ``None`` (the orchestrator's default call) falls back to
+                :attr:`connect_timeout`, which the factory populated from
+                ``env → OrchestratorConfig.runtime_connect → default``.
+                Callers passing an explicit value still win.
             retry_interval: Time between health-check attempts (seconds).
+                Same ``None`` fallback semantics as ``timeout``.
 
         Raises:
             ProvisionError: env_manifest mode; the composer fails to
@@ -1115,6 +1124,10 @@ class SharedStackRuntimeBackend:
             ConnectionError: built-in-stack mode; the runner is not
                 healthy within ``timeout``.
         """
+        if timeout is None:
+            timeout = self.connect_timeout
+        if retry_interval is None:
+            retry_interval = self.connect_retry_interval
         if self._env_manifest is None and not self._per_trial_mode:
             self.runner_client.connect(timeout=timeout, retry_interval=retry_interval)
             logger.info("Shared-stack runtime connected")
@@ -1612,6 +1625,8 @@ def shared_runtime_backend_factory(
             log_capture=ctx.log_capture,
             mount_docker_socket=ctx.mount_docker_socket,
             events=ctx.events,
+            connect_timeout=ctx.connect_timeout_s,
+            connect_retry_interval=ctx.connect_retry_interval_s,
         )
     if ctx.per_trial_mode:
         backend = SharedStackRuntimeBackend(
@@ -1620,6 +1635,8 @@ def shared_runtime_backend_factory(
             log_capture=ctx.log_capture,
             mount_docker_socket=ctx.mount_docker_socket,
             events=ctx.events,
+            connect_timeout=ctx.connect_timeout_s,
+            connect_retry_interval=ctx.connect_retry_interval_s,
         )
         backend._per_trial_mode = True
         return backend
@@ -1628,4 +1645,6 @@ def shared_runtime_backend_factory(
         endpoints=_build_env_endpoints(ctx.runner_address),
         seeds=ctx.seeds,
         events=ctx.events,
+        connect_timeout=ctx.connect_timeout_s,
+        connect_retry_interval=ctx.connect_retry_interval_s,
     )

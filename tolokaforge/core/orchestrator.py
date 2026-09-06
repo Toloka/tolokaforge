@@ -43,6 +43,7 @@ from tolokaforge.core.engine_run_state import (
     read_persisted_run_id,
     write_engine_run_state,
 )
+from tolokaforge.core.env_var import parse_env_positive_float
 from tolokaforge.core.failure_attribution import (
     TrialOutcomeClass,
     attribute_failure,
@@ -1345,6 +1346,19 @@ class Orchestrator:
             and override != "shared"
             and self._any_task_declares_environment_manifest()
         )
+        runtime_connect = self.config.orchestrator.runtime_connect
+        connect_timeout_s = parse_env_positive_float(
+            "TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S",
+            default=runtime_connect.timeout_s,
+            logger=self.logger,
+        )
+        assert connect_timeout_s is not None  # default is a positive float
+        connect_retry_interval_s = parse_env_positive_float(
+            "TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S",
+            default=runtime_connect.retry_interval_s,
+            logger=self.logger,
+        )
+        assert connect_retry_interval_s is not None
         backend = factory(
             RuntimeBackendBuildContext(
                 runner_address=runner_address,
@@ -1355,6 +1369,8 @@ class Orchestrator:
                 events=self._events,
                 mount_docker_socket=_run_needs_docker_cli(adapter_type, self.tasks),
                 per_trial_mode=per_trial_mode,
+                connect_timeout_s=connect_timeout_s,
+                connect_retry_interval_s=connect_retry_interval_s,
             )
         )
         self.logger.info(

@@ -62,6 +62,7 @@ __all__ = [
     "TracingConfig",
     "TypeSenseConfig",
     "USER_REPLY_MAX_ATTEMPTS",
+    "RuntimeConnectConfig",
     "validate_rate_limit_probe_budget",
 ]
 
@@ -73,6 +74,27 @@ class TimeoutConfig(BaseModel):
 
     turn_s: int = 60
     episode_s: int = 1800
+
+
+class RuntimeConnectConfig(BaseModel):
+    """Runner-service health-check budget on connect.
+
+    Cold-boot of the runner container can take longer than the default 30 s
+    under load (image pull, DB Service warm-up). Raise ``timeout_s`` when
+    real trials flake at connect time with
+    ``Runner service at localhost:<port> not healthy after 30.1s``. The
+    env var ``TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S`` overrides ``timeout_s``
+    for operational overrides; ``TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S``
+    overrides ``retry_interval_s``. Flows through
+    :class:`~tolokaforge.core.plugin_registry.RuntimeBackendBuildContext` to
+    :class:`~tolokaforge.core.shared_stack_runtime.SharedStackRuntimeBackend`
+    and :class:`~tolokaforge.core.per_trial_runtime.PerTrialRuntimeBackend`.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    timeout_s: float = Field(default=30.0, gt=0)
+    retry_interval_s: float = Field(default=1.0, gt=0)
 
 
 RATE_LIMIT_PROBE_MIN_EPISODE_S = 3600
@@ -474,6 +496,13 @@ class OrchestratorConfig(BaseModel):
     operator-side clamp. Unset means the task-scoped value governs.
     Field-name migration to ``TimeoutDefaults`` (``trial_seconds`` /
     ``tool_call_seconds``) lands with the cleanup milestone."""
+
+    runtime_connect: RuntimeConnectConfig = Field(default_factory=RuntimeConnectConfig)
+    """Runner-service health-check budget on connect. Raise
+    ``timeout_s`` when real trials flake at connect time under cold-boot
+    load; env vars ``TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S`` and
+    ``TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S`` override this block
+    at operator level."""
 
     rate_limit_probe: RateLimitProbeConfig = Field(default_factory=RateLimitProbeConfig)
     """Rate-limit probe mode. Disabled by default; see

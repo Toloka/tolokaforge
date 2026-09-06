@@ -148,6 +148,36 @@ different questions:
   gRPC wire before promotion; see
   [GRADER_SERVICE.md § Parity gate — RC-smoke guarantees](GRADER_SERVICE.md#parity-gate).
 
+### Health-check timeout on connect
+
+The engine dials the runner at `orchestrator.runtime_backend.connect()` time
+with a wall-clock retry loop that polls the runner's gRPC `HealthCheck` every
+`retry_interval_s` seconds until healthy or the `timeout_s` budget expires.
+Cold-boot under load (image pull, DB Service warm-up) sometimes exceeds the
+30 s default; if trials flake at connect with
+`Runner service at localhost:<port> not healthy after 30.1s`, raise the
+budget:
+
+```yaml
+orchestrator:
+  runtime_connect:
+    timeout_s: 90.0          # default 30.0
+    retry_interval_s: 1.0    # default 1.0
+```
+
+Or override at the operator level without touching the run config:
+
+```bash
+TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S=90 \
+TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S=1 \
+  scripts/with_env.sh uv run tolokaforge run --config <run-config>
+```
+
+Env vars win over the YAML block, which wins over the shipped defaults. An
+invalid env-var value (non-numeric, zero, or negative) logs a warning and
+falls back to the YAML / default; a running trial is never taken down by a
+mis-set operational override.
+
 ## Runner Image Contents
 
 `runner.Dockerfile` is a multi-stage build on a `python:3.12-slim` base
