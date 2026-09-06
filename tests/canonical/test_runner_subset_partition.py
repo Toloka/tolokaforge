@@ -107,6 +107,12 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         "tolokaforge/core/grading/default_transcript_rule_matcher.py",
         "tolokaforge/core/grading/judge.py",
         "tolokaforge/core/grading/rubric.py",
+        # JSONPath + SQL-probe evaluators reached from
+        # ``default_state_check_backends`` at grade time, so the boot closure
+        # never sees them. Shipped in the subset because ``jsonpath`` /
+        # ``db_probes`` backends call them on the grading path.
+        "tolokaforge/core/grading/db_probes.py",
+        "tolokaforge/core/grading/jsonpath_evaluators.py",
         # Seam-neutral judge-prompt composition helpers (body + marker
         # contract, ``effective_judge_system_prompt``). Reached at grade
         # time from ``core.grading.judge`` (runner-side, via the lazy

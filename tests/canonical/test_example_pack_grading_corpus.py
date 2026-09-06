@@ -124,6 +124,7 @@ from tolokaforge.adapters._task_loader import (
 )
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
+from tolokaforge.core.grading.composite_fold import compose_trial_verdict
 from tolokaforge.core.grading.config_validation import (
     ArgumentSchema,
     AuthoringReport,
@@ -181,7 +182,6 @@ from tolokaforge.core.project_loader import (
     resolve_effective_grading_combine,
 )
 from tolokaforge.dx.cli.main import cli
-from tolokaforge.runner.grading import compose_runner_trial_verdict
 from tolokaforge.runner.grading_ledger import audit_accounted_keys
 from tolokaforge.runner.models import (
     RunnerInitialStateConfig,
@@ -652,8 +652,8 @@ def test_no_shipped_pack_addresses_a_state_its_substrate_cannot_reach() -> None:
     )
 
     # ``$.filesystem[…]`` is reachable on the runner (via
-    # ``_read_agent_visible_filesystem``), so it is *not* in the negative-control
-    # set. The residue is ``agent`` / ``user`` / ``mock_web_url`` /
+    # ``filesystem_view.read_agent_visible_filesystem``), so it is *not* in the
+    # negative-control set. The residue is ``agent`` / ``user`` / ``mock_web_url`` /
     # ``rag_corpus_dir`` — roots the core engine composes from a run's live env
     # that the runner has no equivalent for.
     probed_paths, _ = _states_a_pack_addresses_but_cannot_reach(
@@ -2100,10 +2100,10 @@ _UNREAD_LOT_RUN = (
 )
 
 # #773: the action is posted twice. The db_probe does see the duplicate — its third
-# assertion reads `row_count` — but `evaluate_db_probes` passes a probe only when every
-# assertion does, so a duplicate took `state_checks` to `0.0` and the remaining
-# `0.2 + 0.3` landed on `pass_threshold` exactly, which `>=` admits. A rebalance alone
-# would not close that, which is why the check is a gate.
+# assertion reads `row_count` — but `DbProbesStateCheckBackend` passes a probe only
+# when every assertion does, so a duplicate took `state_checks` to `0.0` and the
+# remaining `0.2 + 0.3` landed on `pass_threshold` exactly, which `>=` admits. A
+# rebalance alone would not close that, which is why the check is a gate.
 _DOUBLE_POST_RUN = (
     _lot(0),
     _catalog(1),
@@ -2588,7 +2588,7 @@ def test_each_half_of_the_notes_policy_is_vetoed_by_the_mechanism_that_can_see_i
     judge = aggregate_rubric(
         rubric, parse_submit_report(_notes_submission(scenario.warned), rubric)
     )
-    verdict = compose_runner_trial_verdict(
+    verdict = compose_trial_verdict(
         {
             COMPONENT_BY_NAME["llm_judge"].runner_score_field: judge.score,
             COMPONENT_BY_NAME["trace_checks"].runner_score_field: trace.score,

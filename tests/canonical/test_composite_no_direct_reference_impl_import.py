@@ -1,20 +1,20 @@
-"""Structural lock: ``composite.py`` does not import reference impls.
+"""Structural lock: no module under ``composite/`` imports reference impls.
 
 The composite reaches every sub-component through its Protocol via a
 resolved instance passed as a kwarg. It must never name the reference
 impl at module load time — that would defeat the plug-in seam by pinning
 one implementation into the dispatch surface.
 
-Reads the composite module's source and asserts, via ``ast``, that none of
-the shipping reference-impl names appear on any ``import`` statement's
-imported symbol list. Six sub-component seams cover the six reference-impl
-holdings the composite is fenced from: :class:`LLMJudge`, :class:`LLMClient`,
-:class:`LLMJudgeRubricEvaluator`, :class:`LiteLLMJudgeModelProvider`,
-:class:`DefaultTranscriptRuleMatcher`, and the two state-check backends
-:class:`JsonpathStateCheckBackend` + :class:`DbProbesStateCheckBackend`.
-The underlying utility functions those reference impls wrap
-(:func:`evaluate_transcript_rules`, :func:`evaluate_jsonpath_checks`,
-:func:`evaluate_db_probes`) are forbidden by name for the same reason.
+Walks every ``*.py`` under ``tolokaforge/core/grading/composite/`` and asserts,
+via ``ast``, that none of the shipping reference-impl names appear on any
+``import`` statement's imported symbol list. Six sub-component seams cover the
+six reference-impl holdings the composite is fenced from: :class:`LLMJudge`,
+:class:`LLMClient`, :class:`LLMJudgeRubricEvaluator`,
+:class:`LiteLLMJudgeModelProvider`, :class:`DefaultTranscriptRuleMatcher`, and
+the two state-check backends :class:`JsonpathStateCheckBackend` +
+:class:`DbProbesStateCheckBackend`. The underlying utility functions those
+reference impls wrap (:func:`evaluate_transcript_rules`,
+:func:`evaluate_jsonpath_checks`) are forbidden by name for the same reason.
 Utility symbols the composite legitimately reuses —
 :func:`scored_transcript_rules` (events-less-trial gate),
 :func:`transcript_rules_author_keys` (accounting),
@@ -23,8 +23,8 @@ Utility symbols the composite legitimately reuses —
 
 Complements the ``.importlinter`` ``composite-sub-component-seams``
 contract — the linter enforces module-level forbid rules across the
-codebase; this test locks the composite specifically, at unit-tier cost,
-so a regression trips even when the linter is not yet run.
+codebase; this test locks the composite package specifically, at unit-tier
+cost, so a regression trips even when the linter is not yet run.
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ import pytest
 pytestmark = pytest.mark.canonical
 
 
-_COMPOSITE_PATH = (
-    Path(__file__).resolve().parents[2] / "tolokaforge" / "core" / "grading" / "composite.py"
+_COMPOSITE_PKG = (
+    Path(__file__).resolve().parents[2] / "tolokaforge" / "core" / "grading" / "composite"
 )
 
 
@@ -62,37 +62,45 @@ def _imported_names(module_source: str) -> set[tuple[str, str]]:
     return pairs
 
 
+def _all_composite_imports() -> set[tuple[str, str]]:
+    """Union of every ``(from_module, imported_name)`` pair across the package."""
+    all_pairs: set[tuple[str, str]] = set()
+    for module_path in sorted(_COMPOSITE_PKG.rglob("*.py")):
+        all_pairs |= _imported_names(module_path.read_text())
+    return all_pairs
+
+
 def test_composite_does_not_import_llm_judge() -> None:
-    """The rubric-evaluator seam owns the ``LLMJudge`` reach — the composite
-    must not import it directly.
+    """The rubric-evaluator seam owns the ``LLMJudge`` reach — no module
+    under ``composite/`` may import it directly.
     """
-    imports = _imported_names(_COMPOSITE_PATH.read_text())
+    imports = _all_composite_imports()
     assert ("tolokaforge.core.grading.judge", "LLMJudge") not in imports, (
-        "composite.py must not import LLMJudge — the RubricEvaluator seam owns "
-        "the reach through the reference impl."
+        "A module under composite/ must not import LLMJudge — the RubricEvaluator "
+        "seam owns the reach through the reference impl."
     )
 
 
 def test_composite_does_not_import_evaluate_transcript_rules() -> None:
     """The transcript-rule-matcher seam owns the ``evaluate_transcript_rules``
-    reach — the composite must not import it directly. The gate + accounting
-    utilities from the same module (``scored_transcript_rules`` and
+    reach — no module under ``composite/`` may import it directly. The gate +
+    accounting utilities from the same module (``scored_transcript_rules`` and
     ``transcript_rules_author_keys``) remain permitted.
     """
-    imports = _imported_names(_COMPOSITE_PATH.read_text())
+    imports = _all_composite_imports()
     assert (
         "tolokaforge.core.grading.transcript",
         "evaluate_transcript_rules",
     ) not in imports, (
-        "composite.py must not import evaluate_transcript_rules — the "
-        "TranscriptRuleMatcher seam owns the reach through the reference impl."
+        "A module under composite/ must not import evaluate_transcript_rules — "
+        "the TranscriptRuleMatcher seam owns the reach through the reference impl."
     )
     assert (
         "tolokaforge.core.grading.transcript",
         "scored_transcript_rules",
     ) in imports, (
-        "composite.py must keep scored_transcript_rules — it is the "
-        "events-less-trial gate that runs above the matcher."
+        "A module under composite/ must keep scored_transcript_rules — it is "
+        "the events-less-trial gate that runs above the matcher."
     )
 
 
@@ -103,7 +111,7 @@ def test_composite_does_not_import_any_reference_impl_symbol() -> None:
     functions those impls wrap. A direct import of any of these would
     silently re-collapse the seam it belongs to.
     """
-    imports = _imported_names(_COMPOSITE_PATH.read_text())
+    imports = _all_composite_imports()
     imported_symbol_names = {name for _module, name in imports}
     forbidden = {
         # Reference impls the four `default_*.py` + two `judge.py`/`llm.client` modules hold
@@ -117,11 +125,11 @@ def test_composite_does_not_import_any_reference_impl_symbol() -> None:
         # Underlying utility functions each reference impl wraps
         "evaluate_transcript_rules",
         "evaluate_jsonpath_checks",
-        "evaluate_db_probes",
     }
     leaked = forbidden & imported_symbol_names
     assert not leaked, (
-        f"composite.py imports forbidden reference-impl symbols {sorted(leaked)!r}. "
-        "Every sub-component seam requires the reference impl reach only through "
-        "its resolved-instance kwarg, never through a direct import."
+        f"A module under composite/ imports forbidden reference-impl symbols "
+        f"{sorted(leaked)!r}. Every sub-component seam requires the reference "
+        f"impl reach only through its resolved-instance kwarg, never through a "
+        f"direct import."
     )

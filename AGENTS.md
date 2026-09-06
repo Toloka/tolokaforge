@@ -550,6 +550,14 @@ pack (`fix-billing-holds` or `fix-airline-segmentation`), a canonical
 snapshot capturing the assembled `harness_command`, and PR-quoted test output.
 No harness lands as data alone.
 
+## Grader architecture invariants
+
+The grader is a plug-in seam with three independent axes — substrate topology, transport, and grading kind — sitting behind one Protocol. Cross-referenced from [ADR-0043 — Detached-mode grader, typed grader kinds, adapter grading contract](docs/adr/0043-detached-mode-grader-and-typed-grader-kinds.md).
+
+1. **Grader is a pure function of `(GradingSubstrate, task_config, kind_config, agent_tools)`.** The substrate is the sole channel through which grading reads a trial's **state** — `db_reader`, `initial_state`, `final_state`, `filesystem_root`, `knowledge_search`, `db_probe`, `run_test_suite`. `task_config` and `kind_config` are caller-supplied parameters; `agent_tools` is a read-only view. Direct imports of `tolokaforge.runner.service` or `tolokaforge.runner.grading` from any module under `tolokaforge/core/grading/` are forbidden — mechanically enforced by the `no-runner-reach-from-core-grading` `.importlinter` contract (`allow_indirect_imports=false`). Any module under `core.grading/` that reaches for `RunnerServiceImpl` is running on the wrong side of the substrate seam.
+
+2. **Fold logic lives in `tolokaforge.core.grading.composite_fold`.** The `CompositeFold.finalise(...)` classmethod is the single reduction from component scores + weights to a `Grade`; three sanctioned callers use it (`runner/service.py::_grade_trial_async`, `grader/composite_dispatch.py::_run_composite`, `core/grading/kinds/composite.py::CompositeGraderKind.evaluate`). A fourth caller silently re-collapses the seam. Mechanically locked by `tests/canonical/test_fold_defined_once.py`. If a dispatcher re-derives `binary_pass` or `score` inline — you are duplicating the fold. Call `CompositeFold.finalise` instead.
+
 ## Known Gotchas
 
 1. **Browser automation** requires Chromium: `uv run playwright install --with-deps chromium`

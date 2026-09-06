@@ -24,14 +24,19 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from tolokaforge.core.compose_materialisation import LogCaptureConfig
 from tolokaforge.core.composition_runtime import ComposedEnvHandle, SubstrateComposer
 from tolokaforge.core.models import SeedRef
+from tolokaforge.core.models.trajectory import Trajectory
 from tolokaforge.core.plugin_registry import load_readiness_probe
 from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.runtime import EnvHandle, IsolationMode
 from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
+from tolokaforge.runner.models import TaskDescription
 from tolokaforge.tools.registry import ToolResult
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
+    from tolokaforge.core.grading.bundle import GradeBundleManifest
     from tolokaforge.core.plugin_registry import ReadinessProbeFactory, RuntimeBackendBuildContext
     from tolokaforge.core.trial import TrialSpec
 
@@ -94,7 +99,11 @@ class PerTrialRuntimeBackend:
 
     # ---- Run-level lifecycle ----
 
-    def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
+    def connect(
+        self,
+        timeout: float | None = None,
+        retry_interval: float | None = None,
+    ) -> None:
         return self._delegate.connect(timeout=timeout, retry_interval=retry_interval)
 
     def close(self) -> None:
@@ -189,6 +198,32 @@ class PerTrialRuntimeBackend:
     def cleanup_trial(self, trial_id: str) -> dict[str, Any]:
         return self._delegate.cleanup_trial(trial_id)
 
+    def remember_trial_inputs(
+        self,
+        trial_id: str,
+        trajectory: Trajectory,
+        task_description: TaskDescription,
+    ) -> None:
+        """Stash trial inputs the orchestrator will pass to ``build_grade_bundle``.
+
+        Snapshot-mode producer seam (see ``RuntimeBackend`` Protocol). Cleared
+        by :meth:`cleanup_trial` so per-run memory stays bounded.
+        """
+        self._delegate.remember_trial_inputs(trial_id, trajectory, task_description)
+
+    def build_grade_bundle(
+        self,
+        trial_id: str,
+        *,
+        out_dir: Path,
+    ) -> GradeBundleManifest:
+        """Produce a grade bundle for ``trial_id`` under ``out_dir``.
+
+        Delegates to the shared-stack impl which composes reads via
+        :class:`LiveRunnerCallbackGradingSubstrate`.
+        """
+        return self._delegate.build_grade_bundle(trial_id, out_dir=out_dir)
+
 
 def per_trial_runtime_backend_factory(
     ctx: RuntimeBackendBuildContext,
@@ -198,6 +233,8 @@ def per_trial_runtime_backend_factory(
         seeds=ctx.seeds,
         log_capture=ctx.log_capture,
         mount_docker_socket=ctx.mount_docker_socket,
+        connect_timeout=ctx.connect_timeout_s,
+        connect_retry_interval=ctx.connect_retry_interval_s,
     )
 
 

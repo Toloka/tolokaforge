@@ -28,8 +28,8 @@ import pytest
 
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tolokaforge.core.grading.checks_interface import SUPPORTED_VERSIONS
+from tolokaforge.core.grading.composite_fold import combine_grade_components
 from tolokaforge.core.trial_grader import _parse_grade_result
-from tolokaforge.runner.grading import combine_grade_components
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 

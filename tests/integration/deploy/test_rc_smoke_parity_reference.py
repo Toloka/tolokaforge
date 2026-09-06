@@ -246,9 +246,9 @@ def test_reference_pack_parity_deterministic_tier(
 
     ``state_checks_db_probes_only`` skips: its ``db_probes.dsn`` points at
     an ``app-db`` postgres absent from the standalone compose stack, so
-    the runner's real ``_fetch_probe_rows`` cannot reach the pack-declared
-    rows. Canonical parity via the harness's monkeypatched
-    ``_fetch_probe_rows`` covers the pack.
+    the real ``tolokaforge.core.grading.db_probes._fetch_probe_rows`` running
+    in the runner image cannot reach the pack-declared rows. Canonical parity
+    via the harness's monkeypatched ``_fetch_probe_rows`` covers the pack.
     """
     if pack_id == _DB_PROBES_PACK_ID:
         pytest.skip(

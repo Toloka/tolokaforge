@@ -113,7 +113,6 @@ carries that call's own result text — is locked at the end of this module.
 """
 
 import ast
-import asyncio
 import importlib
 import json
 import re
@@ -143,7 +142,7 @@ from tests.utils.grading_parity_packs import (
 from tests.utils.runner_requests import execute_request, register_request, trial_spec_json
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
-from tolokaforge.core.grading import composite as composite_module
+from tolokaforge.core.grading import db_probes as db_probes_module
 from tolokaforge.core.grading import (
     default_transcript_rule_matcher as default_transcript_rule_matcher_module,
 )
@@ -152,8 +151,16 @@ from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import COMBINE_METHODS
 from tolokaforge.core.grading.combine_weights import MissingComponentWeight
 from tolokaforge.core.grading.composite import _build_runner_check_transcript
+from tolokaforge.core.grading.composite import state_checks as _state_checks_mod
+from tolokaforge.core.grading.composite import trace_checks as _composite_trace_checks_mod
+from tolokaforge.core.grading.composite_fold import (
+    combine_grade_components,
+    resolve_state_checks_component,
+)
+from tolokaforge.core.grading.default_state_check_backends import DbProbesStateCheckBackend
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord, resolve_initial_state
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.jsonpath_evaluators import evaluate_jsonpath_checks
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
@@ -175,16 +182,9 @@ from tolokaforge.core.models import (
     ToolCall,
     Trajectory,
 )
-from tolokaforge.runner import grading as runner_grading
 from tolokaforge.runner import models as runner_models
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import service as runner_service_module
-from tolokaforge.runner.grading import (
-    combine_grade_components,
-    evaluate_db_probes,
-    evaluate_jsonpath_checks,
-    resolve_state_checks_component,
-)
 from tolokaforge.runner.grading_ledger import (
     LEDGER_KEYS,
     LLM_JUDGE_KEY,
@@ -254,9 +254,11 @@ _BINARY_HASH_VERDICT = frozenset({0.0, 1.0})
 _UNSCORED_COMPONENT = -1.0
 """What ``GradeComponents`` carries for a component the runner did not score.
 
-Every component evaluator in ``tolokaforge/runner/grading.py`` returns it when
-handed nothing to evaluate, so a slot holding it means no evaluation happened
-whatever the ledger recorded for the keys that feed it.
+Every component evaluator in ``tolokaforge/core/grading/jsonpath_evaluators.py``
+and ``tolokaforge/core/grading/db_probes.py``, and the runner-wire projection
+in ``tolokaforge/runner/grading.py``, returns it when handed nothing to
+evaluate, so a slot holding it means no evaluation happened whatever the
+ledger recorded for the keys that feed it.
 """
 
 _HASH_FAMILY_ROOT = "state_checks.hash"
@@ -2714,7 +2716,8 @@ def test_a_source_less_hash_block_on_a_task_that_seeds_nothing_is_refused_by_nam
 def test_a_filesystem_rooted_path_is_graded_not_refused(runner_service, mock_grpc_context):
     """The runner grades a ``$.filesystem[…]``-rooted path against the
     agent-visible filesystem — the state
-    :meth:`RunnerServiceImpl._read_agent_visible_filesystem` composes.
+    :func:`tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`
+    composes.
 
     The pre-existing refusal at ``_unreachable_state_checks_refusal`` classified
     every filesystem-rooted path as unreachable and led ``GradeTrial`` to answer
@@ -3007,27 +3010,39 @@ def test_an_empty_assertion_list_is_unscored_on_both_substrates(declared, test_d
     )
 
 
-def _probe_component(
-    probes: list[dict[str, Any]], rows: list[dict[str, Any]], monkeypatch
-) -> float | None:
-    """The runner's ``state_checks`` slot from its real probe evaluator over ``rows``.
+class _FakeProbeSubstrate:
+    """Minimal :class:`GradingSubstrate` stand-in for ``_probe_component``.
 
-    ``rows`` stands in for the postgres the probe queries, at the seam
-    ``_fetch_probe_rows`` exists to provide — the DSN resolves only inside the task's
-    docker network, which is why the manifest enforces this key at the integration
-    tier. The probe's own ``expect`` assertions and the fold that reads the score are
-    the real ones.
+    Only :meth:`db_probe` is reached — ``DbProbesStateCheckBackend.query``
+    calls the accessor once per probe with the ``(dsn, query)`` pair the
+    pack declares. Returns the same scripted rows for every call.
     """
 
-    async def _rows(dsn: str, query: str) -> list[dict[str, Any]]:
-        return rows
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
 
-    monkeypatch.setattr(runner_grading, "_fetch_probe_rows", _rows)
-    probe_score, _ = asyncio.run(evaluate_db_probes(probes))
+    def db_probe(self, dsn: str, query: str) -> list[dict[str, Any]]:  # noqa: ARG002
+        return list(self._rows)
+
+
+def _probe_component(probes: list[dict[str, Any]], rows: list[dict[str, Any]]) -> float | None:
+    """The runner's ``state_checks`` slot from the ``db_probes`` backend over ``rows``.
+
+    ``rows`` stands in for the postgres the probe queries, at the seam
+    :meth:`~tolokaforge.core.grading.substrate.GradingSubstrate.db_probe`
+    exposes — the DSN resolves only inside the task's docker network, which is
+    why the manifest enforces this key at the integration tier. The probe's own
+    ``expect`` assertions and the fold that reads the score are the real ones.
+    """
+    substrate = _FakeProbeSubstrate(rows)
+    probe_score, _ = DbProbesStateCheckBackend().query(
+        expression=probes,
+        substrate=substrate,  # type: ignore[arg-type]
+    )
     return resolve_state_checks_component(
         hash_score=-1.0,
         jsonpath_score=-1.0,
-        db_probe_score=probe_score,
+        db_probe_score=probe_score if probe_score is not None else -1.0,
         hash_weight=None,
     ).component
 
@@ -3040,7 +3055,7 @@ def _probe_component(
     ],
 )
 def test_a_probe_only_pack_is_unscored_core_side_and_scored_by_the_runner(
-    rows, expected, test_data_dir, monkeypatch
+    rows, expected, test_data_dir
 ):
     """The one asymmetry this presence rule is allowed to have, asserted not assumed.
 
@@ -3071,7 +3086,7 @@ def test_a_probe_only_pack_is_unscored_core_side_and_scored_by_the_runner(
         f"core scored state_checks {core!r} on a pack whose only state source it cannot "
         "read, so the number can only have come from the empty assertion list beside it"
     )
-    assert _probe_component(probes, rows, monkeypatch) == pytest.approx(expected)
+    assert _probe_component(probes, rows) == pytest.approx(expected)
 
 
 # --------------------------------------------------------------------------
@@ -3639,7 +3654,7 @@ def _drive_db_probes(
     async def _rows(_dsn: str, _query: str) -> list[dict[str, Any]]:
         return _PROBE_ROWS
 
-    monkeypatch.setattr(runner_grading, "_fetch_probe_rows", _rows)
+    monkeypatch.setattr(db_probes_module, "_fetch_probe_rows", _rows)
     task_description = _adapter_for(test_data_dir, _TASKS_GLOB).to_task_description(_PROBE_PACK)
     _register_pack(servicer, context, task_description, trial_id)
 
@@ -3791,7 +3806,7 @@ def test_the_site_lock_rejects_a_site_that_filed_a_skip_where_it_evaluated(
         outcome=KeyAccounting.SKIPPED, detail="downgraded by injection"
     )
     monkeypatch.setattr(runner_service_module, "EVALUATED", downgraded)
-    monkeypatch.setattr(composite_module, "EVALUATED", downgraded)
+    monkeypatch.setattr(_state_checks_mod, "EVALUATED", downgraded)
 
     grading_config, response = _drive_parity_pack(
         _INJECTION_JSONPATHS,
@@ -3809,7 +3824,7 @@ def test_the_site_lock_rejects_a_site_that_filed_a_skip_where_it_evaluated(
 @pytest.mark.parametrize(
     ("evaluator_module", "evaluator_name", "author_key"),
     [
-        (composite_module, "evaluate_trace_checks", _INJECTION_TRACE),
+        (_composite_trace_checks_mod, "evaluate_trace_checks", _INJECTION_TRACE),
         (
             default_transcript_rule_matcher_module,
             "evaluate_transcript_rules",

@@ -28,7 +28,9 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 import grpc
 
 from tolokaforge.core.compose_materialisation import LogCaptureConfig
+from tolokaforge.core.grading.bundle_producer import serialize_bundle_from_substrate
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.substrate_live import LiveRunnerCallbackGradingSubstrate
 from tolokaforge.core.health import HealthLevel, HealthReport
 from tolokaforge.core.models import SeedRef, TraceConstraintSeverity
 from tolokaforge.core.run_display_events import (
@@ -54,13 +56,18 @@ from tolokaforge.runner.protocol import (
 from tolokaforge.tools.registry import ToolResult
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports for provisioning surface
+    from pathlib import Path
+
     from tolokaforge.core.composition_runtime import (
         ComposedEnvHandle,
         RunSubstrate,
         SubstrateComposer,
     )
+    from tolokaforge.core.grading.bundle import GradeBundleManifest
+    from tolokaforge.core.models.trajectory import Trajectory
     from tolokaforge.core.plugin_registry import RuntimeBackendBuildContext
     from tolokaforge.core.trial import TrialSpec
+    from tolokaforge.runner.models import TaskDescription
 
 logger = logging.getLogger(__name__)
 
@@ -1018,6 +1025,15 @@ class SharedStackRuntimeBackend:
         self.log_capture = log_capture
         self._mount_docker_socket = mount_docker_socket
         self._events: RunDisplayEvents = events if events is not None else _NULL_EVENTS
+        # Populated by ``remember_trial_inputs`` before each trial-end
+        # ``build_grade_bundle`` call; cleared by ``cleanup_trial`` so a
+        # long-running orchestrator process does not accumulate per-trial
+        # domain objects in memory. Only consulted when snapshot mode is
+        # active — the orchestrator's startup gate refuses that mode when
+        # this backend lacks ``build_grade_bundle``, so the entries here
+        # exist only when the producer seam will actually read them.
+        self._pending_trajectories: dict[str, Trajectory] = {}
+        self._pending_task_descriptions: dict[str, TaskDescription] = {}
         self.composer: SubstrateComposer = (
             composer if composer is not None else DefaultSubstrateComposer()
         )
@@ -1078,7 +1094,11 @@ class SharedStackRuntimeBackend:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def connect(self, timeout: float = 30.0, retry_interval: float = 1.0) -> None:
+    def connect(
+        self,
+        timeout: float | None = None,
+        retry_interval: float | None = None,
+    ) -> None:
         """Connect to the Runner service with health-check retry.
 
         In built-in-stack mode this delegates straight to the injected
@@ -1090,7 +1110,12 @@ class SharedStackRuntimeBackend:
 
         Args:
             timeout: Maximum time to wait for healthy service (seconds).
+                ``None`` (the orchestrator's default call) falls back to
+                :attr:`connect_timeout`, which the factory populated from
+                ``env → OrchestratorConfig.runtime_connect → default``.
+                Callers passing an explicit value still win.
             retry_interval: Time between health-check attempts (seconds).
+                Same ``None`` fallback semantics as ``timeout``.
 
         Raises:
             ProvisionError: env_manifest mode; the composer fails to
@@ -1099,6 +1124,10 @@ class SharedStackRuntimeBackend:
             ConnectionError: built-in-stack mode; the runner is not
                 healthy within ``timeout``.
         """
+        if timeout is None:
+            timeout = self.connect_timeout
+        if retry_interval is None:
+            retry_interval = self.connect_retry_interval
         if self._env_manifest is None and not self._per_trial_mode:
             self.runner_client.connect(timeout=timeout, retry_interval=retry_interval)
             logger.info("Shared-stack runtime connected")
@@ -1204,6 +1233,60 @@ class SharedStackRuntimeBackend:
         if self._run_substrate is None:
             return None
         return self._run_substrate.runner_client
+
+    def remember_trial_inputs(
+        self,
+        trial_id: str,
+        trajectory: Trajectory,
+        task_description: TaskDescription,
+    ) -> None:
+        """Stash the trajectory + task description keyed by ``trial_id``.
+
+        Called by the orchestrator's producer seam right before
+        :meth:`build_grade_bundle`; cleared by :meth:`cleanup_trial`.
+        """
+        self._pending_trajectories[trial_id] = trajectory
+        self._pending_task_descriptions[trial_id] = task_description
+
+    def build_grade_bundle(
+        self,
+        trial_id: str,
+        *,
+        out_dir: Path,
+    ) -> GradeBundleManifest:
+        """Produce a grade bundle for ``trial_id`` in ``out_dir`` by
+        composing reads over the runner's ``SubstrateService``.
+
+        A fresh :class:`LiveRunnerCallbackGradingSubstrate` dials the same
+        runner address the live-callback grader path uses; the bundle
+        producer helper reads state through that substrate and stitches
+        it with the trajectory + task description stashed by
+        :meth:`remember_trial_inputs`. The substrate's gRPC channel is
+        closed in ``try/finally`` so a serialise failure still releases
+        the transport.
+        """
+        if self.runner_client is None:
+            raise RuntimeError(
+                "SharedStackRuntimeBackend.build_grade_bundle called before connect()."
+            )
+        if trial_id not in self._pending_trajectories:
+            raise KeyError(
+                f"SharedStackRuntimeBackend.build_grade_bundle: no remembered trajectory "
+                f"for trial_id={trial_id!r}; call remember_trial_inputs first."
+            )
+        trajectory = self._pending_trajectories[trial_id]
+        task_description = self._pending_task_descriptions[trial_id]
+        substrate = LiveRunnerCallbackGradingSubstrate(self.runner_client.runner_address, trial_id)
+        try:
+            return serialize_bundle_from_substrate(
+                substrate=substrate,
+                trial_id=trial_id,
+                out_dir=out_dir,
+                trajectory=trajectory,
+                task_description=task_description,
+            )
+        finally:
+            substrate.close()
 
     # ------------------------------------------------------------------
     # Per-trial provisioning (ADR-0010)
@@ -1443,8 +1526,12 @@ class SharedStackRuntimeBackend:
         a given trial, so a cleanup on an unprovisioned trial returns
         the idempotent success payload rather than raising — no runner
         client exists to talk to. Built-in-stack mode always has a
-        run-owned client and delegates unconditionally.
+        run-owned client and delegates unconditionally. Also drops any
+        pending snapshot-producer inputs the orchestrator stashed via
+        :meth:`remember_trial_inputs`.
         """
+        self._pending_trajectories.pop(trial_id, None)
+        self._pending_task_descriptions.pop(trial_id, None)
         if self._env_manifest is None and not self._per_trial_mode:
             return self.runner_client.cleanup_trial(trial_id)
         if trial_id not in self._env_handles:
@@ -1538,6 +1625,8 @@ def shared_runtime_backend_factory(
             log_capture=ctx.log_capture,
             mount_docker_socket=ctx.mount_docker_socket,
             events=ctx.events,
+            connect_timeout=ctx.connect_timeout_s,
+            connect_retry_interval=ctx.connect_retry_interval_s,
         )
     if ctx.per_trial_mode:
         backend = SharedStackRuntimeBackend(
@@ -1546,6 +1635,8 @@ def shared_runtime_backend_factory(
             log_capture=ctx.log_capture,
             mount_docker_socket=ctx.mount_docker_socket,
             events=ctx.events,
+            connect_timeout=ctx.connect_timeout_s,
+            connect_retry_interval=ctx.connect_retry_interval_s,
         )
         backend._per_trial_mode = True
         return backend
@@ -1554,4 +1645,6 @@ def shared_runtime_backend_factory(
         endpoints=_build_env_endpoints(ctx.runner_address),
         seeds=ctx.seeds,
         events=ctx.events,
+        connect_timeout=ctx.connect_timeout_s,
+        connect_retry_interval=ctx.connect_retry_interval_s,
     )

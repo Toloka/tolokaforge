@@ -1,4 +1,6 @@
-"""Tests for evaluate_jsonpath_file_checks in runner/grading.py.
+"""Tests for the JSONPath evaluators in core/grading/jsonpath_evaluators.py
+and the ``db_probes`` state-check backend in
+core/grading/default_state_check_backends.py.
 
 The Runner-side jsonpath check evaluates state_checks.jsonpath_checks
 against files inside the runner container's /env/fs/agent-visible tree.
@@ -9,27 +11,29 @@ in state_checks.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from tolokaforge.core.grading.composite_fold import (
+    build_grade_reasons,
+    combine_grade_components,
+    resolve_state_checks_component,
+)
+from tolokaforge.core.grading.default_state_check_backends import DbProbesStateCheckBackend
 from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenActionFailure,
     GoldenReplayRecord,
 )
-from tolokaforge.core.grading.state_composition import (
-    CONFLICTING_STATE_SOURCES_MESSAGE,
-    INERT_HASH_WEIGHT_REASON,
-)
-from tolokaforge.runner import grading as grading_module
-from tolokaforge.runner.grading import (
-    build_grade_reasons,
-    combine_grade_components,
-    evaluate_db_probes,
+from tolokaforge.core.grading.jsonpath_evaluators import (
     evaluate_jsonpath_checks,
     evaluate_jsonpath_file_checks,
     evaluate_jsonpath_state_checks,
-    resolve_state_checks_component,
+)
+from tolokaforge.core.grading.state_composition import (
+    CONFLICTING_STATE_SOURCES_MESSAGE,
+    INERT_HASH_WEIGHT_REASON,
 )
 
 pytestmark = pytest.mark.unit
@@ -147,7 +151,7 @@ def test_logical_agent_visible_path_translates_to_work(tmp_path: Path, monkeypat
             pattern = str(tmp_path / "work")
         return real_glob(pattern, *args, **kwargs)
 
-    monkeypatch.setattr("tolokaforge.runner.grading.glob.glob", patched_glob)
+    monkeypatch.setattr("tolokaforge.core.grading.jsonpath_evaluators.glob.glob", patched_glob)
 
     checks = [
         {
@@ -396,23 +400,47 @@ def test_combine_components_uses_jsonpath_when_hash_absent():
     assert score == 0.75
 
 
-def _stub_rows(rows, monkeypatch):
-    """Inject an in-memory row set for _fetch_probe_rows (no live DB)."""
+class _StubProbeSubstrate:
+    """Minimal :class:`GradingSubstrate` stand-in for ``db_probes`` backend tests.
 
-    async def fake_fetch(dsn: str, query: str):
-        return rows
+    Only :meth:`db_probe` is exercised by ``DbProbesStateCheckBackend.query``;
+    every other Protocol method would raise ``AttributeError`` if reached — the
+    backend keeps the surface narrow by design.
 
-    monkeypatch.setattr(grading_module, "_fetch_probe_rows", fake_fetch)
+    Constructed with either a scripted row set (returned for any ``(dsn,
+    query)`` pair) or a preloaded exception (raised on first call), covering
+    the two response shapes the backend routes on: rows land in the fold as
+    ``{"rows": rows, "row_count": len(rows)}``; a substrate exception surfaces
+    as a per-probe FAIL line naming the exception.
+    """
+
+    def __init__(
+        self,
+        rows: list[dict[str, Any]] | None = None,
+        raises: BaseException | None = None,
+    ) -> None:
+        self._rows = rows
+        self._raises = raises
+
+    def db_probe(self, dsn: str, query: str) -> list[dict[str, Any]]:  # noqa: ARG002
+        if self._raises is not None:
+            raise self._raises
+        assert self._rows is not None
+        return list(self._rows)
 
 
-async def test_db_probes_empty_returns_sentinel():
-    score, reasons = await evaluate_db_probes([])
-    assert score == -1.0
-    assert reasons == ""
+def test_db_probes_empty_returns_none_pair():
+    """Empty probe list → ``(None, None)`` — the shared "nothing to score" sentinel."""
+    backend = DbProbesStateCheckBackend()
+    substrate = _StubProbeSubstrate(rows=[])
+    score, reasons = backend.query(expression=[], substrate=substrate)  # type: ignore[arg-type]
+    assert score is None
+    assert reasons is None
 
 
-async def test_db_probe_passes_when_expect_matches(monkeypatch):
-    _stub_rows([{"reason_code": "CAPA-01", "status": "open"}], monkeypatch)
+def test_db_probe_passes_when_expect_matches():
+    backend = DbProbesStateCheckBackend()
+    substrate = _StubProbeSubstrate(rows=[{"reason_code": "CAPA-01", "status": "open"}])
     probes = [
         {
             "name": "ca_exists",
@@ -430,13 +458,14 @@ async def test_db_probe_passes_when_expect_matches(monkeypatch):
             "description": "corrective action recorded",
         }
     ]
-    score, reasons = await evaluate_db_probes(probes)
+    score, reasons = backend.query(expression=probes, substrate=substrate)  # type: ignore[arg-type]
     assert score == 1.0
-    assert "PASS: probe 'ca_exists'" in reasons
+    assert "PASS: probe 'ca_exists'" in (reasons or "")
 
 
-async def test_db_probe_fails_and_reports_actual_value(monkeypatch):
-    _stub_rows([{"reason_code": "WRONG", "status": "open"}], monkeypatch)
+def test_db_probe_fails_and_reports_actual_value():
+    backend = DbProbesStateCheckBackend()
+    substrate = _StubProbeSubstrate(rows=[{"reason_code": "WRONG", "status": "open"}])
     probes = [
         {
             "name": "ca_exists",
@@ -452,18 +481,15 @@ async def test_db_probe_fails_and_reports_actual_value(monkeypatch):
             "description": "corrective action recorded",
         }
     ]
-    score, reasons = await evaluate_db_probes(probes)
+    score, reasons = backend.query(expression=probes, substrate=substrate)  # type: ignore[arg-type]
     assert score == 0.0
-    assert "FAIL: probe 'ca_exists'" in reasons
-    # The mismatching value is surfaced for debugging.
-    assert "WRONG" in reasons
+    assert "FAIL: probe 'ca_exists'" in (reasons or "")
+    assert "WRONG" in (reasons or "")
 
 
-async def test_db_probe_connection_error_fails_loud(monkeypatch):
-    async def raising_fetch(dsn: str, query: str):
-        raise ConnectionError("could not connect to app-db:5432")
-
-    monkeypatch.setattr(grading_module, "_fetch_probe_rows", raising_fetch)
+def test_db_probe_connection_error_fails_loud():
+    backend = DbProbesStateCheckBackend()
+    substrate = _StubProbeSubstrate(raises=ConnectionError("could not connect to app-db:5432"))
     probes = [
         {
             "name": "ca_exists",
@@ -473,11 +499,11 @@ async def test_db_probe_connection_error_fails_loud(monkeypatch):
             "description": "corrective action recorded",
         }
     ]
-    score, reasons = await evaluate_db_probes(probes)
+    score, reasons = backend.query(expression=probes, substrate=substrate)  # type: ignore[arg-type]
     assert score == 0.0
-    assert "FAIL: probe 'ca_exists'" in reasons
-    assert "could not query postgres" in reasons
-    assert "ConnectionError" in reasons
+    assert "FAIL: probe 'ca_exists'" in (reasons or "")
+    assert "could not query postgres" in (reasons or "")
+    assert "ConnectionError" in (reasons or "")
 
 
 @pytest.mark.parametrize(("hash_score", "expected"), [(1.0, (1.0, True)), (0.0, (0.0, False))])

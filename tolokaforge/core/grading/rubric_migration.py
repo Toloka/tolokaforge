@@ -70,6 +70,7 @@ from tolokaforge.core.grading.agreement import (
     cohen_kappa,
 )
 from tolokaforge.core.grading.combine_weights import MissingComponentWeight
+from tolokaforge.core.grading.composite_fold import TrialVerdict, compose_trial_verdict
 from tolokaforge.core.grading.config_validation import inspect_grading_authoring
 from tolokaforge.core.grading.grade_components import (
     COMPONENT_BY_NAME,
@@ -109,7 +110,6 @@ from tolokaforge.core.models import (
     TraceConstraintSeverity,
 )
 from tolokaforge.core.output_writer import GRADE_FILENAME, TASK_FILENAME
-from tolokaforge.runner.grading import RunnerTrialVerdict, compose_runner_trial_verdict
 
 __all__ = [
     "CANDIDATE_LABELLER",
@@ -1023,7 +1023,7 @@ def _judge_component_of(
 
 
 def _reproduces_the_recorded_verdict(
-    recorded: RecordedTrialVerdict, verdict: RunnerTrialVerdict
+    recorded: RecordedTrialVerdict, verdict: TrialVerdict
 ) -> str | None:
     """``None`` where the recomposition matches the bundle's grade, else how it diverged."""
     grade = recorded.grade
@@ -1054,7 +1054,7 @@ def _composed_column(
     *,
     judge_gate_failed: bool,
     trace_gate_failed: bool,
-) -> RunnerTrialVerdict | UnrecomputedTrial:
+) -> TrialVerdict | UnrecomputedTrial:
     """One column's verdict, or the gap a map that does not weight what it folds leaves.
 
     The *after* column installs ``trace_checks`` as a scored component, and an entry
@@ -1064,7 +1064,7 @@ def _composed_column(
     states the missing key instead.
     """
     try:
-        return compose_runner_trial_verdict(
+        return compose_trial_verdict(
             dict(components),
             dict(config),
             judge_gate_failed=judge_gate_failed,

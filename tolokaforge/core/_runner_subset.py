@@ -124,9 +124,13 @@ base wheel."""
 RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/actors/turn_policy.py",
     "tolokaforge/core/grading/agreement.py",
+    "tolokaforge/core/grading/bundle.py",
+    "tolokaforge/core/grading/bundle_producer.py",
+    "tolokaforge/core/grading/bundle_store.py",
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/config_validation.py",
     "tolokaforge/core/grading/corpus_curation.py",
+    "tolokaforge/core/grading/judge_only_helpers.py",
     "tolokaforge/core/grading/migration_declaration.py",
     "tolokaforge/core/grading/replay.py",
     "tolokaforge/core/grading/replay_layout.py",
@@ -165,7 +169,12 @@ adapter for the runner's ``SubstrateService`` — and ``core.grading.substrate_l
 — :class:`LiveRunnerCallbackGradingSubstrate` and its private gRPC helpers).
 The runner never instantiates them: they are the grader container's client
 side of the substrate seam, and shipping them inside the runner image would
-double-ship the compiled ``runner_pb2`` surface without a caller. The
+double-ship the compiled ``runner_pb2`` surface without a caller.
+``core.grading.judge_only_helpers`` is the orchestrator-side dispatch body
+the ``judge_only`` :class:`TrialGrader` delegates its per-trial run to — the
+runner never invokes it, and its imports reach the orchestrator-only
+``core.trial_grader`` (for :class:`GradingFailedError`) and the already-excluded
+``core.grading.replay`` (for :func:`build_replay_grade`). The
 remaining five (``core.grading.agreement``, ``core.grading.config_validation``,
 ``core.grading.replay_layout``, ``core.grading.unknown_keys``,
 ``core.llm.fallback_client``) have only
@@ -175,6 +184,26 @@ authoring gate, the rubric-to-trace-check migration and the offline replay
 commands all run on the host, before or after any trial is scheduled, and they
 would ship as dead weight. The runner container's runtime
 closure reaches none of them.
+
+``core.grading.bundle`` is the offline grade-bundle format library — a
+manifest-first, part-addressable, content-addressable directory carrying
+everything a grader needs to score one trial without a live runner. Its
+imports are stdlib-only, but the runner container has no code path that
+reads or writes bundles: the producer runs host-side (offline replay /
+cross-topology grading), and no runner boot-closure module reaches into
+it. Ships as dead weight in the runner image.
+
+``core.grading.bundle_store`` ships the ``BundleStore`` Protocol and its
+built-in transports for the same offline grade-bundle format. Its
+producers and consumers live host-side (offline replay, cross-topology
+grading, standalone grader service); no runner boot-closure module
+reaches into it. Excluded on the same grounds as ``core.grading.bundle``.
+
+``core.grading.bundle_producer`` is the orchestrator-side helper the
+runtime backend's ``build_grade_bundle`` hook delegates to. It composes
+substrate reads plus caller-supplied trajectory and task-description
+inputs into a v1.0 bundle via ``serialize_grade_bundle``; the runner
+never invokes it. Excluded on the same grounds as ``core.grading.bundle``.
 """
 
 

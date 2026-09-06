@@ -73,3 +73,222 @@ forbidden_modules =
     tolokaforge.core.grading.default_transcript_rule_matcher
     tolokaforge.core.grading.default_state_check_backends
 allow_indirect_imports = true
+
+
+# Composite-fold purity (ADR-0040 Stream B).
+#
+# ``core.grading.composite_fold`` owns the substrate-neutral fold both the
+# runner-side ``_grade_trial_async`` and the grader-side ``_run_composite``
+# drive. It must not reach *back* into the runner or grader packages, nor
+# into the live substrate — a reach would silently re-collapse the seam and
+# make the fold substrate-specific again. ``allow_indirect_imports = false``
+# is intentional: a transitive path back into a forbidden target must trip
+# the contract, not just a direct import.
+[importlinter:contract:composite-fold-purity]
+name = composite_fold is a pure library — no runner/grader/live-substrate reach
+type = forbidden
+source_modules =
+    tolokaforge.core.grading.composite_fold
+forbidden_modules =
+    tolokaforge.runner
+    tolokaforge.grader
+    tolokaforge.core.grading.substrate_live
+allow_indirect_imports = false
+
+
+# Filesystem-view purity (ADR-0040 Stream B).
+#
+# ``core.grading.filesystem_view`` owns the agent-visible workspace-walk
+# contract every grading path reaches through: the runner's non-harness
+# filesystem-state factory, ``SubstrateService.ListFilesystemDir``, and
+# ``SubstrateService.ReadFilesystemPath``. A reach back into the runner,
+# grader, or live substrate would silently re-collapse the seam and make
+# the walk caller-specific again. ``allow_indirect_imports = false`` is
+# intentional: a transitive path back into a forbidden target must trip
+# the contract, not just a direct import.
+[importlinter:contract:filesystem-view-purity]
+name = filesystem_view is a pure library — no runner/grader/live-substrate reach
+type = forbidden
+source_modules =
+    tolokaforge.core.grading.filesystem_view
+forbidden_modules =
+    tolokaforge.runner
+    tolokaforge.grader
+    tolokaforge.core.grading.substrate_live
+allow_indirect_imports = false
+
+
+# No runner-reach from core.grading (ADR-0040 north star).
+#
+# ``core.grading`` owns the pure grading library the runner-side
+# GradeTrial and the standalone Grader v3 service both drive. A reach
+# back into the runner surface silently re-collapses the substrate seam
+# ADR-0040 makes the boundary of. Two runner targets are fenced here:
+# the runner's gRPC service module and the narrow ``runner.grading``
+# (state-diff + wire-sentinel projection + the ``CheckResult`` wire
+# encoder). ``runner.grading_ledger`` is deliberately not fenced; the
+# composite reads LEDGER keys from it.
+# ``allow_indirect_imports = false`` is intentional: a transitive path
+# back into a forbidden target must trip the contract, not just a
+# direct import — a downstream cannot slip these targets in via a
+# wire-infrastructure module either.
+[importlinter:contract:no-runner-reach-from-core-grading]
+name = core.grading does not reach the runner-side grade RPC or narrow runner-wire helpers
+type = forbidden
+source_modules =
+    tolokaforge.core.grading
+forbidden_modules =
+    tolokaforge.runner.service
+    tolokaforge.runner.grading
+allow_indirect_imports = false
+
+
+# No pb2 reach from core.grading (ADR-0040 north star, pb2 fence).
+#
+# The generated ``runner_pb2`` / ``runner_pb2_grpc`` stubs are the wire
+# shape ``runner.service`` produces. A direct ``pb2`` import anywhere
+# under ``core.grading`` re-collapses the fence at the layer the
+# composite package was split to make legible.
+#
+# Carve-out: ``core.grading.substrate_client`` IS the
+# ``SubstrateService`` gRPC client — it lives under ``core.grading``
+# because the composite reads through the substrate seam, but it must
+# import the generated stubs to speak gRPC. The ``ignore_imports``
+# clauses below name the two specific edges (``substrate_client →
+# runner_pb2`` and ``→ runner_pb2_grpc``) so the carve-out is legible
+# at the source.
+#
+# ``allow_indirect_imports = true`` is deliberate: wire-level
+# infrastructure (``core.loop``, ``core.trial_grader``,
+# ``core.shared_stack_runtime``, ``core.plugin_registry``) legitimately
+# imports ``pb2`` and is legitimately consumed by ``core.grading``
+# modules; a strict-transitive fence would trip on those chains without
+# catching the pattern this contract exists to prevent — a module
+# under ``core.grading`` naming a ``pb2`` module in its own imports.
+# The canonical AST grep guard at
+# ``tests/canonical/test_no_pb2_imports_in_composite.py`` locks the
+# composite package specifically at unit-tier cost, so a direct
+# reintroduction on the surface the split makes legible trips at
+# pytest collection.
+[importlinter:contract:no-pb2-reach-from-core-grading]
+name = core.grading does not directly import runner_pb2 or runner_pb2_grpc (transitive via wire infrastructure is OK)
+type = forbidden
+source_modules =
+    tolokaforge.core.grading
+forbidden_modules =
+    tolokaforge.runner.runner_pb2
+    tolokaforge.runner.runner_pb2_grpc
+ignore_imports =
+    tolokaforge.core.grading.substrate_client -> tolokaforge.runner.runner_pb2
+    tolokaforge.core.grading.substrate_client -> tolokaforge.runner.runner_pb2_grpc
+allow_indirect_imports = true
+
+
+# Bundle-library purity (grade bundle format v1.0).
+#
+# ``core.grading.bundle`` ships the offline grade-bundle format library
+# (manifest schema v1.0 + reader + producer + `%.6g` float normaliser).
+# The bundle is content-addressable: its canonical name is
+# ``sha256(manifest.json)``, and each part is digested inside the manifest.
+# A reach back into ``runner``, ``grader``, or the live substrate would
+# couple the format bytes to the wire and defeat that invariant — the
+# same trial serialised on two topologies would land at different digests.
+# ``allow_indirect_imports = false`` mirrors ``composite-fold-purity`` /
+# ``filesystem-view-purity`` — a transitive path back into a forbidden
+# target trips the contract, not just a direct import.
+[importlinter:contract:bundle-library-purity]
+name = tolokaforge.core.grading.bundle is a pure library — no runner/grader/substrate_live reach
+type = forbidden
+source_modules =
+    tolokaforge.core.grading.bundle
+forbidden_modules =
+    tolokaforge.runner
+    tolokaforge.grader
+    tolokaforge.core.grading.substrate_live
+allow_indirect_imports = false
+
+
+# Bundle-store purity (grade bundle transport seam).
+#
+# ``core.grading.bundle_store`` ships the ``BundleStore`` Protocol and its
+# built-in implementations. The seam moves an already-serialised bundle
+# between storage endpoints; a reach back into ``runner``, ``grader``, or
+# the live substrate would couple the transport to the wire and break the
+# seam that lets an offline grader consume a bundle produced anywhere.
+# ``bundle_store`` MAY reach ``tolokaforge.core.grading.bundle`` (for the
+# manifest digest primitive). ``allow_indirect_imports = false`` mirrors
+# ``bundle-library-purity`` — a transitive path back into a forbidden
+# target trips the contract, not just a direct import.
+[importlinter:contract:bundle-store-purity]
+name = tolokaforge.core.grading.bundle_store is a pure transport module — no runner/grader/substrate_live reach
+type = forbidden
+source_modules =
+    tolokaforge.core.grading.bundle_store
+forbidden_modules =
+    tolokaforge.runner
+    tolokaforge.grader
+    tolokaforge.core.grading.substrate_live
+allow_indirect_imports = false
+
+
+# Bundle-producer purity (grade bundle orchestrator-side producer helper).
+#
+# ``core.grading.bundle_producer`` is the orchestrator-side helper the
+# runtime backend's ``build_grade_bundle`` hook delegates to. It composes
+# substrate reads plus caller-supplied trajectory + task-description
+# inputs into a v1.0 bundle via ``serialize_grade_bundle``. A reach back
+# into ``runner``, ``grader``, or the live substrate would couple the
+# producer to the wire and defeat the seam that lets any topology
+# emit a byte-identical bundle for the same trial. The helper MAY reach
+# ``tolokaforge.core.grading.bundle`` (for the serialiser + manifest) and
+# ``tolokaforge.core.grading.substrate`` (the ``GradingSubstrate``
+# Protocol — the caller passes a live-callback substrate, but the helper
+# talks to it structurally). ``allow_indirect_imports = false`` mirrors
+# ``bundle-library-purity`` — a transitive path back into a forbidden
+# target trips the contract, not just a direct import.
+[importlinter:contract:bundle-producer-purity]
+name = tolokaforge.core.grading.bundle_producer is a pure orchestrator-side helper — no runner/grader/substrate_live reach
+type = forbidden
+source_modules =
+    tolokaforge.core.grading.bundle_producer
+forbidden_modules =
+    tolokaforge.runner
+    tolokaforge.grader
+    tolokaforge.core.grading.substrate_live
+allow_indirect_imports = false
+
+
+# Grader-kinds purity.
+#
+# The typed grader-kind package (``tolokaforge.core.grading.kinds``) is a
+# pure library on the topology-neutral seam ADR-0040 draws: every kind
+# reads through :class:`GradingSubstrate` and folds into the shared
+# :class:`Grade` type. A DIRECT reach back into the runner-side grade RPC,
+# narrow runner-wire helpers, generated pb2 modules, the grader package,
+# or the live substrate would re-collapse the seam.
+#
+# ``allow_indirect_imports = true`` matches ``no-pb2-reach-from-core-grading``:
+# wire-level infrastructure (``core.plugin_registry`` → ``trial_grader``
+# → ``shared_stack_runtime`` → ``runner_pb2_grpc``) legitimately imports
+# ``pb2`` and is legitimately consumed transitively by ``core.grading``
+# modules; a strict-transitive fence would trip on those chains without
+# catching the pattern this contract exists to prevent — a module under
+# ``core.grading.kinds`` naming one of the forbidden targets in its own
+# imports. The direct-import check is what preserves the seam.
+#
+# ``tolokaforge.runner.models`` is intentionally NOT forbidden — kinds
+# validate their ``kind_config`` against Pydantic models declared there
+# under ``TYPE_CHECKING`` (e.g. ``RunnerGradingConfig``).
+[importlinter:contract:grader-kinds-purity]
+name = tolokaforge.core.grading.kinds is a pure library — no direct runner/grader/live-substrate reach
+type = forbidden
+source_modules =
+    tolokaforge.core.grading.kinds
+forbidden_modules =
+    tolokaforge.runner.service
+    tolokaforge.runner.grading
+    tolokaforge.runner.runner_pb2
+    tolokaforge.runner.runner_pb2_grpc
+    tolokaforge.grader
+    tolokaforge.core.grading.substrate_live
+allow_indirect_imports = true

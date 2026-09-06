@@ -429,12 +429,18 @@ _RETIRED_EXPECTED_HASH_MESSAGE: str = (
 class RunnerStateChecksConfig(BaseModel):
     """State-based grading configuration on the runner wire.
 
-    Declares no ``expected_hash`` field; a ``mode="before"`` validator refuses the
-    retired key with a ``ValidationError`` naming the two current sources
+    Declares no ``expected_hash`` field. A ``mode="before"`` validator refuses
+    the retired key with a ``ValidationError`` naming the two current sources
     (``golden_actions``, ``expect_initial_state``) and the retirement tracker
-    (#1304). The ``state_checks.hash.expected_state_hash`` author-surface
-    retirement is separately handled in
-    :mod:`tolokaforge.core.grading.state_composition`.
+    (#1304) **when the value is truthy** — a stored digest coerced through
+    would grade under a rule the emitting engine never chose. A falsy value
+    (``None``, ``""``, ``False``, ``0``) is silently dropped: it carries no
+    digest and no semantic — matching the author-facing sibling
+    ``_drop_retired_hash_keys`` on ``StateHashConfig`` in
+    :mod:`tolokaforge.core.grading.state_composition`. The narrow drop unblocks
+    stale emitters (e.g. an adapter kwargs-list still threading
+    ``expected_hash=hash_cfg.get("expected_state_hash")``) without ever letting
+    a real digest through.
     """
 
     # Hash comparison
@@ -469,16 +475,21 @@ class RunnerStateChecksConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _refuse_retired_expected_hash(cls, data: Any) -> Any:
-        """Raise the migration a caller that declares ``expected_hash`` reads.
+        """Raise on a truthy retired ``expected_hash``; silently drop a falsy one.
 
         Fires before Pydantic's ``extra_forbidden`` sweep, so the actionable
-        migration message wins over the generic "Extra inputs are not permitted".
-        Presence of the key at all — populated, falsy, or ``None`` — is enough:
-        a caller that even declares it is speaking the retired schema.
+        migration message wins over the generic "Extra inputs are not permitted"
+        when the caller passed a real digest. A falsy value (``None``, ``""``,
+        ``False``, ``0``) is stripped from the input mapping and construction
+        continues — a stale adapter kwargs-list threading a defaulted-``None``
+        never emitted a digest and carries no semantic (mirror of
+        ``_drop_retired_hash_keys`` on ``StateHashConfig``).
         """
-        if isinstance(data, Mapping) and "expected_hash" in data:
+        if not isinstance(data, Mapping) or "expected_hash" not in data:
+            return data
+        if data["expected_hash"]:
             raise ValueError(_RETIRED_EXPECTED_HASH_MESSAGE)
-        return data
+        return {key: value for key, value in data.items() if key != "expected_hash"}
 
     @field_validator("id_fields")
     @classmethod
@@ -703,9 +714,11 @@ class ValuePredicate(BaseModel):
     """A conjunction of operators over one field of one event.
 
     Every declared operator must hold, so ``{gt: 0, lt: 100}`` is a range. This is
-    deliberately unlike ``evaluate_jsonpath_state_checks``, which rejects a second
-    operator: there two operators had no conjunctive reading, while here the range
-    is the common case and a misspelled operator is already a load error.
+    deliberately unlike
+    :func:`~tolokaforge.core.grading.jsonpath_evaluators.evaluate_jsonpath_state_checks`,
+    which rejects a second operator: there two operators had no conjunctive reading,
+    while here the range is the common case and a misspelled operator is already a
+    load error.
 
     An operator counts as declared when its value is not ``None``, so a predicate
     means the same thing after the gRPC round trip that dumps every unset field as
@@ -2057,22 +2070,14 @@ class RunnerGradingConfig(BaseModel):
         return validate_combine_method(value, context="TaskDescription grading.combine_method")
 
     # Declarative grading dispatch — adapters tell the runner *how* to grade in data,
-    # so the runner never infers it from the adapter's identity.
-    #
-    # Values:
-    #   ``None`` (default)
-    #     Standard grading: combine state checks / transcript rules / LLM judge
-    #     using ``weights`` and ``pass_threshold``. Most adapters want this.
-    #   ``"test_execution"``
-    #     Run a reference test suite inside the trial env via an exec-capable
-    #     lifecycle tool (today: ``DockerComposeExecToolWrapper``) and score by
-    #     reading the reward written to ``/logs/verifier/reward.txt``. Requires
-    #     such a tool to be present in ``TaskDescription.agent_tools`` — without
-    #     one the runner returns a clear error at ``GradeTrial`` time.
-    #   ``"hash"`` / ``"transcript"`` / ``"llm"``
-    #     Reserved names for future single-method dispatch; not currently used
-    #     for dispatch (today their behaviour is part of the default path).
-    grading_method: Literal["hash", "test_execution", "transcript", "llm"] | None = None
+    # so the runner never infers it from the adapter's identity. The registered
+    # names live in the ``tolokaforge.grading_methods`` entry-point group
+    # (:mod:`tolokaforge.core.grading.grading_method`); read the current set with
+    # :func:`~tolokaforge.core.plugin_registry.available_grading_methods`.
+    # ``None`` (the default) picks the composite dispatch — same as
+    # ``"composite"``. Unknown names are refused at ``RegisterTrial`` with an
+    # error naming both the offending key and the registered set.
+    grading_method: str | None = None
 
     state_checks: RunnerStateChecksConfig | None = None
     transcript_rules: TranscriptRulesConfig | None = None

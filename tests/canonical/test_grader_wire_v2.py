@@ -1,6 +1,6 @@
-"""Wire v2 contract of the standalone grader service.
+"""Wire contract of the standalone grader service.
 
-``GraderService.Grade`` carries seven named fields — the four the
+``GraderService.Grade`` carries nine named fields — the four the
 composite dispatcher needs to drive its plug-in seams without an
 in-process ``RunnerServiceImpl`` (``trial_id``, ``llm_messages_json``,
 ``termination_reason``, ``task_config_json``) plus three additions:
@@ -14,11 +14,21 @@ in-process ``RunnerServiceImpl`` (``trial_id``, ``llm_messages_json``,
 - ``runner_substrate_address`` — the runner's ``SubstrateService`` gRPC
   address the ``LiveRunnerCallbackGradingSubstrate`` dials.
 
+Fields 13 + 14 are additive proto3 strings — an unpopulated sender lands
+empty strings on both, which keeps a sender populating only fields 1–7
+round-tripping byte-identically:
+
+- ``bundle_manifest_json`` (13) — ``GradeBundleManifest`` JSON. Empty
+  when the caller has no bundle; no in-tree caller populates it yet.
+- ``bundle_parts_uri`` (14) — bundle-store URI
+  (``bundle://<store-name>/<content-hash>``). Empty when the caller
+  has no bundle; no in-tree caller populates it yet.
+
 The post-policy agent system prompt already rides ``llm_messages_json`` as
 its leading ``role=system`` message; the grader recovers it via
 ``split_leading_system_message``, so no separate wire field is needed.
 
-This test locks two properties: (a) the proto shape carries all seven
+This test locks two properties: (a) the proto shape carries all nine
 fields with the field numbers and types the plan pins, and
 (b) :meth:`GrpcGraderClient.grade` round-trips every field verbatim into
 the injected judge callable's :class:`GradeDispatch`. If either breaks,
@@ -58,16 +68,21 @@ _EXPECTED_FIELDS: dict[str, tuple[int, int]] = {
     "judge_model_config_json": (5, FieldDescriptor.CPPTYPE_STRING),
     "task_description_json": (6, FieldDescriptor.CPPTYPE_STRING),
     "runner_substrate_address": (7, FieldDescriptor.CPPTYPE_STRING),
+    "bundle_manifest_json": (13, FieldDescriptor.CPPTYPE_STRING),
+    "bundle_parts_uri": (14, FieldDescriptor.CPPTYPE_STRING),
 }
 
 
-def test_grade_request_proto_carries_the_seven_wire_v2_fields() -> None:
+def test_grade_request_proto_carries_the_nine_wire_v3_fields() -> None:
     """Every wire field lands at the number and type the plan pins.
 
-    A field-number reshuffle silently reinterprets stored data, so this test
-    asserts the numbering the composite dispatcher and its client both rely
-    on — moving ``task_description_json`` off field 6 would make a client's
-    payload land in ``runner_substrate_address`` on the grader.
+    A field-number reshuffle silently reinterprets stored data, so this
+    test asserts the numbering the composite dispatcher and its client
+    both rely on — moving ``task_description_json`` off field 6 would
+    make a client's payload land in ``runner_substrate_address`` on the
+    grader. Fields 13 + 14 are additive proto3 strings; no in-tree
+    caller populates them yet. The numbering skips 8–12 so those slots
+    stay free for future additions without reshuffling.
     """
     descriptor = grader_pb2.GradeRequest.DESCRIPTOR
     got = {f.name: (f.number, f.cpp_type) for f in descriptor.fields}
@@ -75,6 +90,32 @@ def test_grade_request_proto_carries_the_seven_wire_v2_fields() -> None:
         "GradeRequest field shape drifted from the plan. Expected: "
         f"{_EXPECTED_FIELDS!r}. Got: {got!r}."
     )
+
+
+def test_bundle_fields_are_plain_proto3_strings_not_optional_or_repeated() -> None:
+    """The additive fields ``bundle_manifest_json`` / ``bundle_parts_uri``
+    land as plain proto3 strings — unset senders land empty on the wire
+    (not the ``optional`` presence bit; not a repeated shape). This
+    preserves sender compatibility for callers that populate only fields
+    1–7: an unpopulated ``GradeRequest`` still round-trips through both
+    fields as empty strings, and downstream fail-loud "missing required
+    field" checks land at the Python-side dispatcher (not at the wire
+    layer).
+    """
+    descriptor = grader_pb2.GradeRequest.DESCRIPTOR
+    fields_by_name = {f.name: f for f in descriptor.fields}
+    for name in ("bundle_manifest_json", "bundle_parts_uri"):
+        field = fields_by_name[name]
+        assert not field.is_repeated, f"{name} must be singular, not repeated."
+        assert field.containing_oneof is None, (
+            f"{name} must be a plain proto3 string, not ``optional`` — "
+            "the wire's empty-default idiom is what sender-compatibility "
+            "relies on."
+        )
+        assert not field.has_presence, (
+            f"{name} must carry no presence bit — unset senders land "
+            "empty strings on the wire rather than an absent-field signal."
+        )
 
 
 # -----------------------------------------------------------------------------

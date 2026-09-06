@@ -1,14 +1,15 @@
 """Driver-availability guard for the state_checks.db_probes primitive.
 
-``evaluate_db_probes`` connects to postgres via ``asyncpg`` at grade time, so
-the runner image MUST ship that driver. Unit tests inject rows and never import
-asyncpg, and the end-to-end integration test auto-skips without Docker — so
-dropping a domain driver would otherwise fail silently at grade time. The lazy
-import (``runner/grading.py`` imports ``asyncpg`` only inside the grade call)
-also means the import-boundary subset test cannot see it. This canonical test
-is the ship-lock: it asserts every domain driver is declared in the runner
-image's dependency SSOT — ``[project.optional-dependencies].runner`` — so a
-driver can never silently leave the image.
+:func:`~tolokaforge.core.grading.db_probes._fetch_probe_rows` connects to
+postgres via ``asyncpg`` at grade time, so the runner image MUST ship that
+driver. Unit tests inject rows and never import asyncpg, and the end-to-end
+integration test auto-skips without Docker — so dropping a domain driver
+would otherwise fail silently at grade time. The lazy import
+(``core/grading/db_probes.py`` imports ``asyncpg`` only inside the helper)
+also means the import-boundary subset test cannot see it. This canonical
+test is the ship-lock: it asserts every domain driver is declared in the
+runner image's dependency SSOT — ``[project.optional-dependencies].runner``
+— so a driver can never silently leave the image.
 """
 
 from __future__ import annotations
@@ -44,6 +45,6 @@ def test_runner_extra_declares_every_domain_driver() -> None:
     missing = [driver for driver in DOMAIN_DRIVERS if driver not in declared]
     assert not missing, (
         "[project.optional-dependencies].runner must declare every domain driver "
-        "(evaluate_db_probes and domain tool code need them at grade time); "
+        "(_fetch_probe_rows and domain tool code need them at grade time); "
         f"missing: {missing}"
     )

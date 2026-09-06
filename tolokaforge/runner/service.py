@@ -27,6 +27,7 @@ import time
 import traceback
 from collections.abc import Callable, Collection
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,8 @@ from tolokaforge.core.grading.check_runner import (
 )
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.grading.checks_interface import CustomChecksConfig
+from tolokaforge.core.grading.composite_fold import CompositeFold
+from tolokaforge.core.grading.filesystem_view import read_agent_visible_filesystem
 from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenReplayRecord,
@@ -56,21 +59,19 @@ from tolokaforge.core.grading.judge_model_provider import JudgeModelProvider
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
+from tolokaforge.core.grading.kinds import GraderKindRefusedError
 from tolokaforge.core.grading.state_check_backend import StateCheckBackend
 from tolokaforge.core.grading.substrate import (
     GradingSubstrate,
     InProcessGradingSubstrate,
+    RunTestSuiteResult,
 )
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
     TrialTimeline,
-    build_trial_timeline,
+    build_timeline_from_wire,
 )
 from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcher
-from tolokaforge.core.grading.transcript_wire import (
-    decode_transcript_wire,
-    split_leading_system_message,
-)
 from tolokaforge.core.models import (
     CriterionResult,
     LLMJudgeConfig,
@@ -78,7 +79,12 @@ from tolokaforge.core.models import (
     TerminationReason,
 )
 from tolokaforge.core.plugin_registry import (
+    UnknownImplementationError,
+    available_grader_kinds,
+    available_grading_methods,
     load_custom_check_executor,
+    load_grader_kind,
+    load_grading_method,
     load_judge_model_provider,
     load_rubric_evaluator,
     load_state_check_backend,
@@ -96,10 +102,9 @@ from tolokaforge.runner.db_client import (
     TrialNotFoundError as DBTrialNotFoundError,
 )
 from tolokaforge.runner.grading import (
-    build_grade_reasons,
-    compose_runner_trial_verdict,
     compute_state_diff,
-    resolve_state_checks_component,
+    grade_to_runner_wire,
+    project_state_checks_to_runner_wire,
 )
 from tolokaforge.runner.grading_ledger import (
     CUSTOM_CHECKS_DISABLED_SKIP,
@@ -173,10 +178,12 @@ def _first_docker_compose_exec_tool(
 ) -> DockerComposeExecToolWrapper | None:
     """Return the first exec-capable wrapper among *tools*, or ``None``.
 
-    Used from two grade-time paths — ``_grade_via_test_execution`` (running
-    ``test.sh``) and ``_read_filesystem_for_state`` (snapshotting a harness
-    trial's tree) — that both need to reach into the trial container via the
-    same wrapper the runner already registered for the tool.
+    Three consumers reach the trial container through the same wrapper the
+    runner already registered for the tool: ``_run_test_suite_via_agent_tools``
+    (running the pack's verifier for a ``test_execution`` grader-kind trial),
+    ``_read_filesystem_for_state`` (snapshotting a harness trial's tree), and
+    :meth:`SubstrateServicer.RunTestSuite` (via its own lookup when an
+    independent grader dials the substrate).
     """
     for tool in tools:
         if isinstance(tool, DockerComposeExecToolWrapper):
@@ -391,7 +398,8 @@ def _unreachable_state_checks_refusal(
             continue
         # Only ``BEYOND_THE_RUNNERS_STATE`` (``agent`` / ``user`` /
         # ``mock_web_url`` / ``rag_corpus_dir``) reaches here. ``FILESYSTEM``
-        # is graded by the runner via ``_read_agent_visible_filesystem`` and
+        # is graded by the runner via
+        # ``filesystem_view.read_agent_visible_filesystem`` and
         # ``TRIAL_DATABASE`` returns ``None`` from :func:`unreachable_target`.
         described = assertion.get("description")
         return (
@@ -874,6 +882,28 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
 
         task_description = trial_spec.task
+
+        # Reject an unregistered ``grading.grading_method`` before any tool
+        # artifacts land on disk — cheapest schema failure first, no cleanup
+        # path to walk on refusal. The name must resolve in BOTH the marker
+        # registry (``tolokaforge.grading_methods``) AND the typed-kind
+        # registry (``tolokaforge.grader_kinds``); every shipped name
+        # dual-registers, and a downstream adapter shipping only in one group
+        # is refused here rather than silently short-circuiting at grade time.
+        method_name = task_description.grading.grading_method
+        if method_name is not None:
+            try:
+                load_grading_method(method_name)
+                load_grader_kind(method_name)
+            except UnknownImplementationError:
+                known = sorted(set(available_grading_methods()) | set(available_grader_kinds()))
+                error = (
+                    f"Unknown grading_method {method_name!r}; registered names "
+                    f"across tolokaforge.grading_methods + tolokaforge.grader_kinds: "
+                    f"{known}. Add entries under both groups or fix the typo."
+                )
+                logger.error(f"RegisterTrial: {trial_id} - {error}")
+                return pb2.RegisterTrialResponse(success=False, error=error)
 
         # Extract tool artifacts to temp directory if present
         artifacts_dir = None
@@ -1589,7 +1619,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         Filesystem reads are harness-aware: a trial whose adapter emitted
         ``agent_harness_command`` + ``agent_visible_dir`` gets its tree
         snapshotted from inside its own container via the exec-wrapper;
-        every other trial reads back the runner's own ``AGENT_WORK_DIR``.
+        every other trial reads back the runner's own ``AGENT_WORK_DIR``
+        via :func:`~tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`.
         """
         loop = self._loop
         db_client = self.db_client
@@ -1622,6 +1653,159 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             final_state_factory=_get_raw_state,
             final_state_stable_factory=_get_stable_state,
             filesystem_state_factory=_get_filesystem_state,
+            run_test_suite_impl=partial(self._run_test_suite_via_agent_tools, trial_id=trial_id),
+        )
+
+    def _run_test_suite_via_agent_tools(
+        self,
+        script_path: str,
+        reward_path: str,
+        timeout_s: float,
+        reward_read_timeout_s: float,
+        *,
+        trial_id: str,
+    ) -> RunTestSuiteResult:
+        """Run ``bash <script_path>`` inside the trial's env container.
+
+        The four exec parameters ride positionally so the substrate wrapper's
+        kwargs-only delegation lands them on this signature cleanly; ``trial_id``
+        is kwarg-only so a caller can bind it via
+        ``partial(m, trial_id=<id>)`` at construction (see
+        :meth:`_build_grading_substrate`) without colliding with a positional
+        value for the same argument.
+
+        Two first-class outcomes ride the result rather than raising:
+        ``tool_absent`` (no exec-capable lifecycle tool in the trial's
+        ``agent_tools``) and ``script_exec_error`` (the exec call raised —
+        subprocess timeout, OSError, ...); the caller renders both as
+        observable grade outcomes. Reward-cat runs
+        ``cat {reward_path} 2>/dev/null || echo 0.0`` and a reward-cat exception
+        falls back to ``b"0.0\\n"``.
+        """
+        trial_context = self.trials.get(trial_id)
+        if trial_context is None:
+            return RunTestSuiteResult(
+                exit_code=0,
+                reward_bytes=b"",
+                stdout="",
+                tool_absent=True,
+                tool_absent_reason=f"Trial {trial_id!r} not registered",
+                script_exec_error="",
+            )
+        bash_tool = _first_docker_compose_exec_tool(trial_context.agent_tools.values())
+        if bash_tool is None:
+            return RunTestSuiteResult(
+                exit_code=0,
+                reward_bytes=b"",
+                stdout="",
+                tool_absent=True,
+                tool_absent_reason=(
+                    "test-execution grading was requested "
+                    "(grading_method='test_execution') but no exec-capable env "
+                    "tool was found in this trial. Include an exec-capable "
+                    "lifecycle tool (e.g. DockerComposeExecToolWrapper) in "
+                    "TaskDescription.agent_tools so the runner can execute the "
+                    "test suite inside the trial environment."
+                ),
+                script_exec_error="",
+            )
+
+        try:
+            exit_code, stdout = bash_tool._exec_sync_with_rc(
+                f"cd $(dirname {script_path}) && bash {script_path} 2>&1",
+                timeout_s,
+            )
+        except Exception as exc:
+            return RunTestSuiteResult(
+                exit_code=-1,
+                reward_bytes=b"",
+                stdout="",
+                tool_absent=False,
+                tool_absent_reason="",
+                script_exec_error=str(exc),
+            )
+
+        try:
+            _rc, reward_str = bash_tool._exec_sync_with_rc(
+                f"cat {reward_path} 2>/dev/null || echo 0.0",
+                reward_read_timeout_s,
+            )
+            reward_bytes = reward_str.encode()
+        except Exception as exc:  # noqa: BLE001
+            # Reward-cat is a diagnostic read; the fallback bytes match the shell
+            # ``|| echo 0.0`` path so the kind renders the same "0.0" reward.
+            logger.warning(
+                "RunnerServiceImpl._run_test_suite_via_agent_tools: reward-cat raised "
+                "for trial %r: %s: %s; falling back to b'0.0\\n'",
+                trial_id,
+                type(exc).__name__,
+                exc,
+            )
+            reward_bytes = b"0.0\n"
+
+        return RunTestSuiteResult(
+            exit_code=exit_code,
+            reward_bytes=reward_bytes,
+            stdout=stdout,
+            tool_absent=False,
+            tool_absent_reason="",
+            script_exec_error="",
+        )
+
+    async def _dispatch_via_grader_kind(
+        self,
+        *,
+        trial_id: str,
+        trial_context: TrialContextRuntime,
+        method_name: str,
+    ) -> "pb2.GradeTrialResponse":
+        """Route grading through a registered ``tolokaforge.grader_kinds`` entry.
+
+        Called for every non-composite method. ``composite`` stays on the
+        runner-side fold below because moving it is a follow-up milestone
+        (kinds registry ships; composite runtime dispatch through it does
+        not).
+
+        ``functools.partial`` binds ``evaluate``'s kwargs so ``run_in_executor``
+        — which takes positional args only — invokes the kind synchronously
+        off-loop. A raised :class:`GraderKindRefusedError` maps to
+        ``pb2.GradeTrialResponse(success=False, error=exc.reason)``, byte-
+        parity with the pre-move tool-absent shape.
+        """
+        kind_cls = load_grader_kind(method_name)
+        substrate = self._build_grading_substrate(trial_id, trial_context)
+        try:
+            evaluate_call = partial(
+                kind_cls().evaluate,
+                substrate=substrate,
+                task_config=trial_context.grading_config,
+                kind_config=None,
+                trial_id=trial_id,
+                agent_tools=trial_context.agent_tools,
+                logger=logger,
+            )
+            try:
+                grade = await asyncio.get_event_loop().run_in_executor(None, evaluate_call)
+            except GraderKindRefusedError as exc:
+                return pb2.GradeTrialResponse(success=False, error=exc.reason)
+        finally:
+            substrate.close()
+
+        if grade is None:
+            return pb2.GradeTrialResponse(
+                success=True,
+                error="",
+                grade=pb2.Grade(
+                    binary_pass=False,
+                    score=0.0,
+                    components=pb2.GradeComponents(custom_checks=-1.0),
+                    reasons=f"grader-kind {method_name!r} returned no verdict",
+                ),
+            )
+        return pb2.GradeTrialResponse(
+            success=True,
+            error="",
+            grade=grade_to_runner_wire(grade),
         )
 
     def _read_filesystem_for_state(self, trial_id: str) -> dict[str, str]:
@@ -1651,34 +1835,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     f"GradeTrial: {trial_id} - harness trial has no exec-capable tool; "
                     "falling back to the runner's own /work/ walk"
                 )
-        return self._read_agent_visible_filesystem()
-
-    def _read_agent_visible_filesystem(self) -> dict[str, str]:
-        # Inverse of the RegisterTrial provisioner's
-        # ``/env/fs/agent-visible/<rel>`` → ``/work/<rel>`` block: expose each
-        # file back at its logical path so
-        # ``$.filesystem['/env/fs/agent-visible/<rel>']`` resolves. Binary
-        # files are skipped — ``contains:``/``equals:`` operators can only
-        # match text. Symlinks are skipped too: the assertion vocabulary was
-        # not designed to expose arbitrary container-readable paths reachable
-        # via a link the agent dropped in ``/work/``.
-        root = Path(AGENT_WORK_DIR)
-        fs: dict[str, str] = {}
-        if not root.is_dir():
-            return fs
-        for path in root.rglob("*"):
-            if path.is_symlink() or not path.is_file():
-                continue
-            try:
-                content = path.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                continue
-            except OSError as exc:
-                logger.warning(f"GradeTrial: could not read {path} for jsonpath state: {exc}")
-                continue
-            rel = path.relative_to(root)
-            fs[f"/env/fs/agent-visible/{rel.as_posix()}"] = content
-        return fs
+        return read_agent_visible_filesystem(Path(AGENT_WORK_DIR))
 
     async def _grade_trial_async(self, request: pb2.GradeTrialRequest) -> pb2.GradeTrialResponse:
         """
@@ -1701,11 +1858,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         grading_config = trial_context.grading_config
 
-        # Declarative grading-method dispatch (no adapter identity): a task can request
-        # test-execution grading — run a reference suite in the env and score it —
-        # instead of the default state/transcript/judge combination.
-        if grading_config and grading_config.grading_method == "test_execution":
-            return await self._grade_via_test_execution(trial_id, trial_context)
+        # Declarative grading-method dispatch: a non-composite name resolves through
+        # ``tolokaforge.grader_kinds`` to a :class:`GraderKind`. ``composite`` (or
+        # ``None``) stays on the runner-side fold below because moving it is a
+        # follow-up milestone.
+        method_name = grading_config.grading_method if grading_config else None
+        if method_name and method_name != "composite":
+            return await self._dispatch_via_grader_kind(
+                trial_id=trial_id,
+                trial_context=trial_context,
+                method_name=method_name,
+            )
 
         # Initialize grading components
         components = RunnerGradeComponents()
@@ -1912,7 +2075,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     judge_status = pb2.JUDGE_STATUS_COMPLETED
                     judge_gate_failed = judge_result.gate_failed
                     # The judge's raw aggregate; the required-criterion gate is applied
-                    # by ``compose_runner_trial_verdict`` below.
+                    # by ``CompositeFold.finalise`` below.
                     components.llm_judge_score = judge_result.score
                     logger.info(
                         f"GradeTrial: {trial_id} - LLM judge: "
@@ -1952,21 +2115,28 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             return pb2.GradeTrialResponse(success=False, error=audit.error)
 
         # D) COMBINE SCORES
-        # Resolved before the combine, which resolves the same slot again, so that an
-        # undecidable fold fails the RPC naming this trial rather than reaching the
-        # outer catch-all as an anonymous grading error.
+        # Delegate the state-checks slot fold, the verdict composition and the
+        # reasons string to the shared fold. An undecidable fold fails the RPC
+        # naming this trial rather than reaching the outer catch-all as an
+        # anonymous grading error.
+        state_diff_dict = state_diff.model_dump() if state_diff else None
         try:
-            state_checks_slot = resolve_state_checks_component(
-                hash_score=components.hash_score,
-                jsonpath_score=components.jsonpath_score,
-                db_probe_score=components.db_probe_score,
+            fold_result = CompositeFold.finalise(
+                components_dict=components.model_dump(),
+                grading_config_dict=grading_config.model_dump(),
                 hash_weight=state_checks_config.hash_weight if state_checks_config else None,
-            )
-            verdict = compose_runner_trial_verdict(
-                components.model_dump(),
-                grading_config.model_dump(),
                 judge_gate_failed=judge_gate_failed,
                 trace_gate_failed=trace_checks_result.gate_failed,
+                state_diff_dict=state_diff_dict,
+                transcript_result_dict=(
+                    transcript_result.model_dump() if transcript_result else None
+                ),
+                judge_reasons=judge_reasons or None,
+                trace_checks_result_dict=trace_checks_result.model_dump(mode="json"),
+                golden_replay=hash_result.golden_replay if hash_result is not None else None,
+                custom_checks_reasons=custom_checks_reasons,
+                judge_errored=judge_status == pb2.JUDGE_STATUS_ERRORED,
+                ledger_skip_notes=audit.skip_notes,
             )
         except ValueError as exc:
             logger.error(f"GradeTrial: {trial_id} - {exc}")
@@ -1974,79 +2144,41 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 success=False,
                 error=f"Trial {trial_id!r} is not gradeable: {type(exc).__name__}: {exc}",
             )
-        if verdict.refusal:
-            # A declared component produced no verdict (a judge that errored, a
-            # golden replay that did not run whole) or the scored components carry
-            # no weight; folding on the remainder would silently redistribute the
-            # missing share, so the RPC refuses and the trial lands UNGRADEABLE.
-            logger.error(f"GradeTrial: {trial_id} - {verdict.reason}")
-            return pb2.GradeTrialResponse(success=False, error=verdict.reason or "")
-        # The gated component, not the judge's raw aggregate, is what the wire grade and
-        # the reasons carry — so the write-back happens before either is built.
-        components.llm_judge_score = verdict.judge_component
-        components_dict = components.model_dump()
-        score, binary_pass = verdict.score, verdict.binary_pass
-
-        # Build reasons string
-        state_diff_dict = state_diff.model_dump() if state_diff else None
-        transcript_result_dict = transcript_result.model_dump() if transcript_result else None
-        # Collected and joined once. The components' renderer contributes nothing for a
-        # trial that scored nothing, and appending to its output would open that grade
-        # with a separator.
-        reason_segments = [
-            build_grade_reasons(
-                components_dict,
-                state_diff_dict,
-                transcript_result_dict,
-                judge_reasons=judge_reasons or None,
-                trace_checks_result=trace_checks_result.model_dump(mode="json"),
-                golden_replay=hash_result.golden_replay if hash_result is not None else None,
-                custom_checks_reasons=custom_checks_reasons,
-            )
-        ]
-        if judge_status == pb2.JUDGE_STATUS_ERRORED:
-            reason_segments.append(f"JUDGE ERRORED: {judge_reasons}")
-
-        # A populated key whose evaluator was skipped scored nothing; say so on the
-        # grade rather than letting the trial look fully evaluated.
-        if audit.skip_notes:
-            reason_segments.append("; ".join(audit.skip_notes))
-
-        # The ledger's skip notes cover populated SCORED_CHECK keys; hash.weight is a
-        # CONFIG_INPUT the fold can skip on its own, so it reports itself.
-        if state_checks_slot.inert_weight_reason:
-            reason_segments.append(state_checks_slot.inert_weight_reason)
-
-        # A fold that counted nothing is not described by any component's reasons, so its
-        # own sentence is what stops a 0.0 arriving beside components that all read as passing.
-        if verdict.reason:
-            reason_segments.append(verdict.reason)
-
-        reasons = " | ".join(segment for segment in reason_segments if segment)
+        # A declared component produced no verdict (a judge that errored, a
+        # golden replay that did not run whole) or the scored components carry
+        # no weight; folding on the remainder would silently redistribute the
+        # missing share, so the RPC refuses and the trial lands UNGRADEABLE.
+        if fold_result.refusal:
+            logger.error(f"GradeTrial: {trial_id} - {fold_result.verdict_reason}")
+            return pb2.GradeTrialResponse(success=False, error=fold_result.verdict_reason or "")
+        # The gated judge component, not the raw aggregate, is what the wire
+        # carries; the fold already applied the gate, this write-back mirrors
+        # it into the runner's typed model so the wire dict reads it back below.
+        components.llm_judge_score = fold_result.judge_component
 
         logger.info(
-            f"GradeTrial: {trial_id} - score={score:.2f}, pass={binary_pass}, "
+            f"GradeTrial: {trial_id} - score={fold_result.score:.2f}, "
+            f"pass={fold_result.binary_pass}, "
             f"termination_reason={termination_reason.value if termination_reason else 'none'}"
         )
 
-        # -1.0 is the wire's not-evaluated sentinel for a component.
         wire_component_scores = {
             spec.name: getattr(components, spec.runner_score_field)
             for spec in GRADE_COMPONENTS
             if spec.runner_score_field is not None
         }
-        wire_component_scores["state_checks"] = (
-            -1.0 if state_checks_slot.component is None else state_checks_slot.component
+        wire_component_scores["state_checks"] = project_state_checks_to_runner_wire(
+            fold_result.state_checks_component
         )
 
         return pb2.GradeTrialResponse(
             success=True,
             error="",
             grade=pb2.Grade(
-                binary_pass=binary_pass,
-                score=score,
+                binary_pass=fold_result.binary_pass,
+                score=fold_result.score,
                 components=pb2.GradeComponents(**wire_component_scores),
-                reasons=reasons,
+                reasons=fold_result.reasons,
                 state_diff_json=json.dumps(state_diff_dict) if state_diff_dict else "",
                 custom_checks=custom_check_wire_results,
                 criterion_results=[
@@ -2110,13 +2242,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             ValueError: the payload does not decode into a transcript.
             TimelineInconsistencyError: the two views cannot be joined.
         """
-        if not request.llm_messages_json:
-            return [], build_trial_timeline([], trial_context.recorded, termination_reason)
-
-        llm_messages: list[dict[str, Any]] = json.loads(request.llm_messages_json)
-        _, transcript = split_leading_system_message(llm_messages)
-        return llm_messages, build_trial_timeline(
-            decode_transcript_wire(transcript), trial_context.recorded, termination_reason
+        llm_messages: list[dict[str, Any]] = (
+            json.loads(request.llm_messages_json) if request.llm_messages_json else []
+        )
+        return llm_messages, build_timeline_from_wire(
+            llm_messages, trial_context.recorded, termination_reason
         )
 
     def _grade_transcript_rules(
@@ -2259,12 +2389,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """Delegate to :func:`composite.grade_custom_checks` over the runner's substrate.
 
         The composite owns the custom-checks dispatch (config normalisation,
-        artifacts-dir gating, degrade-to-empty on DB failure, executor drive,
-        wire-result wrapping). This wrapper hands it the runner-owned pieces —
-        the per-trial ``artifacts_dir``, the sync :class:`CheckExecutor`, the
-        parsed ``TaskDescription``, and the ``InProcessGradingSubstrate`` built
-        once by :meth:`_build_grading_substrate` at the outer level and shared
-        with the state-checks + judge paths.
+        artifacts-dir gating, degrade-to-empty on DB failure, executor drive)
+        and returns pure :class:`CheckResult` values. This wrapper hands the
+        composite the runner-owned pieces — the per-trial ``artifacts_dir``,
+        the sync :class:`CheckExecutor`, the parsed ``TaskDescription``, and
+        the ``InProcessGradingSubstrate`` built once by
+        :meth:`_build_grading_substrate` at the outer level and shared with the
+        state-checks + judge paths — then encodes each returned
+        :class:`CheckResult` to its wire ``pb2.CustomCheckResult`` shape via
+        :func:`project_check_result_to_runner_wire` before returning.
 
         Sync-in-async: :func:`composite.grade_custom_checks` is a sync function
         whose ``substrate.final_state`` bridge to :meth:`db_client.get_state`
@@ -2273,10 +2406,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         the bridges resolve rather than deadlocking on this loop.
         """
         from tolokaforge.core.grading.composite import grade_custom_checks
+        from tolokaforge.runner.grading import project_check_result_to_runner_wire
 
         grading_config = trial_context.grading_config
         custom_config_raw = grading_config.custom_checks if grading_config else None
-        return await self._loop.run_in_executor(
+        score, results, reasons = await self._loop.run_in_executor(
             None,
             lambda: grade_custom_checks(
                 trial_id=trial_id,
@@ -2289,6 +2423,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
             ),
         )
+        wire_results = [project_check_result_to_runner_wire(r) for r in results]
+        return score, wire_results, reasons
 
     def _resolve_judge_kb_search(
         self, trial_id: str, agent_tools: dict[str, Callable]
@@ -2772,93 +2908,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             state_json=state_json,
             stable_hash=stable_hash,
             full_hash=full_hash,
-        )
-
-    # =========================================================================
-    # Terminal-bench grading
-    # =========================================================================
-
-    async def _grade_via_test_execution(
-        self,
-        trial_id: str,
-        trial_context: "TrialContextRuntime",
-    ) -> "pb2.GradeTrialResponse":
-        """Grade by running a reference test suite inside the trial's env container.
-
-        Selected declaratively via ``grading.grading_method == "test_execution"`` —
-        no adapter identity involved.
-
-        1. Execute ``test.sh`` (pytest + reward calculation) in the task container.
-        2. Read the reward float from ``/logs/verifier/reward.txt``.
-        3. Return a ``GradeTrialResponse`` with the reward as score.
-        """
-        # Find an exec-capable lifecycle tool to run the suite in the env.
-        bash_tool = _first_docker_compose_exec_tool(trial_context.agent_tools.values())
-
-        if bash_tool is None:
-            # Actionable for the adapter author: they asked for test-execution
-            # grading but didn't ship a tool that can run the suite inside the env.
-            error_msg = (
-                "test-execution grading was requested (grading_method='test_execution') "
-                "but no exec-capable env tool was found in this trial. Include an "
-                "exec-capable lifecycle tool (e.g. DockerComposeExecToolWrapper) in "
-                "TaskDescription.agent_tools so the runner can execute the test suite "
-                "inside the trial environment."
-            )
-            logger.error(f"GradeTrial(test-execution): {trial_id} - {error_msg}")
-            return pb2.GradeTrialResponse(success=False, error=error_msg)
-
-        loop = asyncio.get_event_loop()
-
-        # Run test.sh
-        logger.info(f"GradeTrial(test-execution): {trial_id} - running test.sh")
-        try:
-            test_output = await loop.run_in_executor(
-                None,
-                bash_tool._exec_sync,
-                "cd /tests && bash test.sh 2>&1",
-                300.0,  # verifier timeout
-            )
-        except Exception as e:
-            logger.error(f"GradeTrial(test-execution): test.sh failed: {e}")
-            return pb2.GradeTrialResponse(
-                success=True,
-                error="",
-                grade=pb2.Grade(
-                    binary_pass=False,
-                    score=0.0,
-                    components=pb2.GradeComponents(custom_checks=0.0),
-                    reasons=f"test.sh execution failed: {e}",
-                ),
-            )
-
-        # Read reward
-        try:
-            reward_str = await loop.run_in_executor(
-                None,
-                bash_tool._exec_sync,
-                "cat /logs/verifier/reward.txt 2>/dev/null || echo 0.0",
-                10.0,
-            )
-            reward = float(reward_str.strip().split("\n")[-1])
-            reward = max(0.0, min(1.0, reward))
-        except (ValueError, IndexError):
-            reward = 0.0
-
-        logger.info(f"GradeTrial(test-execution): {trial_id} - reward={reward:.4f}")
-
-        return pb2.GradeTrialResponse(
-            success=True,
-            error="",
-            grade=pb2.Grade(
-                binary_pass=(reward >= 0.5),
-                score=reward,
-                components=pb2.GradeComponents(custom_checks=reward),
-                reasons=(
-                    f"test-execution reward: {reward:.4f}\n\n"
-                    f"test output (truncated):\n{test_output[:2000]}"
-                ),
-            ),
         )
 
     # =========================================================================

@@ -6,7 +6,7 @@ component evaluators above the substrate (rubric, judge, transcript rules,
 trace-check operators, state-check backends, custom-check executors) never
 change when the topology changes.
 
-See ADR-0040 for the design rationale + the recipes carried for the three
+See ADR-0040 for the design rationale + the recipes carried for the two
 reserved future substrates.
 
 The runtime picture
@@ -18,15 +18,15 @@ The runtime picture
 | Aggregate image (shipping)          | :class:`InProcessGradingSubstrate`     |
 | Independent grader (shipping)       | :class:`LiveRunnerCallbackGradingSub-  |
 |                                     | strate`                                |
+| Offline / cross-region / replay     | :class:`SnapshotGradingSubstrate`      |
+|                                     | (reads a serialised grade bundle)      |
 | Trajectory-storage service (future) | :class:`TrajectoryStorageGradingSub-   |
 |                                     | strate` (recipe in ADR-0040)           |
-| Snapshot-on-wire (future)           | :class:`SnapshotGradingSubstrate`      |
-|                                     | (recipe in ADR-0040)                   |
 | Shared-mount (future)               | :class:`SharedMountGradingSubstrate`   |
 |                                     | (recipe in ADR-0040)                   |
 +-------------------------------------+----------------------------------------+
 
-Two impls ship today. :class:`InProcessGradingSubstrate` is the aggregate-image
+Three impls ship today. :class:`InProcessGradingSubstrate` is the aggregate-image
 / in-runner path — a thin view over live objects the caller owns.
 :class:`~tolokaforge.core.grading.substrate_live.LiveRunnerCallbackGradingSubstrate`
 is the independent-grader path — each read dials the runner's read-only
@@ -35,10 +35,13 @@ is the independent-grader path — each read dials the runner's read-only
 transport failure raises :class:`SubstrateUnreachableError` and the seam
 translates that into ``GradingFailedError`` at the composite dispatch. It lives
 in the sibling :mod:`~tolokaforge.core.grading.substrate_live` module because
-the runner subset does not ship the gRPC client. The remaining three
-implementations are declared but not implemented — each raises
-``NotImplementedError`` with a pointer to ADR-0040 so a downstream contributor
-who reaches for them sees the recipe rather than a mystery stub.
+the runner subset does not ship the gRPC client. :class:`SnapshotGradingSubstrate`
+is the offline / cross-region / replay path — it reads state from a serialised
+:class:`~tolokaforge.core.grading.bundle.GradeBundleView` produced by
+:func:`~tolokaforge.core.grading.bundle.serialize_grade_bundle`; no live runner
+in reach. The two remaining implementations are declared but not implemented —
+each raises ``NotImplementedError`` with a pointer to ADR-0040 so a downstream
+contributor who reaches for them sees the recipe rather than a mystery stub.
 
 Two views of the trial's final DB state ride the Protocol side by side:
 :meth:`GradingSubstrate.final_state` returns the **RAW** rows the judge's
@@ -57,22 +60,61 @@ ships, it registers a one-line entry point — no framework PR needed.
 
 from __future__ import annotations
 
+import asyncio
+import io
+import json
+import tarfile
+import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from tolokaforge.core.grading.filesystem_view import read_agent_visible_filesystem
+
 if TYPE_CHECKING:
+    from tolokaforge.core.grading.bundle import GradeBundleView
     from tolokaforge.core.grading.judge import DBReader
     from tolokaforge.core.grading.kb_search import KnowledgeSearch
 
 __all__ = [
     "GradingSubstrate",
     "InProcessGradingSubstrate",
+    "RunTestSuiteResult",
     "SharedMountGradingSubstrate",
     "SnapshotGradingSubstrate",
     "SubstrateUnreachableError",
     "TrajectoryStorageGradingSubstrate",
 ]
+
+
+@dataclass(frozen=True)
+class RunTestSuiteResult:
+    """One :meth:`GradingSubstrate.run_test_suite` return.
+
+    Mirrors ``pb2.RunTestSuiteResponse`` field-for-field so a callback substrate
+    (in-process) and a wire substrate (live-callback over gRPC) return the same
+    shape. Two outcomes are first-class flags rather than exceptions:
+
+    - ``tool_absent`` — no exec-capable lifecycle tool in the trial's agent
+      tools. The trial DID complete; the pack asked for test-execution
+      grading but the adapter did not ship the tool. Callers translate this
+      to a ``GradeTrialResponse(success=False, error=tool_absent_reason)``.
+    - ``script_exec_error`` — the exec call itself raised (subprocess
+      timeout, OSError, ...). Populated with ``"{type_name}: {msg}"``; empty
+      when the script ran to completion regardless of ``exit_code``.
+
+    ``exit_code`` is informational: the caller does NOT gate on it. A script
+    that legitimately exits non-zero but writes a valid reward is scored by
+    the reward.
+    """
+
+    exit_code: int
+    reward_bytes: bytes
+    stdout: str
+    tool_absent: bool
+    tool_absent_reason: str
+    script_exec_error: str
 
 
 class SubstrateUnreachableError(Exception):
@@ -166,6 +208,57 @@ class GradingSubstrate(Protocol):
         """
         ...
 
+    def db_probe(self, dsn: str, query: str) -> list[dict[str, Any]]:
+        """Run ``query`` against ``dsn`` and return the rows as dicts.
+
+        The caller declares both the DSN (a task-declared postgres URL —
+        reachable only inside the task's docker network) and the read-only
+        SQL query. The substrate resolves ``dsn`` in whichever network the
+        implementation runs in — the runner container in every shipped
+        deployment topology — and returns the rows shaped as
+        ``[{col_name: value, ...}, ...]``. Empty result set is an empty
+        list, never ``None``.
+
+        Values are JSON-round-tripped, so asyncpg-native scalars
+        (``datetime``, ``Decimal``, ``UUID``, ``bytes``) land as their
+        ``str(...)`` forms — pack authors' ``expect`` JSONPath assertions
+        target the string forms, symmetric with how
+        :meth:`final_state` renders DB rows on the wire.
+        """
+        ...
+
+    def run_test_suite(
+        self,
+        *,
+        script_path: str,
+        reward_path: str,
+        timeout_s: float,
+        reward_read_timeout_s: float,
+    ) -> RunTestSuiteResult:
+        """Execute the pack-declared verifier and return its outcome.
+
+        Runs ``bash <script_path>`` inside the trial's env container from
+        the script's directory, then reads ``<reward_path>`` (with shell
+        fallback ``|| echo 0.0`` so an absent file yields ``b"0.0\\n"``).
+        The caller passes both timeouts (script + reward-cat) explicitly;
+        no defaults live on the substrate.
+
+        Two first-class outcomes ride in the result rather than raising:
+        ``tool_absent`` (no exec-capable lifecycle tool in the trial's
+        tools — an adapter authoring issue, not a substrate transport
+        failure) and ``script_exec_error`` (the exec call raised, e.g.
+        subprocess timeout — the trial completed but the verifier crashed).
+        Both are distinct from :class:`SubstrateUnreachableError`, which
+        this method raises only when the substrate itself is unreachable
+        (e.g. snapshot substrate — bundle format v1.0 carries no test
+        suite; grader-side gRPC transport failure).
+
+        ``exit_code`` is informational: callers do NOT gate on it. A
+        rc≠0 script that wrote a valid reward file is scored by the
+        reward.
+        """
+        ...
+
     def filesystem_state(self) -> dict[str, str] | None:
         """The agent-visible filesystem as ``{'/env/fs/agent-visible/<rel>': text}``,
         or ``None`` when the trial has no workspace tree.
@@ -173,8 +266,11 @@ class GradingSubstrate(Protocol):
         The shape jsonpath grading resolves ``$.filesystem['/env/fs/agent-
         visible/<rel>']`` against — every non-symlink UTF-8-decodable file
         below the agent-visible root, keyed by its logical path. Binary
-        files and symlinks are skipped, matching the runner's shipped
-        ``_read_agent_visible_filesystem`` filter.
+        files, symlinks, and files under any
+        :data:`~tolokaforge.core.grading.filesystem_view.AGENT_VISIBLE_EXCLUDES`
+        subtree are skipped, matching the
+        :func:`~tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`
+        filter.
 
         ``None`` — first-class "the trial declared no filesystem surface" —
         is distinct from ``{}`` (a workspace root that exists but holds no
@@ -234,6 +330,7 @@ class InProcessGradingSubstrate:
         final_state_factory: Callable[[], dict[str, Any]] | None = None,
         final_state_stable_factory: Callable[[], dict[str, Any]] | None = None,
         filesystem_state_factory: Callable[[], dict[str, str] | None] | None = None,
+        run_test_suite_impl: Callable[..., RunTestSuiteResult] | None = None,
     ) -> None:
         if final_state is not None and final_state_factory is not None:
             raise ValueError(
@@ -248,6 +345,7 @@ class InProcessGradingSubstrate:
         self._final_state_factory = final_state_factory
         self._final_state_stable_factory = final_state_stable_factory
         self._filesystem_state_factory = filesystem_state_factory
+        self._run_test_suite_impl = run_test_suite_impl
         self._final_state_stable_cache: dict[str, Any] | Any = _MISSING
         self._filesystem_state_cache: dict[str, str] | None | Any = _MISSING
         self._closed = False
@@ -296,6 +394,38 @@ class InProcessGradingSubstrate:
                 self._filesystem_state_cache = self._filesystem_state_factory()
         return self._filesystem_state_cache
 
+    def db_probe(self, dsn: str, query: str) -> list[dict[str, Any]]:
+        from tolokaforge.core.grading.db_probes import _fetch_probe_rows
+
+        rows = asyncio.run(_fetch_probe_rows(dsn, query))
+        return json.loads(json.dumps(rows, default=str))
+
+    def run_test_suite(
+        self,
+        *,
+        script_path: str,
+        reward_path: str,
+        timeout_s: float,
+        reward_read_timeout_s: float,
+    ) -> RunTestSuiteResult:
+        # The impl callback is invoked with keyword arguments only. Callers
+        # bind trial-scoped state (e.g. ``trial_id``) via
+        # ``functools.partial(runner_helper, trial_id=<id>)`` at construction
+        # time — the kwargs delegation here keeps such partial binds from
+        # colliding with a positional value for the same argument.
+        if self._run_test_suite_impl is None:
+            raise SubstrateUnreachableError(
+                "InProcessGradingSubstrate.run_test_suite() called but "
+                "'run_test_suite_impl' was not supplied at construction — "
+                "test-execution grading requires an exec-capable callback."
+            )
+        return self._run_test_suite_impl(
+            script_path=script_path,
+            reward_path=reward_path,
+            timeout_s=timeout_s,
+            reward_read_timeout_s=reward_read_timeout_s,
+        )
+
     def close(self) -> None:
         # Nothing to release — the caller owns the DB reader, KB search,
         # and workspace paths; the substrate is a thin view.
@@ -303,8 +433,192 @@ class InProcessGradingSubstrate:
 
 
 # ---------------------------------------------------------------------------
+# Shipped implementation 2 — SnapshotGradingSubstrate
+# ---------------------------------------------------------------------------
+
+
+_BUNDLE_MODULE = "tolokaforge.core.grading.bundle"
+"""Dotted name of the host-only bundle library.
+
+:meth:`SnapshotGradingSubstrate._read_part` compares
+``type(exc).__module__`` against this constant to translate
+``BundleError`` subclasses into :class:`SubstrateUnreachableError`
+without a static import — the bundle library is excluded from the
+runner subset (host-side producers/consumers only), and this shared-
+spine module ships in that subset.
+"""
+
+
+class _SnapshotDBReader:
+    """Sync :class:`DBReader` view over a snapshot substrate's ``final_state``.
+
+    ``get_state`` returns the raw ``final_state`` dict (optionally filtered
+    to a subset of tables). ``query`` runs jsonpath locally over the same
+    dict — mirrors ``_GrpcDBReader.query`` in :mod:`substrate_live`, keeping
+    the caller-side jsonpath semantics uniform across topologies.
+    """
+
+    def __init__(self, substrate: SnapshotGradingSubstrate) -> None:
+        self._substrate = substrate
+
+    def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:
+        state = self._substrate.final_state()
+        if not tables:
+            return state
+        inner = state.get("tables")
+        if isinstance(inner, dict):
+            filtered = {name: inner[name] for name in tables if name in inner}
+            return {**state, "tables": filtered}
+        return {name: state[name] for name in tables if name in state}
+
+    def query(self, jsonpath: str) -> dict[str, Any]:
+        from jsonpath_ng import parse
+
+        expr = parse(jsonpath)
+        return {"results": [match.value for match in expr.find(self._substrate.final_state())]}
+
+
+class SnapshotGradingSubstrate:
+    """The offline / cross-region / replay path: reads state from a serialised
+    grade bundle produced by
+    :func:`~tolokaforge.core.grading.bundle.serialize_grade_bundle`.
+
+    Constructed per-trial with a :class:`GradeBundleView` (already loaded
+    by :func:`~tolokaforge.core.grading.bundle.load_grade_bundle`). All
+    state reads resolve from bundle parts; no live runner, no gRPC channel,
+    no DSN reach.
+
+    Two Protocol methods have known offline limits in bundle format v1.0
+    and fail loud rather than silently returning empty:
+
+    - :meth:`db_probe` raises :class:`SubstrateUnreachableError` — the
+      caller-supplied DSN is only reachable inside the task's docker
+      network; offline substrates cannot dial it. A pack declaring
+      ``state_checks.db_probes`` is not gradeable in snapshot mode until
+      bundle format v1.1 pre-materialises probe rows.
+    - :meth:`knowledge_search` returns ``None`` — the bundle's optional
+      ``kb/`` subtree carries raw bytes without a queryable index. The
+      judge already treats ``None`` as "the trial declared no KB"; a
+      pack using rubric criteria that require KB search will grade
+      without the KB tool wired.
+
+    Every part read routes through the private :meth:`_read_part` helper,
+    which translates :class:`BundleIntegrityError` (corrupt bytes),
+    ``OSError`` (caller-deleted bundle_dir / permission / directory-in-
+    place-of-file / device errors), and ``KeyError`` (missing manifest
+    entry) into :class:`SubstrateUnreachableError`. The composite dispatch
+    swallows every other exception as "grade against empty state"; the
+    translated error is the sole class the seam propagates as
+    ``GradingFailedError``, keeping a corrupt or vanished bundle from
+    silently booking as a valid but empty grade.
+
+    :meth:`filesystem_root` lazily extracts ``filesystem.tar`` into a
+    :class:`tempfile.TemporaryDirectory` on first call, memoised for the
+    substrate's lifetime; extraction uses ``tar.extractall(path=root,
+    filter='data')`` (PEP 706) for comprehensive path-traversal defence.
+    :meth:`close` cleans up the tmpdir; the bundle view itself is
+    caller-owned.
+    """
+
+    def __init__(self, bundle_view: GradeBundleView) -> None:
+        self._bundle_view = bundle_view
+        self._initial_state_cache: dict[str, Any] | Any = _MISSING
+        self._final_state_cache: dict[str, Any] | Any = _MISSING
+        self._final_state_stable_cache: dict[str, Any] | Any = _MISSING
+        self._filesystem_root_cache: Path | None | Any = _MISSING
+        self._filesystem_state_cache: dict[str, str] | None | Any = _MISSING
+        self._filesystem_tmpdir: tempfile.TemporaryDirectory[str] | None = None
+        self._db_reader_cache: _SnapshotDBReader | None = None
+        self._closed = False
+
+    def _read_part(self, rel_path: str) -> bytes:
+        try:
+            return self._bundle_view.open_part(rel_path)
+        except (OSError, KeyError) as exc:
+            raise SubstrateUnreachableError(
+                f"SnapshotGradingSubstrate cannot read part {rel_path!r} from "
+                f"{self._bundle_view.bundle_dir}: {type(exc).__name__}: {exc}"
+            ) from exc
+        except Exception as exc:
+            if type(exc).__module__ != _BUNDLE_MODULE:
+                raise
+            raise SubstrateUnreachableError(
+                f"SnapshotGradingSubstrate cannot read part {rel_path!r} from "
+                f"{self._bundle_view.bundle_dir}: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    def db_reader(self) -> DBReader:
+        if self._db_reader_cache is None:
+            self._db_reader_cache = _SnapshotDBReader(self)
+        return self._db_reader_cache
+
+    def knowledge_search(self) -> KnowledgeSearch | None:
+        return None
+
+    def initial_state(self) -> dict[str, Any]:
+        if self._initial_state_cache is _MISSING:
+            self._initial_state_cache = json.loads(self._read_part("initial_state.json"))
+        return self._initial_state_cache
+
+    def final_state(self) -> dict[str, Any]:
+        if self._final_state_cache is _MISSING:
+            self._final_state_cache = json.loads(self._read_part("final_state.json"))
+        return self._final_state_cache
+
+    def final_state_stable(self) -> dict[str, Any]:
+        if self._final_state_stable_cache is _MISSING:
+            self._final_state_stable_cache = json.loads(self._read_part("final_state_stable.json"))
+        return self._final_state_stable_cache
+
+    def filesystem_root(self) -> Path | None:
+        if self._filesystem_root_cache is _MISSING:
+            data = self._read_part("filesystem.tar")
+            self._filesystem_tmpdir = tempfile.TemporaryDirectory(prefix="snapshot-workspace-")
+            root = Path(self._filesystem_tmpdir.name)
+            with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+                tar.extractall(path=root, filter="data")
+            self._filesystem_root_cache = root
+        return self._filesystem_root_cache
+
+    def filesystem_state(self) -> dict[str, str] | None:
+        if self._filesystem_state_cache is _MISSING:
+            root = self.filesystem_root()
+            self._filesystem_state_cache = read_agent_visible_filesystem(root) if root else None
+        return self._filesystem_state_cache
+
+    def db_probe(self, dsn: str, query: str) -> list[dict[str, Any]]:  # noqa: ARG002
+        raise SubstrateUnreachableError(
+            f"SnapshotGradingSubstrate cannot serve db_probes offline (dsn={dsn!r}). "
+            f"This pack requires live_callback for grading; see docs/GRADER_SERVICE.md "
+            f"§ substrate topology."
+        )
+
+    def run_test_suite(
+        self,
+        *,
+        script_path: str,
+        reward_path: str,  # noqa: ARG002
+        timeout_s: float,  # noqa: ARG002
+        reward_read_timeout_s: float,  # noqa: ARG002
+    ) -> RunTestSuiteResult:
+        raise SubstrateUnreachableError(
+            f"SnapshotGradingSubstrate cannot run a test suite offline "
+            f"(script_path={script_path!r}) — bundle format v1.0 carries no "
+            f"test-suite hook. Pack requires live_callback for grading."
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._filesystem_tmpdir is not None:
+            self._filesystem_tmpdir.cleanup()
+            self._filesystem_tmpdir = None
+
+
+# ---------------------------------------------------------------------------
 # Reserved future substrates — declared here so ADR-0040's design is
-# discoverable in one module. All three raise NotImplementedError with a
+# discoverable in one module. Both raise NotImplementedError with a
 # pointer to the ADR recipe.
 # ---------------------------------------------------------------------------
 
@@ -326,27 +640,6 @@ class TrajectoryStorageGradingSubstrate:
             "The recipe for wiring it is in docs/adr/0040-standalone-grader.md — "
             "the substrate ships as a separate PR once the trajectory-storage "
             "service is stable."
-        )
-
-
-class SnapshotGradingSubstrate:
-    """Reserved: Harbor-pattern snapshot-on-wire. State travels inside
-    ``GradeRequest``.
-
-    Recipe in ADR-0040 § "Reserved future substrate — SnapshotGradingSubstrate
-    (Harbor pattern)". Ship when offline replay / cross-region grading is a
-    hard requirement (grader outlives the runner, or lives in a different
-    network region). Filesystem cap policy + auto-fallback to live-callback
-    is part of the recipe — the runner's ``_read_agent_visible_filesystem``
-    already filters ``node_modules`` / ``.venv`` / ``.git``, so the wire
-    payload is bounded for most tolokaforge tasks.
-    """
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ARG002
-        raise NotImplementedError(
-            "SnapshotGradingSubstrate is a reserved future substrate. The recipe "
-            "for wiring it (GradeRequest v3, filesystem cap, auto-fallback to "
-            "LiveRunnerCallback) is in docs/adr/0040-standalone-grader.md."
         )
 
 

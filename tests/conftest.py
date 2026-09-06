@@ -10,6 +10,11 @@ import yaml
 from tests.utils.secret_state import secret_manager_state_restored
 from tolokaforge.core.llm.presets import set_overlay_path
 
+pytest_plugins = ["pytester"]
+"""``pytester`` is a pytest-built-in plugin that lets tests spin up an isolated
+pytest session inside a temp dir. Registered at the top-level conftest so any
+lane can reach it."""
+
 
 @pytest.fixture(autouse=True)
 def overlay_isolation():

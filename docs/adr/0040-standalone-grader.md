@@ -40,7 +40,7 @@ Tolokaforge needs the grader to work under (1), (2), and (3) *this milestone* �
 - `SnapshotGradingSubstrate` (Harbor pattern) — state travels inside `GradeRequest`.
 - `SharedMountGradingSubstrate` (SWE-bench pattern) — reads from a shared mount.
 
-**Register substrate implementations under a plug-in group** — `tolokaforge.grading_substrates`. Ships with two entries this milestone; when trajectory-storage lands, it registers itself as one entry-point line — no framework PR.
+**Register substrate implementations under a plug-in group** — `tolokaforge.grading_substrates`. Ships with two entries this milestone; when trajectory-storage lands, it registers itself as one entry-point line — no framework PR. Two companion groups register the runner-side dispatch selector on `RunnerGradingConfig.grading_method`: `tolokaforge.grading_methods` (marker Protocol, validation + discovery) and `tolokaforge.grader_kinds` (typed `GraderKind` Protocol, driving runtime dispatch for every non-composite name at `RunnerServiceImpl._dispatch_via_grader_kind`). Every shipped name registers in both — `RegisterTrial` validates against the pair; see [`docs/GRADING.md` § Grading Method Dispatch](../GRADING.md#grading-method-dispatch).
 
 **Introduce six new entry-point groups for sub-component evaluators** (rubric_evaluators, judge_model_providers, transcript_rule_matchers, trace_check_operators, state_check_backends, custom_check_executors). Every existing implementation becomes the reference impl behind its Protocol — extract-refactor, zero behaviour change.
 
@@ -48,16 +48,15 @@ Tolokaforge needs the grader to work under (1), (2), and (3) *this milestone* �
 
 **Backward compatibility is a first-class deliverable.** `runner_rpc` behaviour is preserved from the operator's view. Every existing `grading.yaml` runs untouched. No task auto-migrates to `grader_rpc`.
 
-## Non-goals and rationale — why the shipped grader is not fully independent
+## Deployment paths — three shipping substrates
 
-The deployed grader image dials back to the runner over `SubstrateService` gRPC (`LiveRunnerCallbackGradingSubstrate`). A grader that reads only what crosses `GradeRequest` — no callback, no runner dependency at grade time — is what most operators mean by "fully independent grader." **That's `SnapshotGradingSubstrate` (Harbor pattern), and it is deliberately deferred to a future milestone.** The reasoning:
+Every substrate satisfies the same `GradingSubstrate` Protocol; the composite grading dispatch above them is identical across topologies. Operators pick a path by grader-name + config; no runtime substrate-selector rides on the wire.
 
-- **Wire size for the target workloads.** Snapshot-on-wire packs the trial's initial + final DB state, filesystem tree, KB corpus, and `checks.py` bytes into one `GradeRequest`. For a state-routed task (a few tables, a handful of tool calls) the payload is small — under 100 KB. For a coding-task workspace (terminal-bench, SWE-bench-adjacent tasks) the filesystem tree alone is ~100 MB after the shipped `_read_agent_visible_filesystem` filter (which excludes symlinks and non-UTF-8 files but does NOT prune `node_modules` / `.venv` / `.git` — verified in `runner/service.py:1691-1716`). A default-behaviour grader that ships every trial's full workspace over one gRPC message would make each grade RPC a multi-hundred-megabyte transfer under a payload limit designed for control-plane messages.
-- **The alternative today is cheap and correct.** `LiveRunnerCallbackGradingSubstrate` does one RPC per read — `db_reader().get_state()` is one round trip, each `filesystem_root().read_file(path)` is one round trip. Small tasks pay for what they use; large tasks materialise the filesystem tree once eagerly (documented in `docs/GRADER_SERVICE.md § Wire cost per grade component`) and stay under the wire budget by construction because the payload never crosses in a single frame.
-- **Independence is available where it's cheap.** Operators who need a wire-independent grader today have two paths that ship in this milestone: (a) `runner_rpc` with `InProcessGradingSubstrate` — the grader and runner are one process, no wire at all, no independence needed; (b) `grader_rpc` with `LiveRunnerCallbackGradingSubstrate` — the grader is a separate container that dials the runner for reads. Neither is "the grader takes a snapshot and walks away," but both are correct and shipped.
-- **The Protocol is shaped for the third path.** When snapshot-on-wire becomes required (offline replay, cross-region grading, a task family whose workspace is small enough to ship whole), `SnapshotGradingSubstrate` registers as one entry-point line under `tolokaforge.grading_substrates`. `grader.proto` extends with the additive fields it needs (v3). The composite dispatch above the substrate does not change. This ADR carries a concrete wiring recipe below.
+- **`runner_rpc` with `InProcessGradingSubstrate`.** Grader and runner share a Python process; the substrate is a thin view over the runner's live objects. No wire, no serialisation. Shipping default for the aggregate image.
+- **`grader_rpc` with `LiveRunnerCallbackGradingSubstrate`.** Grader is a separate container that dials the runner's read-only `SubstrateService` per read (`db_reader().get_state()` = one round trip; each `filesystem_root().read_file(path)` = one round trip). Small tasks pay for what they use; large workspaces materialise the filesystem tree once eagerly (documented in `docs/GRADER_SERVICE.md § Wire cost per grade component`) and stay under the wire budget by construction because the payload never crosses in a single frame.
+- **Snapshot mode with `SnapshotGradingSubstrate`.** Grader reads a serialised grade bundle (see [`../GRADE_BUNDLE.md`](../GRADE_BUNDLE.md)) rather than dialling a live runner. Decouples the grader's lifetime from the runner's, so a grader can grade a trial whose runner was torn down (offline replay), grade across a network region, or grade a bulk backfill of already-recorded trials. Shape + reads + fail-loud translator + two hard offline limits (`db_probe` / `knowledge_search`) are documented below under [Shipped substrate — `SnapshotGradingSubstrate`](#shipped-substrate--snapshotgradingsubstrate-offline--cross-region--replay-path).
 
-**Operator-facing knob today.** Choose `grader.name: runner_rpc` for coding-task workloads with large workspaces — the docs (`docs/GRADER_SERVICE.md § Wire cost per grade component`) make this explicit and name the crossover empirically. `grader.name: grader_rpc` is correct and shipping for the deployment shape where the grader lives separately from the runner and the workspace stays small.
+**Operator-facing knob today.** Coding-task workloads with large workspaces prefer `grader.name: runner_rpc` — the docs (`docs/GRADER_SERVICE.md § Wire cost per grade component`) make this explicit and name the crossover empirically. `grader.name: grader_rpc` is the deployment shape where the grader lives separately from the runner and the workspace stays small. Snapshot mode is the offline / replay / cross-region path; the regrade CLI that composes it is separate work (see phase-C list below).
 
 **Two other deliberate non-goals of this milestone:**
 
@@ -68,9 +67,9 @@ The deployed grader image dials back to the runner over `SubstrateService` gRPC 
 
 **Positive**
 
-- Three deployment topologies operational this milestone (aggregate image, independent grader container, unified `runner_rpc` path).
+- Three deployment topologies operational (aggregate image, independent grader container with live-callback, snapshot mode with bundle-backed reads).
 - The trajectory-storage service, when it ships, registers itself with a one-line entry point.
-- Snapshot mode and shared-mount mode become documented, additive future shifts — the Protocol is already shaped for them.
+- Shared-mount mode remains a documented, additive future shift — the Protocol is already shaped for it.
 - Component evaluators become individually pluggable; operators can extend judges / rules / trace ops without touching the framework.
 - Extract-refactor of runner-side grading code onto the Protocol path unifies the codebase and locks behaviour parity by construction.
 - **Phase 1 landing (issue #1261).** `GradingSubstrate` Protocol + `InProcessGradingSubstrate` + `LiveRunnerCallbackGradingSubstrate` shipped; `SubstrateService` gRPC (7 read-only RPCs, gated by `RunConfig.grader.expose_substrate: false`); five composite grading functions extracted to `tolokaforge.core.grading.composite`.
@@ -81,7 +80,7 @@ The deployed grader image dials back to the runner over `SubstrateService` gRPC 
 **Negative**
 
 - Adds a new gRPC surface (`SubstrateService`) on the runner. Config-gated (`RunConfig.grader.expose_substrate: false` default) — no impact on runs that don't need it, but it's a new component with its own maintenance cost.
-- `LiveRunnerCallbackGradingSubstrate` ties grader lifecycle to runner lifecycle (grader fails if the runner is torn down mid-grade). Documented; caller sees `GradingFailedError`. Snapshot mode later decouples this.
+- `LiveRunnerCallbackGradingSubstrate` ties grader lifecycle to runner lifecycle (grader fails if the runner is torn down mid-grade). Documented; caller sees `GradingFailedError`. Snapshot mode decouples this at the cost of the two offline limits (`db_probe` refuses; `knowledge_search` returns `None`).
 
 **Neutral**
 
@@ -110,31 +109,68 @@ Substrate selection is not a wire-carried enum. The shipping mechanism is: `grad
 
 **No changes to evaluator code, `runner_rpc`, or the aggregate image path.**
 
-## Reserved future substrate — `SnapshotGradingSubstrate` (Harbor pattern)
+## Shipped substrate — `SnapshotGradingSubstrate` (offline / cross-region / replay path)
 
-**When to ship:** offline replay / cross-region grading becomes a hard requirement (grader outlives the runner, or lives in a different network region).
+**Shape.** `SnapshotGradingSubstrate(bundle_view: GradeBundleView)` reads a
+trial's state from a serialised grade bundle (see
+[`docs/GRADE_BUNDLE.md`](../GRADE_BUNDLE.md)) rather than over a live wire. A
+caller composes `store.get(uri, dest) -> load_grade_bundle(dest) ->
+SnapshotGradingSubstrate(view)`; the substrate satisfies the same
+`GradingSubstrate` Protocol every deployment topology reads through, so the
+composite grading dispatch above it is unchanged.
 
-**Wiring recipe:**
+**Reads.** Initial / final / final-stable DB state come from the manifested
+`initial_state.json` / `final_state.json` / `final_state_stable.json` parts.
+`filesystem.tar` is lazily extracted to a per-substrate `tempfile.TemporaryDirectory`
+on first `filesystem_root()` call, using `tar.extractall(path=root,
+filter='data')` (PEP 706) for comprehensive path-traversal defence.
+`filesystem_state()` walks the extracted root through the shipped
+`read_agent_visible_filesystem` helper, matching what `LiveRunnerCallback`
+returns.
 
-1. Extend `grader.proto` to wire v3 with additive snapshot-bundle fields on `GradeRequest`:
-   - `initial_state_json`, `final_state_json` — DB snapshots at trial start / end.
-   - `filesystem_snapshot: bytes` — tar of agent-visible files (already filtered by the runner's `_read_agent_visible_filesystem` — never `node_modules`, `.venv`, `.git`).
-   - `checks_module_bytes: bytes` — `checks.py` bytes when `custom_checks` is enabled.
-   - `kb_snapshot` — for tasks with deterministic KB corpora, the vector-store manifest. Live-TypeSense tasks stay on live-callback.
+**Fail-loud translator.** Every `bundle_view.open_part(...)` call routes
+through a private `_read_part` helper that translates `BundleIntegrityError`
+(corrupt bytes), `OSError` (caller-deleted bundle_dir / permission / device
+errors), and `KeyError` (missing manifest entry) into
+`SubstrateUnreachableError` naming the offending part + bundle_dir. This is
+load-bearing: the composite call sites in `composite/custom_checks.py` and
+`composite/llm_judge.py` catch `Exception` broadly and degrade-to-empty,
+letting only `SubstrateUnreachableError` propagate to `GradingFailedError`.
+Without the translation, a corrupt or vanished bundle silently books the
+trial as "empty state, grade against nothing" — an incorrect verdict, not a
+failure.
 
-   `id_fields`, `unstable_fields`, and `judge_model_config` already ride on `task_description_json` / `judge_model_config_json` from wire v2 and need no addition.
-2. Implement `SnapshotGradingSubstrate` unpacking the fields into the same shape `LiveRunnerCallbackGradingSubstrate` produces.
-3. Register under the shipping entry-point group:
+**Two Protocol methods have hard offline limits in bundle format v1.0** and
+fail loud rather than silently returning empty:
 
-   ```toml
-   [project.entry-points."tolokaforge.grading_substrates"]
-   snapshot = "tolokaforge.core.grading.substrate:SnapshotGradingSubstrate"
-   ```
+- `db_probe(dsn, query)` raises `SubstrateUnreachableError` naming the DSN.
+  The DSN is only reachable inside the task's docker network; offline
+  substrates cannot dial it. A pack declaring `state_checks.db_probes` is
+  not gradeable in snapshot mode until bundle format v1.1 pre-materialises
+  probe rows ([#1438](https://github.com/Toloka/tolokaforge/issues/1438)).
+- `knowledge_search()` returns `None`. The bundle's optional `kb/` subtree
+  carries raw bytes without a queryable index. The judge already treats
+  `None` as "the trial declared no KB"; a pack whose rubric criteria
+  require KB search grades without the KB tool wired
+  ([#1439](https://github.com/Toloka/tolokaforge/issues/1439)).
 
-4. **Filesystem cap policy** — 32 MB soft cap. Tasks exceeding the cap auto-fall-back to `LiveRunnerCallbackGradingSubstrate` (documented behaviour; not a bug). Config: extend `GraderConfig` with a typed `snapshot: SnapshotGraderConfig | None` subblock — same shape as the shipped `queue` / `judge` subblocks — carrying an explicit `fallback_on_snapshot_error` field (default `live_callback`).
-5. The snapshot builder replaces `LiveRunnerCallbackGradingSubstrate` construction inside a new `GraderRPCSnapshotTrialGrader` (or an extended `GraderRPCTrialGrader`) — no wire-carried selector; the client-side transport decides.
+**Registered as a one-line entry point** under the shipping group:
 
-**Why this is riskier than live-callback:** coding tasks with ~100 MB workspaces would need the auto-fallback path; a bug in the size check could break existing pipelines. Shipping later when the platform has learned the wire behaviours.
+```toml
+[project.entry-points."tolokaforge.grading_substrates"]
+snapshot = "tolokaforge.core.grading.substrate:SnapshotGradingSubstrate"
+```
+
+**What ships now vs. what remains ahead.** The substrate class + entry-point
++ per-Protocol-method behaviour locks ship in the current release. Remaining
+phase-C work in milestone [#39](https://github.com/Toloka/tolokaforge/milestone/39):
+`grader.proto` wire-v3 additive fields carrying bundle references
+([#1358](https://github.com/Toloka/tolokaforge/issues/1358)); the
+`RuntimeBackend.build_grade_bundle` producer hook that writes a bundle at
+trial-end ([#1356](https://github.com/Toloka/tolokaforge/issues/1356)); the
+`tolokaforge grade <bundle-uri>` regrade CLI verb
+([#1361](https://github.com/Toloka/tolokaforge/issues/1361)); and the
+3-lane parity gate expanding to include the snapshot path.
 
 ## Reserved future substrate — `SharedMountGradingSubstrate` (SWE-bench pattern)
 

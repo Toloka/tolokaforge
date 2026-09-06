@@ -2,18 +2,27 @@
 
 ``expected_hash`` and ``expect_initial_state`` name different concepts on similar
 names — a stored digest vs. a comparison-basis selector — so
-``RunnerStateChecksConfig`` refuses ``expected_hash`` rather than mapping it
-through: a digest silently absorbed into the selector would grade the trial by a
-rule the emitting engine never asked for. The refusal fires at the wire layer
-with an actionable message naming the two current sources (``golden_actions``,
-``expect_initial_state``) and the retirement tracker (#1304); the generic
-Pydantic ``extra_forbidden`` output does not appear.
+``RunnerStateChecksConfig`` refuses a truthy ``expected_hash`` rather than
+mapping it through: a digest silently absorbed into the selector would grade the
+trial by a rule the emitting engine never asked for. The refusal fires at the
+wire layer with an actionable message naming the two current sources
+(``golden_actions``, ``expect_initial_state``) and the retirement tracker
+(#1304); the generic Pydantic ``extra_forbidden`` output does not appear.
+
+A **falsy** value (``None``, ``""``, ``False``, ``0``) is silently dropped —
+mirror of ``_drop_retired_hash_keys`` on the author-facing sibling
+``StateHashConfig``. It carries no digest and no semantic; stale adapter
+kwargs-lists threading ``expected_hash=hash_cfg.get("expected_state_hash")``
+against packs that never authored it (result: ``None``) construct cleanly.
 
 Locks:
 
-- Presence of ``expected_hash`` under any value — a populated digest string, a
-  bool, ``None`` — fires the same actionable refusal, with a single
-  ``value_error`` naming the retirement, the two migration targets and #1304.
+- A truthy ``expected_hash`` (populated digest string) fires the actionable
+  refusal, with a single ``value_error`` naming the retirement, the two
+  migration targets, and #1304.
+- A falsy ``expected_hash`` (``None``, ``""``, ``False``, ``0``) is silently
+  dropped from the input and construction succeeds; the constructed model has
+  no ``expected_hash`` attribute.
 - The refusal message does not carry Pydantic's generic ``Extra inputs are not
   permitted`` / ``extra_forbidden`` string — the specific migration message wins.
 - ``expect_initial_state=True`` and default construction validate and round-trip.
@@ -57,11 +66,22 @@ def test_expected_hash_digest_string_raises_actionable_refusal() -> None:
     _assert_actionable_refusal(exc_info.value)
 
 
-@pytest.mark.parametrize("value", [True, False, None])
-def test_expected_hash_key_presence_under_any_value_refuses(value: object) -> None:
+@pytest.mark.parametrize("value", ["deadbeef" * 8, "0", "no", True, 1, 0.5])
+def test_expected_hash_truthy_value_still_refuses(value: object) -> None:
     with pytest.raises(ValidationError) as exc_info:
         RunnerStateChecksConfig(expected_hash=value)
     _assert_actionable_refusal(exc_info.value)
+
+
+@pytest.mark.parametrize("value", [None, "", False, 0, 0.0])
+def test_expected_hash_falsy_value_dropped_silently(value: object) -> None:
+    """Stale adapter kwargs-list (`expected_hash=hash_cfg.get(...)`) against a
+    pack that never authored the key resolves to ``None`` — construction must
+    succeed and the retired key must not survive on the model."""
+    config = RunnerStateChecksConfig(expected_hash=value)
+    assert not hasattr(config, "expected_hash")
+    dumped = config.model_dump()
+    assert "expected_hash" not in dumped
 
 
 def test_refusal_message_does_not_leak_generic_extra_forbidden() -> None:

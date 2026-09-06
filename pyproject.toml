@@ -167,6 +167,12 @@ adapters = [
 all = [
     "tolokaforge[dx,browser,server,rag,office,adapters,runner]",
 ]
+# S3-compatible bundle store transport (``S3BundleStore``). boto3 is a
+# lazy import inside the store's method bodies, so the pure module loads
+# without it; install this extra when a caller instantiates ``S3BundleStore``.
+bundle-store-s3 = [
+    "boto3>=1.34,<2",
+]
 
 [project.urls]
 Homepage = "https://github.com/Toloka/tolokaforge"
@@ -212,6 +218,26 @@ tcp = "tolokaforge.core.service_readiness:tcp_readiness_probe_factory"
 agent_only = "tolokaforge.core.actors.turn_policy:_agent_only_policy_factory"
 conversational = "tolokaforge.core.actors.turn_policy:_conversational_policy_factory"
 
+# Runner-side dispatch selector on ``RunnerGradingConfig.grading_method``: the
+# registered names are the ones ``RegisterTrial`` accepts. Two markers ship
+# today — ``composite`` (default state-checks / transcript-rules / trace-checks /
+# llm-judge / custom-checks fold) and ``test_execution`` (reference-suite
+# short-circuit). A downstream dispatch registers here without a framework PR;
+# see :mod:`tolokaforge.core.grading.grading_method`.
+[project.entry-points."tolokaforge.grading_methods"]
+composite = "tolokaforge.core.grading.grading_method:CompositeGradingMethod"
+test_execution = "tolokaforge.core.grading.grading_method:TestExecutionGradingMethod"
+
+# Typed grader-kind Protocol registry. Every entry resolves to a class with a
+# kwargs-only ``evaluate(*, substrate, task_config, kind_config, trial_id,
+# agent_tools, logger) -> Grade | None``. Shares vocabulary with
+# ``tolokaforge.grading_methods`` (each shipped name registers in both groups);
+# a canonical test locks the shared name set. See
+# :mod:`tolokaforge.core.grading.kinds`.
+[project.entry-points."tolokaforge.grader_kinds"]
+composite = "tolokaforge.core.grading.kinds.composite:CompositeGraderKind"
+test_execution = "tolokaforge.core.grading.kinds.test_execution:TestExecutionGraderKind"
+
 # ADR-0044 composition-plan adapter Protocols
 # (``tolokaforge/core/composition_runtime.py``). Each entry point resolves
 # directly to the impl class — the class is arg-less-constructible, so the
@@ -231,13 +257,14 @@ ephemeral = "tolokaforge.core.service_lifecycle_dispatchers:EphemeralDispatcher"
 default = "tolokaforge.core.default_substrate_composer:DefaultSubstrateComposer"
 
 # ADR-0040 § "The single design abstraction" — GradingSubstrate implementations
-# resolvable by name. Two implementations ship today (``in_process`` +
-# ``live_callback``); ``trajectory_storage`` / ``snapshot`` / ``shared_mount``
+# resolvable by name. Three implementations ship today (``in_process`` +
+# ``live_callback`` + ``snapshot``); ``trajectory_storage`` / ``shared_mount``
 # are reserved future substrates and register themselves when they ship (no
 # framework change needed then).
 [project.entry-points."tolokaforge.grading_substrates"]
 in_process = "tolokaforge.core.grading.substrate:InProcessGradingSubstrate"
 live_callback = "tolokaforge.core.grading.substrate_live:LiveRunnerCallbackGradingSubstrate"
+snapshot = "tolokaforge.core.grading.substrate:SnapshotGradingSubstrate"
 
 # Custom-check executor Protocol (``tolokaforge/core/grading/check_runner.py``).
 # ``check_runner`` is the production default (in-process ThreadPoolExecutor);
@@ -316,6 +343,17 @@ len_gte = "tolokaforge.core.grading.trace_check_operator:len_gte"
 exists = "tolokaforge.core.grading.trace_check_operator:exists"
 equals_binding = "tolokaforge.core.grading.trace_check_operator:equals_binding"
 contains_binding = "tolokaforge.core.grading.trace_check_operator:contains_binding"
+
+# Bundle-store Protocol (``tolokaforge/core/grading/bundle_store.py``). Two
+# built-ins ship: ``local_disk`` writes the bundle directory under
+# ``<root_dir>/grade_bundles/<digest>/`` with atomic per-worker staging;
+# ``s3`` uploads each part to an S3-compatible bucket under
+# ``<prefix>/<digest>/`` and requires the ``bundle-store-s3`` extra
+# (``uv add 'tolokaforge[bundle-store-s3]'``) — ``boto3`` is imported
+# lazily inside the method bodies so the bare module loads without it.
+[project.entry-points."tolokaforge.bundle_stores"]
+local_disk = "tolokaforge.core.grading.bundle_store:LocalDiskBundleStore"
+s3 = "tolokaforge.core.grading.bundle_store:S3BundleStore"
 
 [tool.hatch.build]
 exclude = [
@@ -419,9 +457,13 @@ exclude = [
     # otherwise-included subpackage.
     "tolokaforge/core/actors/turn_policy.py",
     "tolokaforge/core/grading/agreement.py",
+    "tolokaforge/core/grading/bundle.py",
+    "tolokaforge/core/grading/bundle_producer.py",
+    "tolokaforge/core/grading/bundle_store.py",
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/config_validation.py",
     "tolokaforge/core/grading/corpus_curation.py",
+    "tolokaforge/core/grading/judge_only_helpers.py",
     "tolokaforge/core/grading/migration_declaration.py",
     "tolokaforge/core/grading/replay.py",
     "tolokaforge/core/grading/replay_layout.py",
@@ -656,6 +698,10 @@ dev = [
     "tolokaforge-adapter-terminal-bench",
     "dev-mcp",
     "automation",
+    # boto3 pulled in for the S3BundleStore stubber tests
+    # (tests/unit/grading/test_bundle_store_s3.py drives
+    # ``botocore.stub.Stubber`` against a real boto3 S3 client).
+    "boto3>=1.34,<2",
     # Terminal front-end deps live in [project.optional-dependencies].dx.
     # Dev tooling exercises the terminal front-end tests, so pull them in
     # here explicitly rather than relying on `[dx]` being installed.

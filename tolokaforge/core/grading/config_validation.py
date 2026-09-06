@@ -1835,9 +1835,10 @@ def _check_jsonpaths_address_a_reachable_state(grading: Mapping[str, Any]) -> Au
         target = unreachable_target(assertion)
         if target is None:
             continue
-        # Only ``BEYOND_THE_RUNNERS_STATE`` reaches here now — ``FILESYSTEM``
-        # grades on the runner via ``_read_agent_visible_filesystem``, so the
-        # authoring gate no longer refuses ``$.filesystem[…]``-rooted paths.
+        # Only ``BEYOND_THE_RUNNERS_STATE`` reaches here — ``FILESYSTEM``
+        # grades on the runner via
+        # ``filesystem_view.read_agent_visible_filesystem``, so the authoring
+        # gate does not refuse ``$.filesystem[…]``-rooted paths.
         findings.append(
             Finding(
                 _JSONPATHS_ADDRESS,
