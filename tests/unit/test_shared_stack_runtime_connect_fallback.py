@@ -2,11 +2,11 @@
 when the caller passes no arguments — the orchestrator's ``connect()`` path.
 
 The orchestrator invokes ``runtime_backend.connect()`` with no args at both
-call sites (``_construct_runtime_backend`` callers). Before the fallback,
-the method-parameter default (30 s) governed regardless of what the factory
-plumbed onto the instance from ``OrchestratorConfig.runtime_connect``.
-This test locks the fallback so an operator-configured timeout actually
-reaches the health-check loop on the primary connect path.
+call sites (``_construct_runtime_backend`` callers). The factory populates
+``self.connect_timeout`` / ``self.connect_retry_interval`` from
+``env → OrchestratorConfig.runtime_connect → default``; this test locks the
+``None``-argument fallback so an operator-configured budget actually reaches
+the health-check loop on the primary connect path. Explicit args still win.
 """
 
 from __future__ import annotations

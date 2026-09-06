@@ -18,7 +18,7 @@ from tolokaforge.core.models.run_config import OrchestratorConfig, RuntimeConnec
 pytestmark = pytest.mark.unit
 
 
-def test_defaults_preserve_pre_block_behaviour() -> None:
+def test_default_construction_yields_30s_timeout_and_1s_retry() -> None:
     cfg = RuntimeConnectConfig()
     assert cfg.timeout_s == 30.0
     assert cfg.retry_interval_s == 1.0

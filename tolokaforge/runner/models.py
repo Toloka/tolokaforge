@@ -433,10 +433,10 @@ class RunnerStateChecksConfig(BaseModel):
     the retired key with a ``ValidationError`` naming the two current sources
     (``golden_actions``, ``expect_initial_state``) and the retirement tracker
     (#1304) **when the value is truthy** — a stored digest coerced through
-    would grade under a rule the emitting engine never chose (the PR #1306
-    rationale). A falsy value (``None``, ``""``, ``False``, ``0``) is silently
-    dropped: it carries no digest and no semantic — matching the author-facing
-    sibling ``_drop_retired_hash_keys`` on ``StateHashConfig`` in
+    would grade under a rule the emitting engine never chose. A falsy value
+    (``None``, ``""``, ``False``, ``0``) is silently dropped: it carries no
+    digest and no semantic — matching the author-facing sibling
+    ``_drop_retired_hash_keys`` on ``StateHashConfig`` in
     :mod:`tolokaforge.core.grading.state_composition`. The narrow drop unblocks
     stale emitters (e.g. an adapter kwargs-list still threading
     ``expected_hash=hash_cfg.get("expected_state_hash")``) without ever letting

@@ -22,6 +22,12 @@ All notable changes to this project are documented in this file.
 ### Changed
 
 - **runner** (**internal**): `RunnerServiceImpl._grade_via_test_execution` deleted; test-execution grading dispatches through `TestExecutionGraderKind` reading `substrate.run_test_suite(...)`. **Wire shape byte-identical to pre-move for every observable case** — tool-absent produces `GradeTrialResponse(success=False, error=<message>)`, script exception produces `success=True + Grade(0.0, "test.sh execution failed: {msg}")`, rewarded runs produce `success=True + Grade(reward, "test-execution reward: {r:.4f}\n\ntest output (truncated):\n{output[:2000]}")` — locked by `test_test_execution_grader_kind.py` and `test_runner_dispatch_via_grader_kind.py`. `RegisterTrial` now validates `grading_method` against both `tolokaforge.grading_methods` and `tolokaforge.grader_kinds`; a downstream adapter registering only in the older group is refused. Every shipped grader name registers in both.
+- **runtime**: `OrchestratorConfig.runtime_connect.{timeout_s,retry_interval_s}` operator knob for the runner health-check budget on connect; env vars `TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S` and `TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S` override the block (env → YAML → default). Raise `timeout_s` when trials flake at connect with `Runner service at localhost:<port> not healthy after 30.1s` under cold-boot. See [`docs/RUNNER.md`](docs/RUNNER.md) § Health-check timeout on connect.
+
+### Fixed
+
+- **grading**: Snapshot mode's bundle producer now supports filesystem-only trials (packs whose `initial_state` declares no `tables` / `schemas` / `unstable_fields`). Previously produced `snapshot_status.outcome = produce_failed, reason = "Trial '<id>' not found"` because the substrate's DB reads refused for a trial the runner never registered with the DB Service; the producer now gates the DB reads on `provisions_database(initial_state)` and bundles empty DB parts (`{}`) for the fs-only shape, symmetric with the LIVE grader lane's per-caller degradation.
+- **runner**: `RunnerStateChecksConfig` no longer refuses a falsy `expected_hash` (`None`, `""`, `False`, `0`); a truthy digest still raises the actionable retirement message. Unblocks stale adapter kwargs-lists that unconditionally thread `expected_hash=hash_cfg.get("expected_state_hash")` on packs that never authored the key.
 
 ### Removed
 
