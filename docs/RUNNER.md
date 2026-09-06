@@ -150,13 +150,23 @@ different questions:
 
 ### Health-check timeout on connect
 
-The engine dials the runner at `orchestrator.runtime_backend.connect()` time
-with a wall-clock retry loop that polls the runner's gRPC `HealthCheck` every
-`retry_interval_s` seconds until healthy or the `timeout_s` budget expires.
-Cold-boot under load (image pull, DB Service warm-up) sometimes exceeds the
-30 s default; if trials flake at connect with
-`Runner service at localhost:<port> not healthy after 30.1s`, raise the
-budget:
+The engine gates on the runner's readiness twice around start-up. Immediately
+after `service_stack.start_all(wait=True)` returns (compose reports every
+container's internal HEALTHCHECK passing), the orchestrator opens a host-side
+gRPC `HealthCheck` on the runner's *published* host port. This closes the
+propagation-lag gap between "gRPC server bound inside the container" and
+"the published port routes from the host" that Docker Desktop occasionally
+exhibits; a refusal at this stage raises actionably with the resolved
+`host:port` and the knob to raise, rather than surfacing later as a
+client-side timeout. Once the probe passes, `runtime_backend.connect()`
+dials the same address and the loop below rarely fires more than one attempt.
+
+Both stages use one budget — `orchestrator.runtime_connect`. Cold-boot under
+load (image pull, DB Service warm-up) sometimes exceeds the 30 s default; if
+trials flake at connect with
+`Runner service at localhost:<port> not healthy after 30.1s` (or the
+prewarm's `Runner host-side readiness probe failed at localhost:<port>`
+sibling), raise the budget:
 
 ```yaml
 orchestrator:

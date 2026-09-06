@@ -103,6 +103,7 @@ from tolokaforge.core.trial import (
     TrialSpec,
 )
 from tolokaforge.core.trial_executor import TrialExecutor
+from tolokaforge.docker.health import HealthProbe, HealthProbeError
 from tolokaforge.runner.models import AdapterType, PlanShape, StackScope, TaskDescription
 from tolokaforge.secrets import register_runtime_secret
 
@@ -1288,6 +1289,67 @@ class Orchestrator:
             on_success=compute.capture_logs_on_success,
         )
 
+    def _resolve_runtime_connect_budget(self) -> tuple[float, float]:
+        """Resolve the runner health-check budget (env → YAML → default).
+
+        Same precedence at every use site (host-side prewarm probe +
+        RuntimeBackendBuildContext plumbing). Env-var values that fail
+        to parse fall back to the YAML block with a warning.
+        """
+        runtime_connect = self.config.orchestrator.runtime_connect
+        timeout_s = parse_env_positive_float(
+            "TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S",
+            default=runtime_connect.timeout_s,
+            logger=self.logger,
+        )
+        retry_interval_s = parse_env_positive_float(
+            "TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S",
+            default=runtime_connect.retry_interval_s,
+            logger=self.logger,
+        )
+        assert timeout_s is not None and retry_interval_s is not None
+        return timeout_s, retry_interval_s
+
+    def _prewarm_runner_host_endpoint(self, runner_address: str) -> None:
+        """Probe the runner's PUBLISHED host port before constructing the backend.
+
+        Compose's internal ``HEALTHCHECK`` says the gRPC server bound
+        its port inside the container, but the published host port has
+        propagation lag (particularly under Docker Desktop). Doing the
+        readiness gate here means ``runtime_backend.connect()`` never
+        races the port-publish — it dials a socket already listening
+        from the host.
+
+        Budget is the operator-configured ``orchestrator.runtime_connect``
+        (env-var-overridable). A refusal here raises an actionable
+        ``RuntimeError`` naming the resolved host:port and the knob to
+        raise; the downstream ``connect()`` would otherwise surface a
+        confusing ``Runner service not healthy after 30.1s``.
+        """
+        timeout_s, retry_interval_s = self._resolve_runtime_connect_budget()
+        host, port_str = runner_address.rsplit(":", 1)
+        port = int(port_str)
+        try:
+            HealthProbe.grpc(
+                host=host,
+                port=port,
+                timeout_s=timeout_s,
+                interval_s=retry_interval_s,
+            ).wait()
+        except HealthProbeError as exc:
+            raise RuntimeError(
+                f"Runner host-side readiness probe failed at {host}:{port} after "
+                f"{timeout_s}s. Raise orchestrator.runtime_connect.timeout_s in the "
+                f"run config, or set TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S, if the "
+                f"container needs longer to cold-boot. Detail: {exc}"
+            ) from exc
+        self.logger.info(
+            "Runner host-side readiness confirmed",
+            host=host,
+            port=port,
+            budget_s=timeout_s,
+        )
+
     def _construct_runtime_backend(
         self,
         runner_address: str,
@@ -1346,19 +1408,7 @@ class Orchestrator:
             and override != "shared"
             and self._any_task_declares_environment_manifest()
         )
-        runtime_connect = self.config.orchestrator.runtime_connect
-        connect_timeout_s = parse_env_positive_float(
-            "TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S",
-            default=runtime_connect.timeout_s,
-            logger=self.logger,
-        )
-        assert connect_timeout_s is not None  # default is a positive float
-        connect_retry_interval_s = parse_env_positive_float(
-            "TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S",
-            default=runtime_connect.retry_interval_s,
-            logger=self.logger,
-        )
-        assert connect_retry_interval_s is not None
+        connect_timeout_s, connect_retry_interval_s = self._resolve_runtime_connect_budget()
         backend = factory(
             RuntimeBackendBuildContext(
                 runner_address=runner_address,
@@ -2439,6 +2489,10 @@ class Orchestrator:
                     # get_service_url returns "http://localhost:{port}" — strip scheme for gRPC
                     runner_address = runner_url.replace("http://", "")
                     self.logger.info("EngineStack started", runner_address=runner_address)
+                    # Compose's per-container HEALTHCHECK doesn't cover the published
+                    # host port's propagation lag; probe it here so
+                    # runtime_backend.connect() below never races the port publish.
+                    self._prewarm_runner_host_endpoint(runner_address)
 
                 # Connect TypeSense to core stack network so Runner can reach it
                 if self._typesense_server is not None:
