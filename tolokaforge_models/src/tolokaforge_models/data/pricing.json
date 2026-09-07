@@ -1268,6 +1268,12 @@
       "output": 15.0,
       "cache_read": 0.25
     },
+    "openai/gpt-6-astra": {
+      "input": 10.0,
+      "output": 50.0,
+      "cache_read": 1.0,
+      "cache_write": 12.5
+    },
     "openai/gpt-audio": {
       "input": 2.5,
       "output": 10.0

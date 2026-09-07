@@ -196,6 +196,28 @@ presets:
     response_policy: array_dict_map
     reasoning_codec: openai
 
+  # openai/gpt-6-astra (and its -pro tier): the gpt-5 axes for the GPT-6 line,
+  # landed by hand after the auto-integration run on PR #1511 stopped at the
+  # cleanliness gate (observe 2026-09-05 on the default preset). The OpenAI
+  # endpoint rejects tool schemas carrying a RE2-incompatible lookaround
+  # ``pattern`` (``400 invalid_json_schema: regex lookaround is not supported``),
+  # so on the default preset every Decimal-field tool call died (decimal_field
+  # 0/15, re2_pattern_tolerance 0/15, 80 api_error + 100 max_turns over 200 wire
+  # trials). ``strict`` strips those patterns before they reach the model, exactly
+  # as it does for gpt-5.4 / 5.5 / 5.6; the gpt-5 globs do not reach
+  # ``openai/gpt-6*``, hence a separate entry with byte-identical axes
+  # (``resolve_policy_names`` matches ``openai_gpt5``). Production evidence: the
+  # Arena v1 eval of this model (2026-09-05, 4170 trials) ran on a task-set
+  # overlay carrying these same three axes with 0 status_error and 0 formatting
+  # failures.
+  openai_gpt6:
+    match:
+      - "openai/gpt-6*"
+      - "*gpt-6*"
+    schema_sanitizer: strict
+    response_policy: array_dict_map
+    reasoning_codec: openai
+
   # x-ai/grok-4.6 — model-specific overlay landed via auto-resolve
   # (Slack-requested integration, PR #1161). Declared BEFORE the generic
   # ``xai_grok`` preset (whose broader ``x-ai/*`` glob it would otherwise match)
