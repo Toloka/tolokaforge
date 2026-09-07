@@ -123,6 +123,7 @@ _COMPOSITE_PACKS: list[ParityPackSpec] = [
     ParityPackSpec("state_plus_judge", "gradable"),
     ParityPackSpec("all_four_no_hash", "gradable"),
     ParityPackSpec("hash_and_all_four", "refusal"),
+    ParityPackSpec("custom_checks_disabled_ledger_skip", "gradable"),
 ]
 _COMPOSITE_PARITY_PACK_IDS: list[str] = [
     spec.name for spec in _COMPOSITE_PACKS if spec.snapshot_kind == "gradable"
