@@ -8,6 +8,10 @@ All notable changes to this project are documented in this file.
 
 - **testing**: `tolokaforge.testing.adapters.AdapterGradingContractSuite` pins `grading_source` classmethod-dispatch parity — the class-level call (`type(adapter).grading_source(task, task_dir)`) must return the same `GradingSource` the instance-level call returns, matching the base contract's classmethod declaration and the invariant the delegation helper `grading_source_under_adapter` relies on. A third-party adapter that subclasses the suite and overrides `grading_source` as an instance method (rather than the classmethod the base declares) will fail the new invariant on upgrade; switch the override to `@classmethod` (or `@staticmethod` returning a value equal to the instance call). (#1393)
 
+### Perf
+
+- **runtime**: `LiveRunnerCallbackGradingSubstrate` reads the agent-visible filesystem in a single `SubstrateService.ReadAgentVisibleFilesystem` RPC per accessor — was `N+1` per accessor (one `ListFilesystemDir` + one `ReadFilesystemPath` per file), or `2N+2` composite when a dispatch reached for both `filesystem_state()` and `filesystem_root()`. New per-accessor cost is `1`, composite cost is `2`, independent of pack file count. Same byte content; only round-trip count changes. `ListFilesystemDir` and `ReadFilesystemPath` remain on the wire for per-path callers. (#1406)
+
 ## v0.23.1 (2026-09-07)
 
 ### Fix
