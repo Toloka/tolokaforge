@@ -58,7 +58,6 @@ from tolokaforge.runner.models import (
     RecordedToolCall,
     RequiredAction,
     Rubric,
-    RunnerGradeComponents,
     RunnerGradingConfig,
     RunnerInitializationAction,
     RunnerInitialStateConfig,
@@ -210,7 +209,6 @@ def test_reconciled_wire_types_forbid_extras():
         RunnerInitializationAction,
         {"env_type": "assistant", "tool_name": "t"},
     )
-    _requires_forbid(RunnerGradeComponents, {})
 
 
 @pytest.mark.parametrize("retired", ["first_message", "user_context"])
