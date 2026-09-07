@@ -108,12 +108,13 @@ fails the suite instead of failing every `GradeTrial` that carries it.
 
 ### The runtime ledger
 
-The canonical suite guards the *config models*; the runner guards each individual
-request. Through the component phase `GradeTrial` records, at every point an
-evaluator is invoked or deliberately skipped, which author key that call accounts
-for. Each record is a `KeyAccountingRecord` — an outcome of `EVALUATED` or
-`SKIPPED` plus, for a skip, the `detail` a task author reads. It then subtracts
-those records from the scored keys the request's grading config actually populated
+The canonical suite guards the *config models*; both composite dispatchers
+guard each individual request. Through the component phase each dispatcher
+records, at every point an evaluator is invoked or deliberately skipped, which
+author key that call accounts for. Each record is a `KeyAccountingRecord` — an
+outcome of `EVALUATED` or `SKIPPED` plus, for a skip, the `detail` a task
+author reads. It then subtracts those records from the scored keys the request's
+grading config actually populated
 ([`tolokaforge/runner/grading_ledger.py`](../tolokaforge/runner/grading_ledger.py)).
 A non-empty remainder means a key would have scored nothing, so the RPC returns
 `success=False` naming each key and the runner evaluator its manifest entry
@@ -1924,10 +1925,10 @@ defaults silently under proto3 (`withheld == False` from an older runner,
 matching every pack that never declared `on_missing: withhold`).
 
 **A trial whose timeline carries no events leaves the component unscored.** Every
-constraint would otherwise be answered by evidence the trial does not have. The
-runner records that as a skip against each declared constraint kind, and — since
-a component the pack configures but nothing scores is not folded in — a pack
-weighted entirely on `trace_checks` fails such a trial rather than passing it.
+constraint would otherwise be answered by evidence the trial does not have. Both
+composite dispatchers record that as a skip against each declared constraint kind,
+and — since a component the pack configures but nothing scores is not folded in —
+a pack weighted entirely on `trace_checks` fails such a trial rather than passing it.
 The guard against a trial that *does* carry events but should not have counted as
 work is `transcript_rules.min_assistant_turns`, which is a separate declaration.
 
