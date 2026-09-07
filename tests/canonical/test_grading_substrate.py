@@ -37,6 +37,7 @@ from tolokaforge.core.grading.substrate import (
     SubstrateUnreachableError,
     TrajectoryStorageGradingSubstrate,
 )
+from tolokaforge.core.grading.substrate_client import GrpcSubstrateClient
 from tolokaforge.core.grading.substrate_live import LiveRunnerCallbackGradingSubstrate
 from tolokaforge.runner import (
     add_RunnerServiceServicer_to_server,
@@ -519,6 +520,57 @@ class TestLiveCallbackSubstrateReads:
                 assert substrate.filesystem_root() is None
             finally:
                 substrate.close()
+
+    def test_snapshot_agent_visible_filesystem_matches_local_walk(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The batch RPC returns the same ``{rel: content}`` map
+        :func:`read_agent_visible_filesystem` assembles locally, with the
+        ``/env/fs/agent-visible/`` prefix stripped. A ``.git/HEAD`` under the
+        workspace is excluded by the walker and MUST NOT appear in the
+        response — proves the servicer routes through the shared walker
+        rather than re-inlining a raw ``rglob`` chain.
+        """
+        (tmp_path / "notes").mkdir()
+        (tmp_path / "notes" / "one.txt").write_text("hello", encoding="utf-8")
+        (tmp_path / "top.md").write_text("# top", encoding="utf-8")
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+        fake_db = _FakeDBServiceClient(raw=_RAW_FINAL_TABLES, stable=_STABLE_FINAL_TABLES)
+        with _running_runner(
+            fake_db=fake_db, kb=None, workspace_root=tmp_path, monkeypatch=monkeypatch
+        ) as (_runner, _trial, channel, _server):
+            client = GrpcSubstrateClient(channel, _TRIAL_ID)
+            result = client.snapshot_agent_visible_filesystem()
+
+        assert result.workspace_exists is True
+        expected = {
+            key.removeprefix("/env/fs/agent-visible/"): value
+            for key, value in read_agent_visible_filesystem(tmp_path).items()
+        }
+        assert result.files == expected
+        assert result.files == {"top.md": "# top", "notes/one.txt": "hello"}
+
+    def test_snapshot_agent_visible_filesystem_reports_missing_workspace(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An AGENT_WORK_DIR that does not exist as a directory returns
+        ``workspace_exists=False`` with an empty ``files`` map — the
+        first-class "no workspace surface" signal the LIVE substrate maps to
+        ``None`` from its accessors, distinct from an empty-but-present
+        workspace.
+        """
+        missing = tmp_path / "does-not-exist"
+        fake_db = _FakeDBServiceClient(raw=_RAW_FINAL_TABLES, stable=_STABLE_FINAL_TABLES)
+        with _running_runner(
+            fake_db=fake_db, kb=None, workspace_root=missing, monkeypatch=monkeypatch
+        ) as (_runner, _trial, channel, _server):
+            client = GrpcSubstrateClient(channel, _TRIAL_ID)
+            result = client.snapshot_agent_visible_filesystem()
+
+        assert result.workspace_exists is False
+        assert result.files == {}
 
     def test_reads_are_cached_across_calls(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake_db = _FakeDBServiceClient(raw=_RAW_FINAL_TABLES, stable=_STABLE_FINAL_TABLES)

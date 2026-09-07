@@ -73,7 +73,10 @@ def test_walker_entry_point_is_defined_exactly_once_in_the_pure_module(
 @pytest.mark.parametrize(
     ("symbol", "expected_callers"),
     [
-        ("read_agent_visible_filesystem", (_SUBSTRATE_SITE, _RUNNER_SITE)),
+        (
+            "read_agent_visible_filesystem",
+            (_SUBSTRATE_SITE, _RUNNER_SITE, _SUBSTRATE_SERVICE_SITE),
+        ),
         ("iter_agent_visible_rel_paths", (_SUBSTRATE_SERVICE_SITE,)),
     ],
 )
@@ -84,11 +87,13 @@ def test_walker_entry_point_has_its_named_production_callers_only(
     and no others. An unnamed callsite in ``tolokaforge/`` would signal recipe
     leakage into a codepath the pure module was not designed for.
 
-    ``read_agent_visible_filesystem`` has two callers: ``runner/service.py``
-    (runner-side non-harness state factory) and ``core/grading/substrate.py``
+    ``read_agent_visible_filesystem`` has three callers: ``runner/service.py``
+    (runner-side non-harness state factory), ``core/grading/substrate.py``
     (``SnapshotGradingSubstrate.filesystem_state`` walks the extracted bundle
-    tmpdir through the shared helper). Each is one entry per module, so the
-    "one walker, no re-inline" invariant holds per site.
+    tmpdir through the shared helper), and ``runner/substrate_service.py``
+    (``SubstrateServicer.ReadAgentVisibleFilesystem`` packs the walker's
+    ``{rel: content}`` dict into the batch response). Each is one entry per
+    module, so the "one walker, no re-inline" invariant holds per site.
     """
     call_pattern = re.compile(rf"\b{symbol}\(")
     call_sites = [

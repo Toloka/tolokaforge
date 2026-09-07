@@ -28,6 +28,7 @@ import grpc
 from tolokaforge.core.grading.filesystem_view import (
     is_excluded_rel_path,
     iter_agent_visible_rel_paths,
+    read_agent_visible_filesystem,
 )
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc as pb2_grpc
@@ -164,6 +165,24 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
     ) -> pb2.ListFilesystemDirResponse:
         rel_paths = sorted(iter_agent_visible_rel_paths(self._workspace_root()))
         return pb2.ListFilesystemDirResponse(rel_paths=rel_paths)
+
+    def ReadAgentVisibleFilesystem(  # noqa: N802
+        self,
+        request: pb2.ReadAgentVisibleFilesystemRequest,  # noqa: ARG002 — process-global root
+        context: grpc.ServicerContext,  # noqa: ARG002
+    ) -> pb2.ReadAgentVisibleFilesystemResponse:
+        root = self._workspace_root()
+        if not root.is_dir():
+            return pb2.ReadAgentVisibleFilesystemResponse(workspace_exists=False)
+        walked = read_agent_visible_filesystem(root)
+        files = [
+            pb2.AgentVisibleFile(
+                rel_path=key.removeprefix("/env/fs/agent-visible/"),
+                content_utf8=content,
+            )
+            for key, content in walked.items()
+        ]
+        return pb2.ReadAgentVisibleFilesystemResponse(workspace_exists=True, files=files)
 
     # ------------------------------------------------------------------
     # KB reads

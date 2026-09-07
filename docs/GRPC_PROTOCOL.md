@@ -145,6 +145,16 @@ service SubstrateService {
   // as tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem.
   rpc ListFilesystemDir(ListFilesystemDirRequest) returns (ListFilesystemDirResponse);
 
+  // Whole agent-visible workspace tree in one round trip: workspace_exists
+  // plus every UTF-8-decodable file's rel-path and content. Same walker and
+  // exclusion policy as read_agent_visible_filesystem — the byte content
+  // matches what InProcessGradingSubstrate.filesystem_state assembles
+  // locally. workspace_exists=false is the "no workspace surface" signal
+  // (LiveRunnerCallbackGradingSubstrate maps it to None from its
+  // filesystem_state / filesystem_root accessors), distinct from an empty
+  // present workspace (workspace_exists=true, files=[]).
+  rpc ReadAgentVisibleFilesystem(ReadAgentVisibleFilesystemRequest) returns (ReadAgentVisibleFilesystemResponse);
+
   // Trial's per-trial KB. kb_available=false is a first-class "no KB
   // provisioned" signal; the callback substrate returns None from
   // knowledge_search() when it is false.
