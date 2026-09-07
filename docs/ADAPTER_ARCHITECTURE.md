@@ -2,7 +2,7 @@
 
 Adapters provide a unified interface for loading tasks and environments from different sources.
 
-For contributor-facing contract details, see `docs/ADAPTER_INTERFACE.md`.
+For contributor-facing contract details, see `docs/ADAPTER_INTERFACE.md`. For the end-to-end adoption walkthrough that consumes this architecture, see [AUTHORING_AN_ADAPTER.md](AUTHORING_AN_ADAPTER.md).
 
 ## Adapter families
 
