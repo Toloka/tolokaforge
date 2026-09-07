@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 from tests.utils.grader_parity_harness import (
     load_parity_pack,
     produce_snapshot_bundle,

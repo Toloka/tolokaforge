@@ -20,6 +20,8 @@ from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 from tolokaforge.core.models import TaskConfig
 from tolokaforge.testing.adapters import AdapterGradingContractSuite
 
+pytestmark = pytest.mark.unit
+
 _TERMINAL_BENCH_DIR = Path(__file__).resolve().parents[3] / "examples" / "terminal_bench"
 _TASK_ID = "fix-airline-segmentation"
 

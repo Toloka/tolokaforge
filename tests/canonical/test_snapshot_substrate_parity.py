@@ -42,6 +42,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+pytestmark = pytest.mark.canonical
+
 from tests.canonical._bundle_fixtures import synthetic_inputs
 from tolokaforge.core.grading.bundle import (
     load_grade_bundle,

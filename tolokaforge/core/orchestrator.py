@@ -1679,9 +1679,11 @@ class Orchestrator:
         * The resolved backend must implement
           :meth:`RuntimeBackend.build_grade_bundle` — probed with a
           fake ``__snapshot_probe__`` trial id. A backend that raises
-          :class:`NotImplementedError` opts out; any other exception
-          (trial-not-registered from a real impl, in particular) is
-          treated as "backend supports snapshot mode".
+          :class:`NotImplementedError` opts out; two named "backend
+          supports it, probe trial isn't set up" errors are treated as
+          "backend is snapshot-capable" and every other exception
+          re-raises so genuine bugs surface loudly here rather than
+          per-trial at grade time.
 
         Actionable :class:`ValueError` names the failing condition and
         the concrete fix.
@@ -1706,10 +1708,19 @@ class Orchestrator:
                 "Use SharedStackRuntimeBackend or PerTrialRuntimeBackend, or "
                 "extend your custom backend with a real implementation of the hook."
             ) from exc
-        except Exception:
-            # Any other exception means the backend implements the hook but
-            # the probe trial isn't registered — which is the point of the
-            # probe. Backend is snapshot-capable.
+        except (KeyError, RuntimeError):
+            # The two named "backend implements the hook but the probe
+            # trial isn't set up" errors: ``KeyError`` for the missing
+            # ``__snapshot_probe__`` entry in ``_pending_trajectories``
+            # (both shared-stack and per-trial backends), and
+            # ``RuntimeError("build_grade_bundle called before
+            # connect()")`` for the shared-stack backend when the probe
+            # fires before the runner connect completes. Both mean the
+            # backend IS snapshot-capable. Any other exception re-raises
+            # (importlinter forbids reaching runner-side error types
+            # from ``core.orchestrator``, so the tighter set stays at
+            # stdlib), so a genuine backend bug fails loudly at
+            # run-start rather than silently per-trial at grade time.
             pass
         finally:
             shutil.rmtree(probe_dir, ignore_errors=True)

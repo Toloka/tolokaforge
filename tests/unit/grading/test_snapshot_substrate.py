@@ -19,6 +19,8 @@ from typing import Any
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 from tests.canonical._bundle_fixtures import synthetic_inputs
 from tolokaforge.core.grading.bundle import (
     BUNDLE_SCHEMA_VERSION,

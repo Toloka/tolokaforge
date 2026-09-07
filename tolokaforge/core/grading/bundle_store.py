@@ -262,6 +262,18 @@ class S3BundleStore:
     S3-compatible endpoints (MinIO, Ceph) or a custom region, construct a
     boto3 client with ``endpoint_url=`` / ``region_name=`` and pass it as
     ``client=``.
+
+    .. warning:: **Secrets bypass — tracked in #1457.**
+       The auto-built client's credentials come from the boto3 default
+       chain, bypassing :class:`~tolokaforge.secrets.SecretManager`. In
+       production, either
+       (a) inject a pre-built ``client=`` whose credential source is
+       already routed through ``SecretManager``, or (b) run only in
+       IRSA / EC2-role environments where the credential source is
+       ambient infrastructure metadata, not an ``AWS_*`` env var.
+       Passing ``AWS_*`` env vars to the process to feed the default
+       chain contradicts AGENTS.md § Secrets — single abstraction and
+       is refused in a follow-up (#1457).
     """
 
     bucket: str

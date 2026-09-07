@@ -126,10 +126,50 @@ class TestBackendCapabilityGate:
         )
         backend = MagicMock()
         # A real impl raises trial-not-registered / KeyError on the probe
-        # trial id — the gate treats any non-NotImplementedError as
-        # "backend supports snapshot mode".
+        # trial id — the gate treats that (and the shared-stack's pre-connect
+        # ``RuntimeError``) as "backend supports snapshot mode".
         backend.build_grade_bundle.side_effect = KeyError("trial not registered")
         orch._validate_snapshot_mode_compatibility(backend)
         backend.build_grade_bundle.assert_called_once()
         _args, kwargs = backend.build_grade_bundle.call_args
         assert kwargs["trial_id"] == "__snapshot_probe__"
+
+    def test_accepts_snapshot_mode_when_backend_raises_pre_connect_runtime_error(
+        self, tmp_path
+    ) -> None:
+        """Shared-stack backend probed before ``connect()`` raises
+        ``RuntimeError("build_grade_bundle called before connect()")`` —
+        the gate treats it as capability-present."""
+        orch = Orchestrator(
+            _make_run_config(
+                snapshot=SnapshotBundleConfig(
+                    enabled=True,
+                    store=LocalDiskBundleStoreConfig(root_dir=str(tmp_path)),
+                ),
+                expose_substrate=True,
+            )
+        )
+        backend = MagicMock()
+        backend.build_grade_bundle.side_effect = RuntimeError(
+            "SharedStackRuntimeBackend.build_grade_bundle called before connect()."
+        )
+        orch._validate_snapshot_mode_compatibility(backend)
+
+    def test_propagates_unexpected_backend_exception(self, tmp_path) -> None:
+        """A non-``NotImplementedError`` / ``KeyError`` / ``RuntimeError``
+        exception from the probe now propagates instead of being silently
+        swallowed as "backend supports snapshot mode". Genuine backend
+        bugs surface at run-start, not per-trial at grade time."""
+        orch = Orchestrator(
+            _make_run_config(
+                snapshot=SnapshotBundleConfig(
+                    enabled=True,
+                    store=LocalDiskBundleStoreConfig(root_dir=str(tmp_path)),
+                ),
+                expose_substrate=True,
+            )
+        )
+        backend = MagicMock()
+        backend.build_grade_bundle.side_effect = ValueError("unexpected backend bug")
+        with pytest.raises(ValueError, match="unexpected backend bug"):
+            orch._validate_snapshot_mode_compatibility(backend)

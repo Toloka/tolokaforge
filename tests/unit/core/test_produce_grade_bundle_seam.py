@@ -154,6 +154,7 @@ class TestStoredOutcome:
             "t1:0",
             trajectory,
             spec.task,
+            None,
         )
         conductor.runtime_backend.build_grade_bundle.assert_called_once()
         assert trajectory.snapshot_status is not None

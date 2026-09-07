@@ -34,10 +34,15 @@ All notable changes to this project are documented in this file.
 - **runner**: `RunnerStateChecksConfig` no longer refuses a falsy `expected_hash` (`None`, `""`, `False`, `0`); a truthy digest still raises the actionable retirement message. Unblocks stale adapter kwargs-lists that unconditionally thread `expected_hash=hash_cfg.get("expected_state_hash")` on packs that never authored the key.
 - **grading**: `refuse_retired_hash_keys` now WARNS instead of raising when a pack declares the retired `state_checks.hash.expected_state_hash` key. `StateHashConfig._drop_retired_hash_keys` continues to strip the value so the hash block is unread; a task authored against v0.18.1 (including tolokaforge-tasks packs under `tasks/sampled/state_checks_examples/`) now loads without a task-side migration. Grading with the block dropped is degraded (no hash contribution) but not misgraded — the trial scores against remaining state_checks (jsonpaths, transcript_rules, etc). Closes #1514.
 - **runtime**: TypeSense bridge is now idempotent (skips re-connect when the TypeSense container is already on runner-net from a prior aborted teardown) and verifies the `typesense` alias attaches to the container after connect. A failed alias bind now surfaces as an actionable `RuntimeError` at run start naming the `docker network inspect` command to run, rather than the slow-fail refusal at register_trial time (`TypeSense at typesense:8108 not reachable`). Closes #1516.
+- **runtime**: `Orchestrator._validate_snapshot_mode_compatibility` no longer catches every non-`NotImplementedError` exception from the snapshot-capability probe. Only the two named "backend is snapshot-capable but the probe trial isn't set up" errors — `KeyError` (probe trial missing from `_pending_trajectories`) and `RuntimeError` (shared-stack `build_grade_bundle called before connect()`) — are treated as capability-present; any other exception now propagates, so a genuine backend bug fails loudly at run start rather than silently per-trial at grade time. AGENTS.md § Code quality — surface failures explicitly.
 
 ### Removed
 
 - `grading_method` reserved names `hash`, `transcript`, `llm` — never emitted, never dispatched. Task packs using these values fail loud at `RegisterTrial` with a message naming the registered set. Use `composite` (or leave `grading_method` unset).
+
+### Known limitations
+
+- **grading (bundle store)**: `S3BundleStore` still auto-builds a `boto3.client("s3")` whose credentials come from the boto3 default chain (env vars, `~/.aws/credentials`, EC2 / IRSA) rather than `SecretManager` — a bypass of AGENTS.md § Secrets — single abstraction. Operator workaround today: inject a pre-built `client=` whose credentials are sourced through `SecretManager`, or run only in IRSA / EC2-role environments where the credential source is ambient infrastructure metadata (never an `AWS_*` env var). The auto-build path stays for local dev + IRSA prod; #1457 will refuse an `AWS_*`-env-fed default client and add a `SecretProvider` for AWS-shaped credentials.
 
 ## v0.22.5 (2026-09-04)
 
