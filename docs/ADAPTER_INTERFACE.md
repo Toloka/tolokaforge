@@ -1,5 +1,7 @@
 # Adapter Interface Contract
 
+For the end-to-end adoption walkthrough that consumes this contract, see [AUTHORING_AN_ADAPTER.md](AUTHORING_AN_ADAPTER.md).
+
 This document defines the extension contract for adding new adapter backends. For the accepted-record on the `AdapterGradingContract` structural Protocol and the three capability flags on `BaseAdapter` (`requires_docker_cli_in_runner`, `grades_from_task_grading_file`, `syncs_adapter_env_to_state`), see [ADR-0043 — Detached-mode grader, typed grader kinds, adapter grading contract](adr/0043-detached-mode-grader-and-typed-grader-kinds.md).
 
 ## Plugin Registration
@@ -215,7 +217,7 @@ otherwise infer from adapter identity. Each default is `False` on
 ### AdapterGradingContract
 
 The Protocol at `tolokaforge.adapters.AdapterGradingContract` names the six
-grading methods (items 13 - 16, 18 - 20) plus the three capability flags as
+grading methods (items 14 - 16, 18 - 20) plus the three capability flags as
 one addressable contract. `BaseAdapter` satisfies it structurally through
 the defaults documented above, so every adapter shipping today matches
 without changing shape. External adapters can import it for a

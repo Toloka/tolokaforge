@@ -201,6 +201,8 @@ Both are documented in
 
 ## Adopting the mixin in an adapter
 
+Harness adoption is one branch of the general adapter-authoring walkthrough at [AUTHORING_AN_ADAPTER.md § Subclass `BaseAdapter`](AUTHORING_AN_ADAPTER.md#2-subclass-baseadapter) (step 2).
+
 An adapter opts into harness mode by inheriting
 `CodingHarnessAdapterMixin` alongside `BaseAdapter`. The mixin sets
 `supports_coding_harness = True` (which the orchestrator's gate reads)
