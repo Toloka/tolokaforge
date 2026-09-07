@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.23.1 (2026-09-07)
+
+### Fix
+
+- **grader-v3**: carry tolokaforge.grading_methods + grader_kinds into the runner-subset wheel (#1527)
+
 ## v0.23.0 (2026-09-07)
 
 ### Feat
