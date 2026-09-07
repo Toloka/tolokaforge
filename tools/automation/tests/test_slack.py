@@ -207,7 +207,8 @@ class TestResolveMentions:
     )
     def test_junk_is_dropped_not_rendered(self, junk, monkeypatch):
         """The value crossed from Slack metadata through a workflow input and comes back OUT as a
-        mention - anything not shaped like a user id must fall back to the list, never interpolate."""
+        mention - anything not shaped like a user id must fall back to the list, never interpolate.
+        """
         monkeypatch.setenv("SLACK_MENTIONS", "U_OPS1")
         monkeypatch.setenv(slack.REQUESTED_BY_ENV, junk)
         assert slack.resolve_mentions() == "U_OPS1"
