@@ -1,6 +1,6 @@
 # Adapter Interface Contract
 
-This document defines the extension contract for adding new adapter backends.
+This document defines the extension contract for adding new adapter backends. For the accepted-record on the `AdapterGradingContract` structural Protocol and the three capability flags on `BaseAdapter` (`requires_docker_cli_in_runner`, `grades_from_task_grading_file`, `syncs_adapter_env_to_state`), see [ADR-0043 — Detached-mode grader, typed grader kinds, adapter grading contract](adr/0043-detached-mode-grader-and-typed-grader-kinds.md).
 
 ## Plugin Registration
 
@@ -154,6 +154,97 @@ Each adapter must subclass `BaseAdapter` and implement:
     default returns `None` and contributes no namespace; an adapter overrides
     it once it has resolved inputs worth naming.  See
     [Output Format](OUTPUT_FORMAT.md) § `engine_run_state.json`.
+
+18. `grading_source(task: TaskConfig, task_dir: Path) -> GradingSource`
+
+    The grading block one run of *task* reads, resolved against this adapter.
+    Where a task naming a file that is on disk is `GradingSourceKind.ON_DISK`
+    whatever the adapter, an absence is answered off the adapter: an adapter
+    that grades from the task file (native) refuses one it has no block to
+    read; an adapter that grades from a source the pack does not carry
+    (external) pronounces on the absence through its own registered kind.
+
+    The default answers `GradingSourceKind.UNINTERROGABLE` with `path=None`
+    and a non-empty reason — the honest "the adapter has not declared its
+    grading source". An adapter that resolves the block against its own run
+    configuration overrides. See `NativeAdapter.grading_source` for the
+    native reading — the shape any adapter's override here can consult.
+
+    A classmethod, matching items 13 - 16: every fact reported here is a
+    function of the task and its directory alone, so the static gate
+    `tolokaforge validate` reaches the source through the same dispatch helper
+    the sibling readers use. See ADR-0042.
+
+19. `emit_runner_grading_payload(task_id: str) -> dict[str, Any]`
+
+    The payload this adapter emits for the runner's `RunnerGradingConfig`
+    construction. The default is `{}` — the runner falls through to the
+    historical dispatch. Adapters that grade by their own registered kind
+    (`test_execution`, `preference_pair`, …) override to return the payload
+    their grader reads at trial time.
+
+20. `preferred_grader_kind() -> str`
+
+    The registered `tolokaforge.grader_kinds` key this adapter prefers.  The
+    default is `"composite"`, the shipped default kind. Adapters shipping
+    their own kind override to return its registered name.
+
+### Capability flags
+
+Three `ClassVar[bool]` slots declare adapter-level runtime facts callers
+otherwise infer from adapter identity. Each default is `False` on
+`BaseAdapter`; an adapter that answers `True` for one flips it on the class:
+
+- `requires_docker_cli_in_runner: ClassVar[bool] = False` — the runner needs
+  the host Docker CLI to grade this adapter's trials. Adapters whose grading
+  runs commands against Docker daemons (build/exec) flip this to `True`; the
+  harness reads the flag to decide whether the runner stack must carry a
+  Docker socket bind.
+- `grades_from_task_grading_file: ClassVar[bool] = False` — this adapter
+  grades from the `grading:` block the task names on disk. Native-shaped
+  adapters flip this to `True`; external adapters that synthesise grading
+  config from their own fixtures leave it `False`. The `grading:` presence
+  gate reads the flag to decide whether an absent block is a refusal or an
+  unchecked pronouncement.
+- `syncs_adapter_env_to_state: ClassVar[bool] = False` — the conductor
+  should sync `AdapterEnvironment` into runner state. Adapters whose
+  environment holds runtime facts the runner reads back into `TrialState`
+  (Tau-family) flip this to `True`; adapters whose runner owns the state
+  end-to-end leave it `False`.
+
+### AdapterGradingContract
+
+The Protocol at `tolokaforge.adapters.AdapterGradingContract` names the six
+grading methods (items 13 - 16, 18 - 20) plus the three capability flags as
+one addressable contract. `BaseAdapter` satisfies it structurally through
+the defaults documented above, so every adapter shipping today matches
+without changing shape. External adapters can import it for a
+`runtime_checkable` `isinstance` check or for a mypy contract; adoption is
+optional — the harness reaches through the slots directly, not through the
+Protocol.
+
+#### AdapterGradingContractSuite (reusable pytest suite)
+
+`tolokaforge.testing.adapters.AdapterGradingContractSuite` pins one
+adapter's conformance against the contract in 11 test methods (six method
+slots, three capability flags, emit-payload schema, preferred-kind
+registry resolution). Subclass, provide two fixtures, and (optionally)
+override four class attributes when the adapter's declaration diverges
+from the shipped default:
+
+- `adapter` (fixture) → constructed adapter instance.
+- `task_and_dir` (fixture) → `tuple[TaskConfig, Path]` the adapter can
+  resolve.
+- `expected_requires_docker_cli_in_runner: bool = False`
+- `expected_grades_from_task_grading_file: bool = False`
+- `expected_syncs_adapter_env_to_state: bool = False`
+- `expected_preferred_grader_kind: str = "composite"`
+
+Reference subclasses:
+`tests/canonical/test_native_adapter_grading_contract.py::TestNativeAdapterGradingContract`
+(in-tree) and
+`external_adapters/tolokaforge-adapter-terminal-bench/tests/test_terminal_bench_grading_contract.py::TestTerminalBenchAdapterGradingContract`
+(third-party adopter pattern).
 
 ## Lifecycle Expectations
 

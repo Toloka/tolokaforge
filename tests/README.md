@@ -194,7 +194,7 @@ Compare output against committed golden snapshots in `snapshots/`.
   folding a listed numeric-string field by name on one of the two substrates, or an
   unmakeable binding comparison stopped failing the candidate it was read on — or
   its sentence stopped crossing the wire. For that last one, fix the reduction in
-  `tolokaforge/core/grading/trace_checks.py`; for the rest, fix the manifest entry in
+  `tolokaforge/core/grading/trace_checks/`; for the rest, fix the manifest entry in
   `tolokaforge/core/grading/key_manifest.py` or the drift it exposed; widening a
   frozen exemption set in the test module is the deliberate last resort.
   A **lock 15** failure is narrower: one ledger key's recording site was deleted,
@@ -250,14 +250,27 @@ Compare output against committed golden snapshots in `snapshots/`.
   last assistant turn, while `build_turn_timeline` takes the calls per turn — which
   is what an ordering or turn-window property needs.
 - Grader parity reference (`test_grader_parity_reference.py`) — the ten packs under
-  `tests/canonical/grader_parity_baselines/` are graded through both the in-process
-  substrate leg and the composite dispatch that speaks the standalone grader's gRPC,
-  and both wire `Grade` messages must byte-match the committed
-  `expected_grade.json` under the shared `serialise_grade` projection. A failure
-  means the two grader shapes have drifted; the `hash_and_all_four` pack additionally
-  pins the composite dispatch's refusal message against the ADR-0040 fragment. The
-  isolation invariant — one non-trivial grading block per isolation pack — is locked
-  by `test_isolation_pack_config_is_single_seam`, so a divergence at one seam
+  `tests/canonical/grader_parity_baselines/` are driven through three substrate
+  topologies, each locking one property against the shared `serialise_grade`
+  projection over the committed `expected_grade.json`:
+  - **Lane A** — `run_via_runner_rpc` (the runner's in-process `InProcessGradingSubstrate`)
+    vs `run_via_grader_rpc` (the standalone grader's `LiveRunnerCallbackGradingSubstrate`
+    dialling the runner's `SubstrateService` gRPC). Both wire `Grade` messages
+    byte-match the baseline.
+  - **Lane B** — `run_via_snapshot_rpc` (the standalone grader's composite over a
+    `SnapshotGradingSubstrate` reading a per-test-run bundle produced from the
+    same substrate the runner leg reads). Byte-parity against the same baseline
+    for the eight snapshot-gradable packs; `state_checks_db_probes_only` surfaces
+    `SubstrateUnreachableError` in the Grade's ``reasons`` text (the state-check
+    backend catches per-probe, matching the fail-loud db-probe contract);
+    `hash_and_all_four` raises `GradingFailedError` on the grader-side hash-refusal
+    branch, matching Lane A's fragment.
+  - **Lane C** — three sequential in-process replays against the same frozen
+    bundle bytes produce byte-identical Grades — the regrade-parity property.
+  A failure means the two grader shapes have drifted or the substrate topology
+  no longer produces a deterministic Grade. The isolation invariant — one
+  non-trivial grading block per isolation pack — is locked by
+  `test_isolation_pack_config_is_single_seam`, so a divergence at one seam
   surfaces at exactly one pack. The RC-smoke sibling
   (`tests/integration/deploy/test_rc_smoke_parity_reference.py`) reads the SAME
   corpus over real containers — an import-time

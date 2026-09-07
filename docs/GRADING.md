@@ -18,6 +18,20 @@ weighted mean, the weakest of them or the strongest, as the pack declares. See
 [Score Combination](#score-combination) for the three rules and
 [REFERENCE.md](REFERENCE.md) for the `grading.yaml` schema.
 
+**Grading kind is a plug-in seam.** `task.grading.grading_method` selects the
+kind — the typed evaluator that drives grading above the substrate.
+`tolokaforge.grader_kinds` is the entry-point group; every registered kind
+implements the `GraderKind` Protocol with kwargs-only
+`evaluate(*, substrate, task_config, kind_config, trial_id, agent_tools, logger) -> Grade | None`.
+Two built-ins ship: `composite` (the five-dimension fold this document describes) and
+`test_execution` (bash test suite reading `/logs/verifier/reward.txt` — dispatched via
+`SubstrateService.RunTestSuite`; refuses actionably on a snapshot substrate because
+bundle format v1.0 carries no test-suite hook). `judge_only` is preserved as a compat
+alias for the equivalent `composite + weights: {llm_judge: 1.0}` registry lookup —
+external surface unchanged. For the accepted-record naming the substrate / kind /
+transport product and the operator regrade CLI, see
+[ADR-0043](adr/0043-detached-mode-grader-and-typed-grader-kinds.md).
+
 ---
 
 ## Substrate Parity
@@ -173,9 +187,55 @@ written *only* inside an [`alternatives`](#alternative-paths) path is covered by
 holds for the block, not for that leaf (#772). The evaluator's side is unaffected: it
 records every kind the walk reached, wherever the constraint was written.
 
-`grading_method: test_execution` returns before the component phase, so the ledger
-does not apply to that dispatch mode — recorded as the `grading_method` entry's
-declared `reason`.
+Non-composite `grading_method` values return before the component phase, so the
+ledger does not apply to those dispatch modes — recorded as the `grading_method`
+entry's declared `reason`.
+
+### Grading Method Dispatch
+
+`RunnerGradingConfig.grading_method` selects which runner-side dispatch a trial
+takes. The value is a bare string on the wire — every shipped name registers in
+BOTH the marker registry (`tolokaforge.grading_methods`, loaded via
+[`load_grading_method(name)`](../tolokaforge/core/plugin_registry.py)) and the
+typed-kind registry (`tolokaforge.grader_kinds`, loaded via
+[`load_grader_kind(name)`](../tolokaforge/core/plugin_registry.py)). Two names
+ship:
+
+- `composite` — the default state-checks / transcript-rules / trace-checks /
+  llm-judge / custom-checks fold. Omitting `grading_method` selects the same
+  dispatch — `None` and `"composite"` are equivalent on the wire. The runner's
+  inline composite fold owns this path.
+- `test_execution` — the reference-suite kind. Requires an exec-capable
+  lifecycle tool in `TaskDescription.agent_tools` (`DockerComposeExecToolWrapper`
+  today); the kind reads through `substrate.run_test_suite(...)` and parses the
+  reward off `/logs/verifier/reward.txt`.
+
+Every non-composite name routes through the typed `GraderKind` seam at
+`RunnerServiceImpl._dispatch_via_grader_kind`. A downstream adapter registers a
+new dispatch name under BOTH entry-point groups:
+
+```toml
+[project.entry-points."tolokaforge.grading_methods"]
+terminal_bench_native = "acme_adapter:TerminalBenchNativeGradingMethod"
+
+[project.entry-points."tolokaforge.grader_kinds"]
+terminal_bench_native = "acme_adapter:TerminalBenchNativeGraderKind"
+```
+
+The marker class carries a `NAME: ClassVar[str]` — same shape as
+`tolokaforge.grading_substrates` from ADR-0040 (three shipped: `in_process`,
+`live_callback`, `snapshot`; the last reads a serialised grade bundle so the
+grader grades a trial without a live runner in reach — see
+[docs/GRADER_SERVICE.md](GRADER_SERVICE.md) and
+[docs/GRADE_BUNDLE.md](GRADE_BUNDLE.md) for the substrate topology and
+bundle format). The kind class satisfies the `GraderKind` Protocol
+(`evaluate(*, substrate, task_config, kind_config, trial_id, agent_tools,
+logger) -> Grade | None`) — see
+[`tolokaforge/core/grading/kinds/`](../tolokaforge/core/grading/kinds/).
+`RegisterTrial` refuses a name missing from either group with an error listing
+both group names, the offending key, and the union of registered names — so a
+typo, or a downstream adapter that registered in only one of the two groups,
+surfaces before the trial spends any turns.
 
 ### Single-substrate keys
 
@@ -184,7 +244,7 @@ declared `reason`.
 | `state_checks.hash.description` | `CONFIG_INPUT` | `CORE_ONLY` | field resolution | the runner's flattened hash block declares no description field, so there is nothing on that substrate for the key to resolve against — the wire carries the runner's hash verdict, not the reason text an author writes beside it | architectural |
 | `state_checks.db_probes` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the probe DSN resolves only inside the task's docker network, which the runner joins and the host-side core engine does not | architectural |
 | `llm_judge` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the rubric judge runs runner-side on the shared `ToolCallingLoop`; the core engine deliberately leaves the component unset | architectural |
-| `grading_method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | a runner-side dispatch selector with no `grading.yaml` counterpart; the dispatch returns before the component phase | architectural |
+| `grading_method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | a runner-side dispatch selector with no `grading.yaml` counterpart; non-composite kinds return before the component phase | architectural |
 
 Architectural entries can never be both substrates and carry no tracking issue.
 Every other row is drift and names the issue that closes it. The exemption sets
@@ -610,6 +670,18 @@ same thing whichever substrate grades the trial:
 | `messages` | `decode_transcript_wire(llm_messages_json)` | `trajectory.messages` |
 | `recorded_calls` | `trial_context.tool_call_history` | `trajectory.tool_log` |
 | `termination_reason` | `GradeTrialRequest.termination_reason` | `trajectory.termination_reason` |
+
+The `messages` column names one recipe both wire dispatchers share: strip the
+leading `role: system` message off the payload, decode the remaining transcript
+into `Message` objects, and hand the result to `build_trial_timeline`.
+[`build_timeline_from_wire`](../tolokaforge/core/grading/trace_timeline.py)
+owns that recipe. The runner's `_grade_time_views` and the grader's
+`GraderCompositeDispatch.grade` are its two callers — see
+[`docs/GRADER_SERVICE.md` § The `Grade` wire](GRADER_SERVICE.md#the-grade-wire)
+for the `llm_messages_json` row it decodes. An empty message list
+short-circuits to a records-only timeline; the branch reconciles without
+raising, which is what lets a hash-only trial reach the timeline the same
+way a records-only bundle does.
 
 ### Both substrates consume it
 
@@ -1388,6 +1460,15 @@ has the answer `1.0`, and that fraction of nothing never becomes a component sco
   (one whose `initial_state` declares no `tables`) still grades, and a
   `$.filesystem['/env/fs/agent-visible/<rel>']` assertion resolves to the
   file's current on-disk content.
+
+  `tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`
+  is the single source of truth for the walk contract: symlinks and
+  non-UTF-8-decodable files are skipped, and the five directory basenames
+  named on `AGENT_VISIBLE_EXCLUDES` (`.git`, `.venv`, `node_modules`,
+  `dist`, `.next`) prune subtrees at any depth. A file whose parent path
+  passes through one of those names is not addressable via
+  `$.filesystem['/env/fs/agent-visible/<rel>']`; a task that wants to grade
+  such a file names it under a differently-named directory.
 - **both**: `jsonpath_score × (1 − weight) + hash_score × weight`.
 - **neither** — an empty `jsonpaths` list with hash grading off, or on and unable
   to produce a verdict: the component is **not evaluated**. It is absent from the
@@ -1823,7 +1904,7 @@ evaluated over the [trial event timeline](#trial-event-timeline). Where
 predicates, nested argument paths, counting, and a call's status or result.
 
 **Both substrates score it through one function.** `evaluate_trace_checks`
-(`tolokaforge/core/grading/trace_checks.py`) is called by the core engine's
+(`tolokaforge/core/grading/trace_checks/`) is called by the core engine's
 `grade_trajectory` and by the runner's `GradeTrial`, over the timeline each
 already builds, so the component score does not depend on which substrate graded
 the trial. The per-constraint verdicts cross the wire on `Grade.trace_checks`,
@@ -3790,7 +3871,7 @@ met, else `0.0`.
 its own says nothing about the gate: on a rubric whose non-required criteria all
 scored full marks, a trial that *failed* a required criterion still aggregates to
 `score: 1.0`. Zeroing the component is
-[`compose_runner_trial_verdict`](#score-combination)'s, and it is what the wire
+[`CompositeFold.finalise`](#score-combination)'s, and it is what the wire
 grade and the reasons string carry — measured on the five bundles under
 `tests/data/migration_corpora/notes_duplicate_check/not_met/`, whose `grade.yaml`
 records `components.llm_judge: 0.0` where the aggregate alone gives `1.0`. Read the
@@ -3844,9 +3925,11 @@ functions from a pack's `checks.py`. It's the deterministic-Python gap
 the other four components don't express: arithmetic over final DB
 rows, invariants that span multiple tables, transcript patterns tied to
 computed values. Each `@check` returns `CheckPassed` / `CheckFailed` /
-`CheckSkipped`; per-check results ride the wire as `CustomCheckResult`
-entries and the aggregate `CheckResultSet.aggregate_score` fills the
-`custom_checks` component.
+`CheckSkipped`; the composite returns a `list[CheckResult]`, and the
+runner's `project_check_result_to_runner_wire` encodes each into
+`pb2.CustomCheckResult` for the wire while the grader constructs
+`CustomCheckDetail` from each directly. The aggregate
+`CheckResultSet.aggregate_score` fills the `custom_checks` component.
 
 `aggregate_score` averages the checks that reached a verdict and excludes the
 skips, so a suite whose **every** check skipped — and one whose file declared no
@@ -3894,7 +3977,7 @@ custom_checks:
 ```
 
 **Where the dispatch lives.** The custom-checks dispatch lives on the composite
-(`core/grading/composite.py: grade_custom_checks`) and reads its evidence through
+(`core/grading/composite/custom_checks.py: grade_custom_checks`) and reads its evidence through
 the `GradingSubstrate` seam: `substrate.initial_state()` feeds
 `ctx.initial_state`, and `substrate.final_state()` (RAW) feeds `ctx.final_state`
 — the shape a check's arithmetic over final DB rows needs. Any failure reaching
@@ -4226,18 +4309,30 @@ the denominator — this includes an `llm_judge` component whose judge ERRORED
 as a `0.0`. An *evaluated* component that `combine.weights` declares no weight for is
 neither excluded nor defaulted: the fold raises on both substrates, per the rule above.
 
-**Where the runner-side verdict is composed.** The runner folds a trial through
-`compose_runner_trial_verdict`
-([`tolokaforge/runner/grading.py`](../tolokaforge/runner/grading.py)), which wraps
-`combine_grade_components` and applies **both gates** around it: the judge
-component is zeroed where a required criterion failed, and a failed judge or
-trace gate then forces `binary_pass` false whatever the threshold. It returns the
-gated judge component beside `(score, binary_pass)`, because that component — not
-the judge's raw aggregate — is what the wire grade and the reasons carry. One
-runner-side home, so an offline recomputation reaches the runner's verdict without
-repeating either gate: `tolokaforge reconcile`'s counterfactual
-([`docs/RUBRIC_MIGRATION.md`](RUBRIC_MIGRATION.md)) is that caller, and it is what
-[#775](https://github.com/toloka/tolokaforge/issues/775) would call.
+**Where the runner-side verdict is composed.** The runner drives a trial through
+`CompositeFold.finalise` in
+[`tolokaforge/core/grading/composite_fold.py`](../tolokaforge/core/grading/composite_fold.py) —
+one substrate-neutral entry point that resolves the `state_checks` slot,
+applies **both gates** around `combine_grade_components`, and joins the
+author-facing reasons string in one call. The judge component is zeroed where
+a required criterion failed, and a failed judge or trace gate then forces
+`binary_pass` false whatever the threshold. `finalise` returns a neutral
+`CompositeFoldResult` — score, `binary_pass`, gated judge component,
+`state_checks` slot as ``float | None``, joined reasons — and each dispatcher
+projects it onto its own wire type: the runner encodes into
+`pb2.GradeTrialResponse` and translates the `None` slot into the wire's
+`-1.0` sentinel via `project_state_checks_to_runner_wire`; the grader-side
+`GraderCompositeDispatch` builds the Python `Grade` and keeps the `None`.
+
+The gated judge component — not the judge's raw aggregate — is what the wire
+grade and the reasons carry. Both dispatchers drive one fold definition, so an
+offline recomputation reaches the runner's verdict without repeating either
+gate: `tolokaforge reconcile`'s counterfactual
+([`docs/RUBRIC_MIGRATION.md`](RUBRIC_MIGRATION.md)) reaches
+`compose_trial_verdict` directly (the fold's public verdict primitive) because
+it composes verdicts by historical column and swallows `MissingComponentWeight`
+into an `UnrecomputedTrial` sentinel — the reason-joining path `finalise`
+provides is not the one that caller wants.
 
 **Core composes its own**, in
 [`tolokaforge/core/grading/combine.py`](../tolokaforge/core/grading/combine.py),

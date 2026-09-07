@@ -24,10 +24,12 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.plugin_registry import TrialGraderContext, load_trial_grader
 from tolokaforge.core.trial_grader import (
+    _JUDGE_ONLY_EQUIVALENT_CONFIG,
     JudgeBackedTrialGrader,
     TrialGrader,
     judge_backed_trial_grader_factory,
 )
+from tolokaforge.runner.models import RunnerGradingConfig
 
 pytestmark = pytest.mark.canonical
 
@@ -126,6 +128,22 @@ class TestFactoryAndRegistration:
         grader = judge_backed_trial_grader_factory(ctx)
         assert isinstance(grader, JudgeBackedTrialGrader)
         assert callable(grader.judge_fn)
+
+    def test_factory_registers_the_equivalent_composite_shape(self) -> None:
+        """The module-level ``_JUDGE_ONLY_EQUIVALENT_CONFIG`` pins the
+        composite dispatch shape ``judge_only`` collapses to — the
+        "one implementation, two names" contract locked at the code
+        layer without cross-file drift. Byte-parity between the two
+        paths on the constrained-input shape is separately locked at
+        ``tests/canonical/test_judge_only_composite_llm_judge_only_parity.py``.
+        """
+        assert (
+            RunnerGradingConfig(
+                grading_method="composite",
+                weights={"llm_judge": 1.0},
+            )
+            == _JUDGE_ONLY_EQUIVALENT_CONFIG
+        )
 
     def test_grade_raises_when_task_has_no_llm_judge_block(self) -> None:
         """A task with no ``grading.llm_judge`` block cannot be judged;

@@ -8,10 +8,26 @@ plus an LLM judge, a host-side judge callable that runs the rubric
 directly, a dedicated grader-service RPC bound to its own address, or a
 queue-backed transport that decouples throughput from grader latency.
 
-This document describes the seam as it stands after the grader-detachment
-milestone, points at the four registered built-ins, and shows how a
-downstream package can register its own grader without touching engine
-code. For the design record, see [ADR-0038](adr/0038-grader-detachment.md).
+This document describes the seam as it stands, points at the four
+registered built-ins, and shows how a downstream package can register its
+own grader without touching engine code.
+
+The three axes of grading — substrate topology, transport, and grading
+kind — are independent. `grader.name` picks the transport (this
+document's four built-ins). `grader.snapshot.enabled` picks whether the
+trial's state materialises as a bundle (opt-in, default `False`).
+`task.grading.grading_method` picks the kind — the typed evaluator
+that reads the substrate ([`GRADING.md § Grading method dispatch`](GRADING.md#grading-method-dispatch)).
+The composite dispatch above the substrate does not know which of the
+eight combinations is running.
+
+For the design record: [ADR-0038 — Grader detachment](adr/0038-grader-detachment.md)
+established the plug-in seam; [ADR-0040 — Standalone-grader substrate](adr/0040-standalone-grader.md)
+introduced the `GradingSubstrate` Protocol behind which every topology
+runs; [ADR-0043 — Detached-mode grader, typed grader kinds, adapter grading contract](adr/0043-detached-mode-grader-and-typed-grader-kinds.md)
+is the accepted-record for the third substrate (offline / replay via
+snapshot), the typed grader-kind registry, the adapter grading contract,
+and the operator regrade CLI.
 
 ## The seam
 
@@ -140,15 +156,30 @@ runner_rpc = "tolokaforge.core.trial_grader:runner_rpc_trial_grader_factory"
 
 ### `judge_only` — `JudgeBackedTrialGrader`
 
-Host-side dispatch to an injected judge callable. No runner state, no
-transcript rules, no custom checks — pure rubric evaluation. Auto-fail
-branches match `RunnerRPCTrialGrader` so both are drop-in swaps for the
-caller.
+Host-side dispatch to :class:`~tolokaforge.core.grading.judge.LLMJudge` over
+a trajectory. No runner state, no transcript rules, no custom checks —
+pure rubric evaluation against the task's `grading.llm_judge` block, using
+the run's `models.judge`. Auto-fail branches match `RunnerRPCTrialGrader`
+so both are drop-in swaps for the caller.
 
-The factory ships with an unwired default that raises `NotImplementedError`
-if selected in production before a real `LLMJudge`-backed dispatch is
-wired; direct construction with a real `JudgeGradeFn` works today (for
-tests and offline-replay integration).
+`judge_only` and the composite dispatch selected by
+`grading.grading_method: composite` (or omitted) with
+`weights: {llm_judge: 1.0}` and no other component surface are two names
+for the same run: both route through the shared
+`tolokaforge.core.grading.judge_only_helpers.run_judge_only_for_trajectory`
+helper, and both reach :class:`LLMJudge` with byte-identical evidence on
+that constrained-input shape. The equivalence is pinned by the module
+constant `_JUDGE_ONLY_EQUIVALENT_CONFIG` on
+`tolokaforge.core.trial_grader` and the byte-parity canonical test at
+`tests/canonical/test_judge_only_composite_llm_judge_only_parity.py`.
+
+Fail-loud shape: a task without `grading.llm_judge`, a run without
+`models.judge`, or an `ERRORED` judge verdict surfaces as
+`GradingFailedError` naming the trial — never a booked agent failure.
+Discovery-time gate: the factory calls `load_grading_method("composite")`
+at construction so a misconfigured install (missing the
+`tolokaforge.grading_methods` entry-point group) fails there rather than
+at grade time.
 
 ```toml
 [project.entry-points."tolokaforge.trial_graders"]
@@ -170,10 +201,17 @@ The standalone service mounts
 `task_config_json` / `task_description_json` / `judge_model_config_json`,
 builds a fresh
 `tolokaforge.core.grading.substrate_live.LiveRunnerCallbackGradingSubstrate`
-against `runner_substrate_address`, and runs the composite grading
+against `runner_substrate_address`, and drives the composite grading
 functions (state checks / transcript rules / trace checks / llm judge /
-custom checks) mirroring the runner's `_grade_trial_async`. Hash grading
-is refused server-side too — the substrate is read-only. See
+custom checks) mirroring the runner's `_grade_trial_async`. Both
+dispatchers reduce their component scores through
+[`CompositeFold.finalise`](../tolokaforge/core/grading/composite_fold.py) —
+one pure substrate-neutral fold that resolves the `state_checks` slot,
+applies the judge + trace gates around the weighted combine, and joins
+the author-facing reasons string. Each side then projects the neutral
+`CompositeFoldResult` onto its own wire type: the runner encodes into
+`pb2.GradeTrialResponse`, the grader constructs a Python `Grade`. Hash
+grading is refused server-side too — the substrate is read-only. See
 [`docs/adr/0040-standalone-grader.md`](adr/0040-standalone-grader.md).
 
 The factory reads `ctx.grader_address` when the operator has split the
@@ -262,23 +300,29 @@ produces a `Grade` end-to-end against a running stack.
 
 `GraderService.Grade` is stateless per call: every field the grader-side
 composite dispatcher needs to grade the trial rides on the request. The
-wire carries seven named fields — the caller populates whichever ones
+wire carries nine named fields — the caller populates whichever ones
 its dispatch consumes and leaves the rest empty.
 
 | Field                         | # | Purpose                                                                                   |
 | ----------------------------- | - | ----------------------------------------------------------------------------------------- |
 | `trial_id`                    | 1 | Canonical `"{task_id}:{trial_index}"` identifier — the join key for logs and future stores. |
-| `llm_messages_json`           | 2 | Transcript as an LLM-messages JSON string; the timeline builder decodes it. The agent system prompt rides as the leading `role=system` message; the grader recovers it via `split_leading_system_message`. |
+| `llm_messages_json`           | 2 | Transcript as an LLM-messages JSON string; the composite dispatcher hands the decoded list to [`build_timeline_from_wire`](../tolokaforge/core/grading/trace_timeline.py), which splits the leading `role=system` message off (the agent system prompt) and decodes the remaining transcript before joining it with the empty grader-side records. |
 | `termination_reason`          | 3 | `TerminationReason` value name; empty when the caller reports none.                       |
 | `task_config_json`            | 4 | `RunnerGradingConfig` JSON — the whole `grading:` block the composite dispatcher reads.   |
 | `judge_model_config_json`     | 5 | Optional `ModelConfig` JSON for the judge; empty when the task declares no `llm_judge`.   |
 | `task_description_json`       | 6 | `TaskDescription` JSON — carries `initial_state`, `state_checks.id_fields`, `unstable_fields`, and `tool_artifacts` (checks.py plus every sibling artefact module the pack imports). |
 | `runner_substrate_address`    | 7 | gRPC address of the runner's `SubstrateService`; the grader builds a `LiveRunnerCallbackGradingSubstrate` against it per trial. |
+| `bundle_manifest_json`        | 13 | Wire v3 additive. `GradeBundleManifest` JSON — the parsed manifest (see [`GRADE_BUNDLE.md`](GRADE_BUNDLE.md)). Empty when the caller has no bundle. Not populated by `wire_snapshot.build_grade_request_fields`; no in-tree caller populates it yet. |
+| `bundle_parts_uri`            | 14 | Wire v3 additive. Bundle-store URI — `bundle://<store-name>/<content-hash>`. Empty when the caller has no bundle. Not populated by `wire_snapshot.build_grade_request_fields`; no in-tree caller populates it yet. |
 
-Field numbers are stable and additive: a future field lands on number 8
-so an existing client's payload never lands in a new slot. Provider +
-model-name evidence rides on field 5 so the grader constructs its
-`LLMClient` via the [`judge_model_providers` seam](#sub-component-plug-in-seams)
+Field numbers are stable and additive. The bundle-URI pair lands on 13
+and 14 so numbers 8–12 stay free as a reserved window for future
+growth (per-trial substrate override, grader-kind hint, credentials
+envelope, retry budget, opt-in trace bundle) without another reshuffle.
+An existing client's payload never lands in a new slot: fields the
+sender leaves unset arrive as proto3 empty defaults on the grader.
+Provider + model-name evidence rides on field 5 so the grader constructs
+its `LLMClient` via the [`judge_model_providers` seam](#sub-component-plug-in-seams)
 without inferring provider from a model name (AGENTS.md Core Rule 10).
 
 ### Client-side snapshot
@@ -297,6 +341,7 @@ above the trajectory-shaped trio. The builder returns a frozen
 | `judge_model_config_json` | `spec.judge_model_config.model_dump_json()`, empty when `spec.judge_model_config is None` |
 | `task_description_json`   | `spec.task.model_dump_json()` — one field carries `initial_state`, `state_checks.id_fields`, `initial_state.unstable_fields`, and `tool_artifacts` |
 | `runner_substrate_address`| Passthrough from the grader's stored context (`ctx.runner_address`) |
+| `bundle_manifest_json` / `bundle_parts_uri` | Not projected; no in-tree caller populates yet. |
 
 The builder is a pure projection: it reads only in-memory Pydantic
 models, opens no gRPC channel, and never touches the filesystem. Both
@@ -420,7 +465,13 @@ truthy, registers `add_SubstrateServiceServicer_to_server` on the same
 started with the flag off returns `UNIMPLEMENTED` for any
 `SubstrateService/*` call.
 
-The seven RPCs:
+The three opt-in defaults that keep snapshot mode off out of the box —
+`GraderConfig.expose_substrate=False`, `GraderConfig.snapshot=None`, and
+`SnapshotBundleConfig.enabled=False` — are locked mechanically by
+`tests/canonical/test_grader_defaults.py`. A PR flipping any of the
+three fails that canonical test unless it also edits the lock file.
+
+The eight RPCs:
 
 | RPC | What it returns |
 | --- | --- |
@@ -428,8 +479,9 @@ The seven RPCs:
 | `ReadFinalDBState` | RAW final DB state, mirroring `db_client.get_state`. The shape judge state-diff and custom_checks read; unfiltered rows. |
 | `ReadFinalDBStateStable` | STABLE final DB state, mirroring `db_client.get_stable_state`. The shape jsonpath state-checks grading reads; unstable fields filtered server-side by the DB service. |
 | `ReadFilesystemPath` | One file under `AGENT_WORK_DIR`; `is_file` + `content_utf8` for text, `is_file` + `content_bytes_b64` for binary. Symlinks / non-files / missing paths return `exists=false`. |
-| `ListFilesystemDir` | Relative POSIX paths of every non-symlink UTF-8-decodable file under `AGENT_WORK_DIR`. Same filter `_read_agent_visible_filesystem` ships today — no `node_modules` / `.venv` / `.git` excluder. |
+| `ListFilesystemDir` | Relative POSIX paths of every non-symlink UTF-8-decodable file under `AGENT_WORK_DIR`, alphabetically sorted. Same filter and exclusion policy as `tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem` — prunes `.git`, `.venv`, `node_modules`, `dist`, `.next` subtrees at any depth. |
 | `KBSearch` | Trial's per-trial KB hits. `kb_available: false` is a first-class "this trial has no KB" signal; the callback substrate returns `None` from `knowledge_search()` when it is false. |
+| `RunDbProbe` | Rows returned by a task-declared read-only SQL probe: `rows_json` is `json.dumps(rows, default=str)` — a JSON array of objects. asyncpg-native scalars (`datetime`, `Decimal`, `UUID`, `bytes`) land as their `str(...)` forms. The runner container resolves the probe DSN on its own docker network; the servicer does not validate SQL shape. Feeds `DbProbesStateCheckBackend` on the grader side. |
 | `SubstrateHealthCheck` | `status: "ready" \| "degraded" \| "unavailable"` and `active_trials` — distinct from `RunnerService.HealthCheck`, which reports RunnerService plumbing. |
 
 The read-only guarantee is structural, not a docstring promise. The
@@ -468,9 +520,22 @@ pins for every seam in the engine. Six sub-component seams cover the six
 evaluators the composite dispatch reaches. The [`.importlinter`
 `composite-sub-component-seams` contract](../.importlinter) enforces the
 negative-space of the seam by forbidding
-[`composite.py`](../tolokaforge/core/grading/composite.py) from importing
-any of the six reference-impl-holding modules — the composite reaches every
-sub-component only through its Protocol via a resolved-instance kwarg.
+any module under [`composite/`](../tolokaforge/core/grading/composite/__init__.py)
+from importing any of the six reference-impl-holding modules — the composite
+reaches every sub-component only through its Protocol via a resolved-instance
+kwarg. Two sibling contracts fence the runner-wire side of the same story:
+[`no-runner-reach-from-core-grading`](../.importlinter) forbids every path
+(direct or transitive) from `core.grading` back into `runner.service` or
+`runner.grading`, and [`no-pb2-reach-from-core-grading`](../.importlinter)
+forbids a direct `runner_pb2` / `runner_pb2_grpc` import from any module
+under `core.grading` (`core.grading.substrate_client` is the one carve-out
+— it IS the `SubstrateService` gRPC client). Transitive `pb2` reach through
+wire-level infrastructure (`core.loop`, `core.trial_grader`,
+`core.shared_stack_runtime`, `core.plugin_registry`) is legitimate and
+permitted; the canonical AST guard
+[`tests/canonical/test_no_pb2_imports_in_composite.py`](../tests/canonical/test_no_pb2_imports_in_composite.py)
+locks the composite package specifically at unit-tier cost — a runtime `pb2`
+import anywhere under `composite/` trips at pytest collection.
 
 | Group | Protocol module | Reference impls | Granularity |
 | --- | --- | --- | --- |
@@ -573,18 +638,39 @@ wire.
 topology where an independent grader container reads the substrate off
 a shared filesystem/DB mount is the reserved `SharedMountGradingSubstrate`
 recipe — see [ADR-0040](adr/0040-standalone-grader.md), reserved-future
-substrate SWE-bench pattern. Not shipped today; the two shipping
-substrates are `InProcess` and `LiveCallback`.
+substrate SWE-bench pattern. Not shipped today; the three shipping
+substrates are `InProcess`, `LiveCallback`, and `Snapshot`.
 
-<a id="extension-points-the-seven-plug-in-groups"></a>
+**Snapshot substrate — offline / cross-region / replay path.** A trial's
+state travels as a serialised grade bundle (see
+[docs/GRADE_BUNDLE.md](GRADE_BUNDLE.md)) rather than over a live wire.
+The grader constructs `SnapshotGradingSubstrate(bundle_view)` from a
+`GradeBundleView` (loaded via `load_grade_bundle(bundle_dir)`) and reads
+initial / final / final-stable DB state, filesystem tar (lazily
+extracted to a per-substrate tmpdir), and custom-check bytes from the
+bundle parts. Two Protocol methods have hard offline limits in bundle
+format v1.0 and fail loud rather than silently returning empty:
+`db_probe(dsn, query)` raises `SubstrateUnreachableError` naming the
+DSN (the DSN is only reachable inside the task's docker network; bundle
+v1.1 will pre-materialise probe rows — [#1438](https://github.com/Toloka/tolokaforge/issues/1438));
+`knowledge_search()` returns `None` (the optional `kb/` subtree carries
+raw bytes without a queryable index — [#1439](https://github.com/Toloka/tolokaforge/issues/1439)).
+Packs declaring `state_checks.db_probes` or judge criteria that need KB
+search grade correctly on `InProcess` / `LiveCallback`; snapshot mode
+routes those trials to a live-callback path in the caller.
 
-## Extension points — the seven plug-in groups
+<a id="extension-points-the-nine-plug-in-groups"></a>
 
-Seven `importlib.metadata` entry-point groups let a downstream package
-extend the grader without a framework change: one substrate group and
+## Extension points — the nine plug-in groups
+
+Nine `importlib.metadata` entry-point groups let a downstream package
+extend the grader without a framework change: one runner-side dispatch
+selector (paired with the typed-kind registry), one substrate group, and
 six sub-component seams. Each group has a matching loader on
 [`tolokaforge.core.plugin_registry`](../tolokaforge/core/plugin_registry.py):
 
+- `tolokaforge.grading_methods` — `load_grading_method(name)` returns the `GradingMethod` marker **class**. Names in this group are the values `RunnerGradingConfig.grading_method` accepts at `RegisterTrial`; the marker carries `NAME: ClassVar[str]` so a downstream typo in `pyproject.toml` fails at discovery. Every shipped name also registers in `tolokaforge.grader_kinds` below — `RegisterTrial` validates the wire name against both groups.
+- `tolokaforge.grader_kinds` — `load_grader_kind(name)` returns the typed `GraderKind` **class**, whose `evaluate(*, substrate, task_config, kind_config, trial_id, agent_tools, logger) -> Grade | None` drives runtime dispatch for every non-composite name at `RunnerServiceImpl._dispatch_via_grader_kind`. Composite (or `None`) stays on the runner-side fold. Two built-ins ship: `composite` (a reference impl over `CompositeFold`) and `test_execution` (reads through `substrate.run_test_suite(...)`).
 - `tolokaforge.grading_substrates` — `load_grading_substrate(name)` returns the `GradingSubstrate` **class** (the caller instantiates it with per-trial arguments).
 - `tolokaforge.custom_check_executors` — `load_custom_check_executor(name)` returns a factory.
 - `tolokaforge.judge_model_providers` — `load_judge_model_provider(name)` returns a factory.
@@ -596,6 +682,12 @@ six sub-component seams. Each group has a matching loader on
 Copy-paste block for a downstream `pyproject.toml`:
 
 ```toml
+[project.entry-points."tolokaforge.grading_methods"]
+my_grading_method = "my_package:my_grading_method_marker"
+
+[project.entry-points."tolokaforge.grader_kinds"]
+my_grading_method = "my_package:MyGraderKind"
+
 [project.entry-points."tolokaforge.grading_substrates"]
 my_substrate = "my_package:my_substrate_class"
 
@@ -618,20 +710,111 @@ my_state_backend = "my_package:my_state_backend_factory"
 my_operator = "my_package:my_operator"
 ```
 
-`tolokaforge.trial_graders` is the eighth registration point — the
-top-level grader-name seam ADR-0038 shipped, already documented in
+`tolokaforge.trial_graders` is the top-level grader-name seam ADR-0038
+shipped, already documented in
 [Registering a downstream grader](#registering-a-downstream-grader).
 A downstream package registering a new grader name lands there, not
-in any of the seven groups above.
+in any of the nine groups above.
+
+The bundle-transport seam `tolokaforge.bundle_stores` is documented in
+the [Bundle store seam](#bundle-store-seam) section below — it extends a
+different surface (offline bundle transport, not grader plug-ins) and
+uses the same entry-point-group + `load_bundle_store` shape.
+
+## Bundle store seam
+
+Offline grading operates on a **grade bundle** — a manifest-first,
+part-addressable directory whose canonical name is
+`sha256(manifest.json)`. See [docs/GRADE_BUNDLE.md](GRADE_BUNDLE.md) for
+the format itself. Two responsibilities are strictly separated: the
+producer (`tolokaforge.core.grading.bundle.serialize_grade_bundle`) owns
+the bytes; a `BundleStore` moves those bytes between a local directory
+and addressable storage. Every stored bundle is addressed uniformly by
+the URI scheme `bundle://<store-name>/<content-hash>`, and two puts of
+byte-identical bundles land at the same URI (content-addressable dedupe
+is implicit).
+
+The Protocol lives in `tolokaforge.core.grading.bundle_store`:
+
+```python
+class BundleStore(Protocol):
+    name: str
+    def put(self, bundle_dir: Path) -> str: ...
+    def get(self, uri: str, dest_dir: Path) -> Path: ...
+    def close(self) -> None: ...
+```
+
+Implementations are discovered through the `tolokaforge.bundle_stores`
+entry-point group and resolved with
+`plugin_registry.load_bundle_store(name)`. Two built-ins ship:
+
+- **`local_disk` — `LocalDiskBundleStore(root_dir=…)`.** Writes to
+  `<root_dir>/grade_bundles/<digest>/`, staging into a per-worker
+  `.<digest>.<uuid4>.tmp/` sibling and landing atomically via
+  `os.replace`. The per-worker suffix isolates concurrent puts of the
+  same digest so two workers never share a staging path. `get` refuses
+  a non-empty destination with `FileExistsError`.
+
+- **`s3` — `S3BundleStore(bucket=…, prefix="grade_bundles")`.** Uploads
+  each part under `<prefix>/<digest>/<rel>` in an S3-compatible bucket.
+  Every data part is uploaded first, then `manifest.json` LAST — a
+  crashed put leaves orphan parts but no manifest, so a subsequent `get`
+  fails cleanly with `BundleNotFoundError`. Idempotency is a
+  `head_object` on the manifest key: a second put of the same digest
+  returns the URI without re-uploading.
+
+`S3BundleStore` requires the optional extra `bundle-store-s3` (`uv add
+'tolokaforge[bundle-store-s3]'`). `boto3` is imported lazily inside the
+store's method bodies, so `import tolokaforge.core.grading.bundle_store`
+succeeds without `boto3` installed. Credentials come from the boto3
+default chain — environment variables, `~/.aws/credentials`, EC2 /
+IRSA — matching the credential model of every other AWS-facing surface
+in the codebase. To target an S3-compatible endpoint (MinIO, Ceph) or a
+non-default region, construct a boto3 client with `endpoint_url=` and
+`region_name=` and pass it as `client=` on the store.
+
+```python
+from pathlib import Path
+
+from tolokaforge.core.grading.bundle_store import (
+    LocalDiskBundleStore,
+    S3BundleStore,
+)
+
+local = LocalDiskBundleStore(root_dir=Path("/var/tolokaforge/bundles"))
+s3 = S3BundleStore(bucket="tolokaforge-bundles", prefix="grade_bundles")
+```
+
+The shipped operator entry point for offline regrade is `tolokaforge grade <uri>` — it constructs a store from `--store-config` (`BundleStoreBackend` discriminated union above), calls `store.get(uri, tmp_dir)`, wraps the materialised bundle in `SnapshotGradingSubstrate`, dispatches a `--grader-kind`, and writes `grade.json`. See [`docs/CLI.md`](CLI.md) § `tolokaforge grade` — offline regrade for flags, exit codes, and byte-parity scope. The batch counterpart is `tolokaforge grade-run <run-dir> --with-kind <k>`, which walks a run's `trials/<task>/<idx>/trajectory.yaml` subtree, filters trials whose `snapshot_status.outcome == stored`, and dispatches each through the same seam.
 
 ## Parity gate
 
-The `runner_rpc` and `grader_rpc` legs must produce byte-identical
-`Grade` output for every combination of grading components a task
-declares — except the two accepted, documented divergences (KB
-passthrough for the judge; hash grading refused). A canonical parity
-gate at `tests/canonical/test_grader_parity_reference.py` locks that
-invariant against a growing corpus of reference packs.
+The parity gate covers three substrate topologies over the same
+10-pack corpus:
+
+- **Lane A** — `runner_rpc` (`InProcessGradingSubstrate` inside the
+  runner) vs `grader_rpc` (`LiveRunnerCallbackGradingSubstrate` dialling
+  the runner's `SubstrateService` gRPC). Both wire `Grade` messages
+  byte-match the committed baseline.
+- **Lane B** — `grader_rpc + snapshot=on`
+  (`SnapshotGradingSubstrate` over a produced grade bundle). Byte-parity
+  against the same baseline for the eight snapshot-gradable packs;
+  `state_checks_db_probes_only` surfaces `SubstrateUnreachableError`
+  in the Grade's `reasons` text (the state-check backend catches per
+  probe), and `hash_and_all_four` raises `GradingFailedError` with the
+  same hash-refusal fragment Lane A pins.
+- **Lane C** — three sequential in-process replays against the same
+  frozen bundle bytes produce byte-identical `Grade` output. The
+  regrade-parity property.
+
+Together the three lanes lock: (1) the two shipped substrate topologies
+produce byte-identical Grades; (2) the offline replay substrate reads
+the same story off a bundle; (3) regrade is deterministic across
+sequential dispatches. Except the two accepted, documented divergences
+(KB passthrough for the judge; hash grading refused), every combination
+of grading components a task declares grades identically. The canonical
+gate at `tests/canonical/test_grader_parity_reference.py` locks all
+three lanes against a growing corpus of reference packs.
 
 **Harness.** `tests/utils/grader_parity_harness.py` boots an in-process
 `RunnerServiceImpl` + `SubstrateServicer` and drives each leg against

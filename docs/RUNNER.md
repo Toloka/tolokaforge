@@ -148,6 +148,46 @@ different questions:
   gRPC wire before promotion; see
   [GRADER_SERVICE.md § Parity gate — RC-smoke guarantees](GRADER_SERVICE.md#parity-gate).
 
+### Health-check timeout on connect
+
+The engine gates on the runner's readiness twice around start-up. Immediately
+after `service_stack.start_all(wait=True)` returns (compose reports every
+container's internal HEALTHCHECK passing), the orchestrator opens a host-side
+gRPC `HealthCheck` on the runner's *published* host port. This closes the
+propagation-lag gap between "gRPC server bound inside the container" and
+"the published port routes from the host" that Docker Desktop occasionally
+exhibits; a refusal at this stage raises actionably with the resolved
+`host:port` and the knob to raise, rather than surfacing later as a
+client-side timeout. Once the probe passes, `runtime_backend.connect()`
+dials the same address and the loop below rarely fires more than one attempt.
+
+Both stages use one budget — `orchestrator.runtime_connect`. Cold-boot under
+load (image pull, DB Service warm-up) sometimes exceeds the 30 s default; if
+trials flake at connect with
+`Runner service at localhost:<port> not healthy after 30.1s` (or the
+prewarm's `Runner host-side readiness probe failed at localhost:<port>`
+sibling), raise the budget:
+
+```yaml
+orchestrator:
+  runtime_connect:
+    timeout_s: 90.0          # default 30.0
+    retry_interval_s: 1.0    # default 1.0
+```
+
+Or override at the operator level without touching the run config:
+
+```bash
+TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S=90 \
+TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S=1 \
+  scripts/with_env.sh uv run tolokaforge run --config <run-config>
+```
+
+Env vars win over the YAML block, which wins over the shipped defaults. An
+invalid env-var value (non-numeric, zero, or negative) logs a warning and
+falls back to the YAML / default; a running trial is never taken down by a
+mis-set operational override.
+
 ## Runner Image Contents
 
 `runner.Dockerfile` is a multi-stage build on a `python:3.12-slim` base
@@ -534,6 +574,69 @@ queue = create_run_queue(
     postgres_dsn="postgresql://<postgres-host>:5432/tolokaforge",
 )
 ```
+
+## Snapshot bundle mode
+
+The runner optionally produces a **grade bundle** at trial-end — a manifest-first, content-addressable, part-addressable directory carrying everything a grader needs to score the trial without a live runner. Bundles enable offline grading, cross-region replay, and third-party analysis; the format is documented in [`docs/GRADE_BUNDLE.md`](GRADE_BUNDLE.md). For the accepted-record naming the substrate / kind / transport product this mode sits inside, see [ADR-0043](adr/0043-detached-mode-grader-and-typed-grader-kinds.md).
+
+**Operator quickstart:** [`docs/DETACHED_GRADING.md`](DETACHED_GRADING.md) walks the produce-then-grade two-step end-to-end (config sample, disk layout, `tolokaforge grade` + `tolokaforge grade-run` invocations, known bundle-v1.0 limits, and how to register a custom `GraderKind`).
+
+**Off by default.** Enable per-run via `RunConfig.grader.snapshot`:
+
+```yaml
+grader:
+  name: grader_rpc                 # transport (unchanged)
+  expose_substrate: true           # REQUIRED: snapshot mode composes reads via SubstrateService
+  snapshot:
+    enabled: true
+    max_bundle_mb: 32              # soft cap; over-cap bundles discarded + fallback
+    fallback_on_oversize: live_callback
+    store:
+      type: local_disk             # or `s3`
+      root_dir: /var/tolokaforge/grade_bundles
+```
+
+For S3-backed storage, install the optional extra and configure the store:
+
+```bash
+uv add tolokaforge[bundle-store-s3]
+```
+
+```yaml
+    store:
+      type: s3
+      bucket: my-grade-bundles
+      prefix: run-2026-08          # optional; default `grade_bundles`
+```
+
+**Lifecycle.** After grading each trial the conductor:
+1. Composes bundle inputs via `RuntimeBackend.build_grade_bundle(trial_id, *, out_dir)` — the backend reads state / filesystem / trajectory / grading config through its `LiveRunnerCallbackGradingSubstrate` and calls `serialize_grade_bundle(...)`.
+2. Walks the produced bundle's on-disk size.
+3. Either stores it (`BundleStore.put(bundle_dir) -> "bundle://<store>/<sha256(manifest.json)>"`) or discards it (over the `max_bundle_mb` cap).
+4. Records the outcome on `Trajectory.snapshot_status` — persisted to `trials/<task_id>/<trial>/trajectory.yaml` under the `snapshot_status:` key by `FileArtifactWriter.write_trajectory` in the same write that lands the message trace (see below).
+
+The result lives on the trial's trajectory (as it appears on `trajectory.yaml`):
+
+```yaml
+snapshot_status:
+  outcome: stored                  # or oversize / produce_failed / ungraded
+  uri: bundle://local_disk/f1c2…   # present only when outcome == stored
+  bundle_size_bytes: 128394        # actual on-disk size after produce
+  cap_bytes: 33554432              # 32 MiB
+  reason: null                     # populated on outcome=produce_failed
+```
+
+**Startup validation.** `Orchestrator.__init__` refuses `snapshot.enabled=true` when:
+- the selected `RuntimeBackend` raises `NotImplementedError` from `build_grade_bundle` (opt-out signal), OR
+- `grader.expose_substrate=false` (snapshot mode composes reads via `SubstrateService` RPCs — the substrate must be exposed).
+
+Both refusals name the failing condition and terminate the run before any trial produces.
+
+**Backend support.** Shipped backends: `SharedStackRuntimeBackend` + `PerTrialRuntimeBackend` implement `build_grade_bundle`; `InMemoryRuntimeBackend` opts out. External `tolokaforge.runtime_backends` plugins either implement the hook or opt out with a `NotImplementedError` stub — the Protocol is `@runtime_checkable` and the startup gate probes the backend at run-start.
+
+**Storage.** `BundleStore` is a plug-in seam under the `tolokaforge.bundle_stores` entry-point group — see [`docs/GRADER_SERVICE.md`](GRADER_SERVICE.md) § Bundle store seam for the Protocol shape + URI format.
+
+**Consuming bundles.** Load a stored bundle with `load_grade_bundle(bundle_dir)`; grade offline with `SnapshotGradingSubstrate(bundle_view)`. Two Protocol methods have hard offline limits in bundle format v1.0: `db_probe` raises `SubstrateUnreachableError` naming the DSN ([#1438](https://github.com/Toloka/tolokaforge/issues/1438) tracks a v1.1 pre-materialised probes part); `knowledge_search` returns `None` ([#1439](https://github.com/Toloka/tolokaforge/issues/1439) tracks a v1.1 indexed KB).
 
 ## Output Artifacts
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from tolokaforge.runner.grading import (
+from tolokaforge.core.grading.composite_fold import (
     build_grade_reasons,
     combine_grade_components,
 )

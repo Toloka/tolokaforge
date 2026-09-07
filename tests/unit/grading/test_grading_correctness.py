@@ -19,6 +19,10 @@ pytestmark = pytest.mark.unit
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import Turn, build_timeline, build_turn_timeline
 from tolokaforge.core.grading.combine import GradingEngine
+from tolokaforge.core.grading.composite_fold import (
+    build_grade_reasons,
+    combine_grade_components,
+)
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.state_checks import StateChecker, consistent_hash, to_hashable
 from tolokaforge.core.grading.trace_timeline import TrialTimeline, build_trial_timeline
@@ -39,11 +43,7 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
-from tolokaforge.runner.grading import (
-    build_grade_reasons,
-    combine_grade_components,
-    compute_state_diff,
-)
+from tolokaforge.runner.grading import compute_state_diff
 from tolokaforge.runner.models import (
     RequiredAction,
     ToolExpectations,

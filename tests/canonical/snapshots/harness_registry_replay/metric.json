@@ -3,6 +3,12 @@
   "bucket_b_count": 12,
   "commits": [
     {
+      "sha": "a9fe0411ff281c96c082ce99e42a15708ddffdb3",
+      "pr": null,
+      "date": "2026-04-18",
+      "subject": "feat: add PyPI publishing workflows and package metadata",
+      "bucket": "B",
+      "reason": "9 adapter-side path(s) outside Bucket-A allow-list",
       "adapter_paths": [
         ".github/workflows/publish-adapter-terminal-bench.yml",
         ".github/workflows/publish-tolokaforge.yml",
@@ -14,12 +20,6 @@
         "tolokaforge/__init__.py",
         "uv.lock"
       ],
-      "bucket": "B",
-      "date": "2026-04-18",
-      "pr": null,
-      "reason": "9 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "a9fe0411ff281c96c082ce99e42a15708ddffdb3",
-      "subject": "feat: add PyPI publishing workflows and package metadata",
       "touched_files": [
         ".github/workflows/publish-adapter-terminal-bench.yml",
         ".github/workflows/publish-tolokaforge.yml",
@@ -34,6 +34,12 @@
       ]
     },
     {
+      "sha": "3c1636fdd9e020b6c5fd4c5102b074b78793a20c",
+      "pr": 6,
+      "date": "2026-05-28",
+      "subject": "feat: Major engine cleanup for open-source release (#6)",
+      "bucket": "B",
+      "reason": "490 adapter-side path(s) outside Bucket-A allow-list",
       "adapter_paths": [
         ".devcontainer/.zshrc",
         ".devcontainer/Dockerfile",
@@ -526,12 +532,6 @@
         "tools/pricing-updater/tests/test_fetcher.py",
         "uv.lock"
       ],
-      "bucket": "B",
-      "date": "2026-05-28",
-      "pr": 6,
-      "reason": "490 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "3c1636fdd9e020b6c5fd4c5102b074b78793a20c",
-      "subject": "feat: Major engine cleanup for open-source release (#6)",
       "touched_files": [
         ".devcontainer/.zshrc",
         ".devcontainer/Dockerfile",
@@ -1070,44 +1070,44 @@
       ]
     },
     {
-      "adapter_paths": [
-        "docs/architecture/ROADMAP.md",
-        "docs/architecture/RUNTIME_BACKENDS.md",
-        "docs/architecture/adr/0009-environment-manifest.md",
-        "docs/architecture/adr/0010-runtime-backend-provisioning-contract.md",
-        "docs/architecture/adr/0014-trial-grader-protocol.md",
-        "docs/architecture/adr/0015-trial-executor-protocol.md",
-        "docs/architecture/adr/0016-runtime-backend-comparison.md",
-        "docs/architecture/adr/README.md",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
-        "tests/canonical/_factories.py",
-        "tests/canonical/snapshots/native_browser_basic/task_config.json",
-        "tests/canonical/snapshots/native_calc_basic/task_config.json",
-        "tests/canonical/snapshots/native_example_domain_case_a/task_config.json",
-        "tests/canonical/snapshots/native_shop_orders_02/task_config.json",
-        "tests/canonical/snapshots/tbench_echo_hello/task_config.json",
-        "tests/unit/test_conductor.py",
-        "tests/unit/test_docker_build_context.py",
-        "tests/unit/test_native_adapter_domain.py",
-        "tests/unit/test_native_adapter_environment_manifest.py",
-        "tests/unit/test_native_adapter_rubric_mapping.py",
-        "tests/unit/test_orchestrator_engine_image_local_aliases.py",
-        "tests/unit/test_task_loader.py",
-        "tolokaforge/adapters/_task_loader.py",
-        "tolokaforge/adapters/native.py",
-        "tolokaforge/core/conductor.py",
-        "tolokaforge/core/models.py",
-        "tolokaforge/core/orchestrator.py",
-        "tolokaforge/core/per_trial_runtime.py",
-        "tolokaforge/docker/image.py",
-        "tolokaforge/docker/stack.py"
-      ],
-      "bucket": "B",
-      "date": "2026-07-03",
-      "pr": 163,
-      "reason": "30 adapter-side path(s) outside Bucket-A allow-list",
       "sha": "6d88093abd811c01a204effa6bf4159674a12727",
+      "pr": 163,
+      "date": "2026-07-03",
       "subject": "feat(runtime): :local engine-image alias + wire environment_manifest through TaskConfig (#163)",
+      "bucket": "B",
+      "reason": "30 adapter-side path(s) outside Bucket-A allow-list",
+      "adapter_paths": [
+        "docs/architecture/ROADMAP.md",
+        "docs/architecture/RUNTIME_BACKENDS.md",
+        "docs/architecture/adr/0009-environment-manifest.md",
+        "docs/architecture/adr/0010-runtime-backend-provisioning-contract.md",
+        "docs/architecture/adr/0014-trial-grader-protocol.md",
+        "docs/architecture/adr/0015-trial-executor-protocol.md",
+        "docs/architecture/adr/0016-runtime-backend-comparison.md",
+        "docs/architecture/adr/README.md",
+        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
+        "tests/canonical/_factories.py",
+        "tests/canonical/snapshots/native_browser_basic/task_config.json",
+        "tests/canonical/snapshots/native_calc_basic/task_config.json",
+        "tests/canonical/snapshots/native_example_domain_case_a/task_config.json",
+        "tests/canonical/snapshots/native_shop_orders_02/task_config.json",
+        "tests/canonical/snapshots/tbench_echo_hello/task_config.json",
+        "tests/unit/test_conductor.py",
+        "tests/unit/test_docker_build_context.py",
+        "tests/unit/test_native_adapter_domain.py",
+        "tests/unit/test_native_adapter_environment_manifest.py",
+        "tests/unit/test_native_adapter_rubric_mapping.py",
+        "tests/unit/test_orchestrator_engine_image_local_aliases.py",
+        "tests/unit/test_task_loader.py",
+        "tolokaforge/adapters/_task_loader.py",
+        "tolokaforge/adapters/native.py",
+        "tolokaforge/core/conductor.py",
+        "tolokaforge/core/models.py",
+        "tolokaforge/core/orchestrator.py",
+        "tolokaforge/core/per_trial_runtime.py",
+        "tolokaforge/docker/image.py",
+        "tolokaforge/docker/stack.py"
+      ],
       "touched_files": [
         "docs/architecture/ROADMAP.md",
         "docs/architecture/RUNTIME_BACKENDS.md",
@@ -1143,6 +1143,12 @@
       ]
     },
     {
+      "sha": "a5bf8a5780a5970215646323964d05c863bb0482",
+      "pr": 473,
+      "date": "2026-07-17",
+      "subject": "docs: MULTI_CONTAINER_GUIDE.md + flatten docs/architecture/* (#473)",
+      "bucket": "B",
+      "reason": "61 adapter-side path(s) outside Bucket-A allow-list",
       "adapter_paths": [
         "CHANGELOG.md",
         "README.md",
@@ -1206,12 +1212,6 @@
         "tolokaforge/core/shared_stack_runtime.py",
         "tolokaforge/runner/runner.proto"
       ],
-      "bucket": "B",
-      "date": "2026-07-17",
-      "pr": 473,
-      "reason": "61 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "a5bf8a5780a5970215646323964d05c863bb0482",
-      "subject": "docs: MULTI_CONTAINER_GUIDE.md + flatten docs/architecture/* (#473)",
       "touched_files": [
         "CHANGELOG.md",
         "README.md",
@@ -1278,6 +1278,12 @@
       ]
     },
     {
+      "sha": "57e57efc364783530898303475addfb1cb0d0a6c",
+      "pr": 1060,
+      "date": "2026-08-12",
+      "subject": "feat(tbench-adapter): synthesise EnvironmentManifest from task compose; migrate compose lifecycle to PerTrialRuntimeBackend (#1060)",
+      "bucket": "B",
+      "reason": "32 adapter-side path(s) outside Bucket-A allow-list",
       "adapter_paths": [
         "CHANGELOG.md",
         "docs/ADAPTER_INTERFACE.md",
@@ -1312,12 +1318,6 @@
         "tolokaforge/runner/models.py",
         "tolokaforge/runner/tool_factory.py"
       ],
-      "bucket": "B",
-      "date": "2026-08-12",
-      "pr": 1060,
-      "reason": "32 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "57e57efc364783530898303475addfb1cb0d0a6c",
-      "subject": "feat(tbench-adapter): synthesise EnvironmentManifest from task compose; migrate compose lifecycle to PerTrialRuntimeBackend (#1060)",
       "touched_files": [
         "CHANGELOG.md",
         "docs/ADAPTER_INTERFACE.md",
@@ -1359,6 +1359,12 @@
       ]
     },
     {
+      "sha": "a9c9f7f03a0a271edf26e8dc401e1fba2a8ddf22",
+      "pr": 1083,
+      "date": "2026-08-14",
+      "subject": "feat(tbench): TrialMode.HARNESS + 6 shipped coding-harness CLIs + YAML-driven registry (ADRs 0031/0032) (#1083)",
+      "bucket": "B",
+      "reason": "32 adapter-side path(s) outside Bucket-A allow-list",
       "adapter_paths": [
         "CHANGELOG.md",
         "docs/RUNTIME_BACKENDS.md",
@@ -1393,12 +1399,6 @@
         "tolokaforge/runner/service.py",
         "uv.lock"
       ],
-      "bucket": "B",
-      "date": "2026-08-14",
-      "pr": 1083,
-      "reason": "32 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "a9c9f7f03a0a271edf26e8dc401e1fba2a8ddf22",
-      "subject": "feat(tbench): TrialMode.HARNESS + 6 shipped coding-harness CLIs + YAML-driven registry (ADRs 0031/0032) (#1083)",
       "touched_files": [
         "CHANGELOG.md",
         "docs/RUNTIME_BACKENDS.md",
@@ -1446,18 +1446,24 @@
       ]
     },
     {
-      "adapter_paths": [],
-      "bucket": "A",
-      "date": "2026-08-14",
-      "pr": 1159,
-      "reason": "all touched paths in Bucket-A allow-list",
       "sha": "c5429c1d10b417eb2a2e408394f75e84d835ab21",
+      "pr": 1159,
+      "date": "2026-08-14",
       "subject": "fix(tbench): opencode ANTHROPIC_BASE_URL /v1 + kimi-code multi-turn docs (#1159)",
+      "bucket": "A",
+      "reason": "all touched paths in Bucket-A allow-list",
+      "adapter_paths": [],
       "touched_files": [
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/data/harnesses.yaml"
       ]
     },
     {
+      "sha": "3564e6724be3bcdfedeba7d79e5ecad67e122a94",
+      "pr": 1236,
+      "date": "2026-08-18",
+      "subject": "feat(refactor): hoist coding-harness surface to top-level tolokaforge_coding_harnesses (#1236)",
+      "bucket": "B",
+      "reason": "49 adapter-side path(s) outside Bucket-A allow-list",
       "adapter_paths": [
         ".github/workflows/ci.yml",
         ".github/workflows/release-gate.yml",
@@ -1509,12 +1515,6 @@
         "tools/dev-mcp/src/dev_mcp/server.py",
         "uv.lock"
       ],
-      "bucket": "B",
-      "date": "2026-08-18",
-      "pr": 1236,
-      "reason": "49 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "3564e6724be3bcdfedeba7d79e5ecad67e122a94",
-      "subject": "feat(refactor): hoist coding-harness surface to top-level tolokaforge_coding_harnesses (#1236)",
       "touched_files": [
         ".github/workflows/ci.yml",
         ".github/workflows/release-gate.yml",
@@ -1576,6 +1576,12 @@
       ]
     },
     {
+      "sha": "53ae81ed66cb07b97af63792677f6eed7ff2511d",
+      "pr": 1228,
+      "date": "2026-08-18",
+      "subject": "feat(tbench): consolidated matrix harness fixes \u2014 Kimi K2.7 middleware, opencode routing/auth, Gemini via LiteLLM, supervisord, disk hygiene (#1228)",
+      "bucket": "B",
+      "reason": "44 adapter-side path(s) outside Bucket-A allow-list",
       "adapter_paths": [
         "docs/ADAPTER_INTERFACE.md",
         "docs/ARCHITECTURE.md",
@@ -1622,12 +1628,6 @@
         "tools/automation/src/automation/harness_bucket_classifier.py",
         "tools/automation/tests/test_harness_bucket_classifier.py"
       ],
-      "bucket": "B",
-      "date": "2026-08-18",
-      "pr": 1228,
-      "reason": "44 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "53ae81ed66cb07b97af63792677f6eed7ff2511d",
-      "subject": "feat(tbench): consolidated matrix harness fixes \u2014 Kimi K2.7 middleware, opencode routing/auth, Gemini via LiteLLM, supervisord, disk hygiene (#1228)",
       "touched_files": [
         "docs/ADAPTER_INTERFACE.md",
         "docs/ARCHITECTURE.md",
@@ -1691,6 +1691,12 @@
       ]
     },
     {
+      "sha": "8fa9f48a5e910376f10814929312f709e8f0d58f",
+      "pr": 1241,
+      "date": "2026-08-19",
+      "subject": "feat(coding-harnesses): RuntimeGateway + ContainerFileInjector + gateway_route (ADR-0037) (#1241)",
+      "bucket": "B",
+      "reason": "19 adapter-side path(s) outside Bucket-A allow-list",
       "adapter_paths": [
         "CHANGELOG.md",
         "docs/RUNNING_TERMINAL_BENCH.md",
@@ -1712,12 +1718,6 @@
         "tools/automation/src/automation/harness_bucket_classifier.py",
         "tools/automation/tests/test_harness_bucket_classifier.py"
       ],
-      "bucket": "B",
-      "date": "2026-08-19",
-      "pr": 1241,
-      "reason": "19 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "8fa9f48a5e910376f10814929312f709e8f0d58f",
-      "subject": "feat(coding-harnesses): RuntimeGateway + ContainerFileInjector + gateway_route (ADR-0037) (#1241)",
       "touched_files": [
         "CHANGELOG.md",
         "docs/RUNNING_TERMINAL_BENCH.md",
@@ -1748,6 +1748,12 @@
       ]
     },
     {
+      "sha": "db89028afe58278ffdd2a71a9bcd4007c8b6170e",
+      "pr": 1257,
+      "date": "2026-08-25",
+      "subject": "docs(coding-harnesses): make the harness surface discoverable (Stage 1 of harness ecosystem plan) (#1257)",
+      "bucket": "B",
+      "reason": "9 adapter-side path(s) outside Bucket-A allow-list",
       "adapter_paths": [
         ".github/workflows/coding-harness-matrix.yml",
         "AGENTS.md",
@@ -1759,12 +1765,6 @@
         "tolokaforge_coding_harnesses/README.md",
         "tolokaforge_coding_harnesses/tests/canonical/test_pypi_ready.py"
       ],
-      "bucket": "B",
-      "date": "2026-08-25",
-      "pr": 1257,
-      "reason": "9 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "db89028afe58278ffdd2a71a9bcd4007c8b6170e",
-      "subject": "docs(coding-harnesses): make the harness surface discoverable (Stage 1 of harness ecosystem plan) (#1257)",
       "touched_files": [
         ".github/workflows/coding-harness-matrix.yml",
         "AGENTS.md",
@@ -1780,6 +1780,12 @@
       ]
     },
     {
+      "sha": "efb58fe486c12ac190cfd13c36ce18c0824db733",
+      "pr": 1279,
+      "date": "2026-08-25",
+      "subject": "feat(coding-harness): lift agent_harness to a top-level, adapter-agnostic capability (#1279)",
+      "bucket": "B",
+      "reason": "38 adapter-side path(s) outside Bucket-A allow-list",
       "adapter_paths": [
         "AGENTS.md",
         "CHANGELOG.md",
@@ -1820,12 +1826,6 @@
         "tolokaforge_coding_harnesses/tests/canonical/test_pypi_ready.py",
         "tolokaforge_coding_harnesses/tests/unit/test_adapter_support.py"
       ],
-      "bucket": "B",
-      "date": "2026-08-25",
-      "pr": 1279,
-      "reason": "38 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "efb58fe486c12ac190cfd13c36ce18c0824db733",
-      "subject": "feat(coding-harness): lift agent_harness to a top-level, adapter-agnostic capability (#1279)",
       "touched_files": [
         "AGENTS.md",
         "CHANGELOG.md",
@@ -1868,6 +1868,12 @@
       ]
     },
     {
+      "sha": "5fbd3d87e486ccabd880a834ba80461699ef98a5",
+      "pr": 1423,
+      "date": "2026-09-02",
+      "subject": "milestone: composition-plan runtime \u2014 one composer, N stacks, per-scope lifecycle (closes #1336) (#1423)",
+      "bucket": "B",
+      "reason": "86 adapter-side path(s) outside Bucket-A allow-list",
       "adapter_paths": [
         "AGENTS.md",
         "CHANGELOG.md",
@@ -1956,12 +1962,6 @@
         "tolokaforge/core/shared_stack_runtime.py",
         "tolokaforge/runner/models.py"
       ],
-      "bucket": "B",
-      "date": "2026-09-02",
-      "pr": 1423,
-      "reason": "86 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "5fbd3d87e486ccabd880a834ba80461699ef98a5",
-      "subject": "milestone: composition-plan runtime \u2014 one composer, N stacks, per-scope lifecycle (closes #1336) (#1423)",
       "touched_files": [
         "AGENTS.md",
         "CHANGELOG.md",

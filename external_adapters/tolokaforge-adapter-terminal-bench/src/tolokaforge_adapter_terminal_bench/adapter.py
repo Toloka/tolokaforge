@@ -14,7 +14,7 @@ from __future__ import annotations
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from tolokaforge_coding_harnesses.adapter_support import CodingHarnessAdapterMixin
 
@@ -154,6 +154,9 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     ``test_execution`` grading — leaving only the terminal-bench-specific
     compose synthesis in this adapter.
     """
+
+    requires_docker_cli_in_runner: ClassVar[bool] = True
+    """Runner runs docker CLI + compose plugin against the host daemon via the mounted socket."""
 
     def __init__(
         self,

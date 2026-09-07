@@ -189,6 +189,10 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         # against the episode budget, and a MagicMock reads as enabled.
         config.orchestrator.rate_limit_probe = RateLimitProbeConfig()
         config.models = {"agent": {"name": "stub", "provider": "anthropic"}}
+        # Snapshot mode is opt-in; a MagicMock reads truthy which would trip
+        # the trial-end producer seam on a stub runtime backend that lacks
+        # ``remember_trial_inputs`` / ``build_grade_bundle``.
+        config.grader = None
 
         runtime = _RecordingRuntime(tools)
         grader = _RecordingGrader()

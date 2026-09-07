@@ -108,9 +108,30 @@ class _ServiceStack:
 class _DockerNetwork:
     def __init__(self) -> None:
         self.connected: list[tuple[str, tuple[str, ...]]] = []
+        self.name = "runner-net"
+        # Post-connect verification (idempotency, alias check — closes #1516)
+        # inspects ``self.attrs["Containers"]`` for membership and reads the
+        # container's ``NetworkSettings.Networks[<net>].Aliases`` for the
+        # bound alias; a stubbed empty ``Containers`` view keeps the test
+        # exercising the happy path (fresh connect → verify).
+        self.attrs: dict[str, Any] = {"Containers": {}}
+
+    def reload(self) -> None:
+        # Bridge calls ``.reload()`` twice: once to seed the pre-connect
+        # membership check, once to re-read after connect. The fake carries
+        # a static Containers view, so ``reload`` is a no-op.
+        return None
 
     def connect(self, container: Any, aliases: list[str] | None = None) -> None:
         self.connected.append((container.name, tuple(aliases or ())))
+        alias_list = list(aliases or [])
+        # After a successful ``connect``, the network reports the container
+        # as a member, and the container's ``NetworkSettings.Networks``
+        # entry for this network carries the bound aliases — the shape the
+        # post-connect verification walks.
+        self.attrs["Containers"][container.id] = {"Name": container.name}
+        networks = container.attrs.setdefault("NetworkSettings", {}).setdefault("Networks", {})
+        networks[self.name] = {"Aliases": alias_list}
 
 
 def _docker_module(
@@ -119,13 +140,25 @@ def _docker_module(
     def _get_container(container_id: str) -> Any:
         if containers_get_raises is not None:
             raise containers_get_raises
-        return types.SimpleNamespace(id=container_id, name="tolokaforge-typesense")
+        # ``ts_container`` must carry ``.reload()`` + ``.attrs`` so the
+        # bridge's post-connect verification can walk its NetworkSettings.
+        container = types.SimpleNamespace(
+            id=container_id,
+            name="tolokaforge-typesense",
+            attrs={},
+        )
+        container.reload = lambda: None  # type: ignore[attr-defined]
+        return container
 
+    class _APIError(Exception):
+        pass
+
+    errors_ns = types.SimpleNamespace(APIError=_APIError)
     client = types.SimpleNamespace(
         containers=types.SimpleNamespace(get=_get_container),
         networks=types.SimpleNamespace(get=lambda _nid: network),
     )
-    return types.SimpleNamespace(from_env=lambda: client)
+    return types.SimpleNamespace(from_env=lambda: client, errors=errors_ns)
 
 
 def _orchestrator(tmp_path: Path) -> Orchestrator:

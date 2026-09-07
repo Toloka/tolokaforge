@@ -202,20 +202,23 @@ def test_an_empty_grading_file_is_answered_by_each_read_site_as_it_was(
 
 
 @pytest.mark.parametrize("site", _READ_SITES)
-def test_a_populated_retired_hash_key_is_refused_at_each_read_site(
-    tmp_path: Path, site: str
+def test_a_populated_retired_hash_key_warns_but_does_not_refuse_at_each_read_site(
+    tmp_path: Path, site: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A stored hash stops the pack at whichever read a run reaches first.
+    """A retired ``expected_state_hash`` warns loud but grading proceeds.
 
-    Parametrised over the errands rather than driven through one, because the two share
-    a file and not an object: ``tolokaforge run-trial`` runs no grading pre-flight, so
-    the description build is the only read a trial started there passes through, and a
-    refusal that lived on the other errand alone would let such a trial be paid for. Each
-    row builds its own adapter and calls one method, so what it measures is that read's
-    refusal and not a neighbour's.
+    Was raise-at-every-read-site before #1514 (in milestone #45); the
+    "cannot modify tasks" constraint required an engine-side back-compat so
+    packs authored against v0.18.1 (including the six under
+    ``tolokaforge-tasks/tasks/sampled/state_checks_examples``) load without a
+    pack-side migration. Parametrised over each read errand — description
+    build + grading-config — because they share the file, not the object,
+    and each must warn-and-accept identically for a ``run-trial`` invocation
+    that only reaches one to survive.
 
-    Both replacements are asserted rather than the message as a whole: naming only the
-    shape a refusal task cannot use is the failure this retirement exists to avoid.
+    Both replacements are asserted rather than the whole message: naming only
+    ``golden_actions`` would send a refusal task (which by definition replays
+    nothing) to write actions it doesn't have.
     """
     adapter = _pack(
         tmp_path,
@@ -224,14 +227,18 @@ def test_a_populated_retired_hash_key_is_refused_at_each_read_site(
         ),
     )
 
-    with pytest.raises(ValueError) as excinfo:
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        # Must not raise — the back-compat contract.
         _read(adapter, site)
 
-    message = str(excinfo.value)
-    assert str(tmp_path / "tasks" / _TASK_ID / "grading.yaml") in message
-    assert "state_checks.hash.expected_state_hash has been retired" in message
-    assert "golden_actions" in message
-    assert "expect_initial_state" in message
+    messages = [rec.getMessage() for rec in caplog.records]
+    combined = "\n".join(messages)
+    assert str(tmp_path / "tasks" / _TASK_ID / "grading.yaml") in combined, messages
+    assert "state_checks.hash.expected_state_hash has been retired" in combined, messages
+    assert "golden_actions" in combined, messages
+    assert "expect_initial_state" in combined, messages
 
 
 #: Both shape tables are shared with the gate's rows and core's, over a tool name this

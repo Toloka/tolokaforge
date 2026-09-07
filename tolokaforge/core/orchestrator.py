@@ -3,7 +3,9 @@
 import logging
 import os
 import random
+import shutil
 import socket
+import tempfile
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -41,6 +43,7 @@ from tolokaforge.core.engine_run_state import (
     read_persisted_run_id,
     write_engine_run_state,
 )
+from tolokaforge.core.env_var import parse_env_positive_float
 from tolokaforge.core.failure_attribution import (
     TrialOutcomeClass,
     attribute_failure,
@@ -100,6 +103,7 @@ from tolokaforge.core.trial import (
     TrialSpec,
 )
 from tolokaforge.core.trial_executor import TrialExecutor
+from tolokaforge.docker.health import HealthProbe, HealthProbeError
 from tolokaforge.runner.models import AdapterType, PlanShape, StackScope, TaskDescription
 from tolokaforge.secrets import register_runtime_secret
 
@@ -202,17 +206,25 @@ def _run_needs_docker_cli(adapter_type: str | None, tasks: list[Any]) -> bool:
 
     Two triggers today:
 
-    - Terminal-bench tasks exec the docker CLI + compose plugin in the runner
-      (against the host daemon via the mounted socket).
+    - The adapter declares ``requires_docker_cli_in_runner = True`` — the
+      class-level capability flag says its grading needs to shell out to
+      docker from the runner container (against the host daemon via the
+      mounted socket). Terminal-bench is the shipped example.
     - Any task that routes a shipped tool through the compose variant (see
       :func:`_tasks_use_compose_variant_tools`) — the runner ``docker exec``\\ s
       into the sibling service.
 
     Detected before build so the slim default image ships without the CLI for
-    every other run. Pure function for unit testing.
+    every other run. Pure function for unit testing — the adapter class is
+    resolved from ``adapter_type`` via the registry, no adapter instance
+    required.
     """
-    if adapter_type == AdapterType.TERMINAL_BENCH:
-        return True
+    if adapter_type is not None:
+        from tolokaforge.adapters import adapter_class
+
+        cls = adapter_class(adapter_type)
+        if cls is not None and cls.requires_docker_cli_in_runner:
+            return True
     return _tasks_use_compose_variant_tools(tasks)
 
 
@@ -1277,6 +1289,74 @@ class Orchestrator:
             on_success=compute.capture_logs_on_success,
         )
 
+    def _resolve_runtime_connect_budget(self) -> tuple[float, float]:
+        """Resolve the runner health-check budget (env → YAML → default).
+
+        Same precedence at every use site (host-side prewarm probe +
+        RuntimeBackendBuildContext plumbing). Env-var values that fail
+        to parse fall back to the YAML block with a warning.
+        """
+        runtime_connect = self.config.orchestrator.runtime_connect
+        timeout_s = parse_env_positive_float(
+            "TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S",
+            default=runtime_connect.timeout_s,
+            logger=self.logger,
+        )
+        retry_interval_s = parse_env_positive_float(
+            "TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S",
+            default=runtime_connect.retry_interval_s,
+            logger=self.logger,
+        )
+        assert timeout_s is not None and retry_interval_s is not None
+        return timeout_s, retry_interval_s
+
+    def _prewarm_runner_host_endpoint(self, runner_address: str) -> None:
+        """Probe the runner's PUBLISHED host port before constructing the backend.
+
+        Compose's internal ``HEALTHCHECK`` says the gRPC server bound
+        its port inside the container, but the published host port has
+        propagation lag (particularly under Docker Desktop). Doing the
+        readiness gate here means ``runtime_backend.connect()`` never
+        races the port-publish — it dials a socket already listening
+        from the host.
+
+        TCP-level probe (not gRPC) because the runner service does not
+        implement the standard ``grpc.health.v1.Health/Check`` interface
+        — its own health check lives on ``RunnerService.HealthCheck``.
+        Port reachability is what closes the compose-vs-host-publish gap
+        anyway; gRPC-level health is covered by the client-side connect
+        retry.
+
+        Budget is the operator-configured ``orchestrator.runtime_connect``
+        (env-var-overridable). A refusal here raises an actionable
+        ``RuntimeError`` naming the resolved host:port and the knob to
+        raise; the downstream ``connect()`` would otherwise surface a
+        confusing ``Runner service not healthy after 30.1s``.
+        """
+        timeout_s, retry_interval_s = self._resolve_runtime_connect_budget()
+        host, port_str = runner_address.rsplit(":", 1)
+        port = int(port_str)
+        try:
+            HealthProbe.tcp(
+                host=host,
+                port=port,
+                timeout_s=timeout_s,
+                interval_s=retry_interval_s,
+            ).wait()
+        except HealthProbeError as exc:
+            raise RuntimeError(
+                f"Runner host-side readiness probe failed at {host}:{port} after "
+                f"{timeout_s}s. Raise orchestrator.runtime_connect.timeout_s in the "
+                f"run config, or set TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S, if the "
+                f"container needs longer to cold-boot. Detail: {exc}"
+            ) from exc
+        self.logger.info(
+            "Runner host-side readiness confirmed",
+            host=host,
+            port=port,
+            budget_s=timeout_s,
+        )
+
     def _construct_runtime_backend(
         self,
         runner_address: str,
@@ -1335,6 +1415,7 @@ class Orchestrator:
             and override != "shared"
             and self._any_task_declares_environment_manifest()
         )
+        connect_timeout_s, connect_retry_interval_s = self._resolve_runtime_connect_budget()
         backend = factory(
             RuntimeBackendBuildContext(
                 runner_address=runner_address,
@@ -1345,6 +1426,8 @@ class Orchestrator:
                 events=self._events,
                 mount_docker_socket=_run_needs_docker_cli(adapter_type, self.tasks),
                 per_trial_mode=per_trial_mode,
+                connect_timeout_s=connect_timeout_s,
+                connect_retry_interval_s=connect_retry_interval_s,
             )
         )
         self.logger.info(
@@ -1581,6 +1664,66 @@ class Orchestrator:
                 "`trial`-scope stack (per-trial materialisation handles every "
                 "label uniformly)."
             )
+
+    def _validate_snapshot_mode_compatibility(self, runtime_backend: RuntimeBackend) -> None:
+        """Refuse ``grader.snapshot.enabled=true`` on backends / configs that
+        cannot honour it.
+
+        Runs once at run-start after the backend is resolved. Two guards:
+
+        * ``grader.expose_substrate`` must be ``True`` — the runtime
+          backend composes bundle reads over the runner's
+          ``SubstrateService``; a runner started with the surface
+          disabled returns ``UNIMPLEMENTED`` and every trial would
+          record ``produce_failed``.
+        * The resolved backend must implement
+          :meth:`RuntimeBackend.build_grade_bundle` — probed with a
+          fake ``__snapshot_probe__`` trial id. A backend that raises
+          :class:`NotImplementedError` opts out; two named "backend
+          supports it, probe trial isn't set up" errors are treated as
+          "backend is snapshot-capable" and every other exception
+          re-raises so genuine bugs surface loudly here rather than
+          per-trial at grade time.
+
+        Actionable :class:`ValueError` names the failing condition and
+        the concrete fix.
+        """
+        grader = self.config.grader
+        if grader is None or grader.snapshot is None or not grader.snapshot.enabled:
+            return
+        if not grader.expose_substrate:
+            raise ValueError(
+                "grader.snapshot.enabled=true requires grader.expose_substrate=true "
+                "so the producer can compose SubstrateService reads at trial-end. "
+                "Set grader.expose_substrate: true in your run config."
+            )
+        probe_dir = Path(tempfile.mkdtemp(prefix="tolokaforge-snapshot-probe-"))
+        try:
+            runtime_backend.build_grade_bundle(trial_id="__snapshot_probe__", out_dir=probe_dir)
+        except NotImplementedError as exc:
+            raise ValueError(
+                "grader.snapshot.enabled=true requires a runtime backend that "
+                "implements RuntimeBackend.build_grade_bundle. The resolved "
+                f"backend {type(runtime_backend).__name__!r} does not. "
+                "Use SharedStackRuntimeBackend or PerTrialRuntimeBackend, or "
+                "extend your custom backend with a real implementation of the hook."
+            ) from exc
+        except (KeyError, RuntimeError):
+            # The two named "backend implements the hook but the probe
+            # trial isn't set up" errors: ``KeyError`` for the missing
+            # ``__snapshot_probe__`` entry in ``_pending_trajectories``
+            # (both shared-stack and per-trial backends), and
+            # ``RuntimeError("build_grade_bundle called before
+            # connect()")`` for the shared-stack backend when the probe
+            # fires before the runner connect completes. Both mean the
+            # backend IS snapshot-capable. Any other exception re-raises
+            # (importlinter forbids reaching runner-side error types
+            # from ``core.orchestrator``, so the tighter set stays at
+            # stdlib), so a genuine backend bug fails loudly at
+            # run-start rather than silently per-trial at grade time.
+            pass
+        finally:
+            shutil.rmtree(probe_dir, ignore_errors=True)
 
     def _build_pending_trials(
         self,
@@ -1848,13 +1991,81 @@ class Orchestrator:
         ts_container = client.containers.get(ts_container_obj.container_id)
         docker_network = client.networks.get(runner_net.network_id)
 
-        docker_network.connect(ts_container, aliases=[_TYPESENSE_NETWORK_ALIAS])
-        self.logger.info(
-            "Connected TypeSense to runner network",
-            network=runner_net.name,
-            container=ts_container.name,
-            alias=injected,
-        )
+        # Idempotent connect: a prior run left the TypeSense container on
+        # runner-net if cleanup_on_exit was disabled or the run aborted
+        # mid-teardown, and Docker's ``network.connect`` raises 403 "already
+        # exists" on a second attempt. Skip re-connecting and confirm the
+        # alias is bound; a stale membership without our alias would still
+        # fail the runner-side ``initialize_typesense_for_domain`` lookup at
+        # register_trial time (closes #1516).
+        docker_network.reload()
+        connected_names = {
+            svc.get("Name")
+            for svc in (docker_network.attrs.get("Containers") or {}).values()
+            if isinstance(svc, dict)
+        }
+        if ts_container.name in connected_names:
+            self.logger.info(
+                "TypeSense already bridged onto runner network (idempotent skip)",
+                network=runner_net.name,
+                container=ts_container.name,
+                alias=injected,
+            )
+        else:
+            try:
+                docker_network.connect(ts_container, aliases=[_TYPESENSE_NETWORK_ALIAS])
+            except docker_lib.errors.APIError as exc:
+                # 403 "endpoint … already exists" — the container is on
+                # the network but the ``reload()`` cache above missed it.
+                # Fall through and verify the alias post-hoc rather than
+                # blowing up.
+                if "already exists" not in str(exc):
+                    raise
+                self.logger.warning(
+                    "TypeSense bridge reported 'already exists' — verifying",
+                    network=runner_net.name,
+                    container=ts_container.name,
+                    error=str(exc),
+                )
+            self.logger.info(
+                "Connected TypeSense to runner network",
+                network=runner_net.name,
+                container=ts_container.name,
+                alias=injected,
+            )
+
+        # Post-connect verification: confirm the alias resolves inside
+        # runner-net BEFORE the first trial tries and fails at
+        # ``initialize_typesense_for_domain``. A missing alias here surfaces
+        # as an actionable RuntimeError at run start instead of a per-trial
+        # ``TypeSense at typesense:8108 … server is unreachable`` refusal.
+        docker_network.reload()
+        endpoint_ok = False
+        for endpoint in (docker_network.attrs.get("Containers") or {}).values():
+            if not isinstance(endpoint, dict):
+                continue
+            if endpoint.get("Name") != ts_container.name:
+                continue
+            # Docker's per-network ``Endpoint`` doesn't list aliases in the
+            # network's Containers view; inspect the container instead.
+            ts_container.reload()
+            net_settings = ts_container.attrs.get("NetworkSettings", {}).get("Networks", {})
+            for net_name, net_info in net_settings.items():
+                if net_name != runner_net.name:
+                    continue
+                aliases = net_info.get("Aliases") or []
+                if _TYPESENSE_NETWORK_ALIAS in aliases:
+                    endpoint_ok = True
+                    break
+            break
+        if not endpoint_ok:
+            raise RuntimeError(
+                f"orchestrator.typesense: bridged the container onto {runner_net.name} "
+                f"but the alias {_TYPESENSE_NETWORK_ALIAS!r} did not attach — the runner "
+                f"would still fail to resolve {injected} at register_trial time. Check "
+                f"`docker network inspect {runner_net.name}` and the TypeSense "
+                f"container's Networks settings."
+            )
 
     def load_tasks(self) -> None:
         """Load tasks using configured adapter"""
@@ -2364,6 +2575,10 @@ class Orchestrator:
                     # get_service_url returns "http://localhost:{port}" — strip scheme for gRPC
                     runner_address = runner_url.replace("http://", "")
                     self.logger.info("EngineStack started", runner_address=runner_address)
+                    # Compose's per-container HEALTHCHECK doesn't cover the published
+                    # host port's propagation lag; probe it here so
+                    # runtime_backend.connect() below never races the port publish.
+                    self._prewarm_runner_host_endpoint(runner_address)
 
                 # Connect TypeSense to core stack network so Runner can reach it
                 if self._typesense_server is not None:
@@ -2422,6 +2637,7 @@ class Orchestrator:
         runtime_backend.connect()
         self.logger.info("Runtime backend connected")
         self._verify_isolation_compatibility(runtime_backend)
+        self._validate_snapshot_mode_compatibility(runtime_backend)
 
         from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
@@ -2883,6 +3099,7 @@ class Orchestrator:
             runtime_backend = self._construct_runtime_backend(runner_address)
         runtime_backend.connect()
         self._verify_isolation_compatibility(runtime_backend)
+        self._validate_snapshot_mode_compatibility(runtime_backend)
 
         from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 

@@ -196,14 +196,20 @@ class TestRunnerStaysAdapterAgnostic:
 
 
 class TestGradingMethodErrorHandling:
-    """Adapter-author-facing error paths: clear, actionable, non-silent."""
+    """Adapter-author-facing error paths: clear, actionable, non-silent.
 
-    def test_invalid_grading_method_string_is_rejected_by_the_model(self):
-        """Typos in ``grading_method`` are caught at validation, not silently ignored."""
-        from pydantic import ValidationError
+    The value axis on ``grading_method`` is open — the pydantic model
+    accepts any string so a downstream adapter can register its own
+    dispatch under ``tolokaforge.grading_methods`` without a framework
+    PR. Rejection of unregistered values happens at ``RegisterTrial``,
+    where the runner names both the offending key and the registered
+    set; see ``tests/unit/test_register_trial_grading_method_registry.py``.
+    """
 
-        with pytest.raises(ValidationError):
-            RunnerGradingConfig(grading_method="test-execution")  # hyphen — should be underscore
+    def test_grading_method_model_accepts_any_string_for_registry_widening(self):
+        """The pydantic model accepts any string — the registry gates the value axis."""
+        cfg = RunnerGradingConfig(grading_method="terminal_bench_native")
+        assert cfg.grading_method == "terminal_bench_native"
 
     def test_test_execution_without_exec_tool_returns_actionable_error(self):
         """If an adapter asks for test-execution grading but ships no exec-capable

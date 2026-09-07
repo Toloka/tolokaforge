@@ -351,7 +351,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="GradingCombineConfig.method",
         runner_field="RunnerGradingConfig.combine_method",
         core_evaluator="tolokaforge.core.grading.combine.GradingEngine.grade_trajectory",
-        runner_evaluator="tolokaforge.runner.grading.combine_grade_components",
+        runner_evaluator="tolokaforge.core.grading.composite_fold.combine_grade_components",
         reason=_COMBINE_METHOD_PARITY_REASON,
     ),
     GradingKey(
@@ -362,7 +362,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="GradingCombineConfig.weights",
         runner_field="RunnerGradingConfig.weights",
         core_evaluator="tolokaforge.core.grading.combine.GradingEngine.grade_trajectory",
-        runner_evaluator="tolokaforge.runner.grading.combine_grade_components",
+        runner_evaluator="tolokaforge.core.grading.composite_fold.combine_grade_components",
         reason=_COMBINE_WEIGHTS_MEMBERSHIP_REASON,
     ),
     GradingKey(
@@ -373,7 +373,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="GradingCombineConfig.pass_threshold",
         runner_field="RunnerGradingConfig.pass_threshold",
         core_evaluator="tolokaforge.core.grading.combine.GradingEngine.grade_trajectory",
-        runner_evaluator="tolokaforge.runner.grading.combine_grade_components",
+        runner_evaluator="tolokaforge.core.grading.composite_fold.combine_grade_components",
     ),
     GradingKey(
         author_key="state_checks.hash",
@@ -432,7 +432,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="StateHashConfig.weight",
         runner_field="RunnerStateChecksConfig.hash_weight",
         core_evaluator="tolokaforge.core.grading.state_composition.compose_state_checks_score",
-        runner_evaluator="tolokaforge.runner.grading.resolve_state_checks_component",
+        runner_evaluator="tolokaforge.core.grading.composite_fold.resolve_state_checks_component",
     ),
     GradingKey(
         author_key="state_checks.hash.description",
@@ -456,7 +456,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="StateChecksConfig.jsonpaths",
         runner_field="RunnerStateChecksConfig.jsonpath_checks",
         core_evaluator="tolokaforge.core.grading.state_checks.StateChecker.check_jsonpaths",
-        runner_evaluator="tolokaforge.runner.grading.evaluate_jsonpath_checks",
+        runner_evaluator="tolokaforge.core.grading.jsonpath_evaluators.evaluate_jsonpath_checks",
     ),
     GradingKey(
         author_key="state_checks.numeric_string_fields",
@@ -496,7 +496,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
         core_field="StateChecksConfig.db_probes",
         runner_field="RunnerStateChecksConfig.db_probes",
-        runner_evaluator="tolokaforge.runner.grading.evaluate_db_probes",
+        runner_evaluator="tolokaforge.core.grading.default_state_check_backends.DbProbesStateCheckBackend",
         enforcing_test=(
             "tests/integration/test_helpdesk_workflow_end_to_end.py"
             "::test_helpdesk_workflow_infrastructure_end_to_end"
@@ -674,13 +674,13 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
         core_field=None,
         runner_field="RunnerGradingConfig.grading_method",
-        runner_evaluator="tolokaforge.runner.service.RunnerServiceImpl._grade_via_test_execution",
+        runner_evaluator="tolokaforge.runner.service.RunnerServiceImpl._dispatch_via_grader_kind",
         reason=(
             "a runner-side dispatch selector with no grading.yaml counterpart, set by "
             "adapters (the terminal-bench adapter emits grading_method=test_execution). "
-            "The test_execution dispatch returns before the component phase, so it "
-            "bypasses key-level evaluation entirely — the declared reason the runtime "
-            "accounted-keys ledger does not apply to that dispatch mode"
+            "Non-composite kinds return before the component phase via the grader-kind "
+            "registry, so they bypass key-level evaluation entirely — the declared reason "
+            "the runtime accounted-keys ledger does not apply to those dispatch modes"
         ),
     ),
 )

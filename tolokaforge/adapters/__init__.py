@@ -18,6 +18,7 @@ from tolokaforge.adapters.base import (
     DockerStackRequirements,
     NativeTaskBundle,
 )
+from tolokaforge.adapters.grading_contract import AdapterGradingContract
 from tolokaforge.runner.models import AdapterType
 
 logger = logging.getLogger(__name__)
@@ -177,8 +178,9 @@ def get_adapter(adapter_type: str | None, params: dict[str, Any]) -> BaseAdapter
 from tolokaforge.adapters.native import NativeAdapter  # noqa: E402
 
 __all__ = [
-    "BaseAdapter",
     "AdapterEnvironment",
+    "AdapterGradingContract",
+    "BaseAdapter",
     "DockerStackRequirements",
     "NativeAdapter",
     "NativeTaskBundle",

@@ -17,7 +17,7 @@ Pack layout on disk (per pack directory):
 * ``parity.yaml`` — accepted divergences declaration, optional ``judge_script``
   (scripted GenerationResult sequence for packs exercising ``llm_judge``),
   optional ``db_probe_rows`` mapping (deterministic rows the harness serves
-  from :func:`tolokaforge.runner.grading._fetch_probe_rows` for packs
+  from :func:`tolokaforge.core.grading.db_probes._fetch_probe_rows` for packs
   exercising ``state_checks.db_probes``), optional refusal-mode contract.
 * ``expected_grade.json`` — the committed baseline; rewritten in place by
   the canonical test when it runs under ``--refresh-baselines``.
@@ -33,11 +33,13 @@ from __future__ import annotations
 
 import base64
 import json
+import tempfile
 from collections.abc import Iterator
 from concurrent import futures
 from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,10 +48,18 @@ import pytest
 import yaml
 from google.protobuf import json_format
 
+from tolokaforge.core.grading import db_probes as db_probes_module
+from tolokaforge.core.grading.bundle import load_grade_bundle, normalise_floats
+from tolokaforge.core.grading.bundle_producer import serialize_bundle_from_substrate
+from tolokaforge.core.grading.substrate import (
+    InProcessGradingSubstrate,
+    SnapshotGradingSubstrate,
+)
+from tolokaforge.core.grading.transcript_wire import decode_transcript_wire
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import StructuredLogger
-from tolokaforge.core.models import ModelConfig, ToolCall
+from tolokaforge.core.models import ModelConfig, ToolCall, Trajectory
 from tolokaforge.core.trial_grader import GradingFailedError
 from tolokaforge.grader import grader_pb2
 from tolokaforge.grader.composite_dispatch import GraderCompositeDispatch
@@ -59,7 +69,6 @@ from tolokaforge.runner import (
     add_SubstrateServiceServicer_to_server,
     runner_pb2,
 )
-from tolokaforge.runner import grading as runner_grading
 from tolokaforge.runner.models import (
     ResetTrialResponse,
     RestoreSnapshotResponse,
@@ -69,6 +78,7 @@ from tolokaforge.runner.models import (
     StateResponse,
     TaskDescription,
 )
+from tolokaforge.runner.protocol import parse_termination_reason
 from tolokaforge.runner.service import RunnerServiceImpl, TrialContextRuntime
 from tolokaforge.runner.substrate_service import SubstrateServicer
 
@@ -115,7 +125,7 @@ class ParityPack:
       under ``refusal_mode``; empty otherwise.
     * ``db_probe_rows`` — deterministic rows served to a pack's
       ``state_checks.db_probes`` seam, keyed by probe name. Each list is
-      the rows :func:`tolokaforge.runner.grading._fetch_probe_rows` returns
+      the rows :func:`tolokaforge.core.grading.db_probes._fetch_probe_rows` returns
       when the probe of that name runs; both legs draw from the same
       mapping. Empty for packs that declare no ``db_probes`` block, which
       is every non-``db_probes`` pack.
@@ -459,16 +469,22 @@ def _install_db_probe_rows(
     monkeypatch: pytest.MonkeyPatch,
     pack: ParityPack,
 ) -> None:
-    """Route :func:`tolokaforge.runner.grading._fetch_probe_rows` to
+    """Route :func:`tolokaforge.core.grading.db_probes._fetch_probe_rows` to
     pack-declared row sets instead of opening a live postgres connection.
 
     Both legs' ``state_check_backends["db_probes"]`` is
     :class:`~tolokaforge.core.grading.default_state_check_backends.DbProbesStateCheckBackend`,
-    whose :meth:`query` wraps :func:`evaluate_db_probes` — the sole caller
-    of :func:`_fetch_probe_rows`. Monkeypatching that seam keeps the
+    whose :meth:`query` reads each probe through
+    :meth:`~tolokaforge.core.grading.substrate.GradingSubstrate.db_probe`.
+    :func:`_fetch_probe_rows` is the single helper both substrate impls call
+    inside the runner process: the aggregate-image leg reaches it directly
+    through :class:`InProcessGradingSubstrate.db_probe`, and the
+    independent-grader leg reaches it through
+    :meth:`~tolokaforge.runner.substrate_service.SubstrateServicer.RunDbProbe`
+    — same process in the parity harness, so a single monkeypatch on
+    ``db_probes_module._fetch_probe_rows`` reaches both legs. Keeps the
     surrounding backend logic (per-probe ``expect`` JSONPath evaluation,
-    pass/fail accounting, reasons composition) under test symmetrically
-    on both legs.
+    pass/fail accounting, reasons composition) under test symmetrically.
 
     Rows are keyed by SQL ``query`` string: :func:`_fetch_probe_rows`
     receives ``(dsn, query)`` and cannot see the probe name, so the
@@ -499,7 +515,7 @@ def _install_db_probe_rows(
                 "issued a query the pack did not declare"
             ) from exc
 
-    monkeypatch.setattr(runner_grading, "_fetch_probe_rows", fake_fetch)
+    monkeypatch.setattr(db_probes_module, "_fetch_probe_rows", fake_fetch)
 
 
 def _build_grade_dispatch(pack: ParityPack, *, substrate_address: str) -> GradeDispatch:
@@ -522,6 +538,175 @@ def _build_grade_dispatch(pack: ParityPack, *, substrate_address: str) -> GradeD
         task_description_json=pack.task_description.model_dump_json(),
         runner_substrate_address=substrate_address,
     )
+
+
+class _ParityHarnessSnapshotSubstrate(SnapshotGradingSubstrate):
+    """:class:`SnapshotGradingSubstrate` variant the parity gate reads through.
+
+    Parity packs model a stationary trial with **no agent workspace tree**;
+    the pack directory only carries YAML fixtures. Bundle format v1.0
+    refuses a ``None`` ``filesystem_root`` at
+    :func:`serialize_bundle_from_substrate` (``bundle_producer.py:75-80``),
+    so the harness passes ``pack.directory`` at bundle-production time and
+    ``filesystem.tar`` picks up the pack's YAML files. That inflates the
+    Snapshot substrate's :meth:`filesystem_root` above the Lane A baseline:
+    :class:`~tolokaforge.core.grading.substrate_live.LiveRunnerCallbackGradingSubstrate`
+    returns ``None`` for a parity pack (empty workspace + non-existent
+    root), which suppresses the judge's ``read_file`` registration at
+    ``judge.py:500-503``, while the base :class:`SnapshotGradingSubstrate`
+    extracts the tar to a tmpdir and returns a non-``None`` root.
+
+    Overriding :meth:`filesystem_root` to ``None`` at the parity seam
+    restores byte-parity: parity packs semantically have no workspace, and
+    the harness's live-callback leg encodes that as ``None``. Production
+    grade-bundle consumers still see the base behaviour — this subclass is
+    a test seam only, registered via
+    :attr:`GraderCompositeDispatch._substrate_cls` inside
+    :func:`run_via_snapshot_rpc`.
+
+    A future bundle format v1.1 with an explicit "no workspace" encoding
+    would remove this seam; tracked as a Lane B follow-up.
+    """
+
+    def filesystem_root(self) -> Path | None:  # type: ignore[override]
+        return None
+
+
+_TRAJECTORY_FIXED_TS = datetime(2026, 1, 1, tzinfo=UTC)
+"""Deterministic timestamp for the two :class:`Trajectory` datetime fields
+the snapshot leg synthesises. Pinning both ``start_ts`` and ``end_ts`` keeps
+``trajectory.json`` bytes reproducible across sessions along those two
+axes. :attr:`Message.ts` retains its wall-clock default: the bundle carries
+that timestamp per message but no grader-side code reads
+``trajectory.json``, so Grade equality still holds. A future bundle-digest
+lockfile must pin ``Message.ts`` before it can lock those bytes."""
+
+
+class _NoOpDBReader:
+    """Fail-loud :class:`DBReader` stand-in for the snapshot-leg substrate
+    used at bundle-production time.
+
+    :func:`serialize_bundle_from_substrate` reads
+    :meth:`~GradingSubstrate.initial_state`,
+    :meth:`~GradingSubstrate.final_state`,
+    :meth:`~GradingSubstrate.final_state_stable`, and
+    :meth:`~GradingSubstrate.filesystem_root` off its substrate — never the
+    DB reader. This stub raises if anything reaches for that seam, so a
+    producer change reaching for DB rows surfaces at the harness rather
+    than silently returning an empty view.
+    """
+
+    def get_state(self, tables: list[str] | None = None) -> dict[str, Any]:  # noqa: ARG002
+        raise AssertionError(
+            "parity snapshot leg exposes no DBReader — bundle production "
+            "reads state via initial_state() / final_state() only."
+        )
+
+    def query(self, jsonpath: str) -> dict[str, Any]:  # noqa: ARG002
+        raise AssertionError(
+            "parity snapshot leg exposes no DBReader — bundle production "
+            "reads state via initial_state() / final_state() only."
+        )
+
+
+def _synthesise_trajectory(pack: ParityPack) -> Trajectory:
+    """Build the :class:`Trajectory` the bundle producer serialises.
+
+    Splits ``pack.trial_id`` on ``':'`` to derive ``task_id`` /
+    ``trial_index`` (the harness pack convention:
+    ``{task_id}:{trial_index}``). Decodes ``pack.llm_messages_json`` back
+    into a :class:`Message` list via :func:`decode_transcript_wire`. Maps
+    ``pack.termination_reason`` through :func:`parse_termination_reason`.
+    Pins ``start_ts`` and ``end_ts`` to :data:`_TRAJECTORY_FIXED_TS`.
+
+    Other :class:`Trajectory` fields default per Pydantic
+    ``Field(default_factory=...)``. ``grade`` is ``None`` — the trajectory
+    is the *input* to grading here, not the graded record.
+    """
+    task_id, sep, trial_index_str = pack.trial_id.partition(":")
+    if not sep or not trial_index_str.isdigit():
+        raise ValueError(
+            f"pack.trial_id {pack.trial_id!r} does not follow the "
+            "'{task_id}:{trial_index}' convention the snapshot leg requires"
+        )
+    messages_list: list[dict[str, Any]] = json.loads(pack.llm_messages_json)
+    return Trajectory(
+        task_id=task_id,
+        trial_index=int(trial_index_str),
+        start_ts=_TRAJECTORY_FIXED_TS,
+        end_ts=_TRAJECTORY_FIXED_TS,
+        messages=decode_transcript_wire(messages_list),
+        termination_reason=parse_termination_reason(pack.termination_reason),
+    )
+
+
+def _build_bundle_substrate(pack: ParityPack) -> InProcessGradingSubstrate:
+    """Build the :class:`InProcessGradingSubstrate`
+    :func:`serialize_bundle_from_substrate` reads.
+
+    Parity packs model a stationary trial: :meth:`initial_state`,
+    :meth:`final_state`, and :meth:`final_state_stable` all resolve to
+    ``pack.task_description.initial_state.tables`` — the same authored bytes
+    the live-callback substrate serves through its ``_FakeDBServiceClient``.
+
+    ``filesystem_root=pack.directory`` — bundle format v1.0 requires a
+    non-``None`` root at ``bundle_producer.py:75-80``; the pack directory
+    is a real folder, so the producer's ``filesystem.tar`` gets non-empty
+    bytes. Grading code never inspects the tarball contents for parity
+    packs, so the Grade output is unaffected.
+
+    ``filesystem_state_factory=lambda: None`` — parity packs do not grade
+    ``$.filesystem[...]``; ``None`` is the first-class "no workspace tree"
+    answer the composite already handles.
+    """
+    tables: dict[str, Any] = dict(pack.task_description.initial_state.tables)
+    return InProcessGradingSubstrate(
+        db_reader=_NoOpDBReader(),  # type: ignore[arg-type]
+        knowledge_search=None,
+        filesystem_root=pack.directory,
+        initial_state=tables,
+        final_state=tables,
+        final_state_stable_factory=lambda: tables,
+        filesystem_state_factory=lambda: None,
+    )
+
+
+def _produce_bundle_into(pack: ParityPack, *, out_dir: Path) -> None:
+    """Materialise a v1.0 grade bundle for ``pack`` into ``out_dir``.
+
+    Callers own ``out_dir`` lifecycle. The substrate is constructed,
+    driven through :func:`serialize_bundle_from_substrate`, and closed
+    within this helper.
+    """
+    substrate = _build_bundle_substrate(pack)
+    try:
+        serialize_bundle_from_substrate(
+            substrate=substrate,
+            trial_id=pack.trial_id,
+            out_dir=out_dir,
+            trajectory=_synthesise_trajectory(pack),
+            task_description=pack.task_description,
+        )
+    finally:
+        substrate.close()
+
+
+@contextmanager
+def _bundle_dir_context(pack: ParityPack, override: Path | None) -> Iterator[Path]:
+    """Yield the ``bundle_dir`` one snapshot dispatch reads from.
+
+    ``override`` (Lane C's pre-materialised bundle) is yielded verbatim
+    and never cleaned up — the caller owns it. ``None`` materialises a
+    fresh bundle into a :class:`tempfile.TemporaryDirectory` that is
+    removed on exit.
+    """
+    if override is not None:
+        yield override
+        return
+    with tempfile.TemporaryDirectory(prefix="parity-snapshot-bundle-") as tmpdir:
+        bundle_dir = Path(tmpdir)
+        _produce_bundle_into(pack, out_dir=bundle_dir)
+        yield bundle_dir
 
 
 def run_via_runner_rpc(
@@ -609,6 +794,112 @@ def assert_grader_rpc_refuses(
         )
 
 
+def run_via_snapshot_rpc(
+    pack: ParityPack,
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    bundle_dir_override: Path | None = None,
+) -> grader_pb2.Grade:
+    """Drive :class:`GraderCompositeDispatch` end-to-end with substrate reads
+    served by a :class:`SnapshotGradingSubstrate` over a produced bundle.
+
+    A :class:`_running_runner` still boots so the wire dispatch carries a
+    non-empty ``runner_substrate_address`` — the composite refuses an empty
+    address up front. The monkeypatched ``_substrate_cls`` factory ignores
+    the address, so the runner is never dialled.
+
+    ``bundle_dir_override`` — when supplied, the caller owns the bundle
+    bytes on disk and the leg reads them verbatim. Lane C uses this to
+    replay a single materialised bundle across three sequential dispatches.
+    ``None`` materialises a fresh bundle in a scoped
+    :class:`tempfile.TemporaryDirectory`.
+
+    The substrate factory closure captures ``bundle_dir`` rather than a
+    substrate instance and returns a *fresh*
+    :class:`SnapshotGradingSubstrate` per call:
+    :meth:`GraderCompositeDispatch.grade` closes its substrate in
+    ``finally`` (``composite_dispatch.py:224-225``) and
+    :meth:`SnapshotGradingSubstrate.close` drops the extracted-filesystem
+    tmpdir (``substrate.py:610-616``), so a reused instance would collapse
+    after the first ``close``. Fresh-from-bytes per invocation is the
+    "same bundle, N replays" property Lane C locks.
+
+    The ``_substrate_cls`` monkeypatch is a test seam. Production
+    grader-side substrate selection driven off wire fields lands under
+    follow-up #1453; the harness's injection here does not shape any
+    shipped API.
+    """
+    _install_scripted_client(monkeypatch, pack.judge_script)
+    if pack.db_probe_rows:
+        _install_db_probe_rows(monkeypatch, pack)
+    with (
+        _running_runner(pack) as ctx,
+        _bundle_dir_context(pack, bundle_dir_override) as bundle_dir,
+    ):
+
+        def _substrate_factory(
+            _address: str,  # noqa: ARG001
+            _trial_id: str,  # noqa: ARG001
+        ) -> _ParityHarnessSnapshotSubstrate:
+            return _ParityHarnessSnapshotSubstrate(load_grade_bundle(bundle_dir))
+
+        dispatch = _build_grade_dispatch(pack, substrate_address=ctx.substrate_address)
+        composite = GraderCompositeDispatch(
+            logger=StructuredLogger(name="parity-gate-grader-snapshot")  # type: ignore[arg-type]
+        )
+        monkeypatch.setattr(composite, "_substrate_cls", _substrate_factory)
+        grade = composite.grade(dispatch)
+        assert grade is not None, "grader_rpc snapshot leg produced no verdict"
+        return _grade_to_wire(grade)
+
+
+def assert_snapshot_rpc_refuses(
+    pack: ParityPack,
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    expected_error_fragment: str,
+) -> None:
+    """Assert :func:`run_via_snapshot_rpc` raises :class:`GradingFailedError`
+    whose message contains ``expected_error_fragment``.
+
+    Covers two refusal shapes the snapshot leg lands on:
+
+    * A pack declaring ``state_checks.db_probes`` reaches
+      :meth:`SnapshotGradingSubstrate.db_probe`, which raises
+      :class:`SubstrateUnreachableError` — the composite translates it to
+      :class:`GradingFailedError` at ``composite_dispatch.py:220-223``. The
+      fragment "cannot serve db_probes offline" pins that translation.
+    * A pack declaring ``state_checks.hash_enabled`` refuses grader-side
+      before any substrate read; the fragment "cannot execute hash-based
+      grading" pins the same grader-side message the live-callback leg
+      surfaces. Substrate topology does not shift a hash refusal.
+    """
+    with pytest.raises(GradingFailedError) as excinfo:
+        run_via_snapshot_rpc(pack, monkeypatch=monkeypatch)
+    assert expected_error_fragment in str(excinfo.value), (
+        f"snapshot leg refused but the message does not carry the declared "
+        f"fragment {expected_error_fragment!r}: {str(excinfo.value)!r}"
+    )
+
+
+def produce_snapshot_bundle(
+    pack: ParityPack,
+    *,
+    monkeypatch: pytest.MonkeyPatch,  # noqa: ARG001
+    bundle_dir: Path,
+) -> None:
+    """Materialise a v1.0 grade bundle for ``pack`` into ``bundle_dir``.
+
+    Lane C helper: run once against a caller-owned empty directory, then
+    dispatch ``run_via_snapshot_rpc(pack, monkeypatch=..., bundle_dir_override=bundle_dir)``
+    N times to lock the regrade-parity property. The ``monkeypatch``
+    argument is required for API symmetry with the other snapshot-leg
+    helpers, but bundle production reaches no monkeypatched seams —
+    :class:`_ScriptedClient` and the probe-rows fake are grade-time only.
+    """
+    _produce_bundle_into(pack, out_dir=bundle_dir)
+
+
 def serialise_grade(grade: runner_pb2.Grade | grader_pb2.Grade) -> str:
     """Canonical JSON projection shared by both wire types.
 
@@ -630,7 +921,7 @@ def serialise_grade(grade: runner_pb2.Grade | grader_pb2.Grade) -> str:
         always_print_fields_with_no_presence=True,
     )
     normalised = _normalise_optional_components(projected)
-    normalised = _normalise_floats(normalised)
+    normalised = normalise_floats(normalised)
     return json.dumps(normalised, sort_keys=True, indent=2)
 
 
@@ -659,18 +950,6 @@ def _normalise_optional_components(projected: dict[str, Any]) -> dict[str, Any]:
     for field, default in _OPTIONAL_COMPONENT_DEFAULTS.items():
         components.setdefault(field, default)
     return projected
-
-
-def _normalise_floats(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {key: _normalise_floats(child) for key, child in value.items()}
-    if isinstance(value, list):
-        return [_normalise_floats(child) for child in value]
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, float):
-        return float(f"{value:.6g}")
-    return value
 
 
 REFRESH_BASELINES_OPTION = "--refresh-baselines"
@@ -799,12 +1078,15 @@ __all__ = [
     "REFRESH_BASELINES_OPTION",
     "ParityPack",
     "assert_grader_rpc_refuses",
+    "assert_snapshot_rpc_refuses",
     "components_diff",
     "load_parity_pack",
+    "produce_snapshot_bundle",
     "read_baseline",
     "refresh_or_assert_baseline",
     "run_via_grader_rpc",
     "run_via_runner_rpc",
+    "run_via_snapshot_rpc",
     "serialise_grade",
     "should_refresh_baselines",
     "write_baseline",

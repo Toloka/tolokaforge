@@ -25,6 +25,10 @@ from typing import TYPE_CHECKING
 
 import grpc
 
+from tolokaforge.core.grading.filesystem_view import (
+    is_excluded_rel_path,
+    iter_agent_visible_rel_paths,
+)
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc as pb2_grpc
 from tolokaforge.runner.db_client import (
@@ -120,6 +124,8 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         request: pb2.ReadFilesystemPathRequest,
         context: grpc.ServicerContext,
     ) -> pb2.ReadFilesystemPathResponse:
+        if request.path and is_excluded_rel_path(request.path):
+            return pb2.ReadFilesystemPathResponse(exists=False)
         root = self._workspace_root()
         target = (root / request.path).resolve() if request.path else root
         # Refuse a path that escapes the workspace root — a defensive check
@@ -156,28 +162,7 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
         request: pb2.ListFilesystemDirRequest,
         context: grpc.ServicerContext,
     ) -> pb2.ListFilesystemDirResponse:
-        # Same filter _read_agent_visible_filesystem ships today: skip
-        # symlinks, non-files, and files that refuse UTF-8 decode. No
-        # path-component excluder for node_modules / .venv / .git — a
-        # coding-harness workspace carries those trees on the wire, matching
-        # the shipped runner behaviour byte-for-byte.
-        rel_paths: list[str] = []
-        root = self._workspace_root()
-        if not root.is_dir():
-            return pb2.ListFilesystemDirResponse()
-        for path in root.rglob("*"):
-            if path.is_symlink() or not path.is_file():
-                continue
-            try:
-                path.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                continue
-            except OSError as exc:
-                logger.warning(
-                    "SubstrateService.ListFilesystemDir: could not read %s: %s", path, exc
-                )
-                continue
-            rel_paths.append(path.relative_to(root).as_posix())
+        rel_paths = sorted(iter_agent_visible_rel_paths(self._workspace_root()))
         return pb2.ListFilesystemDirResponse(rel_paths=rel_paths)
 
     # ------------------------------------------------------------------
@@ -212,6 +197,124 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
                 )
                 for hit in hits
             ],
+        )
+
+    # ------------------------------------------------------------------
+    # SQL probe
+    # ------------------------------------------------------------------
+
+    def RunDbProbe(  # noqa: N802
+        self,
+        request: pb2.RunDbProbeRequest,
+        context: grpc.ServicerContext,
+    ) -> pb2.RunDbProbeResponse:
+        from tolokaforge.core.grading.db_probes import _fetch_probe_rows
+
+        try:
+            rows = self._runner._run_async(_fetch_probe_rows(request.dsn, request.query))
+        except Exception as exc:
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(f"RunDbProbe failed: {type(exc).__name__}: {exc}")
+            return pb2.RunDbProbeResponse()
+        return pb2.RunDbProbeResponse(rows_json=json.dumps(rows, default=str))
+
+    # ------------------------------------------------------------------
+    # Test-suite execution
+    # ------------------------------------------------------------------
+
+    def RunTestSuite(  # noqa: N802
+        self,
+        request: pb2.RunTestSuiteRequest,
+        context: grpc.ServicerContext,
+    ) -> pb2.RunTestSuiteResponse:
+        """Execute a pack-declared verifier inside the trial's env container.
+
+        Two first-class outcomes ride the response rather than the gRPC
+        status: ``tool_absent`` (the trial completed but the adapter shipped
+        no exec-capable lifecycle tool — a pack-authoring issue) and
+        ``script_exec_error`` (the exec call raised, e.g. subprocess timeout —
+        the trial completed but the verifier crashed). Neither is an RPC
+        failure: the caller renders both as observable grade outcomes.
+
+        The reward file is read via ``cat {reward_path} 2>/dev/null || echo
+        0.0`` so an absent file yields ``b"0.0\\n"``. A raised exception
+        inside the reward-cat call is treated the same way (falls back to
+        ``b"0.0\\n"``) — a resilience upgrade over the pre-move runner-side
+        path, which would have propagated the exception through the async
+        bridge; observable only when the reward-cat call itself raises,
+        which the pre-move ``|| echo 0.0`` shell fallback made rare.
+
+        ``stdout`` is wire-capped at 65_536 bytes; the caller further
+        truncates for the grade's reasons string.
+        """
+        _DEFAULT_SCRIPT_TIMEOUT_S = 300.0
+        _DEFAULT_REWARD_READ_TIMEOUT_S = 10.0
+        _STDOUT_WIRE_CAP_BYTES = 65_536
+
+        trial_context = self._runner.trials.get(request.trial_id)
+        if trial_context is None:
+            context.set_code(grpc.StatusCode.NOT_FOUND)
+            context.set_details(f"Trial '{request.trial_id}' not registered")
+            return pb2.RunTestSuiteResponse()
+
+        from tolokaforge.runner.service import _first_docker_compose_exec_tool
+
+        bash_tool = _first_docker_compose_exec_tool(trial_context.agent_tools.values())
+        if bash_tool is None:
+            error_msg = (
+                "test-execution grading was requested (grading_method='test_execution') "
+                "but no exec-capable env tool was found in this trial. Include an "
+                "exec-capable lifecycle tool (e.g. DockerComposeExecToolWrapper) in "
+                "TaskDescription.agent_tools so the runner can execute the test suite "
+                "inside the trial environment."
+            )
+            return pb2.RunTestSuiteResponse(
+                tool_absent=True,
+                tool_absent_reason=error_msg,
+            )
+
+        script_timeout = request.timeout_s if request.timeout_s > 0.0 else _DEFAULT_SCRIPT_TIMEOUT_S
+        reward_read_timeout = (
+            request.reward_read_timeout_s
+            if request.reward_read_timeout_s > 0.0
+            else _DEFAULT_REWARD_READ_TIMEOUT_S
+        )
+
+        try:
+            exit_code, stdout = bash_tool._exec_sync_with_rc(
+                f"cd $(dirname {request.script_path}) && bash {request.script_path} 2>&1",
+                script_timeout,
+            )
+        except Exception as exc:
+            return pb2.RunTestSuiteResponse(
+                exit_code=-1,
+                reward_bytes=b"",
+                stdout="",
+                script_exec_error=str(exc),
+            )
+
+        try:
+            _rc, reward_str = bash_tool._exec_sync_with_rc(
+                f"cat {request.reward_path} 2>/dev/null || echo 0.0",
+                reward_read_timeout,
+            )
+            reward_bytes = reward_str.encode()
+        except Exception as exc:  # noqa: BLE001
+            # Reward-cat is a diagnostic read; the fallback bytes match the shell
+            # ``|| echo 0.0`` path so the kind renders the same "0.0" reward.
+            logger.warning(
+                "SubstrateService.RunTestSuite: reward-cat raised for trial %r: "
+                "%s: %s; falling back to b'0.0\\n'",
+                request.trial_id,
+                type(exc).__name__,
+                exc,
+            )
+            reward_bytes = b"0.0\n"
+
+        return pb2.RunTestSuiteResponse(
+            exit_code=exit_code,
+            reward_bytes=reward_bytes,
+            stdout=stdout[:_STDOUT_WIRE_CAP_BYTES],
         )
 
     # ------------------------------------------------------------------

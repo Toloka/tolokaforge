@@ -219,6 +219,8 @@ class _GroupedCommandsGroup(click.Group):
         "analyze": "Runs",
         "browse": "Runs",
         "curate": "Runs",
+        "grade": "Runs",
+        "grade-run": "Runs",
         "reconcile": "Runs",
         "rejudge": "Runs",
         "retrace": "Runs",
@@ -387,6 +389,12 @@ cli.add_command(assets)
 from tolokaforge.dx.cli.run_trial_command import run_trial  # noqa: E402
 
 cli.add_command(run_trial)
+
+# Register the offline-regrade `grade` / `grade-run` verbs.
+from tolokaforge.dx.cli.grade import grade, grade_run  # noqa: E402
+
+cli.add_command(grade)
+cli.add_command(grade_run)
 
 
 # Default user model configuration

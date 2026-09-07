@@ -928,25 +928,36 @@ def test_a_populated_retired_key_draws_its_migration_and_not_the_unknown_key_ref
     assert "unknown key" not in message, message
 
 
-def test_validate_refuses_a_populated_retired_hash_key_naming_both_replacements(tmp_path: Path):
-    """The third read a pack passes through, and the only one an author runs on purpose.
+def test_validate_warns_but_accepts_a_populated_retired_hash_key(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    """Retired ``expected_state_hash`` warns loud (with the shipped migration
+    naming both replacements) but does NOT refuse — packs authored against
+    v0.18.1 load unchanged, and grading proceeds with the hash block dropped.
 
-    A stored hash is written in one substrate's algebra and the other cannot compare
-    against it, so the gate refuses it here rather than letting a trial be paid for and
-    graded differently depending on where it ran. Both replacements are asserted
-    separately: a migration naming only ``golden_actions`` would send a refusal task —
-    which by definition replays nothing — to write actions it does not have.
+    Was raise-with-actionable-message before #1514 (in milestone #45); the
+    "cannot modify tasks" constraint required an engine-side back-compat that
+    accepts truthy retired keys with a warning while
+    :meth:`StateHashConfig._drop_retired_hash_keys` drops the value so the
+    hash block goes unread. Grading with the block dropped is degraded (no
+    hash contribution) but not misgraded (jsonpaths / transcript_rules /
+    trace_checks etc. still score); packs migrate to
+    ``expect_initial_state`` or ``golden_actions`` to restore hash scoring.
     """
     grading = _write_grading(tmp_path, {"hash": {"enabled": True, "expected_state_hash": "a" * 64}})
 
-    with pytest.raises(ValueError) as excinfo:
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        # Validate call must not raise — the back-compat contract.
         validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
-    message = str(excinfo.value)
-    assert str(grading) in message, message
-    assert "state_checks.hash.expected_state_hash has been retired" in message, message
-    assert "golden_actions" in message, message
-    assert "expect_initial_state" in message, message
+    messages = [rec.getMessage() for rec in caplog.records]
+    combined = "\n".join(messages)
+    assert str(grading) in combined, messages
+    assert "state_checks.hash.expected_state_hash has been retired" in combined, messages
+    assert "golden_actions" in combined, messages
+    assert "expect_initial_state" in combined, messages
 
 
 def test_validate_names_a_misspelled_hash_key_and_the_hash_blocks_accepted_set(tmp_path: Path):

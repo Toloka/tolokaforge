@@ -46,13 +46,8 @@ from pydantic import ValidationError
 
 from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
-from tolokaforge.core.grading.judge import LLMJudge
-from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
-from tolokaforge.core.grading.replay import build_replay_grade
-from tolokaforge.core.grading.transcript_wire import (
-    encode_transcript_wire,
-    split_leading_system_message,
-)
+from tolokaforge.core.grading.judge_only_helpers import run_judge_only_for_trajectory
+from tolokaforge.core.grading.transcript_wire import encode_transcript_wire
 from tolokaforge.core.models import (
     CriterionResult,
     CustomCheckDetail,
@@ -68,8 +63,10 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
+from tolokaforge.core.plugin_registry import load_grading_method
 from tolokaforge.core.trial import TrialSpec
 from tolokaforge.grader.wire_snapshot import build_grade_request_fields
+from tolokaforge.runner.models import RunnerGradingConfig
 
 if TYPE_CHECKING:
     from tolokaforge.core.llm.client import LLMClient
@@ -1246,6 +1243,21 @@ def _queue_worker_loop(
         broker.publish_result(GradeResult(job_id=job.job_id, grade=grade, error=error))
 
 
+_JUDGE_ONLY_EQUIVALENT_CONFIG = RunnerGradingConfig(
+    grading_method="composite",
+    weights={"llm_judge": 1.0},
+)
+"""The composite dispatch shape ``judge_only`` is equivalent to.
+
+Pinned as a module constant so the parity gate at
+``tests/canonical/test_judge_only_composite_llm_judge_only_parity.py``
+can assert both paths agree on the same
+:class:`~tolokaforge.runner.models.RunnerGradingConfig` at the config
+layer. A future rename of either name reds the parity test at the config
+layer before it reaches the grade-shape assertion.
+"""
+
+
 def judge_backed_trial_grader_factory(
     ctx: TrialGraderContext,
     *,
@@ -1255,36 +1267,33 @@ def judge_backed_trial_grader_factory(
 
     Reads the run-level ``grader.judge`` overrides (or the task's own
     ``grading.llm_judge.customization`` when no override is set) and
-    produces a :data:`JudgeGradeFn` that on each call:
-
-    1. Reads the task's rubric from ``spec.task.grading.llm_judge.rubric``.
-    2. Reads the judge model from ``spec.judge_model_config`` (which
-       rides the run config's ``models["judge"]``).
-    3. Encodes the trajectory + agent policy through the same
-       :func:`encode_transcript_wire` + :func:`split_leading_system_message`
-       replay uses, so the transcript the judge sees is byte-identical
-       to the runner-side grading path.
-    4. Runs :class:`LLMJudge` with rubric + transcript only — no
-       ``db_reader`` / ``kb_search`` / ``workspace_dir`` / ``state_diff``,
-       because ``judge_only`` grades trajectories after the trial ended
-       and holds no live substrate state.
-    5. Raises :class:`GradingFailedError` on an ``ERRORED`` judge run —
-       the fail-loud contract that trial_grader.py's ``GradingFailedError``
-       docstring names. A judge malfunction MUST NOT be booked as an
-       agent failure; the seam records ``grading_error`` and leaves the
-       grade unset. Only a ``COMPLETED`` verdict is translated through
-       :func:`build_replay_grade` into a persistable :class:`Grade`.
+    routes the per-trial dispatch through
+    :func:`~tolokaforge.core.grading.judge_only_helpers.run_judge_only_for_trajectory`
+    — the same pure helper the runner-side composite path reaches when a
+    task declares ``grading.grading_method = "composite"`` with
+    ``weights: {llm_judge: 1.0}`` and no state / transcript-rule /
+    trace-check / custom-check / KB surface. The equivalence is pinned
+    by :data:`_JUDGE_ONLY_EQUIVALENT_CONFIG` and the byte-parity gate at
+    ``tests/canonical/test_judge_only_composite_llm_judge_only_parity.py``.
 
     Failure surface at grade time (not factory time — the same factory
     serves both rubric-carrying and rubric-less tasks in one run, so
     per-task decisions belong at dispatch): a task with no
     ``grading.llm_judge`` block, and a run with no ``models["judge"]``.
-    Both surface as :class:`GradingFailedError` naming the trial.
+    Both surface as :class:`GradingFailedError` naming the trial. An
+    ``ERRORED`` judge result surfaces the same way from the helper.
+
+    Fail-loud at factory time: :func:`load_grading_method` resolves the
+    ``composite`` marker so a misconfigured install (missing the
+    ``tolokaforge.grading_methods`` entry-point group) surfaces here
+    rather than at grade time.
 
     ``llm_client`` is a test-only injection point mirroring
     :func:`~tolokaforge.core.grading.replay.replay_trial`; production
     callers leave it ``None`` and the judge builds its own client.
     """
+    load_grading_method("composite")
+
     override = ctx.grader_config.judge if ctx.grader_config else None
     logger = ctx.logger
 
@@ -1301,69 +1310,15 @@ def judge_backed_trial_grader_factory(
                 "config declares no models.judge; add one, or select a "
                 "grader that does not need a judge model."
             )
-
-        wire = encode_transcript_wire(trajectory, agent_system_prompt)
-        if wire is None:
-            # Empty trajectory with no policy — no evidence to judge
-            # against. ``JudgeBackedTrialGrader.grade`` logs the
-            # ``None`` verdict at the seam.
-            return None
-        judge_agent_prompt, transcript = split_leading_system_message(json.loads(wire))
-
-        # Task customization is the base; the run-level override wins
-        # per-field when it is not ``None``. The override cannot express
-        # "reset to library default" — see :class:`JudgeGraderConfig`.
-        customization = llm_judge_config.customization
-        base_disable_kb = customization.disable_knowledge_search if customization else None
-        base_custom_prompt = customization.system_prompt if customization else None
-        base_include_agent = customization.include_agent_system_prompt if customization else None
-
-        disable_kb_resolved = (
-            override.disable_knowledge_search
-            if override is not None and override.disable_knowledge_search is not None
-            else base_disable_kb
-        )
-        custom_prompt = (
-            override.custom_system_prompt
-            if override is not None and override.custom_system_prompt is not None
-            else base_custom_prompt
-        )
-        include_agent_resolved = (
-            override.include_agent_system_prompt
-            if override is not None and override.include_agent_system_prompt is not None
-            else base_include_agent
-        )
-        # LLMJudge's own defaults for the two bool knobs are
-        # ``disable_knowledge_search=False`` and
-        # ``include_agent_system_prompt=True``; collapse the tri-state
-        # here so both fields resolve consistently (the reviewer flagged
-        # an asymmetry where one collapsed via ``bool()`` and the other
-        # kept the tri-state).
-        judge = LLMJudge(
-            spec.judge_model_config,
-            disable_knowledge_search=bool(disable_kb_resolved),
-            custom_system_prompt=custom_prompt,
-            include_agent_system_prompt=(
-                include_agent_resolved if include_agent_resolved is not None else True
-            ),
+        return run_judge_only_for_trajectory(
+            trial_id=spec.trial_id,
+            llm_judge_config=llm_judge_config,
+            judge_model_config=spec.judge_model_config,
+            trajectory=trajectory,
+            agent_system_prompt=agent_system_prompt,
+            override=override,
             llm_client=llm_client,
             logger=logger,
         )
-        result = judge.run(
-            rubric=llm_judge_config.rubric,
-            agent_system_prompt=judge_agent_prompt,
-            transcript=transcript,
-        )
-        # Fail-loud contract: an ERRORED judge is a grading failure the
-        # trial is ungradeable under, never a booked agent failure. The
-        # ``JudgeBackedTrialGrader.grade`` caller catches nothing here;
-        # the seam's ``GradingFailedError`` surface is what carries the
-        # verdict-of-nothing forward.
-        if result.status is JudgeRunStatus.ERRORED:
-            raise GradingFailedError(
-                f"judge_only grader errored for trial {spec.trial_id!r}: "
-                f"{result.reasons or 'no reason recorded'}"
-            )
-        return build_replay_grade(result)
 
     return JudgeBackedTrialGrader(judge_fn=judge_fn, logger=ctx.logger)

@@ -7,7 +7,8 @@ and asserts every leg produces the baseline byte-for-byte.
 
 Test tier: canonical. No live LLM key ever reaches the harness (the judge
 provider's :class:`LLMClient` is monkeypatched to a scripted stand-in), and
-no live postgres is ever dialled (the ``_fetch_probe_rows`` seam is
+no live postgres is ever dialled (the
+``tolokaforge.core.grading.db_probes._fetch_probe_rows`` seam is
 monkeypatched to serve pack-declared rows), so the lane stays keyless and
 network-free.
 
@@ -21,8 +22,9 @@ baseline produces no diff.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -30,11 +32,15 @@ from tests.utils.grader_parity_harness import (
     REFRESH_BASELINES_OPTION,
     ParityPack,
     assert_grader_rpc_refuses,
+    assert_snapshot_rpc_refuses,
+    components_diff,
     load_parity_pack,
+    produce_snapshot_bundle,
     read_baseline,
     refresh_or_assert_baseline,
     run_via_grader_rpc,
     run_via_runner_rpc,
+    run_via_snapshot_rpc,
     serialise_grade,
     should_refresh_baselines,
     write_baseline,
@@ -47,34 +53,101 @@ pytestmark = pytest.mark.canonical
 
 _BASELINES_ROOT = Path(__file__).parent / "grader_parity_baselines"
 
+
+@dataclass(frozen=True)
+class ParityPackSpec:
+    """One row of the parity gate's pack matrix.
+
+    Fields:
+
+    * ``name`` — the pack directory name under
+      ``tests/canonical/grader_parity_baselines/``.
+    * ``snapshot_kind`` — how Lane B (snapshot dispatch) and Lane C
+      (regrade replays) treat the pack:
+
+      - ``"gradable"`` — the snapshot substrate can serve every read the
+        pack's config declares; the leg asserts byte-parity against the
+        pack's committed :file:`expected_grade.json`.
+      - ``"refusal"`` — the snapshot substrate refuses a read the pack
+        declares (``state_checks.db_probes`` offline) or the grader-side
+        composite refuses before any substrate read
+        (``state_checks.hash_enabled`` on ``hash_and_all_four``); the
+        leg asserts :class:`GradingFailedError` with the pack's declared
+        message fragment instead.
+
+    * ``expected_block`` — the isolation-invariant seam
+      ``test_isolation_pack_config_is_single_seam`` locks. Applies to
+      isolation packs only; ``None`` for composite packs, where the
+      invariant is "≥2 populated seams" and the single-seam parametrise
+      does not read the field.
+    """
+
+    name: str
+    snapshot_kind: Literal["gradable", "refusal"]
+    expected_block: str | None = None
+
+
 # One row per plug-in seam. Each pack's grading.yaml declares exactly
 # one non-trivial grading block — the isolation invariant
 # ``test_isolation_pack_config_is_single_seam`` locks — so a divergence at
 # that seam surfaces at that pack alone.
-_ISOLATION_PACKS: list[tuple[str, str]] = [
-    ("state_checks_jsonpath_only", "state_checks"),
-    ("state_checks_db_probes_only", "state_checks"),
-    ("transcript_rules_only", "transcript_rules"),
-    ("trace_checks_heavy", "trace_checks"),
-    ("custom_checks_only", "custom_checks"),
-    ("rubric_only", "llm_judge"),
+#
+# ``snapshot_kind="refusal"`` for ``state_checks_db_probes_only`` locks the
+# documented bundle-format-v1.0 limit: the snapshot substrate cannot serve
+# ``db_probe`` offline (the DSN is only reachable inside the task's docker
+# network). Bundle format v1.1 — pre-materialised probe rows — is deferred
+# under issue #1438.
+_ISOLATION_PACKS: list[ParityPackSpec] = [
+    ParityPackSpec("state_checks_jsonpath_only", "gradable", "state_checks"),
+    ParityPackSpec("state_checks_db_probes_only", "refusal", "state_checks"),
+    ParityPackSpec("transcript_rules_only", "gradable", "transcript_rules"),
+    ParityPackSpec("trace_checks_heavy", "gradable", "trace_checks"),
+    ParityPackSpec("custom_checks_only", "gradable", "custom_checks"),
+    ParityPackSpec("rubric_only", "gradable", "llm_judge"),
 ]
-_ISOLATION_PACK_DIRS = [_BASELINES_ROOT / name for name, _ in _ISOLATION_PACKS]
-_ISOLATION_PACK_IDS = [name for name, _ in _ISOLATION_PACKS]
-_ISOLATION_PACK_EXPECTED_BLOCK = dict(_ISOLATION_PACKS)
+_ISOLATION_PACK_DIRS = [_BASELINES_ROOT / spec.name for spec in _ISOLATION_PACKS]
+_ISOLATION_PACK_IDS = [spec.name for spec in _ISOLATION_PACKS]
+_ISOLATION_PACK_EXPECTED_BLOCK = {
+    spec.name: spec.expected_block for spec in _ISOLATION_PACKS if spec.expected_block is not None
+}
 
 _RUBRIC_ONLY_PACK_DIR = _BASELINES_ROOT / "rubric_only"
 
 # Composite packs that assert per-component parity across two or more seams.
-# The refusal case (``hash_and_all_four``) rides its own test — the grader leg
-# raises rather than producing a Grade — so it is excluded from this list.
+# ``hash_and_all_four`` — ``snapshot_kind="refusal"`` — locks the
+# grader-side hash refusal: hash grading fires before any substrate read,
+# so the snapshot leg surfaces the same message the live-callback leg
+# surfaces (substrate topology does not shift a hash refusal).
+_COMPOSITE_PACKS: list[ParityPackSpec] = [
+    ParityPackSpec("state_plus_transcript", "gradable"),
+    ParityPackSpec("state_plus_judge", "gradable"),
+    ParityPackSpec("all_four_no_hash", "gradable"),
+    ParityPackSpec("hash_and_all_four", "refusal"),
+]
 _COMPOSITE_PARITY_PACK_IDS: list[str] = [
-    "state_plus_transcript",
-    "state_plus_judge",
-    "all_four_no_hash",
+    spec.name for spec in _COMPOSITE_PACKS if spec.snapshot_kind == "gradable"
 ]
 _COMPOSITE_PARITY_PACK_DIRS = [_BASELINES_ROOT / name for name in _COMPOSITE_PARITY_PACK_IDS]
 _HASH_AND_ALL_FOUR_PACK_DIR = _BASELINES_ROOT / "hash_and_all_four"
+
+_SNAPSHOT_GRADABLE_PACK_SPECS: list[ParityPackSpec] = [
+    spec for spec in [*_ISOLATION_PACKS, *_COMPOSITE_PACKS] if spec.snapshot_kind == "gradable"
+]
+_SNAPSHOT_GRADABLE_PACK_DIRS = [
+    _BASELINES_ROOT / spec.name for spec in _SNAPSHOT_GRADABLE_PACK_SPECS
+]
+_SNAPSHOT_GRADABLE_PACK_IDS = [spec.name for spec in _SNAPSHOT_GRADABLE_PACK_SPECS]
+
+_SNAPSHOT_ISOLATION_GRADABLE_DIRS = [
+    _BASELINES_ROOT / spec.name for spec in _ISOLATION_PACKS if spec.snapshot_kind == "gradable"
+]
+_SNAPSHOT_ISOLATION_GRADABLE_IDS = [
+    spec.name for spec in _ISOLATION_PACKS if spec.snapshot_kind == "gradable"
+]
+
+_STATE_CHECKS_DB_PROBES_ONLY_PACK_DIR = _BASELINES_ROOT / "state_checks_db_probes_only"
+_SNAPSHOT_DB_PROBES_REFUSAL_FRAGMENT = "cannot serve db_probes offline"
+_SNAPSHOT_HASH_REFUSAL_FRAGMENT = "cannot execute hash-based grading"
 
 
 @pytest.mark.parametrize("pack_dir", _ISOLATION_PACK_DIRS, ids=_ISOLATION_PACK_IDS)
@@ -418,6 +491,240 @@ def test_regression_sim_leg_divergence_names_the_component(
         _fake_grade_trace_checks,
     )
     assert_grader_rpc_refuses(pack, "trace_checks", monkeypatch=monkeypatch)
+
+
+@pytest.mark.parametrize(
+    "pack_dir",
+    _SNAPSHOT_ISOLATION_GRADABLE_DIRS,
+    ids=_SNAPSHOT_ISOLATION_GRADABLE_IDS,
+)
+def test_isolation_pack_parity_snapshot(
+    pack_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lane B: each snapshot-gradable isolation pack matches its baseline.
+
+    Drives :func:`run_via_snapshot_rpc` — the grader composite over a
+    :class:`SnapshotGradingSubstrate` reading a per-test-run bundle — and
+    asserts the resulting :class:`grader_pb2.Grade` serialises to the same
+    bytes as the pack's committed :file:`expected_grade.json` (the Lane A
+    baseline). Lane A owns baseline refresh; Lane B never rewrites.
+    """
+    pack = load_parity_pack(pack_dir)
+    grade = run_via_snapshot_rpc(pack, monkeypatch=monkeypatch)
+    serialised = serialise_grade(grade)
+    baseline = read_baseline(pack)
+    if serialised != baseline:
+        raise AssertionError(
+            _snapshot_baseline_divergence_message(
+                leg="grader_rpc_snapshot",
+                serialised=serialised,
+                baseline=baseline,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "pack_dir",
+    _COMPOSITE_PARITY_PACK_DIRS,
+    ids=_COMPOSITE_PARITY_PACK_IDS,
+)
+def test_composite_pack_parity_snapshot(
+    pack_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lane B: each snapshot-gradable composite pack matches its baseline.
+
+    Same shape as :func:`test_isolation_pack_parity_snapshot` over the
+    three composite packs whose grading blocks span multiple seams and
+    the snapshot substrate can serve every read. ``hash_and_all_four``
+    is refusal-mode in Lane B and rides
+    :func:`test_snapshot_rpc_refuses_hash_and_all_four`.
+    """
+    pack = load_parity_pack(pack_dir)
+    grade = run_via_snapshot_rpc(pack, monkeypatch=monkeypatch)
+    serialised = serialise_grade(grade)
+    baseline = read_baseline(pack)
+    if serialised != baseline:
+        raise AssertionError(
+            _snapshot_baseline_divergence_message(
+                leg="grader_rpc_snapshot",
+                serialised=serialised,
+                baseline=baseline,
+            )
+        )
+
+
+def test_snapshot_rpc_db_probes_surfaces_substrate_unreachable_in_reasons(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The snapshot leg cannot serve ``state_checks.db_probes`` offline; the
+    :class:`SubstrateUnreachableError` lands in the Grade's ``reasons`` text.
+
+    Locks the documented bundle-format-v1.0 limit for db_probes.
+    :meth:`SnapshotGradingSubstrate.db_probe` raises
+    :class:`SubstrateUnreachableError`; the state-check backend
+    (:class:`~tolokaforge.core.grading.default_state_check_backends.DbProbesStateCheckBackend`)
+    catches every ``substrate.db_probe`` exception per-probe and emits a
+    ``FAIL:`` reason line naming the exception, matching the fail-loud
+    contract shipped for db-probe connection errors. The Grade is
+    produced (not refused): ``components.state_checks == 0.0`` (every
+    probe failed) and ``reasons`` carries the "cannot serve db_probes
+    offline" fragment.
+
+    Bundle format v1.1 that pre-materialises probe rows is deferred
+    under issue #1438; once it lands, this pack graduates from Lane B's
+    refusal-in-reasons contract to full byte-parity.
+    """
+    pack = load_parity_pack(_STATE_CHECKS_DB_PROBES_ONLY_PACK_DIR)
+    grade = run_via_snapshot_rpc(pack, monkeypatch=monkeypatch)
+    projected = json.loads(serialise_grade(grade))
+    assert projected["components"]["state_checks"] == 0.0, projected["components"]
+    reasons = projected["reasons"]
+    assert _SNAPSHOT_DB_PROBES_REFUSAL_FRAGMENT in reasons, reasons
+
+
+def test_snapshot_rpc_refuses_hash_and_all_four(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The snapshot leg refuses a hash-enabled pack with the same message
+    the live-callback leg surfaces.
+
+    Hash refusal fires before any substrate read at
+    ``composite_dispatch.py:178-183``, so the message is grader-side and
+    substrate topology does not shift it. Locks that invariant: the
+    snapshot leg refuses on the same fragment Lane A pins.
+    """
+    pack = load_parity_pack(_HASH_AND_ALL_FOUR_PACK_DIR)
+    assert_snapshot_rpc_refuses(
+        pack,
+        monkeypatch=monkeypatch,
+        expected_error_fragment=_SNAPSHOT_HASH_REFUSAL_FRAGMENT,
+    )
+
+
+@pytest.mark.parametrize(
+    "pack_dir",
+    _SNAPSHOT_GRADABLE_PACK_DIRS,
+    ids=_SNAPSHOT_GRADABLE_PACK_IDS,
+)
+def test_regrade_parity_snapshot_replays(
+    pack_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Lane C: three sequential replays against one bundle produce identical
+    Grades.
+
+    Materialises a v1.0 grade bundle once, then dispatches
+    :func:`run_via_snapshot_rpc` three times with ``bundle_dir_override``
+    pointing at the same bytes. Asserts each replay's serialised Grade is
+    byte-identical to the pack's committed baseline (Lane A anchor) and
+    to the other two replays. The property is equality-of-inputs →
+    equality-of-outputs: the bundle bytes are fixed, so a divergence
+    across replays would mean the composite reached ``datetime.now()`` /
+    a mutable module-global / a process-local cache.
+
+    :class:`freezegun` is deliberately not used — the deterministic-bundle
+    property is the invariant here, not clock advancement. Follow-up:
+    strengthen with explicit 24 h advancement (adds a dev-dep).
+    """
+    pack = load_parity_pack(pack_dir)
+    bundle_dir = tmp_path / "regrade-bundle"
+    produce_snapshot_bundle(pack, monkeypatch=monkeypatch, bundle_dir=bundle_dir)
+    baseline = read_baseline(pack)
+    serialised_replays: list[str] = []
+    for _ in range(3):
+        grade = run_via_snapshot_rpc(
+            pack,
+            monkeypatch=monkeypatch,
+            bundle_dir_override=bundle_dir,
+        )
+        serialised_replays.append(serialise_grade(grade))
+    first_replay = serialised_replays[0]
+    for index, replay in enumerate(serialised_replays):
+        if replay != first_replay:
+            raise AssertionError(
+                _snapshot_baseline_divergence_message(
+                    leg=f"grader_rpc_snapshot replay #{index}",
+                    serialised=replay,
+                    baseline=first_replay,
+                )
+            )
+    if first_replay != baseline:
+        raise AssertionError(
+            _snapshot_baseline_divergence_message(
+                leg="grader_rpc_snapshot (regrade)",
+                serialised=first_replay,
+                baseline=baseline,
+            )
+        )
+
+
+def test_regrade_parity_snapshot_replays_db_probes_pack_are_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Lane C substrate-unreachable companion: three replays against the
+    db-probes pack produce byte-identical Grades.
+
+    Bundle production is substrate-independent for non-``db_probes``
+    reads, so the bundle materialises fine; each of three replays reaches
+    :meth:`SnapshotGradingSubstrate.db_probe`, which raises
+    :class:`SubstrateUnreachableError` per probe and lands in every
+    replay's ``reasons`` text through the state-check backend's catch.
+    Locks that Lane B's substrate-unreachable-in-reasons contract is
+    idempotent across replays.
+    """
+    pack = load_parity_pack(_STATE_CHECKS_DB_PROBES_ONLY_PACK_DIR)
+    bundle_dir = tmp_path / "regrade-bundle"
+    produce_snapshot_bundle(pack, monkeypatch=monkeypatch, bundle_dir=bundle_dir)
+    serialised_replays: list[str] = []
+    for _ in range(3):
+        grade = run_via_snapshot_rpc(
+            pack,
+            monkeypatch=monkeypatch,
+            bundle_dir_override=bundle_dir,
+        )
+        serialised_replays.append(serialise_grade(grade))
+    first_replay = serialised_replays[0]
+    for index, replay in enumerate(serialised_replays):
+        if replay != first_replay:
+            raise AssertionError(
+                _snapshot_baseline_divergence_message(
+                    leg=f"grader_rpc_snapshot db_probes replay #{index}",
+                    serialised=replay,
+                    baseline=first_replay,
+                )
+            )
+    projected = json.loads(first_replay)
+    assert _SNAPSHOT_DB_PROBES_REFUSAL_FRAGMENT in projected["reasons"], projected["reasons"]
+
+
+def _snapshot_baseline_divergence_message(
+    *,
+    leg: str,
+    serialised: str,
+    baseline: str,
+) -> str:
+    """Name the ``GradeComponents`` slots that diverged in the snapshot
+    leg's serialised Grade, mirroring the message
+    :func:`refresh_or_assert_baseline` emits for Lane A.
+    """
+    diverging = components_diff(serialised, baseline)
+    if diverging:
+        component_list = ", ".join(diverging)
+        return (
+            f"{leg} leg diverged from the baseline on components "
+            f"[{component_list}]; the snapshot substrate no longer produces "
+            "a byte-identical Grade for this pack."
+        )
+    return (
+        f"{leg} leg diverged from the baseline outside the components map "
+        "(score / reasons / detail lists differ but every component score "
+        "matches); the snapshot substrate no longer produces a byte-identical "
+        "Grade for this pack."
+    )
 
 
 def _fake_grade_trace_checks(*_args: Any, **_kwargs: Any) -> TraceChecksResult:

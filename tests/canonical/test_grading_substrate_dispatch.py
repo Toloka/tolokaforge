@@ -16,7 +16,7 @@ Locks the two seams the substrate design commits to (per ADR-0040):
    - **InProcess leg** — drive the runner's ``GradeTrial`` RPC. Its
      ``_grade_trial_async`` builds :class:`InProcessGradingSubstrate`
      internally and reassembles the ``Grade`` proto via
-     ``compose_runner_trial_verdict`` + ``build_grade_reasons``.
+     ``compose_trial_verdict`` + ``build_grade_reasons``.
    - **LiveRunnerCallback leg** — construct
      :class:`LiveRunnerCallbackGradingSubstrate` against the runner's
      in-process gRPC channel; call each ``composite.grade_*`` function
@@ -48,6 +48,11 @@ import pytest
 
 from tests.utils.dummy_grading_substrate import DummyGradingSubstrate
 from tolokaforge.core.grading import composite
+from tolokaforge.core.grading.composite_fold import (
+    build_grade_reasons,
+    compose_trial_verdict,
+    resolve_state_checks_component,
+)
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.grading.key_manifest import EVALUATED
@@ -55,11 +60,7 @@ from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorContext
 from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.grading.substrate_live import LiveRunnerCallbackGradingSubstrate
 from tolokaforge.core.grading.trace_checks import TraceChecksResult
-from tolokaforge.core.grading.trace_timeline import build_trial_timeline
-from tolokaforge.core.grading.transcript_wire import (
-    decode_transcript_wire,
-    split_leading_system_message,
-)
+from tolokaforge.core.grading.trace_timeline import build_timeline_from_wire
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import StructuredLogger
@@ -77,11 +78,6 @@ from tolokaforge.runner import (
     add_SubstrateServiceServicer_to_server,
 )
 from tolokaforge.runner import runner_pb2 as pb2
-from tolokaforge.runner.grading import (
-    build_grade_reasons,
-    compose_runner_trial_verdict,
-    resolve_state_checks_component,
-)
 from tolokaforge.runner.grading_ledger import (
     CUSTOM_CHECKS_DISABLED_SKIP,
     CUSTOM_CHECKS_KEY,
@@ -397,10 +393,7 @@ def _reassemble_grade_from_composite(
     try:
         logger = StructuredLogger(name="parity-gate-live-callback")
         llm_messages = list(_LLM_MESSAGES)
-        _, transcript = split_leading_system_message(llm_messages)
-        timeline = build_trial_timeline(
-            decode_transcript_wire(transcript), trial_context.recorded, None
-        )
+        timeline = build_timeline_from_wire(llm_messages, trial_context.recorded, None)
 
         components = RunnerGradeComponents()
         accounted_keys: dict[str, Any] = {}
@@ -532,7 +525,7 @@ def _reassemble_grade_from_composite(
                 grading_config.state_checks.hash_weight if grading_config.state_checks else None
             ),
         )
-        verdict = compose_runner_trial_verdict(
+        verdict = compose_trial_verdict(
             components.model_dump(),
             grading_config.model_dump(),
             judge_gate_failed=judge_gate_failed,

@@ -6,17 +6,19 @@ External code discovers and loads alternative implementations of the
 :class:`~tolokaforge.core.conductor.Conductor`,
 :class:`~tolokaforge.core.service_readiness.ServiceReadinessProbe`,
 :class:`~tolokaforge.core.actors.turn_policy.TurnPolicy`,
+:class:`~tolokaforge.core.grading.grading_method.GradingMethod`,
+:class:`~tolokaforge.core.grading.kinds.GraderKind`,
 :class:`~tolokaforge.core.grading.substrate.GradingSubstrate`,
 :class:`~tolokaforge.core.grading.check_runner.CheckExecutor`,
 :class:`~tolokaforge.core.grading.judge_model_provider.JudgeModelProvider`,
 :class:`~tolokaforge.core.grading.rubric_evaluator.RubricEvaluator`,
 :class:`~tolokaforge.core.grading.transcript_rule_matcher.TranscriptRuleMatcher`,
 :class:`~tolokaforge.core.grading.state_check_backend.StateCheckBackend`,
+:data:`~tolokaforge.core.grading.trace_check_operator.TraceCheckOperator`,
+:class:`~tolokaforge.core.grading.bundle_store.BundleStore`,
 :class:`~tolokaforge.core.composition_runtime.ComposeMaterialiser`,
 :class:`~tolokaforge.core.composition_runtime.ServiceLifecycleDispatcher`,
-:class:`~tolokaforge.core.composition_runtime.SubstrateComposer`,
-and
-:data:`~tolokaforge.core.grading.trace_check_operator.TraceCheckOperator`
+and :class:`~tolokaforge.core.composition_runtime.SubstrateComposer`
 Protocols through ``importlib.metadata`` entry-point groups — no in-tree
 edit, no monkey-patch. Each holistic seam resolves to a *factory callable*,
 mirroring the existing :data:`~tolokaforge.core.conductor.ConductorFactory`
@@ -37,6 +39,10 @@ caller instantiates with the class's own optional injection seams
 The trace-check-operator loader resolves directly to the operator callable
 — one operator per entry point, no factory wrapper, since the callable
 itself IS the seam contract.
+The bundle-store loader mirrors the grading-substrate shape: resolves to
+the store *class*, and the caller instantiates with topology-specific
+arguments (``root_dir=`` for local disk, ``bucket=``/``endpoint_url=`` for
+S3-compatible endpoints).
 
 The groups:
 
@@ -45,6 +51,9 @@ The groups:
 * ``tolokaforge.conductors`` → :data:`~tolokaforge.core.conductor.ConductorFactory`
 * ``tolokaforge.service_readiness_probes`` → :data:`ReadinessProbeFactory`
 * ``tolokaforge.turn_policies`` → :data:`TurnPolicyFactory`
+* ``tolokaforge.grading_methods`` → ``type[GradingMethod]``
+* ``tolokaforge.grader_kinds`` → ``type[GraderKind]``
+* ``tolokaforge.bundle_stores`` → ``type[BundleStore]``
 * ``tolokaforge.compose_materialisers`` → ``type[ComposeMaterialiser]``
 * ``tolokaforge.service_lifecycle_dispatchers`` → ``type[ServiceLifecycleDispatcher]``
 * ``tolokaforge.substrate_composers`` → ``type[SubstrateComposer]``
@@ -55,6 +64,7 @@ The groups:
 * ``tolokaforge.transcript_rule_matchers`` → :data:`TranscriptRuleMatcherFactory`
 * ``tolokaforge.state_check_backends`` → :data:`StateCheckBackendFactory`
 * ``tolokaforge.trace_check_operators`` → :data:`TraceCheckOperator`
+* ``tolokaforge.bundle_stores`` → ``type[BundleStore]``
 
 Discovery is lazy and cached per group; it enumerates ``ep.name`` /
 ``ep.dist`` **without** calling ``ep.load()``. This splits the fail-loud
@@ -79,7 +89,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
 from tolokaforge.core.grading.check_runner import CheckExecutor
+from tolokaforge.core.grading.grading_method import GradingMethod
 from tolokaforge.core.grading.judge_model_provider import JudgeModelProviderFactory
+from tolokaforge.core.grading.kinds import GraderKind
 from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorFactory
 from tolokaforge.core.grading.state_check_backend import StateCheckBackendFactory
 from tolokaforge.core.grading.substrate import GradingSubstrate
@@ -100,6 +112,7 @@ if TYPE_CHECKING:
         SubstrateComposer,
     )
     from tolokaforge.core.conductor import Conductor, ConductorContext
+    from tolokaforge.core.grading.bundle_store import BundleStore
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import SeedRef
     from tolokaforge.core.runtime import RuntimeBackend
@@ -134,9 +147,12 @@ __all__ = [
     "TurnPolicyContext",
     "TurnPolicyFactory",
     "UnknownImplementationError",
+    "available_bundle_stores",
     "available_compose_materialisers",
     "available_conductors",
     "available_custom_check_executors",
+    "available_grader_kinds",
+    "available_grading_methods",
     "available_grading_substrates",
     "available_judge_model_providers",
     "available_readiness_probes",
@@ -150,9 +166,12 @@ __all__ = [
     "available_trial_graders",
     "available_turn_policies",
     "discover_entry_points",
+    "load_bundle_store",
     "load_compose_materialiser",
     "load_conductor",
     "load_custom_check_executor",
+    "load_grader_kind",
+    "load_grading_method",
     "load_grading_substrate",
     "load_judge_model_provider",
     "load_readiness_probe",
@@ -172,6 +191,8 @@ TRIAL_GRADERS_GROUP = "tolokaforge.trial_graders"
 CONDUCTORS_GROUP = "tolokaforge.conductors"
 SERVICE_READINESS_PROBES_GROUP = "tolokaforge.service_readiness_probes"
 TURN_POLICIES_GROUP = "tolokaforge.turn_policies"
+GRADING_METHODS_GROUP = "tolokaforge.grading_methods"
+GRADER_KINDS_GROUP = "tolokaforge.grader_kinds"
 GRADING_SUBSTRATES_GROUP = "tolokaforge.grading_substrates"
 CUSTOM_CHECK_EXECUTORS_GROUP = "tolokaforge.custom_check_executors"
 JUDGE_MODEL_PROVIDERS_GROUP = "tolokaforge.judge_model_providers"
@@ -179,6 +200,7 @@ RUBRIC_EVALUATORS_GROUP = "tolokaforge.rubric_evaluators"
 TRANSCRIPT_RULE_MATCHERS_GROUP = "tolokaforge.transcript_rule_matchers"
 STATE_CHECK_BACKENDS_GROUP = "tolokaforge.state_check_backends"
 TRACE_CHECK_OPERATORS_GROUP = "tolokaforge.trace_check_operators"
+BUNDLE_STORES_GROUP = "tolokaforge.bundle_stores"
 COMPOSE_MATERIALISERS_GROUP = "tolokaforge.compose_materialisers"
 SERVICE_LIFECYCLE_DISPATCHERS_GROUP = "tolokaforge.service_lifecycle_dispatchers"
 SUBSTRATE_COMPOSERS_GROUP = "tolokaforge.substrate_composers"
@@ -270,6 +292,18 @@ class RuntimeBackendBuildContext:
     :meth:`provision` routes through ``composer.provision_trial``. Default
     ``False`` preserves built-in-engine behaviour for packs that declare
     no manifest."""
+    connect_timeout_s: float = 30.0
+    """Runner health-check budget on connect, seconds. Resolved by the
+    orchestrator from ``env TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S →
+    OrchestratorConfig.runtime_connect.timeout_s → this default``. Passed
+    into the backend so the primary ``connect()`` call (no args) picks it
+    up via the instance attribute (see
+    :class:`~tolokaforge.core.shared_stack_runtime.SharedStackRuntimeBackend`)."""
+    connect_retry_interval_s: float = 1.0
+    """Interval between health-check attempts during connect, seconds.
+    Same resolution as :attr:`connect_timeout_s` via
+    ``TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S`` and
+    ``OrchestratorConfig.runtime_connect.retry_interval_s``."""
 
 
 @dataclass(frozen=True)
@@ -484,6 +518,52 @@ def load_trace_check_operator(name: str) -> TraceCheckOperator:
     return cast(TraceCheckOperator, _load(TRACE_CHECK_OPERATORS_GROUP, name))
 
 
+def load_grading_method(name: str) -> type[GradingMethod]:
+    """Resolve a registered grading-method name to its marker class.
+
+    Returns the class object itself, matching :func:`load_grading_substrate`:
+    a downstream method registers the class it defined, and the runner
+    reads ``NAME`` off it to spot pyproject typos at discovery. Runtime
+    dispatch today branches on the wire string
+    (:meth:`RunnerServiceImpl.GradeTrial`); this loader is a validation +
+    discovery surface, called at ``RegisterTrial`` to refuse an unknown
+    ``grading.grading_method`` before the runner spends a trial on it.
+
+    Fail-loud on unknown names via :class:`UnknownImplementationError`,
+    matching every other loader in this module.
+    """
+    return cast(type[GradingMethod], _load(GRADING_METHODS_GROUP, name))
+
+
+def load_grader_kind(name: str) -> type[GraderKind]:
+    """Resolve a registered grader-kind name to its implementation class.
+
+    Returns the class object itself, matching :func:`load_grading_method`
+    and :func:`load_grading_substrate`. Every shipped name registers in
+    BOTH ``tolokaforge.grading_methods`` (the marker Protocol registry) and
+    ``tolokaforge.grader_kinds`` (this typed-kind registry); a canonical
+    test locks the shared vocabulary. Downstream adapters are expected to
+    register in both groups too.
+
+    Fail-loud on unknown names via :class:`UnknownImplementationError`,
+    matching every other loader in this module.
+    """
+    return cast(type[GraderKind], _load(GRADER_KINDS_GROUP, name))
+
+
+def load_bundle_store(name: str) -> type[BundleStore]:
+    """Resolve a registered bundle-store name to its implementation class.
+
+    Mirrors :func:`load_grading_substrate` — returns the store *class*, not
+    a factory. Bundle stores are constructed with topology-specific
+    arguments (``root_dir=`` for local, ``bucket=``/``endpoint_url=`` for
+    S3-compatible) that no shared context can generically supply, so the
+    caller instantiates the class it received. Fail-loud on unknown names
+    via :class:`UnknownImplementationError`.
+    """
+    return cast("type[BundleStore]", _load(BUNDLE_STORES_GROUP, name))
+
+
 def load_grading_substrate(name: str) -> type[GradingSubstrate]:
     """Resolve a registered grading-substrate name to its implementation class.
 
@@ -558,6 +638,16 @@ def available_turn_policies() -> list[str]:
     return sorted(discover_entry_points(TURN_POLICIES_GROUP))
 
 
+def available_grading_methods() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.grading_methods`` group."""
+    return sorted(discover_entry_points(GRADING_METHODS_GROUP))
+
+
+def available_grader_kinds() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.grader_kinds`` group."""
+    return sorted(discover_entry_points(GRADER_KINDS_GROUP))
+
+
 def available_grading_substrates() -> list[str]:
     """Sorted names registered in the ``tolokaforge.grading_substrates`` group."""
     return sorted(discover_entry_points(GRADING_SUBSTRATES_GROUP))
@@ -591,6 +681,11 @@ def available_state_check_backends() -> list[str]:
 def available_trace_check_operators() -> list[str]:
     """Sorted names registered in the ``tolokaforge.trace_check_operators`` group."""
     return sorted(discover_entry_points(TRACE_CHECK_OPERATORS_GROUP))
+
+
+def available_bundle_stores() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.bundle_stores`` group."""
+    return sorted(discover_entry_points(BUNDLE_STORES_GROUP))
 
 
 def available_compose_materialisers() -> list[str]:

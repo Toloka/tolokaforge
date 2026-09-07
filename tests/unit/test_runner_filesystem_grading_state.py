@@ -1,4 +1,4 @@
-"""Runner reads back the agent-visible tree at grading time.
+"""Runner routes the filesystem-state read at grading time.
 
 Task authors write jsonpath state_checks like::
 
@@ -8,11 +8,12 @@ Task authors write jsonpath state_checks like::
           contains: "amount * (1 + tax_rate)"
 
 For that to match, the runner exposes the on-disk contents of the agent's
-edit surface back at its logical path. Two routes:
+edit surface back at its logical path. Two routes, both exercised here:
 
-* **Engine-loop trial** — the runner service walks its own ``AGENT_WORK_DIR``,
-  the container it registered the trial into. Keys land under
-  ``/env/fs/agent-visible/<rel>``.
+* **Engine-loop trial** — the runner service walks its own ``AGENT_WORK_DIR``
+  via :func:`tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`
+  (whose behaviour is locked in ``tests/unit/grading/test_filesystem_view.py``).
+  Keys land under ``/env/fs/agent-visible/<rel>``.
 * **Harness-mode trial** — the CLI edits inside a separate container reached
   via the exec-wrapper; the runner service execs ``tar | base64`` there and
   decodes the tree in-process. Keys land under the container's declared
@@ -43,11 +44,12 @@ pytestmark = pytest.mark.unit
 
 
 class _StubRunnerServiceImpl:
-    """Bind just the method under test onto a minimal instance.
+    """Bind just the routing method under test onto a minimal instance.
 
     The full RunnerServiceImpl constructor spins up a gRPC server, a DB client,
-    an LLM stack and an OTEL exporter — none of which the filesystem-read
-    helper touches. Binding the method directly to a plain object keeps the
+    an LLM stack and an OTEL exporter — none of which
+    :meth:`_read_filesystem_for_state` touches on the routing branches this
+    file exercises. Binding the method directly to a plain object keeps the
     test hermetic.
     """
 
@@ -55,7 +57,6 @@ class _StubRunnerServiceImpl:
         self.db_client = db_client
         self.trials: dict[str, object] = {}
 
-    _read_agent_visible_filesystem = service_module.RunnerServiceImpl._read_agent_visible_filesystem
     _read_filesystem_for_state = service_module.RunnerServiceImpl._read_filesystem_for_state
 
 
@@ -67,60 +68,6 @@ def redirect_work_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     work.mkdir()
     monkeypatch.setattr(service_module, "AGENT_WORK_DIR", str(work))
     return work
-
-
-def test_read_agent_visible_filesystem_relabels_files_under_logical_root(
-    redirect_work_dir: Path,
-) -> None:
-    (redirect_work_dir / "buggy_math.py").write_text("amount * (1 + tax_rate)\n")
-    (redirect_work_dir / "sub").mkdir()
-    (redirect_work_dir / "sub" / "helper.py").write_text("def x(): return 1\n")
-
-    svc = _StubRunnerServiceImpl(db_client=AsyncMock())
-    fs = svc._read_agent_visible_filesystem()
-
-    assert fs == {
-        "/env/fs/agent-visible/buggy_math.py": "amount * (1 + tax_rate)\n",
-        "/env/fs/agent-visible/sub/helper.py": "def x(): return 1\n",
-    }
-
-
-def test_read_agent_visible_filesystem_skips_binary_and_returns_empty_when_absent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Point AGENT_WORK_DIR at a directory that will not exist for the empty case.
-    monkeypatch.setattr(service_module, "AGENT_WORK_DIR", str(tmp_path / "nope"))
-    svc = _StubRunnerServiceImpl(db_client=AsyncMock())
-    assert svc._read_agent_visible_filesystem() == {}
-
-    # Then repoint at a fresh subdirectory (dodging the unit-conftest's
-    # autouse fake wheel at tmp_path root) with a binary file: it is skipped,
-    # not raised.
-    work = tmp_path / "work"
-    work.mkdir()
-    monkeypatch.setattr(service_module, "AGENT_WORK_DIR", str(work))
-    (work / "image.bin").write_bytes(b"\x89PNG\x00\x01\x02\x03\xff\xfe")
-    (work / "readme.txt").write_text("hello")
-    fs = svc._read_agent_visible_filesystem()
-    assert fs == {"/env/fs/agent-visible/readme.txt": "hello"}
-
-
-def test_read_agent_visible_filesystem_skips_symlinks(
-    redirect_work_dir: Path,
-) -> None:
-    # A symlink under /work/ could point at any container-readable path
-    # (e.g. /etc/hostname). The assertion vocabulary is not a general-purpose
-    # container filesystem probe, so the walk must ignore the link even
-    # though ``is_file()`` returns True for a file-target symlink.
-    outside = redirect_work_dir.parent / "outside.txt"
-    outside.write_text("must not leak")
-    (redirect_work_dir / "readme.txt").write_text("ok")
-    (redirect_work_dir / "link").symlink_to(outside)
-
-    svc = _StubRunnerServiceImpl(db_client=AsyncMock())
-    fs = svc._read_agent_visible_filesystem()
-
-    assert fs == {"/env/fs/agent-visible/readme.txt": "ok"}
 
 
 # ---------------------------------------------------------------------------
