@@ -218,7 +218,7 @@ class TestPreferredGraderKind:
     def test_returns_composite_under_engine_loop(self) -> None:
         # ENGINE_LOOP means the engine's own turn loop drives the trial and
         # the mixin's grading dispatch is unreached — composite is the
-        # historical fall-through the runner picks up.
+        # BaseAdapter default the mixin's fallback preserves.
         class _MixinUser(CodingHarnessAdapterMixin):
             agent_harness = ENGINE_LOOP
 
@@ -234,9 +234,9 @@ class TestPreferredGraderKind:
         assert _MixinUser().preferred_grader_kind() == "test_execution"
 
     def test_falls_back_to_composite_when_agent_harness_is_absent(self) -> None:
-        # A subclass that never assigns self.agent_harness sees the same
-        # answer BaseAdapter.preferred_grader_kind gave before the mixin
-        # supplied a default — adopting the mixin cannot regress that value.
+        # A subclass that never assigns self.agent_harness sees the
+        # underlying BaseAdapter.preferred_grader_kind answer — the mixin's
+        # getattr fallback preserves it, so adopting the mixin cannot regress.
         class _MixinUser(CodingHarnessAdapterMixin):
             pass
 

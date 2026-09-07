@@ -150,9 +150,8 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     Inheriting :class:`CodingHarnessAdapterMixin` opts this adapter into the
     orchestrator's ``models.agent.harness`` config gate (via the mixin's
     ``supports_coding_harness = True`` flag) and gives it the shared helpers
-    for command assembly, metadata emission, tool-schema payload, and
-    ``test_execution`` grading — leaving only the terminal-bench-specific
-    compose synthesis in this adapter.
+    — leaving only the terminal-bench-specific compose synthesis in this
+    adapter.
     """
 
     requires_docker_cli_in_runner: ClassVar[bool] = True

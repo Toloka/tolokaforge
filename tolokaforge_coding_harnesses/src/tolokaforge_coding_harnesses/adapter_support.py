@@ -259,9 +259,9 @@ class CodingHarnessAdapterMixin:
         override to return the fixed kind.
 
         The ``getattr`` fallback keeps the mixin resilient to a subclass that
-        never sets ``self.agent_harness`` — such a subclass sees the pre-mixin
+        never sets ``self.agent_harness`` — such a subclass sees the underlying
         :meth:`~tolokaforge.adapters.base.BaseAdapter.preferred_grader_kind`
-        answer (``"composite"``), so adopting the mixin cannot regress it."""
+        answer (``"composite"``), which the mixin's fallback preserves."""
         agent_harness = getattr(self, "agent_harness", ENGINE_LOOP)
         if agent_harness != ENGINE_LOOP:
             return "test_execution"

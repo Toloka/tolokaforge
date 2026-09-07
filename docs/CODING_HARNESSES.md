@@ -218,7 +218,7 @@ the design record is [ADR-0039](adr/0039-coding-harness-adapter-agnostic.md).
 `"test_execution"` when `self.agent_harness != ENGINE_LOOP` — matching
 the `grading_method` `emit_test_execution_grading()` puts on the
 `RunnerGradingConfig` the adapter emits under an active harness — and
-`"composite"` otherwise, matching the historical fall-through for a
+`"composite"` otherwise, matching the fall-through for a
 subject whose engine-loop branch does not reach the mixin's grading
 payload. An adapter whose grading is static across both loop branches
 (e.g. because the pack's own verifier writes the reward regardless of
