@@ -1,4 +1,4 @@
-# Grade Bundle Format v1.0
+# Grade Bundle Format v1.1
 
 The **grade bundle** is a self-contained, part-addressable artifact holding everything the grader needs to score a trial: initial state, final state, filesystem snapshot, agent trajectory, custom checks, knowledge base, and the grading configuration itself. Bundles are portable across storage locations, bit-extractable by external tools, and content-addressable — the same trial serialised twice produces byte-identical bytes with matching digest.
 
@@ -19,6 +19,8 @@ The bundle is the wire between the runner (which produces trial artifacts) and a
 ├── filesystem.tar             # workspace snapshot (USTAR, deterministic entries)
 ├── trajectory.json            # agent messages, tool calls, LLM turns
 ├── grading_config.json        # the grading block from the task pack
+├── task_description.json      # v1.1-optional; task description dict (for offline composite kind)
+├── judge_model_config.json    # v1.1-optional; judge ModelConfig dict (for offline llm_judge)
 ├── checks/                    # optional; per-check bytes (custom-check payloads)
 │   ├── manifest.json          # nested manifest with per-file digests
 │   └── <check-name>/...
@@ -29,11 +31,11 @@ The bundle is the wire between the runner (which produces trial artifacts) and a
 
 Every part named in the top-level `manifest.json` MUST be present on disk with a matching SHA-256 digest. Parts not named in the manifest are ignored by conforming readers.
 
-## Manifest schema v1.0
+## Manifest schema v1.1
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "trial_id": "<opaque string, e.g. task-name/2024-05-14T12:34:56Z-abc123>",
   "parts": {
     "initial_state.json":       { "sha256": "<hex>", "size": 1234 },
@@ -42,6 +44,8 @@ Every part named in the top-level `manifest.json` MUST be present on disk with a
     "filesystem.tar":           { "sha256": "<hex>", "size": 8192 },
     "trajectory.json":          { "sha256": "<hex>", "size": 23456 },
     "grading_config.json":      { "sha256": "<hex>", "size": 890 },
+    "task_description.json":    { "sha256": "<hex>", "size": 1024 },
+    "judge_model_config.json":  { "sha256": "<hex>", "size": 256 },
     "checks/manifest.json":     { "sha256": "<hex>", "size": 234 },
     "kb/manifest.json":         { "sha256": "<hex>", "size": 234 }
   }
@@ -54,6 +58,8 @@ Fields:
 - `parts` — map of `rel_path -> {sha256, size}`. The map key IS the file's location relative to the bundle directory; `sha256` is the hex-encoded digest over the file's exact bytes on disk; `size` is the byte length.
 
 The `checks/` and `kb/` subtrees are optional. When present, each carries its own nested `<subtree>/manifest.json` with per-file digests for the subtree's contents; the top-level manifest names only the nested manifest's digest.
+
+The `task_description.json` and `judge_model_config.json` parts are optional additions in schema v1.1. Producers writing a v1.0-shape bundle omit them and the manifest simply skips the entries. Consumers guard on `view.has_part("task_description.json")` / `view.has_part("judge_model_config.json")` before reading. The offline `CompositeGraderKind.evaluate` uses both to recompute sub-components from the substrate; a v1.0 bundle without them falls back to `kind_config["components"]`-driven grading or refuses actionably naming the missing part.
 
 ## Deterministic serialisation rules
 

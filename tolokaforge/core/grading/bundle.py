@@ -89,7 +89,7 @@ __all__ = [
 ]
 
 
-BUNDLE_SCHEMA_VERSION: str = "1.0"
+BUNDLE_SCHEMA_VERSION: str = "1.1"
 _SUPPORTED_MAJOR: str = BUNDLE_SCHEMA_VERSION.split(".", 1)[0]
 
 
@@ -280,9 +280,11 @@ def serialize_grade_bundle(
     kb: Mapping[str, bytes] | None,
     trajectory: dict[str, Any],
     grading_config: dict[str, Any],
+    task_description: Mapping[str, Any] | None = None,
+    judge_model_config: Mapping[str, Any] | None = None,
     exclude_dirs: frozenset[str] = AGENT_VISIBLE_EXCLUDES,
 ) -> GradeBundleManifest:
-    """Materialise a v1.0 grade bundle into ``out_dir``.
+    """Materialise a grade bundle into ``out_dir``.
 
     ``out_dir`` must not already contain any file (raises
     :class:`FileExistsError` on entry). The caller owns lifecycle. Returns
@@ -294,6 +296,15 @@ def serialize_grade_bundle(
     is captured as a USTAR tar with sorted entries and zeroed metadata;
     the top-level ``manifest.json`` is written LAST so its bytes see every
     part's digest.
+
+    v1.1-optional parts — the two keyword-only args ``task_description``
+    and ``judge_model_config`` add matching JSON parts when non-None.
+    Absent means the manifest simply omits the entry; a v1.0-shape
+    caller passes neither and the bundle is byte-identical to what
+    ``BUNDLE_SCHEMA_VERSION="1.0"`` produced. Consumed by
+    :class:`~tolokaforge.core.grading.substrate.SnapshotGradingSubstrate`
+    via ``task_description()`` / ``judge_model_config()`` — used by the
+    full offline ``CompositeGraderKind.evaluate`` path.
     """
     if out_dir.exists() and any(out_dir.iterdir()):
         raise FileExistsError(f"out_dir {out_dir} must be empty; found existing entries")
@@ -301,13 +312,17 @@ def serialize_grade_bundle(
 
     parts: dict[str, dict[str, Any]] = {}
 
-    json_parts: dict[str, dict[str, Any]] = {
+    json_parts: dict[str, Mapping[str, Any]] = {
         "initial_state.json": initial_state,
         "final_state.json": final_state,
         "final_state_stable.json": final_state_stable,
         "trajectory.json": trajectory,
         "grading_config.json": grading_config,
     }
+    if task_description is not None:
+        json_parts["task_description.json"] = task_description
+    if judge_model_config is not None:
+        json_parts["judge_model_config.json"] = judge_model_config
     for rel, payload in json_parts.items():
         data = _canonical_json_bytes(payload)
         (out_dir / rel).write_bytes(data)

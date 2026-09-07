@@ -111,3 +111,48 @@ def test_float_normaliser_matches_parity_harness_import() -> None:
 
     assert harness_ref is normalise_floats
     assert normalise_floats({"score": 0.123456789}) == {"score": 0.123457}
+
+
+def test_v1_1_optional_parts_absent_when_kwargs_omitted(tmp_path: Path) -> None:
+    """A v1.0-shape caller (neither ``task_description`` nor
+    ``judge_model_config`` passed) writes no such parts. The manifest
+    inventory matches what v1.0 emitted; the bundle bytes are what a
+    downstream v1.0 consumer would see."""
+    inputs = synthetic_inputs(tmp_path)
+    out_dir = tmp_path / "bundle"
+    manifest = serialize_grade_bundle(out_dir, **inputs)
+
+    assert "task_description.json" not in manifest.parts
+    assert "judge_model_config.json" not in manifest.parts
+    assert not (out_dir / "task_description.json").exists()
+    assert not (out_dir / "judge_model_config.json").exists()
+
+
+def test_v1_1_optional_parts_written_when_provided(tmp_path: Path) -> None:
+    inputs = synthetic_inputs(tmp_path)
+    task_description = {"task_id": "t", "grading": {"combine": {"method": "weighted"}}}
+    judge_model_config = {"provider": "openrouter", "name": "anthropic/claude-sonnet-4-6"}
+    out_dir = tmp_path / "bundle"
+    manifest = serialize_grade_bundle(
+        out_dir,
+        task_description=task_description,
+        judge_model_config=judge_model_config,
+        **inputs,
+    )
+
+    assert "task_description.json" in manifest.parts
+    assert "judge_model_config.json" in manifest.parts
+    assert (out_dir / "task_description.json").exists()
+    assert (out_dir / "judge_model_config.json").exists()
+
+    # Round-trip determinism holds for v1.1 too — two same-process
+    # serialisations of the same v1.1-shape inputs bit-identical.
+    out_b = tmp_path / "bundle_b"
+    serialize_grade_bundle(
+        out_b,
+        task_description=task_description,
+        judge_model_config=judge_model_config,
+        **inputs,
+    )
+    for rel in sorted(manifest.parts):
+        assert (out_dir / rel).read_bytes() == (out_b / rel).read_bytes()

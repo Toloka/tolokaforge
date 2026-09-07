@@ -163,3 +163,31 @@ def test_schema_version_rejection(tmp_path: Path, schema_version_value: object) 
 
     with pytest.raises(BundleSchemaVersionError):
         load_grade_bundle(bundle_dir)
+
+
+@pytest.mark.parametrize(
+    "schema_version_value",
+    [
+        pytest.param("1.0", id="current-minor-minus-one"),
+        pytest.param("1.1", id="current-minor"),
+        pytest.param("1.5", id="future-minor"),
+        pytest.param("1.99", id="far-future-minor"),
+    ],
+)
+def test_schema_version_accepts_minor_range(tmp_path: Path, schema_version_value: str) -> None:
+    """MINOR-accept path — v1.0 bundles and future v1.x bundles both load
+    on a v1.x reader. Locks the MAJOR-only gate the format spec commits to.
+    (``view.manifest.schema_version`` reports the current reader constant,
+    not the on-disk value — that's the shipped behavior of
+    ``_view_from_parts``, which the MAJOR gate covers.)"""
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    manifest: dict[str, Any] = {
+        "schema_version": schema_version_value,
+        "trial_id": "trial-x",
+        "parts": {},
+    }
+    _write_manifest(bundle_dir, manifest)
+
+    view = load_grade_bundle(bundle_dir)
+    assert view.manifest.trial_id == "trial-x"
