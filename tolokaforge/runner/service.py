@@ -49,7 +49,7 @@ from tolokaforge.core.grading.golden_replay import (
     declared_failure,
     resolve_golden_action_names,
 )
-from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, CompositeGradeComponents
 from tolokaforge.core.grading.jsonpath_addressing import (
     addresses_the_database,
     block_addresses_the_database,
@@ -127,7 +127,6 @@ from tolokaforge.runner.models import (
     HashGradingResult,
     KeyAccountingRecord,
     RecordedToolCall,
-    RunnerGradeComponents,
     RunnerInitialStateConfig,
     RunnerStateChecksConfig,
     SearchConfig,
@@ -1871,7 +1870,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
 
         # Initialize grading components
-        components = RunnerGradeComponents()
+        components = CompositeGradeComponents()
         state_diff: StateDiff | None = None
         transcript_result: TranscriptEvaluationResult | None = None
         hash_result: HashGradingResult | None = None
