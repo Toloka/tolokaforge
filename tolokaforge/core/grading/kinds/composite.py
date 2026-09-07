@@ -23,8 +23,10 @@ Two-mode dispatch:
    ``grade_transcript_rules`` / ``grade_trace_checks`` /
    ``build_judge_state_diff`` + ``grade_llm_judge`` /
    ``grade_custom_checks``; folds; returns a :class:`Grade` byte-parity
-   with the runner-side ``_grade_trial_async`` dispatch (minus hash +
-   accounted-keys ledger, which are runner-only surfaces).
+   with the runner-side ``_grade_trial_async`` dispatch (minus hash
+   grading, which needs runner DB write access, and minus the accounted-keys
+   ledger, which the two live dispatchers own — the offline recompute
+   here trusts a bundle a live dispatcher already audited).
 
 **Hash refusal.** A task declaring ``state_checks.hash_enabled`` is
 refused up-front with the same fragment

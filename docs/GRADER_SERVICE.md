@@ -366,6 +366,21 @@ The refusal is client-side (fires before any gRPC round-trip) so the
 misconfiguration surfaces without a network hop, and the trial books as
 ungradeable rather than as an agent failure.
 
+### Runtime ledger
+
+The grader-service composite dispatcher records the same
+`accounted_keys` ledger the runner does. Each `_grade_*_block` helper
+returns the `KeyAccountingRecord` fragment for its component;
+`_run_composite` merges every fragment, runs
+`audit_accounted_keys(grading_config, accounted_keys)` before the fold,
+and forwards `audit.skip_notes` to
+`CompositeFold.finalise(ledger_skip_notes=...)`. A populated scored key
+neither evaluated nor recorded as a skip raises `GradingFailedError`
+naming the key; the `Grade` handler translates that into
+`GradeResponse(success=false)` — the wire shape a runner-side ledger
+failure produces. See [`docs/GRADING.md` § The runtime ledger](GRADING.md#the-runtime-ledger)
+for the shared contract.
+
 ### A component the config declared that produced no verdict
 
 The grader-service composite dispatcher shares one fold rule with the
