@@ -30,6 +30,7 @@ _PACKAGE_ROOT = _REPO_ROOT / "tolokaforge"
 _TIMELINE_MODULE = _PACKAGE_ROOT / "core" / "grading" / "trace_timeline.py"
 _RUNNER_SITE = _PACKAGE_ROOT / "runner" / "service.py"
 _GRADER_SITE = _PACKAGE_ROOT / "grader" / "composite_dispatch.py"
+_OFFLINE_KIND_SITE = _PACKAGE_ROOT / "core" / "grading" / "kinds" / "composite.py"
 
 
 def _iter_package_python_files() -> list[Path]:
@@ -51,13 +52,14 @@ def test_build_timeline_from_wire_is_defined_exactly_once_in_the_pure_module() -
     )
 
 
-def test_build_timeline_from_wire_has_exactly_two_call_sites_outside_the_module() -> None:
-    """One call site in the runner service, one in the grader dispatch — no other.
+def test_build_timeline_from_wire_has_exactly_three_call_sites_outside_the_module() -> None:
+    """Three sanctioned dispatchers: runner service, grader dispatch, and the
+    offline ``CompositeGraderKind`` full-recompute path.
 
     ``core.grading.combine`` and ``core.grading.trace_replay`` legitimately
     call :func:`build_trial_timeline` directly on non-wire inputs (stored
     trajectory data). A ``build_timeline_from_wire`` callsite outside the
-    two dispatcher modules would signal recipe leakage into a codepath the
+    three dispatcher modules would signal recipe leakage into a codepath the
     wrapper was not designed for.
     """
     call_pattern = re.compile(r"build_timeline_from_wire\(")
@@ -66,9 +68,10 @@ def test_build_timeline_from_wire_has_exactly_two_call_sites_outside_the_module(
         for path in _iter_package_python_files()
         if path != _TIMELINE_MODULE and call_pattern.search(path.read_text(encoding="utf-8"))
     ]
-    assert sorted(call_sites) == sorted([_RUNNER_SITE, _GRADER_SITE]), (
-        f"Expected exactly two callers of build_timeline_from_wire( "
-        f"({_RUNNER_SITE.relative_to(_REPO_ROOT)}, {_GRADER_SITE.relative_to(_REPO_ROOT)}); "
+    assert sorted(call_sites) == sorted([_RUNNER_SITE, _GRADER_SITE, _OFFLINE_KIND_SITE]), (
+        f"Expected exactly three callers of build_timeline_from_wire( "
+        f"({_RUNNER_SITE.relative_to(_REPO_ROOT)}, {_GRADER_SITE.relative_to(_REPO_ROOT)}, "
+        f"{_OFFLINE_KIND_SITE.relative_to(_REPO_ROOT)}); "
         f"found: {[p.relative_to(_REPO_ROOT) for p in call_sites]}"
     )
 

@@ -109,3 +109,142 @@ def test_composite_kind_reraises_substrate_unreachable_verbatim() -> None:
             agent_tools={},
             logger=_logger(),  # type: ignore[arg-type]
         )
+
+
+# ---------------------------------------------------------------------------
+# Full offline recompute mode — issue #1465. Kind reads task_description /
+# trajectory / judge_model_config from the substrate (v1.1 bundle parts) and
+# recomputes every sub-component; the fold reproduces what the runner's own
+# composite dispatch would have produced.
+# ---------------------------------------------------------------------------
+
+
+def _minimal_task_description() -> dict:
+    """Minimum ``TaskDescription`` shape for offline-recompute tests."""
+    return {
+        "task_id": "task-1",
+        "name": "task-1",
+        "category": "test",
+        "description": "a task",
+        "adapter_type": "native",
+        "system_prompt": "You are a helpful assistant.",
+        "initial_state": {},
+    }
+
+
+class _OfflineV11Substrate:
+    """Snapshot-shaped substrate stub exposing v1.1 accessors non-None."""
+
+    def __init__(
+        self,
+        *,
+        task_description: dict,
+        trajectory: dict | None = None,
+        judge_model_config: dict | None = None,
+    ) -> None:
+        self._task_description = task_description
+        self._trajectory = trajectory or {"messages": [], "termination_reason": "agent_done"}
+        self._judge_model_config = judge_model_config
+
+    def final_state(self) -> dict:
+        return {}
+
+    def initial_state(self) -> dict:
+        return {}
+
+    def final_state_stable(self) -> dict:
+        return {}
+
+    def filesystem_root(self) -> None:
+        return None
+
+    def filesystem_state(self) -> dict:
+        return {}
+
+    def knowledge_search(self) -> None:
+        return None
+
+    def db_reader(self) -> MagicMock:
+        return MagicMock()
+
+    def db_probe(self, dsn: str, query: str) -> list:
+        raise SubstrateUnreachableError(f"db_probe offline (dsn={dsn!r})")
+
+    def trajectory(self) -> dict:
+        return self._trajectory
+
+    def task_description(self) -> dict:
+        return self._task_description
+
+    def judge_model_config(self) -> dict | None:
+        return self._judge_model_config
+
+
+def test_offline_dispatch_refuses_hash_enabled_tasks() -> None:
+    task_config = RunnerGradingConfig(
+        combine_method="weighted",
+        weights={"state_checks": 1.0},
+        pass_threshold=0.5,
+        state_checks=RunnerStateChecksConfig(hash_enabled=True, expect_initial_state=True),
+    )
+    substrate = _OfflineV11Substrate(task_description=_minimal_task_description())
+    from tolokaforge.core.grading.kinds import GraderKindRefusedError
+
+    with pytest.raises(GraderKindRefusedError, match="cannot execute hash-based grading"):
+        CompositeGraderKind().evaluate(
+            substrate=substrate,  # type: ignore[arg-type]
+            task_config=task_config,
+            kind_config=None,
+            trial_id="task:0",
+            agent_tools={},
+            logger=_logger(),  # type: ignore[arg-type]
+        )
+
+
+def test_offline_dispatch_refuses_when_bundle_lacks_task_description() -> None:
+    """A v1.0 bundle whose substrate returns ``None`` for
+    ``task_description()`` falls back to reference-impl mode: empty active
+    set → ``None``. Locks the backward-compat shim."""
+    task_config = RunnerGradingConfig(combine_method="weighted", weights={}, pass_threshold=0.5)
+    grade = CompositeGraderKind().evaluate(
+        substrate=_substrate(),
+        task_config=task_config,
+        kind_config=None,
+        trial_id="task:0",
+        agent_tools={},
+        logger=_logger(),  # type: ignore[arg-type]
+    )
+    assert grade is None
+
+
+def test_offline_dispatch_refuses_when_judge_config_missing_for_declared_judge() -> None:
+    """A task declaring ``llm_judge`` but no ``judge_model_config.json`` in
+    the bundle refuses actionably, naming the missing v1.1 part."""
+    from tolokaforge.core.grading.kinds import GraderKindRefusedError
+    from tolokaforge.runner.models import Criterion, LLMJudgeConfig, Rubric
+
+    task_config = RunnerGradingConfig(
+        combine_method="weighted",
+        weights={"llm_judge": 1.0},
+        pass_threshold=0.5,
+        llm_judge=LLMJudgeConfig(
+            rubric=Rubric(
+                criteria=[
+                    Criterion(id="c1", description="Response addresses the ask", kind="binary")
+                ]
+            )
+        ),
+    )
+    substrate = _OfflineV11Substrate(
+        task_description=_minimal_task_description(),
+        judge_model_config=None,  # v1.0 bundle or run without judge — this triggers refusal
+    )
+    with pytest.raises(GraderKindRefusedError, match="requires judge_model_config.json"):
+        CompositeGraderKind().evaluate(
+            substrate=substrate,  # type: ignore[arg-type]
+            task_config=task_config,
+            kind_config=None,
+            trial_id="task:0",
+            agent_tools={},
+            logger=_logger(),  # type: ignore[arg-type]
+        )
