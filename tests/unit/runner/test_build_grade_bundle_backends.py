@@ -82,6 +82,7 @@ class TestSharedStackRuntimeBackendImpl:
             out_dir=tmp_path / "bundle",
             trajectory=trajectory,
             task_description=task_description,
+            judge_model_config=None,
         )
         fake_substrate_instance.close.assert_called_once()
 

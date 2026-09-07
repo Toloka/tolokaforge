@@ -64,6 +64,7 @@ if TYPE_CHECKING:  # pragma: no cover — type-only imports for provisioning sur
         SubstrateComposer,
     )
     from tolokaforge.core.grading.bundle import GradeBundleManifest
+    from tolokaforge.core.models.run_config import ModelConfig
     from tolokaforge.core.models.trajectory import Trajectory
     from tolokaforge.core.plugin_registry import RuntimeBackendBuildContext
     from tolokaforge.core.trial import TrialSpec
@@ -1034,6 +1035,7 @@ class SharedStackRuntimeBackend:
         # exist only when the producer seam will actually read them.
         self._pending_trajectories: dict[str, Trajectory] = {}
         self._pending_task_descriptions: dict[str, TaskDescription] = {}
+        self._pending_judge_model_configs: dict[str, ModelConfig | None] = {}
         self.composer: SubstrateComposer = (
             composer if composer is not None else DefaultSubstrateComposer()
         )
@@ -1239,14 +1241,21 @@ class SharedStackRuntimeBackend:
         trial_id: str,
         trajectory: Trajectory,
         task_description: TaskDescription,
+        judge_model_config: ModelConfig | None = None,
     ) -> None:
-        """Stash the trajectory + task description keyed by ``trial_id``.
+        """Stash the trajectory + task description (+ judge model config,
+        optional) keyed by ``trial_id``.
 
         Called by the orchestrator's producer seam right before
         :meth:`build_grade_bundle`; cleared by :meth:`cleanup_trial`.
+
+        ``judge_model_config`` is bundled as the v1.1-optional
+        ``judge_model_config.json`` part; ``None`` (the default) emits a
+        v1.0-shape bundle without the part.
         """
         self._pending_trajectories[trial_id] = trajectory
         self._pending_task_descriptions[trial_id] = task_description
+        self._pending_judge_model_configs[trial_id] = judge_model_config
 
     def build_grade_bundle(
         self,
@@ -1276,6 +1285,7 @@ class SharedStackRuntimeBackend:
             )
         trajectory = self._pending_trajectories[trial_id]
         task_description = self._pending_task_descriptions[trial_id]
+        judge_model_config = self._pending_judge_model_configs.get(trial_id)
         substrate = LiveRunnerCallbackGradingSubstrate(self.runner_client.runner_address, trial_id)
         try:
             return serialize_bundle_from_substrate(
@@ -1284,6 +1294,7 @@ class SharedStackRuntimeBackend:
                 out_dir=out_dir,
                 trajectory=trajectory,
                 task_description=task_description,
+                judge_model_config=judge_model_config,
             )
         finally:
             substrate.close()
@@ -1532,6 +1543,7 @@ class SharedStackRuntimeBackend:
         """
         self._pending_trajectories.pop(trial_id, None)
         self._pending_task_descriptions.pop(trial_id, None)
+        self._pending_judge_model_configs.pop(trial_id, None)
         if self._env_manifest is None and not self._per_trial_mode:
             return self.runner_client.cleanup_trial(trial_id)
         if trial_id not in self._env_handles:

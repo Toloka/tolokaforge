@@ -51,6 +51,7 @@ def serialize_bundle_from_substrate(
     out_dir: Path,
     trajectory: Any,
     task_description: Any,
+    judge_model_config: Any | None = None,
 ) -> GradeBundleManifest:
     """Compose substrate reads + trajectory + task-description into a bundle.
 
@@ -103,6 +104,10 @@ def serialize_bundle_from_substrate(
         initial_state = {}
         final_state = {}
         final_state_stable = {}
+    task_description_dict = task_description.model_dump(mode="json")
+    judge_model_config_dict: Any | None = None
+    if judge_model_config is not None:
+        judge_model_config_dict = judge_model_config.model_dump(mode="json")
     return serialize_grade_bundle(
         out_dir,
         trial_id=trial_id,
@@ -114,6 +119,8 @@ def serialize_bundle_from_substrate(
         kb=None,
         trajectory=trajectory.model_dump(mode="json"),
         grading_config=grading_config,
+        task_description=task_description_dict,
+        judge_model_config=judge_model_config_dict,
     )
 
 

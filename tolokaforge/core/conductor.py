@@ -1078,7 +1078,7 @@ class InProcessConductor:
                 bundle_dir = Path(scratch) / "bundle"
                 try:
                     self.runtime_backend.remember_trial_inputs(
-                        setup.trial_id, trajectory, spec.task
+                        setup.trial_id, trajectory, spec.task, spec.judge_model_config
                     )
                     self.runtime_backend.build_grade_bundle(setup.trial_id, out_dir=bundle_dir)
                     size_bytes = _bundle_dir_size_bytes(bundle_dir)

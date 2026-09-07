@@ -31,6 +31,7 @@ from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialSp
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from tolokaforge.core.grading.bundle import GradeBundleManifest
+    from tolokaforge.core.models.run_config import ModelConfig
     from tolokaforge.core.models.trajectory import Trajectory
     from tolokaforge.core.plugin_registry import RuntimeBackendBuildContext
     from tolokaforge.core.service_readiness import DiagnosticPayload
@@ -320,10 +321,11 @@ class RuntimeBackend(Protocol):
         trial_id: str,
         trajectory: Trajectory,
         task_description: TaskDescription,
+        judge_model_config: ModelConfig | None = None,
     ) -> None:
-        """Stash the caller's trajectory + task description against
-        ``trial_id`` so a subsequent :meth:`build_grade_bundle` call can
-        emit them into the bundle.
+        """Stash the caller's trajectory + task description (+ judge model
+        config, optional) against ``trial_id`` so a subsequent
+        :meth:`build_grade_bundle` call can emit them into the bundle.
 
         Called by the orchestrator's trial-end producer seam right before
         :meth:`build_grade_bundle`. Keeps ``build_grade_bundle`` a
@@ -333,6 +335,15 @@ class RuntimeBackend(Protocol):
         :class:`~tolokaforge.runner.models.TaskDescription` on every
         implementation. Cleared by :meth:`cleanup_trial` so per-run
         memory stays bounded.
+
+        ``judge_model_config`` is the run's judge ``ModelConfig`` (from
+        :attr:`TrialSpec.judge_model_config` — resolved from
+        ``RunConfig.models['judge']`` by ``Orchestrator._resolve_judge_config``).
+        When passed, the backend forwards it into the bundle producer as
+        the v1.1-optional ``judge_model_config.json`` part; the full
+        offline ``CompositeGraderKind.evaluate`` path (issue #1465) reads
+        it back through the snapshot substrate. ``None`` (the default)
+        preserves v1.0-shape bundles.
 
         Backends that do not implement snapshot mode may treat this as a
         no-op (recording the call for tests to inspect) — the orchestrator
@@ -709,6 +720,7 @@ class InMemoryRuntimeBackend:
         trial_id: str,
         trajectory: Trajectory,
         task_description: TaskDescription,
+        judge_model_config: ModelConfig | None = None,
     ) -> None:
         """Record the call on :attr:`call_log`; no state is kept.
 
@@ -718,7 +730,7 @@ class InMemoryRuntimeBackend:
         :attr:`RuntimeBackendCallLog.remembered_trial_inputs` to prove
         the orchestrator drove the seam.
         """
-        del trajectory, task_description
+        del trajectory, task_description, judge_model_config
         self.call_log.remembered_trial_inputs.append(trial_id)
 
     def build_grade_bundle(

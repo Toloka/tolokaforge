@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from tolokaforge.core.grading.bundle import GradeBundleManifest
+    from tolokaforge.core.models.run_config import ModelConfig
     from tolokaforge.core.plugin_registry import ReadinessProbeFactory, RuntimeBackendBuildContext
     from tolokaforge.core.trial import TrialSpec
 
@@ -203,13 +204,16 @@ class PerTrialRuntimeBackend:
         trial_id: str,
         trajectory: Trajectory,
         task_description: TaskDescription,
+        judge_model_config: ModelConfig | None = None,
     ) -> None:
         """Stash trial inputs the orchestrator will pass to ``build_grade_bundle``.
 
         Snapshot-mode producer seam (see ``RuntimeBackend`` Protocol). Cleared
         by :meth:`cleanup_trial` so per-run memory stays bounded.
         """
-        self._delegate.remember_trial_inputs(trial_id, trajectory, task_description)
+        self._delegate.remember_trial_inputs(
+            trial_id, trajectory, task_description, judge_model_config
+        )
 
     def build_grade_bundle(
         self,

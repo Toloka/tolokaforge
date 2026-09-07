@@ -85,6 +85,10 @@ class _StubTaskDescription:
         # keep exercising the substrate's DB read branch.
         self.initial_state = initial_state or _StubInitialState(tables={"users": []})
 
+    def model_dump(self, *, mode: str) -> dict:
+        del mode
+        return {"tool_artifacts": self.tool_artifacts, "grading": self.grading._payload}
+
 
 class _StubTrajectory:
     def __init__(self, payload: dict) -> None:
