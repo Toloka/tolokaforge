@@ -14,6 +14,7 @@ import typer
 from automation import (
     bucket_classifier,
     cert,
+    cost_summary,
     gateway_catalog,
     greencheck,
     model_resolver,
@@ -147,6 +148,56 @@ def observe_findings(
 ) -> None:
     """Emit deterministic observe-stage findings.json (raw stats) from an obs dir."""
     raise typer.Exit(observe.run(obs_dir, out=out, summary_out=summary_out, run_url=run_url))
+
+
+@app.command("cost-summary")
+def cost_summary_cmd(
+    obs_dir: str = typer.Argument(..., help="the observation artifact directory"),
+    out: str = typer.Option(..., "--out", help="cost summary JSON output path"),
+    md_out: str | None = typer.Option(
+        None, "--md-out", help="optional markdown output path (the PR comment body)"
+    ),
+    line_out: str | None = typer.Option(
+        None, "--line-out", help="optional one-line output path (the Slack text)"
+    ),
+    run_url: str | None = typer.Option(None, "--run-url", help="workflow run URL to link"),
+    key_dir: str | None = typer.Option(
+        None,
+        "--key-dir",
+        help="directory holding the key_*.json snapshots (default: <obs_dir>/cost); the "
+        "workflow keeps them outside the observation dir so they never reach an artifact",
+    ),
+) -> None:
+    """Attribute the run's spend: agent self-reports, wire aggregates, key-usage deltas."""
+    raise typer.Exit(
+        cost_summary.run(
+            obs_dir, out=out, md_out=md_out, line_out=line_out, run_url=run_url, key_dir=key_dir
+        )
+    )
+
+
+@app.command("key-snapshot")
+def key_snapshot_cmd(
+    out: str = typer.Option(..., "--out", help="where to write the key usage snapshot JSON"),
+) -> None:
+    """Snapshot the automation key's usage (OpenRouter GET /api/v1/key). Best-effort, exit 0."""
+    raise typer.Exit(cost_summary.run_key_snapshot(out))
+
+
+@app.command("agent-digest")
+def agent_digest_cmd(
+    path: str = typer.Argument(
+        ..., help="a claude -p output file (json / json array / stream-json)"
+    ),
+    out: str | None = typer.Option(
+        None,
+        "--out",
+        help="also write the NORMALIZED result event (cost, turns, usage, ending - no "
+        "transcript) here; this is the shape the cost artifact uploads",
+    ),
+) -> None:
+    """Print one line (subtype, turns, cost) for an agent run, for the job log."""
+    raise typer.Exit(cost_summary.run_digest(path, out=out))
 
 
 def _classify_paths_format(cls: bucket_classifier.Classification, fmt: str) -> str:
