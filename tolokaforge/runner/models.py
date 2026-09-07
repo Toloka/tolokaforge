@@ -15,7 +15,7 @@ The types in this module fall into three tiers:
 - **Runner-only wire types with a ``Runner`` prefix** —
   ``RunnerGradingConfig`` / ``RunnerStateChecksConfig`` /
   ``RunnerInitialStateConfig`` / ``RunnerInitializationAction`` /
-  ``RunnerUserSimulatorConfig`` / ``RunnerGradeComponents``. Each is the
+  ``RunnerUserSimulatorConfig``. Each is the
   strict, wire-shaped Pydantic model the runner produces or consumes;
   ``tolokaforge.core.models`` carries the sibling YAML-authoring shape under
   the unprefixed name for the same concern. The two live side by side
@@ -3658,25 +3658,6 @@ class TraceChecksResult(BaseModel):
     failed_gate_ids: list[str] = Field(default_factory=list)
     paths: list[TracePathResult] = Field(default_factory=list)
     accounted_keys: dict[str, KeyAccountingRecord] = Field(default_factory=dict)
-
-    model_config = {"extra": "forbid"}
-
-
-class RunnerGradeComponents(BaseModel):
-    """Component scores for grading."""
-
-    hash_match: bool | None = None
-    hash_score: float = -1.0  # -1.0 means not evaluated
-    jsonpath_score: float = -1.0  # -1.0 means not evaluated
-    jsonpath_reasons: str = ""
-    db_probe_score: float = -1.0  # -1.0 means not evaluated
-    db_probe_reasons: str = ""
-    transcript_pass: bool | None = None
-    transcript_score: float = -1.0
-    trace_checks_score: float = -1.0  # -1.0 means not evaluated
-    llm_judge_score: float = -1.0  # -1.0 means not evaluated
-    llm_judge_reasons: str = ""
-    custom_checks_score: float = -1.0  # -1.0 means not evaluated
 
     model_config = {"extra": "forbid"}
 

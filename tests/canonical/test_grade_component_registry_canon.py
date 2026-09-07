@@ -2,10 +2,10 @@
 
 Five independently maintained sources have to agree on what a component is: the
 registry, the core ``GradeComponents`` model, the proto ``GradeComponents``
-descriptor, the score-carrying fields on the runner's own model, and the
+descriptor, the score-carrying fields on ``CompositeGradeComponents``, and the
 ``grading.yaml`` sections ``GradingConfig`` declares. Three are compared by
-name; the other two are resolution checks, because the runner names its scores
-``*_score`` and one component has no single runner field at all.
+name; the other two are resolution checks, because scores are named ``*_score``
+and one component has no single dedicated field at all.
 
 A sixth component added to any one source without the others is what these tests
 exist to catch — that is the shape the plan for #678 found seven times over,
@@ -19,11 +19,15 @@ from typing import Any
 import pytest
 
 from tests.utils.wire_grades import lower_wire_grade
-from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, component_requested
+from tolokaforge.core.grading.grade_components import (
+    GRADE_COMPONENTS,
+    CompositeGradeComponents,
+    component_requested,
+)
 from tolokaforge.core.models import GradeComponents as CoreGradeComponents
 from tolokaforge.core.models import GradingConfig, StateChecksConfig
 from tolokaforge.runner import runner_pb2
-from tolokaforge.runner.models import RunnerGradeComponents, RunnerGradingConfig
+from tolokaforge.runner.models import RunnerGradingConfig
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
@@ -53,7 +57,7 @@ def test_every_registered_component_arrives_under_its_own_key() -> None:
 
 
 def test_every_runner_score_field_resolves_on_the_runner_model() -> None:
-    declared = set(RunnerGradeComponents.model_fields)
+    declared = set(CompositeGradeComponents.model_fields)
     unresolved = [
         spec.runner_score_field
         for spec in GRADE_COMPONENTS
