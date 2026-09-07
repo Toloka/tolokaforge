@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **testing**: `tolokaforge.testing.adapters.AdapterGradingContractSuite` pins `grading_source` classmethod-dispatch parity — the class-level call (`type(adapter).grading_source(task, task_dir)`) must return the same `GradingSource` the instance-level call returns, matching the base contract's classmethod declaration and the invariant the delegation helper `grading_source_under_adapter` relies on. A third-party adapter that subclasses the suite and overrides `grading_source` as an instance method (rather than the classmethod the base declares) will fail the new invariant on upgrade; switch the override to `@classmethod` (or `@staticmethod` returning a value equal to the instance call). (#1393)
+
 ## v0.23.1 (2026-09-07)
 
 ### Fix

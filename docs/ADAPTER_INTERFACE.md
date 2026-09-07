@@ -226,11 +226,11 @@ Protocol.
 #### AdapterGradingContractSuite (reusable pytest suite)
 
 `tolokaforge.testing.adapters.AdapterGradingContractSuite` pins one
-adapter's conformance against the contract in 12 test methods (six method
-slots, three capability flags, emit-payload schema, preferred-kind
-registry resolution, preferred-kind alignment with
-`emit_test_execution_grading` under an active harness). Subclass, provide
-two fixtures, and (optionally)
+adapter's conformance against the contract in 13 test methods (six method
+slots, three capability flags, `grading_source` classmethod-dispatch
+parity, emit-payload schema, preferred-kind registry resolution,
+preferred-kind alignment with `emit_test_execution_grading` under an
+active harness). Subclass, provide two fixtures, and (optionally)
 override four class attributes when the adapter's declaration diverges
 from the shipped default:
 

@@ -5,7 +5,7 @@ An adapter subclasses :class:`AdapterGradingContractSuite`, provides an
 overrides ``expected_*`` class attributes for the three capability flags and
 the preferred grader kind whose adapter declaration disagrees with the
 shipped defaults (all three flags default ``False``; preferred kind defaults
-``"composite"``). The subclass then collects the 12 test methods below,
+``"composite"``). The subclass then collects the 13 test methods below,
 pinning:
 
 - The six methods :class:`~tolokaforge.adapters.grading_contract.AdapterGradingContract`
@@ -14,6 +14,12 @@ pinning:
 - The three capability flags matching the subclass's declared expectation
   (``requires_docker_cli_in_runner``, ``grades_from_task_grading_file``,
   ``syncs_adapter_env_to_state``).
+- ``grading_source`` classmethod-dispatch parity: the class-level call
+  (``type(adapter).grading_source(task, task_dir)``) returns the same
+  :class:`~tolokaforge.adapters._task_loader.GradingSource` the instance
+  call returns — the invariant the free-function delegation helper
+  :func:`~tolokaforge.adapters._task_loader.grading_source_under_adapter`
+  relies on to reach the source without instantiating the adapter.
 - ``emit_runner_grading_payload(task_id)`` returning a ``dict``; when
   non-empty, constructing a valid
   :class:`~tolokaforge.runner.models.RunnerGradingConfig` (empty payloads
@@ -113,6 +119,22 @@ class AdapterGradingContractSuite:
                 f"{source.kind.value} with an empty reason: the reason field "
                 "carries the sentence the absence is reported by"
             )
+
+    def test_grading_source_dispatches_from_class_and_instance(
+        self, adapter: BaseAdapter, task_and_dir: tuple[TaskConfig, Path]
+    ) -> None:
+        task, task_dir = task_and_dir
+        from_class = type(adapter).grading_source(task, task_dir)
+        from_instance = adapter.grading_source(task, task_dir)
+        assert from_class == from_instance, (
+            f"{type(adapter).__name__}.grading_source disagrees between "
+            f"class-level and instance-level dispatch: class returned "
+            f"{from_class!r}, instance returned {from_instance!r}. The base "
+            f"contract declares grading_source a classmethod; an override "
+            f"that shadows it with an instance method breaks the static "
+            f"delegation helper `grading_source_under_adapter`, which reaches "
+            f"the source without instantiating the adapter."
+        )
 
     def test_grading_tool_inventory_returns_a_tool_inventory(
         self, adapter: BaseAdapter, task_and_dir: tuple[TaskConfig, Path]
