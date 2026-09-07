@@ -23,6 +23,8 @@ import shlex
 import tarfile
 from collections.abc import Callable
 
+from tolokaforge.core.grading.filesystem_view import AGENT_VISIBLE_EXCLUDES
+
 DEFAULT_MAX_FILE_BYTES = 1_000_000
 """Files strictly larger than this are omitted from the snapshot.
 
@@ -85,15 +87,18 @@ def snapshot_container_filesystem(
 
     1. ``du -sb`` for the tree — refuse if it exceeds *max_total_bytes* before
        any read is issued.
-    2. ``tar --exclude=./.git -cf - . | base64`` — emit a base64-encoded
-       tarball of the tree over stdout.
+    2. ``tar --exclude=<name> ... -cf - . | base64`` — emit a base64-encoded
+       tarball of the tree over stdout, one ``--exclude`` per entry in
+       :data:`~tolokaforge.core.grading.filesystem_view.AGENT_VISIBLE_EXCLUDES`.
     3. Decoded in-process: each POSIX file member with a UTF-8-decodable body
        under *max_file_bytes* is included, keyed as
        ``<agent_visible_dir>/<relative posix path>``.
 
-    Binary files and symlinks are skipped. ``.git/`` is skipped whole — its
-    contents are rarely what a state-checks assertion targets, and it is often
-    what pushes a tree over the per-run cap.
+    Binary files and symlinks are skipped. Every subtree named by
+    :data:`~tolokaforge.core.grading.filesystem_view.AGENT_VISIBLE_EXCLUDES`
+    is skipped whole — SCM metadata, tool caches, and JS-tooling build
+    outputs the assertion vocabulary was designed not to address, and which
+    are often what pushes a tree over the per-run cap.
 
     Returns an empty dict rather than raising when:
 
@@ -189,13 +194,26 @@ def _tar_and_base64(
     """Run ``tar`` piped through ``base64`` inside the container, return stdout.
 
     The ``cd`` puts tar's paths under ``./`` so :func:`_decode_tar` can strip
-    the leading ``./`` cleanly; ``--exclude=./.git`` drops the SCM directory
-    whole — its contents are rarely what an assertion targets and are often
-    what pushes a tree past the cap.
+    the leading ``./`` cleanly. One ``--exclude=<name>`` argument is emitted
+    per entry in :data:`~tolokaforge.core.grading.filesystem_view.AGENT_VISIBLE_EXCLUDES`,
+    in sorted order for a stable command shape. GNU tar's ``--exclude`` is
+    unanchored basename-matching, so a nested ``packages/foo/node_modules/``
+    is dropped just like a root ``node_modules/`` — the same subtree-drop
+    semantic :func:`~tolokaforge.core.grading.filesystem_view.is_excluded_rel_path`
+    applies on the non-harness walk.
+
+    Corner: tar's unanchored ``--exclude=<name>`` also drops a *file* at
+    workspace root whose leaf equals an excluded name (e.g. ``./dist`` as a
+    plain file, not a directory), where
+    :func:`~tolokaforge.core.grading.filesystem_view.is_excluded_rel_path`
+    keeps such a leaf. Theoretical corner — no known task ships a root
+    file literally called ``.git`` / ``dist`` / ``.next`` / ``node_modules``
+    / ``.venv``.
     """
-    cmd = (
-        f"cd {shlex.quote(agent_visible_dir)} && tar --exclude=./.git -cf - . 2>/dev/null | base64"
+    exclude_args = " ".join(
+        f"--exclude={shlex.quote(name)}" for name in sorted(AGENT_VISIBLE_EXCLUDES)
     )
+    cmd = f"cd {shlex.quote(agent_visible_dir)} && tar {exclude_args} -cf - . 2>/dev/null | base64"
     try:
         return exec_fn(cmd, _TAR_SNAPSHOT_TIMEOUT_S)
     except Exception as exc:
