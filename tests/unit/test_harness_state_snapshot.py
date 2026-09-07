@@ -18,6 +18,7 @@ import tarfile
 
 import pytest
 
+from tolokaforge.core.grading.filesystem_view import AGENT_VISIBLE_EXCLUDES
 from tolokaforge.runner.harness_state import (
     DEFAULT_MAX_FILE_BYTES,
     DEFAULT_MAX_TOTAL_BYTES,
@@ -102,8 +103,11 @@ class TestSnapshotHappyPath:
 
         assert len(exec_fn.calls) == 2
         assert "du -sb" in exec_fn.calls[0][0]
-        assert "tar --exclude=./.git" in exec_fn.calls[1][0]
-        assert "base64" in exec_fn.calls[1][0]
+        tar_cmd = exec_fn.calls[1][0]
+        assert "tar " in tar_cmd
+        assert "base64" in tar_cmd
+        for name in AGENT_VISIBLE_EXCLUDES:
+            assert f"--exclude={name}" in tar_cmd
 
     def test_agent_visible_dir_is_shell_quoted(self) -> None:
         # A dir with a space must survive the shell round-trip intact.

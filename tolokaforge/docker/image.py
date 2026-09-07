@@ -766,9 +766,21 @@ class Image(BaseModel):
 
     @classmethod
     def _should_skip_file(cls, file_path: Path) -> bool:
-        """Check if a file should be skipped during hashing.
+        """Drop paths that would destabilise the Docker build-context cache hash.
 
-        Skips common non-source files like .git, __pycache__, etc.
+        The domain here is *cache-hash stability* for the runtime-image build
+        context: an editor swapfile touched between builds, an OS junk file
+        (``.DS_Store`` / ``Thumbs.db``), or a churny log must not invalidate
+        the image cache when the underlying source is unchanged. The set
+        therefore mixes directory basenames (``.git``, ``__pycache__``,
+        ``.idea``, ``.vscode``), source-tree artefacts (``.venv``, ``venv``,
+        ``node_modules``, ``.egg-info``), and glob suffixes (``*.log``,
+        ``*.tmp``, ``*.swp``) that share only their cache-noise property.
+
+        Distinct from the agent-visible grading filter — see
+        :data:`tolokaforge.core.grading.filesystem_view.AGENT_VISIBLE_EXCLUDES`,
+        which owns *which subtrees the graded workspace reads back* — a
+        different question with a narrower answer.
 
         Args:
             file_path: Path to check.
