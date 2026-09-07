@@ -80,9 +80,11 @@ class LiveRunnerCallbackGradingSubstrate:
     :class:`SubstrateService` on demand.
 
     Reads are lazy and cached: each accessor fires at most one RPC per grade
-    call; a second call returns the cached value. ``filesystem_root`` eagerly
-    materialises the agent-visible tree to a :class:`tempfile.TemporaryDirectory`
-    on first use.
+    call; a second call returns the cached value. ``filesystem_root`` and
+    ``filesystem_state`` each fire one ``ReadAgentVisibleFilesystem`` RPC on
+    first use — the whole agent-visible tree ships in one batch response
+    regardless of pack file count. ``filesystem_root`` materialises that tree
+    to a :class:`tempfile.TemporaryDirectory`.
 
     A grader losing the runner mid-grade raises
     :class:`SubstrateUnreachableError`; the seam translates that into
@@ -206,33 +208,19 @@ class LiveRunnerCallbackGradingSubstrate:
             self._channel.close()
 
     def _read_filesystem_state(self) -> dict[str, str] | None:
-        rel_paths = self._client.list_filesystem_dir()
-        if not rel_paths and not self._workspace_root_exists():
+        result = self._client.snapshot_agent_visible_filesystem()
+        if not result.workspace_exists:
             return None
-        fs: dict[str, str] = {}
-        for rel in rel_paths:
-            entry = self._client.read_filesystem_path(rel)
-            if entry.is_file:
-                fs[f"/env/fs/agent-visible/{rel}"] = entry.content_utf8
-        return fs
+        return {f"/env/fs/agent-visible/{rel}": content for rel, content in result.files.items()}
 
     def _materialise_filesystem_root(self) -> Path | None:
-        rel_paths = self._client.list_filesystem_dir()
-        if not rel_paths and not self._workspace_root_exists():
+        result = self._client.snapshot_agent_visible_filesystem()
+        if not result.workspace_exists:
             return None
         self._filesystem_tmpdir = tempfile.TemporaryDirectory(prefix="grader-workspace-")
         root = Path(self._filesystem_tmpdir.name)
-        for rel in rel_paths:
-            entry = self._client.read_filesystem_path(rel)
-            if not entry.is_file:
-                continue
+        for rel, content in result.files.items():
             dest = root / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            if entry.content_bytes:
-                dest.write_bytes(entry.content_bytes)
-            else:
-                dest.write_text(entry.content_utf8, encoding="utf-8")
+            dest.write_text(content, encoding="utf-8")
         return root
-
-    def _workspace_root_exists(self) -> bool:
-        return self._client.read_filesystem_path("").exists
