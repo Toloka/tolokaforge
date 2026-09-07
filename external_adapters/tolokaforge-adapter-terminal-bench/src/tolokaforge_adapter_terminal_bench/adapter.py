@@ -320,7 +320,7 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                 user={"enabled": []},
             ),
             grading="__adapter__",
-            system_prompt="__adapter__",
+            policies={"agent_system_prompt": self.get_system_prompt(task_id)},
             environment_manifest=self._environment_patch(task_id),
             adapter_settings={
                 "difficulty": meta.difficulty,
