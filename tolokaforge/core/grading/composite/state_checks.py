@@ -33,10 +33,10 @@ class StateChecksReadResult:
     ``jsonpath_score`` / ``db_probe_score`` are ``None`` when the composite
     did not reach an assertion for that half — an empty checks list, or a
     probe-less pack — and the runner leaves the corresponding
-    :class:`RunnerGradeComponents` slot untouched (which then folds as
-    'component not evaluated'). Every author key the composite reached is
-    added to ``accounted_keys`` so the caller can merge it into the
-    RPC-level ledger.
+    :class:`~tolokaforge.core.grading.grade_components.CompositeGradeComponents`
+    slot untouched (which then folds as 'component not evaluated'). Every
+    author key the composite reached is added to ``accounted_keys`` so the
+    caller can merge it into the RPC-level ledger.
     """
 
     jsonpath_score: float | None

@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 from tolokaforge.core.grading import composite
 from tolokaforge.core.grading.checks_interface import CheckResult
 from tolokaforge.core.grading.composite_fold import CompositeFold, CompositeFoldResult
+from tolokaforge.core.grading.grade_components import CompositeGradeComponents
 from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
 from tolokaforge.core.grading.tool_artifacts import extract_tool_artifacts
@@ -72,7 +73,6 @@ from tolokaforge.core.plugin_registry import (
 )
 from tolokaforge.core.trial_grader import GradingFailedError
 from tolokaforge.runner.models import (
-    RunnerGradeComponents,
     RunnerGradingConfig,
     TaskDescription,
 )
@@ -250,7 +250,7 @@ class GraderCompositeDispatch:
         timeline = build_timeline_from_wire(
             llm_messages, [], parse_termination_reason(dispatch.termination_reason)
         )
-        components = RunnerGradeComponents()
+        components = CompositeGradeComponents()
         state_checks_config = grading_config.state_checks
         self._grade_state_checks_block(
             trial_id=trial_id,
@@ -322,7 +322,7 @@ class GraderCompositeDispatch:
         trial_id: str,
         state_checks_config: Any,
         substrate: GradingSubstrate,
-        components: RunnerGradeComponents,
+        components: CompositeGradeComponents,
     ) -> None:
         """Run the ``state_checks`` reads block and fold results onto ``components``."""
         if not state_checks_config:
@@ -349,7 +349,7 @@ class GraderCompositeDispatch:
         trial_id: str,
         config: Any,
         timeline: Any,
-        components: RunnerGradeComponents,
+        components: CompositeGradeComponents,
     ) -> TranscriptEvaluationResult | None:
         """Run the transcript-rules block and fold the pass / score onto ``components``."""
         if not config:
@@ -372,7 +372,7 @@ class GraderCompositeDispatch:
         trial_id: str,
         config: Any,
         timeline: Any,
-        components: RunnerGradeComponents,
+        components: CompositeGradeComponents,
     ) -> TraceChecksResult:
         """Run the trace-checks block; populate ``components.trace_checks_score`` when scored."""
         if not config:
@@ -396,7 +396,7 @@ class GraderCompositeDispatch:
         llm_messages: list[dict[str, Any]],
         substrate: GradingSubstrate,
         artifacts_dir: Any,
-        components: RunnerGradeComponents,
+        components: CompositeGradeComponents,
     ) -> tuple[list[CheckResult], str | None]:
         """Run custom checks and fold the score onto ``components``.
 
@@ -428,7 +428,7 @@ class GraderCompositeDispatch:
         initial_state_schemas: list[Any],
         id_fields: dict[str, str | list[str]],
         unstable_fields: set[tuple[str, str]],
-        components: RunnerGradeComponents,
+        components: CompositeGradeComponents,
     ) -> tuple[JudgeResult | None, JudgeStatus, bool]:
         """Load the rubric-evaluator seam, render the state diff, and grade.
 
@@ -501,7 +501,7 @@ class GraderCompositeDispatch:
 def _build_grade(
     *,
     fold_result: CompositeFoldResult,
-    components: RunnerGradeComponents,
+    components: CompositeGradeComponents,
     custom_check_results: list[CheckResult],
     trace_result: TraceChecksResult,
     judge_result: JudgeResult | None,
