@@ -1980,13 +1980,81 @@ class Orchestrator:
         ts_container = client.containers.get(ts_container_obj.container_id)
         docker_network = client.networks.get(runner_net.network_id)
 
-        docker_network.connect(ts_container, aliases=[_TYPESENSE_NETWORK_ALIAS])
-        self.logger.info(
-            "Connected TypeSense to runner network",
-            network=runner_net.name,
-            container=ts_container.name,
-            alias=injected,
-        )
+        # Idempotent connect: a prior run left the TypeSense container on
+        # runner-net if cleanup_on_exit was disabled or the run aborted
+        # mid-teardown, and Docker's ``network.connect`` raises 403 "already
+        # exists" on a second attempt. Skip re-connecting and confirm the
+        # alias is bound; a stale membership without our alias would still
+        # fail the runner-side ``initialize_typesense_for_domain`` lookup at
+        # register_trial time (closes #1516).
+        docker_network.reload()
+        connected_names = {
+            svc.get("Name")
+            for svc in (docker_network.attrs.get("Containers") or {}).values()
+            if isinstance(svc, dict)
+        }
+        if ts_container.name in connected_names:
+            self.logger.info(
+                "TypeSense already bridged onto runner network (idempotent skip)",
+                network=runner_net.name,
+                container=ts_container.name,
+                alias=injected,
+            )
+        else:
+            try:
+                docker_network.connect(ts_container, aliases=[_TYPESENSE_NETWORK_ALIAS])
+            except docker_lib.errors.APIError as exc:
+                # 403 "endpoint … already exists" — the container is on
+                # the network but the ``reload()`` cache above missed it.
+                # Fall through and verify the alias post-hoc rather than
+                # blowing up.
+                if "already exists" not in str(exc):
+                    raise
+                self.logger.warning(
+                    "TypeSense bridge reported 'already exists' — verifying",
+                    network=runner_net.name,
+                    container=ts_container.name,
+                    error=str(exc),
+                )
+            self.logger.info(
+                "Connected TypeSense to runner network",
+                network=runner_net.name,
+                container=ts_container.name,
+                alias=injected,
+            )
+
+        # Post-connect verification: confirm the alias resolves inside
+        # runner-net BEFORE the first trial tries and fails at
+        # ``initialize_typesense_for_domain``. A missing alias here surfaces
+        # as an actionable RuntimeError at run start instead of a per-trial
+        # ``TypeSense at typesense:8108 … server is unreachable`` refusal.
+        docker_network.reload()
+        endpoint_ok = False
+        for endpoint in (docker_network.attrs.get("Containers") or {}).values():
+            if not isinstance(endpoint, dict):
+                continue
+            if endpoint.get("Name") != ts_container.name:
+                continue
+            # Docker's per-network ``Endpoint`` doesn't list aliases in the
+            # network's Containers view; inspect the container instead.
+            ts_container.reload()
+            net_settings = ts_container.attrs.get("NetworkSettings", {}).get("Networks", {})
+            for net_name, net_info in net_settings.items():
+                if net_name != runner_net.name:
+                    continue
+                aliases = net_info.get("Aliases") or []
+                if _TYPESENSE_NETWORK_ALIAS in aliases:
+                    endpoint_ok = True
+                    break
+            break
+        if not endpoint_ok:
+            raise RuntimeError(
+                f"orchestrator.typesense: bridged the container onto {runner_net.name} "
+                f"but the alias {_TYPESENSE_NETWORK_ALIAS!r} did not attach — the runner "
+                f"would still fail to resolve {injected} at register_trial time. Check "
+                f"`docker network inspect {runner_net.name}` and the TypeSense "
+                f"container's Networks settings."
+            )
 
     def load_tasks(self) -> None:
         """Load tasks using configured adapter"""
