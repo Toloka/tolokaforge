@@ -10,7 +10,7 @@ All notable changes to this project are documented in this file.
 
 ### Perf
 
-- **runtime (perf)**: `LiveRunnerCallbackGradingSubstrate` reads the agent-visible filesystem in a single `SubstrateService.ReadAgentVisibleFilesystem` RPC per accessor — was `N+1` per accessor (one `ListFilesystemDir` + one `ReadFilesystemPath` per file), or `2N+2` composite when a dispatch reached for both `filesystem_state()` and `filesystem_root()`. New per-accessor cost is `1`, composite cost is `2`, independent of pack file count. Same byte content; only round-trip count changes. `ListFilesystemDir` and `ReadFilesystemPath` remain on the wire for per-path callers. (#1406)
+- **runtime**: `LiveRunnerCallbackGradingSubstrate` reads the agent-visible filesystem in a single `SubstrateService.ReadAgentVisibleFilesystem` RPC per accessor — was `N+1` per accessor (one `ListFilesystemDir` + one `ReadFilesystemPath` per file), or `2N+2` composite when a dispatch reached for both `filesystem_state()` and `filesystem_root()`. New per-accessor cost is `1`, composite cost is `2`, independent of pack file count. Same byte content; only round-trip count changes. `ListFilesystemDir` and `ReadFilesystemPath` remain on the wire for per-path callers. (#1406)
 
 ## v0.23.1 (2026-09-07)
 

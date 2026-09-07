@@ -168,8 +168,8 @@ class SubstrateServicer(pb2_grpc.SubstrateServiceServicer):
 
     def ReadAgentVisibleFilesystem(  # noqa: N802
         self,
-        request: pb2.ReadAgentVisibleFilesystemRequest,  # noqa: ARG002 — process-global root
-        context: grpc.ServicerContext,  # noqa: ARG002
+        request: pb2.ReadAgentVisibleFilesystemRequest,
+        context: grpc.ServicerContext,
     ) -> pb2.ReadAgentVisibleFilesystemResponse:
         root = self._workspace_root()
         if not root.is_dir():
