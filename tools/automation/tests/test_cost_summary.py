@@ -21,7 +21,10 @@ _RESULT = {
     "num_turns": 7,
     "duration_ms": 65_000,
     "total_cost_usd": 1.25,
-    "result": "I edited the preset overlay. OPENROUTER_API_KEY=sk-or-v1-would-be-here",
+    # A transcript-only marker, deliberately NOT key-shaped: normalization drops the whole
+    # `result` field, so proving it is stripped needs a sentinel, not a real key prefix in a
+    # public repo. Keeps a secret-scanner from flagging a fixture that carries no real value.
+    "result": "I edited the preset overlay. TRANSCRIPT_ONLY_do_not_leak",
     "usage": {
         "input_tokens": 100,
         "output_tokens": 2_000,
@@ -113,7 +116,7 @@ class TestBuildSummary:
 
     def test_the_summary_never_carries_the_transcript_or_the_lifetime_usage(self, tmp_path):
         text = json.dumps(cs.build_summary(_obs_dir(tmp_path)))
-        assert "sk-or-v1" not in text and "I edited" not in text
+        assert "TRANSCRIPT_ONLY" not in text and "I edited" not in text
         assert "usage_usd" not in text  # only deltas + snapshot timestamps
         assert json.loads(text)["key_usage"]["snapshots"]["key_end"] == {"at": "t2"}
 
@@ -247,7 +250,9 @@ class TestKeySnapshot:
     ):
         payload = {
             "data": {
-                "label": "sk-or-v1-abc...def",
+                # OpenRouter's label is the masked key; a non-key-shaped stand-in here proves it
+                # is dropped without putting a key prefix in a public repo.
+                "label": "redacted-masked-key-label",
                 "usage": 1891.41,
                 "usage_daily": 0,
                 "limit": 750,
@@ -328,4 +333,4 @@ def test_run_digest_writes_the_normalized_event_without_the_transcript(tmp_path,
     assert capsys.readouterr().out.startswith("agent_iter_4.jsonl: subtype=success")
     normalized = json.loads(out.read_text())
     assert normalized["iteration"] == 4 and normalized["total_cost_usd"] == 1.25
-    assert "result" not in normalized and "sk-or-v1" not in out.read_text()
+    assert "result" not in normalized and "TRANSCRIPT_ONLY" not in out.read_text()
