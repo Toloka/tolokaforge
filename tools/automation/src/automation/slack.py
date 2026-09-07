@@ -138,7 +138,7 @@ def resolve_mentions() -> str | None:
     """
     requester = (os.environ.get(REQUESTED_BY_ENV) or "").strip().strip("<>").lstrip("@")
     if requester:
-        if _SLACK_USER_ID_RE.match(requester):
+        if looks_like_slack_user_id(requester):
             return requester
         # Bounded like every other interpolated value: this is a raw input echoed into a log.
         _log(

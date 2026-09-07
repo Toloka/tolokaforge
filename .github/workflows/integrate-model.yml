@@ -136,12 +136,11 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.ARENA_AUTOMATION_SLACK_BOT_TOKEN }}
       SLACK_CHANNEL: ${{ vars.ARENA_AUTOMATION_SLACK_CHANNEL }}
       SLACK_MENTIONS: ${{ vars.ARENA_AUTOMATION_SLACK_MENTIONS }}
-      # WHO a `--mention` notification pages: the requester ALONE when the run came in through
-      # Slack, else SLACK_MENTIONS (see `automation.slack.resolve_mentions`). Set from the poller's
-      # forwarded input on the Slack path; the "Resolve the Slack requester" step below fills it
-      # from the seed commit on the label-triggered path, where inputs are absent. A value that is
-      # not a Slack user id is dropped by `resolve_mentions`, so the standing list takes over.
-      SLACK_REQUESTED_BY: ${{ inputs.requested_by }}
+      # SLACK_REQUESTED_BY (WHO a `--mention` pings: the requester ALONE when the run came in
+      # through Slack, else SLACK_MENTIONS - see `automation.slack.resolve_mentions`) is NOT declared
+      # here on purpose: a job-level `env:` entry can shadow a value a step writes to $GITHUB_ENV, so
+      # the label-triggered path (no input) could never override an empty default. The "Resolve the
+      # Slack requester" step is the SINGLE writer instead, reading the input at step scope.
       # Values the ${secret:NAME} references in the LLM_PROXY_HEADERS variable resolve to.
       # Named LLM_PROXY_* because they are gateway configuration, not automation config;
       # they are NOT companions in the resolve_proxy_config sense (that check names only
@@ -203,15 +202,19 @@ jobs:
 
       - name: Resolve the Slack requester (input first, else the seed commit)
         # WHO the terminal / needs-human Slack pings page: the person who asked, ALONE, when the
-        # request came through Slack. The poller forwards their id as the `requested_by` input (job
-        # env above); a by-hand label add carries no input, so fall back to the `requested_by:`
-        # trailer the poller - and a by-hand seed - writes into the branch's seed commit.
-        # `automation.slack.resolve_mentions` re-validates, so a value that is not a Slack user id
-        # (e.g. a GitHub login on a by-hand seed) is dropped there and the standing SLACK_MENTIONS
-        # list takes over. Exported to $GITHUB_ENV so every later `slack ... --mention` step sees it.
+        # request came through Slack. The poller forwards their id as the `requested_by` input (read
+        # at STEP scope below); a by-hand label add carries no input, so fall back to the
+        # `requested_by:` trailer the poller - and a by-hand seed - writes into the branch's seed
+        # commit. This step is the SINGLE writer of SLACK_REQUESTED_BY (no job-level default to be
+        # shadowed by, or to shadow, this $GITHUB_ENV write), so every later `slack ... --mention`
+        # step sees exactly this value. `automation.slack.resolve_mentions` re-validates it, so a
+        # value that is not a Slack user id (e.g. a GitHub login on a by-hand seed) is dropped there
+        # and the standing SLACK_MENTIONS list takes over.
+        env:
+          INPUT_REQUESTED_BY: ${{ inputs.requested_by }}
         run: |
           set -uo pipefail
-          REQ="${SLACK_REQUESTED_BY:-}"
+          REQ="${INPUT_REQUESTED_BY:-}"
           if [ -z "$REQ" ]; then
             # Newest-first, capped: the seed is the branch's oldest commit ahead of base and the
             # only one carrying the trailer, so the first match is it; -n 50 bounds the log walk.
