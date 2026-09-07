@@ -100,8 +100,10 @@ grade_bundle_<trial_id>/
 ├── final_state.json            # trial-end state
 ├── final_state_stable.json     # final state with unstable fields normalised
 ├── filesystem.tar              # workspace snapshot (USTAR, deterministic entries)
-├── trajectory.json             # agent messages + tool calls + LLM turns
+├── trajectory.json             # agent messages + tool calls + tool-execution log
 ├── grading_config.json         # the grading block from the task pack
+├── task_description.json       # v1.1-optional: the trial's TaskDescription (offline composite kind reads it)
+├── judge_model_config.json     # v1.1-optional: the run's judge ModelConfig (offline llm_judge reads it)
 ├── checks/                     # optional; per-check bytes (custom-check payloads)
 │   ├── manifest.json
 │   └── <check-name>/…
@@ -115,15 +117,15 @@ Full format spec: [`docs/GRADE_BUNDLE.md`](GRADE_BUNDLE.md).
 ### Single-trial regrade
 
 ```bash
+# Full offline recompute — no --grader-config needed on a v1.1 bundle.
 uv run tolokaforge grade \
     bundle://local_disk/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
     --grader-kind composite \
-    --grader-config kind_config.yaml \
     --store-config store.yaml \
     --out ./regrade-output
 ```
 
-The verb resolves the URI via the `tolokaforge.bundle_stores` registry, wraps the loaded bundle in a `SnapshotGradingSubstrate`, dispatches the kind through the `tolokaforge.grader_kinds` registry, and writes `regrade-output/grade.json`.
+The verb resolves the URI via the `tolokaforge.bundle_stores` registry, wraps the loaded bundle in a `SnapshotGradingSubstrate`, dispatches the kind through the `tolokaforge.grader_kinds` registry, and writes `regrade-output/grade.json`. `--grader-config` is optional — the composite kind reads sub-component inputs from the bundle's v1.1 parts when it's absent (see § Two modes of `--grader-kind composite`).
 
 **Flags:**
 
@@ -255,7 +257,6 @@ EOF
 $ scripts/with_env.sh uv run tolokaforge grade \
     bundle://local_disk/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
     --grader-kind composite \
-    --grader-config components.yaml \
     --store-config store.yaml \
     --out ./regrades/first-pass
 
@@ -267,31 +268,57 @@ true
 "custom_checks: 0.87 (reconcile_ledger matched)"
 ```
 
-Note that `composite` currently needs a pre-computed `components:` map in
-`--grader-config` (see § Known limits below and [#1465](https://github.com/Toloka/tolokaforge/issues/1465)); a `components.yaml` for the run above:
+The composite kind reads the bundle's `task_description.json` + `trajectory.json` + `judge_model_config.json` (v1.1 parts written by snapshot mode above), recomputes each sub-component through the shipped plug-ins, folds, and writes the `Grade`. Byte-parity with LIVE grading holds — verified on real trials (tool_use, knowledge_reasoning, OTS ACC-001).
 
-```yaml
-components:
-  custom_checks: 0.87
-```
+### Two modes of `--grader-kind composite`
 
-The primary composite path — the runner-side `_grade_trial_async` fold that
-ran during step 2 — is unchanged. CLI-driven end-to-end composite regrade
-(dispatching each sub-component against the substrate before folding) is
-[#1465](https://github.com/Toloka/tolokaforge/issues/1465).
+The shipped `composite` kind selects its behaviour from the shape of
+`--grader-config`:
 
-## Known limits (bundle format v1.0)
+1. **Full offline recompute** (default, no `--grader-config` needed):
+   the kind reads `task_description.json` + `trajectory.json` +
+   `judge_model_config.json` from the bundle (v1.1 parts written by the
+   producer when snapshot mode is on), loads the same five sub-component
+   plug-ins the runner uses (state-check backends, transcript matcher,
+   trace-check evaluator, LLM judge, custom-check executor), and folds
+   into the same `Grade` shape live grading would have produced. Runs
+   byte-parity with LIVE on packs whose substrate reads all succeed
+   offline. **Preferred path for regrade of runs produced on tolokaforge
+   ≥ v0.23 (bundle v1.1).**
+
+2. **Pre-computed sub-scores** (opt-in, backward-compat): pass
+   `--grader-config <path>` where `<path>` contains a `components:`
+   mapping (`jsonpath_score` / `transcript_score` / etc). The kind folds
+   those and returns a `Grade`. Path for v1.0 bundles that don't carry
+   `task_description.json` / `judge_model_config.json`, or for callers
+   that want to bypass the sub-component dispatch and hand in scores
+   they computed elsewhere.
+
+The kind picks the mode automatically:
+`kind_config["components"]` non-empty → mode 2, else mode 1. A v1.0
+bundle handed to mode 1 falls back to mode 2's "empty active set → no
+verdict" semantic rather than refusing.
+
+**Hash refusal.** A task declaring `state_checks.hash_enabled: true`
+refuses in both modes with the same fragment the grader-side dispatcher
+raises — hash grading needs runner DB write access, and the snapshot
+substrate is read-only. Use the runner-side dispatch (`runner_rpc`
+grader, in-container) for hash-enabled packs.
+
+## Known limits (bundle format v1.1)
 
 **Two substrate methods raise `SubstrateUnreachableError` on a snapshot substrate:**
 
 - `db_probe(dsn, query)` — bundle v1.0 carries no pre-materialised probe rows. The `db_probes` state-check backend surfaces this as a `FAIL:` reason line rather than propagating; a task grading via `db_probes` on a snapshot substrate loses that component's score. Bundle v1.1 will pre-materialise probe rows (see [#1439](https://github.com/Toloka/tolokaforge/issues/1439)).
 - `knowledge_search()` — bundle v1.0 carries raw KB bytes but no queryable index. Returns `None` (treated by the judge as "the trial declared no KB"). Bundle v1.1 will carry an indexed snapshot (see [#1438](https://github.com/Toloka/tolokaforge/issues/1438)).
 
-**`test_execution` grading kind refuses offline on a snapshot substrate.** Bundle v1.0 carries no `test.sh` hook. The kind raises `GraderKindRefusedError`; the CLI exits `1` with an actionable message. Use `composite` for offline regrade until bundle v1.1 pre-materialises test-suite results.
+**`test_execution` grading kind refuses offline on a snapshot substrate.** Bundle v1.1 carries no `test.sh` hook. The kind raises `GraderKindRefusedError`; the CLI exits `1` with an actionable message. Use `composite` for offline regrade.
 
-**Composite kind requires pre-computed sub-component scores today** (`--grader-config` with `components: {…}`) — full sub-component dispatch through the kind is [#1465](https://github.com/Toloka/tolokaforge/issues/1465). The primary composite path lives in the runner-side `_grade_trial_async`; it works untouched.
+**Hash-enabled state checks refuse offline.** `composite` (both modes) refuses a task declaring `state_checks.hash_enabled: true` — hash grading needs runner DB write access. Grade hash-enabled packs with the runner-side `runner_rpc` grader instead.
 
 **Regrade byte-parity holds only for kinds whose substrate reads all succeed offline.** The parity 10-pack gate covers 8 of 10 packs (`state_checks_db_probes_only` and `hash_and_all_four` refuse actionably). See [`tests/canonical/test_grader_parity_reference.py`](../tests/canonical/test_grader_parity_reference.py) for the coverage matrix.
+
+**v1.0 bundle regrade fallback.** Bundles produced on tolokaforge ≤ v0.22 carry no `task_description.json` / `judge_model_config.json`. The composite kind's offline mode refuses actionably on such bundles; use pre-computed-scores mode instead (pass `--grader-config` with a `components:` map).
 
 ## Extending — adding a new grader kind
 
@@ -362,9 +389,8 @@ Now `task.grading.grading_method: my_custom_kind` is a valid selector, and `tolo
 
 ## Follow-up tickets that change this surface
 
-- **[#1439](https://github.com/Toloka/tolokaforge/issues/1439)** — bundle v1.1 with pre-materialised db_probes rows (unlocks `state_checks_db_probes_only` offline).
-- **[#1438](https://github.com/Toloka/tolokaforge/issues/1438)** — bundle v1.1 indexed KB snapshot.
-- **[#1465](https://github.com/Toloka/tolokaforge/issues/1465)** — composite kind runtime dispatch (removes the pre-computed-components requirement).
+- **[#1439](https://github.com/Toloka/tolokaforge/issues/1439)** — bundle v1.2 with pre-materialised db_probes rows (unlocks `state_checks_db_probes_only` offline).
+- **[#1438](https://github.com/Toloka/tolokaforge/issues/1438)** — bundle v1.2 indexed KB snapshot.
 - **[#1467](https://github.com/Toloka/tolokaforge/issues/1467)** — task-level `kind_config` plumbing on `RunnerGradingConfig`.
 - **[#1468](https://github.com/Toloka/tolokaforge/issues/1468)** — grader-side dispatch through kinds (unblocks queue-transport `grade-run`).
 - **[#1453](https://github.com/Toloka/tolokaforge/issues/1453)** — production wire-driven substrate selection (Lane B production variant currently uses a monkeypatch).
