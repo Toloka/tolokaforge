@@ -1669,7 +1669,7 @@ class Orchestrator:
         """Refuse ``grader.snapshot.enabled=true`` on backends / configs that
         cannot honour it.
 
-        Runs once at run-start after the backend is resolved. Two guards:
+        Runs once at run-start after the backend is resolved. Three guards:
 
         * ``grader.expose_substrate`` must be ``True`` — the runtime
           backend composes bundle reads over the runner's
@@ -1684,6 +1684,13 @@ class Orchestrator:
           "backend is snapshot-capable" and every other exception
           re-raises so genuine bugs surface loudly here rather than
           per-trial at grade time.
+        * The resolved bundle store must be reachable — a single
+          ``store.probe()`` at run-start (S3 ``head_bucket`` /
+          LocalDisk sentinel write+delete) fails loud on bad credentials,
+          missing bucket, or non-writeable ``root_dir``. Without this,
+          a misconfigured store surfaces as ``produce_failed`` on every
+          trial inside :meth:`Conductor._produce_grade_bundle`'s
+          seam-contained ``try/except``.
 
         Actionable :class:`ValueError` names the failing condition and
         the concrete fix.
@@ -1724,6 +1731,27 @@ class Orchestrator:
             pass
         finally:
             shutil.rmtree(probe_dir, ignore_errors=True)
+        store = grader.snapshot.build_store()
+        try:
+            try:
+                store.probe()
+            except Exception as exc:
+                # Broad ``except`` is load-bearing: three failure families
+                # (``BundleStoreUnreachableError`` from a shipped store,
+                # ``RuntimeError`` from the missing ``bundle-store-s3``
+                # extra, ``AttributeError`` from an out-of-tree plugin
+                # without ``probe()``) all collapse into one message.
+                # Naming any of them here would import from
+                # ``core.grading.bundle_store`` and break the
+                # orchestration-surface plug-in seam.
+                raise ValueError(
+                    f"grader.snapshot.store (type={grader.snapshot.store.type!r}) "
+                    f"is not reachable at run-start: {exc}. Verify the store "
+                    "config and credentials before re-running; snapshot mode "
+                    "cannot record bundles until the store answers."
+                ) from exc
+        finally:
+            store.close()
 
     def _build_pending_trials(
         self,

@@ -7,6 +7,11 @@ All notable changes to this project are documented in this file.
 ### Changed
 
 - **testing**: `tolokaforge.testing.adapters.AdapterGradingContractSuite` pins `grading_source` classmethod-dispatch parity — the class-level call (`type(adapter).grading_source(task, task_dir)`) must return the same `GradingSource` the instance-level call returns, matching the base contract's classmethod declaration and the invariant the delegation helper `grading_source_under_adapter` relies on. A third-party adapter that subclasses the suite and overrides `grading_source` as an instance method (rather than the classmethod the base declares) will fail the new invariant on upgrade; switch the override to `@classmethod` (or `@staticmethod` returning a value equal to the instance call). (#1393)
+- **grading**: `BundleStore` Protocol grew a required `probe(self) -> None` method — a cheap run-start reachability check the orchestrator calls once from `_validate_snapshot_mode_compatibility` when `grader.snapshot.enabled=true` (S3 `head_bucket`, LocalDisk sentinel write+delete). Out-of-tree plugins registered under the `tolokaforge.bundle_stores` entry-point group must implement it: an unupgraded plugin raises `AttributeError` at the call site, which the orchestrator wraps into an actionable `ValueError` with the `AttributeError` preserved on `__cause__` so plugin authors see the exact missing method. Migration one-liner for a plugin whose reachability cannot be cheaply asserted: `def probe(self) -> None: return None`. Operators whose credentials grant `s3:PutObject` but deny `s3:ListBucket` newly fail at run-start; inject a pre-built `client=` whose credentials pass `head_bucket` as the documented escape hatch. (#1457)
+
+### Fixed
+
+- **grading**: `grader.snapshot.enabled=true` with unreachable / mis-credentialled bundle stores (bad AWS creds on `S3BundleStore`, non-writeable `root_dir` on `LocalDiskBundleStore`) now aborts at run-start with an actionable `ValueError` naming the store type, its config, and a credential-source hint. Previously the failure surfaced silently as `SnapshotStatus.produce_failed` on every trial from `Conductor._produce_grade_bundle`'s per-trial `try/except`, leaving operators with N failed bundles instead of one clear message. (#1457)
 
 ### Perf
 

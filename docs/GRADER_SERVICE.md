@@ -757,7 +757,22 @@ class BundleStore(Protocol):
     def put(self, bundle_dir: Path) -> str: ...
     def get(self, uri: str, dest_dir: Path) -> Path: ...
     def close(self) -> None: ...
+    def probe(self) -> None: ...
 ```
+
+`probe()` is a cheap reachability check the orchestrator calls once at
+run-start when `grader.snapshot.enabled=true` (via
+`Orchestrator._validate_snapshot_mode_compatibility`): `LocalDiskBundleStore`
+writes and deletes a sentinel under `<root_dir>/grade_bundles/`;
+`S3BundleStore` issues a single `head_bucket` on `bucket=`. A failure
+raises `BundleStoreUnreachableError` naming the store's target and a
+credential-source hint, and the orchestrator wraps every probe exception
+(the shipped subclass, the missing-`boto3` `RuntimeError`, and the
+`AttributeError` an unupgraded out-of-tree plugin raises when its class
+has no `probe`) into one actionable `ValueError` with the underlying
+error preserved on `__cause__`. Passing the probe does not guarantee
+subsequent `put`/`get` calls succeed — probe covers reachability, not
+per-object durability.
 
 Implementations are discovered through the `tolokaforge.bundle_stores`
 entry-point group and resolved with

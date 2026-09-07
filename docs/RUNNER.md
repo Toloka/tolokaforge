@@ -628,9 +628,10 @@ snapshot_status:
 
 **Startup validation.** `Orchestrator.__init__` refuses `snapshot.enabled=true` when:
 - the selected `RuntimeBackend` raises `NotImplementedError` from `build_grade_bundle` (opt-out signal), OR
-- `grader.expose_substrate=false` (snapshot mode composes reads via `SubstrateService` RPCs — the substrate must be exposed).
+- `grader.expose_substrate=false` (snapshot mode composes reads via `SubstrateService` RPCs — the substrate must be exposed), OR
+- the resolved bundle store's `probe()` fails — `LocalDiskBundleStore` sentinel write+delete under `<root_dir>/grade_bundles/`, `S3BundleStore` `head_bucket` on `bucket=` (bad AWS credentials, missing bucket, non-writable `root_dir`, or an out-of-tree plugin that has not upgraded to implement `probe()` all surface here as a single actionable `ValueError`).
 
-Both refusals name the failing condition and terminate the run before any trial produces.
+Each refusal names the failing condition and terminates the run before any trial produces.
 
 **Backend support.** Shipped backends: `SharedStackRuntimeBackend` + `PerTrialRuntimeBackend` implement `build_grade_bundle`; `InMemoryRuntimeBackend` opts out. External `tolokaforge.runtime_backends` plugins either implement the hook or opt out with a `NotImplementedError` stub — the Protocol is `@runtime_checkable` and the startup gate probes the backend at run-start.
 

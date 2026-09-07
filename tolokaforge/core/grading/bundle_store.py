@@ -61,6 +61,7 @@ __all__ = [
     "BundleNotFoundError",
     "BundleStore",
     "BundleStoreError",
+    "BundleStoreUnreachableError",
     "InvalidBundleURIError",
     "LocalDiskBundleStore",
     "S3BundleStore",
@@ -87,6 +88,20 @@ class BundleNotFoundError(BundleStoreError):
 
 class InvalidBundleURIError(BundleStoreError):
     """The URI is malformed, targets a different scheme, or names another store."""
+
+
+class BundleStoreUnreachableError(BundleStoreError):
+    """The store itself cannot be reached — bad credentials, missing bucket,
+    non-writeable ``root_dir``, network partition. Distinct from
+    :class:`BundleNotFoundError`, which means "this URI didn't resolve to a
+    stored bundle" on an otherwise-healthy store.
+
+    Tidy-not-load-bearing: the orchestrator's run-start wire-up catches
+    :class:`Exception` uniformly (see
+    :meth:`Orchestrator._validate_snapshot_mode_compatibility`), so no
+    production path branches on this subclass. It exists for semantic
+    clarity in the shipped stores' unit assertions and debug traces.
+    """
 
 
 def build_bundle_uri(store_name: str, digest: str) -> str:
@@ -174,6 +189,19 @@ class BundleStore(Protocol):
         """Release store-held resources. Idempotent."""
         ...
 
+    def probe(self) -> None:
+        """Verify the store is reachable and credentials/permissions work.
+
+        Raises :class:`BundleStoreUnreachableError` (or a subclass) with a
+        message naming the store's target and a credential-source hint.
+        Called once at run-start when ``grader.snapshot.enabled=true``.
+        Cheap: a single metadata read (S3 ``head_bucket``, LocalDisk
+        sentinel write+delete). NOT a substitute for ``put``/``get`` error
+        handling — a probe pass does not guarantee subsequent ``put``
+        calls succeed.
+        """
+        ...
+
 
 @dataclass
 class LocalDiskBundleStore:
@@ -231,10 +259,29 @@ class LocalDiskBundleStore:
     def close(self) -> None:
         return None
 
+    def probe(self) -> None:
+        sentinel = self._bundles_root / f".probe.{uuid.uuid4()}"
+        try:
+            sentinel.write_bytes(b"")
+            sentinel.unlink()
+        except OSError as exc:
+            raise BundleStoreUnreachableError(
+                f"LocalDiskBundleStore cannot write under root_dir={self.root_dir!s}: "
+                f"{exc.strerror or exc}. Verify the directory exists, is writeable "
+                "by the process user, and the filesystem has free space."
+            ) from exc
+
 
 _BOTO3_INSTALL_HINT = (
     "S3BundleStore requires boto3. Install the optional extra with "
     "'uv add tolokaforge[bundle-store-s3]' or 'pip install boto3'."
+)
+
+_S3_CREDENTIAL_HINT = (
+    "S3BundleStore credentials come from the boto3 default chain "
+    "(env vars / ~/.aws/credentials / EC2 or IRSA role) unless client= "
+    "was injected. Verify the bucket exists and the credential source "
+    "grants s3:ListBucket on it."
 )
 
 
@@ -263,7 +310,14 @@ class S3BundleStore:
     boto3 client with ``endpoint_url=`` / ``region_name=`` and pass it as
     ``client=``.
 
-    .. warning:: **Secrets bypass — tracked in #1457.**
+    :meth:`probe` runs at run-start (via
+    :meth:`Orchestrator._validate_snapshot_mode_compatibility` when
+    ``grader.snapshot.enabled=true``) and issues a single ``head_bucket``
+    to fail loud on unreachable buckets, missing credentials, or denied
+    permissions — a misconfigured store aborts the run at start rather
+    than silently recording ``produce_failed`` on every trial.
+
+    .. warning:: **Secrets bypass.**
        The auto-built client's credentials come from the boto3 default
        chain, bypassing :class:`~tolokaforge.secrets.SecretManager`. In
        production, either
@@ -272,8 +326,10 @@ class S3BundleStore:
        IRSA / EC2-role environments where the credential source is
        ambient infrastructure metadata, not an ``AWS_*`` env var.
        Passing ``AWS_*`` env vars to the process to feed the default
-       chain contradicts AGENTS.md § Secrets — single abstraction and
-       is refused in a follow-up (#1457).
+       chain contradicts AGENTS.md § Secrets — single abstraction; the
+       :class:`SecretManager` routing cleanup for
+       :meth:`_boto3_client` is tracked in `#1538
+       <https://github.com/Toloka/tolokaforge/issues/1538>`_.
     """
 
     bucket: str
@@ -371,3 +427,32 @@ class S3BundleStore:
         if callable(close):
             close()
         self.client = None
+
+    def probe(self) -> None:
+        client = self._boto3_client()
+        from botocore.exceptions import (
+            ClientError,
+            EndpointConnectionError,
+            NoCredentialsError,
+            PartialCredentialsError,
+        )
+
+        try:
+            client.head_bucket(Bucket=self.bucket)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            raise BundleStoreUnreachableError(
+                f"S3BundleStore cannot reach bucket={self.bucket!r} "
+                f"(prefix={self.prefix!r}): head_bucket failed with "
+                f"Error.Code={code!r}. {_S3_CREDENTIAL_HINT}"
+            ) from exc
+        except (
+            EndpointConnectionError,
+            NoCredentialsError,
+            PartialCredentialsError,
+        ) as exc:
+            raise BundleStoreUnreachableError(
+                f"S3BundleStore cannot reach bucket={self.bucket!r} "
+                f"(prefix={self.prefix!r}): {type(exc).__name__}: {exc}. "
+                f"{_S3_CREDENTIAL_HINT}"
+            ) from exc
