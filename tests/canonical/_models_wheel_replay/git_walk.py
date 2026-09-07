@@ -58,8 +58,15 @@ def _run_git(repo_root: Path, args: list[str]) -> str:
     return result.stdout
 
 
-def enumerate_integration_commits(repo_root: Path) -> list[IntegrationCommit]:
-    """Return every ``^integrate: `` commit reachable from ``HEAD``.
+def enumerate_integration_commits(
+    repo_root: Path, until: str | None = None
+) -> list[IntegrationCommit]:
+    """Return every ``^integrate: `` commit reachable from ``until`` (defaults to ``HEAD``).
+
+    Passing ``until`` walks history reachable from that revision instead of
+    ``HEAD``, so the caller can freeze the replay at a known cutoff and stop
+    the metric from drifting on every new integration. Any revision ``git
+    log`` accepts is valid; missing revisions raise ``RuntimeError``.
 
     Chronological, oldest-first (``git log --reverse`` over committer-
     date order). One ``git log`` call across all matching commits, plus
@@ -81,7 +88,7 @@ def enumerate_integration_commits(repo_root: Path) -> list[IntegrationCommit]:
         repo_root,
         [
             "log",
-            "HEAD",
+            until or "HEAD",
             f"--grep={_SUBJECT_PREFIX}",
             f"--format={_LOG_FORMAT}",
             "--reverse",
