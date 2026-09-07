@@ -13,6 +13,14 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_mention_env(monkeypatch):
+    """`resolve_mentions` reads the environment, so a developer shell exporting either variable
+    would leak into every test. Scrub both; the tests that WANT one set it explicitly."""
+    monkeypatch.delenv(slack.REQUESTED_BY_ENV, raising=False)
+    monkeypatch.delenv("SLACK_MENTIONS", raising=False)
+
+
 class TestBuildRootText:
     def test_contains_match_tokens(self):
         text = slack.build_root_text("qwen/qwen3.6-plus", 42)
@@ -168,3 +176,88 @@ class TestMentionSuffix:
         assert slack.build_mention_suffix("") == expected
         assert slack.build_mention_suffix(None) == expected
         assert slack.build_mention_suffix(" , , ") == expected
+
+
+class TestResolveMentions:
+    """WHO a `--mention` notification pages: the Slack requester alone when the run came in through
+    the channel, else the standing `SLACK_MENTIONS` list (a by-hand label add / manual dispatch has
+    a GitHub actor but no Slack identity).
+    """
+
+    def test_the_requester_wins_over_the_standing_list(self, monkeypatch):
+        monkeypatch.setenv("SLACK_MENTIONS", "U_OPS1,U_OPS2")
+        monkeypatch.setenv(slack.REQUESTED_BY_ENV, "U0B1AN4QYMR")
+        assert slack.resolve_mentions() == "U0B1AN4QYMR"
+
+    def test_no_requester_keeps_the_standing_list(self, monkeypatch):
+        monkeypatch.setenv("SLACK_MENTIONS", "U_OPS1")
+        assert slack.resolve_mentions() == "U_OPS1"
+
+    def test_no_requester_and_no_list_is_none(self):
+        assert slack.resolve_mentions() is None
+
+    def test_a_wrapped_id_is_normalised(self, monkeypatch):
+        # The poller hands over a bare id, but tolerate the mention-shaped forms the rest of the
+        # module already accepts.
+        monkeypatch.setenv(slack.REQUESTED_BY_ENV, "<@U0B1AN4QYMR>")
+        assert slack.resolve_mentions() == "U0B1AN4QYMR"
+
+    @pytest.mark.parametrize(
+        "junk", ["not-a-user", "u0lowercase", "U12", "rm -rf /", "U0B1 AN4QYMR", "*<!channel>*"]
+    )
+    def test_junk_is_dropped_not_rendered(self, junk, monkeypatch):
+        """The value crossed from Slack metadata through a workflow input and comes back OUT as a
+        mention - anything not shaped like a user id must fall back to the list, never interpolate."""
+        monkeypatch.setenv("SLACK_MENTIONS", "U_OPS1")
+        monkeypatch.setenv(slack.REQUESTED_BY_ENV, junk)
+        assert slack.resolve_mentions() == "U_OPS1"
+
+    def test_junk_with_no_list_is_none_not_the_junk(self, monkeypatch):
+        monkeypatch.setenv(slack.REQUESTED_BY_ENV, "not-a-user")
+        assert slack.resolve_mentions() is None
+
+
+class TestLooksLikeSlackUserId:
+    @pytest.mark.parametrize("good", ["U0B1AN4QYMR", "W12345", "<@U0B1AN4QYMR>", "@U12345"])
+    def test_accepts_user_ids_and_their_wrappings(self, good):
+        assert slack.looks_like_slack_user_id(good) is True
+
+    @pytest.mark.parametrize("bad", ["", None, "not-a-user", "u0lowercase", "U12", "U1,U2"])
+    def test_rejects_everything_else(self, bad):
+        assert slack.looks_like_slack_user_id(bad) is False
+
+
+class TestTheReplyPingsTheRequesterAlone:
+    """`cmd_reply --mention` must page the resolved audience, not the raw standing list."""
+
+    def _capture(self, monkeypatch):
+        sent: list[str] = []
+        monkeypatch.setattr(slack, "_ready", lambda *_a, **_k: "tok")
+        monkeypatch.setattr(slack, "_find_or_create_root", lambda *_a, **_k: "1.0")
+        monkeypatch.setattr(
+            slack,
+            "_post_message",
+            lambda ch, text, tok, thread_ts=None: sent.append(text) or "9.9",
+        )
+        return sent
+
+    def test_requester_present_pages_them_alone(self, monkeypatch):
+        sent = self._capture(monkeypatch)
+        monkeypatch.setenv("SLACK_MENTIONS", "U_OPS1,U_OPS2")
+        monkeypatch.setenv(slack.REQUESTED_BY_ENV, "U0B1AN4QYMR")
+        slack.cmd_reply("C", 7, "needs a human.", "m", mention=True)
+        assert "<@U0B1AN4QYMR>" in sent[0]
+        assert "U_OPS1" not in sent[0] and "U_OPS2" not in sent[0]
+
+    def test_no_requester_pages_the_standing_list(self, monkeypatch):
+        sent = self._capture(monkeypatch)
+        monkeypatch.setenv("SLACK_MENTIONS", "U_OPS1,U_OPS2")
+        slack.cmd_reply("C", 7, "needs a human.", "m", mention=True)
+        assert "<@U_OPS1>" in sent[0] and "<@U_OPS2>" in sent[0]
+
+    def test_without_mention_no_one_is_paged(self, monkeypatch):
+        sent = self._capture(monkeypatch)
+        monkeypatch.setenv("SLACK_MENTIONS", "U_OPS1")
+        monkeypatch.setenv(slack.REQUESTED_BY_ENV, "U0B1AN4QYMR")
+        slack.cmd_reply("C", 7, "observe started", "m", mention=False)
+        assert "U0B1AN4QYMR" not in sent[0] and "U_OPS1" not in sent[0]
