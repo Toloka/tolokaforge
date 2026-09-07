@@ -181,12 +181,16 @@ class CompositeGraderKind:
         required inputs (v1.0 bundle without the v1.1-optional parts,
         or a LIVE substrate that stubs the accessors to ``None``).
         """
+        import json as _json
+
         from tolokaforge.core.grading import composite
         from tolokaforge.core.grading.substrate import SubstrateUnreachableError
         from tolokaforge.core.grading.tool_artifacts import extract_tool_artifacts
         from tolokaforge.core.grading.trace_timeline import build_timeline_from_wire
+        from tolokaforge.core.grading.transcript_wire import encode_transcript_wire
         from tolokaforge.core.models.grade import CustomCheckDetail, JudgeStatus
         from tolokaforge.core.models.run_config import ModelConfig
+        from tolokaforge.core.models.trajectory import Trajectory as _Trajectory
         from tolokaforge.core.plugin_registry import (
             load_custom_check_executor,
             load_judge_model_provider,
@@ -221,20 +225,33 @@ class CompositeGraderKind:
             )
         judge_model_config_dict = substrate.judge_model_config()
 
+        # Refuse fast when llm_judge is declared but the substrate has no
+        # judge_model_config — cheaper than the trajectory rehydration below
+        # and more actionable for the operator.
+        if task_config.llm_judge is not None and judge_model_config_dict is None:
+            raise GraderKindRefusedError(
+                "CompositeGraderKind offline recompute mode requires judge_model_config.json "
+                "when the task declares llm_judge — bundle v1.1 optional part missing."
+            )
+
         task_description = TaskDescription.model_validate(task_description_dict)
         judge_model_config: ModelConfig | None = (
             ModelConfig.model_validate(judge_model_config_dict)
             if judge_model_config_dict is not None
             else None
         )
-        llm_messages: list[dict[str, Any]] = list(trajectory_dict.get("messages") or [])
+        # Reconstruct the wire-encoded llm_messages the runner + grader
+        # dispatchers pass to the composite helpers. trajectory.messages
+        # in the bundle carries the Trajectory Pydantic dump — a different
+        # shape from the encode_transcript_wire wire (which nests tool_calls
+        # under {function: {name, arguments}} OpenAI-style). Rehydrate the
+        # Trajectory, encode it against the task's system_prompt, then parse
+        # the returned JSON string — the exact input the LIVE dispatchers
+        # feed build_timeline_from_wire.
+        trajectory_obj = _Trajectory.model_validate(trajectory_dict)
+        wire_str = encode_transcript_wire(trajectory_obj, task_description.system_prompt)
+        llm_messages: list[dict[str, Any]] = _json.loads(wire_str) if wire_str else []
         termination_reason = parse_termination_reason(trajectory_dict.get("termination_reason"))
-
-        if task_config.llm_judge is not None and judge_model_config is None:
-            raise GraderKindRefusedError(
-                "CompositeGraderKind offline recompute mode requires judge_model_config.json "
-                "when the task declares llm_judge — bundle v1.1 optional part missing."
-            )
 
         state_check_backends = {
             "jsonpath": load_state_check_backend("jsonpath")(),
