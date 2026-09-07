@@ -3,9 +3,11 @@
 Driven by ``botocore.stub.Stubber`` — no live S3, no ``moto`` dep.
 Locks the upload-order invariant (parts first, manifest LAST), the
 dedupe short-circuit on an existing manifest, the byte-identical
-round-trip through ``put``/``get``, the non-empty dest refusal, and
-proves that ``import tolokaforge.core.grading.bundle_store`` succeeds
-when ``boto3`` is not installed.
+round-trip through ``put``/``get``, the non-empty dest refusal,
+the run-start ``probe()`` contract (``head_bucket`` OK / denied /
+unreachable), and proves that ``import tolokaforge.core.grading.bundle_store``
+succeeds when ``boto3`` is not installed (with parity between the
+``put`` and ``probe`` install-hint ``RuntimeError``).
 """
 
 from __future__ import annotations
@@ -25,7 +27,10 @@ from tolokaforge.core.grading.bundle import (  # noqa: E402
     manifest_digest,
     serialize_grade_bundle,
 )
-from tolokaforge.core.grading.bundle_store import S3BundleStore  # noqa: E402
+from tolokaforge.core.grading.bundle_store import (  # noqa: E402
+    BundleStoreUnreachableError,
+    S3BundleStore,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -64,23 +69,32 @@ def _key(digest: str, rel: str) -> str:
 
 def test_lazy_boto3_import(tmp_path: Path) -> None:
     # Verify (a) bundle_store imports without boto3 present, and (b) instantiating
-    # S3BundleStore + calling put raises RuntimeError naming the install extra.
-    # Runs in a subprocess so sys.modules pollution can't leak into sibling tests
-    # (importlib.reload swaps class identities and breaks `pytest.raises` in
-    # downstream tests that captured the pre-reload class at collection time).
+    # S3BundleStore + calling put OR probe raises the same install-hint
+    # RuntimeError shape (parity: both entry points surface the missing extra
+    # identically). Runs in a subprocess so sys.modules pollution can't leak
+    # into sibling tests (importlib.reload swaps class identities and breaks
+    # `pytest.raises` in downstream tests that captured the pre-reload class
+    # at collection time).
     bundle = _make_bundle(tmp_path / "bundle", tmp_path / "fs")
     script = (
         "import sys\n"
         "sys.modules['boto3'] = None\n"
         "from tolokaforge.core.grading.bundle_store import S3BundleStore\n"
-        f"store = S3BundleStore(bucket='x')\n"
+        "store = S3BundleStore(bucket='x')\n"
         "try:\n"
         f"    store.put({str(bundle)!r})\n"
         "except RuntimeError as exc:\n"
         "    assert 'bundle-store-s3' in str(exc), str(exc)\n"
-        "    print('OK')\n"
         "else:\n"
         "    raise AssertionError('put did not raise RuntimeError')\n"
+        "probe_store = S3BundleStore(bucket='x')\n"
+        "try:\n"
+        "    probe_store.probe()\n"
+        "except RuntimeError as exc:\n"
+        "    assert 'bundle-store-s3' in str(exc), str(exc)\n"
+        "    print('OK')\n"
+        "else:\n"
+        "    raise AssertionError('probe did not raise RuntimeError')\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", script],
@@ -240,3 +254,66 @@ class _StreamStub:
             if not chunk:
                 return
             yield chunk
+
+
+class TestS3BundleStoreProbe:
+    """Run-start reachability probe for ``S3BundleStore``.
+
+    A single ``head_bucket`` covers the whole store: credentials work,
+    bucket exists, and the caller can enumerate it. Every failure shape
+    surfaces as :class:`BundleStoreUnreachableError` naming the bucket
+    and the credential-source hint so operators know exactly which
+    lever to pull.
+    """
+
+    def test_probe_returns_none_when_head_bucket_ok(self) -> None:
+        client, stubber = _stubbed_client()
+        stubber.add_response(
+            "head_bucket",
+            service_response={},
+            expected_params={"Bucket": BUCKET},
+        )
+        stubber.activate()
+        try:
+            store = S3BundleStore(bucket=BUCKET, prefix=PREFIX, client=client)
+            assert store.probe() is None
+        finally:
+            stubber.deactivate()
+        stubber.assert_no_pending_responses()
+
+    def test_probe_raises_unreachable_on_client_error_403(self) -> None:
+        client, stubber = _stubbed_client()
+        stubber.add_client_error(
+            "head_bucket",
+            service_error_code="403",
+            service_message="Forbidden",
+            http_status_code=403,
+            expected_params={"Bucket": BUCKET},
+        )
+        stubber.activate()
+        try:
+            store = S3BundleStore(bucket=BUCKET, prefix=PREFIX, client=client)
+            with pytest.raises(BundleStoreUnreachableError) as excinfo:
+                store.probe()
+        finally:
+            stubber.deactivate()
+        message = str(excinfo.value)
+        assert BUCKET in message
+        assert "s3:ListBucket" in message
+        assert "boto3 default chain" in message
+
+    def test_probe_raises_unreachable_on_endpoint_connection_error(self) -> None:
+        from botocore.exceptions import EndpointConnectionError
+
+        client, _ = _stubbed_client()
+
+        def _boom(**_: Any) -> None:
+            raise EndpointConnectionError(endpoint_url="https://s3.example.invalid")
+
+        client.head_bucket = _boom  # type: ignore[method-assign]
+        store = S3BundleStore(bucket=BUCKET, prefix=PREFIX, client=client)
+        with pytest.raises(BundleStoreUnreachableError) as excinfo:
+            store.probe()
+        message = str(excinfo.value)
+        assert BUCKET in message
+        assert "EndpointConnectionError" in message

@@ -1,13 +1,16 @@
 """Unit acceptance for ``LocalDiskBundleStore``.
 
 Covers the URI shape returned by ``put``, byte-identical round-trip
-through ``get``, and the three refusal contracts (non-empty destination,
-non-bundle scheme, wrong store name).
+through ``get``, the three refusal contracts (non-empty destination,
+non-bundle scheme, wrong store name), and the run-start ``probe()``
+contract (writable OK with zero residue / read-only ``root_dir``
+refused).
 """
 
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +18,7 @@ import pytest
 from tolokaforge.core.grading.bundle import serialize_grade_bundle
 from tolokaforge.core.grading.bundle_store import (
     BundleNotFoundError,
+    BundleStoreUnreachableError,
     InvalidBundleURIError,
     LocalDiskBundleStore,
     build_bundle_uri,
@@ -152,3 +156,32 @@ def test_get_raises_bundle_not_found_for_partial_bundle(tmp_path: Path) -> None:
 
     with pytest.raises(BundleNotFoundError):
         store.get(partial_uri, dest)
+
+
+class TestLocalDiskBundleStoreProbe:
+    """Run-start reachability probe for ``LocalDiskBundleStore``.
+
+    A sentinel write+delete under ``_bundles_root`` covers the store's
+    single write path. Residue leakage would silently break dedupe; the
+    write-permission check surfaces stale mounts and read-only
+    filesystems at run-start rather than per-trial.
+    """
+
+    def test_probe_writable_root_returns_none_and_leaves_no_residue(self, tmp_path: Path) -> None:
+        store = LocalDiskBundleStore(root_dir=tmp_path / "ok")
+        assert store.probe() is None
+        assert list((tmp_path / "ok" / "grade_bundles").iterdir()) == []
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="chmod-based read-only enforcement is not honoured on Windows",
+    )
+    def test_probe_read_only_root_raises_unreachable(self, tmp_path: Path) -> None:
+        store = LocalDiskBundleStore(root_dir=tmp_path / "ro")
+        store._bundles_root.chmod(0o500)
+        try:
+            with pytest.raises(BundleStoreUnreachableError) as excinfo:
+                store.probe()
+            assert str(store.root_dir) in str(excinfo.value)
+        finally:
+            store._bundles_root.chmod(0o700)

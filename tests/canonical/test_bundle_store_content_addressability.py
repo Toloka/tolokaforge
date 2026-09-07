@@ -9,6 +9,7 @@ bundle.
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -123,3 +124,39 @@ def test_atomic_staging_leaves_no_partial_state_on_crash(
     assert (
         len(staging_dirs) == 1
     ), f"expected exactly one orphan per-worker .<digest>.<uuid4>.tmp/, got {staging_dirs}"
+
+
+def _tree_fingerprint(root: Path) -> dict[str, str]:
+    """Walk ``root``, hash every file's bytes, return ``{rel_posix: sha256_hex}``.
+
+    Deterministic across runs: keys are ``PurePosixPath.as_posix()`` and the
+    hash is a byte-for-byte read.
+    """
+    result: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        result[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return result
+
+
+def test_probe_then_put_byte_identical_to_put_alone(tmp_path: Path) -> None:
+    """``store.probe(); store.put(bundle)`` produces the same on-disk bytes as
+    ``store.put(bundle)`` alone — a probe must leave zero residue that could
+    pollute a subsequent put, or dedupe would silently break across
+    probed and non-probed stores."""
+    inputs = synthetic_inputs(tmp_path / "fixture")
+    bundle_a = _bundle_at(tmp_path, "bundle_a", inputs)
+    bundle_b = _bundle_at(tmp_path, "bundle_b", inputs)
+
+    store_probe = LocalDiskBundleStore(root_dir=tmp_path / "store_probe")
+    store_probe.probe()
+    store_probe.put(bundle_a)
+
+    store_plain = LocalDiskBundleStore(root_dir=tmp_path / "store_plain")
+    store_plain.put(bundle_b)
+
+    probe_tree = _tree_fingerprint(store_probe.root_dir / "grade_bundles")
+    plain_tree = _tree_fingerprint(store_plain.root_dir / "grade_bundles")
+    assert probe_tree == plain_tree
