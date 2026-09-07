@@ -150,10 +150,9 @@ holds structurally for any subclass of `BaseAdapter`.
 
 **Explicit exclusion.** Item 13 (`grading_hash_source_layer`) is **not** a
 member of `AdapterGradingContract` — it is a classmethod default on
-`BaseAdapter`. Step 2 above is where you override it. This is the item-range
-correction the sibling
+`BaseAdapter`. Step 2 above is where you override it. The sibling
 [`docs/ADAPTER_INTERFACE.md § AdapterGradingContract`](ADAPTER_INTERFACE.md#adaptergradingcontract)
-section names.
+section names the same six items (14 – 16 and 18 – 20).
 
 Under an active coding harness, `preferred_grader_kind()` alignment with the
 `grading_method` `emit_test_execution_grading()` puts on the emitted
