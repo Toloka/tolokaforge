@@ -56,9 +56,10 @@ Or with S3:
 
 **Startup gate.** The orchestrator refuses `snapshot.enabled=true` at run-start when:
 - The backend does not implement `RuntimeBackend.build_grade_bundle` (raises `NotImplementedError`), OR
-- `grader.expose_substrate` is `false` (the producer needs `SubstrateService` to compose reads).
+- `grader.expose_substrate` is `false` (the producer needs `SubstrateService` to compose reads), OR
+- the resolved bundle store's `probe()` fails — `LocalDiskBundleStore` sentinel write+delete under `<root_dir>/grade_bundles/`, `S3BundleStore` `head_bucket` on `bucket=` (a misconfigured store aborts the run before any trial produces, instead of recording `produce_failed` on every trial).
 
-An actionable error names both preconditions.
+An actionable error names the failing precondition.
 
 **Backend support** (out of the box):
 - `SharedStackRuntimeBackend` — supported.

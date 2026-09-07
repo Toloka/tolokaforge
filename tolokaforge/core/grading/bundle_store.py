@@ -429,6 +429,7 @@ class S3BundleStore:
         self.client = None
 
     def probe(self) -> None:
+        client = self._boto3_client()
         from botocore.exceptions import (
             ClientError,
             EndpointConnectionError,
@@ -436,7 +437,6 @@ class S3BundleStore:
             PartialCredentialsError,
         )
 
-        client = self._boto3_client()
         try:
             client.head_bucket(Bucket=self.bucket)
         except ClientError as exc:

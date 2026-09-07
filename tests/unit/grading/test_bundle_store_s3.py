@@ -78,7 +78,13 @@ def test_lazy_boto3_import(tmp_path: Path) -> None:
     bundle = _make_bundle(tmp_path / "bundle", tmp_path / "fs")
     script = (
         "import sys\n"
+        # Block BOTH boto3 and botocore so probe's local botocore.exceptions
+        # import can't succeed before _boto3_client() gets a chance to raise
+        # the friendly install-hint. Production `pip install tolokaforge`
+        # without the extra ships neither package.
         "sys.modules['boto3'] = None\n"
+        "sys.modules['botocore'] = None\n"
+        "sys.modules['botocore.exceptions'] = None\n"
         "from tolokaforge.core.grading.bundle_store import S3BundleStore\n"
         "store = S3BundleStore(bucket='x')\n"
         "try:\n"
