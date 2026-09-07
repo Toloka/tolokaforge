@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 1,
-  "bucket_b_count": 14,
+  "bucket_b_count": 13,
   "commits": [
     {
       "adapter_paths": [
@@ -2056,32 +2056,14 @@
     },
     {
       "adapter_paths": [
-        "docs/CODING_HARNESSES.md",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_adapter_support.py"
-      ],
-      "bucket": "B",
-      "date": "2026-09-07",
-      "pr": null,
-      "reason": "4 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "104b89a3a43bc1a1a986a132354c3639f4a61e6e",
-      "subject": "docs+comments: present-tense polish + adapter-mixin helper enumeration (hygiene nits on #1394)",
-      "touched_files": [
-        "docs/CODING_HARNESSES.md",
-        "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
-        "tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py",
-        "tolokaforge_coding_harnesses/tests/unit/test_adapter_support.py"
-      ]
-    },
-    {
-      "adapter_paths": [
         "AGENTS.md",
         "docs/ADAPTER_ARCHITECTURE.md",
         "docs/ADAPTER_INTERFACE.md",
         "docs/CODING_HARNESSES.md",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/tests/test_terminal_bench_grading_contract.py",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/snapshots/models_wheel_replay/metric.json",
         "tests/canonical/test_grading_contract_suite_self_check.py",
         "tests/canonical/test_native_adapter_grading_contract_under_harness.py",
         "tolokaforge/testing/adapters/__init__.py",
@@ -2092,10 +2074,10 @@
       ],
       "bucket": "B",
       "date": "2026-09-07",
-      "pr": 1394,
-      "reason": "13 adapter-side path(s) outside Bucket-A allow-list",
-      "sha": "f06e4e7f01e95926fe4c480f3a4348cf607fdab7",
-      "subject": "refactor(adapters): align preferred_grader_kind() with emit_test_execution_grading (#1394)",
+      "pr": 1535,
+      "reason": "15 adapter-side path(s) outside Bucket-A allow-list",
+      "sha": "e61032ccc8243cc8ef52626a6314cc862048fe0d",
+      "subject": "refactor(adapters): align preferred_grader_kind() with emit_test_execution_grading (#1394) (#1535)",
       "touched_files": [
         "AGENTS.md",
         "docs/ADAPTER_ARCHITECTURE.md",
@@ -2103,6 +2085,8 @@
         "docs/CODING_HARNESSES.md",
         "external_adapters/tolokaforge-adapter-terminal-bench/src/tolokaforge_adapter_terminal_bench/adapter.py",
         "external_adapters/tolokaforge-adapter-terminal-bench/tests/test_terminal_bench_grading_contract.py",
+        "tests/canonical/snapshots/harness_registry_replay/metric.json",
+        "tests/canonical/snapshots/models_wheel_replay/metric.json",
         "tests/canonical/test_grading_contract_suite_self_check.py",
         "tests/canonical/test_native_adapter_grading_contract_under_harness.py",
         "tolokaforge/testing/adapters/__init__.py",

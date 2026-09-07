@@ -47,7 +47,8 @@ class _FakeAdapterBase:
     grades_from_task_grading_file = False
     syncs_adapter_env_to_state = False
 
-    def grading_source(self, task, task_dir):
+    @classmethod
+    def grading_source(cls, task, task_dir):
         return GradingSource(
             kind=GradingSourceKind.UNINTERROGABLE,
             path=None,
@@ -128,9 +129,9 @@ def test_both_branches_of_the_emit_payload_schema_check_fire(
     )
 
     outcomes = result.parseoutcomes()
-    assert outcomes.get("passed", 0) >= 21, (
-        f"expected the two subclasses' 12 test methods each to run (24 total, "
-        f"minus 3 skips leaves 21 passes), got outcomes={outcomes!r}"
+    assert outcomes.get("passed", 0) >= 23, (
+        f"expected the two subclasses' 13 test methods each to run (26 total, "
+        f"minus 3 skips leaves 23 passes), got outcomes={outcomes!r}"
     )
     assert outcomes.get("skipped", 0) == 3, (
         f"expected exactly three skips — the empty-payload branch of the "
