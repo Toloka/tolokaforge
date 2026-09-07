@@ -442,8 +442,9 @@ class ToolCallingLoop:
     def _append_both(self, messages: list[Message], message: Message) -> None:
         """Append to the caller-owned recorded list and the wire list.
 
-        A summarize event rewrites ``_wire_messages`` but leaves ``messages``
-        alone, so grading reads the full pre-summarize history via
+        A summarize event rewrites ``_wire_messages`` in place and appends a
+        ``role=system`` reset marker to both lists; the pre-summarize turn
+        content stays in ``messages`` so grading reads the full history via
         ``Trajectory.messages``.
         """
         messages.append(message)
