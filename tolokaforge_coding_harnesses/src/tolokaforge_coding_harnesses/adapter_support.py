@@ -1,12 +1,13 @@
 """Adapter-side coding-harness pattern, shared by any adapter that opts in.
 
 An adapter routes a task to a vendor coding-agent CLI by agreeing with the
-engine on four surfaces: the harness metadata the conductor branches on, the
+engine on five surfaces: the harness metadata the conductor branches on, the
 ``docker exec``-shaped tool the runner uses for exec, the ``test_execution``
-grading dispatch, and the image layer that puts the CLI on ``PATH``. Every
-adapter's version of those four is the same shape — only the compose /
-container plumbing around them differs — so this module gives the shape one
-address any adapter can inherit.
+grading dispatch, the image layer that puts the CLI on ``PATH``, and the
+preferred-grader-kind answer that stays aligned with the grading dispatch
+whenever a real CLI drives the trial. Every adapter's version of those five
+is the same shape — only the compose / container plumbing around them
+differs — so this module gives the shape one address any adapter can inherit.
 
 The mixin cannot import the engine: this package ships to runtimes that do
 not install ``tolokaforge`` (the boundary invariant in
@@ -29,6 +30,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from ._registry import (
+    ENGINE_LOOP,
     INSTALL_SCRIPT,
     MIDDLEWARE_PROXY_CONTAINER_PATH,
     MIDDLEWARE_PROXY_SCRIPT,
@@ -61,10 +63,12 @@ class CodingHarnessAdapterMixin:
 
     An adapter that inherits this mixin declares — via
     :attr:`supports_coding_harness` — that the orchestrator's config gate can
-    route ``models.agent.harness`` runs to it, and gets the five helpers the
+    route ``models.agent.harness`` runs to it, and gets the seven helpers the
     pattern needs: registry resolution, command assembly, metadata emission,
-    tool-schema payload, ``test_execution`` grading payload, and the standalone
-    install-script Dockerfile layer.
+    tool-schema payload, ``test_execution`` grading payload, the standalone
+    install-script Dockerfile layer, and the instance-aware
+    :meth:`preferred_grader_kind` answer that agrees with
+    :meth:`emit_test_execution_grading` under an active harness.
 
     The mixin is stateless — every helper takes what it needs as arguments — so
     an adapter can inherit alongside any base class without inheritance-order
@@ -242,6 +246,26 @@ class CodingHarnessAdapterMixin:
             "pass_threshold": 0.5,
             "grading_method": "test_execution",
         }
+
+    def preferred_grader_kind(self) -> str:
+        """Grader-kind name aligned with the payload the mixin emits.
+
+        Returns ``"test_execution"`` when a real harness drives the trial
+        (matching the ``grading_method`` :meth:`emit_test_execution_grading`
+        emits into :class:`~tolokaforge.runner.models.RunnerGradingConfig`),
+        ``"composite"`` under :data:`ENGINE_LOOP` where the engine's own turn
+        loop runs and the adapter's grading falls through to the historical
+        default. Adapters whose grading is static across both branches
+        override to return the fixed kind.
+
+        The ``getattr`` fallback keeps the mixin resilient to a subclass that
+        never sets ``self.agent_harness`` — such a subclass sees the pre-mixin
+        :meth:`~tolokaforge.adapters.base.BaseAdapter.preferred_grader_kind`
+        answer (``"composite"``), so adopting the mixin cannot regress it."""
+        agent_harness = getattr(self, "agent_harness", ENGINE_LOOP)
+        if agent_harness != ENGINE_LOOP:
+            return "test_execution"
+        return "composite"
 
     def write_install_script_layer(
         self,

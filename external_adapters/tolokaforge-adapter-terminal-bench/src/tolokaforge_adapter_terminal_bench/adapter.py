@@ -158,6 +158,18 @@ class TerminalBenchAdapter(CodingHarnessAdapterMixin, BaseAdapter):
     requires_docker_cli_in_runner: ClassVar[bool] = True
     """Runner runs docker CLI + compose plugin against the host daemon via the mounted socket."""
 
+    def preferred_grader_kind(self) -> str:
+        """Grades via ``test_execution`` on both branches.
+
+        The pack's verifier writes ``/logs/verifier/reward.txt`` regardless of
+        whether the CLI or the engine loop drove the trial, so
+        :meth:`to_task_description` calls
+        :meth:`~tolokaforge_coding_harnesses.adapter_support.CodingHarnessAdapterMixin.emit_test_execution_grading`
+        unconditionally. The mixin's harness-aware default would report
+        ``"composite"`` under :data:`~tolokaforge_coding_harnesses.ENGINE_LOOP`;
+        this override keeps the two answers in agreement on both branches."""
+        return "test_execution"
+
     def __init__(
         self,
         params: dict[str, Any],
