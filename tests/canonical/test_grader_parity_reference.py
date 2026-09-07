@@ -478,11 +478,11 @@ def test_regression_sim_leg_divergence_names_the_component(
     Runs the runner leg with production :func:`grade_trace_checks`, then
     monkeypatches the composite module's binding to a stub whose result leaves
     ``trace_checks`` unscored while the config still declares it. The grader
-    leg's fold refuses the trial (``resolve_uncounted_fold`` catches the
-    declared-but-unscored shape) and the parity harness sees a
-    :class:`GradingFailedError` naming the missing component — the same
-    seam-named signal a between-legs code divergence produces, now surfacing
-    fail-loud through the refusal path rather than through a score diff.
+    leg's ``audit_accounted_keys`` catches the declared-but-unaccounted shape
+    and the parity harness sees a :class:`GradingFailedError` naming the
+    missing component — the same seam-named signal a between-legs code
+    divergence produces, surfacing fail-loud through the ledger-audit refusal
+    path rather than through a score diff.
     """
     pack = load_parity_pack(_BASELINES_ROOT / "all_four_no_hash")
     run_via_runner_rpc(pack, monkeypatch=monkeypatch)

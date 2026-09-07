@@ -96,7 +96,7 @@ def _task_description() -> TaskDescription:
     )
 
 
-def test_llm_judge_no_messages_records_skip(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_llm_judge_no_messages_records_skip() -> None:
     """A populated ``llm_judge`` block with an empty transcript files
     :data:`NO_JUDGE_MESSAGES_SKIP` under :data:`LLM_JUDGE_KEY` so the audit
     reads a ``SKIPPED`` record instead of an unaccounted-key error.
@@ -132,7 +132,7 @@ def test_llm_judge_no_messages_records_skip(monkeypatch: pytest.MonkeyPatch) -> 
     assert judge_gate_failed is False
 
 
-def test_custom_checks_disabled_records_skip(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_custom_checks_disabled_records_skip() -> None:
     """A ``custom_checks: {enabled: false}`` block files
     :data:`CUSTOM_CHECKS_DISABLED_SKIP` under :data:`CUSTOM_CHECKS_KEY` so
     the audit reads a ``SKIPPED`` record.
