@@ -65,7 +65,7 @@ import io
 import json
 import tarfile
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -278,6 +278,48 @@ class GradingSubstrate(Protocol):
         """
         ...
 
+    def trajectory(self) -> Mapping[str, Any] | None:
+        """The trial's serialised trajectory (wire ``Trajectory`` dict), or
+        ``None`` when the substrate does not carry one.
+
+        Read by the full offline ``CompositeGraderKind.evaluate`` (issue
+        #1465) to reconstruct ``llm_messages`` + termination reason for
+        transcript-rules + trace-checks + llm_judge scoring. LIVE-callback
+        substrates return ``None`` — the LIVE grading dispatchers already
+        thread llm_messages directly and never call this accessor.
+        SnapshotGradingSubstrate reads from ``trajectory.json`` (v1.0
+        required part; always present).
+        """
+        ...
+
+    def task_description(self) -> Mapping[str, Any] | None:
+        """The trial's ``TaskDescription`` dict, or ``None`` when the
+        substrate does not carry one.
+
+        Read by the full offline composite kind to reach
+        ``initial_state.schemas`` / ``id_fields`` / ``unstable_fields``
+        (llm_judge state diff) and ``tool_artifacts`` (custom_checks).
+        LIVE-callback substrates return ``None`` — the LIVE dispatchers
+        thread ``TaskDescription`` directly. SnapshotGradingSubstrate
+        reads from the v1.1-optional ``task_description.json`` part;
+        v1.0 bundles without the part return ``None``, and the offline
+        kind refuses actionably.
+        """
+        ...
+
+    def judge_model_config(self) -> Mapping[str, Any] | None:
+        """The run's judge ``ModelConfig`` dict, or ``None`` when the
+        substrate does not carry one.
+
+        Read by the full offline composite kind to construct the LLM judge
+        provider. LIVE substrates return ``None`` — the LIVE dispatchers
+        thread ``judge_model_config`` directly. SnapshotGradingSubstrate
+        reads from the v1.1-optional ``judge_model_config.json`` part;
+        v1.0 bundles or runs without a judge configured return ``None``,
+        and the offline kind either declares no llm_judge or refuses.
+        """
+        ...
+
     def close(self) -> None:
         """Release any transport / temp-directory resources this substrate
         owns. Called by the grader at the end of one grade call.
@@ -426,6 +468,23 @@ class InProcessGradingSubstrate:
             reward_read_timeout_s=reward_read_timeout_s,
         )
 
+    def trajectory(self) -> Mapping[str, Any] | None:
+        """The in-process substrate does not carry a serialised trajectory.
+
+        LIVE grading dispatchers thread ``llm_messages`` and termination
+        reason directly; only the offline composite kind reads this
+        accessor, and it never runs against ``InProcessGradingSubstrate``.
+        """
+        return None
+
+    def task_description(self) -> Mapping[str, Any] | None:
+        """The in-process substrate does not carry a task description."""
+        return None
+
+    def judge_model_config(self) -> Mapping[str, Any] | None:
+        """The in-process substrate does not carry a judge model config."""
+        return None
+
     def close(self) -> None:
         # Nothing to release — the caller owns the DB reader, KB search,
         # and workspace paths; the substrate is a thin view.
@@ -527,6 +586,9 @@ class SnapshotGradingSubstrate:
         self._final_state_stable_cache: dict[str, Any] | Any = _MISSING
         self._filesystem_root_cache: Path | None | Any = _MISSING
         self._filesystem_state_cache: dict[str, str] | None | Any = _MISSING
+        self._trajectory_cache: Mapping[str, Any] | None | Any = _MISSING
+        self._task_description_cache: Mapping[str, Any] | None | Any = _MISSING
+        self._judge_model_config_cache: Mapping[str, Any] | None | Any = _MISSING
         self._filesystem_tmpdir: tempfile.TemporaryDirectory[str] | None = None
         self._db_reader_cache: _SnapshotDBReader | None = None
         self._closed = False
@@ -546,6 +608,14 @@ class SnapshotGradingSubstrate:
                 f"SnapshotGradingSubstrate cannot read part {rel_path!r} from "
                 f"{self._bundle_view.bundle_dir}: {type(exc).__name__}: {exc}"
             ) from exc
+
+    def _read_part_optional(self, rel_path: str) -> bytes | None:
+        """Read a v1.1-optional part; return ``None`` when the manifest
+        does not name it (v1.0-shape bundle). Read failures on a NAMED
+        part still translate to :class:`SubstrateUnreachableError`."""
+        if not self._bundle_view.has_part(rel_path):
+            return None
+        return self._read_part(rel_path)
 
     def db_reader(self) -> DBReader:
         if self._db_reader_cache is None:
@@ -606,6 +676,31 @@ class SnapshotGradingSubstrate:
             f"(script_path={script_path!r}) — bundle format v1.0 carries no "
             f"test-suite hook. Pack requires live_callback for grading."
         )
+
+    def trajectory(self) -> Mapping[str, Any] | None:
+        """The trial's ``Trajectory`` dict from ``trajectory.json`` (v1.0
+        required part) — always present in a well-formed bundle."""
+        if self._trajectory_cache is _MISSING:
+            self._trajectory_cache = json.loads(self._read_part("trajectory.json"))
+        return self._trajectory_cache
+
+    def task_description(self) -> Mapping[str, Any] | None:
+        """The trial's ``TaskDescription`` dict from the v1.1-optional
+        ``task_description.json`` part. Returns ``None`` on a v1.0 bundle
+        without the part."""
+        if self._task_description_cache is _MISSING:
+            data = self._read_part_optional("task_description.json")
+            self._task_description_cache = json.loads(data) if data is not None else None
+        return self._task_description_cache
+
+    def judge_model_config(self) -> Mapping[str, Any] | None:
+        """The run's judge ``ModelConfig`` dict from the v1.1-optional
+        ``judge_model_config.json`` part. Returns ``None`` on a v1.0
+        bundle or a run without a judge configured."""
+        if self._judge_model_config_cache is _MISSING:
+            data = self._read_part_optional("judge_model_config.json")
+            self._judge_model_config_cache = json.loads(data) if data is not None else None
+        return self._judge_model_config_cache
 
     def close(self) -> None:
         if self._closed:

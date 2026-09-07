@@ -17,6 +17,7 @@ files inside the slim image. See :mod:`tolokaforge.core._runner_subset`.
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -172,6 +173,27 @@ class LiveRunnerCallbackGradingSubstrate:
             timeout_s=timeout_s,
             reward_read_timeout_s=reward_read_timeout_s,
         )
+
+    def trajectory(self) -> Mapping[str, Any] | None:
+        """LIVE substrate does not carry a serialised trajectory.
+
+        The LIVE grading dispatchers (``RunnerServiceImpl._grade_trial_async``
+        and ``GraderCompositeDispatch``) thread ``llm_messages`` directly
+        into the composite helpers; nothing on the LIVE path reads this
+        accessor. Only the offline ``CompositeGraderKind.evaluate`` does,
+        and it runs against ``SnapshotGradingSubstrate`` — never LIVE.
+        """
+        return None
+
+    def task_description(self) -> Mapping[str, Any] | None:
+        """LIVE substrate does not carry a task description — the LIVE
+        dispatchers thread ``TaskDescription`` directly."""
+        return None
+
+    def judge_model_config(self) -> Mapping[str, Any] | None:
+        """LIVE substrate does not carry a judge model config — the LIVE
+        dispatchers thread ``judge_model_config`` directly."""
+        return None
 
     def close(self) -> None:
         if self._closed:
