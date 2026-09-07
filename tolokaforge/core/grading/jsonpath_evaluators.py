@@ -25,8 +25,10 @@ a no-op and diverge from host-side grading.
 
 from __future__ import annotations
 
+import fnmatch
 import glob
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 def evaluate_jsonpath_file_checks(
     checks: list[dict[str, Any]],
+    filesystem_state: Mapping[str, str] | None = None,
 ) -> tuple[float, str]:
     """
     Evaluate jsonpath file assertions against the Runner container's filesystem.
@@ -90,19 +93,34 @@ def evaluate_jsonpath_file_checks(
                 )
             continue
 
-        # Translate logical /env/fs/agent-visible/ paths to the runner's
-        # actual /work/ tree (matching where the file tools and BashTool
-        # operate). This keeps grading/runtime consistent: the agent
-        # writes via write_file under /work/, and the grader reads from
-        # the same place.
-        resolved_pattern = path_pattern
-        if resolved_pattern.startswith("/env/fs/agent-visible/"):
-            resolved_pattern = "/work/" + resolved_pattern[len("/env/fs/agent-visible/") :]
-        elif resolved_pattern == "/env/fs/agent-visible":
-            resolved_pattern = "/work"
-
-        # Glob for matching files on the container filesystem
-        matching_files = glob.glob(resolved_pattern)
+        # Path resolution — two modes:
+        #
+        # 1. filesystem_state (dict keyed by /env/fs/agent-visible/ paths)
+        #    when provided by the substrate (LIVE-callback, snapshot, or any
+        #    grader consuming the substrate from outside the runner
+        #    container). Match ``path_pattern`` against dict keys via
+        #    ``fnmatch`` and read content from the dict — the runner's
+        #    ``/work/`` tree isn't visible from the host, and even in the
+        #    runner an offline regrade doesn't have it. Closes #1517.
+        #
+        # 2. Legacy glob against the runner container's own filesystem —
+        #    the shipped runner-side path. Translates ``/env/fs/agent-visible/``
+        #    to ``/work/`` (where the file tools and BashTool operate) and
+        #    uses ``glob.glob``. Kept for the runner-rpc grader dispatch
+        #    which runs in-container.
+        matching_files: list[str]
+        matching_contents: dict[str, str] = {}
+        if filesystem_state is not None:
+            matching_files = fnmatch.filter(list(filesystem_state.keys()), path_pattern)
+            for match in matching_files:
+                matching_contents[match] = filesystem_state[match]
+        else:
+            resolved_pattern = path_pattern
+            if resolved_pattern.startswith("/env/fs/agent-visible/"):
+                resolved_pattern = "/work/" + resolved_pattern[len("/env/fs/agent-visible/") :]
+            elif resolved_pattern == "/env/fs/agent-visible":
+                resolved_pattern = "/work"
+            matching_files = glob.glob(resolved_pattern)
 
         if not matching_files:
             reasons_parts.append(f"FAIL: No files match {path_pattern} — {description}")
@@ -112,7 +130,10 @@ def evaluate_jsonpath_file_checks(
         found = False
         for file_path in matching_files:
             try:
-                content = Path(file_path).read_text(encoding="utf-8", errors="replace")
+                if file_path in matching_contents:
+                    content = matching_contents[file_path]
+                else:
+                    content = Path(file_path).read_text(encoding="utf-8", errors="replace")
                 if contains_ci.lower() in content.lower():
                     found = True
                     break
@@ -253,7 +274,12 @@ def evaluate_jsonpath_checks(
     reasons_parts: list[str] = []
 
     if file_checks:
-        file_score, file_reasons = evaluate_jsonpath_file_checks(file_checks)
+        filesystem_state = None
+        if state is not None:
+            fs = state.get("filesystem")
+            if isinstance(fs, Mapping):
+                filesystem_state = fs
+        file_score, file_reasons = evaluate_jsonpath_file_checks(file_checks, filesystem_state)
         if file_score >= 0:
             passed += file_score * len(file_checks)
         if file_reasons:

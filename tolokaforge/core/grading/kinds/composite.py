@@ -247,10 +247,15 @@ class CompositeGraderKind:
         # under {function: {name, arguments}} OpenAI-style). Rehydrate the
         # Trajectory, encode it against the task's system_prompt, then parse
         # the returned JSON string — the exact input the LIVE dispatchers
-        # feed build_timeline_from_wire.
+        # feed build_timeline_from_wire. Trajectory.tool_log carries the
+        # RecordedToolCall history the runner passes as ``recorded`` for
+        # required_action / no-matching-tool-call transcript rule checks;
+        # without it those rules could not distinguish declared-but-unrun
+        # calls from failed ones (closes #1517).
         trajectory_obj = _Trajectory.model_validate(trajectory_dict)
         wire_str = encode_transcript_wire(trajectory_obj, task_description.system_prompt)
         llm_messages: list[dict[str, Any]] = _json.loads(wire_str) if wire_str else []
+        recorded_tool_calls = list(trajectory_obj.tool_log)
         termination_reason = parse_termination_reason(trajectory_dict.get("termination_reason"))
 
         state_check_backends = {
@@ -270,7 +275,7 @@ class CompositeGraderKind:
         unstable_fields = {(u.table_name, u.field_name) for u in initial_state.unstable_fields}
         initial_state_schemas = list(initial_state.schemas)
         tool_artifacts = task_description.tool_artifacts or {}
-        timeline = build_timeline_from_wire(llm_messages, [], termination_reason)
+        timeline = build_timeline_from_wire(llm_messages, recorded_tool_calls, termination_reason)
 
         artifacts_dir = None
         added_sys_path: list[str] = []
@@ -352,9 +357,9 @@ class CompositeGraderKind:
         :meth:`~tolokaforge.grader.composite_dispatch.GraderCompositeDispatch._run_composite`
         which we cannot import directly (importlinter contract
         ``grader-kinds-purity`` forbids reaching ``tolokaforge.grader``)."""
-        from tolokaforge.core.grading.composite.llm_judge import JudgeStatus as JudgeRunStatus
-        from tolokaforge.core.grading.composite_fold import TraceChecksResult
+        from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
         from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorContext
+        from tolokaforge.runner.models import TraceChecksResult
 
         components = runner_components_cls()
         state_checks_config = task_config.state_checks

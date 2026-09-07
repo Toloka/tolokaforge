@@ -170,31 +170,31 @@ class TestJsonpathCompositeParity:
         assert result.jsonpath_score == expected_score
         assert result.jsonpath_reasons == expected_reasons
 
-    def test_path_glob_only_pack_matches_the_runner_path(self, tmp_path) -> None:
-        # Write a file so the glob check can find something on disk. The
-        # ``core.grading.jsonpath_evaluators`` file evaluator reads from cwd;
-        # setting cwd via monkeypatch keeps the shipped shape.
-        target = tmp_path / "output.txt"
-        target.write_text("hello disk", encoding="utf-8")
-        # A pack whose only assertion is a path_glob does not touch the
-        # substrate at all — this only asserts the composite behaves as
-        # expected for an all-glob pack.
+    def test_path_glob_only_pack_matches_the_runner_path(self) -> None:
+        """path_glob checks now route through ``substrate.filesystem_state()``
+        so LIVE-callback + snapshot substrates work. The composite result
+        matches what ``evaluate_jsonpath_checks`` produces over the same
+        ``{filesystem: substrate.filesystem_state()}`` view. Closes #1517."""
+        # Populate the substrate's filesystem view so both paths (composite
+        # via substrate, direct call with the same state) see the same file.
         checks = [
             {
-                "path_glob": str(target),
+                "path_glob": "/env/fs/agent-visible/notes.md",
                 "contains_ci": "hello",
-                "description": "output on disk",
+                "description": "notes on disk",
             },
         ]
         config = RunnerStateChecksConfig(jsonpath_checks=checks)
         result = grade_state_checks_reads(
             trial_id="task:0",
             config=config,
-            substrate=_substrate(),
+            substrate=_substrate(filesystem=_FILESYSTEM),
             state_check_backends=_shipped_backends(),
             logger=_logger(),
         )
-        expected_score, expected_reasons = evaluate_jsonpath_checks(checks, state=None)
+        expected_score, expected_reasons = evaluate_jsonpath_checks(
+            checks, state={"filesystem": _FILESYSTEM}
+        )
         assert result.jsonpath_score == expected_score
         assert result.jsonpath_reasons == expected_reasons
 

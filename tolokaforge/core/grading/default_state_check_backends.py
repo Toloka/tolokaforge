@@ -79,9 +79,17 @@ class JsonpathStateCheckBackend:
         if not expression:
             return None, None
         path_checks = [check for check in expression if check.get("path") is not None]
-        state_dict_needed = bool(path_checks)
+        # A path_glob check reads the substrate's filesystem view too — otherwise
+        # the runner-side ``evaluate_jsonpath_file_checks`` falls back to
+        # ``glob.glob("/work/…")`` on the host FS, which returns empty on any
+        # grader consuming the substrate from outside the runner container
+        # (LIVE-callback, snapshot). Closes #1517.
+        path_glob_checks = [check for check in expression if check.get("path_glob") is not None]
+        state_dict_needed = bool(path_checks) or bool(path_glob_checks)
         db_state_needed = any(addresses_the_database(check) for check in path_checks)
-        fs_state_needed = any(not addresses_the_database(check) for check in path_checks)
+        fs_state_needed = bool(path_glob_checks) or any(
+            not addresses_the_database(check) for check in path_checks
+        )
         jsonpath_state: dict[str, Any] | None = None
         if state_dict_needed:
             db_state: dict[str, Any] = {}
