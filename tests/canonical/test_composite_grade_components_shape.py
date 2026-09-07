@@ -60,11 +60,13 @@ def test_unknown_key_fails_loud() -> None:
         CompositeGradeComponents.model_validate({"definitely_unknown_key": 1})
 
 
-def test_runner_models_does_not_re_export_the_old_name() -> None:
-    """Guards against a well-meaning "let me re-add it as a compat re-export".
+def test_runner_models_does_not_export_runner_grade_components() -> None:
+    """``tolokaforge.runner.models`` does not expose ``RunnerGradeComponents``.
 
-    The rename removed ``RunnerGradeComponents`` from ``runner.models``
-    with no shim and no ``__getattr__`` alias. A re-export sneaking back in
-    would revive the cross-boundary import the rename eliminated.
+    A re-export (module attribute, ``from ... import ... as`` alias, or
+    ``__getattr__`` shim) would create a cross-boundary import from the
+    composite grading dispatchers into ``runner.models`` — the exact
+    coupling ``CompositeGradeComponents`` lives in ``core.grading`` to
+    prevent.
     """
     assert not hasattr(runner_models, "RunnerGradeComponents")
