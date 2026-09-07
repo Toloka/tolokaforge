@@ -59,6 +59,7 @@ _RATCHET_TARGETS_BASELINE: dict[str, list[str]] = {
     "tolokaforge.testing.certify.suite.test_re2_pattern_tolerance_unsupported_ratchet": [
         "openrouter__openai_gpt-5.6-sol",
         "openrouter__openai_gpt-5.6-terra",
+        "openrouter__openai_gpt-6-astra",
         "openrouter__x-ai_grok-4.3",
     ],
     "tolokaforge.testing.certify.suite.test_enum_slash_tolerance_unsupported_ratchet": [

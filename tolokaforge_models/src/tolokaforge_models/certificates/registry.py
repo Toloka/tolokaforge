@@ -261,6 +261,80 @@ _ALL: list[MC] = [
         ),
     ),
     # -----------------------------------------------------------------
+    # OpenAI GPT-6 Astra (``openai/gpt-6-astra``, listed on OpenRouter
+    # 2026-09-04, endpoints OpenAI + Azure) — routed through the model-specific
+    # ``openai_gpt6`` preset: the same three axes as ``openai_gpt5`` (strict
+    # schema sanitiser + array_dict_map + OpenAI reasoning summary), which the
+    # gpt-5 globs do not reach for ``openai/gpt-6*``. Landed BY HAND after the
+    # auto-integration run (PR #1511, observe 2026-09-05 on the DEFAULT preset)
+    # stopped at the cleanliness gate: 80 api_error + 100 max_turns of 200 wire
+    # trials, all deterministic — the endpoint rejects tool schemas carrying a
+    # RE2-incompatible lookaround ``pattern`` (``400 invalid_json_schema``), so
+    # without ``strict`` every Decimal-field tool call died (decimal_field 0/15,
+    # re2_pattern_tolerance 0/15, dict_map 12/15, the three thinking probes
+    # 0/15). Production evidence on the gpt-5-axes overlay: the Arena v1 eval of
+    # 2026-09-05 (4170 trials) ran 0 status_error / 0 formatting failures.
+    #
+    # Posture: ADD_NEW_MODEL.md § 3 flow with the gpt-5.6 siblings as the
+    # starting hypothesis — every gpt-5.6 ``known_unsupported`` entry flipped
+    # to ``required``, plus the three probes gpt-5.6 left undeclared. Live
+    # suite 2026-09-07: PROMPT_CACHING, IMPLICIT_PROMPT_CACHING,
+    # DECIMAL_FIELD_TOOL_CALL, ALLOF_MERGE_TOOL_CALL and
+    # HETEROGENEOUS_ARRAY_TOOL_CALL passed (all five unsupported or undeclared
+    # on gpt-5.6); what stays ``known_unsupported`` below is what the suite
+    # refuted, each with its dated failure mode.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__openai_gpt-6-astra",
+        provider="openrouter",
+        name="openai/gpt-6-astra",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # 400 ``Invalid JSON schema: regex lookaround is not supported``
+                # for the probe's ``anyOf[0].pattern`` — same as gpt-5.6 terra /
+                # sol; verified live 2026-09-07.
+                C.RE2_PATTERN_TOLERANCE,
+                # ``GenerationResult.reasoning`` is ``None``: the OpenRouter
+                # route surfaces no structured reasoning for this model, so the
+                # emit probe fails and the replayed assistant dict carries no
+                # ``reasoning_details`` — verified live 2026-09-07.
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                # Sanitiser-side, not the model: ``StrictSchema`` raises
+                # ``$ref resolution exceeded depth 16`` before the request is
+                # sent, 0/4 shapes — verified live 2026-09-07. The cycle
+                # pruning ``xai_grok_recursive`` inherits from
+                # ``GeminiRecursiveSchema`` would lift this; an OpenAI-flavoured
+                # variant is a Bucket B follow-up.
+                C.RECURSIVE_REF_TOOL_CALL,
+            }
+        ),
+    ),
+    # -----------------------------------------------------------------
     # Anthropic Claude family — structured thinking blocks + ephemeral
     # cache fully wired. Strict schema sanitisation is NOT applied to
     # Anthropic (preset keeps :class:`PassthroughSchema`), so dict-map /
