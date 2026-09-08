@@ -361,6 +361,39 @@ The fork-reject path is PR-comment-only (a fork `pull_request` run gets no secre
 notifier cannot post). `SLACK_MENTIONS` pings fire on the terminal and error notifications so a
 human is alerted when the PR needs review or the run broke.
 
+## Cost summary
+
+Every run ends with an accounting tail once the candidate is known, whatever the outcome:
+`automation cost-summary` writes `observation/cost/cost_summary.{json,md,txt}`, posts the markdown
+as a PR comment, sends the one-liner to the Slack thread (`cost_summary` icon role, no mention) and
+uploads the `integration-cost-pr<N>` artifact. Three sources, kept apart because they measure
+different things:
+
+| Source | Covers | What the number is |
+|---|---|---|
+| the `claude -p` result event (`total_cost_usd`, `usage`, `num_turns`) of every resolve iteration and the finalize run - the agent calls run with `--output-format stream-json`, tee'd to `observation/resolve/agent_*.jsonl` so the transcript still reaches the job log | the agent | the CLI's own report at Anthropic list price; cache WRITES are not surfaced on the gateway route, so a lower bound |
+| `wire_probes_*/aggregate.json` (observe) and `resolve/reprobe_*/` (reprobe) | the candidate's wire calls only - the capability + variant probes and the user simulator leave no cost artifact | exact for what it covers |
+| `automation key-snapshot` at run start (`.env` step), after observe (gateway step - so only when the gate chains to resolve; on an observe -> needs-human run the whole delta is the observe spend and the summary says so) and at the end -> `$RUNNER_TEMP/cost/key_*.json`, i.e. OpenRouter `GET /api/v1/key` | everything billed on `ARENA_AUTOMATION_OPENROUTER_API_KEY`, including the probes without an artifact | the billed figure; key-level, so a concurrent run on the same key is included |
+
+**Route caveat.** The `.env` step records the route it actually configured in
+`observation/cost/route.txt`. On `litellm` the observe + reprobe probes (candidate and user
+simulator) bill the gateway key, so the key deltas cover the agent alone; the summary labels the
+observe delta "billed on the gateway key" and says so in its notes.
+
+**What leaves the runner.** The artifact holds the summary and the NORMALIZED agent result events
+(`observation/cost/agent_*.json`: cost, turns, usage, how the run ended) - never the raw
+`agent_*.jsonl` transcripts, whose tool results can echo the agent's environment (`env`, `.env`),
+and GitHub masks the job log, not a public repo's artifact. The key snapshots hold the key's
+lifetime usage figure, so they stay in `RUNNER_TEMP` and only their deltas reach the summary.
+
+The summary names the source of every number and lists the caveats. A missing snapshot degrades
+to the attributed lower bound (agents + wire) rather than failing anything; a run with nothing spent
+on record writes the JSON but no md/txt, so nothing is posted. Accounting can never fail the
+integration: every call is `|| true`, both steps are `continue-on-error`, and `key-snapshot` exits
+0 on any miss. `automation agent-digest <file> --out <json>` prints one line per agent run
+(subtype, turns, cost) into the job log - where the old `--verbose` text transcript used to say how
+a run ended - and writes the normalized event the artifact uploads.
+
 ## Prompts (`tools/automation/src/automation/prompts/`)
 
 The analysis-dimension briefs interpret an eval or observe artifact (one dimension per
@@ -407,6 +440,9 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   resolves free-text model phrases to OpenRouter slugs (deterministic, version-strict), and
   `slack-poll` scans the channel (last `--window-hours`), replies per request, and emits the
   integration plan that `slack-integrate.yml` turns into a draft PR + `workflow_dispatch`.
+- `automation cost-summary` / `key-snapshot` / `agent-digest` - the accounting tail (see "Cost
+  summary" above): key-usage snapshots, the per-run cost summary (JSON + markdown + one-liner) and
+  the one-line job-log digest of an agent run's result event.
 - `tests/unit/llm/test_policy_no_regression.py` - GENERIC (model-agnostic) anti-over-reach
   gate: every model's resolved response policy must keep an already-valid tool-call arg valid.
 - `tests/unit/llm/test_policy_array_recovery.py` - schema-driven recovery oracle: inject
