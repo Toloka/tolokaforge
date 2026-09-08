@@ -61,9 +61,9 @@ def agent_prompts() -> dict[Path, str]:
             continue
         task, task_dir = loaded
         assert task.system_prompt != "__adapter__", (
-            f"{task_yaml} carries the (removed) `__adapter__` sentinel on "
-            "`system_prompt`, a value with no meaning on this field; move the prompt "
-            "into `policies['agent_system_prompt']`."
+            f"{task_yaml} carries an `__adapter__` string on `system_prompt`, "
+            "a value with no meaning on this field; move the prompt into "
+            "`policies['agent_system_prompt']`."
         )
         prompts[task_yaml] = build_system_prompt(task=task, task_dir=task_dir)
     return prompts
