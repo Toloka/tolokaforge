@@ -2,21 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## v0.24.0 (2026-09-08)
 
-### Changed
+### Feat
 
-- **runtime**: harness-mode grading tarballs now honour `AGENT_VISIBLE_EXCLUDES` (dropping `.venv/`, `node_modules/`, `dist/`, `.next/` subtrees alongside the already-excluded `.git/`) — the container-side `tar | base64` snapshot matches the documented exclusion policy the non-harness Python walk already applies. Corpus check confirmed zero shipped task packs address these paths via `$.filesystem[...]` jsonpath assertions, so no grading behaviour changes on shipped packs. (#1405)
-- **testing**: `tolokaforge.testing.adapters.AdapterGradingContractSuite` pins `grading_source` classmethod-dispatch parity — the class-level call (`type(adapter).grading_source(task, task_dir)`) must return the same `GradingSource` the instance-level call returns, matching the base contract's classmethod declaration and the invariant the delegation helper `grading_source_under_adapter` relies on. A third-party adapter that subclasses the suite and overrides `grading_source` as an instance method (rather than the classmethod the base declares) will fail the new invariant on upgrade; switch the override to `@classmethod` (or `@staticmethod` returning a value equal to the instance call). (#1393)
-- **grading**: `BundleStore` Protocol grew a required `probe(self) -> None` method — a cheap run-start reachability check the orchestrator calls once from `_validate_snapshot_mode_compatibility` when `grader.snapshot.enabled=true` (S3 `head_bucket`, LocalDisk sentinel write+delete). Out-of-tree plugins registered under the `tolokaforge.bundle_stores` entry-point group must implement it: an unupgraded plugin raises `AttributeError` at the call site, which the orchestrator wraps into an actionable `ValueError` with the `AttributeError` preserved on `__cause__` so plugin authors see the exact missing method. Migration one-liner for a plugin whose reachability cannot be cheaply asserted: `def probe(self) -> None: return None`. Operators whose credentials grant `s3:PutObject` but deny `s3:ListBucket` newly fail at run-start; inject a pre-built `client=` whose credentials pass `head_bucket` as the documented escape hatch. (#1457)
-
-### Fixed
-
-- **grading**: `grader.snapshot.enabled=true` with unreachable / mis-credentialled bundle stores (bad AWS creds on `S3BundleStore`, non-writeable `root_dir` on `LocalDiskBundleStore`) now aborts at run-start with an actionable `ValueError` naming the store type, its config, and a credential-source hint. Previously the failure surfaced silently as `SnapshotStatus.produce_failed` on every trial from `Conductor._produce_grade_bundle`'s per-trial `try/except`, leaving operators with N failed bundles instead of one clear message. (#1457)
-
-### Perf
-
-- **runtime**: `LiveRunnerCallbackGradingSubstrate` reads the agent-visible filesystem in a single `SubstrateService.ReadAgentVisibleFilesystem` RPC per accessor — was `N+1` per accessor (one `ListFilesystemDir` + one `ReadFilesystemPath` per file), or `2N+2` composite when a dispatch reached for both `filesystem_state()` and `filesystem_root()`. New per-accessor cost is `1`, composite cost is `2`, independent of pack file count. Same byte content; only round-trip count changes. `ListFilesystemDir` and `ReadFilesystemPath` remain on the wire for per-path callers. (#1406)
+- **automation**: cost summary for the integration run (agents, wire probes, key deltas) (#1542)
+- **engine-loop**: scaffold improvements for reasoning-heavy models (#1519)
 
 ## v0.23.1 (2026-09-07)
 
