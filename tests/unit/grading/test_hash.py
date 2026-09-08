@@ -9,6 +9,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
+from tolokaforge.core.grading.state_checks import state_digest
 from tolokaforge.core.hash import (
     ColumnCompareRule,
     apply_compare_columns_extras,
@@ -116,7 +117,7 @@ class TestApplyCompareColumnsExtras:
         rules = {"notifications": {"params": self._rule("param_case_number")}}
         filtered = apply_compare_columns_extras(actual, expected, rules)
         assert filtered["notifications"][0]["params"] == {"body": "hi"}
-        assert compute_stable_hash(filtered) == compute_stable_hash(expected)
+        assert state_digest(filtered) == state_digest(expected)
 
     def test_extra_not_in_allowlist_still_fails(self):
         """Only keys the pack named are dropped; other model-added keys stay."""
@@ -128,7 +129,7 @@ class TestApplyCompareColumnsExtras:
             "body": "hi",
             "unlisted_key": "x",
         }
-        assert compute_stable_hash(filtered) != compute_stable_hash(expected)
+        assert state_digest(filtered) != state_digest(expected)
 
     def test_key_declared_in_golden_is_compared_value_for_value(self):
         """Extras allowed only when golden lacks the key — when golden has it,
@@ -138,7 +139,7 @@ class TestApplyCompareColumnsExtras:
         rules = {"notifications": {"params": self._rule("param_case_number")}}
         filtered = apply_compare_columns_extras(actual, expected, rules)
         assert filtered["notifications"][0]["params"] == {"param_case_number": "MODEL"}
-        assert compute_stable_hash(filtered) != compute_stable_hash(expected)
+        assert state_digest(filtered) != state_digest(expected)
 
     def test_composes_with_unstable_fields_mask(self):
         """``unstable_fields`` drops the whole column (symmetric); ``compare_columns``
@@ -159,7 +160,7 @@ class TestApplyCompareColumnsExtras:
         filtered_actual = apply_compare_columns_extras(actual, expected, rules)
         masked_actual = filter_unstable_fields(filtered_actual, ["notifications.created_at"])
         masked_expected = filter_unstable_fields(expected, ["notifications.created_at"])
-        assert compute_stable_hash(masked_actual) == compute_stable_hash(masked_expected)
+        assert state_digest(masked_actual) == state_digest(masked_expected)
 
     def test_non_dict_column_value_is_left_alone(self):
         """The rule only makes sense for dict columns. Non-dict values pass through."""
@@ -193,7 +194,7 @@ class TestApplyCompareColumnsExtras:
         }
         rules = {"notifications": {"params": self._rule("param_case_number")}}
         filtered = apply_compare_columns_extras(actual, expected, rules)
-        assert compute_stable_hash(filtered) == compute_stable_hash(expected)
+        assert state_digest(filtered) == state_digest(expected)
 
     def test_dict_column_pair_shape_also_supported(self):
         """A table stored as a single dict (not list-of-rows) is handled too."""
@@ -201,7 +202,7 @@ class TestApplyCompareColumnsExtras:
         expected = {"config": {"id": "c1", "params": {"a": 1}}}
         rules = {"config": {"params": self._rule("param_case_number")}}
         filtered = apply_compare_columns_extras(actual, expected, rules)
-        assert compute_stable_hash(filtered) == compute_stable_hash(expected)
+        assert state_digest(filtered) == state_digest(expected)
 
 
 # ---------------------------------------------------------------------------

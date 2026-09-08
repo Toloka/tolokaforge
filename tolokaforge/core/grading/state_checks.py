@@ -518,8 +518,9 @@ class StateChecker:
 
         # Apply per-(table, column) subset rules before hashing so a model-added key
         # the prompt explicitly permits does not fail an otherwise-matching state.
-        if compare_columns:
-            db_state = apply_compare_columns_extras(db_state, expected_state, compare_columns)
+        # apply_compare_columns_extras is a no-op when compare_columns is None/empty,
+        # so pass through unconditionally.
+        db_state = apply_compare_columns_extras(db_state, expected_state, compare_columns)
 
         # Compute hashes
         expected_hash = state_digest(expected_state, numeric_string_fields=numeric_string_fields)

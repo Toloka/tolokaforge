@@ -30,6 +30,16 @@ state_checks:
   id_fields:
     widgets: widget_id
   relaxed_validation: true
+  # compare_columns is declared here so the manifest-coverage gate for
+  # state_checks.compare_columns is satisfied. This pack's expect_initial_state
+  # source does not hash the widgets.details column asymmetrically, so the rule
+  # is inert for this trial — the presence of the key is what proves the adapter
+  # translation carries it end to end.
+  compare_columns:
+    widgets:
+      details:
+        mode: subset
+        extras_allowed_for: [scratch_note]
   # No db_probes here: a probe is exclusive with the hash and jsonpaths sources above,
   # so this pack cannot declare all three. That key is carried by
   # tests/data/tasks/db_probe_grading, and manifest totality is a union over the two.

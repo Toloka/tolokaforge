@@ -83,10 +83,22 @@ def apply_compare_columns_extras(
     (so a value mismatch on a declared key still fails the hash). Keys outside the
     allowlist are left in place (extras not permitted by the pack still fail).
 
-    Non-dict column values are left untouched: the rule only makes sense for dict
-    columns like tool-call ``params``. Tables and columns absent from ``actual`` or
-    ``expected`` are skipped without error — the state hash still catches genuine
-    schema mismatches at the containing level.
+    Row pairing is strictly positional (``actual[i]`` against ``expected[i]``): the
+    state hash itself is order-sensitive on list columns, so a row-order mismatch
+    fails the hash regardless of what this filter does. The one visible consequence
+    of positional pairing is that the ``StateDiff`` reported to the author after a
+    mismatch reflects the pairing that was hashed, not a semantic id-match.
+
+    Table cases with no filter to apply:
+
+    - The rule only makes sense for dict-valued columns like tool-call ``params``.
+      A non-dict actual column value is left untouched.
+    - When the golden's row does not carry the column at all (missing or non-dict),
+      the containing hash mismatch already covers the schema difference. The rule
+      leaves the actual column unchanged: a golden with no ``params`` at all and an
+      actual with ``params: {…}`` is a schema difference the state hash fails on.
+    - Tables absent from ``actual`` or ``expected``, or with mismatched container
+      shapes (list vs dict), are skipped without error for the same reason.
 
     Symmetric-drop escape hatches (:func:`filter_unstable_fields`) remain the right
     tool for a column the pack wants to ignore entirely; this one is for keys the
@@ -95,27 +107,36 @@ def apply_compare_columns_extras(
     if not compare_columns:
         return actual
 
-    def _filter_row_pair(actual_row: Any, expected_row: Any) -> Any:
+    def _filter_row_pair(
+        actual_row: Any,
+        expected_row: Any,
+        rules_with_allowed: list[tuple[str, frozenset[str]]],
+    ) -> Any:
         if not isinstance(actual_row, dict) or not isinstance(expected_row, dict):
             return actual_row
         filtered = dict(actual_row)
-        for column, rule in column_rules.items():
-            if rule.mode != "subset":
-                continue
+        for column, allowed in rules_with_allowed:
             actual_col = filtered.get(column)
             expected_col = expected_row.get(column)
             if not isinstance(actual_col, dict) or not isinstance(expected_col, dict):
                 continue
             filtered[column] = {
-                k: v
-                for k, v in actual_col.items()
-                if not (k in rule.extras_allowed_for and k not in expected_col)
+                k: v for k, v in actual_col.items() if not (k in allowed and k not in expected_col)
             }
         return filtered
 
     result = dict(actual)
     for table, column_rules in compare_columns.items():
         if not column_rules:
+            continue
+        # Materialize allowlist once per rule as a frozenset — O(1) membership
+        # inside the inner comprehension, regardless of extras_allowed_for length.
+        rules_with_allowed: list[tuple[str, frozenset[str]]] = [
+            (column, frozenset(rule.extras_allowed_for))
+            for column, rule in column_rules.items()
+            if rule.mode == "subset"
+        ]
+        if not rules_with_allowed:
             continue
         actual_table = result.get(table)
         expected_table = expected.get(table)
@@ -125,10 +146,10 @@ def apply_compare_columns_extras(
             paired: list[Any] = []
             for i, actual_row in enumerate(actual_table):
                 expected_row = expected_table[i] if i < len(expected_table) else {}
-                paired.append(_filter_row_pair(actual_row, expected_row))
+                paired.append(_filter_row_pair(actual_row, expected_row, rules_with_allowed))
             result[table] = paired
         elif isinstance(actual_table, dict) and isinstance(expected_table, dict):
-            result[table] = _filter_row_pair(actual_table, expected_table)
+            result[table] = _filter_row_pair(actual_table, expected_table, rules_with_allowed)
     return result
 
 

@@ -474,6 +474,13 @@ class RunnerStateChecksConfig(BaseModel):
     # failing the state hash. Keys the golden declares are still compared
     # value-for-value; extras outside the allowlist still fail. Mirrors the trace
     # comparator's ``compare_args`` shape (see :class:`ColumnCompareRule`).
+    #
+    # Consumed on the core / frozen_mcp_core grading path
+    # (``combine.py`` -> ``state_checks.py::check_hash_against_golden_replay``).
+    # The runner-side hash grading path (``_execute_hash_grading`` via db-service
+    # ``get_stable_hash``) does not yet apply this filter — accepted on the wire
+    # for round-trip fidelity, consumed by the core substrate only. Runner-path
+    # wiring is tracked in #1558.
     compare_columns: dict[str, dict[str, ColumnCompareRule]] = Field(default_factory=dict)
 
     # JSONPath assertions
