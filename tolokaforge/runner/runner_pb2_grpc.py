@@ -459,6 +459,12 @@ class SubstrateServiceStub:
             response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ListFilesystemDirResponse.FromString,
             _registered_method=True,
         )
+        self.ReadAgentVisibleFilesystem = channel.unary_unary(
+            "/tolokaforge.runner.SubstrateService/ReadAgentVisibleFilesystem",
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.ReadAgentVisibleFilesystemRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ReadAgentVisibleFilesystemResponse.FromString,
+            _registered_method=True,
+        )
         self.KBSearch = channel.unary_unary(
             "/tolokaforge.runner.SubstrateService/KBSearch",
             request_serializer=tolokaforge_dot_runner_dot_runner__pb2.KBSearchRequest.SerializeToString,
@@ -547,6 +553,22 @@ class SubstrateServiceServicer:
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
 
+    def ReadAgentVisibleFilesystem(self, request, context):
+        """Return the whole agent-visible workspace tree in one round trip:
+        workspace_exists plus every UTF-8-decodable file's rel-path and content.
+        Same walker (tolokaforge.core.grading.filesystem_view.
+        read_agent_visible_filesystem) and same exclusion policy the per-path
+        methods use, so the byte content matches what
+        InProcessGradingSubstrate.filesystem_state assembles locally.
+        workspace_exists=false is the first-class "no workspace surface" signal;
+        it maps to None from LiveRunnerCallbackGradingSubstrate.filesystem_state
+        and .filesystem_root, distinct from an empty-but-present workspace
+        (workspace_exists=true, files=[]).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
     def KBSearch(self, request, context):
         """Query the trial's per-trial KB (rag-service). kb_available=false is a
         first-class signal ("this trial has no KB provisioned"); the callback
@@ -622,6 +644,11 @@ def add_SubstrateServiceServicer_to_server(servicer, server):
             servicer.ListFilesystemDir,
             request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ListFilesystemDirRequest.FromString,
             response_serializer=tolokaforge_dot_runner_dot_runner__pb2.ListFilesystemDirResponse.SerializeToString,
+        ),
+        "ReadAgentVisibleFilesystem": grpc.unary_unary_rpc_method_handler(
+            servicer.ReadAgentVisibleFilesystem,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ReadAgentVisibleFilesystemRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.ReadAgentVisibleFilesystemResponse.SerializeToString,
         ),
         "KBSearch": grpc.unary_unary_rpc_method_handler(
             servicer.KBSearch,
@@ -808,6 +835,36 @@ class SubstrateService:
             "/tolokaforge.runner.SubstrateService/ListFilesystemDir",
             tolokaforge_dot_runner_dot_runner__pb2.ListFilesystemDirRequest.SerializeToString,
             tolokaforge_dot_runner_dot_runner__pb2.ListFilesystemDirResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def ReadAgentVisibleFilesystem(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/tolokaforge.runner.SubstrateService/ReadAgentVisibleFilesystem",
+            tolokaforge_dot_runner_dot_runner__pb2.ReadAgentVisibleFilesystemRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.ReadAgentVisibleFilesystemResponse.FromString,
             options,
             channel_credentials,
             insecure,

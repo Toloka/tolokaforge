@@ -2,7 +2,7 @@
 
 Adapters provide a unified interface for loading tasks and environments from different sources.
 
-For contributor-facing contract details, see `docs/ADAPTER_INTERFACE.md`.
+For contributor-facing contract details, see `docs/ADAPTER_INTERFACE.md`. For the end-to-end adoption walkthrough that consumes this architecture, see [AUTHORING_AN_ADAPTER.md](AUTHORING_AN_ADAPTER.md).
 
 ## Adapter families
 
@@ -202,11 +202,12 @@ defaults:
 `CodingHarnessAdapterMixin` is a shipped capability adapters compose with
 alongside `BaseAdapter`. Inheriting it confers `supports_coding_harness = True`
 (the flag the orchestrator's config-validation gate reads before it will route
-a `models.agent.harness` run to the adapter) plus six helpers that produce
+a `models.agent.harness` run to the adapter) plus seven helpers that produce
 the wire artefacts a harness trial needs — spec resolution, command
 assembly, the metadata handshake, the bash tool schema payload, the
-`test_execution` grading payload, and the standalone install-script
-Dockerfile layer. See
+`test_execution` grading payload, the standalone install-script Dockerfile
+layer, and the instance-aware `preferred_grader_kind()` answer that agrees
+with the grading payload under an active harness. See
 [ADR-0039](adr/0039-coding-harness-adapter-agnostic.md) and
 [`tolokaforge_coding_harnesses/README.md § Adopting the mixin`](../tolokaforge_coding_harnesses/README.md#adopting-the-mixin).
 

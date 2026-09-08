@@ -1,0 +1,23 @@
+task_id: custom_checks_disabled_ledger_skip
+name: Ledger SKIP-with-note lane — custom_checks disabled
+category: test
+description: |
+  Isolates the runtime ledger's ``SKIPPED``-with-note path end-to-end. The
+  grading config populates ``custom_checks`` with ``enabled: false`` and
+  declares no other component; the audit records a
+  ``CUSTOM_CHECKS_DISABLED_SKIP`` for the populated key, the fold treats
+  ``custom_checks`` as unrequested (opt-in gate returns false), the
+  free-pass verdict produces a Grade, and
+  ``CompositeFold.finalise(ledger_skip_notes=...)`` renders the skip note
+  ``"custom_checks skipped: custom checks not enabled"`` verbatim in
+  ``Grade.reasons`` on both dispatch substrates.
+adapter_type: tau
+schema_version: 1.0.0
+system_prompt: You are a test assistant.
+agent_tools: []
+user_tools: []
+initial_state:
+  tables:
+    users:
+      - id: u1
+        name: Alice

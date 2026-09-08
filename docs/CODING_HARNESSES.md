@@ -201,15 +201,33 @@ Both are documented in
 
 ## Adopting the mixin in an adapter
 
+Harness adoption is one branch of the general adapter-authoring walkthrough at [AUTHORING_AN_ADAPTER.md § Subclass `BaseAdapter`](AUTHORING_AN_ADAPTER.md#2-subclass-baseadapter) (step 2).
+
 An adapter opts into harness mode by inheriting
 `CodingHarnessAdapterMixin` alongside `BaseAdapter`. The mixin sets
 `supports_coding_harness = True` (which the orchestrator's gate reads)
-and provides six helpers: registry resolution, command assembly, the
+and provides seven helpers: registry resolution, command assembly, the
 metadata handshake, the bash tool schema payload, the `test_execution`
-grading payload, and the standalone install-script Dockerfile layer.
+grading payload, the standalone install-script Dockerfile layer, and the
+instance-aware `preferred_grader_kind()` answer.
 The shape and the payload-dict return convention live in
 [`tolokaforge_coding_harnesses/README.md § Adopting the mixin`](../tolokaforge_coding_harnesses/README.md#adopting-the-mixin);
 the design record is [ADR-0039](adr/0039-coding-harness-adapter-agnostic.md).
+
+### Grader-kind alignment
+
+`CodingHarnessAdapterMixin.preferred_grader_kind()` returns
+`"test_execution"` when `self.agent_harness != ENGINE_LOOP` — matching
+the `grading_method` `emit_test_execution_grading()` puts on the
+`RunnerGradingConfig` the adapter emits under an active harness — and
+`"composite"` otherwise, matching the fall-through for a
+subject whose engine-loop branch does not reach the mixin's grading
+payload. An adapter whose grading is static across both loop branches
+(e.g. because the pack's own verifier writes the reward regardless of
+which loop drove the trial) overrides the method to return the fixed
+kind unconditionally. The reusable grading-contract suite's alignment
+invariant exercises the agreement against real adapters, and lifts the
+choice back to the adapter author when the two seams diverge.
 
 ## Gateway routing (external runtimes only)
 

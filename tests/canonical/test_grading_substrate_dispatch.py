@@ -53,7 +53,7 @@ from tolokaforge.core.grading.composite_fold import (
     compose_trial_verdict,
     resolve_state_checks_component,
 )
-from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, CompositeGradeComponents
 from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.grading.key_manifest import EVALUATED
 from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorContext
@@ -89,7 +89,6 @@ from tolokaforge.runner.models import (
     LLMJudgeConfig,
     PresentConstraint,
     Rubric,
-    RunnerGradeComponents,
     RunnerGradingConfig,
     RunnerInitialStateConfig,
     RunnerStateChecksConfig,
@@ -395,7 +394,7 @@ def _reassemble_grade_from_composite(
         llm_messages = list(_LLM_MESSAGES)
         timeline = build_timeline_from_wire(llm_messages, trial_context.recorded, None)
 
-        components = RunnerGradeComponents()
+        components = CompositeGradeComponents()
         accounted_keys: dict[str, Any] = {}
 
         state_reads = composite.grade_state_checks_reads(

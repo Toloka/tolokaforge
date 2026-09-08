@@ -201,7 +201,7 @@ class TestJsonpathCompositeParity:
 
 class TestEmptyPacksLeaveTheComponentsUntouched:
     """A pack that carried no jsonpath and no probe leaves both slots
-    ``None`` so the runner does not overwrite ``RunnerGradeComponents``
+    ``None`` so the runner does not overwrite ``CompositeGradeComponents``
     with sentinels the combine treats as evaluated."""
 
     def test_no_jsonpaths_no_probes_returns_all_none(self) -> None:

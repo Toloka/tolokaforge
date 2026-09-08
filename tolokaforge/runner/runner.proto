@@ -609,6 +609,18 @@ service SubstrateService {
   // Rel-paths returned in alphabetically-sorted order.
   rpc ListFilesystemDir(ListFilesystemDirRequest) returns (ListFilesystemDirResponse);
 
+  // Return the whole agent-visible workspace tree in one round trip:
+  // workspace_exists plus every UTF-8-decodable file's rel-path and content.
+  // Same walker (tolokaforge.core.grading.filesystem_view.
+  // read_agent_visible_filesystem) and same exclusion policy the per-path
+  // methods use, so the byte content matches what
+  // InProcessGradingSubstrate.filesystem_state assembles locally.
+  // workspace_exists=false is the first-class "no workspace surface" signal;
+  // it maps to None from LiveRunnerCallbackGradingSubstrate.filesystem_state
+  // and .filesystem_root, distinct from an empty-but-present workspace
+  // (workspace_exists=true, files=[]).
+  rpc ReadAgentVisibleFilesystem(ReadAgentVisibleFilesystemRequest) returns (ReadAgentVisibleFilesystemResponse);
+
   // Query the trial's per-trial KB (rag-service). kb_available=false is a
   // first-class signal ("this trial has no KB provisioned"); the callback
   // substrate returns None from knowledge_search() when kb_available is
@@ -708,6 +720,35 @@ message ListFilesystemDirResponse {
   // Relative POSIX paths of every non-symlink UTF-8-decodable file under
   // AGENT_WORK_DIR, alphabetically sorted.
   repeated string rel_paths = 1;
+}
+
+message ReadAgentVisibleFilesystemRequest {
+  string trial_id = 1;
+}
+
+// One file inside a ReadAgentVisibleFilesystemResponse. Content-carrying only:
+// it ships as a repeated field on the batch response and never as an
+// independent RPC payload.
+message AgentVisibleFile {
+  // POSIX rel-path under AGENT_WORK_DIR, same shape ListFilesystemDir emits.
+  string rel_path = 1;
+  // File content decoded as UTF-8. Binary files fail UTF-8 decode and are
+  // dropped by the walker before they reach this message; the wire never
+  // carries them.
+  string content_utf8 = 2;
+}
+
+message ReadAgentVisibleFilesystemResponse {
+  // Whether AGENT_WORK_DIR exists as a directory on the runner. false maps
+  // to the LIVE substrate's "no workspace surface" answer (None from
+  // LiveRunnerCallbackGradingSubstrate.filesystem_state and .filesystem_root),
+  // distinct from an empty-but-present workspace (workspace_exists=true,
+  // files=[]).
+  bool workspace_exists = 1;
+  // Every non-symlink UTF-8-decodable file below AGENT_WORK_DIR that passes
+  // AGENT_VISIBLE_EXCLUDES. Same walker as read_agent_visible_filesystem —
+  // the servicer delegates verbatim.
+  repeated AgentVisibleFile files = 2;
 }
 
 // -----------------------------------------------------------------------------

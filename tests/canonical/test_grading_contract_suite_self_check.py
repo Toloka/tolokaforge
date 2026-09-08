@@ -8,6 +8,10 @@ two fake adapters — one returning ``{}`` (empty-payload short-circuit skips
 the check) and one returning the ``test_execution`` payload
 :meth:`~tolokaforge_coding_harnesses.adapter_support.CodingHarnessAdapterMixin.emit_test_execution_grading`
 emits (schema check runs and passes).
+
+The fake adapters do not opt into ``supports_coding_harness``, so the
+grader-kind alignment invariant skips against both — one extra skip per
+subject on top of the empty-payload skip on the empty-payload subject.
 """
 
 from __future__ import annotations
@@ -43,7 +47,8 @@ class _FakeAdapterBase:
     grades_from_task_grading_file = False
     syncs_adapter_env_to_state = False
 
-    def grading_source(self, task, task_dir):
+    @classmethod
+    def grading_source(cls, task, task_dir):
         return GradingSource(
             kind=GradingSourceKind.UNINTERROGABLE,
             path=None,
@@ -124,13 +129,15 @@ def test_both_branches_of_the_emit_payload_schema_check_fire(
     )
 
     outcomes = result.parseoutcomes()
-    assert outcomes.get("passed", 0) >= 21, (
-        f"expected the two subclasses' 11 test methods each to run (~22 total), "
-        f"got outcomes={outcomes!r}"
+    assert outcomes.get("passed", 0) >= 23, (
+        f"expected the two subclasses' 13 test methods each to run (26 total, "
+        f"minus 3 skips leaves 23 passes), got outcomes={outcomes!r}"
     )
-    assert outcomes.get("skipped", 0) == 1, (
-        f"expected exactly one skip — the empty-payload branch of the schema "
-        f"check on TestEmptyPayloadShortCircuits — got outcomes={outcomes!r}"
+    assert outcomes.get("skipped", 0) == 3, (
+        f"expected exactly three skips — the empty-payload branch of the "
+        f"schema check on TestEmptyPayloadShortCircuits plus the grader-kind "
+        f"alignment invariant on both fake subjects (neither opts into "
+        f"supports_coding_harness) — got outcomes={outcomes!r}"
     )
 
     result.stdout.fnmatch_lines(

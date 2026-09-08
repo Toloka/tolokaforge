@@ -180,7 +180,7 @@ capability flag the engine's config-validation gate reads. Adapters
 that do not inherit the mixin (or override the flag to `False`) refuse
 a run declaring `models.agent.harness` before any container work.
 
-Six helpers ship on the mixin. Contracts (parameters live in the
+Seven helpers ship on the mixin. Contracts (parameters live in the
 mixin's own docstrings — read those, not this table):
 
 | Helper | Contract |
@@ -191,6 +191,7 @@ mixin's own docstrings — read those, not this table):
 | `emit_harness_tool_schema(*, service, compose_project_prefix, timeout_s, toolset="coding_harness")` | Payload for the runner's `bash` tool routed through `DockerComposeExecToolWrapper`. `timeout_s` must cover the whole trial. |
 | `emit_test_execution_grading()` | Payload for the runner's `RunnerGradingConfig`. Grades by reading `/logs/verifier/reward.txt`. |
 | `write_install_script_layer(context_dir, base_image, spec, middleware_proxy=False)` | Writes a standalone Dockerfile snippet + the shipped install script (and the middleware proxy when declared) into `context_dir`. Returns the Dockerfile's relative path. |
+| `preferred_grader_kind()` | Instance-aware default. Returns `"test_execution"` when `self.agent_harness != ENGINE_LOOP` (aligning with the payload `emit_test_execution_grading` emits under an active harness) and `"composite"` otherwise. An adapter whose grading is static across both loop branches overrides to return the fixed kind. |
 
 **Payload dicts, not engine types.** `emit_harness_tool_schema` and
 `emit_test_execution_grading` return dicts. Adapters construct the

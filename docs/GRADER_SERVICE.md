@@ -366,6 +366,21 @@ The refusal is client-side (fires before any gRPC round-trip) so the
 misconfiguration surfaces without a network hop, and the trial books as
 ungradeable rather than as an agent failure.
 
+### Runtime ledger
+
+The grader-service composite dispatcher records the same
+`accounted_keys` ledger the runner does. Each `_grade_*_block` helper
+returns the `KeyAccountingRecord` fragment for its component;
+`_run_composite` merges every fragment, runs
+`audit_accounted_keys(grading_config, accounted_keys)` before the fold,
+and forwards `audit.skip_notes` to
+`CompositeFold.finalise(ledger_skip_notes=...)`. A populated scored key
+neither evaluated nor recorded as a skip raises `GradingFailedError`
+naming the key; the `Grade` handler translates that into
+`GradeResponse(success=false)` — the wire shape a runner-side ledger
+failure produces. See [`docs/GRADING.md` § The runtime ledger](GRADING.md#the-runtime-ledger)
+for the shared contract.
+
 ### A component the config declared that produced no verdict
 
 The grader-service composite dispatcher shares one fold rule with the
@@ -742,7 +757,22 @@ class BundleStore(Protocol):
     def put(self, bundle_dir: Path) -> str: ...
     def get(self, uri: str, dest_dir: Path) -> Path: ...
     def close(self) -> None: ...
+    def probe(self) -> None: ...
 ```
+
+`probe()` is a cheap reachability check the orchestrator calls once at
+run-start when `grader.snapshot.enabled=true` (via
+`Orchestrator._validate_snapshot_mode_compatibility`): `LocalDiskBundleStore`
+writes and deletes a sentinel under `<root_dir>/grade_bundles/`;
+`S3BundleStore` issues a single `head_bucket` on `bucket=`. A failure
+raises `BundleStoreUnreachableError` naming the store's target and a
+credential-source hint, and the orchestrator wraps every probe exception
+(the shipped subclass, the missing-`boto3` `RuntimeError`, and the
+`AttributeError` an unupgraded out-of-tree plugin raises when its class
+has no `probe`) into one actionable `ValueError` with the underlying
+error preserved on `__cause__`. Passing the probe does not guarantee
+subsequent `put`/`get` calls succeed — probe covers reachability, not
+per-object durability.
 
 Implementations are discovered through the `tolokaforge.bundle_stores`
 entry-point group and resolved with

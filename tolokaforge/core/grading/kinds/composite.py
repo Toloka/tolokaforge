@@ -23,8 +23,10 @@ Two-mode dispatch:
    ``grade_transcript_rules`` / ``grade_trace_checks`` /
    ``build_judge_state_diff`` + ``grade_llm_judge`` /
    ``grade_custom_checks``; folds; returns a :class:`Grade` byte-parity
-   with the runner-side ``_grade_trial_async`` dispatch (minus hash +
-   accounted-keys ledger, which are runner-only surfaces).
+   with the runner-side ``_grade_trial_async`` dispatch (minus hash
+   grading, which needs runner DB write access, and minus the accounted-keys
+   ledger, which the two live dispatchers own — the offline recompute
+   here trusts a bundle a live dispatcher already audited).
 
 **Hash refusal.** A task declaring ``state_checks.hash_enabled`` is
 refused up-front with the same fragment
@@ -184,6 +186,7 @@ class CompositeGraderKind:
         import json as _json
 
         from tolokaforge.core.grading import composite
+        from tolokaforge.core.grading.grade_components import CompositeGradeComponents
         from tolokaforge.core.grading.substrate import SubstrateUnreachableError
         from tolokaforge.core.grading.tool_artifacts import extract_tool_artifacts
         from tolokaforge.core.grading.trace_timeline import build_timeline_from_wire
@@ -199,7 +202,6 @@ class CompositeGraderKind:
             load_transcript_rule_matcher,
         )
         from tolokaforge.runner.models import (
-            RunnerGradeComponents,
             TaskDescription,
             TraceChecksSummary,
             TraceConstraintResult,
@@ -306,7 +308,7 @@ class CompositeGraderKind:
                     judge_model_provider=judge_model_provider,
                     logger=logger,
                     composite_mod=composite,
-                    runner_components_cls=RunnerGradeComponents,
+                    composite_components_cls=CompositeGradeComponents,
                     load_rubric_evaluator=load_rubric_evaluator,
                     judge_status_cls=JudgeStatus,
                     trace_summary_cls=TraceChecksSummary,
@@ -345,7 +347,7 @@ class CompositeGraderKind:
         judge_model_provider: Any,
         logger: Any,
         composite_mod: Any,
-        runner_components_cls: Any,
+        composite_components_cls: Any,
         load_rubric_evaluator: Any,
         judge_status_cls: Any,
         trace_summary_cls: Any,
@@ -361,7 +363,7 @@ class CompositeGraderKind:
         from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorContext
         from tolokaforge.runner.models import TraceChecksResult
 
-        components = runner_components_cls()
+        components = composite_components_cls()
         state_checks_config = task_config.state_checks
 
         if state_checks_config and (

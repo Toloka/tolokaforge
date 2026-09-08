@@ -57,6 +57,24 @@ class FilesystemEntry:
 
 
 @dataclass(frozen=True)
+class AgentVisibleFilesystemSnapshot:
+    """One :func:`GrpcSubstrateClient.snapshot_agent_visible_filesystem` response.
+
+    ``workspace_exists=False`` is the first-class "no workspace surface" signal
+    the LIVE substrate maps to ``None`` from its ``filesystem_state`` /
+    ``filesystem_root`` accessors, distinct from an empty-but-present workspace
+    (``workspace_exists=True`` with ``files={}``). ``files`` maps each POSIX
+    rel-path under AGENT_WORK_DIR to its UTF-8 content — same walker and
+    exclusion policy
+    :func:`~tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`
+    applies, so the byte content matches the local walk.
+    """
+
+    workspace_exists: bool
+    files: dict[str, str]
+
+
+@dataclass(frozen=True)
 class KBSearchResult:
     """One :func:`GrpcSubstrateClient.kb_search` response.
 
@@ -145,6 +163,18 @@ class GrpcSubstrateClient:
             raise SubstrateUnreachableError(str(err)) from err
         return list(response.rel_paths)
 
+    def snapshot_agent_visible_filesystem(self) -> AgentVisibleFilesystemSnapshot:
+        try:
+            response = self._stub.ReadAgentVisibleFilesystem(
+                pb2.ReadAgentVisibleFilesystemRequest(trial_id=self._trial_id)
+            )
+        except grpc.RpcError as err:
+            raise SubstrateUnreachableError(str(err)) from err
+        return AgentVisibleFilesystemSnapshot(
+            workspace_exists=response.workspace_exists,
+            files={f.rel_path: f.content_utf8 for f in response.files},
+        )
+
     def kb_search(self, query: str, top_k: int, alpha: float) -> KBSearchResult:
         try:
             response = self._stub.KBSearch(
@@ -228,6 +258,7 @@ class GrpcSubstrateClient:
 
 
 __all__ = [
+    "AgentVisibleFilesystemSnapshot",
     "FilesystemEntry",
     "GrpcSubstrateClient",
     "KBSearchResult",

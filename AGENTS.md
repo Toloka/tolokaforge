@@ -529,7 +529,7 @@ and [`docs/CODING_HARNESSES.md`](docs/CODING_HARNESSES.md).
    `supports_coding_harness` class attr reads `False` (the `BaseAdapter`
    default). The mixin sets it as a class-level default, so inheriting is
    the whole opt-in — a bespoke boolean on an adapter class without the
-   mixin's six helpers is not it. New adapters that accept the harness
+   mixin's seven helpers is not it. New adapters that accept the harness
    field MUST inherit
    [`tolokaforge_coding_harnesses.CodingHarnessAdapterMixin`](tolokaforge_coding_harnesses/src/tolokaforge_coding_harnesses/adapter_support.py)
    alongside `BaseAdapter`. Design record:

@@ -214,6 +214,35 @@ class TestEmitTestExecutionGrading:
         }
 
 
+class TestPreferredGraderKind:
+    def test_returns_composite_under_engine_loop(self) -> None:
+        # ENGINE_LOOP means the engine's own turn loop drives the trial and
+        # the mixin's grading dispatch is unreached — composite is the
+        # BaseAdapter default the mixin's fallback preserves.
+        class _MixinUser(CodingHarnessAdapterMixin):
+            agent_harness = ENGINE_LOOP
+
+        assert _MixinUser().preferred_grader_kind() == "composite"
+
+    def test_returns_test_execution_when_a_real_harness_is_active(self) -> None:
+        # Any harness slug other than ENGINE_LOOP means the CLI drives the
+        # trial and emit_test_execution_grading is the grading seam — the
+        # two answers must agree.
+        class _MixinUser(CodingHarnessAdapterMixin):
+            agent_harness = "claude-code"
+
+        assert _MixinUser().preferred_grader_kind() == "test_execution"
+
+    def test_falls_back_to_composite_when_agent_harness_is_absent(self) -> None:
+        # A subclass that never assigns self.agent_harness sees the
+        # underlying BaseAdapter.preferred_grader_kind answer — the mixin's
+        # getattr fallback preserves it, so adopting the mixin cannot regress.
+        class _MixinUser(CodingHarnessAdapterMixin):
+            pass
+
+        assert _MixinUser().preferred_grader_kind() == "composite"
+
+
 class TestWriteInstallScriptLayer:
     def test_writes_dockerfile_and_install_script_flat_under_context_dir(
         self, adapter: _Adapter, tmp_path: Path

@@ -25,6 +25,39 @@ from pydantic import BaseModel
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 
 
+class CompositeGradeComponents(BaseModel):
+    """Score-carrying wire model both composite dispatchers populate.
+
+    The runner-side ``_grade_trial_async``, the grader-side
+    :class:`~tolokaforge.grader.composite_dispatch.GraderCompositeDispatch`,
+    and the offline :class:`~tolokaforge.core.grading.kinds.composite.CompositeGraderKind`
+    all fold their sub-component scores into an instance of this class before
+    :class:`~tolokaforge.core.grading.composite_fold.CompositeFold` combines
+    them. Substrate-neutral by construction — the class carries no
+    dispatch-specific fields.
+
+    Sentinel-form contract: score fields default to ``-1.0`` (not evaluated),
+    boolean pass/match fields default to ``None`` (not evaluated), and
+    reason strings default to ``""``. The fold reads the sentinel form when
+    deciding whether a component was scored.
+    """
+
+    hash_match: bool | None = None
+    hash_score: float = -1.0
+    jsonpath_score: float = -1.0
+    jsonpath_reasons: str = ""
+    db_probe_score: float = -1.0
+    db_probe_reasons: str = ""
+    transcript_pass: bool | None = None
+    transcript_score: float = -1.0
+    trace_checks_score: float = -1.0
+    llm_judge_score: float = -1.0
+    llm_judge_reasons: str = ""
+    custom_checks_score: float = -1.0
+
+    model_config = {"extra": "forbid"}
+
+
 @dataclass(frozen=True)
 class GradeComponentSpec:
     """One grading component's identity across the config, the wire and both substrates.

@@ -37,6 +37,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tolokaforge.core.grading.filesystem_view import AGENT_VISIBLE_EXCLUDES
 from tolokaforge.runner import service as service_module
 from tolokaforge.runner.tool_factory import DockerComposeExecToolWrapper
 
@@ -155,7 +156,11 @@ def test_harness_trial_reads_filesystem_via_exec_wrapper() -> None:
     assert fs == {"/work/factorial.py": "def factorial(n): return 1\n"}
     # Both container-side commands actually issued.
     assert any("du -sb" in cmd for cmd in bash_tool.calls)
-    assert any("tar --exclude=./.git" in cmd for cmd in bash_tool.calls)
+    tar_cmds = [cmd for cmd in bash_tool.calls if "tar " in cmd and "base64" in cmd]
+    assert len(tar_cmds) == 1
+    tar_cmd = tar_cmds[0]
+    for name in AGENT_VISIBLE_EXCLUDES:
+        assert f"--exclude={name}" in tar_cmd
 
 
 def test_engine_loop_trial_still_walks_the_runner_workdir(
