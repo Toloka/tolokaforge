@@ -494,6 +494,48 @@ class TestTerminalBenchAdapterEnvironmentManifest:
         assert extra == {"service": env.agent_service, "compose_project_prefix": "tbench_"}
 
 
+class TestTerminalBenchAgentSystemPromptVerbatim:
+    """T-Bench authors its own agent system prompt via ``policies``, so the
+    engine returns it verbatim without applying the ``<instructions>`` /
+    ``<policy>`` wrap the ``__adapter__`` sentinel triggers.
+
+    The engine's sentinel branch is a customer-service persona wrap
+    (``tolokaforge/core/system_prompt.py:_wrap_policy_document``) — a shape
+    T-Bench's dev-tool tasks do not want.
+    ``TaskConfig.policies["agent_system_prompt"]`` is priority 1 in the
+    engine's chain, returned verbatim; T-Bench opts into that path
+    instead.
+    """
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    @pytest.fixture
+    def adapter(self, fixture_dir, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        return TerminalBenchAdapter(
+            {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
+        )
+
+    def test_task_config_carries_prompt_in_policies_not_sentinel(self, adapter):
+        task = adapter.get_task("echo-hello")
+        assert task.system_prompt is None
+        assert task.policies["agent_system_prompt"] == adapter.get_system_prompt("echo-hello")
+
+    def test_engine_returns_adapter_prompt_verbatim(self, adapter, tmp_path):
+        from tolokaforge.core.system_prompt import build_system_prompt
+
+        task = adapter.get_task("echo-hello")
+        assembled = build_system_prompt(task=task, task_dir=tmp_path, adapter=adapter)
+
+        assert assembled == adapter.get_system_prompt("echo-hello")
+        assert "<instructions>" not in assembled
+        assert "<policy>" not in assembled
+        assert "customer service" not in assembled.lower()
+
+
 class TestTerminalBenchAdapterInstructionlessTask:
     """A pack whose instruction carries no text pins no opener, so the simulator
     writes turn 1.

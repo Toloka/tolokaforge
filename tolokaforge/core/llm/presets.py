@@ -72,6 +72,7 @@ from tolokaforge.core.model_data import (
     bundled_presets_path,
     load_policy_registrations,
 )
+from tolokaforge.core.models.model_config import OpenRouterConfig
 
 __all__ = [
     "build_capabilities",
@@ -1049,6 +1050,14 @@ def build_capabilities(
     api_call_timeout_s = cfg.get("api_call_timeout_s")
     api_call_retries = cfg.get("api_call_retries")
     api_call_wall_timeout_s = cfg.get("api_call_wall_timeout_s")
+    empty_retry_count = cfg.get("empty_retry_count")
+    output_length_retry_count = cfg.get("output_length_retry_count")
+    parser_error_retry_count = cfg.get("parser_error_retry_count")
+    tool_output_max_chars = cfg.get("tool_output_max_chars")
+    default_max_turns = cfg.get("default_max_turns")
+    max_context_tokens = cfg.get("max_context_tokens")
+    context_watermark = cfg.get("context_watermark")
+    openrouter_defaults_cfg = cfg.get("openrouter_defaults")
 
     return ModelCapabilities(
         schema_sanitizer=schema,
@@ -1064,6 +1073,22 @@ def build_capabilities(
         api_call_retries=int(api_call_retries) if api_call_retries is not None else None,
         api_call_wall_timeout_s=(
             float(api_call_wall_timeout_s) if api_call_wall_timeout_s is not None else None
+        ),
+        empty_retry_count=int(empty_retry_count) if empty_retry_count is not None else 0,
+        output_length_retry_count=(
+            int(output_length_retry_count) if output_length_retry_count is not None else 0
+        ),
+        parser_error_retry_count=(
+            int(parser_error_retry_count) if parser_error_retry_count is not None else 0
+        ),
+        tool_output_max_chars=(
+            int(tool_output_max_chars) if tool_output_max_chars is not None else None
+        ),
+        default_max_turns=(int(default_max_turns) if default_max_turns is not None else None),
+        max_context_tokens=(int(max_context_tokens) if max_context_tokens is not None else None),
+        context_watermark=(int(context_watermark) if context_watermark is not None else None),
+        openrouter_defaults=(
+            OpenRouterConfig(**openrouter_defaults_cfg) if openrouter_defaults_cfg else None
         ),
     )
 

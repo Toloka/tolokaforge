@@ -17,6 +17,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -86,8 +87,37 @@ __all__ = [
     "GenerationResult",
     "LLMApiTimeoutError",
     "LLMClient",
+    "ParserError",
     "UserSimulator",
 ]
+
+# Bound on the raw-arguments excerpt carried by ``ParserError.raw_arguments``.
+# A malformed tool_call args payload has enough surrounding context at 500
+# chars for the model to locate its syntactic issue on the resample. Distinct
+# from ``REPLY_DEFECT_EXCERPT_MAX_CHARS`` (200): that constant caps a
+# substring-match excerpt around a suspicious span, this one caps the whole
+# malformed payload — different use cases, tuned independently.
+PARSER_ERROR_RAW_ARGS_EXCERPT_MAX_CHARS = 500
+
+
+@dataclass(frozen=True)
+class ParserError:
+    """Sidecar record of one un-parseable ``tool_call.function.arguments``
+    string. Ephemeral in-process value; never crosses a wire boundary and
+    never serialised into ``Trajectory`` or task artefacts, so a frozen
+    dataclass fits and ``ReplyDefect`` (Pydantic) is the wrong shape.
+
+    ``raw_arguments`` is the original ``tc.function.arguments`` string
+    (verbatim, so the retry feedback can quote it back), bounded by
+    :data:`PARSER_ERROR_RAW_ARGS_EXCERPT_MAX_CHARS`. ``reason`` is the parse
+    failure phrase — the exception message from the last failing parser or
+    ``"Unable to parse with JSON/YAML fallbacks"`` when every fallback
+    exhausted.
+    """
+
+    tool_name: str
+    raw_arguments: str
+    reason: str
 
 
 _module_logger = get_logger("llm_client_cost")
@@ -531,6 +561,7 @@ class GenerationResult:
         reasoning: StructuredReasoning | None = None,
         effective_system_prompt: str | None = None,
         openrouter_generation_id: str | None = None,
+        finish_reason: str | None = None,
     ):
         self.text = text
         self.tool_calls = tool_calls or []
@@ -549,10 +580,26 @@ class GenerationResult:
         # on ``usage.calls[-1]`` — carried here so the turn loop can stamp it
         # onto the assistant message without reaching into the usage record.
         self.openrouter_generation_id = openrouter_generation_id
+        # litellm's post-mapped ``choice.finish_reason`` (e.g. ``"stop"``,
+        # ``"length"``, ``"tool_calls"``). ``"length"`` on a content-carrying
+        # result means the provider truncated the response at ``max_tokens``
+        # — the engine loop's output-length retry seam reads it to decide
+        # whether to resample with feedback (see
+        # :attr:`ModelCapabilities.output_length_retry_count`). ``None`` when
+        # the response carries no finish_reason at all.
+        self.finish_reason = finish_reason
         # Defects of the attempts discarded before this reply was accepted.
         # Stamped only by ``UserSimulator._llm_reply``; every other producer
         # of a result leaves it empty.
         self.guard_rejections: tuple[ReplyDefect, ...] = ()
+        # One ``ParserError`` per ``tool_call.function.arguments`` string that
+        # ``_try_parse_tool_arguments`` could not decode. Stamped by
+        # ``LLMClient._assemble_result`` alongside the ``{}`` coercion the
+        # tolerant parser applies. Read by ``ToolCallingLoop._run_turn``'s
+        # parser-error retry seam to decide whether to discard the response,
+        # append ``role=user`` parse-error feedback naming the failing tools,
+        # and resample under ``LoopConfig.parser_error_retry_count``.
+        self.parser_errors: tuple[ParserError, ...] = ()
         # True iff ``UserSimulator._llm_reply`` substituted the fixed filler
         # for a tool-call-only reply with no text. Callers whose downstream
         # semantics depend on the model having written the text (the
@@ -1046,8 +1093,25 @@ class LLMClient:
 
         return repaired
 
-    def _parse_tool_arguments(self, tool_name: str, raw_args: Any) -> dict[str, Any]:
-        """Parse model-emitted tool arguments with tolerant fallbacks."""
+    def _try_parse_tool_arguments(
+        self, tool_name: str, raw_args: Any
+    ) -> tuple[dict[str, Any], str | None]:
+        """Parse model-emitted tool arguments with tolerant fallbacks and
+        report whether every parser exhausted.
+
+        Returns ``(parsed, error_reason)``. ``error_reason`` is ``None`` on
+        any recovery branch that yielded a dict (including the "provider
+        legitimately sent no args" branch: ``None`` / empty string / non-str)
+        and on the shape-mismatch branch (JSON parsed but yielded a list or
+        scalar rather than a dict — a shape issue rather than a parse
+        failure). It is a short human phrase (``"Unable to parse with
+        JSON/YAML fallbacks"``) only when every parser in the JSON / YAML /
+        repair-JSON / repair-YAML ladder failed to yield any dict.
+
+        Read by :meth:`_assemble_result` to populate
+        :attr:`GenerationResult.parser_errors` alongside the tolerant ``{}``
+        coercion the engine's parser-error retry seam consumes.
+        """
 
         def _normalize(parsed_args: dict[str, Any]) -> dict[str, Any]:
             normalized = dict(parsed_args)
@@ -1070,17 +1134,17 @@ class LLMClient:
             return normalized
 
         if isinstance(raw_args, dict):
-            return _normalize(raw_args)
+            return _normalize(raw_args), None
         if raw_args is None or not isinstance(raw_args, str):
-            return {}
+            return {}, None
 
         args_str = raw_args.strip()
         if not args_str:
-            return {}
+            return {}, None
 
         try:
             parsed = json.loads(args_str)
-            return _normalize(parsed) if isinstance(parsed, dict) else {}
+            return (_normalize(parsed) if isinstance(parsed, dict) else {}), None
         except json.JSONDecodeError:
             pass
 
@@ -1088,7 +1152,7 @@ class LLMClient:
             parsed = yaml.safe_load(args_str)
             if isinstance(parsed, dict):
                 self.logger.warning("Recovered malformed tool arguments", tool=tool_name)
-                return _normalize(parsed)
+                return _normalize(parsed), None
         except Exception:
             pass
 
@@ -1099,7 +1163,7 @@ class LLMClient:
                 parsed = parser(repaired)
                 if isinstance(parsed, dict):
                     self.logger.warning("Recovered malformed tool arguments", tool=tool_name)
-                    return _normalize(parsed)
+                    return _normalize(parsed), None
             except Exception:
                 continue
 
@@ -1108,7 +1172,19 @@ class LLMClient:
             tool=tool_name,
             error="Unable to parse with JSON/YAML fallbacks",
         )
-        return {}
+        return {}, "Unable to parse with JSON/YAML fallbacks"
+
+    def _parse_tool_arguments(self, tool_name: str, raw_args: Any) -> dict[str, Any]:
+        """Tolerant parse of model-emitted tool arguments.
+
+        Thin wrapper over :meth:`_try_parse_tool_arguments` that discards the
+        parse-error phrase. Existing callers that only need the ``{}``-coerced
+        dict use this signature; :meth:`_assemble_result` calls the ``_try``
+        variant directly to stamp
+        :attr:`GenerationResult.parser_errors`.
+        """
+        parsed, _ = self._try_parse_tool_arguments(tool_name, raw_args)
+        return parsed
 
     # ------------------------------------------------------------------
     # Tool content adaptation
@@ -1743,11 +1819,12 @@ class LLMClient:
                     schema_sanitizer=type(self.capabilities.schema_sanitizer).__name__,
                 )
 
-        # Apply cache policy after prompt enrichment + tool sanitization,
-        # BEFORE _convert_messages — this way the cache marker is the last
-        # thing added to the wire-level request and the sanitiser never sees
-        # a ``cache_control`` key it doesn't understand. Stage 6 only caches
-        # system + tools; message-level caching is deferred (empty list).
+        # Cache policy runs in two phases: ``apply`` decorates system + tools
+        # BEFORE ``_convert_messages`` so the schema sanitiser never sees a
+        # ``cache_control`` key it doesn't understand; ``apply_messages`` runs
+        # on the wire-shape messages AFTER ``_convert_messages`` in
+        # :meth:`_build_kwargs`, since message-block marker attachment needs
+        # the exact shape ``litellm.completion`` will receive.
         cached_system, cached_tools, _ = self.capabilities.cache_policy.apply(
             system, sanitized_tools, []
         )
@@ -1832,7 +1909,9 @@ class LLMClient:
             if tool_choice and action != RuleAction.DROP:
                 kwargs["tool_choice"] = tool_choice
 
-        kwargs["messages"] = self._convert_messages(system, messages)
+        kwargs["messages"] = self.capabilities.cache_policy.apply_messages(
+            self._convert_messages(system, messages)
+        )
 
         if self.provider.startswith("openrouter"):
             extra_headers = dict(self._openrouter_headers)
@@ -1844,11 +1923,25 @@ class LLMClient:
                 "custom_llm_provider",
                 self._provider_binding.custom_llm_provider or self.provider.split("/")[0],
             )
-            or_cfg = self.config.openrouter
-            if or_cfg and or_cfg.provider_order:
+            user_or = self.config.openrouter
+            preset_or = self.capabilities.openrouter_defaults
+            provider_order: list[str] | None
+            if user_or is not None and user_or.provider_order:
+                provider_order = list(user_or.provider_order)
+            elif preset_or is not None and preset_or.provider_order:
+                provider_order = list(preset_or.provider_order)
+            else:
+                provider_order = None
+            if user_or is not None:
+                allow_fallbacks = user_or.allow_fallbacks
+            elif preset_or is not None:
+                allow_fallbacks = preset_or.allow_fallbacks
+            else:
+                allow_fallbacks = True
+            if provider_order:
                 kwargs.setdefault("extra_body", {})["provider"] = {
-                    "order": list(or_cfg.provider_order),
-                    "allow_fallbacks": or_cfg.allow_fallbacks,
+                    "order": provider_order,
+                    "allow_fallbacks": allow_fallbacks,
                 }
 
         if self._proxy is not None:
@@ -2166,9 +2259,21 @@ class LLMClient:
         # tool-call argument set the model emits.
         param_types_by_tool = _root_param_types_by_tool(sanitized_tools)
 
+        parser_errors_list: list[ParserError] = []
         if hasattr(message, "tool_calls") and message.tool_calls:
             for tc in message.tool_calls:
-                arguments = self._parse_tool_arguments(tc.function.name, tc.function.arguments)
+                raw = tc.function.arguments
+                arguments, parse_reason = self._try_parse_tool_arguments(tc.function.name, raw)
+                if parse_reason is not None:
+                    raw_str = raw if isinstance(raw, str) else str(raw)
+                    excerpt = raw_str[:PARSER_ERROR_RAW_ARGS_EXCERPT_MAX_CHARS]
+                    parser_errors_list.append(
+                        ParserError(
+                            tool_name=tc.function.name,
+                            raw_arguments=excerpt,
+                            reason=parse_reason,
+                        )
+                    )
                 arguments = self.capabilities.response_policy.parse_arguments(
                     arguments,
                     param_types=param_types_by_tool.get(tc.function.name),
@@ -2219,7 +2324,7 @@ class LLMClient:
             gateway_route_kind=self._gateway_route_kind,
         )
 
-        return GenerationResult(
+        result = GenerationResult(
             text=text,
             tool_calls=tool_calls,
             usage=usage,
@@ -2231,7 +2336,17 @@ class LLMClient:
             # that returned no usage block contributes no call record, and the
             # routing decision is still worth recording for that turn.
             openrouter_generation_id=extract_openrouter_generation_id(response),
+            # litellm post-maps every current provider's max-tokens truncation
+            # to the OpenAI-compatible ``"length"`` on this field; a response
+            # that carries no finish_reason at all lands as ``None``.
+            finish_reason=getattr(choice, "finish_reason", None),
         )
+        # Attribute-post-init idiom matches ``guard_rejections`` and
+        # ``filler_substituted``. Any other producer of a ``GenerationResult``
+        # (mock generator, inline test constructions) inherits the ``()``
+        # default and the seam is inert.
+        result.parser_errors = tuple(parser_errors_list)
+        return result
 
     # ------------------------------------------------------------------
     # Mock generator (offline tests)

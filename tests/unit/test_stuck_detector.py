@@ -3,7 +3,7 @@
 import pytest
 
 from tests.utils.recorded_calls import recorded_call
-from tolokaforge.core.models import Message, MessageRole, RecordedToolCall, ToolCall
+from tolokaforge.core.models import RecordedToolCall
 from tolokaforge.core.stuck import StuckDetector
 
 pytestmark = pytest.mark.unit
@@ -11,10 +11,7 @@ pytestmark = pytest.mark.unit
 # What the cases below that are not about the repeated-call threshold run at.
 _THRESHOLD_NOT_UNDER_TEST = 10
 
-
-def _assistant_msg(content: str, tool_calls: list[ToolCall] | None = None) -> Message:
-    """Create an assistant message with optional tool calls."""
-    return Message(role=MessageRole.ASSISTANT, content=content, tool_calls=tool_calls)
+_BASH_ARGS = {"command": "pytest -x tests/foo.py"}
 
 
 def _tool_log(tool: str, arguments: dict | None = None) -> RecordedToolCall:
@@ -36,7 +33,7 @@ def test_the_repeated_call_threshold_has_to_be_named() -> None:
 
 
 # ---------------------------------------------------------------------------
-# is_stuck — integration of all heuristics
+# is_stuck — the classifier
 # ---------------------------------------------------------------------------
 
 
@@ -48,50 +45,18 @@ class TestStuckDetectorNotStuck:
         """Diverse tool calls across the window should not trigger stuck."""
         detector = StuckDetector(max_repeated_tool_calls=_THRESHOLD_NOT_UNDER_TEST)
         logs = [_tool_log(f"tool_{i}", {"arg": i}) for i in range(15)]
-        messages: list[Message] = []
-        assert detector.is_stuck(messages, logs) is False
+        assert detector.is_stuck(logs) is False
 
     def test_not_stuck_working_dialogue(self) -> None:
-        """An agent acting on every turn, in the alternating shape the loop
-        produces, is not stuck."""
+        """An agent acting on every turn with distinct arguments is not stuck."""
         detector = StuckDetector(max_repeated_tool_calls=_THRESHOLD_NOT_UNDER_TEST)
-        messages: list[Message] = []
-        logs: list[RecordedToolCall] = []
-        for i in range(15):
-            messages.append(Message(role=MessageRole.USER, content=f"question {i}"))
-            messages.append(
-                _assistant_msg(
-                    f"reading record {i}",
-                    tool_calls=[ToolCall(id=str(i), name="search", arguments={"record": i})],
-                )
-            )
-            logs.append(_tool_log("search", {"record": i}))
-        assert detector.is_stuck(messages, logs) is False
-
-    def test_not_stuck_unique_content(self) -> None:
-        """Unique assistant messages should not trigger looping detection."""
-        detector = StuckDetector(max_repeated_tool_calls=_THRESHOLD_NOT_UNDER_TEST)
-        # Each message uses entirely different words to avoid shared trigrams
-        # hitting the ≥10 threshold.
-        unique_sentences = [
-            "the quick brown fox jumps over lazy dogs",
-            "alice went through mirror into wonderland today",
-            "quantum computers solve problems exponentially faster",
-            "three blind mice ran after farmer wife",
-            "mars rover landed safely on red planet",
-            "jazz musicians improvised melodies during late concert",
-            "ocean waves crashed against rocky northern cliffs",
-            "ancient pyramids stand tall beneath blazing sun",
-            "software engineers debug production before monday release",
-            "mountain climbers reached summit despite harsh weather",
-        ]
-        messages = [_assistant_msg(s) for s in unique_sentences]
-        assert detector.is_stuck(messages, []) is False
+        logs = [_tool_log("search", {"record": i}) for i in range(15)]
+        assert detector.is_stuck(logs) is False
 
     def test_not_stuck_empty_inputs(self) -> None:
-        """Empty messages and tool_logs should never flag as stuck."""
+        """Empty tool-call log should never flag as stuck."""
         detector = StuckDetector(max_repeated_tool_calls=_THRESHOLD_NOT_UNDER_TEST)
-        assert detector.is_stuck([], []) is False
+        assert detector.is_stuck([]) is False
 
 
 # ---------------------------------------------------------------------------
@@ -135,51 +100,46 @@ class TestRepeatedToolCalls:
 
 
 # ---------------------------------------------------------------------------
-# _has_looping_content
+# Result-aware identity: same (name, args) with different outputs is progress
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-class TestLoopingContent:
-    """Tests for the looping-content heuristic."""
+class TestResultAwareRepetition:
+    """The identity a repeated call is counted under includes its recorded output.
 
-    def test_stuck_looping_content(self) -> None:
-        """Repeated identical multi-word messages → stuck (trigram count ≥ 10)."""
-        detector = StuckDetector(max_repeated_tool_calls=_THRESHOLD_NOT_UNDER_TEST)
-        # Same sentence repeated 10 times produces the same trigrams 10 times
-        repeated = "I am trying to complete the task right now"
-        messages = [_assistant_msg(repeated) for _ in range(10)]
-        assert detector._has_looping_content(messages) is True
+    Same tool + same args + *different* result bytes across turns is progress,
+    not a stall: the model got new information every turn. Same tool + same args
+    + same result bytes across turns is the shape the detector is for.
+    """
 
-    def test_not_stuck_unique_content(self) -> None:
-        """All-different messages should not trigger looping."""
-        detector = StuckDetector(max_repeated_tool_calls=_THRESHOLD_NOT_UNDER_TEST)
-        unique_sentences = [
-            "the quick brown fox jumps over lazy dogs",
-            "alice went through mirror into wonderland today",
-            "quantum computers solve problems exponentially faster",
-            "three blind mice ran after farmer wife",
-            "mars rover landed safely on red planet",
-            "jazz musicians improvised melodies during late concert",
-            "ocean waves crashed against rocky northern cliffs",
-            "ancient pyramids stand tall beneath blazing sun",
-            "software engineers debug production before monday release",
-            "mountain climbers reached summit despite harsh weather",
+    def test_same_args_different_output_is_not_stuck(self) -> None:
+        """Fix-and-verify: identical ``pytest -x`` command, evolving stdout each turn."""
+        detector = StuckDetector(max_repeated_tool_calls=5)
+        logs = [
+            recorded_call(
+                "bash",
+                sequence=i,
+                arguments=_BASH_ARGS,
+                output=f"FAILED tests/foo.py::test_case[{i}] AssertionError: seq {i}",
+            )
+            for i in range(6)
         ]
-        messages = [_assistant_msg(s) for s in unique_sentences]
-        assert detector._has_looping_content(messages) is False
+        assert detector.is_stuck(logs) is False
 
-    def test_fewer_than_five_assistant_messages(self) -> None:
-        """With fewer than 5 assistant messages, looping cannot trigger."""
-        detector = StuckDetector(max_repeated_tool_calls=_THRESHOLD_NOT_UNDER_TEST)
-        messages = [_assistant_msg("same words over and over") for _ in range(4)]
-        assert detector._has_looping_content(messages) is False
-
-    def test_short_messages_no_trigrams(self) -> None:
-        """Messages with fewer than 3 words produce no trigrams."""
-        detector = StuckDetector(max_repeated_tool_calls=_THRESHOLD_NOT_UNDER_TEST)
-        messages = [_assistant_msg("hi") for _ in range(10)]
-        assert detector._has_looping_content(messages) is False
+    def test_same_args_same_output_still_stuck(self) -> None:
+        """Byte-identical call and result over N turns is still the stall shape."""
+        detector = StuckDetector(max_repeated_tool_calls=5)
+        logs = [
+            recorded_call(
+                "bash",
+                sequence=i,
+                arguments=_BASH_ARGS,
+                output="FAILED tests/foo.py::test_case AssertionError",
+            )
+            for i in range(6)
+        ]
+        assert detector.is_stuck(logs) is True
 
 
 # ---------------------------------------------------------------------------
@@ -195,10 +155,10 @@ class TestCustomThresholds:
         """StuckDetector with a low threshold should detect stuck earlier."""
         detector = StuckDetector(max_repeated_tool_calls=2)
         logs = [_tool_log("search", {"q": "x"})] * 2
-        assert detector.is_stuck([], logs) is True
+        assert detector.is_stuck(logs) is True
 
     def test_high_thresholds_avoid_false_positives(self) -> None:
         """High thresholds should tolerate more repetition."""
         detector = StuckDetector(max_repeated_tool_calls=100)
         logs = [_tool_log("search", {"q": "x"})] * 20
-        assert detector.is_stuck([], logs) is False
+        assert detector.is_stuck(logs) is False

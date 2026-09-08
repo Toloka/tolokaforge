@@ -61,6 +61,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.COMPLETED, TerminationReason.API_TIMEOUT, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.COMPLETED, TerminationReason.EMPTY_COMPLETION, _MEASURED, False),
+    (TrialStatus.COMPLETED, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, False),
     (TrialStatus.COMPLETED, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.COMPLETED, TerminationReason.TRIAL_LOST, _HARNESS, False),
     (TrialStatus.COMPLETED, None, _MEASURED, False),
@@ -74,6 +75,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.FAILED, TerminationReason.API_TIMEOUT, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, _MEASURED, False),
+    (TrialStatus.FAILED, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, False),
     (TrialStatus.FAILED, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.FAILED, TerminationReason.TRIAL_LOST, _HARNESS, False),
     (TrialStatus.FAILED, None, _HARNESS, False),
@@ -87,6 +89,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.TIMEOUT, TerminationReason.API_TIMEOUT, _ABORT, True),
     (TrialStatus.TIMEOUT, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.EMPTY_COMPLETION, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, True),
     (TrialStatus.TIMEOUT, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.TIMEOUT, TerminationReason.TRIAL_LOST, _HARNESS, True),
     (TrialStatus.TIMEOUT, None, _HARNESS, True),
@@ -100,6 +103,7 @@ _GRADED_CELLS: tuple[tuple[TrialStatus, TerminationReason | None, TrialOutcomeCl
     (TrialStatus.ERROR, TerminationReason.API_TIMEOUT, _ABORT, True),
     (TrialStatus.ERROR, TerminationReason.API_ERROR, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.EMPTY_COMPLETION, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.CONTEXT_WINDOW_EXCEEDED, _MEASURED, True),
     (TrialStatus.ERROR, TerminationReason.PROVISION_ERROR, _ABORT, False),
     (TrialStatus.ERROR, TerminationReason.TRIAL_LOST, _HARNESS, True),
     (TrialStatus.ERROR, None, _HARNESS, True),
@@ -186,7 +190,7 @@ class TestOutcomeClassificationCrossProduct:
             for ungradeable in (False, True)
         }
         assert cells == expected
-        assert len(_OUTCOME_CELLS) == len(expected) == 104
+        assert len(_OUTCOME_CELLS) == len(expected) == 112
 
     def test_the_class_column_exhausts_the_declared_vocabulary(self) -> None:
         """The table is hand-maintained and the enum is declared in production,
@@ -226,6 +230,15 @@ class TestOutcomeClassificationCrossProduct:
         ``test_an_unrecognised_reason_would_be_counted`` (which locks the shape
         of the derivation, not which reasons appear on either side)."""
         assert TerminationReason.EMPTY_COMPLETION not in EXCLUDED_TYPED_REASONS
+
+    def test_context_window_exceeded_stays_in_the_measured_denominator(self) -> None:
+        """A trial that hit the provider's max input tokens measured the model
+        on a real long-tail failure — a summarize-opted preset that failed on a
+        recoverable in-scope condition, or a non-opted preset that had no
+        recovery path at all. Adding it to the excluded set here would silently
+        drop it from ``measured_trials`` without failing
+        ``test_an_unrecognised_reason_would_be_counted``."""
+        assert TerminationReason.CONTEXT_WINDOW_EXCEEDED not in EXCLUDED_TYPED_REASONS
 
 
 class TestRetryabilityIsIndependentOfCountability:
@@ -363,6 +376,29 @@ def test_an_empty_completion_is_attributed_to_a_provider_side_resource_event() -
     assert attribution["confidence"] == 1.0
     assert attribution["evidence"] == [
         {"kind": "termination_reason", "value": "empty_completion", "status": "failed"}
+    ]
+
+
+def test_a_context_window_exceeded_trial_is_attributed_to_a_provider_side_resource_event() -> None:
+    """A trial that hit the provider's max input tokens is a resource event,
+    not a model-reasoning failure. Without a dedicated branch it would fall
+    through to ``model_reasoning`` at confidence 0.5, blaming the agent for a
+    provider-side limit."""
+    traj = _base_trajectory()
+    traj.status = TrialStatus.FAILED
+    traj.termination_reason = TerminationReason.CONTEXT_WINDOW_EXCEEDED
+
+    attribution = attribute_failure(traj)
+
+    assert attribution["failure_class"] == "timeout_or_resource"
+    assert attribution["deterministic"] is True
+    assert attribution["confidence"] == 1.0
+    assert attribution["evidence"] == [
+        {
+            "kind": "termination_reason",
+            "value": "context_window_exceeded",
+            "status": "failed",
+        }
     ]
 
 

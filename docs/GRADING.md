@@ -816,7 +816,8 @@ the one the pack asked for, and the agent did not reach it.
 
 A trial the harness auto-fails before any evaluator runs — `TrialStatus.ERROR`
 / `TrialStatus.TIMEOUT`, `TerminationReason.STUCK_DETECTED`,
-`TerminationReason.EMPTY_COMPLETION` — has no evaluator output to compose. The
+`TerminationReason.EMPTY_COMPLETION`,
+`TerminationReason.CONTEXT_WINDOW_EXCEEDED` — has no evaluator output to compose. The
 `TrialGrader` synthesises a `Grade` for it so the trial still reaches
 `measured_trials` (nothing was refused: the grader answered), but the grade
 is deliberately shaped to expose its provenance:
@@ -828,7 +829,7 @@ is deliberately shaped to expose its provenance:
   the grader synthesised from — `TerminationReason.ERROR` for the
   `ERROR`/`TIMEOUT` fallback (`trajectory.termination_reason` when the
   trajectory carries one, otherwise `ERROR`), and the matching value on the
-  `STUCK_DETECTED` / `EMPTY_COMPLETION` branches.
+  `STUCK_DETECTED` / `EMPTY_COMPLETION` / `CONTEXT_WINDOW_EXCEEDED` branches.
 - `Grade.binary_pass` is `False` and `Grade.score` is `0.0` — the trial did
   end unsuccessfully; the marker distinguishes _how_ it ended, not _whether_.
 
@@ -4050,7 +4051,7 @@ infrastructure:
 | `api_error` | measured | Produced by matching provider names in the message text, which also matches a context-window overflow (agent behaviour) and a 400 from a malformed tool schema (our bug) |
 | `error` | harness error | The classifier's fall-through, so usually a defect of ours. Counted — excluding our own bugs would hide them — and reported separately as `harness_errors` so a non-zero count is visible as a run-health signal. A user simulator whose every generation of one turn was flagged by a detector lands here: the reply guard refuses the turn rather than delivering it, and the trajectory's `user_reply_guard_events` carries the evidence (see [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md)) |
 | `trial_lost` | harness error | The runner no longer holds the trial the engine is running, so a tool call reached no tool. The exclusion bar is typed evidence that the *provider or the substrate* killed the trial, and a tool executing agent-supplied input that crashes the runner process is an agent-reachable route to this fault, so it is counted. It is the one counted reason that is **not graded**: the runner that would compute the verdict is the one that lost the trial, so no fabricated `0.0` enters `avg_score` |
-| `stuck_detected` | measured | The agent issued the identical tool call over and over, or repeated the same phrasing back at itself. It auto-fails with `score: 0.0`, and that verdict is correct. An agent that talks without acting is not this — that is a per-task question, asked by `transcript_rules` in the task's `grading.yaml` |
+| `stuck_detected` | measured | The agent issued the identical tool call and got the same result back over and over. It auto-fails with `score: 0.0`, and that verdict is correct. An agent that talks without acting is not this — that is a per-task question, asked by `transcript_rules` in the task's `grading.yaml` |
 | any reason, with `grading_error` set | ungradeable | Grading refused, so no verdict exists. Counted for the same reason a harness error is — the fault is ours — and reported separately as `ungradeable`. This is read **before** the reason, so a refusal is never traded for an exclusion |
 
 The asymmetry decides every borderline case: misclassifying an agent failure as

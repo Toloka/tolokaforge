@@ -70,6 +70,18 @@ presets:
   # ``reasoning_effort`` and requires the canonical litellm ``thinking=``
   # kwarg + explicit ``budget_tokens``. Listed BEFORE the generic
   # ``anthropic`` preset so first-match-wins routing picks it up.
+  #
+  # ``max_context_tokens: 200000`` + ``context_watermark: 12000`` arm the
+  # loop's context-window summarize seam. Claude 4.7's documented 200 K
+  # window still fills on reasoning-heavy multi-turn trajectories: each
+  # turn carries the accumulated tool history plus signed thinking blocks
+  # (the ``anthropic_ephemeral`` cache manages read cost but not prompt
+  # size), and the 8 K default extended-thinking budget stacks per turn.
+  # Once the previous generation's ``prompt_tokens + 12000 >= 200000``
+  # the loop summarizes and continues; 12 K free tokens is ~6 % headroom
+  # sized for one adaptive-thinking turn (~8 K budget + ~4 K reply). The
+  # recorded ``Trajectory.messages`` keeps the full pre-summarize view
+  # for grading. See ``docs/LLM_LAYER.md § Context-window handoff``.
   anthropic_claude_4_7:
     match:
       - "anthropic/claude-opus-4.7*"
@@ -79,6 +91,8 @@ presets:
     content_policy: anthropic
     reasoning_codec: anthropic
     cache_policy: anthropic_ephemeral
+    max_context_tokens: 200000
+    context_watermark: 12000
     params:
       supports_seed: false
       reasoning_via_thinking_kwarg: true
@@ -104,6 +118,14 @@ presets:
   #     json.loads-decodes a top-level string arg whose first char is ``{``/``[``
   #     back to the native container (scalar strings like ``table`` untouched).
   #     Reprobe went 5/5 on the fix-target.
+  #   * ``empty_retry_count: 1`` — Opus 5 empty-completions observed on
+  #     ``fix-inventory-availability-reconciliation`` (4/4 on the 2026-09-04
+  #     T-Bench balanced-10, issue #1491). One resample recovers the
+  #     stochastic empty without doubling reasoning spend twice. Anthropic
+  #     direct is not reachable via OpenRouter's provider fan-out, so the
+  #     openrouter_defaults pin that ships on the sibling
+  #     ``moonshot_kimi_k3`` preset does not apply here — the empty is a
+  #     reasoning-only turn, not a lossy third-party mirror.
   anthropic_claude_opus_5:
     match:
       - "anthropic/claude-opus-5*"
@@ -112,6 +134,7 @@ presets:
     reasoning_codec: anthropic
     cache_policy: anthropic_ephemeral
     response_policy: json_coerce
+    empty_retry_count: 1
     params:
       supports_seed: false
 
@@ -521,6 +544,42 @@ presets:
   # same single-space rewrite for the equivalent Bedrock symptom, so this
   # is precedent, not novelty.
   #
+  # The ``openrouter_defaults`` pin is the second defence against empty
+  # completions: OpenRouter's default fan-out to third-party mirrors
+  # (Sail Research, DeepInfra, Nebius, …) returned empty content in
+  # 15/25 kimi_k3 trials on the 2026-09-04 T-Bench balanced-10 (issue
+  # #1491). ``provider_order: [moonshotai]`` + ``allow_fallbacks: false``
+  # restricts the request to Moonshot direct so the filler policy above
+  # reaches the endpoint it was written for. The user's
+  # ``ModelConfig.openrouter`` block wins per-field; when ``provider_order``
+  # is left unset by the operator the preset default lands on the wire.
+  #
+  # ``empty_retry_count: 1`` covers the reasoning-only class Moonshot
+  # direct still surfaces after the pin lands: K3 legitimately returns
+  # ``content: null`` when the reasoning stage consumes its output
+  # budget (``native_finish_reason: "length"`` on the failing traces),
+  # and a resample against the same messages typically produces a
+  # non-empty completion because the next sample does not exhaust
+  # reasoning. One retry is the conservative default; operators tune it
+  # higher via preset overlay when a model's reasoning-budget miss rate
+  # warrants doubling reasoning spend.
+  #
+  # ``tool_output_max_chars: 32768`` is the third defence — a
+  # loop-layer cap on the ``role=tool`` message content the engine
+  # threads into the next prompt. Large tool outputs (file scans, RAG
+  # hits, DB dumps, browser DOM, MCP tool payloads) accumulate as raw
+  # ``Message.content`` on every subsequent turn and can push the prompt
+  # into the reasoning-budget-exhaustion zone that ``empty_retry_count``
+  # and the provider pin cannot recover from — the fault is upstream of
+  # both, in accumulated context size rather than in one call. The cap
+  # middle-elides tool output that exceeds 32 KB chars (~8 K tokens on
+  # English text, 4× the 16 KB per-call caps ``persistent_shell`` and
+  # ``str_replace_editor`` already apply to their own output) with a
+  # marker so a bash trace that already fits under the per-tool cap
+  # passes through untouched and only unbounded tool sources are
+  # bounded. The trial's recorder and the grader still read the full
+  # untruncated text upstream of the cap.
+  #
   # K2.x is DELIBERATELY NOT in this preset. The
   # ``openrouter_dict_stringify_recovery`` preset above covers K2.6 and
   # K2.7-code but ships ``message_assembly_policy`` unset (→ ``null``);
@@ -531,6 +590,23 @@ presets:
   # siblings clustered). No glob overlap: ``moonshotai/kimi-k3`` does
   # not match ``*kimi-k2*`` (K2 slugs carry a dot before the version:
   # ``kimi-k2.6``, ``kimi-k2.7-code``).
+  #
+  # ``max_context_tokens: 128000`` + ``context_watermark: 8000`` are the
+  # fourth defence — a first-class engine seam for context-window
+  # summarize + handoff. Kimi K3's documented 128 K window is generous by
+  # 2026 baseline, but reasoning-heavy multi-turn trajectories on
+  # tool-rich packs exhaust it well before the turn budget does: each
+  # turn keeps the full history plus signed thinking blocks plus tool
+  # outputs (already loop-capped at 32 KB chars, but still additive across
+  # dozens of turns). Once the previous generation's
+  # ``prompt_tokens + 8000 >= 128000`` the loop asks its
+  # ``SummarizePolicy`` to compress the recorded history and rewrites the
+  # wire message list to ``[first_user_message, summary_as_user_turn]``,
+  # so the trial continues instead of terminating on
+  # ``ContextWindowExceededError``. The recorded ``Trajectory.messages``
+  # keeps the full pre-summarize view for grading. 8 K free tokens is
+  # ~6 % headroom — enough for a normal-sized reasoning turn plus its
+  # tool-call reply. See ``docs/LLM_LAYER.md § Context-window handoff``.
   moonshot_kimi_k3:
     match:
       - "moonshotai/kimi-k3*"
@@ -539,6 +615,13 @@ presets:
       name: nova
       params:
         empty_assistant_filler: " "
+    openrouter_defaults:
+      provider_order: [moonshotai]
+      allow_fallbacks: false
+    empty_retry_count: 1
+    tool_output_max_chars: 32768
+    max_context_tokens: 128000
+    context_watermark: 8000
 
   # thinkingmachines/inkling — model-specific overlay landed via auto-resolve
   # (Slack-requested integration, PR #719). Exact-match globs only; no generic
@@ -688,6 +771,39 @@ presets:
     reasoning_codec: gemini
     schema_sanitizer: gemini_recursive
     response_policy: scalar_array_dict_map
+
+  # Gemini 3.1 Pro Preview — model-specific overlay carrying the generic
+  # ``gemini`` policy trio (reasoning_codec + schema_sanitizer +
+  # response_policy) PLUS one Pro-observed turn-budget default the shared
+  # preset does not carry. Different models converge in different numbers
+  # of steps on the same task; a Pro-lineage per-turn edit style is more
+  # granular than the framework baseline, so the same absolute budget
+  # exhausts earlier on tasks a coarser-grained model completes in fewer
+  # turns. Live evidence: 8/8 gemini-3.1-pro-preview T-Bench balanced-10
+  # failures on the 2026-09-04 head-to-head hit
+  # ``termination_reason: max_turns`` at exactly turn 60 with trajectories
+  # mid-productive at the cutoff. 90 is the conservative lift over the
+  # 50-turn engine default;
+  # operators raise it further via preset overlay when observed
+  # convergence warrants it.
+  #
+  # ``TaskConfig.max_turns`` still wins for tasks that pin their own
+  # budget (the loop-cap authority the task author declared).
+  # ``OrchestratorConfig.max_turns`` still ceilings the resolved value
+  # (the operator's clamp). This default only fills in on the
+  # task-unset + run-cap-unset-or-above-90 path.
+  #
+  # Exact match globs only, listed BEFORE the generic ``gemini`` glob so
+  # no sibling Gemini route (2.5, 3-flash, 3.5-flash, 3.6-flash, 3.7-flash)
+  # inherits the bump.
+  gemini_31_pro_preview:
+    match:
+      - "google/gemini-3.1-pro-preview"
+      - "openrouter/google/gemini-3.1-pro-preview"
+    reasoning_codec: gemini
+    schema_sanitizer: gemini
+    response_policy: array_dict_map
+    default_max_turns: 90
 
   # Google Gemini family (3.x preview + 3.x GA + 2.5 backstop).
   # ``GeminiReasoningCodec`` decodes Gemini's OpenRouter
