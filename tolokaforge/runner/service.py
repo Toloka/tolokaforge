@@ -524,6 +524,35 @@ class TrialContextRuntime:
             return self.user_tools.get(tool_name)
         return self.agent_tools.get(tool_name)
 
+    def nearest_tool_names(
+        self,
+        tool_name: str,
+        executor: ToolExecutorIdentity = ToolExecutorIdentity.AGENT,
+        limit: int = 3,
+    ) -> list[str]:
+        """Registered tool names that could plausibly be what the caller meant.
+
+        Ranked by suffix match on ``_{tool_name}`` first — which catches the common
+        pack-side ``<system>_<tool>_<tool>`` doubled-prefix shape when a model calls
+        the bare short name — then by containing ``_{tool_name}_``. Returns at most
+        ``limit`` names, sorted for determinism. Empty when nothing matches.
+        """
+        if not tool_name:
+            return []
+        registry = self.user_tools if executor is ToolExecutorIdentity.USER else self.agent_tools
+        suffix = f"_{tool_name}"
+        infix = f"_{tool_name}_"
+        ranked: list[tuple[int, str]] = []
+        for name in registry:
+            if name == tool_name:
+                continue
+            if name.endswith(suffix):
+                ranked.append((0, name))
+            elif infix in name:
+                ranked.append((1, name))
+        ranked.sort()
+        return [name for _rank, name in ranked[:limit]]
+
     def record(
         self,
         *,
@@ -1326,7 +1355,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         tool = trial_context.get_tool(tool_name, executor)
         if tool is None:
+            candidates = trial_context.nearest_tool_names(tool_name, executor)
             logger.warning(f"ExecuteTool: Tool not found: {tool_name} ({executor.value})")
+            if candidates:
+                error_message = (
+                    f"Tool '{tool_name}' not found. Did you mean: {', '.join(candidates)}?"
+                )
+            else:
+                error_message = f"Tool '{tool_name}' not found"
             return None, self._reject_tool_call(
                 trial_context=trial_context,
                 call_id=call_id,
@@ -1334,7 +1370,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 arguments=arguments,
                 executor=executor,
                 status=pb2.EXECUTION_STATUS_TOOL_NOT_FOUND,
-                error_message=f"Tool '{tool_name}' not found",
+                error_message=error_message,
             )
 
         unusable = trial_context.unusable_reason(tool_name, executor)

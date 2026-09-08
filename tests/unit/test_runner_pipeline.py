@@ -591,6 +591,61 @@ class TestCallIdCrossesTheWire:
         ]
         assert "not found" in history[0].output
 
+    def test_tool_not_found_hints_at_registered_suffix_match(
+        self, runner_service, mock_grpc_context, echo_trial
+    ):
+        """A model calling the natural short name of a doubled-prefix registration
+        (``<system>_<tool>_<tool>``) gets the registered name back in the error, so
+        the next turn can retry it."""
+
+        async def stuttered(args):
+            return json.dumps(args)
+
+        runner_service.trials[echo_trial].agent_tools[
+            "ots_myzone_send_notification_send_notification"
+        ] = stuttered
+        response = runner_service.ExecuteTool(
+            execute_request(echo_trial, "send_notification", call_id="toolu_stutter"),
+            mock_grpc_context,
+        )
+        assert response.status == pb2.EXECUTION_STATUS_TOOL_NOT_FOUND
+        assert "not found" in response.error_message.lower()
+        assert "Did you mean" in response.error_message
+        assert "ots_myzone_send_notification_send_notification" in response.error_message
+
+    def test_tool_not_found_hint_lists_all_ambiguous_suffix_matches(
+        self, runner_service, mock_grpc_context, echo_trial
+    ):
+        """Two registered names ending in the same short suffix are both surfaced —
+        the engine never silently picks one."""
+
+        async def stub(args):
+            return json.dumps(args)
+
+        runner_service.trials[echo_trial].agent_tools["system_a_notify"] = stub
+        runner_service.trials[echo_trial].agent_tools["system_b_notify"] = stub
+        response = runner_service.ExecuteTool(
+            execute_request(echo_trial, "notify", call_id="toolu_ambig"),
+            mock_grpc_context,
+        )
+        assert response.status == pb2.EXECUTION_STATUS_TOOL_NOT_FOUND
+        assert "Did you mean" in response.error_message
+        assert "system_a_notify" in response.error_message
+        assert "system_b_notify" in response.error_message
+
+    def test_tool_not_found_without_any_near_miss_keeps_bare_message(
+        self, runner_service, mock_grpc_context, echo_trial
+    ):
+        """No registered name is a plausible near-miss, so the error stays terse —
+        no ``Did you mean`` clause to distract the model."""
+        response = runner_service.ExecuteTool(
+            execute_request(echo_trial, "completely_unrelated_name", call_id="toolu_none"),
+            mock_grpc_context,
+        )
+        assert response.status == pb2.EXECUTION_STATUS_TOOL_NOT_FOUND
+        assert "not found" in response.error_message.lower()
+        assert "Did you mean" not in response.error_message
+
     def test_unparseable_arguments_are_recorded_not_only_reported(
         self, runner_service, mock_grpc_context, echo_trial
     ):
