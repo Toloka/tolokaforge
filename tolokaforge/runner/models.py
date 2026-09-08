@@ -67,6 +67,7 @@ from tolokaforge.core.grading.state_composition import (
 )
 from tolokaforge.core.grading.trace_event_kind import TraceEventKind
 from tolokaforge.core.grading.turn_bounds import validate_turn_window
+from tolokaforge.core.hash import ColumnCompareRule
 from tolokaforge.core.netpolicy_constants import HARNESS_RESERVED_NETWORKS
 
 # ``ToolExecutionStatus`` is declared beside ``ToolResult`` in the true leaf
@@ -465,6 +466,15 @@ class RunnerStateChecksConfig(BaseModel):
     # (id_fields keys must appear in initial_state.tables) from a raise to a warning.
     # New tasks should fix typos or add the table, not enable this.
     relaxed_validation: bool = False
+
+    # Opt-in, PER-(TABLE, COLUMN): asymmetric compare mode for column values that
+    # are themselves dicts (typically tool-call param objects). Declaring
+    # ``{table: {column: {mode: subset, extras_allowed_for: [k1, k2]}}}`` lets the
+    # model include ``k1``/``k2`` in ``column`` where the golden does not, without
+    # failing the state hash. Keys the golden declares are still compared
+    # value-for-value; extras outside the allowlist still fail. Mirrors the trace
+    # comparator's ``compare_args`` shape (see :class:`ColumnCompareRule`).
+    compare_columns: dict[str, dict[str, ColumnCompareRule]] = Field(default_factory=dict)
 
     # JSONPath assertions
     jsonpath_checks: list[dict[str, Any]] = Field(default_factory=list)

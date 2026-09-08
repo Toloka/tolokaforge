@@ -9,7 +9,13 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-from tolokaforge.core.hash import canonical_number, compute_stable_hash, filter_unstable_fields
+from tolokaforge.core.hash import (
+    ColumnCompareRule,
+    apply_compare_columns_extras,
+    canonical_number,
+    compute_stable_hash,
+    filter_unstable_fields,
+)
 
 # ---------------------------------------------------------------------------
 # Test 7: filter_unstable_fields handles nested table.field patterns
@@ -80,6 +86,122 @@ class TestFilterUnstableFields:
 
         filtered = filter_unstable_fields(state, unstable)
         assert filtered["orders"][0] == {"id": "1", "status": "pending"}
+
+
+# ---------------------------------------------------------------------------
+# apply_compare_columns_extras: per-(table, column) subset semantics
+# ---------------------------------------------------------------------------
+
+
+class TestApplyCompareColumnsExtras:
+    """Per-column ``mode: subset`` drops permitted extras the golden did not carry."""
+
+    @staticmethod
+    def _rule(*extras: str) -> ColumnCompareRule:
+        return ColumnCompareRule(mode="subset", extras_allowed_for=list(extras))
+
+    def test_unset_is_a_no_op(self):
+        actual = {"notifications": [{"id": "n1", "params": {"body": "hi"}}]}
+        expected = {"notifications": [{"id": "n1", "params": {"body": "hi"}}]}
+        assert apply_compare_columns_extras(actual, expected, None) == actual
+        assert apply_compare_columns_extras(actual, expected, {}) == actual
+
+    def test_declared_extra_absent_from_golden_is_dropped_from_actual(self):
+        """The motivating case: SOP permits ``param_case_number``, golden omits it,
+        model adds it — hash should not fail on this key."""
+        actual = {
+            "notifications": [{"id": "n1", "params": {"body": "hi", "param_case_number": "C-1"}}]
+        }
+        expected = {"notifications": [{"id": "n1", "params": {"body": "hi"}}]}
+        rules = {"notifications": {"params": self._rule("param_case_number")}}
+        filtered = apply_compare_columns_extras(actual, expected, rules)
+        assert filtered["notifications"][0]["params"] == {"body": "hi"}
+        assert compute_stable_hash(filtered) == compute_stable_hash(expected)
+
+    def test_extra_not_in_allowlist_still_fails(self):
+        """Only keys the pack named are dropped; other model-added keys stay."""
+        actual = {"notifications": [{"id": "n1", "params": {"body": "hi", "unlisted_key": "x"}}]}
+        expected = {"notifications": [{"id": "n1", "params": {"body": "hi"}}]}
+        rules = {"notifications": {"params": self._rule("param_case_number")}}
+        filtered = apply_compare_columns_extras(actual, expected, rules)
+        assert filtered["notifications"][0]["params"] == {
+            "body": "hi",
+            "unlisted_key": "x",
+        }
+        assert compute_stable_hash(filtered) != compute_stable_hash(expected)
+
+    def test_key_declared_in_golden_is_compared_value_for_value(self):
+        """Extras allowed only when golden lacks the key — when golden has it,
+        a value mismatch on the same key still fails the hash."""
+        actual = {"notifications": [{"id": "n1", "params": {"param_case_number": "MODEL"}}]}
+        expected = {"notifications": [{"id": "n1", "params": {"param_case_number": "GOLDEN"}}]}
+        rules = {"notifications": {"params": self._rule("param_case_number")}}
+        filtered = apply_compare_columns_extras(actual, expected, rules)
+        assert filtered["notifications"][0]["params"] == {"param_case_number": "MODEL"}
+        assert compute_stable_hash(filtered) != compute_stable_hash(expected)
+
+    def test_composes_with_unstable_fields_mask(self):
+        """``unstable_fields`` drops the whole column (symmetric); ``compare_columns``
+        drops permitted extra keys inside a surviving column. The two do not fight."""
+        actual = {
+            "notifications": [
+                {
+                    "id": "n1",
+                    "created_at": "2026-09-08",
+                    "params": {"body": "hi", "param_case_number": "C-1"},
+                }
+            ]
+        }
+        expected = {
+            "notifications": [{"id": "n1", "created_at": "2020-01-01", "params": {"body": "hi"}}]
+        }
+        rules = {"notifications": {"params": self._rule("param_case_number")}}
+        filtered_actual = apply_compare_columns_extras(actual, expected, rules)
+        masked_actual = filter_unstable_fields(filtered_actual, ["notifications.created_at"])
+        masked_expected = filter_unstable_fields(expected, ["notifications.created_at"])
+        assert compute_stable_hash(masked_actual) == compute_stable_hash(masked_expected)
+
+    def test_non_dict_column_value_is_left_alone(self):
+        """The rule only makes sense for dict columns. Non-dict values pass through."""
+        actual = {"rows": [{"id": "r1", "params": "just-a-string"}]}
+        expected = {"rows": [{"id": "r1", "params": "just-a-string"}]}
+        rules = {"rows": {"params": self._rule("anything")}}
+        filtered = apply_compare_columns_extras(actual, expected, rules)
+        assert filtered == actual
+
+    def test_missing_table_or_column_is_skipped_silently(self):
+        """A rule for a table that either state omits is a no-op — the containing
+        hash still catches genuine schema drift."""
+        actual = {"other": [{"id": "o1"}]}
+        expected = {"other": [{"id": "o1"}]}
+        rules = {"notifications": {"params": self._rule("param_case_number")}}
+        assert apply_compare_columns_extras(actual, expected, rules) == actual
+
+    def test_list_table_rows_paired_positionally(self):
+        """Table rows are paired index-by-index: row N's actual against row N's expected."""
+        actual = {
+            "notifications": [
+                {"id": "n1", "params": {"body": "a", "param_case_number": "C-1"}},
+                {"id": "n2", "params": {"body": "b", "param_case_number": "C-2"}},
+            ]
+        }
+        expected = {
+            "notifications": [
+                {"id": "n1", "params": {"body": "a"}},
+                {"id": "n2", "params": {"body": "b"}},
+            ]
+        }
+        rules = {"notifications": {"params": self._rule("param_case_number")}}
+        filtered = apply_compare_columns_extras(actual, expected, rules)
+        assert compute_stable_hash(filtered) == compute_stable_hash(expected)
+
+    def test_dict_column_pair_shape_also_supported(self):
+        """A table stored as a single dict (not list-of-rows) is handled too."""
+        actual = {"config": {"id": "c1", "params": {"a": 1, "param_case_number": "X"}}}
+        expected = {"config": {"id": "c1", "params": {"a": 1}}}
+        rules = {"config": {"params": self._rule("param_case_number")}}
+        filtered = apply_compare_columns_extras(actual, expected, rules)
+        assert compute_stable_hash(filtered) == compute_stable_hash(expected)
 
 
 # ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ from tolokaforge.core.grading.golden_replay import (
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.predicates import contains
-from tolokaforge.core.hash import canonical_number
+from tolokaforge.core.hash import ColumnCompareRule, apply_compare_columns_extras, canonical_number
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.utils.diff import calculate_state_diff, format_diff_summary
 
@@ -473,6 +473,7 @@ class StateChecker:
         task_domain: str,
         *,
         numeric_string_fields: list[str] | None = None,
+        compare_columns: dict[str, dict[str, ColumnCompareRule]] | None = None,
     ) -> tuple[float, str, dict[str, Any] | None, GoldenReplayRecord]:
         """
         Check state against the state a golden-action replay produces (tau-bench style).
@@ -486,6 +487,11 @@ class StateChecker:
             task_domain: Domain name (e.g., "airline")
             numeric_string_fields: Record field names whose numeric-looking
                 string values fold when hashing (per-field opt-in).
+            compare_columns: Per-(table, column) subset rules the pack declares —
+                model-added keys named in a rule's ``extras_allowed_for`` are
+                dropped from ``db_state`` before hashing when the golden's row for
+                the same column does not carry them. See
+                :func:`tolokaforge.core.hash.apply_compare_columns_extras`.
 
         Returns:
             (score 0 or 1, reason, diff_result dict or None, replay record). The verdict
@@ -509,6 +515,11 @@ class StateChecker:
         except Exception as e:
             self.logger.error("Failed to execute golden actions", error=str(e))
             raise GoldenReplayError(f"Error executing golden actions: {e}") from e
+
+        # Apply per-(table, column) subset rules before hashing so a model-added key
+        # the prompt explicitly permits does not fail an otherwise-matching state.
+        if compare_columns:
+            db_state = apply_compare_columns_extras(db_state, expected_state, compare_columns)
 
         # Compute hashes
         expected_hash = state_digest(expected_state, numeric_string_fields=numeric_string_fields)
