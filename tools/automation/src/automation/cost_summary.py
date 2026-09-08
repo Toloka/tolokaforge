@@ -63,7 +63,7 @@ def _usd(value: float | None, *, escape: bool = False) -> str:
     if value is None:
         return "n/a"
     # GitHub renders `$...$` on one line as math; the markdown body escapes its dollars.
-    return ("\\$" if escape else "$") + f"{value:,.4f}"
+    return ("\\$" if escape else "$") + f"{value:,.2f}"
 
 
 def _num(value: Any, default: float = 0.0) -> float:

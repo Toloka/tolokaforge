@@ -170,7 +170,7 @@ class TestBuildSummary:
             "total": 7.0,
         }
         assert any("resolve did not run" in note for note in summary["notes"])
-        assert "| key delta | \\$7.0000 |" in cs.render_markdown(summary)
+        assert "| key delta | \\$7.00 |" in cs.render_markdown(summary)
 
     def test_unpriced_wire_runs_are_counted_and_said(self, tmp_path):
         obs = tmp_path / "observation"
@@ -210,21 +210,21 @@ class TestBuildSummary:
 class TestRendering:
     def test_the_line_leads_with_the_billed_figure_when_known(self, tmp_path):
         line = cs.render_line(cs.build_summary(_obs_dir(tmp_path)))
-        assert line.startswith("Cost: $6.5000 billed on the automation key - agents $2.0000")
-        assert "over 14 turns in 3 run(s), wire probes $2.5000" in line
+        assert line.startswith("Cost: $6.50 billed on the automation key - agents $2.00")
+        assert "over 14 turns in 3 run(s), wire probes $2.50" in line
         assert "\n" not in line
 
     def test_the_line_falls_back_to_the_attributed_lower_bound(self, tmp_path):
         line = cs.render_line(cs.build_summary(_obs_dir(tmp_path, snapshots=False)))
-        assert line.startswith("Cost: >= $4.5000 attributed (key delta unavailable)")
+        assert line.startswith("Cost: >= $4.50 attributed (key delta unavailable)")
 
     def test_the_markdown_has_one_row_per_stage_escapes_dollars_and_lists_the_notes(self, tmp_path):
         md = cs.render_markdown(cs.build_summary(_obs_dir(tmp_path), run_url="https://run"))
         assert md.startswith("### Cost summary - `x/model`")
-        assert "| Resolve agent iter 1 (7 turns, success) | CLI self-report | \\$1.2500 |" in md
+        assert "| Resolve agent iter 1 (7 turns, success) | CLI self-report | \\$1.25 |" in md
         assert "| Resolve agent iter 2 (? turns, unparsed) | CLI self-report | n/a |" in md
-        assert "| Finalize agent (7 turns, success) | CLI self-report | \\$0.7500 |" in md
-        assert "| **Total billed** (key delta) | | **\\$6.5000** |" in md
+        assert "| Finalize agent (7 turns, success) | CLI self-report | \\$0.75 |" in md
+        assert "| **Total billed** (key delta) | | **\\$6.50** |" in md
         assert "cache read 180,000" in md
         assert "candidate's wire calls only" in md
         assert "[Run](https://run)" in md
@@ -234,7 +234,7 @@ class TestRendering:
     def test_the_digest_line_names_how_the_run_ended(self):
         assert cs.digest_line(None, label="a.jsonl").startswith("a.jsonl: no result event")
         line = cs.digest_line({**_RESULT, "subtype": "error_max_turns"}, label="b.jsonl")
-        assert "subtype=error_max_turns" in line and "turns=7" in line and "cost=$1.2500" in line
+        assert "subtype=error_max_turns" in line and "turns=7" in line and "cost=$1.25" in line
 
 
 class TestKeySnapshot:
@@ -306,8 +306,8 @@ def test_run_writes_json_markdown_and_line(tmp_path, capsys):
     assert code == 0
     assert json.loads((obs / "cost" / "cost_summary.json").read_text())["schema_version"] == 1
     assert (obs / "cost" / "cost_summary.md").read_text().startswith("### Cost summary")
-    assert (obs / "cost" / "cost_summary.txt").read_text().startswith("Cost: $6.5000")
-    assert capsys.readouterr().out.startswith("Cost: $6.5000")
+    assert (obs / "cost" / "cost_summary.txt").read_text().startswith("Cost: $6.50")
+    assert capsys.readouterr().out.startswith("Cost: $6.50")
 
 
 def test_run_writes_only_the_json_when_nothing_was_spent(tmp_path, capsys):
