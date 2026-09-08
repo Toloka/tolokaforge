@@ -130,6 +130,7 @@ class TrialRunner:
         events: RunDisplayEvents = _NULL_EVENTS,
         probe_stats: RateLimitProbeStats | None = None,
         interaction_mode: InteractionMode = "conversational",
+        tool_output_max_chars_by_tool: dict[str, int] | None = None,
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -147,6 +148,7 @@ class TrialRunner:
         self.strict = strict
         self.interaction_mode = interaction_mode
         self._events = events
+        self.tool_output_max_chars_by_tool = tool_output_max_chars_by_tool
         # Non-``None`` only under rate-limit probe mode. Shared by the agent and
         # user observations so both roles' 429s land in one per-trial total, and
         # copied onto ``Metrics`` when the trial finalises.
@@ -354,6 +356,7 @@ class TrialRunner:
                     validation_schemas_by_tool=self.agent_client.sanitize_tools_for_execution(
                         self.tool_schemas
                     ),
+                    tool_output_max_chars_by_tool=self.tool_output_max_chars_by_tool,
                     config=LoopConfig(
                         max_turns=self.max_turns,
                         episode_timeout_s=self.episode_timeout_s,

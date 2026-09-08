@@ -2086,8 +2086,13 @@ search, MCP tool output) rely on the loop caps alone.
 `ToolCallingLoop.tool_output_max_chars_by_tool` — the per-tool map — is
 wired from
 [`ToolRegistry.output_max_chars_by_tool`](../tolokaforge/tools/registry.py:1)
-by the callers that construct the loop over a live registry. Preset
-routing is pinned by
+by the callers that construct the loop over a live registry. Task-pack
+tools reach the harness through the runner: the runner emits each tool's
+`ToolPolicy.output_max_chars` on the wire as
+[`ToolSchema.output_max_chars`](GRPC_PROTOCOL.md#toolschemaoutput_max_chars),
+the harness reads it back via `HasField`, the conductor lifts the set-only
+subset into a per-trial map on `_TrialSetup`, and the map is threaded into
+`TrialRunner.__init__` and on into the loop. Preset routing is pinned by
 [`tests/canonical/test_tool_output_max_chars_preset_routing.py`](../tests/canonical/test_tool_output_max_chars_preset_routing.py);
 the loop-layer behaviour and the helper contract are pinned by
 [`tests/unit/test_tool_calling_loop.py`](../tests/unit/test_tool_calling_loop.py)

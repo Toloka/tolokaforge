@@ -234,6 +234,7 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
                 timeout_s=30.0,
                 source=source,
                 tool_config=configs.get(tool_name, {}),
+                output_max_chars=rich.get("output_max_chars"),
             )
         )
     return schemas

@@ -94,6 +94,9 @@ class ToolSchema(BaseModel):
 
     # How to reconstruct this tool at runtime
     source: ToolSource
+
+    # Per-tool cap on the role=tool message content the engine loop appends.
+    output_max_chars: Optional[int] = None        # see below
 ```
 
 `ToolSchema.timeout_s` is the backstop the runner bands a call with **only for a
@@ -107,6 +110,15 @@ with the model default, so a pack cannot influence the value — tracked in
 [#1147](https://github.com/Toloka/tolokaforge/issues/1147). The one budget a pack
 can set today is `bash_session`'s `tool_config.timeout_s` (see
 [`docs/TOOLS.md`](TOOLS.md)).
+
+`ToolSchema.output_max_chars` is the per-tool cap the runner returns to the
+harness for the tool's `role=tool` message content. The engine loop composes it
+with the per-model
+[`ModelCapabilities.tool_output_max_chars`](LLM_LAYER.md#tool-output-truncation)
+backstop as `min(tool_cap, capability_cap)`: the tighter set cap wins per call.
+Lifted from `ToolPolicy.output_max_chars` at the runner. `None` (the default)
+defers to the per-model cap; a tool that declares no cap and runs under a preset
+that declares no cap passes its message content through verbatim.
 
 ```python
 # =============================================================================

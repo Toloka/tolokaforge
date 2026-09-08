@@ -271,3 +271,87 @@ def test_builtin_schemas_survive_compose_tool_config():
         "insert_text",
     }
     assert editor_props["command"]["enum"] == ["view", "create", "str_replace", "insert"]
+
+
+# ---------------------------------------------------------------------------
+# ToolPolicy.output_max_chars — adapter bridge
+# ---------------------------------------------------------------------------
+
+
+class _StubCappedTool:
+    """Stub builtin whose ``policy.output_max_chars`` names a per-tool cap."""
+
+    def __init__(self) -> None:
+        from tolokaforge.tools.registry import ToolPolicy
+
+        self.policy = ToolPolicy(output_max_chars=512)
+
+    def get_schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": "stub_capped",
+                "description": "A capped stub tool.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+
+def test_builtin_tool_schemas_lifts_output_max_chars_from_policy(monkeypatch):
+    """A builtin whose policy names a per-tool cap surfaces the value on the
+    rich schema ``_builtin_tool_schemas`` returns, so ``_actor_tool_schemas``
+    can lift it onto the emitted ``ToolSchema``.
+    """
+    from tolokaforge.tools.builtin import registry as builtin_registry
+
+    monkeypatch.setattr(builtin_registry, "is_builtin", lambda name: name == "stub_capped")
+    monkeypatch.setattr(builtin_registry, "get_class", lambda name: _StubCappedTool)
+
+    schemas = _builtin_tool_schemas(["stub_capped"])
+
+    assert schemas["stub_capped"]["output_max_chars"] == 512
+
+
+def test_builtin_tool_schemas_lifts_none_for_a_policy_without_a_cap():
+    """A shipped builtin whose policy leaves ``output_max_chars`` at the
+    default ``None`` surfaces ``None`` on the rich schema. Locks the default
+    path: no per-tool cap declared, no per-tool cap threaded.
+    """
+    schemas = _builtin_tool_schemas(["read_file"])
+
+    assert schemas["read_file"]["output_max_chars"] is None
+
+
+def test_native_adapter_emits_output_max_chars_on_the_wire_toolschema(monkeypatch, tmp_path: Path):
+    """The full adapter path: a builtin whose ``ToolPolicy.output_max_chars``
+    is 512 surfaces on the ``ToolSchema`` NativeAdapter emits into the wire
+    payload the runner will send back at ``RegisterTrial``.
+    """
+    from tolokaforge.tools.builtin import registry as builtin_registry
+
+    monkeypatch.setattr(builtin_registry, "is_builtin", lambda name: name == "stub_capped")
+    monkeypatch.setattr(builtin_registry, "get_class", lambda name: _StubCappedTool)
+
+    task_dir = tmp_path / "capped_task"
+    task_dir.mkdir()
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "task_id": "capped_task",
+                "name": "capped task",
+                "description": "one builtin with a policy cap",
+                "category": "compute",
+                "max_turns": 2,
+                "interaction_mode": "conversational",
+                "initial_user_message": "poll",
+                "initial_state": {},
+                "tools": {"agent": {"enabled": ["stub_capped"]}, "user": {"enabled": []}},
+                "actors": {"user": {"mode": "llm"}},
+            }
+        )
+    )
+    adapter = NativeAdapter({"tasks_glob": "*/task.yaml", "base_dir": str(tmp_path)})
+    td = adapter.to_task_description("capped_task")
+
+    stub = next(t for t in td.agent_tools if t.name == "stub_capped")
+    assert stub.output_max_chars == 512
