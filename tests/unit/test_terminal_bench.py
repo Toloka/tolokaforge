@@ -497,8 +497,7 @@ class TestTerminalBenchAdapterEnvironmentManifest:
 class TestTerminalBenchAgentSystemPromptVerbatim:
     """T-Bench authors its own agent system prompt via
     ``TaskConfig.policies["agent_system_prompt"]`` (priority 1 in the
-    engine's chain), returned verbatim. The engine no longer applies an
-    ``<instructions>`` / ``<policy>`` wrap on any adapter path.
+    engine's chain), returned verbatim.
     """
 
     @pytest.fixture
