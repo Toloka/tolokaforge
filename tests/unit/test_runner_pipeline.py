@@ -29,7 +29,7 @@ from tests.utils.servicer_runtime import (
     collided_trajectory,
     register_collided_trial,
 )
-from tolokaforge.core.models import TerminationReason
+from tolokaforge.core.models import TerminationReason, ToolExecutorIdentity
 from tolokaforge.core.trial_grader import GradingFailedError, RunnerRPCTrialGrader
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
@@ -645,6 +645,49 @@ class TestCallIdCrossesTheWire:
         assert response.status == pb2.EXECUTION_STATUS_TOOL_NOT_FOUND
         assert "not found" in response.error_message.lower()
         assert "Did you mean" not in response.error_message
+
+    def test_tool_not_found_hint_skips_registrations_marked_unusable(
+        self, runner_service, mock_grpc_context, echo_trial
+    ):
+        """A tool marked unusable via ``mark_tool_unusable`` is not suggested —
+        pointing the model at a name it also cannot call wastes a retry turn."""
+
+        async def stub(args):
+            return json.dumps(args)
+
+        trial_context = runner_service.trials[echo_trial]
+        trial_context.agent_tools["good_system_notify"] = stub
+        trial_context.agent_tools["broken_system_notify"] = stub
+        trial_context.mark_tool_unusable(
+            "broken_system_notify", ToolExecutorIdentity.AGENT, "backstop failed"
+        )
+        response = runner_service.ExecuteTool(
+            execute_request(echo_trial, "notify", call_id="toolu_skip_unusable"),
+            mock_grpc_context,
+        )
+        assert response.status == pb2.EXECUTION_STATUS_TOOL_NOT_FOUND
+        assert "good_system_notify" in response.error_message
+        assert "broken_system_notify" not in response.error_message
+
+    def test_tool_not_found_hint_signals_hidden_matches_when_capped(
+        self, runner_service, mock_grpc_context, echo_trial
+    ):
+        """When more than five suffix matches exist, the hint lists the first
+        five (alphabetic tiebreak) AND signals how many equally-plausible names
+        are hidden — so the caller sees ambiguity beyond the shown list."""
+
+        async def stub(args):
+            return json.dumps(args)
+
+        trial_context = runner_service.trials[echo_trial]
+        for prefix in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"):
+            trial_context.agent_tools[f"{prefix}_notify"] = stub
+        response = runner_service.ExecuteTool(
+            execute_request(echo_trial, "notify", call_id="toolu_cap"),
+            mock_grpc_context,
+        )
+        assert response.status == pb2.EXECUTION_STATUS_TOOL_NOT_FOUND
+        assert "and 2 more" in response.error_message
 
     def test_unparseable_arguments_are_recorded_not_only_reported(
         self, runner_service, mock_grpc_context, echo_trial

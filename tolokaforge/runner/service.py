@@ -528,30 +528,43 @@ class TrialContextRuntime:
         self,
         tool_name: str,
         executor: ToolExecutorIdentity = ToolExecutorIdentity.AGENT,
-        limit: int = 3,
-    ) -> list[str]:
+        limit: int = 5,
+    ) -> tuple[list[str], int]:
         """Registered tool names that could plausibly be what the caller meant.
 
-        Ranked by suffix match on ``_{tool_name}`` first — which catches the common
-        pack-side ``<system>_<tool>_<tool>`` doubled-prefix shape when a model calls
-        the bare short name — then by containing ``_{tool_name}_``. Returns at most
-        ``limit`` names, sorted for determinism. Empty when nothing matches.
+        Ranked suffix-first (``_{tool_name}`` — catches the common pack-side
+        ``<system>_<tool>_<tool>`` doubled-prefix shape when a model calls the bare
+        short name), then substring (``_{tool_name}_``). Suffix-first specifically
+        (rather than :func:`difflib.get_close_matches`) because the shape this
+        rescues has a known signature: the model asked for the short name, and the
+        registered name is the short name with a system prefix. Edit distance would
+        return arbitrarily similar names for a typo, which is not the failure this
+        method exists for; if a typo-rescue is ever needed, add a lower-rank tier.
+
+        Tools currently marked unusable (:meth:`unusable_reason`) are excluded —
+        pointing a model at a name it also cannot call would waste a retry turn.
+
+        Returns ``(candidates, total_matches)``. ``candidates`` is sorted for
+        determinism, capped at ``limit``. ``total_matches`` is the count *before*
+        truncation, so the caller can signal "and N more" when the cap hides
+        equally-plausible names — a stuttered target might otherwise be dropped by
+        the alphabetic tiebreak when many packs share a suffix.
         """
         if not tool_name:
-            return []
+            return [], 0
         registry = self.user_tools if executor is ToolExecutorIdentity.USER else self.agent_tools
         suffix = f"_{tool_name}"
         infix = f"_{tool_name}_"
         ranked: list[tuple[int, str]] = []
         for name in registry:
-            if name == tool_name:
+            if self.unusable_reason(name, executor) is not None:
                 continue
             if name.endswith(suffix):
                 ranked.append((0, name))
             elif infix in name:
                 ranked.append((1, name))
         ranked.sort()
-        return [name for _rank, name in ranked[:limit]]
+        return [name for _rank, name in ranked[:limit]], len(ranked)
 
     def record(
         self,
@@ -1355,14 +1368,26 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         tool = trial_context.get_tool(tool_name, executor)
         if tool is None:
-            candidates = trial_context.nearest_tool_names(tool_name, executor)
-            logger.warning(f"ExecuteTool: Tool not found: {tool_name} ({executor.value})")
+            candidates, total_matches = trial_context.nearest_tool_names(tool_name, executor)
             if candidates:
-                error_message = (
-                    f"Tool '{tool_name}' not found. Did you mean: {', '.join(candidates)}?"
+                hint = ", ".join(candidates)
+                hidden = total_matches - len(candidates)
+                if hidden > 0:
+                    error_message = (
+                        f"Tool '{tool_name}' not found. Did you mean one of: {hint} "
+                        f"(and {hidden} more registered with the same suffix)?"
+                    )
+                else:
+                    error_message = f"Tool '{tool_name}' not found. Did you mean: {hint}?"
+                logger.warning(
+                    "ExecuteTool: Tool not found: %s (%s). Candidates: %s",
+                    tool_name,
+                    executor.value,
+                    hint,
                 )
             else:
                 error_message = f"Tool '{tool_name}' not found"
+                logger.warning(f"ExecuteTool: Tool not found: {tool_name} ({executor.value})")
             return None, self._reject_tool_call(
                 trial_context=trial_context,
                 call_id=call_id,
