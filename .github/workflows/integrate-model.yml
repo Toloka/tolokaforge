@@ -216,10 +216,18 @@ jobs:
           set -uo pipefail
           REQ="${INPUT_REQUESTED_BY:-}"
           if [ -z "$REQ" ]; then
-            # Newest-first, capped: the seed is the branch's oldest commit ahead of base and the
-            # only one carrying the trailer, so the first match is it; -n 50 bounds the log walk.
-            REQ="$(git log -n 50 --format=%B | sed -nE 's/^requested_by:[[:space:]]*//p' | head -1 | tr -d '[:space:]')"
+            # Scope to THIS branch's commits ahead of base (fetch-depth: 0 fetches origin/<base>):
+            # the seed carries the trailer and no integration commit does, so the first match is the
+            # seed's. Unscoped, `head -1` could pick a `requested_by:` line a prior squash-merge
+            # preserved in the base branch's own history and page an unrelated user. A missing
+            # origin/<base> (2>/dev/null) leaves REQ empty and the standing list takes over.
+            REQ="$(git log "origin/${GITHUB_BASE_REF:-main}..HEAD" --format=%B 2>/dev/null | sed -nE 's/^requested_by:[[:space:]]*//p' | head -1)"
           fi
+          # One line only: strip every whitespace / control char so a multi-line value (which the
+          # workflow_dispatch API accepts even where the web UI would not) cannot inject a second
+          # KEY=VALUE line into $GITHUB_ENV. Applied to BOTH sources. A valid Slack id carries none;
+          # `resolve_mentions` re-validates the shape before it is rendered into a mention.
+          REQ="$(printf '%s' "$REQ" | tr -d '[:space:][:cntrl:]')"
           printf 'SLACK_REQUESTED_BY=%s\n' "$REQ" >> "$GITHUB_ENV"
           echo "Slack requester: '${REQ:-<none>}' (empty or non-user-id -> standing mention list)"
 

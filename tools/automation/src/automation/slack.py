@@ -107,11 +107,21 @@ def build_mention_suffix(raw: str | None) -> str:
 #: notifier reads the SAME variable name, so one mental model covers both flows.
 REQUESTED_BY_ENV = "SLACK_REQUESTED_BY"
 
-#: What a Slack user id looks like (``U…``/``W…``, upper-case alphanumeric). The requester value
-#: originates in a Slack message's platform metadata and crosses a repo boundary as a workflow
-#: input before being rendered back INTO Slack as a mention - so anything that does not look like a
-#: user id is dropped rather than interpolated, and the configured list takes over.
-_SLACK_USER_ID_RE = re.compile(r"^[UW][A-Z0-9]{4,}$")
+#: What a Slack user id looks like (``U…``/``W…``, upper-case alphanumeric, at least nine chars).
+#: The requester value originates in a Slack message's platform metadata and crosses a repo boundary
+#: as a workflow input before being rendered back INTO Slack as a mention - so anything that does not
+#: look like a user id is dropped rather than interpolated, and the configured list takes over. The
+#: ``{8,}`` floor (prefix + >= 8) matches Slack's real id length; a looser ``{4,}`` would pass a
+#: stray short token like ``UAAAA`` through the trust boundary.
+_SLACK_USER_ID_RE = re.compile(r"^[UW][A-Z0-9]{8,}$")
+
+
+def _normalize_user_id(value: str | None) -> str:
+    """Strip the wrappings a Slack id arrives in (surrounding space, ``<@U…>``, ``@U…``).
+
+    One place so :func:`looks_like_slack_user_id` and :func:`resolve_mentions` accept the exact same
+    shapes as they grow (e.g. ``<@U…|display-name>``) instead of drifting apart by hand."""
+    return (value or "").strip().strip("<>").lstrip("@")
 
 
 def looks_like_slack_user_id(value: str | None) -> bool:
@@ -119,7 +129,7 @@ def looks_like_slack_user_id(value: str | None) -> bool:
 
     Tolerates the ``<@U…>`` / ``@U…`` wrappings the same as the mention builders, so a caller can
     validate a raw input before it is interpolated back into a ping."""
-    return bool(_SLACK_USER_ID_RE.match((value or "").strip().strip("<>").lstrip("@")))
+    return bool(_SLACK_USER_ID_RE.match(_normalize_user_id(value)))
 
 
 def resolve_mentions() -> str | None:
@@ -136,7 +146,7 @@ def resolve_mentions() -> str | None:
     rather than trusted: anything not shaped like a Slack user id is dropped and the list takes
     over. Unset is not an error - a run with nobody to page still posts, just without a ping.
     """
-    requester = (os.environ.get(REQUESTED_BY_ENV) or "").strip().strip("<>").lstrip("@")
+    requester = _normalize_user_id(os.environ.get(REQUESTED_BY_ENV))
     if requester:
         if looks_like_slack_user_id(requester):
             return requester

@@ -219,13 +219,19 @@ class TestResolveMentions:
 
 
 class TestLooksLikeSlackUserId:
-    @pytest.mark.parametrize("good", ["U0B1AN4QYMR", "W12345", "<@U0B1AN4QYMR>", "@U12345"])
+    @pytest.mark.parametrize("good", ["U0B1AN4QYMR", "W012345678", "<@U0B1AN4QYMR>", "@U012345678"])
     def test_accepts_user_ids_and_their_wrappings(self, good):
         assert slack.looks_like_slack_user_id(good) is True
 
     @pytest.mark.parametrize("bad", ["", None, "not-a-user", "u0lowercase", "U12", "U1,U2"])
     def test_rejects_everything_else(self, bad):
         assert slack.looks_like_slack_user_id(bad) is False
+
+    @pytest.mark.parametrize("short", ["UAAAA", "U1234", "W1234567", "<@U1234>"])
+    def test_rejects_ids_shorter_than_slacks_real_length(self, short):
+        # The `{8,}` floor (prefix + >= 8) guards the trust boundary: a stray short `U…`/`W…`
+        # token must not pass and get interpolated back into a `<@…>` ping.
+        assert slack.looks_like_slack_user_id(short) is False
 
 
 class TestTheReplyPingsTheRequesterAlone:

@@ -381,7 +381,7 @@ The requester's Slack user id reaches the run two ways, both covered by one reso
   commit.
 
 The value crossed a repo boundary and comes back OUT as a mention, so `resolve_mentions`
-re-validates it against the Slack user-id shape (`^[UW][A-Z0-9]{4,}$`): a by-hand seed that named a
+re-validates it against the Slack user-id shape (`^[UW][A-Z0-9]{8,}$`, prefix + at least eight): a by-hand seed that named a
 GitHub login rather than a Slack id is dropped, and the standing list takes over. This mirrors the
 eval orchestrator's `resolve_mentions`, which pages the eval requester the same way, and the two
 notifiers share the `SLACK_REQUESTED_BY` variable name on purpose.
