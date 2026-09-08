@@ -4,14 +4,15 @@ Produces the agent system prompt (pre-policy) the first
 :meth:`LLMClient.generate` receives on ``system=``. The priority chain
 walks the task authoring surfaces from most specific to fallback:
 
-1. ``task.policies["agent_system_prompt"]`` — inline string.
-2. ``task.system_prompt == "__adapter__"`` — delegate to
-   :meth:`BaseAdapter.get_system_prompt` and wrap in ``<policy>``.
-3. ``task.system_prompt`` (file path) — read verbatim.
-4. Legacy ``main_policy.md`` + additional-policy split — two files
-   composed under ``<main_policy>`` / ``<tech_support_policy>``.
-5. Minimal default with ``policies["guidance"]`` + optional
-   ``tools.agent.browser.initial_url``.
+1. ``task.policies["agent_system_prompt"]`` — inline string, returned
+   verbatim.
+2. ``task.system_prompt`` names a file under *task_dir* — file contents
+   returned verbatim.
+3. Legacy ``main_policy.md`` alongside an additional-policy file —
+   composed under ``<main_policy>`` / ``<tech_support_policy>`` and
+   wrapped in an ``<instructions>`` / ``<policy>`` envelope.
+4. Minimal default with ``policies["guidance"]`` bullets and, when
+   present, ``tools.agent.browser.initial_url``.
 
 The only side effect is reading local files. The returned string is
 handed to the prompt policy layer for enrichment before the wire call.
@@ -23,13 +24,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from tolokaforge.adapters import BaseAdapter
     from tolokaforge.core.models import TaskConfig
 
 __all__ = ["build_system_prompt"]
 
 
-_AGENT_INSTRUCTION_WITH_TOOLS = """You are a customer service agent that helps the user according to the <policy> provided below.
+_AGENT_INSTRUCTION_WITH_TRAILING_NEWLINE = """You are a customer service agent that helps the user according to the <policy> provided below.
 In each turn you can either:
 - Send a message to the user.
 - Make a tool call using the provided functions.
@@ -40,17 +40,13 @@ Always include every required function argument in the tool call itself (do not 
 Try to be helpful and always follow the policy.
 """
 
-_AGENT_INSTRUCTION_NO_TRAILING_NEWLINE = _AGENT_INSTRUCTION_WITH_TOOLS.rstrip("\n")
+_AGENT_INSTRUCTION_NO_TRAILING_NEWLINE = _AGENT_INSTRUCTION_WITH_TRAILING_NEWLINE.rstrip("\n")
 
 
 def _wrap_policy_document(agent_instruction: str, policy_body: str) -> str:
     return (
         f"<instructions>\n{agent_instruction}\n</instructions>\n<policy>\n{policy_body}\n</policy>"
     )
-
-
-def _build_from_adapter(adapter_prompt: str) -> str:
-    return _wrap_policy_document(_AGENT_INSTRUCTION_WITH_TOOLS, adapter_prompt)
 
 
 def _build_legacy_main_policy(main_policy: str, additional_policy: str | None) -> str:
@@ -94,27 +90,19 @@ def _build_minimal_default(task: TaskConfig) -> str:
     return "\n".join(parts)
 
 
-def build_system_prompt(
-    *,
-    task: TaskConfig,
-    task_dir: Path,
-    adapter: BaseAdapter | None,
-) -> str:
+def build_system_prompt(*, task: TaskConfig, task_dir: Path) -> str:
     """Assemble the pre-policy agent system prompt for *task*.
 
     Priority (first-match-wins):
 
-    1. ``task.policies["agent_system_prompt"]`` — inline string.
-    2. ``task.system_prompt == "__adapter__"`` and *adapter* is set —
-       wraps :meth:`BaseAdapter.get_system_prompt` output in an
-       instructions / policy envelope. Falls through when the adapter
-       returns an empty value.
-    3. ``task.system_prompt`` as a filename in *task_dir* — file
-       contents returned verbatim.
-    4. Legacy ``main_policy.md`` alongside an additional-policy file —
+    1. ``task.policies["agent_system_prompt"]`` — inline string, returned
+       verbatim.
+    2. ``task.system_prompt`` as a filename in *task_dir* — file contents
+       returned verbatim.
+    3. Legacy ``main_policy.md`` alongside an additional-policy file —
        composed into ``<main_policy>`` / ``<tech_support_policy>``
-       sections under the same envelope.
-    5. Minimal default that lists any ``policies["guidance"]`` bullets
+       sections under an ``<instructions>`` / ``<policy>`` envelope.
+    4. Minimal default that lists any ``policies["guidance"]`` bullets
        and, when present, ``tools.agent.browser.initial_url``.
 
     Deterministic. Only side effect is local-file reads. Never opens a
@@ -123,12 +111,7 @@ def build_system_prompt(
     if "agent_system_prompt" in task.policies:
         return task.policies["agent_system_prompt"]
 
-    if task.system_prompt == "__adapter__" and adapter is not None:
-        adapter_prompt = adapter.get_system_prompt(task.task_id)
-        if adapter_prompt:
-            return _build_from_adapter(adapter_prompt)
-
-    if task.system_prompt and task.system_prompt != "__adapter__":
+    if task.system_prompt:
         system_prompt_path = task_dir / task.system_prompt
         if system_prompt_path.exists():
             return system_prompt_path.read_text()

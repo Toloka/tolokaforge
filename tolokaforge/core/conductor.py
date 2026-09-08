@@ -1313,7 +1313,7 @@ class InProcessConductor:
     def _build_system_prompt(
         self, task: TaskConfig, tool_schemas: list[dict[str, Any]], task_dir: Path
     ) -> str:
-        return build_system_prompt(task=task, task_dir=task_dir, adapter=self.adapter)
+        return build_system_prompt(task=task, task_dir=task_dir)
 
 
 def in_process_conductor_factory(ctx: ConductorContext) -> InProcessConductor:
