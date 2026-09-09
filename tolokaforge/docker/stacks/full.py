@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Literal
 
 from tolokaforge.core.models.docker_config import DockerConfig
+from tolokaforge.docker.builder import rag_service_context_files
 from tolokaforge.docker.health import HealthProbe
 from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.ports import PortConfig
@@ -90,9 +91,11 @@ def full_stack(
         rag_service_url="http://tolokaforge-rag-service:8001",
     )
 
-    # RAG Service — hybrid BM25 + FAISS search
-    # Needs the tolokaforge wheel (for tolokaforge.secrets) + its own
-    # service files (requirements.txt + app.py).
+    # RAG Service — hybrid BM25 + FAISS search. Context file list is shared
+    # with :func:`tolokaforge.docker.builder._rag_definition` via
+    # :func:`rag_service_context_files`; keeping the two callers on one
+    # source prevents the drift that reproduces
+    # "COPY failed: file not found in build context" at Step 5.
     artifact = resolve_wheel()
     rag_service = ServiceDefinition(
         name="rag-service",
@@ -100,10 +103,7 @@ def full_stack(
         published_image_repo="tolokasoft1/tolokaforge-rag-service",
         dockerfile="tolokaforge/docker/dockerfiles/rag.Dockerfile",
         context=".",
-        context_files=[
-            str(artifact.path),
-            "tolokaforge/env/rag_service/",
-        ],
+        context_files=rag_service_context_files(str(artifact.path)),
         build_args={"WHEEL_FILENAME": artifact.path.name},
         ports=[PortConfig(container_port=8001, host_port=rag_port)],
         mounts=[Mount.volume("rag_data", "/env/rag")],
