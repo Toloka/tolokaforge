@@ -379,6 +379,27 @@ def _coerce_calls(value: Any) -> tuple[ProviderRawCall, ...]:
     return tuple(out)
 
 
+class ParserErrorRecord(BaseModel):
+    """One serialisable ``tool_call.function.arguments`` parse-error record.
+
+    Mirrors the ephemeral ``tolokaforge.core.llm.client.ParserError`` frozen
+    dataclass across the artefact boundary: the client-side sidecar is
+    in-process only, this Pydantic form persists into the trial bundle so
+    downstream analytics (per-preset opt-in decisions for the parser-error
+    retry seam, per-workload rate tallies) can read it after the fact.
+
+    ``raw_arguments`` is already bounded by
+    ``PARSER_ERROR_RAW_ARGS_EXCERPT_MAX_CHARS`` at the source; no additional
+    clipping here.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    tool_name: str
+    raw_arguments: str
+    reason: str
+
+
 class Metrics(BaseModel):
     """Trial execution metrics.
 
@@ -425,6 +446,24 @@ class Metrics(BaseModel):
     turns: int = 0
     api_calls: int = 0
     usage: Usage = Field(default_factory=Usage)
+    tool_output_chars_truncated: int = 0
+    """Cumulative characters clipped by ``ToolCallingLoop._cap_tool_message_content``
+    across every ``role=tool`` message on this trial.
+
+    Non-zero means at least one tool result exceeded the effective cap
+    (``min(ToolPolicy.output_max_chars, LoopConfig.tool_output_max_chars)``)
+    and was middle-elided before append. Zero means either no cap fired or
+    every raw output fit inside the cap. The recorder read at
+    :meth:`ToolCallingLoop._execute_tool_calls` runs earlier against the
+    untruncated result, so grader inputs are unaffected."""
+
+    parser_errors: list[ParserErrorRecord] = Field(default_factory=list)
+    """Every ``tool_call.function.arguments`` string the parser ladder could
+    not decode on this trial.
+
+    Persists the ``GenerationResult.parser_errors`` sidecar across the
+    trial-bundle boundary; recorded every generation whose sidecar is
+    non-empty, regardless of whether ``parser_error_retry_count`` fired."""
     openrouter_generation_ids: list[str] = Field(default_factory=list)
     """Every OpenRouter generation id the trial's agent calls returned, in call order.
 

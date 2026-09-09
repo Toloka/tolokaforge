@@ -451,6 +451,9 @@ class GrpcRunnerClient:
                         ),
                         "category": schema.category,
                         "timeout_s": schema.timeout_s,
+                        "output_max_chars": (
+                            schema.output_max_chars if schema.HasField("output_max_chars") else None
+                        ),
                     }
                 )
 

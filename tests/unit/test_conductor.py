@@ -383,22 +383,31 @@ class TestResolveMaxTurns:
 # ---------------------------------------------------------------------------
 
 
-def _wire_schema(name: str) -> dict[str, Any]:
+def _wire_schema(name: str, *, output_max_chars: int | None = None) -> dict[str, Any]:
     """One entry as ``register_trial`` returns it, pre-sanitisation."""
     return {
         "name": name,
         "description": f"tool {name}",
         "parameters": {"type": "object", "properties": {}},
+        "output_max_chars": output_max_chars,
     }
 
 
-def _register_result(agent: list[str], user: list[str]) -> dict[str, Any]:
+def _register_result(
+    agent: list[str],
+    user: list[str],
+    *,
+    caps_by_tool: dict[str, int] | None = None,
+) -> dict[str, Any]:
     """The register response's shape: one concatenated list, agent slice first,
     partitioned at ``num_agent_tools`` (``runner.proto``)."""
+    caps_by_tool = caps_by_tool or {}
     return {
         "success": True,
         "error": None,
-        "tool_schemas": [_wire_schema(n) for n in agent + user],
+        "tool_schemas": [
+            _wire_schema(n, output_max_chars=caps_by_tool.get(n)) for n in agent + user
+        ],
         "num_agent_tools": len(agent),
         "num_user_tools": len(user),
     }
@@ -585,3 +594,120 @@ class TestTrialToolSurfacePartition:
 
         written = yaml.safe_load((trial_dir / "tools_schemas.yaml").read_text())
         assert _names(written) == ["agent_read", "user_probe"]
+
+
+class TestTrialSetupToolOutputMaxCharsWiring:
+    """The per-tool ``output_max_chars`` map lifted from ``register_trial``
+    reaches ``TrialRunner.__init__`` so the engine loop composes it with the
+    per-model cap. Only tools whose response carries a non-null value appear
+    in the map — a null value threads through as "no per-tool cap declared".
+    """
+
+    def _conductor(self, tmp_path: Path, register_result: dict[str, Any]) -> InProcessConductor:
+        adapter = MagicMock()
+        adapter.get_task_dir.return_value = tmp_path / "task"
+        adapter.create_environment.return_value = MagicMock(data={})
+        adapter.get_grading_config.return_value = None
+
+        runtime_backend = MagicMock()
+        runtime_backend.register_trial.return_value = register_result
+
+        agent_client = MagicMock()
+        agent_client.config = ModelConfig(provider="openai", name="gpt-4")
+        agent_client.capabilities.schema_sanitizer.sanitize.side_effect = lambda s: s
+        agent_client.capabilities.default_max_turns = None
+
+        return InProcessConductor(
+            adapter=adapter,
+            artifact_writer=FileArtifactWriter(),
+            config=RunConfig(
+                models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+                orchestrator=OrchestratorConfig(auto_start_services=False),
+                evaluation=EvaluationConfig(output_dir=str(tmp_path)),
+            ),
+            logger=StructuredLogger("test-tool-output-max-chars"),
+            agent_client=agent_client,
+            runtime_backend=runtime_backend,
+            trial_grader=MagicMock(),
+            output_dir=tmp_path,
+        )
+
+    def test_setup_builds_map_from_tools_that_declare_a_cap(self, tmp_path: Path) -> None:
+        conductor = self._conductor(
+            tmp_path,
+            _register_result(
+                agent=["poll_status", "unbounded"], user=[], caps_by_tool={"poll_status": 512}
+            ),
+        )
+
+        setup = conductor._setup_trial(_make_spec(), TaskConfig(task_id="t1", description="d"))
+
+        assert setup.tool_output_max_chars_by_tool == {"poll_status": 512}
+
+    def test_setup_map_is_empty_when_no_tool_declares_a_cap(self, tmp_path: Path) -> None:
+        conductor = self._conductor(
+            tmp_path, _register_result(agent=["unbounded_a", "unbounded_b"], user=[])
+        )
+
+        setup = conductor._setup_trial(_make_spec(), TaskConfig(task_id="t1", description="d"))
+
+        assert setup.tool_output_max_chars_by_tool == {}
+
+    def test_trial_runner_receives_the_map_from_setup(self, tmp_path: Path) -> None:
+        conductor = self._conductor(tmp_path, _register_result([], []))
+        setup = _TrialSetup(
+            trial_id="t1:0",
+            trial_idx=0,
+            task_dir=tmp_path,
+            trial_dir=tmp_path / "trials" / "t1" / "0",
+            env_state=MagicMock(),
+            adapter_env=MagicMock(),
+            tool_schemas=[{"type": "function", "function": _wire_schema("poll_status")}],
+            tool_executor=MagicMock(),
+            user_tool_schemas=[],
+            user_tool_executor=None,
+            tool_output_max_chars_by_tool={"poll_status": 512},
+        )
+
+        with (
+            patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
+            patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
+        ):
+            conductor._run_agent_loop(
+                _make_spec(), TaskConfig(task_id="t1", description="d"), setup
+            )
+
+        kwargs = runner_cls.call_args.kwargs
+        assert kwargs["tool_output_max_chars_by_tool"] == {"poll_status": 512}
+
+    def test_trial_runner_receives_none_when_no_tool_declares_a_cap(self, tmp_path: Path) -> None:
+        """An empty map defers to the per-model cap alone: passing ``None``
+        matches what construction sites that do not thread per-tool caps at
+        all (the harness runner, every unit-test fixture) already pass, so
+        the loop's ``self.tool_output_max_chars_by_tool or {}`` guard sees
+        a single shape.
+        """
+        conductor = self._conductor(tmp_path, _register_result([], []))
+        setup = _TrialSetup(
+            trial_id="t1:0",
+            trial_idx=0,
+            task_dir=tmp_path,
+            trial_dir=tmp_path / "trials" / "t1" / "0",
+            env_state=MagicMock(),
+            adapter_env=MagicMock(),
+            tool_schemas=[{"type": "function", "function": _wire_schema("poll_status")}],
+            tool_executor=MagicMock(),
+            user_tool_schemas=[],
+            user_tool_executor=None,
+        )
+
+        with (
+            patch.object(InProcessConductor, "_build_system_prompt", return_value="sys"),
+            patch("tolokaforge.core.conductor.TrialRunner") as runner_cls,
+        ):
+            conductor._run_agent_loop(
+                _make_spec(), TaskConfig(task_id="t1", description="d"), setup
+            )
+
+        kwargs = runner_cls.call_args.kwargs
+        assert kwargs["tool_output_max_chars_by_tool"] is None

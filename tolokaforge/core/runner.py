@@ -9,6 +9,7 @@ from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyRefused
 from tolokaforge.core.actors.turn_policy import TurnPolicy, TurnState
 from tolokaforge.core.llm import SIMULATOR_GREETING, GenerationResult, LLMClient, UserSimulator
+from tolokaforge.core.llm.client import ParserError
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
 from tolokaforge.core.logging_context import trial_id_scope
 from tolokaforge.core.loop import (
@@ -23,6 +24,7 @@ from tolokaforge.core.models import (
     Message,
     MessageRole,
     Metrics,
+    ParserErrorRecord,
     RateLimitProbeBucketMetrics,
     RateLimitProbeRoleMetrics,
     RecordedToolCall,
@@ -130,6 +132,7 @@ class TrialRunner:
         events: RunDisplayEvents = _NULL_EVENTS,
         probe_stats: RateLimitProbeStats | None = None,
         interaction_mode: InteractionMode = "conversational",
+        tool_output_max_chars_by_tool: dict[str, int] | None = None,
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -147,6 +150,7 @@ class TrialRunner:
         self.strict = strict
         self.interaction_mode = interaction_mode
         self._events = events
+        self.tool_output_max_chars_by_tool = tool_output_max_chars_by_tool
         # Non-``None`` only under rate-limit probe mode. Shared by the agent and
         # user observations so both roles' 429s land in one per-trial total, and
         # copied onto ``Metrics`` when the trial finalises.
@@ -354,6 +358,7 @@ class TrialRunner:
                     validation_schemas_by_tool=self.agent_client.sanitize_tools_for_execution(
                         self.tool_schemas
                     ),
+                    tool_output_max_chars_by_tool=self.tool_output_max_chars_by_tool,
                     config=LoopConfig(
                         max_turns=self.max_turns,
                         episode_timeout_s=self.episode_timeout_s,
@@ -1074,6 +1079,19 @@ class _AgentMetricsSink(MetricsSink):
 
     def record_tool_call(self) -> None:
         self._metrics.tool_calls += 1
+
+    def record_tool_output_truncated(self, omitted_chars: int) -> None:
+        self._metrics.tool_output_chars_truncated += omitted_chars
+
+    def record_parser_errors(self, errors: tuple[ParserError, ...]) -> None:
+        self._metrics.parser_errors.extend(
+            ParserErrorRecord(
+                tool_name=e.tool_name,
+                raw_arguments=e.raw_arguments,
+                reason=e.reason,
+            )
+            for e in errors
+        )
 
     @property
     def last_prompt_tokens(self) -> int | None:
