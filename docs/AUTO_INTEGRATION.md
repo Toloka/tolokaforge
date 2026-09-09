@@ -305,7 +305,7 @@ cleanly, and a Slack failure never fails the job.
 |---|---|---|
 | `ARENA_AUTOMATION_SLACK_BOT_TOKEN` | secret | bot `xoxb-` token; needs `chat:write` + `channels:history` (history read is what finds the root), and the bot must be a member of the channel |
 | `ARENA_AUTOMATION_SLACK_CHANNEL` | variable | target channel id (both the notifier's thread root and the poller's scan target) |
-| `ARENA_AUTOMATION_SLACK_MENTIONS` | variable | comma-separated Slack user ids to @mention; empty -> no mention |
+| `ARENA_AUTOMATION_SLACK_MENTIONS` | variable | comma-separated Slack user ids to @mention on terminal / needs-human notifications. The FALLBACK list: a run requested through Slack pages its requester alone instead (see _Who gets pinged_). Empty -> no mention |
 | `ARENA_AUTOMATION_SLACK_ALLOWED_USERS` | variable | (poller) comma-separated Slack user-ids allowed to trigger an integration; empty -> anyone in the channel (channel membership is the authz gate, since GitHub only ever sees the bot) |
 | `ARENA_AUTOMATION_SLACK_ICON_OVERRIDE` | variable | OPTIONAL. JSON map from icon ROLE to the emoji the workspace uploaded, e.g. `{"observe_started":":tf-observe-started:","needs_human":":tf-needs-human:"}`. Unset (the default) leaves every message with its default icon |
 
@@ -347,8 +347,8 @@ as a workflow annotation. `icons.icon()` itself still raises (a role is written 
 so a bad one is a bug here, not a user typo), but the CLI wrappers catch everything and exit 0,
 which would otherwise turn that raise into a silently dropped notification on a green step.
 
-Messages are emoji-prefixed and carry the run URL. `mention` = the `SLACK_MENTIONS` users are
-pinged (terminal / attention states only):
+Messages are emoji-prefixed and carry the run URL. `mention` = a ping is appended so someone gets
+pulled in (terminal / attention states only):
 
 | When | Mention |
 |---|---|
@@ -358,8 +358,33 @@ pinged (terminal / attention states only):
 | unexpected failure (catch-all, deduped against the handled cases above) | yes |
 
 The fork-reject path is PR-comment-only (a fork `pull_request` run gets no secrets, so the
-notifier cannot post). `SLACK_MENTIONS` pings fire on the terminal and error notifications so a
-human is alerted when the PR needs review or the run broke.
+notifier cannot post). The pings fire on the terminal and error notifications so a human is alerted
+when the PR needs review or the run broke.
+
+### Who gets pinged
+
+A channel where every integration pages the same standing list is a channel people mute, and a
+muted ping defeats the one message that needs one. So `automation.slack.resolve_mentions` pages the
+**requester alone** when the run came in through Slack, and falls back to the standing
+`ARENA_AUTOMATION_SLACK_MENTIONS` list only for runs nobody asked for through Slack (a by-hand label
+add, or a manual `workflow_dispatch`, has a GitHub actor but no Slack identity). Unset on both is not
+an error: the message still posts, just without a ping.
+
+The requester's Slack user id reaches the run two ways, both covered by one resolver step
+(_Resolve the Slack requester_):
+
+- **Slack path**: the poller (`slack-integrate.yml`) already holds the requester for the allowlist
+  check and forwards it as the `requested_by` workflow input to `integrate-model.yml`, which exports
+  it as `SLACK_REQUESTED_BY`.
+- **Label path**: a human adding `automation:integrate-model` carries no input, so the step reads
+  the `requested_by:` trailer the poller (and a by-hand seed commit) writes into the branch's seed
+  commit.
+
+The value crossed a repo boundary and comes back OUT as a mention, so `resolve_mentions`
+re-validates it against the Slack user-id shape (`^[UW][A-Z0-9]{8,}$`, prefix + at least eight): a by-hand seed that named a
+GitHub login rather than a Slack id is dropped, and the standing list takes over. This mirrors the
+eval orchestrator's `resolve_mentions`, which pages the eval requester the same way, and the two
+notifiers share the `SLACK_REQUESTED_BY` variable name on purpose.
 
 ## Cost summary
 

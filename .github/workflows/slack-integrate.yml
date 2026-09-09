@@ -156,7 +156,7 @@ jobs:
             echo "opened PR #${PR_NUM} for ${SLUG} (${PR_URL})"
             gh workflow run integrate-model.yml -R "$REPO" --ref "$BASE_REF" \
               -f pr="$PR_NUM" -f head_ref="$BRANCH" -f model="$SLUG" -f source=slack \
-              -f route="$ROUTE" || return 1
+              -f route="$ROUTE" -f requested_by="$REQUESTER" || return 1
             echo "dispatched integrate-model.yml for PR #${PR_NUM} (${SLUG})"
             # Confirm in the requester's own thread, WITH the PR link (the poll-step reply was
             # posted before the PR existed; the engine's progress thread is a separate root).

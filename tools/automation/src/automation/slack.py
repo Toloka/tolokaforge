@@ -22,8 +22,11 @@ Subcommands (the ``slack`` sub-app):
       re-trigger reuses the existing root instead of opening a new one.
   reply --channel <id> --pr <N> --text <msg> [--model <name>] [--mention]
       Reply into the PR's thread (creating the root first if missing). With
-      ``--mention`` the configured ``SLACK_MENTIONS`` users are appended so they
-      get pinged; used for the terminal / needs-human / error notifications.
+      ``--mention`` a ping is appended so someone gets pulled in; used for the
+      terminal / needs-human / error notifications. WHO is paged is
+      :func:`resolve_mentions`: the Slack requester alone when the run came in
+      through the channel (``SLACK_REQUESTED_BY``), else the standing
+      ``SLACK_MENTIONS`` list.
 """
 
 from __future__ import annotations
@@ -96,6 +99,63 @@ def build_mention_suffix(raw: str | None) -> str:
     ids = build_mention_prefix(raw).strip()
     sep = chr(10) * 2  # blank line so the reviewer line sits below the links
     return f"{sep}Notifying: {ids}" if ids else f"{sep}No reviewers configured to notify."
+
+
+#: The Slack user who ASKED for this integration, when the request came in through the channel. The
+#: poller (slack-integrate.yml) already has it as ``requester`` for the allowlist check; it forwards
+#: it as the ``requested_by`` workflow input, and the workflow exports it here. The engine's eval
+#: notifier reads the SAME variable name, so one mental model covers both flows.
+REQUESTED_BY_ENV = "SLACK_REQUESTED_BY"
+
+#: What a Slack user id looks like (``U…``/``W…``, upper-case alphanumeric, at least nine chars).
+#: The requester value originates in a Slack message's platform metadata and crosses a repo boundary
+#: as a workflow input before being rendered back INTO Slack as a mention - so anything that does not
+#: look like a user id is dropped rather than interpolated, and the configured list takes over. The
+#: ``{8,}`` floor (prefix + >= 8) matches Slack's real id length; a looser ``{4,}`` would pass a
+#: stray short token like ``UAAAA`` through the trust boundary.
+_SLACK_USER_ID_RE = re.compile(r"^[UW][A-Z0-9]{8,}$")
+
+
+def _normalize_user_id(value: str | None) -> str:
+    """Strip the wrappings a Slack id arrives in (surrounding space, ``<@U…>``, ``@U…``).
+
+    One place so :func:`looks_like_slack_user_id` and :func:`resolve_mentions` accept the exact same
+    shapes as they grow (e.g. ``<@U…|display-name>``) instead of drifting apart by hand."""
+    return (value or "").strip().strip("<>").lstrip("@")
+
+
+def looks_like_slack_user_id(value: str | None) -> bool:
+    """Whether *value* is shaped like a Slack user id (``U…``/``W…``).
+
+    Tolerates the ``<@U…>`` / ``@U…`` wrappings the same as the mention builders, so a caller can
+    validate a raw input before it is interpolated back into a ping."""
+    return bool(_SLACK_USER_ID_RE.match(_normalize_user_id(value)))
+
+
+def resolve_mentions() -> str | None:
+    """Who a terminal / needs-human notification pages: the requester alone, else the standing list.
+
+    A channel where every integration pages the same standing list is a channel people mute, and a
+    muted ping defeats the one message that needs one. So when the run was requested through Slack,
+    the requester ALONE is paged - it is their integration, and everyone else can read the thread
+    without being pulled into it. ``SLACK_MENTIONS`` stays the fallback for runs nobody asked for
+    through Slack (a by-hand label add or a manual ``workflow_dispatch`` has a GitHub actor but no
+    Slack identity).
+
+    The requester value crossed a repo boundary as a workflow input, so it is re-validated here
+    rather than trusted: anything not shaped like a Slack user id is dropped and the list takes
+    over. Unset is not an error - a run with nobody to page still posts, just without a ping.
+    """
+    requester = _normalize_user_id(os.environ.get(REQUESTED_BY_ENV))
+    if requester:
+        if looks_like_slack_user_id(requester):
+            return requester
+        # Bounded like every other interpolated value: this is a raw input echoed into a log.
+        _log(
+            f"ignoring malformed {REQUESTED_BY_ENV} value {requester[:80]!r}; "
+            "using the configured list"
+        )
+    return os.environ.get("SLACK_MENTIONS")
 
 
 def append_footer(text: str, pr_comment: str = "", pr_url: str = "", run_url: str = "") -> str:
@@ -275,7 +335,7 @@ def cmd_reply(
         _prefixed(role, text), pr_comment=pr_comment, pr_url=pr_url, run_url=run_url
     )
     if mention:
-        body += build_mention_suffix(os.environ.get("SLACK_MENTIONS"))
+        body += build_mention_suffix(resolve_mentions())
     if not _post_message(channel, body, token, thread_ts=thread_ts):
         _note_failure("could not post the thread reply")
 

@@ -40,6 +40,14 @@ on:
         description: "what triggered it (e.g. slack); informational only"
         required: false
         default: manual
+      requested_by:
+        description: >-
+          Slack user id of the requester, forwarded by the poller. When set, the terminal /
+          needs-human Slack pings page them ALONE instead of the standing SLACK_MENTIONS list.
+          Empty on a by-hand label add or a manual run (no Slack identity); a value that is not a
+          Slack user id is ignored and the standing list takes over.
+        required: false
+        default: ""
       route:
         description: >-
           transport for EVERY openrouter/openai call this run makes -- the candidate's probes
@@ -128,6 +136,11 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.ARENA_AUTOMATION_SLACK_BOT_TOKEN }}
       SLACK_CHANNEL: ${{ vars.ARENA_AUTOMATION_SLACK_CHANNEL }}
       SLACK_MENTIONS: ${{ vars.ARENA_AUTOMATION_SLACK_MENTIONS }}
+      # SLACK_REQUESTED_BY (WHO a `--mention` pings: the requester ALONE when the run came in
+      # through Slack, else SLACK_MENTIONS - see `automation.slack.resolve_mentions`) is NOT declared
+      # here on purpose: a job-level `env:` entry can shadow a value a step writes to $GITHUB_ENV, so
+      # the label-triggered path (no input) could never override an empty default. The "Resolve the
+      # Slack requester" step is the SINGLE writer instead, reading the input at step scope.
       # Values the ${secret:NAME} references in the LLM_PROXY_HEADERS variable resolve to.
       # Named LLM_PROXY_* because they are gateway configuration, not automation config;
       # they are NOT companions in the resolve_proxy_config sense (that check names only
@@ -186,6 +199,37 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv python install "$(cat .python-version)"
       - run: uv sync --dev --locked
+
+      - name: Resolve the Slack requester (input first, else the seed commit)
+        # WHO the terminal / needs-human Slack pings page: the person who asked, ALONE, when the
+        # request came through Slack. The poller forwards their id as the `requested_by` input (read
+        # at STEP scope below); a by-hand label add carries no input, so fall back to the
+        # `requested_by:` trailer the poller - and a by-hand seed - writes into the branch's seed
+        # commit. This step is the SINGLE writer of SLACK_REQUESTED_BY (no job-level default to be
+        # shadowed by, or to shadow, this $GITHUB_ENV write), so every later `slack ... --mention`
+        # step sees exactly this value. `automation.slack.resolve_mentions` re-validates it, so a
+        # value that is not a Slack user id (e.g. a GitHub login on a by-hand seed) is dropped there
+        # and the standing SLACK_MENTIONS list takes over.
+        env:
+          INPUT_REQUESTED_BY: ${{ inputs.requested_by }}
+        run: |
+          set -uo pipefail
+          REQ="${INPUT_REQUESTED_BY:-}"
+          if [ -z "$REQ" ]; then
+            # Scope to THIS branch's commits ahead of base (fetch-depth: 0 fetches origin/<base>):
+            # the seed carries the trailer and no integration commit does, so the first match is the
+            # seed's. Unscoped, `head -1` could pick a `requested_by:` line a prior squash-merge
+            # preserved in the base branch's own history and page an unrelated user. A missing
+            # origin/<base> (2>/dev/null) leaves REQ empty and the standing list takes over.
+            REQ="$(git log "origin/${GITHUB_BASE_REF:-main}..HEAD" --format=%B 2>/dev/null | sed -nE 's/^requested_by:[[:space:]]*//p' | head -1)"
+          fi
+          # One line only: strip every whitespace / control char so a multi-line value (which the
+          # workflow_dispatch API accepts even where the web UI would not) cannot inject a second
+          # KEY=VALUE line into $GITHUB_ENV. Applied to BOTH sources. A valid Slack id carries none;
+          # `resolve_mentions` re-validates the shape before it is rendered into a mention.
+          REQ="$(printf '%s' "$REQ" | tr -d '[:space:][:cntrl:]')"
+          printf 'SLACK_REQUESTED_BY=%s\n' "$REQ" >> "$GITHUB_ENV"
+          echo "Slack requester: '${REQ:-<none>}' (empty or non-user-id -> standing mention list)"
 
       - name: Parse candidate model from PR title
         id: parse
