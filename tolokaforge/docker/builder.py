@@ -83,6 +83,21 @@ PYTHON_VERSION = _pinned_python_version()
 _PYTHON_BUILD_ARGS: dict[str, str] = {"PYTHON_VERSION": PYTHON_VERSION}
 
 
+#: Parent directory for assembled Docker build contexts. ``/tmp`` is in
+#: Docker Desktop's default shared-paths list on every platform (on macOS
+#: it resolves to ``/private/tmp``, which is one of the four host paths the
+#: Linux VM shares out of the box: ``/Users``, ``/tmp``, ``/private/tmp``,
+#: ``/var/tmp``). The process-level ``TMPDIR`` on macOS points at
+#: ``/var/folders/<user>/T/…`` and is NOT in that set — assembling a build
+#: context there produces the misleading "COPY failed: file not found in
+#: build context" for every image build. ``/tmp`` also sidesteps the
+#: wheel-install trap: if the temp dir were derived from ``repo_root()``,
+#: a pipx/Homebrew wheel install would land the context under
+#: ``site-packages/`` (e.g. ``/opt/homebrew/lib/python*/site-packages/``)
+#: which is not shared with the daemon either. See :func:`assemble_build_context`.
+BUILD_CONTEXT_TMPDIR: Path = Path("/tmp")
+
+
 #: Build-context entries the runner Dockerfile's ``hatchling build`` stage
 #: needs, as repo-relative source-checkout paths. ``_runner_definition()``
 #: maps each to a packaged copy when the repo root is not available.
@@ -202,25 +217,38 @@ EXTENDED_IMAGES: list[str] = ["rag-service", "mock-web"]
 _ALL_KNOWN_SERVICES = frozenset(IMAGE_DEFINITIONS)
 
 
-def _rag_definition() -> dict[str, Any]:
-    """Augment the rag-service base entry with the resolved wheel + service files.
+def rag_service_context_files(wheel_path: str) -> list[str]:
+    """Context file list the rag-service Dockerfile expects.
 
-    The rag service needs the tolokaforge wheel (for
-    ``import tolokaforge.secrets``), its own service files
-    (``requirements.txt`` + ``app.py``), and the workspace-sibling source
-    trees (``tolokaforge_models``, ``tolokaforge_coding_harnesses``) that
-    the Dockerfile's sibling-wheel-builder stage compiles into wheels the
-    tolokaforge base wheel depends on.
+    Must stay in step with the ``COPY`` instructions in
+    ``tolokaforge/docker/dockerfiles/rag.Dockerfile``:
+
+    - the resolved tolokaforge wheel (``${WHEEL_FILENAME}``, absolute → flat copy),
+    - the service directory (``tolokaforge/env/rag_service/``, holds
+      ``requirements.txt`` + ``app.py``),
+    - the two workspace-sibling source trees (``tolokaforge_models``,
+      ``tolokaforge_coding_harnesses``) that the ``sibling-wheel-builder``
+      stage compiles into wheels the base wheel depends on.
+
+    Single source of truth for both the dynamic ``_rag_definition`` path
+    (``tolokaforge.docker.builder``) and the stack-level ``ServiceDefinition``
+    (``tolokaforge.docker.stacks.full.full_stack``). Any drift between them
+    reproduces "COPY failed: file not found in build context" at Step 5.
     """
+    return [
+        wheel_path,
+        "tolokaforge/env/rag_service/",
+        "tolokaforge_models/",
+        "tolokaforge_coding_harnesses/",
+    ]
+
+
+def _rag_definition() -> dict[str, Any]:
+    """Augment the rag-service base entry with the resolved wheel + service files."""
     artifact = resolve_wheel()
     return {
         **IMAGE_DEFINITIONS["rag-service"],
-        "context_files": [
-            str(artifact.path),  # wheel (absolute → flat copy)
-            "tolokaforge/env/rag_service/",  # service files (relative)
-            "tolokaforge_models/",  # sibling source for in-context wheel build
-            "tolokaforge_coding_harnesses/",  # sibling source for in-context wheel build
-        ],
+        "context_files": rag_service_context_files(str(artifact.path)),
         "build_args": {**_PYTHON_BUILD_ARGS, "WHEEL_FILENAME": artifact.path.name},
     }
 
@@ -522,32 +550,21 @@ def assemble_build_context(
         FileNotFoundError: If a declared file or directory does not exist.
 
     Notes:
-        The temp directory is created under ``<repo_root>/.workbench/build-contexts/``
-        rather than the process-level ``TMPDIR``. Docker Desktop on macOS runs
-        the daemon inside a Linux VM that only sees a curated set of host
-        paths (``/Users``, ``/tmp``, ``/private/tmp``, ``/var/tmp``); the
-        default ``TMPDIR`` on macOS points at ``/var/folders/<user>/T/``,
-        which is NOT in that set. A build context assembled there hashes and
-        exists on the host but reads as "file not found in build context" to
-        the daemon, failing every image build with a misleading error. Pinning
-        the temp location under the repo root — which the daemon must already
-        see for any source-based build to work — sidesteps that trap on every
-        platform.
-
-        Second gotcha, same host, opposite direction: Docker Desktop's grpcfuse
-        file-sharing layer applies ``.gitignore`` rules when projecting host
-        paths into the VM. A ``.gitignore`` entry that covers this temp
-        directory therefore hides the assembled context from the daemon in the
-        same way — "file not found" again, from a different cause. This dir
-        must stay OUT of ``.gitignore`` (unlike ``.workbench/wheel-cache/``,
-        which the daemon reads only as an already-copied file inside the tar).
-        Every file here is short-lived; the ``finally`` in
-        :func:`_prepared_build_context` removes each build's tree as soon as
-        the daemon finishes with it.
+        The temp directory is created under :data:`BUILD_CONTEXT_TMPDIR`
+        (``/tmp``) rather than the process-level ``TMPDIR``. Docker Desktop on
+        macOS runs the daemon inside a Linux VM that only sees a curated set of
+        host paths (``/Users``, ``/tmp``, ``/private/tmp``, ``/var/tmp``); the
+        default macOS ``TMPDIR`` points at ``/var/folders/<user>/T/``, which is
+        NOT in that set. A build context assembled there hashes and exists on
+        the host but reads as "file not found in build context" to the daemon,
+        failing every image build with a misleading error. ``/tmp`` is in
+        Docker Desktop's default shared-paths list on every platform, works on
+        Linux (no VM), and works regardless of how tolokaforge itself is
+        installed (source checkout, pipx, Homebrew, system pip) — the
+        repo-root path would land in ``site-packages/`` for a wheel install and
+        re-introduce the same class of bug on Homebrew python.
     """
-    build_root = repo_root / ".workbench" / "build-contexts"
-    build_root.mkdir(parents=True, exist_ok=True)
-    build_dir = Path(tempfile.mkdtemp(prefix="tolokaforge-build-", dir=build_root))
+    build_dir = Path(tempfile.mkdtemp(prefix="tolokaforge-build-", dir=BUILD_CONTEXT_TMPDIR))
 
     # Copy Dockerfile
     src_dockerfile = repo_root / dockerfile
