@@ -207,7 +207,15 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
             # The runner reconstructs search_kb as a RAGSearchToolWrapper
             # (source-less, RAG dispatch). Carry the canonical schema so
             # the LLM sees the real {query, top_k, alpha} parameters.
-            schemas.append(create_search_kb_schema())
+            # The task-yaml override composes with the schema's existing
+            # ``output_max_chars`` under the same tighter-wins rule the
+            # generic branch below applies to every other tool.
+            base = create_search_kb_schema()
+            cap_candidates = [
+                c for c in (base.output_max_chars, overrides.get(tool_name)) if c is not None
+            ]
+            emitted_cap = min(cap_candidates) if cap_candidates else None
+            schemas.append(base.model_copy(update={"output_max_chars": emitted_cap}))
             continue
         if mcp_server_ref is None and not builtin_registry.is_builtin(tool_name):
             raise NativeAdapterMisconfigurationError(
