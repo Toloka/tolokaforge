@@ -624,6 +624,18 @@ custom_checks:                             # author-written Python, see docs/cus
 
 llm_judge:                                 # the judge MODEL is set once per run
                                            # under models.judge — NOT here
+  judge_kind: single_shot_rubric           # optional str; picks the JudgeKind seam
+                                           # entry-point name — must resolve in
+                                           # tolokaforge.judge_kinds. Defaults to
+                                           # single_shot_rubric. Unknown names are
+                                           # refused at parse time with a message
+                                           # naming the registered set.
+  kind_config:                             # optional dict[str, Any] | null;
+                                           # per-kind opaque options — each kind
+    threshold: 0.75                        # validates its own slice inside
+                                           # JudgeKind.evaluate. The framework
+                                           # performs no shape checks and never
+                                           # walks expand_secret_refs over it.
   customization:                           # optional; sibling of rubric
     disable_knowledge_search: true         # tri-state (unset | true | false):
                                            # true withholds every knowledge-search
@@ -670,6 +682,16 @@ not a free-text blob; a free-text `rubric: "<text>"`, an `output_schema` field,
 or a per-task judge-model field is rejected at load with a migration message.
 The judge **model** is a run-level role (`models.judge`, see above) — separate
 from the agent under test, with no default and no fallback.
+
+`judge_kind` (optional `str`, default `single_shot_rubric`) picks the
+`JudgeKind` seam entry-point name; the value must resolve in the
+`tolokaforge.judge_kinds` group (read the current set with
+[`available_judge_kinds()`](../tolokaforge/core/plugin_registry.py)). Unknown
+names are refused at parse time with a message naming the registered set.
+`kind_config` (optional `dict[str, Any]` or `null`) is an opaque per-kind
+options bag; the framework performs zero shape checks on it and never walks
+`expand_secret_refs` inside it — each `JudgeKind` implementation validates its
+own slice inside `evaluate`.
 
 `customization` is an optional block, sibling of `rubric`, holding judge-side
 settings. `disable_knowledge_search` is tri-state (`unset` | `true` | `false`):

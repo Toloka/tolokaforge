@@ -506,7 +506,7 @@ class GraderCompositeDispatch:
         if not llm_messages:
             return None, JudgeStatus.UNSPECIFIED, False, {LLM_JUDGE_KEY: NO_JUDGE_MESSAGES_SKIP}
         assert judge_model_config is not None, "llm_judge branch requires judge_model_config"
-        judge_kind = load_judge_kind("single_shot_rubric")()
+        judge_kind = load_judge_kind(llm_judge_config.judge_kind)()
         customization = llm_judge_config.customization
         disable_knowledge_search = bool(customization and customization.disable_knowledge_search)
         custom_system_prompt = customization.system_prompt if customization else None
@@ -532,7 +532,7 @@ class GraderCompositeDispatch:
             disable_knowledge_search=disable_knowledge_search,
             custom_system_prompt=custom_system_prompt,
             include_agent_system_prompt=include_agent_system_prompt,
-            kind_config=None,
+            kind_config=llm_judge_config.kind_config,
             llm_messages=llm_messages,
             judge_model_config=judge_model_config,
             extra_read_tools=[],

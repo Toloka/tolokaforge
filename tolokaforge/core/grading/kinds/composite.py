@@ -419,7 +419,7 @@ class CompositeGraderKind:
                 if customization and customization.include_agent_system_prompt is not None
                 else True
             )
-            judge_kind = load_judge_kind("single_shot_rubric")()
+            judge_kind = load_judge_kind(task_config.llm_judge.judge_kind)()
             state_diff_text = composite_mod.build_judge_state_diff(
                 trial_id=trial_id,
                 substrate=substrate,
@@ -437,7 +437,7 @@ class CompositeGraderKind:
                 disable_knowledge_search=disable_kb,
                 custom_system_prompt=custom_prompt,
                 include_agent_system_prompt=include_agent_prompt,
-                kind_config=None,
+                kind_config=task_config.llm_judge.kind_config,
                 llm_messages=llm_messages,
                 judge_model_config=judge_model_config,
                 extra_read_tools=[],
