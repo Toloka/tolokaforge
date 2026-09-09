@@ -86,8 +86,8 @@ from tolokaforge.core.plugin_registry import (
     load_custom_check_executor,
     load_grader_kind,
     load_grading_method,
+    load_judge_kind,
     load_judge_model_provider,
-    load_rubric_evaluator,
     load_state_check_backend,
     load_transcript_rule_matcher,
 )
@@ -2360,26 +2360,26 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     ) -> "JudgeResult":
         """Delegate to :func:`composite.grade_llm_judge` over the runner's substrate.
 
-        The composite owns the judge dispatch (rubric plumbing, forwarding to
-        the resolved :class:`RubricEvaluator`); this wrapper collects the
-        trial-context passthroughs (judge ``ModelConfig``, ``search_policy``
-        connector reuse), constructs the ``RubricEvaluator`` from the run-level
-        :attr:`_judge_model_provider` and per-trial customization flags,
-        renders the ``initial → final`` state diff for the evaluator's opening
-        message, and delegates. The ``InProcessGradingSubstrate`` built once
-        by :meth:`_build_grading_substrate` at the outer level is shared
-        here — the judge's read-only DB tools go through
-        ``substrate.db_reader()``, the same ``_LoopBridgeDBReader`` closure the
-        state-checks path uses.
+        Resolves ``load_judge_kind("single_shot_rubric")()`` and hands the kind
+        together with the run-level :attr:`_judge_model_provider` and the
+        per-trial customization kwargs (``disable_knowledge_search``,
+        ``custom_system_prompt``, ``include_agent_system_prompt``, plus
+        ``kind_config=None``) to :func:`composite.grade_llm_judge`. This wrapper
+        also collects the trial-context passthroughs (judge ``ModelConfig``,
+        ``search_policy`` connector reuse) and renders the
+        ``initial → final`` state diff for the judge's opening message. The
+        ``InProcessGradingSubstrate`` built once by
+        :meth:`_build_grading_substrate` at the outer level is shared here —
+        the *kind*'s read-only DB tools go through ``substrate.db_reader()``,
+        the same ``_LoopBridgeDBReader`` closure the state-checks path uses.
 
         Sync-in-async: :func:`composite.grade_llm_judge` is a sync function whose
-        substrate reads (and the evaluator's own DB tool calls) bridge back to
-        this loop via ``run_coroutine_threadsafe``; driving it on the loop thread
+        substrate reads (and the kind's own DB tool calls) bridge back to this
+        loop via ``run_coroutine_threadsafe``; driving it on the loop thread
         would deadlock at the first call. ``run_in_executor`` lands the work on
         a worker thread so the bridges resolve.
         """
         from tolokaforge.core.grading.composite import grade_llm_judge
-        from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorContext
 
         # The judge model is a run-level config that rides the TrialSpec. The
         # orchestrator validates up front that it is present whenever any selected
@@ -2412,14 +2412,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             if customization and customization.include_agent_system_prompt is not None
             else True
         )
-        rubric_evaluator = load_rubric_evaluator("llm_judge")(
-            RubricEvaluatorContext(
-                judge_model_provider=self._judge_model_provider,
-                disable_knowledge_search=disable_knowledge_search,
-                custom_system_prompt=custom_system_prompt,
-                include_agent_system_prompt=include_agent_system_prompt,
-            )
-        )
+        judge_kind = load_judge_kind("single_shot_rubric")()
+        from tolokaforge.core import logging as _tolokaforge_logging
+
+        judge_logger = _tolokaforge_logging.get_logger("rubric_judge")
 
         def _run() -> "JudgeResult":
             state_diff_text = composite.build_judge_state_diff(
@@ -2434,12 +2430,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 trial_id=trial_id,
                 config=llm_judge_config,
                 substrate=substrate,
-                rubric_evaluator=rubric_evaluator,
+                judge_kind=judge_kind,
+                judge_model_provider=self._judge_model_provider,
+                disable_knowledge_search=disable_knowledge_search,
+                custom_system_prompt=custom_system_prompt,
+                include_agent_system_prompt=include_agent_system_prompt,
+                kind_config=None,
                 llm_messages=llm_messages,
                 judge_model_config=judge_model_config,
                 extra_read_tools=extra_read_tools,
                 state_diff=state_diff_text,
-                logger=logger,  # type: ignore[arg-type]  # module logger, satisfies StructuredLogger protocol at runtime
+                logger=judge_logger,
             )
 
         return await self._loop.run_in_executor(None, _run)
