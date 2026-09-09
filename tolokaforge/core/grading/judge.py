@@ -634,6 +634,7 @@ class LLMJudge:
             tool_executor=tool_executor,
             tool_schemas=tool_schemas,
             validation_schemas_by_tool=client.sanitize_tools_for_execution(tool_schemas),
+            tool_output_max_chars_by_tool=registry.output_max_chars_by_tool(),
             # Bounded by max_turns + wall-time (episode_timeout_s). There is no
             # per-turn loop timeout; the per-call LLM timeout lives in LLMClient.
             config=LoopConfig(max_turns=self._max_turns, episode_timeout_s=self._episode_timeout_s),

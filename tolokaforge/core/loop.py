@@ -143,12 +143,15 @@ class LoopConfig:
     transport-timeout retry, substrate re-registration) and retrying them
     here would double-count them.
 
-    ``tool_output_max_chars`` caps the ``role=tool`` message ``content`` at
-    that many chars via
-    :func:`~tolokaforge.core.tool_output_truncation.keep_head_and_tail` before
-    the message is appended; ``None`` (the default) threads tool output
-    through verbatim. The cap is a defensive backstop above any per-tool
-    truncation the tool applies to its own output.
+    ``tool_output_max_chars`` is the per-model backstop cap on the
+    ``role=tool`` message ``content``.
+    :meth:`ToolCallingLoop._cap_tool_message_content` middle-elides via
+    :func:`~tolokaforge.core.tool_output_truncation.keep_head_and_tail` using
+    the tighter of this cap and the tool's own
+    :attr:`~tolokaforge.tools.registry.ToolPolicy.output_max_chars` — carried
+    into the loop as :attr:`ToolCallingLoop.tool_output_max_chars_by_tool` —
+    before the message is appended; ``None`` on both axes threads tool output
+    through verbatim.
 
     ``max_context_tokens``, ``context_watermark`` and ``summarize_policy``
     arm the context-window summarize seam (see
@@ -244,6 +247,27 @@ class MetricsSink(Protocol):
 
     @property
     def last_prompt_tokens(self) -> int | None:
+        return None
+
+    def record_tool_output_truncated(self, omitted_chars: int) -> None:
+        """Accumulate a per-trial count of characters clipped from tool outputs.
+
+        The loop calls this every time ``_cap_tool_message_content`` actually
+        elides a ``role=tool`` message. A trial with the cumulative count at
+        zero saw no truncation, either because no cap fired or because every
+        raw output fit within the effective cap. Default no-op so a sink that
+        does not track truncation stays satisfied.
+        """
+        return None
+
+    def record_parser_errors(self, errors: tuple[ParserError, ...]) -> None:
+        """Persist per-turn ``tool_call.function.arguments`` parse errors.
+
+        The loop calls this on every generation whose ``parser_errors``
+        sidecar is non-empty, regardless of whether ``parser_error_retry_count``
+        subsequently resamples. Default no-op — a sink that does not track
+        parser errors stays satisfied.
+        """
         return None
 
 
@@ -380,6 +404,14 @@ class ToolCallingLoop:
     # executor validates against the tool's declared schema — the path taken by
     # tests that construct the loop without an LLM in scope.
     validation_schemas_by_tool: dict[str, dict[str, Any]] | None = None
+    # Per-tool declared ``ToolPolicy.output_max_chars``, keyed by tool name.
+    # Callers that construct the loop over a live
+    # :class:`~tolokaforge.tools.registry.ToolRegistry` wire this from
+    # :meth:`~tolokaforge.tools.registry.ToolRegistry.output_max_chars_by_tool`.
+    # Only tools that declare a cap appear; a tool absent from the map defers
+    # to :attr:`LoopConfig.tool_output_max_chars`. When both axes name a cap,
+    # :meth:`_cap_tool_message_content` picks the tighter one.
+    tool_output_max_chars_by_tool: dict[str, int] | None = None
     # Bounded API-error retry sleep seam. Parallels ``LLMClient._retry_sleep``:
     # tests bind a no-op so the loop's retry backoff is instant. See
     # :attr:`LoopConfig.api_error_backoff_s` for the wait, and the retry class
@@ -562,6 +594,8 @@ class ToolCallingLoop:
             self._assign_call_ids(result)
             self._capture_effective_prompt(result)
             self.metrics.record_generation(result)
+            if result.parser_errors:
+                self.metrics.record_parser_errors(result.parser_errors)
             self._log_generation(turn, result)
 
             if result.text or result.tool_calls:
@@ -853,24 +887,33 @@ class ToolCallingLoop:
             )
 
     def _cap_tool_message_content(self, tool_name: str, raw: str) -> str:
-        """Apply the loop's tool-output cap to a ``role=tool`` message content.
+        """Apply the tighter tool-output cap to a ``role=tool`` message content.
 
-        Runs :func:`keep_head_and_tail` when
-        :attr:`LoopConfig.tool_output_max_chars` is set; a ``None`` cap threads
-        the content verbatim. The recorder read at
+        Two axes compose here: :attr:`LoopConfig.tool_output_max_chars` is the
+        per-model backstop and
+        :attr:`tool_output_max_chars_by_tool` carries the tool's own declared
+        :attr:`~tolokaforge.tools.registry.ToolPolicy.output_max_chars`. The
+        tighter set cap wins per call; ``None`` on both axes threads the
+        content through verbatim. The recorder read at
         :meth:`_execute_tool_calls` runs earlier against the untruncated tool
         result, so the trial's ordered record and the grader inputs are
         unaffected by the cap.
         """
-        cap = self.config.tool_output_max_chars
-        if cap is None:
+        tool_cap = (self.tool_output_max_chars_by_tool or {}).get(tool_name)
+        cap_cap = self.config.tool_output_max_chars
+        candidates = [x for x in (tool_cap, cap_cap) if x is not None]
+        if not candidates:
             return raw
-        capped, omitted = keep_head_and_tail(raw, cap)
+        effective = min(candidates)
+        capped, omitted = keep_head_and_tail(raw, effective)
         if omitted:
+            self.metrics.record_tool_output_truncated(omitted)
             self.logger.info(
                 "Capped tool output before append",
                 tool=tool_name,
-                cap_chars=cap,
+                cap_chars=effective,
+                tool_cap_chars=tool_cap,
+                capability_cap_chars=cap_cap,
                 omitted_chars=omitted,
                 original_chars=len(raw),
             )

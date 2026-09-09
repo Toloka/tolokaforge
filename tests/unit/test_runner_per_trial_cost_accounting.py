@@ -23,12 +23,14 @@ import pytest
 from pydantic import ValidationError
 
 from tolokaforge.core.llm import GenerationResult
+from tolokaforge.core.llm.client import ParserError
 from tolokaforge.core.llm.usage import ProviderRawCall, Usage
 from tolokaforge.core.models import (
     Metrics,
+    ParserErrorRecord,
     Trajectory,
 )
-from tolokaforge.core.runner import TrialRunner
+from tolokaforge.core.runner import TrialRunner, _AgentMetricsSink
 from tolokaforge.tools.registry import ToolResult
 
 pytestmark = pytest.mark.unit
@@ -206,3 +208,81 @@ class TestTrialCostAccumulation:
         assert latencies == [0.5, 0.1]
         # Flat list is gone — verify by attribute access.
         assert not hasattr(traj.metrics, "api_call_latencies_s")
+
+
+class TestToolOutputTruncationAccounting:
+    """``_AgentMetricsSink.record_tool_output_truncated`` accumulates the
+    per-trial ``tool_output_chars_truncated`` counter that
+    ``ToolCallingLoop._cap_tool_message_content`` calls whenever it clips
+    a ``role=tool`` message.
+    """
+
+    def test_zero_when_never_truncated(self) -> None:
+        metrics = Metrics()
+        assert metrics.tool_output_chars_truncated == 0
+
+    def test_single_call_accumulates(self) -> None:
+        metrics = Metrics()
+        sink = _AgentMetricsSink(metrics)
+        sink.record_tool_output_truncated(1_500)
+        assert metrics.tool_output_chars_truncated == 1_500
+
+    def test_multiple_calls_sum(self) -> None:
+        metrics = Metrics()
+        sink = _AgentMetricsSink(metrics)
+        sink.record_tool_output_truncated(500)
+        sink.record_tool_output_truncated(1_000)
+        sink.record_tool_output_truncated(250)
+        assert metrics.tool_output_chars_truncated == 1_750
+
+
+class TestParserErrorAccounting:
+    """``_AgentMetricsSink.record_parser_errors`` persists per-turn
+    parser-error records onto ``Metrics.parser_errors``, mirroring the
+    ephemeral ``GenerationResult.parser_errors`` sidecar across the
+    trial-bundle boundary.
+    """
+
+    def test_empty_by_default(self) -> None:
+        metrics = Metrics()
+        assert metrics.parser_errors == []
+
+    def test_one_error_appends_one_record(self) -> None:
+        metrics = Metrics()
+        sink = _AgentMetricsSink(metrics)
+        sink.record_parser_errors(
+            (
+                ParserError(
+                    tool_name="query", raw_arguments='{"broken', reason="unterminated string"
+                ),
+            )
+        )
+        assert len(metrics.parser_errors) == 1
+        assert metrics.parser_errors[0] == ParserErrorRecord(
+            tool_name="query",
+            raw_arguments='{"broken',
+            reason="unterminated string",
+        )
+
+    def test_multiple_calls_extend(self) -> None:
+        metrics = Metrics()
+        sink = _AgentMetricsSink(metrics)
+        sink.record_parser_errors(
+            (
+                ParserError(tool_name="a", raw_arguments="x", reason="one"),
+                ParserError(tool_name="b", raw_arguments="y", reason="two"),
+            )
+        )
+        sink.record_parser_errors((ParserError(tool_name="c", raw_arguments="z", reason="three"),))
+        assert [r.tool_name for r in metrics.parser_errors] == ["a", "b", "c"]
+
+    def test_survives_trajectory_roundtrip(self) -> None:
+        metrics = Metrics()
+        sink = _AgentMetricsSink(metrics)
+        sink.record_parser_errors((ParserError(tool_name="run", raw_arguments="{}", reason="ok"),))
+        dumped = metrics.model_dump(mode="json")
+        assert dumped["parser_errors"] == [
+            {"tool_name": "run", "raw_arguments": "{}", "reason": "ok"}
+        ]
+        rebuilt = Metrics.model_validate(dumped)
+        assert rebuilt.parser_errors == metrics.parser_errors

@@ -1,6 +1,6 @@
 """Unit tests for :mod:`tolokaforge.core.system_prompt`.
 
-Locks the five priority branches of :func:`build_system_prompt` and
+Locks the four priority branches of :func:`build_system_prompt` and
 guards the ``InProcessConductor._build_system_prompt`` delegation
 against silent drift.
 """
@@ -54,35 +54,14 @@ class TestBuildSystemPromptBranches:
 
     def test_inline_agent_system_prompt_wins(self, tmp_path: Path) -> None:
         task = _task(policies={"agent_system_prompt": "You are a special assistant."})
-        result = build_system_prompt(task=task, task_dir=tmp_path, adapter=None)
+        result = build_system_prompt(task=task, task_dir=tmp_path)
         assert result == "You are a special assistant."
-
-    def test_adapter_branch_wraps_in_policy_envelope(self, tmp_path: Path) -> None:
-        adapter = MagicMock()
-        adapter.get_system_prompt.return_value = "Adapter policy content."
-        task = _task(system_prompt="__adapter__")
-
-        result = build_system_prompt(task=task, task_dir=tmp_path, adapter=adapter)
-
-        assert "Adapter policy content." in result
-        assert result.startswith("<instructions>\n")
-        assert "<policy>\nAdapter policy content.\n</policy>" in result
-        adapter.get_system_prompt.assert_called_once_with(task.task_id)
-
-    def test_adapter_returns_falsy_falls_through_to_default(self, tmp_path: Path) -> None:
-        adapter = MagicMock()
-        adapter.get_system_prompt.return_value = ""
-        task = _task(system_prompt="__adapter__")
-
-        result = build_system_prompt(task=task, task_dir=tmp_path, adapter=adapter)
-
-        assert result == "You are a helpful assistant."
 
     def test_system_prompt_file_returned_verbatim(self, tmp_path: Path) -> None:
         (tmp_path / "prompt.md").write_text("Custom domain prompt.")
         task = _task(system_prompt="prompt.md")
 
-        result = build_system_prompt(task=task, task_dir=tmp_path, adapter=None)
+        result = build_system_prompt(task=task, task_dir=tmp_path)
 
         assert result == "Custom domain prompt."
 
@@ -93,7 +72,7 @@ class TestBuildSystemPromptBranches:
         (tmp_path / "tasks" / "additional_policy.md").write_text("Additional policy content.")
         task = _task(system_prompt="additional_policy.md")
 
-        result = build_system_prompt(task=task, task_dir=task_dir, adapter=None)
+        result = build_system_prompt(task=task, task_dir=task_dir)
 
         assert "<main_policy>\nMain policy content.\n</main_policy>" in result
         assert "<tech_support_policy>\nAdditional policy content.\n</tech_support_policy>" in result
@@ -104,7 +83,7 @@ class TestBuildSystemPromptBranches:
         (tmp_path / "tasks" / "main_policy.md").write_text("Main policy content.")
         task = _task(system_prompt="missing_additional.md")
 
-        result = build_system_prompt(task=task, task_dir=task_dir, adapter=None)
+        result = build_system_prompt(task=task, task_dir=task_dir)
 
         assert "<main_policy>" not in result
         assert "Main policy content." in result
@@ -116,7 +95,7 @@ class TestBuildSystemPromptBranches:
             tools=ToolsConfig(agent={"browser": {"initial_url": "http://portal.local:8080"}}),
         )
 
-        result = build_system_prompt(task=task, task_dir=tmp_path, adapter=None)
+        result = build_system_prompt(task=task, task_dir=tmp_path)
 
         assert result.startswith("You are a helpful assistant.")
         assert "- step one" in result
@@ -125,7 +104,7 @@ class TestBuildSystemPromptBranches:
 
     def test_minimal_default_bare(self, tmp_path: Path) -> None:
         task = _task()
-        result = build_system_prompt(task=task, task_dir=tmp_path, adapter=None)
+        result = build_system_prompt(task=task, task_dir=tmp_path)
         assert result == "You are a helpful assistant."
 
 
@@ -155,18 +134,6 @@ class TestConductorDelegationParity:
         conductor = self._conductor(adapter)
 
         from_method = conductor._build_system_prompt(task, [], tmp_path)
-        from_helper = build_system_prompt(task=task, task_dir=tmp_path, adapter=adapter)
+        from_helper = build_system_prompt(task=task, task_dir=tmp_path)
 
         assert from_method == from_helper == "Inline prompt body."
-
-    def test_delegator_matches_module_helper_for_adapter_branch(self, tmp_path: Path) -> None:
-        adapter = MagicMock()
-        adapter.get_system_prompt.return_value = "From adapter."
-        task = _task(system_prompt="__adapter__")
-        conductor = self._conductor(adapter)
-
-        from_method = conductor._build_system_prompt(task, [], tmp_path)
-        from_helper = build_system_prompt(task=task, task_dir=tmp_path, adapter=adapter)
-
-        assert from_method == from_helper
-        assert "From adapter." in from_method

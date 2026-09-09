@@ -1195,6 +1195,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 category=tool.category,
                 timeout_s=tool.timeout_s,
             )
+            if tool.output_max_chars is not None:
+                schema.output_max_chars = tool.output_max_chars
             tool_schemas.append(schema)
 
         for tool in task_description.user_tools:
@@ -1205,6 +1207,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 category=tool.category,
                 timeout_s=tool.timeout_s,
             )
+            if tool.output_max_chars is not None:
+                schema.output_max_chars = tool.output_max_chars
             tool_schemas.append(schema)
 
         logger.info(

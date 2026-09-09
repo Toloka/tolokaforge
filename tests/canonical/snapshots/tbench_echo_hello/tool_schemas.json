@@ -3,6 +3,7 @@
     "category": "compute",
     "description": "Execute a bash command inside the task container",
     "name": "bash",
+    "output_max_chars": null,
     "parameters": {
       "properties": {
         "command": {
