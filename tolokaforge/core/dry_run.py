@@ -220,7 +220,7 @@ def materialize_dry_run_sample(
     reads. No LLM client is constructed; no socket is opened.
     """
     task_dir = adapter.get_task_dir(task.task_id)
-    system_prompt = build_system_prompt(task=task, task_dir=task_dir, adapter=adapter)
+    system_prompt = build_system_prompt(task=task, task_dir=task_dir)
     user_prompt_text, user_prompt_is_literal = _resolve_user_prompt(task)
     tool_spec = _sanitized_tool_spec(
         adapter=adapter, task_id=task.task_id, agent_config=agent_config
