@@ -923,7 +923,7 @@ invariant.
 | `transcript_rules_only/` | `transcript_rule_matchers` | `transcript_rules` populated |
 | `trace_checks_heavy/` | `trace_check_operators` (bind + before + within) | `trace_checks.constraints` non-empty |
 | `custom_checks_only/` | `custom_check_executors` | `custom_checks.enabled: true` |
-| `rubric_only/` | `rubric_evaluators` + `judge_model_providers` | `llm_judge.rubric` populated |
+| `rubric_only/` | `judge_kinds` + `judge_model_providers` | `llm_judge.rubric` populated |
 
 The `state_checks_db_probes_only/` pack ships scripted probe rows on
 `parity.yaml`'s `db_probe_rows` field (keyed by probe name); the

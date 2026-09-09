@@ -59,7 +59,7 @@ class SingleShotRubricJudgeKind:
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult:
-        del kind_config  # reserved on the Protocol for downstream kinds; Phase A2 wires
+        del kind_config  # reserved on the Protocol for downstream kinds
         judge_model = judge_model_provider.build(judge_model_config)
         return LLMJudge(
             judge_model_config,

@@ -8,7 +8,7 @@ Drives one fixture's inputs through:
 
 Asserts both :class:`JudgeResult` instances match field-by-field on the
 same seed + same scripted judge model. Locks the "no observable
-behaviour change" contract Phase A1 commits to.
+behaviour change" contract this seam rewire commits to.
 
 **State-sharing warning:** ``_ScriptedClient._i`` advances on each
 ``.generate()`` and ``_ScriptedJudgeModelProvider.build()`` caches its
@@ -155,7 +155,7 @@ def _script() -> list[Any]:
 def _run_pre_seam(config: LLMJudgeConfig) -> JudgeResult:
     """Pre-seam path: :class:`LLMJudgeRubricEvaluator` (still registered
     under ``tolokaforge.rubric_evaluators`` — the group is intentionally
-    left alive at Phase A1 to keep this parity check available)."""
+    kept live so this parity check can drive both paths side by side)."""
     client = _ScriptedClient(_script())
     evaluator = LLMJudgeRubricEvaluator(
         _ScriptedJudgeModelProvider(client),

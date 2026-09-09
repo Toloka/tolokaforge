@@ -2361,21 +2361,22 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     ) -> "JudgeResult":
         """Delegate to :func:`composite.grade_llm_judge` over the runner's substrate.
 
-        The composite owns the judge dispatch (rubric plumbing, forwarding to
-        the resolved :class:`RubricEvaluator`); this wrapper collects the
-        trial-context passthroughs (judge ``ModelConfig``, ``search_policy``
-        connector reuse), constructs the ``RubricEvaluator`` from the run-level
-        :attr:`_judge_model_provider` and per-trial customization flags,
-        renders the ``initial → final`` state diff for the evaluator's opening
-        message, and delegates. The ``InProcessGradingSubstrate`` built once
-        by :meth:`_build_grading_substrate` at the outer level is shared
-        here — the judge's read-only DB tools go through
-        ``substrate.db_reader()``, the same ``_LoopBridgeDBReader`` closure the
-        state-checks path uses.
+        Resolves ``load_judge_kind("single_shot_rubric")()`` and hands the kind
+        together with the run-level :attr:`_judge_model_provider` and the
+        per-trial customization kwargs (``disable_knowledge_search``,
+        ``custom_system_prompt``, ``include_agent_system_prompt``, plus
+        ``kind_config=None``) to :func:`composite.grade_llm_judge`. This wrapper
+        also collects the trial-context passthroughs (judge ``ModelConfig``,
+        ``search_policy`` connector reuse) and renders the
+        ``initial → final`` state diff for the judge's opening message. The
+        ``InProcessGradingSubstrate`` built once by
+        :meth:`_build_grading_substrate` at the outer level is shared here —
+        the *kind*'s read-only DB tools go through ``substrate.db_reader()``,
+        the same ``_LoopBridgeDBReader`` closure the state-checks path uses.
 
         Sync-in-async: :func:`composite.grade_llm_judge` is a sync function whose
-        substrate reads (and the evaluator's own DB tool calls) bridge back to
-        this loop via ``run_coroutine_threadsafe``; driving it on the loop thread
+        substrate reads (and the kind's own DB tool calls) bridge back to this
+        loop via ``run_coroutine_threadsafe``; driving it on the loop thread
         would deadlock at the first call. ``run_in_executor`` lands the work on
         a worker thread so the bridges resolve.
         """
