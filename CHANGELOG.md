@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.24.1 (2026-09-09)
+
+### Feat
+
+- arena v3 engine residuals — tool-name hint, state-hash compare_columns (both substrates), trace_checks gate advisory (#1560)
+- **engine**: M48 — post-M44 follow-ups (adapter sentinel deletion, per-tool cap, truncation + parser-error metrics, replay-snapshot fix) (#1559)
+
 ## v0.24.0 (2026-09-08)
 
 ### Feat
