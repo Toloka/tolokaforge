@@ -116,9 +116,12 @@ harness for the tool's `role=tool` message content. The engine loop composes it
 with the per-model
 [`ModelCapabilities.tool_output_max_chars`](LLM_LAYER.md#tool-output-truncation)
 backstop as `min(tool_cap, capability_cap)`: the tighter set cap wins per call.
-Lifted from `ToolPolicy.output_max_chars` at the runner. `None` (the default)
-defers to the per-model cap; a tool that declares no cap and runs under a preset
-that declares no cap passes its message content through verbatim.
+The native adapter composes two inputs into the value it emits:
+`ToolPolicy.output_max_chars` (the tool-declared bound) and the task-yaml
+override at `tools.<actor>.<tool_name>.output_max_chars`, as `min` of whichever
+are set. `None` (the default) defers to the per-model cap; a tool that declares
+no cap in a pack that overrides no cap, run under a preset that declares no cap,
+passes its message content through verbatim.
 
 ```python
 # =============================================================================

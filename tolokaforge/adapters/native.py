@@ -21,6 +21,7 @@ from tolokaforge.adapters._task_loader import (
     resolve_tool_schemas,
     seeded_tables_from_task,
     tool_configs,
+    tool_output_max_chars_overrides,
 )
 from tolokaforge.adapters.base import (
     AdapterEnvironment,
@@ -197,6 +198,7 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
         raise RuntimeError(f"MCP server script not found: {task_dir / mcp_server_ref}")
 
     configs = tool_configs(task, actor)
+    overrides = tool_output_max_chars_overrides(task, actor)
     rich_schemas = resolve_tool_schemas(task, task_dir, actor, allow_subprocess=True)
 
     schemas: list[ToolSchema] = []
@@ -223,6 +225,10 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
             if mcp_server_ref
             else None
         )
+        cap_candidates = [
+            c for c in (rich.get("output_max_chars"), overrides.get(tool_name)) if c is not None
+        ]
+        emitted_cap = min(cap_candidates) if cap_candidates else None
         schemas.append(
             ToolSchema(
                 name=tool_name,
@@ -234,7 +240,7 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
                 timeout_s=30.0,
                 source=source,
                 tool_config=configs.get(tool_name, {}),
-                output_max_chars=rich.get("output_max_chars"),
+                output_max_chars=emitted_cap,
             )
         )
     return schemas

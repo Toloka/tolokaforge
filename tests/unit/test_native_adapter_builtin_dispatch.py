@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tolokaforge.adapters._task_loader import _builtin_tool_schemas
+from tolokaforge.adapters._task_loader import _builtin_tool_schemas, load_task_yaml
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.runner.models import InvocationStyle
 
@@ -355,3 +355,155 @@ def test_native_adapter_emits_output_max_chars_on_the_wire_toolschema(monkeypatc
 
     stub = next(t for t in td.agent_tools if t.name == "stub_capped")
     assert stub.output_max_chars == 512
+
+
+# ---------------------------------------------------------------------------
+# tools.<actor>.<tool_name>.output_max_chars — task-yaml override
+# ---------------------------------------------------------------------------
+
+
+class _StubUncappedTool:
+    """Stub builtin whose ``policy`` leaves ``output_max_chars`` at ``None``."""
+
+    def __init__(self) -> None:
+        from tolokaforge.tools.registry import ToolPolicy
+
+        self.policy = ToolPolicy()
+
+    def get_schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": "stub_uncapped",
+                "description": "An uncapped stub tool.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+
+def _task_dir_with_stub_block(tmp_path: Path, tool_name: str, block: dict) -> Path:
+    """Write a minimal one-tool task.yaml under ``tmp_path`` and return its parent."""
+    task_dir = tmp_path / "override_task"
+    task_dir.mkdir()
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "task_id": "override_task",
+                "name": "override task",
+                "description": "one builtin, one block",
+                "category": "compute",
+                "max_turns": 2,
+                "interaction_mode": "conversational",
+                "initial_user_message": "poll",
+                "initial_state": {},
+                "tools": {
+                    "agent": {"enabled": [tool_name], tool_name: block},
+                    "user": {"enabled": []},
+                },
+                "actors": {"user": {"mode": "llm"}},
+            }
+        )
+    )
+    return tmp_path
+
+
+@pytest.mark.parametrize(
+    ("task_yaml_cap", "tool_name", "expected_emitted_cap"),
+    [
+        # (task_yaml_cap, tool_stub_name, expected emitted ToolSchema.output_max_chars)
+        (None, "stub_uncapped", None),  # neither axis set
+        (None, "stub_capped", 512),  # only tool-declared
+        (512, "stub_uncapped", 512),  # only task-yaml
+        (256, "stub_capped", 256),  # task-yaml tighter
+        (1024, "stub_capped", 512),  # tool-declared tighter
+        (512, "stub_capped", 512),  # equal, stable
+    ],
+    ids=[
+        "neither_set",
+        "only_tool_declared",
+        "only_task_yaml",
+        "task_yaml_tighter",
+        "tool_declared_tighter",
+        "equal",
+    ],
+)
+def test_native_adapter_composes_task_yaml_and_tool_declared_output_max_chars(
+    monkeypatch,
+    tmp_path: Path,
+    task_yaml_cap: int | None,
+    tool_name: str,
+    expected_emitted_cap: int | None,
+):
+    """The emitted ``ToolSchema.output_max_chars`` is
+    ``min(task_yaml_cap, tool_declared_cap)`` when both are set, whichever is
+    set alone otherwise, ``None`` when neither is set. Locks the composition
+    at ``native._actor_tool_schemas``.
+    """
+    from tolokaforge.tools.builtin import registry as builtin_registry
+
+    classes = {"stub_capped": _StubCappedTool, "stub_uncapped": _StubUncappedTool}
+    monkeypatch.setattr(builtin_registry, "is_builtin", lambda name: name in classes)
+    monkeypatch.setattr(builtin_registry, "get_class", lambda name: classes[name])
+
+    block: dict = {}
+    if task_yaml_cap is not None:
+        block["output_max_chars"] = task_yaml_cap
+    base_dir = _task_dir_with_stub_block(tmp_path, tool_name, block)
+    adapter = NativeAdapter({"tasks_glob": "*/task.yaml", "base_dir": str(base_dir)})
+    td = adapter.to_task_description("override_task")
+
+    tool = next(t for t in td.agent_tools if t.name == tool_name)
+    assert tool.output_max_chars == expected_emitted_cap
+
+
+def test_tool_configs_strips_output_max_chars_and_keeps_other_kwargs(tmp_path: Path):
+    """``tool_configs`` returns a mapping the runner can splat verbatim: the
+    reserved ``output_max_chars`` key never appears, and other kwargs pass
+    through unchanged.
+    """
+    from tolokaforge.adapters._task_loader import ToolActor, tool_configs
+
+    base_dir = _task_dir_with_stub_block(
+        tmp_path, "stub", {"other_kwarg": "x", "output_max_chars": 512}
+    )
+    task, _ = load_task_yaml(base_dir / "override_task" / "task.yaml")
+
+    configs = tool_configs(task, ToolActor.AGENT)
+
+    assert configs == {"stub": {"other_kwarg": "x"}}
+    assert "output_max_chars" not in configs.get("stub", {})
+
+
+def test_tool_configs_drops_entry_when_block_names_only_reserved_keys(tmp_path: Path):
+    """A block that declares nothing but reserved keys yields no entry in
+    :func:`tool_configs` — the runner receives no unknown kwargs to reject.
+    """
+    from tolokaforge.adapters._task_loader import ToolActor, tool_configs
+
+    base_dir = _task_dir_with_stub_block(tmp_path, "stub", {"output_max_chars": 512})
+    task, _ = load_task_yaml(base_dir / "override_task" / "task.yaml")
+
+    configs = tool_configs(task, ToolActor.AGENT)
+
+    assert "output_max_chars" not in configs.get("stub", {})
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [0, -1, 3.14, "512", True],
+    ids=["zero", "negative", "float", "string", "bool_true"],
+)
+def test_tool_output_max_chars_override_rejects_non_positive_int(tmp_path: Path, bad_value):
+    """A non-int, non-positive, or bool ``output_max_chars`` fails loud at
+    authoring time rather than reaching the wire as a nonsense cap.
+    """
+    from tolokaforge.adapters._task_loader import (
+        ToolActor,
+        tool_output_max_chars_overrides,
+    )
+
+    base_dir = _task_dir_with_stub_block(tmp_path, "stub", {"output_max_chars": bad_value})
+    task, _ = load_task_yaml(base_dir / "override_task" / "task.yaml")
+
+    with pytest.raises(ValueError, match=r"tools\.agent\.stub\.output_max_chars"):
+        tool_output_max_chars_overrides(task, ToolActor.AGENT)
