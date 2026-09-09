@@ -200,8 +200,8 @@ sentinel line and parses the trailing exit code.
 (`timeout_s`). This is the control the tool applies to itself; the runner's
 backstop (`ToolWrapper.effective_timeout_s`) sits a fixed grace above it, so the
 tool's own kill-safe termination is what fires. The tool's `ToolSchema.timeout_s`
-plays no part — a native pack pins it to 30 s for every builtin (#1147), which is
-why this budget is read from tool config.
+does not gate the command — `PersistentShellToolWrapper` names the tool-config
+`timeout_s` as its `own_budget_s`, which the backstop bands above.
 
 **Kill-safety.** On timeout the running command is killed (a signal to the
 foreground command's process group) **without leaking the parent shell** —

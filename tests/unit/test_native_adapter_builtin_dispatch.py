@@ -536,3 +536,93 @@ def test_tool_output_max_chars_override_rejects_non_positive_int(tmp_path: Path,
 
     with pytest.raises(ValueError, match=r"tools\.agent\.stub\.output_max_chars"):
         tool_output_max_chars_overrides(task, ToolActor.AGENT)
+
+
+# ---------------------------------------------------------------------------
+# ToolPolicy.timeout_s — adapter bridge
+# ---------------------------------------------------------------------------
+
+
+class _StubShortTimeoutTool:
+    """Stub builtin whose ``policy.timeout_s`` declares a tight per-tool budget."""
+
+    def __init__(self) -> None:
+        from tolokaforge.tools.registry import ToolPolicy
+
+        self.policy = ToolPolicy(timeout_s=5.0)
+
+    def get_schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": "stub_short_timeout",
+                "description": "A stub tool with a tight timeout.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+
+def test_builtin_tool_schemas_lifts_timeout_s_from_policy(monkeypatch):
+    """A builtin whose ``ToolPolicy`` declares a per-tool ``timeout_s`` surfaces
+    the value on the rich schema ``_builtin_tool_schemas`` returns, so
+    ``_actor_tool_schemas`` can lift it onto the emitted ``ToolSchema``.
+    """
+    from tolokaforge.tools.builtin import registry as builtin_registry
+
+    monkeypatch.setattr(builtin_registry, "is_builtin", lambda name: name == "stub_short_timeout")
+    monkeypatch.setattr(builtin_registry, "get_class", lambda name: _StubShortTimeoutTool)
+
+    schemas = _builtin_tool_schemas(["stub_short_timeout"])
+
+    assert schemas["stub_short_timeout"]["timeout_s"] == 5.0
+
+
+def test_builtin_tool_schemas_lifts_default_when_policy_is_default():
+    """A shipped builtin whose ``ToolPolicy`` leaves ``timeout_s`` at the class
+    default (30.0) surfaces 30.0 on the rich schema, so the adapter emits
+    ``ToolSchema.timeout_s == 30.0`` — matching the ``ToolPolicy.timeout_s``
+    field default. ``bash`` is the canonical example.
+    """
+    schemas = _builtin_tool_schemas(["bash"])
+
+    assert schemas["bash"]["timeout_s"] == 30.0
+
+
+def test_native_adapter_emits_declared_timeout_s_on_the_wire_toolschema(
+    monkeypatch, tmp_path: Path
+):
+    """The full adapter path: a builtin whose ``ToolPolicy.timeout_s`` is 5.0
+    surfaces on the ``ToolSchema`` NativeAdapter emits into the wire payload the
+    runner will send back at ``RegisterTrial``.
+    """
+    from tolokaforge.tools.builtin import registry as builtin_registry
+
+    monkeypatch.setattr(builtin_registry, "is_builtin", lambda name: name == "stub_short_timeout")
+    monkeypatch.setattr(builtin_registry, "get_class", lambda name: _StubShortTimeoutTool)
+
+    task_dir = tmp_path / "short_timeout_task"
+    task_dir.mkdir()
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "task_id": "short_timeout_task",
+                "name": "short-timeout task",
+                "description": "one builtin with a tight policy timeout",
+                "category": "compute",
+                "max_turns": 2,
+                "interaction_mode": "conversational",
+                "initial_user_message": "poll",
+                "initial_state": {},
+                "tools": {
+                    "agent": {"enabled": ["stub_short_timeout"]},
+                    "user": {"enabled": []},
+                },
+                "actors": {"user": {"mode": "llm"}},
+            }
+        )
+    )
+    adapter = NativeAdapter({"tasks_glob": "*/task.yaml", "base_dir": str(tmp_path)})
+    td = adapter.to_task_description("short_timeout_task")
+
+    stub = next(t for t in td.agent_tools if t.name == "stub_short_timeout")
+    assert stub.timeout_s == 5.0

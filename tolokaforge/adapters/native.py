@@ -245,7 +245,7 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
                 ),
                 parameters=rich.get("parameters", {"type": "object", "properties": {}}),
                 category="compute",
-                timeout_s=30.0,
+                timeout_s=rich.get("timeout_s", 30.0),
                 source=source,
                 tool_config=configs.get(tool_name, {}),
                 output_max_chars=emitted_cap,

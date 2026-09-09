@@ -105,11 +105,10 @@ shipped one that performs I/O does — is banded at its own budget plus a fixed
 grace instead, and this field plays no part. So a `bash_session` is bounded by
 its `tool_config.timeout_s` (ADR-0017), not by this.
 
-It is not pack-declarable either way: `NativeAdapter` builds every tool's schema
-with the model default, so a pack cannot influence the value — tracked in
-[#1147](https://github.com/Toloka/tolokaforge/issues/1147). The one budget a pack
-can set today is `bash_session`'s `tool_config.timeout_s` (see
-[`docs/TOOLS.md`](TOOLS.md)).
+`NativeAdapter` builds every builtin's schema with the tool's own
+`ToolPolicy.timeout_s`, so a builtin's declared budget reaches the runner as
+its emitted `ToolSchema.timeout_s`. The one budget a pack can set today is
+`bash_session`'s `tool_config.timeout_s` (see [`docs/TOOLS.md`](TOOLS.md)).
 
 `ToolSchema.output_max_chars` is the per-tool cap the runner returns to the
 harness for the tool's `role=tool` message content. The engine loop composes it
