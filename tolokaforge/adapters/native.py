@@ -933,6 +933,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     numeric_string_fields=list(state_checks_data.get("numeric_string_fields", [])),
                     id_fields=id_fields_declared,
                     relaxed_validation=relaxed_validation,
+                    compare_columns=state_checks_data.get("compare_columns", {}),
                 )
 
             # Build transcript rules. One model serves the authored block and the

@@ -30,9 +30,134 @@ import logging
 from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+
+class ColumnCompareRule(BaseModel):
+    """Per-(table, column) rule for the state-hash comparator.
+
+    ``mode: subset`` means the model may include keys in ``column`` beyond what
+    the golden's version of ``column`` carries — for exactly the keys named in
+    ``extras_allowed_for`` — without failing the hash. Extras not named there
+    still fail; keys the golden declares are still compared value-for-value.
+
+    Mirrors the trace comparator's ``compare_args`` shape on ``RequiredAction``:
+    the trace side declares a subset of arguments to compare, the state side
+    declares a subset of column-dict keys the model may add. Room for future
+    modes (case-insensitive, numeric-tolerant) is why this is a typed struct
+    rather than a bare ``list``.
+
+    Declared as a per-table, per-column map in ``state_checks.compare_columns``:
+
+    .. code-block:: yaml
+
+        state_checks:
+          compare_columns:
+            send_notification_notifications:
+              params:
+                mode: subset
+                extras_allowed_for: [param_case_number]
+    """
+
+    model_config = {"extra": "forbid"}
+
+    mode: Literal["subset"]
+    extras_allowed_for: list[str]
+
+
+def apply_compare_columns_extras(
+    actual: dict[str, Any],
+    expected: dict[str, Any],
+    compare_columns: dict[str, dict[str, ColumnCompareRule]] | None,
+) -> dict[str, Any]:
+    """Return ``actual`` with permitted-extra keys removed from the declared column dicts.
+
+    For each ``(table, column)`` in ``compare_columns`` with ``mode: subset``, walks
+    ``actual`` and ``expected`` in lock-step and, for every record where the actual
+    column value is a dict, drops any key in ``extras_allowed_for`` that the model
+    added but the golden did not carry. Keys the golden did declare are left in place
+    (so a value mismatch on a declared key still fails the hash). Keys outside the
+    allowlist are left in place (extras not permitted by the pack still fail).
+
+    Row pairing is strictly positional (``actual[i]`` against ``expected[i]``): the
+    state hash itself is order-sensitive on list columns, so a row-order mismatch
+    fails the hash regardless of what this filter does. The one visible consequence
+    of positional pairing is that the ``StateDiff`` reported to the author after a
+    mismatch reflects the pairing that was hashed, not a semantic id-match.
+
+    Table cases with no filter to apply:
+
+    - The rule only makes sense for dict-valued columns like tool-call ``params``.
+      A non-dict actual column value is left untouched.
+    - When the golden's row does not carry the column at all (missing or non-dict),
+      the containing hash mismatch already covers the schema difference. The rule
+      leaves the actual column unchanged: a golden with no ``params`` at all and an
+      actual with ``params: {…}`` is a schema difference the state hash fails on.
+    - Tables absent from ``actual`` or ``expected``, or with mismatched container
+      shapes (list vs dict), are skipped without error for the same reason.
+
+    Symmetric-drop escape hatches (:func:`filter_unstable_fields`) remain the right
+    tool for a column the pack wants to ignore entirely; this one is for keys the
+    prompt permits the model to add.
+
+    The returned dict is a shallow copy of ``actual`` — tables absent from
+    ``compare_columns`` share list / dict references with the input rather than
+    being deep-copied. Callers that hash the result (``compute_stable_hash``)
+    and discard it — the only supported use — are unaffected; callers that
+    mutate the returned dict must not touch untouched tables in place.
+    """
+    if not compare_columns:
+        return actual
+
+    def _filter_row_pair(
+        actual_row: Any,
+        expected_row: Any,
+        rules_with_allowed: list[tuple[str, frozenset[str]]],
+    ) -> Any:
+        if not isinstance(actual_row, dict) or not isinstance(expected_row, dict):
+            return actual_row
+        filtered = dict(actual_row)
+        for column, allowed in rules_with_allowed:
+            actual_col = filtered.get(column)
+            expected_col = expected_row.get(column)
+            if not isinstance(actual_col, dict) or not isinstance(expected_col, dict):
+                continue
+            filtered[column] = {
+                k: v for k, v in actual_col.items() if not (k in allowed and k not in expected_col)
+            }
+        return filtered
+
+    result = dict(actual)
+    for table, column_rules in compare_columns.items():
+        if not column_rules:
+            continue
+        # Materialize allowlist once per rule as a frozenset — O(1) membership
+        # inside the inner comprehension, regardless of extras_allowed_for length.
+        rules_with_allowed: list[tuple[str, frozenset[str]]] = [
+            (column, frozenset(rule.extras_allowed_for))
+            for column, rule in column_rules.items()
+            if rule.mode == "subset"
+        ]
+        if not rules_with_allowed:
+            continue
+        actual_table = result.get(table)
+        expected_table = expected.get(table)
+        if actual_table is None or expected_table is None:
+            continue
+        if isinstance(actual_table, list) and isinstance(expected_table, list):
+            paired: list[Any] = []
+            for i, actual_row in enumerate(actual_table):
+                expected_row = expected_table[i] if i < len(expected_table) else {}
+                paired.append(_filter_row_pair(actual_row, expected_row, rules_with_allowed))
+            result[table] = paired
+        elif isinstance(actual_table, dict) and isinstance(expected_table, dict):
+            result[table] = _filter_row_pair(actual_table, expected_table, rules_with_allowed)
+    return result
+
 
 # Cap the work spent deciding whether a string is a number: no real amount,
 # quantity, or id is this long, and it bounds pathological inputs.

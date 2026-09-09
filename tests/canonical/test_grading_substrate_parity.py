@@ -355,6 +355,7 @@ _TRACE_CONFIG_INPUT_KEYS: tuple[str, ...] = (
 _NON_TRACKED_FIELD_RESOLUTION_KEYS = frozenset(
     {
         "combine.pass_threshold",
+        "state_checks.compare_columns",
         "state_checks.hash.description",
         "state_checks.id_fields",
         "state_checks.relaxed_validation",
