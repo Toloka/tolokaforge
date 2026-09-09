@@ -492,19 +492,12 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
     GradingKey(
         author_key="state_checks.compare_columns",
         kind=KeyKind.CONFIG_INPUT,
-        coverage=SubstrateCoverage.CORE_ONLY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
         core_field="StateChecksConfig.compare_columns",
         runner_field="RunnerStateChecksConfig.compare_columns",
         core_evaluator="tolokaforge.core.hash.apply_compare_columns_extras",
-        tracking_issue=1558,
-        reason=(
-            "wired on the core grading path (combine.py -> "
-            "state_checks.py::check_hash_against_golden_replay); the runner-side "
-            "hash grading path (_execute_hash_grading via db-service "
-            "get_stable_hash) does not yet apply the filter — accepted on the "
-            "wire for round-trip fidelity, consumed by the core substrate only"
-        ),
+        runner_evaluator="tolokaforge.runner.service.RunnerServiceImpl._execute_hash_grading",
     ),
     GradingKey(
         author_key="state_checks.db_probes",

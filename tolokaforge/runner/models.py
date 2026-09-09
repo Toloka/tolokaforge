@@ -475,12 +475,12 @@ class RunnerStateChecksConfig(BaseModel):
     # value-for-value; extras outside the allowlist still fail. Mirrors the trace
     # comparator's ``compare_args`` shape (see :class:`ColumnCompareRule`).
     #
-    # Consumed on the core / frozen_mcp_core grading path
-    # (``combine.py`` -> ``state_checks.py::check_hash_against_golden_replay``).
-    # The runner-side hash grading path (``_execute_hash_grading`` via db-service
-    # ``get_stable_hash``) does not yet apply this filter — accepted on the wire
-    # for round-trip fidelity, consumed by the core substrate only. Runner-path
-    # wiring is tracked in #1558.
+    # Consumed on both substrates. Core path:
+    # ``combine.py`` -> ``state_checks.py::check_hash_against_golden_replay`` —
+    # filter runs before the two-sided digest. Runner path: ``_grade_hash``
+    # detects a non-empty config and switches from the server-side
+    # ``get_stable_hash`` fast path to a client-side raw-state fetch + local
+    # hash so the asymmetric filter has both sides.
     compare_columns: dict[str, dict[str, ColumnCompareRule]] = Field(default_factory=dict)
 
     # JSONPath assertions

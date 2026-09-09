@@ -80,6 +80,7 @@ from tolokaforge.core.models import (
     TraceChecksConfig,
     TraceConstraint,
     TraceConstraintExpr,
+    TraceConstraintSeverity,
     TraceMatcher,
     TranscriptRulesConfig,
     ValuePredicate,
@@ -994,6 +995,7 @@ def inspect_grading_authoring(
         _check_state_reads_a_database_the_task_seeds(grading, seeded_tables),
         _check_jsonpaths_address_a_reachable_state(grading),
         _check_path_glob_is_compared_the_way_the_runner_reads_it(grading),
+        _check_severity_gate_default_on_missing_is_risky(constraints),
     ]
     if inventory.known:
         reports += [
@@ -2473,6 +2475,43 @@ def _tool_names_asserted_by(predicate: ValuePredicate) -> tuple[str, ...]:
     if predicate.in_ is not None:
         named += [value for value in predicate.in_ if isinstance(value, str)]
     return tuple(named)
+
+
+_SEVERITY_GATE_DEFAULT_FAIL_ADVISORY = (
+    "{where}: severity: gate with default on_missing: fail collapses the whole "
+    "trace_checks component to 0.0 if the anchor's tool errors at runtime — a "
+    "silent tool error becomes a load-bearing verdict. Declare on_missing: "
+    "withhold on this constraint if the anchor's tool can error, or on_missing: "
+    "fail explicitly to accept the risk. See the trace_checks on-missing docs."
+)
+
+
+def _check_severity_gate_default_on_missing_is_risky(
+    constraints: Iterable[tuple[str, TraceConstraint]],
+) -> AuthoringReport:
+    """Advisory: ``severity: gate`` + defaulted ``on_missing`` is the shape where a
+    silent tool error on the anchor zeroes the whole trace_checks component.
+
+    An unmatched-anchor verdict resolves to :attr:`OnMissing.FAIL` by default; on a
+    ``severity: gate`` constraint, that FAIL closes the gate and the composite
+    collapses. Authors who mean "the anchor's tool must have succeeded for this to
+    grade" write it that way explicitly (``on_missing: fail``); the risky shape is
+    the defaulted case, where the pack accepts the FAIL semantics by omission
+    rather than by choice. The advisory names the constraint and points at
+    ``on_missing: withhold`` as the fix when the anchor's tool can silently error
+    (rate limit, connector timeout, unavailable KB).
+
+    Advisory only — no error, since a gate whose anchor is a deterministic action
+    is a legitimate shape and this rule cannot tell the two apart at authoring
+    time. See the on-missing docs on
+    :class:`~tolokaforge.runner.models.OnMissing` for the runtime semantics.
+    """
+    advisories = tuple(
+        Finding(where, _SEVERITY_GATE_DEFAULT_FAIL_ADVISORY.format(where=where))
+        for where, constraint in constraints
+        if constraint.severity is TraceConstraintSeverity.GATE and constraint.on_missing is None
+    )
+    return AuthoringReport(advisories=advisories)
 
 
 def _trace_constraints(grading: Mapping[str, Any]) -> Iterator[tuple[str, TraceConstraint]]:

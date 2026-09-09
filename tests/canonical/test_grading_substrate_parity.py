@@ -308,11 +308,7 @@ _ARCHITECTURAL_EXEMPTIONS = frozenset(
 )
 
 # Non-BOTH keys that should be both and are not yet. tracking_issue is required.
-_DRIFT_EXEMPTIONS: frozenset[str] = frozenset(
-    {
-        "state_checks.compare_columns",
-    }
-)
+_DRIFT_EXEMPTIONS: frozenset[str] = frozenset()
 
 # Scored keys that claim both substrates but are not differentially proven
 # in-process. A key added here is a key whose parity claim rests on field
@@ -359,6 +355,7 @@ _TRACE_CONFIG_INPUT_KEYS: tuple[str, ...] = (
 _NON_TRACKED_FIELD_RESOLUTION_KEYS = frozenset(
     {
         "combine.pass_threshold",
+        "state_checks.compare_columns",
         "state_checks.hash.description",
         "state_checks.id_fields",
         "state_checks.relaxed_validation",

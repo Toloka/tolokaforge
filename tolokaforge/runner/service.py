@@ -72,6 +72,7 @@ from tolokaforge.core.grading.trace_timeline import (
     build_timeline_from_wire,
 )
 from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcher
+from tolokaforge.core.hash import apply_compare_columns_extras, compute_stable_hash
 from tolokaforge.core.models import (
     CriterionResult,
     LLMJudgeConfig,
@@ -2660,6 +2661,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             state_checks.golden_actions if basis is HashComparisonBasis.GOLDEN_REPLAY else []
         )
         numeric_string_fields = state_checks.numeric_string_fields
+        compare_columns = state_checks.compare_columns
+        # When the pack declared per-column subset rules we defer hashing until
+        # after the golden replay so both raw states are in hand and the
+        # asymmetric filter has both sides. Fast server-side get_stable_hash is
+        # preserved for the common empty-compare_columns case.
+        client_side_hash = bool(compare_columns)
         resolved_tool_names = resolve_golden_action_names(
             [action.tool_name for action in golden_actions],
             candidates=trial_context.agent_tools.keys(),
@@ -2684,10 +2691,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 logger.error(f"GradeTrial: Failed to sync MCP state before trial_hash: {e}")
                 raise
 
-        trial_hash = await self.db_client.get_stable_hash(
-            trial_id, numeric_string_fields=numeric_string_fields
-        )
-        logger.debug(f"GradeTrial: Trial hash = {trial_hash[:16]}...")
+        # Fast path: hash server-side. Slow path (compare_columns declared):
+        # fetch raw state now and defer hashing until we hold both sides.
+        trial_hash: str | None = None
+        trial_state_raw: dict[str, Any] | None = None
+        if client_side_hash:
+            trial_state_response = await self.db_client.get_stable_state(trial_id)
+            trial_state_raw = trial_state_response.data
+            logger.debug("GradeTrial: Trial state fetched (deferred hashing for compare_columns)")
+        else:
+            trial_hash = await self.db_client.get_stable_hash(
+                trial_id, numeric_string_fields=numeric_string_fields
+            )
+            logger.debug(f"GradeTrial: Trial hash = {trial_hash[:16]}...")
 
         # 2. Snapshot current state
         await self.db_client.create_snapshot(trial_id, "pre_golden")
@@ -2780,12 +2796,30 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         await self.db_client.create_snapshot(trial_id, "golden_result")
         logger.debug("GradeTrial: Created snapshot 'golden_result'")
 
-        # 6. Get golden stable hash
-        # get_stable_hash returns the hash string directly
-        golden_hash = await self.db_client.get_stable_hash(
-            trial_id, numeric_string_fields=numeric_string_fields
-        )
-        logger.debug(f"GradeTrial: Golden hash = {golden_hash[:16]}...")
+        # 6. Get golden stable hash.
+        # Slow path (compare_columns): fetch the golden raw state, apply the
+        # asymmetric filter to trial_state_raw against it, then hash both
+        # client-side so a model-added key the pack declared permitted-extra
+        # does not fail an otherwise-matching state. Fast path unchanged.
+        if client_side_hash:
+            golden_state_response = await self.db_client.get_stable_state(trial_id)
+            golden_state_raw = golden_state_response.data
+            assert trial_state_raw is not None  # set in step 1 slow-path branch
+            trial_state_filtered = apply_compare_columns_extras(
+                trial_state_raw, golden_state_raw, compare_columns
+            )
+            hash_kwargs = {"numeric_string_fields": list(numeric_string_fields or [])}
+            trial_hash = compute_stable_hash(trial_state_filtered, **hash_kwargs)
+            golden_hash = compute_stable_hash(golden_state_raw, **hash_kwargs)
+            logger.debug(
+                f"GradeTrial: Client-side hashes computed (compare_columns applied) "
+                f"— trial={trial_hash[:16]}... golden={golden_hash[:16]}..."
+            )
+        else:
+            golden_hash = await self.db_client.get_stable_hash(
+                trial_id, numeric_string_fields=numeric_string_fields
+            )
+            logger.debug(f"GradeTrial: Golden hash = {golden_hash[:16]}...")
 
         # 7. Restore trial state
         await self.db_client.restore_snapshot(trial_id, "pre_golden")
