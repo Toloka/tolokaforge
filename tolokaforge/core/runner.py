@@ -9,6 +9,7 @@ from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.reply_guard import UserReplyRefused
 from tolokaforge.core.actors.turn_policy import TurnPolicy, TurnState
 from tolokaforge.core.llm import SIMULATOR_GREETING, GenerationResult, LLMClient, UserSimulator
+from tolokaforge.core.llm.client import ParserError
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
 from tolokaforge.core.logging_context import trial_id_scope
 from tolokaforge.core.loop import (
@@ -23,6 +24,7 @@ from tolokaforge.core.models import (
     Message,
     MessageRole,
     Metrics,
+    ParserErrorRecord,
     RateLimitProbeBucketMetrics,
     RateLimitProbeRoleMetrics,
     RecordedToolCall,
@@ -1077,6 +1079,19 @@ class _AgentMetricsSink(MetricsSink):
 
     def record_tool_call(self) -> None:
         self._metrics.tool_calls += 1
+
+    def record_tool_output_truncated(self, omitted_chars: int) -> None:
+        self._metrics.tool_output_chars_truncated += omitted_chars
+
+    def record_parser_errors(self, errors: tuple[ParserError, ...]) -> None:
+        self._metrics.parser_errors.extend(
+            ParserErrorRecord(
+                tool_name=e.tool_name,
+                raw_arguments=e.raw_arguments,
+                reason=e.reason,
+            )
+            for e in errors
+        )
 
     @property
     def last_prompt_tokens(self) -> int | None:

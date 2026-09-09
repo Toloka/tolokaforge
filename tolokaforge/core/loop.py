@@ -249,6 +249,28 @@ class MetricsSink(Protocol):
     def last_prompt_tokens(self) -> int | None:
         return None
 
+    def record_tool_output_truncated(self, omitted_chars: int) -> None:
+        """Accumulate a per-trial count of characters clipped from tool outputs.
+
+        The loop calls this every time ``_cap_tool_message_content`` actually
+        elides a ``role=tool`` message. A trial with the cumulative count at
+        zero saw no truncation, either because no cap fired or because every
+        raw output fit within the effective cap. Default no-op so a sink that
+        does not track truncation stays satisfied.
+        """
+        return None
+
+    def record_parser_errors(self, errors: tuple[ParserError, ...]) -> None:
+        """Persist per-turn ``tool_call.function.arguments`` parse errors.
+
+        The loop calls this on every generation whose ``parser_errors``
+        sidecar is non-empty, regardless of whether ``parser_error_retry_count``
+        subsequently resamples. Downstream analytics reads the persisted
+        record to decide per-preset opt-in for the parser-error retry seam
+        (see issue #1521). Default no-op keeps the Protocol backward-compatible.
+        """
+        return None
+
 
 ErrorClassifier = Callable[[Exception], TerminationDecision]
 """One-arg callable ``ToolCallingLoop`` invokes on a turn-loop exception.
@@ -573,6 +595,8 @@ class ToolCallingLoop:
             self._assign_call_ids(result)
             self._capture_effective_prompt(result)
             self.metrics.record_generation(result)
+            if result.parser_errors:
+                self.metrics.record_parser_errors(result.parser_errors)
             self._log_generation(turn, result)
 
             if result.text or result.tool_calls:
@@ -884,6 +908,7 @@ class ToolCallingLoop:
         effective = min(candidates)
         capped, omitted = keep_head_and_tail(raw, effective)
         if omitted:
+            self.metrics.record_tool_output_truncated(omitted)
             self.logger.info(
                 "Capped tool output before append",
                 tool=tool_name,
