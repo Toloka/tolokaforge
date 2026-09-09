@@ -86,7 +86,10 @@ from tolokaforge.core.models import (
     ValuePredicate,
 )
 from tolokaforge.runner.id_resolution import IdFieldResolutionError, id_fields_findings
-from tolokaforge.runner.models import TRACE_PREDICATE_BINDING_OPERATORS
+from tolokaforge.runner.models import (
+    _KINDS_WITHOUT_AN_ANCHOR,
+    TRACE_PREDICATE_BINDING_OPERATORS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2510,6 +2513,11 @@ def _check_severity_gate_default_on_missing_is_risky(
         Finding(where, _SEVERITY_GATE_DEFAULT_FAIL_ADVISORY.format(where=where))
         for where, constraint in constraints
         if constraint.severity is TraceConstraintSeverity.GATE and constraint.on_missing is None
+        # The advisory speaks about an "anchor's tool" erroring silently, which
+        # only applies to kinds that read a matched anchor. Anchorless kinds
+        # (``present`` / ``absent`` / ``count``) have no anchor to error on —
+        # skip them so the advisory reads truthfully.
+        and bool(constraint.require.kinds_in_tree() - _KINDS_WITHOUT_AN_ANCHOR)
     )
     return AuthoringReport(advisories=advisories)
 

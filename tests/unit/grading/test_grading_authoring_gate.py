@@ -676,7 +676,22 @@ _RULES: tuple[_Rule, ...] = (
                         "id": "probe",
                         "description": "a probe constraint",
                         "severity": "gate",
-                        "require": {"present": {"match": _tool_call("http_request")}},
+                        # Anchored kind (``before``) so the advisory fires — the
+                        # advisory is scoped to constraints that read an anchor
+                        # whose tool can silently error. Two different matchers
+                        # so the two-quantifier validator accepts the shape.
+                        "require": {
+                            "before": {
+                                "left": {
+                                    "quantifier": "any",
+                                    "match": _tool_call("http_request"),
+                                },
+                                "right": {
+                                    "quantifier": "first",
+                                    "match": _tool_call("write_file"),
+                                },
+                            }
+                        },
                     }
                 ]
             }

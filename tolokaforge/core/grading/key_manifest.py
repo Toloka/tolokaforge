@@ -497,7 +497,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="StateChecksConfig.compare_columns",
         runner_field="RunnerStateChecksConfig.compare_columns",
         core_evaluator="tolokaforge.core.hash.apply_compare_columns_extras",
-        runner_evaluator="tolokaforge.runner.service.RunnerServiceImpl._execute_hash_grading",
+        runner_evaluator="tolokaforge.runner.service.RunnerServiceImpl.GradeTrial",
     ),
     GradingKey(
         author_key="state_checks.db_probes",

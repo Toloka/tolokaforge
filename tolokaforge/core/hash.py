@@ -103,6 +103,12 @@ def apply_compare_columns_extras(
     Symmetric-drop escape hatches (:func:`filter_unstable_fields`) remain the right
     tool for a column the pack wants to ignore entirely; this one is for keys the
     prompt permits the model to add.
+
+    The returned dict is a shallow copy of ``actual`` — tables absent from
+    ``compare_columns`` share list / dict references with the input rather than
+    being deep-copied. Callers that hash the result (``compute_stable_hash``)
+    and discard it — the only supported use — are unaffected; callers that
+    mutate the returned dict must not touch untouched tables in place.
     """
     if not compare_columns:
         return actual

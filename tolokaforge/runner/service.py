@@ -1380,7 +1380,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 if hidden > 0:
                     error_message = (
                         f"Tool '{tool_name}' not found. Did you mean one of: {hint} "
-                        f"(and {hidden} more registered with the same suffix)?"
+                        f"(and {hidden} more registered name(s) whose suffix or "
+                        f"infix matches — cap {len(candidates)})?"
                     )
                 else:
                     error_message = f"Tool '{tool_name}' not found. Did you mean: {hint}?"
@@ -2669,8 +2670,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # When the pack declared per-column subset rules we defer hashing until
         # after the golden replay so both raw states are in hand and the
         # asymmetric filter has both sides. Fast server-side get_stable_hash is
-        # preserved for the common empty-compare_columns case.
-        client_side_hash = bool(compare_columns)
+        # preserved for the common empty-compare_columns case AND for the
+        # inert-declaration case (``{table: {}}``) — an outer dict with no rules
+        # inside is behaviourally identical to no config at all.
+        client_side_hash = any(column_rules for column_rules in compare_columns.values())
         resolved_tool_names = resolve_golden_action_names(
             [action.tool_name for action in golden_actions],
             candidates=trial_context.agent_tools.keys(),
@@ -2805,6 +2808,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # asymmetric filter to trial_state_raw against it, then hash both
         # client-side so a model-added key the pack declared permitted-extra
         # does not fail an otherwise-matching state. Fast path unchanged.
+        trial_state_filtered: dict[str, Any] | None = None
+        golden_state_raw: dict[str, Any] | None = None
         if client_side_hash:
             golden_state_response = await self.db_client.get_stable_state(trial_id)
             golden_state_raw = golden_state_response.data
@@ -2812,9 +2817,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_state_filtered = apply_compare_columns_extras(
                 trial_state_raw, golden_state_raw, compare_columns
             )
-            hash_kwargs = {"numeric_string_fields": list(numeric_string_fields or [])}
-            trial_hash = compute_stable_hash(trial_state_filtered, **hash_kwargs)
-            golden_hash = compute_stable_hash(golden_state_raw, **hash_kwargs)
+            trial_hash = compute_stable_hash(
+                trial_state_filtered, numeric_string_fields=numeric_string_fields
+            )
+            golden_hash = compute_stable_hash(
+                golden_state_raw, numeric_string_fields=numeric_string_fields
+            )
             logger.debug(
                 f"GradeTrial: Client-side hashes computed (compare_columns applied) "
                 f"— trial={trial_hash[:16]}... golden={golden_hash[:16]}..."
@@ -2832,22 +2840,27 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # 8. Compare hashes
         hash_match = trial_hash == golden_hash
 
-        # 9. If mismatch, compute state diff
+        # 9. If mismatch, compute state diff. Slow path already holds both raw
+        # states — reuse them (and the filtered trial view so the diff matches
+        # what the hash verdict was computed against); fast path fetches now.
         state_diff: StateDiff | None = None
         if not hash_match:
             logger.info("GradeTrial: Hash mismatch, computing state diff")
 
-            # Get trial state
-            trial_state_response = await self.db_client.get_stable_state(trial_id)
-            trial_state = trial_state_response.data
+            if client_side_hash:
+                assert trial_state_filtered is not None
+                assert golden_state_raw is not None
+                trial_state = trial_state_filtered
+                golden_state = golden_state_raw
+            else:
+                trial_state_response = await self.db_client.get_stable_state(trial_id)
+                trial_state = trial_state_response.data
 
-            # Restore golden state and get it
-            await self.db_client.restore_snapshot(trial_id, "golden_result")
-            golden_state_response = await self.db_client.get_stable_state(trial_id)
-            golden_state = golden_state_response.data
+                await self.db_client.restore_snapshot(trial_id, "golden_result")
+                golden_state_response = await self.db_client.get_stable_state(trial_id)
+                golden_state = golden_state_response.data
 
-            # Restore trial state again
-            await self.db_client.restore_snapshot(trial_id, "pre_golden")
+                await self.db_client.restore_snapshot(trial_id, "pre_golden")
 
             # Compute diff using grading module (returns StateDiff model directly)
             state_diff = compute_state_diff(trial_state, golden_state)
