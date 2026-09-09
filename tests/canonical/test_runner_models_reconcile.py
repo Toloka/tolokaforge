@@ -422,3 +422,81 @@ def test_task_description_json_wire_shape_uses_flat_wire_field_names():
     # spelling (``func_name``) differs from both.
     for action in dumped["initialization_actions"]:
         assert "tool_name" in action
+
+
+# ────────────────────────────────────────────────────────────────
+# ToolSchema.output_max_chars — proto + JSON round-trip
+# ────────────────────────────────────────────────────────────────
+
+
+def test_tool_schema_output_max_chars_round_trips_across_proto_wire() -> None:
+    """A per-tool cap set by the runner survives serialise/deserialise on the
+    proto wire and lands as ``schema.output_max_chars == 1024`` on the host.
+    """
+    from tolokaforge.runner import runner_pb2
+
+    src = runner_pb2.ToolSchema(
+        name="poll_status",
+        description="Poll the current status.",
+        parameters_json="{}",
+        category="read",
+        timeout_s=5.0,
+        output_max_chars=1024,
+    )
+    reparsed = runner_pb2.ToolSchema.FromString(src.SerializeToString())
+
+    assert reparsed.HasField("output_max_chars")
+    assert reparsed.output_max_chars == 1024
+
+
+def test_tool_schema_output_max_chars_unset_arrives_as_none_not_zero() -> None:
+    """An unset ``output_max_chars`` reaches the harness as ``None`` — the
+    proto3 ``optional`` presence bit distinguishes "not declared" from a
+    scalar-default ``0`` that would read as "clip to zero chars".
+    """
+    from tolokaforge.runner import runner_pb2
+
+    src = runner_pb2.ToolSchema(
+        name="unbounded",
+        description="No declared bound.",
+        parameters_json="{}",
+        category="compute",
+        timeout_s=30.0,
+    )
+    reparsed = runner_pb2.ToolSchema.FromString(src.SerializeToString())
+
+    assert not reparsed.HasField("output_max_chars")
+
+
+def test_tool_schema_pydantic_output_max_chars_serialises_as_null_when_unset() -> None:
+    """The runner-side Pydantic ``ToolSchema`` serialises an unset
+    ``output_max_chars`` as JSON ``null`` — this is the shape canonical
+    snapshots record and the shape the detached grader's ``TaskDescription.
+    model_validate`` reads back.
+    """
+    from tolokaforge.runner.models import ToolSchema as PydanticToolSchema
+
+    schema = PydanticToolSchema(
+        name="poll_status",
+        description="Poll the current status.",
+        parameters={"type": "object", "properties": {}},
+    )
+    dumped = schema.model_dump(mode="json")
+
+    assert "output_max_chars" in dumped
+    assert dumped["output_max_chars"] is None
+
+
+def test_tool_schema_pydantic_output_max_chars_round_trips_a_set_cap() -> None:
+    """A declared cap survives ``model_dump`` → ``model_validate`` unchanged."""
+    from tolokaforge.runner.models import ToolSchema as PydanticToolSchema
+
+    schema = PydanticToolSchema(
+        name="poll_status",
+        description="Poll the current status.",
+        parameters={"type": "object", "properties": {}},
+        output_max_chars=512,
+    )
+    rebuilt = PydanticToolSchema.model_validate(schema.model_dump(mode="json"))
+
+    assert rebuilt.output_max_chars == 512

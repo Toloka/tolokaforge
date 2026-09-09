@@ -1094,6 +1094,7 @@ def _builtin_tool_schemas(
             schemas[name] = {
                 "description": func_def.get("description", f"Builtin tool: {name}"),
                 "parameters": func_def.get("parameters", {"type": "object", "properties": {}}),
+                "output_max_chars": tool.policy.output_max_chars,
             }
         except Exception as exc:
             logger.debug("Could not load builtin schema", tool_name=name, error=str(exc))

@@ -110,6 +110,14 @@ message ToolSchema {
   string category = 4;
   // Timeout override for this specific tool
   double timeout_s = 5;
+
+  // Per-tool cap on the role=tool message content the engine loop appends,
+  // lifted from ToolPolicy.output_max_chars. Composed with the per-model
+  // ModelCapabilities.tool_output_max_chars as min(tool_cap, capability_cap):
+  // the tighter set cap wins per call. Optional (proto3): a runner predating
+  // this field, or a tool whose policy does not name a cap, sends nothing and
+  // the harness reads that as no per-tool cap.
+  optional int32 output_max_chars = 6;
 }
 
 // =============================================================================

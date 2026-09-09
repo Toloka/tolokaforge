@@ -236,6 +236,11 @@ message ToolSchema {
   string category = 4;
   // Timeout override for this specific tool
   double timeout_s = 5;
+  // Per-tool cap on the role=tool message content the engine loop appends,
+  // composed with the per-model ModelCapabilities.tool_output_max_chars as
+  // min(tool_cap, capability_cap). Optional (proto3): unset arrives as
+  // Python None on the host and reads as "no per-tool cap".
+  optional int32 output_max_chars = 6;
 }
 
 // =============================================================================
@@ -700,6 +705,19 @@ the payload did not configure. A payload that configures a component and omits i
 weight therefore reaches the `MissingComponentWeight` row below at grade time rather
 than being folded at a share nobody sent. A payload configuring nothing and weighting
 nothing is the deliberately non-scoring shape and grades `(1.0, True)`.
+
+#### ToolSchema.output_max_chars
+
+Each `ToolSchema` the runner returns in `RegisterTrialResponse.tool_schemas` may
+carry an optional `output_max_chars: int` — the per-tool cap the runner lifts
+from `ToolPolicy.output_max_chars` for the corresponding tool. The harness reads
+it back (via `HasField`) and threads it into the engine loop, where the loop
+composes it with the per-model
+[`ModelCapabilities.tool_output_max_chars`](LLM_LAYER.md#tool-output-truncation)
+as `min(tool_cap, capability_cap)`: the tighter set cap wins per call. Absent
+the field the harness reads `None` and defers to the per-model cap alone. The
+field is proto3-`optional` so a runner that does not carry it sends nothing and
+the harness reads it as no per-tool cap declared, without a version bump.
 
 ### ExecuteToolRequest/Response
 

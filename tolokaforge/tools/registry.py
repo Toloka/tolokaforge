@@ -195,6 +195,22 @@ class ToolPolicy(BaseModel):
     cost_weight: float = 1.0
     category: ToolCategory = ToolCategory.COMPUTE
 
+    output_max_chars: int | None = None
+    """Per-tool cap on the ``role=tool`` message content the loop appends.
+
+    Declared here so a tool whose output has a known bound (a fixed-format
+    status poll, a schema-shaped API response) tells the loop directly, without
+    routing through the per-model backstop on
+    :class:`~tolokaforge.core.model_capabilities.ModelCapabilities`. The loop
+    composes the two by taking the tighter cap at the message-append site: the
+    per-tool cap wins when it is the smaller of the two, the per-model cap wins
+    when it is smaller, and either present cap applies alone when the other is
+    ``None``. ``None`` (the default) opts out of per-tool capping and defers to
+    whatever the per-model cap says. The trial's tool-call record and the
+    grader inputs run against the untruncated tool output — see
+    :meth:`~tolokaforge.core.loop.ToolCallingLoop._cap_tool_message_content`.
+    """
+
 
 class ToolResult(BaseModel):
     """Result from tool execution"""
@@ -328,6 +344,21 @@ class ToolRegistry:
     def reset_counts(self) -> None:
         """Reset call counts (per trial)"""
         self._call_counts = dict.fromkeys(self._tools.keys(), 0)
+
+    def output_max_chars_by_tool(self) -> dict[str, int]:
+        """Per-tool ``ToolPolicy.output_max_chars`` map, keyed by tool name.
+
+        Entries appear only for tools whose policy names a cap; a tool with
+        ``output_max_chars=None`` is absent from the map so the loop's
+        min-of-both selection at the message-append site sees only real
+        candidates. The judge and the runner-side conductor both consume this
+        map when constructing a :class:`~tolokaforge.core.loop.ToolCallingLoop`.
+        """
+        return {
+            name: tool.policy.output_max_chars
+            for name, tool in self._tools.items()
+            if tool.policy.output_max_chars is not None
+        }
 
 
 @runtime_checkable
