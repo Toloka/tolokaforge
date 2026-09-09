@@ -201,6 +201,21 @@ def _actor_routes_a_compose_variant(task: Any, actor: ToolActor) -> bool:
     return False
 
 
+def _run_uses_coding_harness(config: "RunConfig") -> bool:
+    """Return True iff the run config selects a coding-harness CLI.
+
+    A native coding-harness pack drives its bash tool through
+    ``docker compose exec`` (the mixin's harness tool schema uses the
+    ``docker_compose_exec`` invocation style). The runner container therefore
+    needs the docker CLI even though ``NativeAdapter.requires_docker_cli_in_
+    runner`` is ``False`` at class level. Terminal-bench's own flag already
+    forces the CLI in, so this predicate is the shipped route for the native
+    harness case.
+    """
+    agent_model = config.models.get("agent") if config.models else None
+    return agent_model is not None and agent_model.harness is not None
+
+
 def _run_needs_docker_cli(adapter_type: str | None, tasks: list[Any]) -> bool:
     """Return True iff the run needs the docker CLI baked into the runner image.
 
@@ -1424,7 +1439,8 @@ class Orchestrator:
                 seeds=self._project_seed_registry(),
                 log_capture=log_capture,
                 events=self._events,
-                mount_docker_socket=_run_needs_docker_cli(adapter_type, self.tasks),
+                mount_docker_socket=_run_needs_docker_cli(adapter_type, self.tasks)
+                or _run_uses_coding_harness(self.config),
                 per_trial_mode=per_trial_mode,
                 connect_timeout_s=connect_timeout_s,
                 connect_retry_interval_s=connect_retry_interval_s,
@@ -2482,10 +2498,13 @@ class Orchestrator:
                     if self.config.evaluation.harness_adapter
                     else None
                 )
-                if _run_needs_docker_cli(adapter_type, self.tasks):
+                if _run_needs_docker_cli(adapter_type, self.tasks) or _run_uses_coding_harness(
+                    self.config
+                ):
                     self.logger.info(
                         "Docker CLI required in runner image "
-                        "(terminal-bench adapter or compose-variant tools detected)"
+                        "(terminal-bench adapter, compose-variant tools, "
+                        "or coding-harness mode detected)"
                     )
                     core_stack_kwargs["enable_docker_cli"] = True
                     # Fail loud before any container work: INSTALL_DOCKER_CLI

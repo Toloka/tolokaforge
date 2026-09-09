@@ -22,6 +22,7 @@ tools:
   user:
     enabled: []
 environment_manifest:
+  network_policy: full_internet
   stack:
     compose_file: "./docker-compose.yaml"
     runner_service: "main"

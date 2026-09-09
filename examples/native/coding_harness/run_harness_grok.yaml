@@ -5,10 +5,14 @@ models:
   agent:
     provider: "openrouter"
     name: "openrouter/x-ai/grok-4.3"
-    coding_harness: "grok-build"
+    harness: "grok-build"
     temperature: 0.0
     max_tokens: 4096
 
+  user:
+    provider: "openrouter"
+    name: "openrouter/anthropic/claude-sonnet-4-6"
+    temperature: 0.0
 compute:
   workers: 1
 
