@@ -217,11 +217,27 @@ def test_full_stack_mock_web_pins_build_context():
 
 
 def test_full_stack_rag_service_pins_build_context():
-    """``rag-service`` context_files contains the resolved wheel (for
-    ``import tolokaforge.secrets``) and the service's own directory."""
+    """``rag-service`` declares ``context_files`` so its image-content-hash
+    only depends on service-owned source (same rationale as
+    :func:`test_full_stack_mock_web_pins_build_context` — a whole-repo
+    fallback re-fires the cache on every unrelated edit).
+
+    Checked by set-equality against every path the rag Dockerfile COPYs:
+    the resolved tolokaforge wheel (absolute host path, so only its
+    ``.whl`` shape is asserted, not the path itself) plus the three fixed
+    source trees the ``sibling-wheel-builder`` stage compiles in-container.
+    A new entry appearing here means either (a) an intentional Dockerfile
+    COPY was added and this set needs updating alongside, or (b) a
+    whole-repo-hash regression this test catches on the way in.
+    """
     stack = full_stack()
     rag_service = stack.services.get("rag-service")
     assert rag_service is not None
-    assert len(rag_service.context_files) == 2
-    assert rag_service.context_files[0].endswith(".whl")
-    assert rag_service.context_files[1] == "tolokaforge/env/rag_service/"
+    ctx = set(rag_service.context_files)
+    wheel_entries = {e for e in ctx if e.endswith(".whl")}
+    assert len(wheel_entries) == 1, f"expected one wheel entry, got {sorted(wheel_entries)}"
+    assert ctx - wheel_entries == {
+        "tolokaforge/env/rag_service/",
+        "tolokaforge_models/",
+        "tolokaforge_coding_harnesses/",
+    }

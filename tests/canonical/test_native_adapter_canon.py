@@ -80,24 +80,37 @@ class TestNativeAdapterCanon:
 
 
 class TestWidgetsIdFieldsCanon:
-    """Canonical coverage for a table keyed by a non-``id`` column.
+    """Coverage for a table keyed by a non-``id`` column.
 
     ``widgets_id_fields`` declares the single-field string form
     (``id_fields: {widgets: widget_id}``); ``widgets_composite_id_fields``
     declares the ordered-list form (``id_fields: {widgets: [line, slot]}``).
-    Each snapshot pins the serialized shape that crosses to the runner —
-    a string must stay a bare string, a composite key a JSON array.
+    The invariant that crosses to the runner is the shape of that value —
+    a bare string for the single-key form, a JSON array for the composite
+    form. Asserted directly here rather than via a snapshot of the whole
+    ``GradingConfig`` dump; unrelated additions to the config schema
+    (e.g. new default fields) do not affect this test.
     """
 
-    def test_grading_config(self, native_adapter, canon_snapshot):
+    def test_grading_config(self, native_adapter):
+        """widgets_id_fields → ``id_fields[widgets]`` is a bare string."""
         grading = native_adapter.get_grading_config("widgets_id_fields")
-        snap = canon_snapshot("native_widgets_id_fields")
-        snap.assert_match(grading.model_dump(mode="json"), "grading_config.json")
+        id_fields = grading.state_checks.id_fields
+        assert id_fields == {"widgets": "widget_id"}
+        assert type(id_fields["widgets"]) is str, (
+            f"single-key form must serialize as a bare string, got "
+            f"{type(id_fields['widgets']).__name__}"
+        )
 
-    def test_composite_grading_config(self, native_adapter, canon_snapshot):
+    def test_composite_grading_config(self, native_adapter):
+        """widgets_composite_id_fields → ``id_fields[widgets]`` is a JSON list."""
         grading = native_adapter.get_grading_config("widgets_composite_id_fields")
-        snap = canon_snapshot("native_widgets_composite_id_fields")
-        snap.assert_match(grading.model_dump(mode="json"), "grading_config.json")
+        id_fields = grading.state_checks.id_fields
+        assert id_fields == {"widgets": ["line", "slot"]}
+        assert type(id_fields["widgets"]) is list, (
+            f"composite-key form must serialize as a JSON list (not a tuple, "
+            f"not a string), got {type(id_fields['widgets']).__name__}"
+        )
 
     def test_task_description_carries_id_fields(self, native_adapter):
         # Full to_task_description round-trip: initial_state.tables and the
@@ -139,11 +152,30 @@ class TestNativeAdapterDomainCanon:
         actual = native_adapter.get_task_dir("example_domain_case_a")
         assert actual == test_data_dir / "tasks" / "example_domain"
 
-    def test_domain_layout_grading_config(self, native_adapter, canon_snapshot):
-        """GradingConfig loads via the case-relative grading.yaml."""
+    def test_domain_layout_grading_config(self, native_adapter):
+        """The case-relative ``grading.yaml`` resolves to a valid
+        :class:`GradingConfig` via the domain-merge / path-rewrite pipeline.
+
+        The invariant is that the case can be loaded at all: if the merge
+        drops fields, the rewrite mis-resolves a path, or the schema
+        rejects the merged result, ``get_grading_config`` raises and this
+        fails clearly. Snapshotting the whole ``model_dump`` on top locked
+        every unrelated default field alongside — every future addition
+        of an optional default to :class:`GradingConfig` used to churn
+        this snapshot for no signal.
+
+        The load itself does the schema validation
+        (``GradingConfig.model_validate`` runs inside ``get_grading_config``);
+        we assert a couple of the case's own declared properties as a
+        smoke that the merged config is actually the case's config, not
+        an empty default.
+        """
         grading = native_adapter.get_grading_config("example_domain_case_a")
-        snap = canon_snapshot("native_example_domain_case_a")
-        snap.assert_match(grading.model_dump(mode="json"), "grading_config.json")
+        assert grading is not None, "case-relative grading.yaml did not resolve"
+        # The example_domain_case_a fixture declares a combine block; a
+        # dropped combine field is the classic F3 (path-field coverage)
+        # regression shape.
+        assert grading.combine is not None, "combine block did not survive the merge"
 
     def test_domain_layout_bundle_artifact_keys(self, native_adapter, canon_snapshot):
         """Bundle keys cover both ``_shared/`` and ``testcases/<case>/`` files
@@ -174,12 +206,14 @@ class TestShopOrders02Canon:
 
         snap.assert_match(task.model_dump(mode="json"), "task_config.json")
 
-    def test_grading_config(self, native_adapter, canon_snapshot):
-        """GradingConfig captures golden_actions, jsonpaths, and combine weights."""
-        grading = native_adapter.get_grading_config("shop_orders_02")
-        snap = canon_snapshot("native_shop_orders_02")
-
-        snap.assert_match(grading.model_dump(mode="json"), "grading_config.json")
+    # ``test_grading_config`` intentionally omitted. The invariants that
+    # snapshot originally locked — combine weights, golden-action
+    # names+kwargs, jsonpath dicts, communicate_info sets, arithmetic
+    # consistency — are asserted semantically by
+    # ``TestShopOrders02SnapshotIntegrity`` below (test_grading_snapshot_
+    # mirrors_source, test_grading_arithmetic_consistency). A byte-equal
+    # dump of the whole GradingConfig on top adds only churn on unrelated
+    # schema evolution.
 
     def test_tool_schemas(self, native_adapter, canon_snapshot):
         """Agent tool schemas: names, descriptions, and parameter JSON Schemas.
