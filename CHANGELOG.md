@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.24.2 (2026-09-09)
+
+### Feat
+
+- **adapter**: bridge Tool.policy.timeout_s to ToolSchema.timeout_s (#1556) (#1573)
+- **adapter**: task-yaml override for per-tool output_max_chars (#1563)
+
+### Fix
+
+- **docker**: make image builds work on default macOS Docker Desktop (#1574)
+
 ## v0.24.1 (2026-09-09)
 
 ### Feat
