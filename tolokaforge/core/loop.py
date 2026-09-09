@@ -265,9 +265,8 @@ class MetricsSink(Protocol):
 
         The loop calls this on every generation whose ``parser_errors``
         sidecar is non-empty, regardless of whether ``parser_error_retry_count``
-        subsequently resamples. Downstream analytics reads the persisted
-        record to decide per-preset opt-in for the parser-error retry seam
-        (see issue #1521). Default no-op keeps the Protocol backward-compatible.
+        subsequently resamples. Default no-op — a sink that does not track
+        parser errors stays satisfied.
         """
         return None
 

@@ -463,9 +463,7 @@ class Metrics(BaseModel):
 
     Persists the ``GenerationResult.parser_errors`` sidecar across the
     trial-bundle boundary; recorded every generation whose sidecar is
-    non-empty, regardless of whether ``parser_error_retry_count`` fired.
-    Downstream analytics reads the list to decide per-preset opt-in for
-    the parser-error retry seam (issue #1521)."""
+    non-empty, regardless of whether ``parser_error_retry_count`` fired."""
     openrouter_generation_ids: list[str] = Field(default_factory=list)
     """Every OpenRouter generation id the trial's agent calls returned, in call order.
 
