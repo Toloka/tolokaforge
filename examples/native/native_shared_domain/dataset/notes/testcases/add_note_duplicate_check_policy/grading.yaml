@@ -39,6 +39,11 @@ trace_checks:
     - id: the_notes_were_listed_before_the_note_was_added
       description: "the assistant listed the existing notes before it added a new one"
       severity: gate
+      # Explicit accept-the-risk: the whole point of the gate demo is that a
+      # missing list_notes call fails the trial, so we treat a silent tool
+      # error the same way. Mirrors add_note_duplicate_check_gated/grading.yaml
+      # — the two arms must stay identical on every graded block.
+      on_missing: fail
       require:
         before:
           left:
