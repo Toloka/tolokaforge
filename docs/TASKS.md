@@ -360,6 +360,8 @@ tools:
 
 The `mobile` tool uses a phone-sized viewport (412x915) and only exposes tap, type, scroll, and gesture actions — no URL navigation, search, or browser-specific actions. See [BROWSER_TOOLS.md](BROWSER_TOOLS.md) for full details.
 
+Any tool block also accepts an `output_max_chars: int` sibling that caps the `role=tool` message content the loop appends for that tool in this pack. It composes with the tool's declared bound and the per-model backstop; the tighter set candidate wins. See [`LLM_LAYER.md § Tool-output truncation`](LLM_LAYER.md#tool-output-truncation) for the composition rule.
+
 ## Mobile App Fixtures
 
 Mobile app tasks in `tasks/mobile/` share a common mock data layer and theming approach:

@@ -709,10 +709,13 @@ nothing is the deliberately non-scoring shape and grades `(1.0, True)`.
 #### ToolSchema.output_max_chars
 
 Each `ToolSchema` the runner returns in `RegisterTrialResponse.tool_schemas` may
-carry an optional `output_max_chars: int` — the per-tool cap the runner lifts
-from `ToolPolicy.output_max_chars` for the corresponding tool. The harness reads
-it back (via `HasField`) and threads it into the engine loop, where the loop
-composes it with the per-model
+carry an optional `output_max_chars: int` — the per-tool cap on the corresponding
+tool's `role=tool` message content. The native adapter composes two inputs into
+the emitted value (`min` of whichever are set): `ToolPolicy.output_max_chars`
+(the tool-declared bound) and the task-yaml override at
+`tools.<actor>.<tool_name>.output_max_chars`. The harness reads the value back
+(via `HasField`) and threads it into the engine loop, where the loop composes
+it with the per-model
 [`ModelCapabilities.tool_output_max_chars`](LLM_LAYER.md#tool-output-truncation)
 as `min(tool_cap, capability_cap)`: the tighter set cap wins per call. Absent
 the field the harness reads `None` and defers to the per-model cap alone. The

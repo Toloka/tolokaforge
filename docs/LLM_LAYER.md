@@ -2020,30 +2020,40 @@ land alongside the run data that justified the chosen watermark.
 
 ### Tool-output truncation
 
-The loop layer caps the `content` a `role=tool` message carries into the
-next prompt along two axes and picks the tighter one per call:
+The `content` a `role=tool` message carries into the next prompt is capped
+along three axes and the tighter set candidate wins. Ordered narrowest-first
+by scope:
 
-- `ModelCapabilities.tool_output_max_chars: int | None` is the per-model
-  backstop; a preset that names the key applies its cap uniformly to every
-  trial that runs on that model.
+- `tools.<actor>.<tool_name>.output_max_chars: int | None` is the task-yaml
+  override — a pack author's per-tool cap on the tool as used in this pack,
+  tighter than the tool's own declared bound. Reserved sibling to the
+  block's per-tool init kwargs; positive int, else the loader rejects it at
+  authoring time.
 - `ToolPolicy.output_max_chars: int | None` is the per-tool declared bound
   a tool sets on its own output — a status poll that always returns ≤512
   chars declares that shape once at registration and every loop composes it
   correctly.
+- `ModelCapabilities.tool_output_max_chars: int | None` is the per-model
+  backstop; a preset that names the key applies its cap uniformly to every
+  trial that runs on that model.
 
-`ToolCallingLoop._cap_tool_message_content` computes
-`effective = min(tool_cap, capability_cap)` when both are set, uses
-whichever is set alone otherwise, and threads the content verbatim when
-neither is set. Middle-elision uses `keep_head_and_tail` from
+The composition runs at two sites, each using the same shape (`min` of the
+set candidates, `None` when none is set). The adapter site
+(`native._actor_tool_schemas`) folds the task-yaml override and the
+tool-declared bound into the emitted `ToolSchema.output_max_chars`. The
+loop site (`ToolCallingLoop._cap_tool_message_content`) folds that emitted
+value with the per-model backstop into the per-call effective cap.
+
+Middle-elision uses `keep_head_and_tail` from
 [`tolokaforge/core/tool_output_truncation.py`](../tolokaforge/core/tool_output_truncation.py:1)
 so accumulated context stays predictable across trials whose tools return
 unbounded strings (browser tool DOM dumps, database result sets, RAG hit
 lists, task-pack MCP tool output). Reasoning-heavy models are the norm; a
 first-class engine policy for bounding tool-output size that lands on the
 message history is a general improvement rather than a per-model
-workaround. Absent both a preset key and a per-tool declaration, tool
-messages pass through verbatim — the baseline for presets that do not
-name the key on tools that do not declare a cap.
+workaround. Absent all three axes, tool messages pass through verbatim —
+the baseline for presets that do not name the key on tools that do not
+declare a cap in a pack that does not override it.
 
 The cap sits **below** the trial's recorder and the grader. The recorder
 call inside `_execute_tool_calls` reads the full text through
@@ -2087,12 +2097,13 @@ search, MCP tool output) rely on the loop caps alone.
 wired from
 [`ToolRegistry.output_max_chars_by_tool`](../tolokaforge/tools/registry.py:1)
 by the callers that construct the loop over a live registry. Task-pack
-tools reach the harness through the runner: the runner emits each tool's
-`ToolPolicy.output_max_chars` on the wire as
+tools reach the harness through the runner: the native adapter composes
+`ToolPolicy.output_max_chars` with the task-yaml override into
 [`ToolSchema.output_max_chars`](GRPC_PROTOCOL.md#toolschemaoutput_max_chars),
-the harness reads it back via `HasField`, the conductor lifts the set-only
-subset into a per-trial map on `_TrialSetup`, and the map is threaded into
-`TrialRunner.__init__` and on into the loop. Preset routing is pinned by
+the runner emits it on the wire, the harness reads it back via `HasField`,
+the conductor lifts the set-only subset into a per-trial map on
+`_TrialSetup`, and the map is threaded into `TrialRunner.__init__` and on
+into the loop. Preset routing is pinned by
 [`tests/canonical/test_tool_output_max_chars_preset_routing.py`](../tests/canonical/test_tool_output_max_chars_preset_routing.py);
 the loop-layer behaviour and the helper contract are pinned by
 [`tests/unit/test_tool_calling_loop.py`](../tests/unit/test_tool_calling_loop.py)
