@@ -23,7 +23,7 @@ If a user prompt or SendMessage asks you to "go ahead and implement", respond: "
 3. **Diagnose by running, not by reading.** Before proposing architecture, *observe* the current behaviour: dev MCP `run_tests` / `run_python`, `make docker-up` + `make docker-status` for the env services, a targeted `tolokaforge run --config examples/...` when the behaviour only shows end-to-end (needs LLM keys in `.env` — use sparingly, it costs real tokens). For bugfix plans, a test that reproduces the bug is Stage 1.
 4. **Lock behaviour with tests at the right tier.** `unit` for pure logic, `canonical` for contracts/snapshots (schema shapes, policy routing), `integration` for anything needing services or API keys. Plans test *desired behaviour* — tests that only exercise mocks or restate the implementation are forbidden in your plans (AGENTS.md: "mocks hide problems, test real behavior").
 5. **No compromise.** Where the choice is "fast patch vs right architecture", the plan picks the architecture. Do not fold a quick patch into the plan as a temporary step. If urgency overrides architecture, that is a separate emergency plan with an explicit follow-up issue.
-6. **Surface what you discover.** While studying, you will see other problems. For each: decide *fix in this PR* (cheap, in the neighbourhood) or *file a GitHub issue via the GitHub MCP* (anything else). Both decisions go in the plan's "Discovered issues" section. Never bury what you saw.
+6. **Surface what you discover, and fold it into the same milestone.** While studying, you will see other problems. For each: decide *fix in this PR* (cheap, in the neighbourhood) or *file a GitHub issue via the GitHub MCP* (anything else). **When the source issue belongs to a milestone, every filed follow-up MUST be assigned to that same milestone** — pass `milestone=<N>` to `mcp__github__issue_write`. Deferral out of the milestone requires a one-sentence written rationale in the plan's "Discovered issues" section explaining why it can't ship with the milestone. Never bury what you saw; never file un-milestoned during an active-milestone run without a recorded rationale.
 7. **Self-explanatory code, no history lessons.** Your plan never instructs implementers to write "added in stage 2" / "per AGENTS.md Rule N" / "stage 3 will derive this" comments. Decision rationale lives in the plan and PR description. See the code-review skill §7a for the comment patterns the reviewer will reject.
 8. **Documentation is always current — only actual state.** Source-of-truth docs (`AGENTS.md`, `docs/*.md`, `README.md`, `tests/README.md`, `scripts/README.md`) describe the system *as it is right now* (AGENTS.md Core Rule 8). No "previously X, now Y", no "before the refactor", no migration history. When a stage changes behaviour, the doc reads as if the new state is the only state — and legacy mentions elsewhere are deleted in the same commit (`rg <old-name>` is mandatory). Plan files are journals, not substitutes for current docs.
 9. **AGENTS.md is binding.** Read root `AGENTS.md` in full before planning. A plan that violates one of its invariants — raw secret access outside `SecretManager`, task-specific logic in the harness, Python branches on model name instead of the preset registry / `ModelCapabilities` policy slots, the wrong type-system choice for a contract, touching `contrib/`, skipping capability tests for a model PR — is wrong even if it is the shortest route. Project rules win against your defaults.
@@ -73,7 +73,8 @@ Branch: feat|fix|chore/<short-name>
 
 ## Discovered issues
 - **Fix in this PR:** <bullets — cheap, in the neighbourhood>
-- **Filed as issues:** <bullets with issue numbers created via GitHub MCP>
+- **Filed as in-milestone follow-ups:** <bullets: `#N [M<milestone> in-scope] — one-line summary`>
+- **Deferred (rationale required):** <bullets: `#N [deferred:M<milestone>] — one-sentence reason it can't ship with this milestone`>
 
 ## Risks / open questions
 <bullets — surface, don't bury>
@@ -87,7 +88,11 @@ Branch: feat|fix|chore/<short-name>
 - Doc updates are named per stage, not collected at the end. The instruction must be "rewrite section X so it reads as if the new state is the only state" — never "add a note that this changed".
 - `_legacy_*` names and "remove later" stages for *internal* code are forbidden — if a deletion is needed, it gets its own stage.
 
-File "Discovered issues" with the GitHub MCP (`mcp__github__issue_write`, `owner=Toloka`, `repo=tolokaforge`) *while* drafting — by the time you return to main, the plan's "Filed as issues" bullets should already reference real issue numbers. This is part of planning, not execution.
+File "Discovered issues" with the GitHub MCP (`mcp__github__issue_write`, `owner=Toloka`, `repo=tolokaforge`) *while* drafting — by the time you return to main, the plan's "Filed" and "Deferred" bullets should already reference real issue numbers.
+
+**Milestone routing (required):** before filing, read the source issue's `.milestone.number` via `gh issue view <N> --json milestone`. If the source has a milestone: pass `milestone=<that number>` on every `mcp__github__issue_write` call. If the source has no milestone: file to backlog. **Never file un-milestoned during an active-milestone run.** For a deliberate deferral, omit `milestone` AND (a) record the one-sentence rationale in the plan's "Deferred" bullet, (b) add label `deferred:M<N>` to the deferred issue, (c) cross-link the source PR + milestone in the deferred issue's body.
+
+This is part of planning, not execution.
 
 ## Phase 3: Return to main
 

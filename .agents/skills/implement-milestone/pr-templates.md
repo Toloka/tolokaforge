@@ -38,8 +38,11 @@ Discipline shared by both templates (modelled on [Toloka/tolokaforge#121](https:
 <the staged plan, pasted from ~/.claude/plans/toloka-tolokaforge/issue-<N>-<short-name>.md — plans have no in-repo home, so the PR body is the plan's durable record>
 
 ## Discovered issues
-- Filed: #<n>, #<m>
-- Fixed in this PR: <one-line each>
+- **Filed as in-milestone follow-ups:** `#<n> [M<milestone>] — <one-line summary>`
+- **Deferred (rationale required):** `#<n> [deferred:M<milestone>] — <one-sentence reason it can't ship with this milestone>`
+- **Fixed in this PR:** <one-line each>
+
+Rule: when issue #<N> has a milestone, every filed follow-up MUST carry the same milestone by default. Deferral requires the rationale above plus a `deferred:M<milestone>` label on the deferred issue AND a cross-link to this PR in its body. See `/executing-development-tickets` Step 7 for the mechanics. If issue #<N> has no milestone, drop the `[M<milestone>]` tag and the "Deferred" bullet doesn't apply.
 
 ## Test plan
 - <what to verify post-merge — one bullet per verification>
@@ -65,7 +68,9 @@ The consolidation PR body **is** the finalized running design journal (`~/.claud
 ## Impact on existing tasks — read this first
 - **Today (nothing changes):** <what continues to work exactly as before, and where the guard rails are>
 - **Near-term (opt-in):** <what users can adopt today if they want the new surface>
-- **Longer-term (planned):** <where this milestone points; forward links to follow-up issues>
+- **In-milestone follow-ups (still queued for this consolidation):** <bullets — `#<n> — one-line summary`; issues that carry `milestone=M<N>` and were absorbed into this run>
+- **Deferred (rationale + link):** <bullets — `#<n> — <one-sentence reason it can't ship with this milestone>`; each cross-links back here and carries the `deferred:M<N>` label. Empty section means nothing was deferred.>
+- **Longer-term (planned):** <where this milestone points beyond the deferred set; forward links to future-milestone issues>
 
 ## Design walkthrough
 <Two or three paragraphs framing the shape of the change. Enough that a reader who never saw the milestone can hold the picture. The Mermaid block below is the picture — not decorative.>
@@ -112,7 +117,10 @@ The stacked PRs, in the order that makes them make sense:
 - Deliberately skipped: <lane> — <reason, e.g. "integration-openai; no OPENAI_API_KEY set in this session — smoke covered by the equivalent Gemini lane">
 
 ## What's next
-<Two sentences of forward-looking scope. Follow-up issues filed during the milestone are linked here (`#<n>`, `#<m>`) with a one-line description each. If a follow-up milestone is already tracked, name it.>
+<Two sentences of forward-looking scope. In-milestone follow-ups and deferred issues are already listed under `Impact on existing tasks`; this section names the *next* horizon — the milestone or umbrella that picks up where this one stops. If a follow-up milestone is already tracked, name it.>
+
+## Deferrals
+<Complete list of every issue filed during this milestone that carries `deferred:M<N>` — one row per deferral: `#<n> — one-sentence rationale — <link to source PR>`. Empty if nothing was deferred. Consolidation-PR guardrail (Step 4.0) verifies each entry has a matching labeled issue with a cross-link.>
 ```
 
 **Anti-patterns to avoid:**
