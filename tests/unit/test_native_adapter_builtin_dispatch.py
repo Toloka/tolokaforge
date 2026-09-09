@@ -490,8 +490,8 @@ def test_tool_configs_drops_entry_when_block_names_only_reserved_keys(tmp_path: 
 
 @pytest.mark.parametrize(
     "bad_value",
-    [0, -1, 3.14, "512", True],
-    ids=["zero", "negative", "float", "string", "bool_true"],
+    [0, -1, 3.14, "512", True, False],
+    ids=["zero", "negative", "float", "string", "bool_true", "bool_false"],
 )
 def test_tool_output_max_chars_override_rejects_non_positive_int(tmp_path: Path, bad_value):
     """A non-int, non-positive, or bool ``output_max_chars`` fails loud at
