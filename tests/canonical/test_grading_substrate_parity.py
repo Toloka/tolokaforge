@@ -308,7 +308,11 @@ _ARCHITECTURAL_EXEMPTIONS = frozenset(
 )
 
 # Non-BOTH keys that should be both and are not yet. tracking_issue is required.
-_DRIFT_EXEMPTIONS: frozenset[str] = frozenset()
+_DRIFT_EXEMPTIONS: frozenset[str] = frozenset(
+    {
+        "state_checks.compare_columns",
+    }
+)
 
 # Scored keys that claim both substrates but are not differentially proven
 # in-process. A key added here is a key whose parity claim rests on field

@@ -20,6 +20,7 @@ from tolokaforge.core.grading.state_composition import (
     refuse_probes_beside_another_state_source,
     resolve_hash_weight,
 )
+from tolokaforge.core.hash import ColumnCompareRule
 from tolokaforge.core.models.run_config import RunDefaults
 from tolokaforge.runner.models import (
     EnvironmentPatch,
@@ -516,6 +517,14 @@ class StateChecksConfig(BaseModel):
     # keys must appear in initial_state.tables) to a warning at every gate that runs it.
     # New tasks should fix typos or add the table, not enable this.
     relaxed_validation: bool = False
+    # Opt-in, PER-(TABLE, COLUMN): asymmetric compare mode for column values that
+    # are themselves dicts (typically tool-call param objects). Declaring
+    # ``{table: {column: {mode: subset, extras_allowed_for: [k1, k2]}}}`` lets the
+    # model include ``k1``/``k2`` in ``column`` where the golden does not, without
+    # failing the state hash. Keys the golden declares are still compared
+    # value-for-value; extras outside the allowlist still fail. Mirrors the runner
+    # wire's field of the same name (see :class:`ColumnCompareRule`).
+    compare_columns: dict[str, dict[str, ColumnCompareRule]] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
