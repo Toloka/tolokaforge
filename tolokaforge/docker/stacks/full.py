@@ -91,8 +91,14 @@ def full_stack(
     )
 
     # RAG Service — hybrid BM25 + FAISS search
-    # Needs the tolokaforge wheel (for tolokaforge.secrets) + its own
-    # service files (requirements.txt + app.py).
+    # Needs the tolokaforge wheel (for tolokaforge.secrets), its own service
+    # files (requirements.txt + app.py), and the workspace-sibling source
+    # trees the Dockerfile's ``sibling-wheel-builder`` stage compiles into
+    # wheels the tolokaforge base wheel depends on
+    # (``tolokaforge_models``, ``tolokaforge_coding_harnesses``). The
+    # context list here must stay in step with the Dockerfile's ``COPY``
+    # instructions — dropping a sibling reproduces "COPY failed: file not
+    # found in build context" at :func:`build_images` time.
     artifact = resolve_wheel()
     rag_service = ServiceDefinition(
         name="rag-service",
@@ -103,6 +109,8 @@ def full_stack(
         context_files=[
             str(artifact.path),
             "tolokaforge/env/rag_service/",
+            "tolokaforge_models/",
+            "tolokaforge_coding_harnesses/",
         ],
         build_args={"WHEEL_FILENAME": artifact.path.name},
         ports=[PortConfig(container_port=8001, host_port=rag_port)],

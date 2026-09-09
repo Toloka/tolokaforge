@@ -520,8 +520,34 @@ def assemble_build_context(
 
     Raises:
         FileNotFoundError: If a declared file or directory does not exist.
+
+    Notes:
+        The temp directory is created under ``<repo_root>/.workbench/build-contexts/``
+        rather than the process-level ``TMPDIR``. Docker Desktop on macOS runs
+        the daemon inside a Linux VM that only sees a curated set of host
+        paths (``/Users``, ``/tmp``, ``/private/tmp``, ``/var/tmp``); the
+        default ``TMPDIR`` on macOS points at ``/var/folders/<user>/T/``,
+        which is NOT in that set. A build context assembled there hashes and
+        exists on the host but reads as "file not found in build context" to
+        the daemon, failing every image build with a misleading error. Pinning
+        the temp location under the repo root — which the daemon must already
+        see for any source-based build to work — sidesteps that trap on every
+        platform.
+
+        Second gotcha, same host, opposite direction: Docker Desktop's grpcfuse
+        file-sharing layer applies ``.gitignore`` rules when projecting host
+        paths into the VM. A ``.gitignore`` entry that covers this temp
+        directory therefore hides the assembled context from the daemon in the
+        same way — "file not found" again, from a different cause. This dir
+        must stay OUT of ``.gitignore`` (unlike ``.workbench/wheel-cache/``,
+        which the daemon reads only as an already-copied file inside the tar).
+        Every file here is short-lived; the ``finally`` in
+        :func:`_prepared_build_context` removes each build's tree as soon as
+        the daemon finishes with it.
     """
-    build_dir = Path(tempfile.mkdtemp(prefix="tolokaforge-build-"))
+    build_root = repo_root / ".workbench" / "build-contexts"
+    build_root.mkdir(parents=True, exist_ok=True)
+    build_dir = Path(tempfile.mkdtemp(prefix="tolokaforge-build-", dir=build_root))
 
     # Copy Dockerfile
     src_dockerfile = repo_root / dockerfile

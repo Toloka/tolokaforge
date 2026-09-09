@@ -213,6 +213,66 @@ def test_mock_web_context_scoped_to_service_files() -> None:
         assert not (build_dir / "pyproject.toml").exists()
 
 
+def test_assembled_context_lives_under_repo_root_not_tmpdir() -> None:
+    """Assembled Docker build contexts land under ``<repo_root>/.workbench/
+    build-contexts/`` rather than the process-level ``TMPDIR``. Docker Desktop
+    on macOS runs the daemon inside a Linux VM that only shares a curated set
+    of host paths; ``TMPDIR`` on macOS points at ``/var/folders/…`` which is
+    not in that set, so a build context assembled there fails every image
+    build with a misleading "file not found in build context" error. Pinning
+    the temp dir under the repo root — a path the daemon must already see for
+    any source-based build to work — sidesteps that trap on every platform.
+
+    A regression that reverts to bare ``tempfile.mkdtemp(prefix=…)`` (no
+    ``dir=``) would break ``tolokaforge run`` on default-configured macOS
+    Docker Desktop; this test locks the location invariant.
+    """
+    from tolokaforge.docker.builder import _prepared_build_context, repo_root
+
+    expected_root = (repo_root() / ".workbench" / "build-contexts").resolve()
+    with _prepared_build_context("mock-web") as (_dockerfile, context, _name, _build_args):
+        assert Path(context).resolve().parent == expected_root, (
+            f"build context {context!r} not under {expected_root!r} — "
+            "revert would break Docker Desktop on macOS (see docstring)"
+        )
+
+
+def test_full_stack_rag_service_context_includes_sibling_wheel_sources(_mock_wheel) -> None:
+    """The rag-service Dockerfile's ``sibling-wheel-builder`` stage COPYs
+    ``tolokaforge_models/`` and ``tolokaforge_coding_harnesses/`` from the
+    build context to build their wheels in-container. The ``full_stack``
+    factory builds its own ``ServiceDefinition`` for rag-service rather than
+    reusing the ``_rag_definition`` helper in ``builder.py`` — so the two
+    context-file lists can drift and the ``tolokaforge run`` code path (which
+    consumes the stack's definition) fails at Step 5 with
+    "COPY failed: file not found in build context".
+
+    This test locks the stack-side ``context_files`` set against the paths
+    the Dockerfile actually needs, so a future edit that drops one
+    reproduces here instead of only surfacing under ``tolokaforge run``.
+    """
+    from tolokaforge.docker.stacks.full import full_stack
+
+    stack = full_stack()
+    rag_svc = stack.services["rag-service"]
+    ctx = set(rag_svc.context_files)
+    required = {
+        "tolokaforge/env/rag_service/",
+        "tolokaforge_models/",
+        "tolokaforge_coding_harnesses/",
+    }
+    missing = required - ctx
+    assert not missing, (
+        f"rag-service ServiceDefinition.context_files is missing {sorted(missing)} — "
+        "the rag Dockerfile's sibling-wheel-builder stage COPYs these paths and "
+        "will fail with 'file not found in build context' at build time."
+    )
+    assert any(entry.endswith(".whl") for entry in ctx), (
+        "rag-service context_files must include the resolved tolokaforge wheel "
+        "(the Dockerfile COPYs ${WHEEL_FILENAME})."
+    )
+
+
 def test_runner_build_context_ships_source_tree_for_multi_stage_hatch_build() -> None:
     """The runner Dockerfile is multi-stage: its ``wheel-builder`` stage
     runs ``hatch build --target custom`` in-container to produce the
