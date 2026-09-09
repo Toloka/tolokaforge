@@ -9,7 +9,6 @@ See :mod:`automation.harness_bucket_classifier` for the classifier."""
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any
@@ -34,7 +33,6 @@ def _build_metric() -> dict[str, Any]:
         cls = classify_harness_paths(c.touched)
         entries.append(
             {
-                "sha": c.sha,
                 "pr": c.pr,
                 "date": c.date,
                 "subject": c.subject,
@@ -44,7 +42,7 @@ def _build_metric() -> dict[str, Any]:
                 "touched_files": list(c.touched),
             }
         )
-    entries.sort(key=lambda e: (e["date"], e["sha"]))
+    entries.sort(key=lambda e: (e["date"], e["pr"] or "", e["subject"]))
     return {
         "bucket_a_count": sum(1 for e in entries if e["bucket"] == "A"),
         "bucket_b_count": sum(1 for e in entries if e["bucket"] == "B"),
@@ -53,7 +51,14 @@ def _build_metric() -> dict[str, Any]:
 
 
 def test_replay_matches_baseline(canon_snapshot, pytestconfig) -> None:
-    """Live replay of every harness-touching commit reachable from HEAD."""
+    """Live replay of every harness-touching commit reachable from HEAD.
+
+    Identity keys off PR number (stable across squash-merge / rebase),
+    not commit SHA. A history rewrite that changes SHAs but preserves
+    the same PR set is a no-op for this metric; a genuine regression
+    is a PR present in the baseline that no HEAD-reachable commit
+    still names.
+    """
     metric = _build_metric()
     # Captured by pytest and surfaced on the CI log; carries the current
     # metric even on green so passing runs still report the counts.
@@ -63,17 +68,6 @@ def test_replay_matches_baseline(canon_snapshot, pytestconfig) -> None:
         f"total: {len(metric['commits'])}"
     )
     snapshot = canon_snapshot("harness_registry_replay")
-    if not pytestconfig.getoption("--update-canon"):
-        baseline = json.loads((snapshot.snapshot_dir / "metric.json").read_text())
-        unreachable = {e["sha"] for e in baseline["commits"]} - {
-            e["sha"] for e in metric["commits"]
-        }
-        assert not unreachable, (
-            f"baseline names commit(s) unreachable from HEAD ({sorted(unreachable)}): "
-            "history was rewritten (squash-merge, rebase), so the metric did not "
-            "regress. Regenerate the baseline against the rewritten history "
-            "(`update_canonical_snapshots`). See #1234."
-        )
     snapshot.assert_match(metric, "metric.json")
 
 
