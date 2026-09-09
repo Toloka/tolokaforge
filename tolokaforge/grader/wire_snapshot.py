@@ -15,6 +15,10 @@ The builder reads only from the in-memory :class:`~tolokaforge.core.trial.TrialS
 channel and never touches the filesystem — the ``runner_substrate_address`` is
 threaded through as a passthrough so the caller has one struct with every
 non-trajectory wire field ready to hand to :meth:`GrpcGraderClient.grade`.
+
+The wire also carries two additive fields — ``bundle_manifest_json`` (13) and
+``bundle_parts_uri`` (14) — which are not projected from :class:`TrialSpec`.
+This builder does not populate them; no in-tree caller populates them yet.
 """
 
 from __future__ import annotations

@@ -18,6 +18,20 @@ weighted mean, the weakest of them or the strongest, as the pack declares. See
 [Score Combination](#score-combination) for the three rules and
 [REFERENCE.md](REFERENCE.md) for the `grading.yaml` schema.
 
+**Grading kind is a plug-in seam.** `task.grading.grading_method` selects the
+kind — the typed evaluator that drives grading above the substrate.
+`tolokaforge.grader_kinds` is the entry-point group; every registered kind
+implements the `GraderKind` Protocol with kwargs-only
+`evaluate(*, substrate, task_config, kind_config, trial_id, agent_tools, logger) -> Grade | None`.
+Two built-ins ship: `composite` (the five-dimension fold this document describes) and
+`test_execution` (bash test suite reading `/logs/verifier/reward.txt` — dispatched via
+`SubstrateService.RunTestSuite`; refuses actionably on a snapshot substrate because
+bundle format v1.0 carries no test-suite hook). `judge_only` is preserved as a compat
+alias for the equivalent `composite + weights: {llm_judge: 1.0}` registry lookup —
+external surface unchanged. For the accepted-record naming the substrate / kind /
+transport product and the operator regrade CLI, see
+[ADR-0043](adr/0043-detached-mode-grader-and-typed-grader-kinds.md).
+
 ---
 
 ## Substrate Parity
@@ -94,12 +108,13 @@ fails the suite instead of failing every `GradeTrial` that carries it.
 
 ### The runtime ledger
 
-The canonical suite guards the *config models*; the runner guards each individual
-request. Through the component phase `GradeTrial` records, at every point an
-evaluator is invoked or deliberately skipped, which author key that call accounts
-for. Each record is a `KeyAccountingRecord` — an outcome of `EVALUATED` or
-`SKIPPED` plus, for a skip, the `detail` a task author reads. It then subtracts
-those records from the scored keys the request's grading config actually populated
+The canonical suite guards the *config models*; both composite dispatchers
+guard each individual request. Through the component phase each dispatcher
+records, at every point an evaluator is invoked or deliberately skipped, which
+author key that call accounts for. Each record is a `KeyAccountingRecord` — an
+outcome of `EVALUATED` or `SKIPPED` plus, for a skip, the `detail` a task
+author reads. It then subtracts those records from the scored keys the request's
+grading config actually populated
 ([`tolokaforge/runner/grading_ledger.py`](../tolokaforge/runner/grading_ledger.py)).
 A non-empty remainder means a key would have scored nothing, so the RPC returns
 `success=False` naming each key and the runner evaluator its manifest entry
@@ -173,9 +188,55 @@ written *only* inside an [`alternatives`](#alternative-paths) path is covered by
 holds for the block, not for that leaf (#772). The evaluator's side is unaffected: it
 records every kind the walk reached, wherever the constraint was written.
 
-`grading_method: test_execution` returns before the component phase, so the ledger
-does not apply to that dispatch mode — recorded as the `grading_method` entry's
-declared `reason`.
+Non-composite `grading_method` values return before the component phase, so the
+ledger does not apply to those dispatch modes — recorded as the `grading_method`
+entry's declared `reason`.
+
+### Grading Method Dispatch
+
+`RunnerGradingConfig.grading_method` selects which runner-side dispatch a trial
+takes. The value is a bare string on the wire — every shipped name registers in
+BOTH the marker registry (`tolokaforge.grading_methods`, loaded via
+[`load_grading_method(name)`](../tolokaforge/core/plugin_registry.py)) and the
+typed-kind registry (`tolokaforge.grader_kinds`, loaded via
+[`load_grader_kind(name)`](../tolokaforge/core/plugin_registry.py)). Two names
+ship:
+
+- `composite` — the default state-checks / transcript-rules / trace-checks /
+  llm-judge / custom-checks fold. Omitting `grading_method` selects the same
+  dispatch — `None` and `"composite"` are equivalent on the wire. The runner's
+  inline composite fold owns this path.
+- `test_execution` — the reference-suite kind. Requires an exec-capable
+  lifecycle tool in `TaskDescription.agent_tools` (`DockerComposeExecToolWrapper`
+  today); the kind reads through `substrate.run_test_suite(...)` and parses the
+  reward off `/logs/verifier/reward.txt`.
+
+Every non-composite name routes through the typed `GraderKind` seam at
+`RunnerServiceImpl._dispatch_via_grader_kind`. A downstream adapter registers a
+new dispatch name under BOTH entry-point groups:
+
+```toml
+[project.entry-points."tolokaforge.grading_methods"]
+terminal_bench_native = "acme_adapter:TerminalBenchNativeGradingMethod"
+
+[project.entry-points."tolokaforge.grader_kinds"]
+terminal_bench_native = "acme_adapter:TerminalBenchNativeGraderKind"
+```
+
+The marker class carries a `NAME: ClassVar[str]` — same shape as
+`tolokaforge.grading_substrates` from ADR-0040 (three shipped: `in_process`,
+`live_callback`, `snapshot`; the last reads a serialised grade bundle so the
+grader grades a trial without a live runner in reach — see
+[docs/GRADER_SERVICE.md](GRADER_SERVICE.md) and
+[docs/GRADE_BUNDLE.md](GRADE_BUNDLE.md) for the substrate topology and
+bundle format). The kind class satisfies the `GraderKind` Protocol
+(`evaluate(*, substrate, task_config, kind_config, trial_id, agent_tools,
+logger) -> Grade | None`) — see
+[`tolokaforge/core/grading/kinds/`](../tolokaforge/core/grading/kinds/).
+`RegisterTrial` refuses a name missing from either group with an error listing
+both group names, the offending key, and the union of registered names — so a
+typo, or a downstream adapter that registered in only one of the two groups,
+surfaces before the trial spends any turns.
 
 ### Single-substrate keys
 
@@ -184,7 +245,7 @@ declared `reason`.
 | `state_checks.hash.description` | `CONFIG_INPUT` | `CORE_ONLY` | field resolution | the runner's flattened hash block declares no description field, so there is nothing on that substrate for the key to resolve against — the wire carries the runner's hash verdict, not the reason text an author writes beside it | architectural |
 | `state_checks.db_probes` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the probe DSN resolves only inside the task's docker network, which the runner joins and the host-side core engine does not | architectural |
 | `llm_judge` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the rubric judge runs runner-side on the shared `ToolCallingLoop`; the core engine deliberately leaves the component unset | architectural |
-| `grading_method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | a runner-side dispatch selector with no `grading.yaml` counterpart; the dispatch returns before the component phase | architectural |
+| `grading_method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | a runner-side dispatch selector with no `grading.yaml` counterpart; non-composite kinds return before the component phase | architectural |
 
 Architectural entries can never be both substrates and carry no tracking issue.
 Every other row is drift and names the issue that closes it. The exemption sets
@@ -409,7 +470,10 @@ runner's `_execute_hash_grading` returns its verdict inside `HashGradingResult`,
 verdict is unrepresentable, so that producer's source needs no audit; the suite proves
 the derivation over both `hash_match` values, that constructing the model with an
 explicit `hash_score` is refused, and that the producer's declared return type keeps
-its verdict inside the model. The producer set is derived from the hash family's
+its verdict inside the model. The runner-side diff reports an order-mismatch verdict
+on the same-set-different-order class, so a `hash_score: 0.0` never sits beside a
+`state_diff` that reads as identical (see [§ Hash / diff verdict
+parity](#hash--diff-verdict-parity)). The producer set is derived from the hash family's
 declared evaluators and asserted as set equality against the union of the two frozen
 partitions, so a fourth producer forces a reviewable edit rather than landing with the
 guard green. What the source audit cannot see is a producer reached only *through* one
@@ -608,6 +672,18 @@ same thing whichever substrate grades the trial:
 | `recorded_calls` | `trial_context.tool_call_history` | `trajectory.tool_log` |
 | `termination_reason` | `GradeTrialRequest.termination_reason` | `trajectory.termination_reason` |
 
+The `messages` column names one recipe both wire dispatchers share: strip the
+leading `role: system` message off the payload, decode the remaining transcript
+into `Message` objects, and hand the result to `build_trial_timeline`.
+[`build_timeline_from_wire`](../tolokaforge/core/grading/trace_timeline.py)
+owns that recipe. The runner's `_grade_time_views` and the grader's
+`GraderCompositeDispatch.grade` are its two callers — see
+[`docs/GRADER_SERVICE.md` § The `Grade` wire](GRADER_SERVICE.md#the-grade-wire)
+for the `llm_messages_json` row it decodes. An empty message list
+short-circuits to a records-only timeline; the branch reconciles without
+raising, which is what lets a hash-only trial reach the timeline the same
+way a records-only bundle does.
+
 ### Both substrates consume it
 
 Every transcript rule is evaluated off the timeline on both substrates.
@@ -692,6 +768,92 @@ reads the trajectory's own status and reason, which grading's failure does not
 touch. A grading failure that a second attempt would have got past is therefore
 recorded ungradeable on the first: the price of never fabricating a verdict and
 never counting one attempt twice.
+
+#### A component the config declared that produced no verdict
+
+The same fail-loud shape covers any component the config declared and the trial
+did not score. `resolve_uncounted_fold`
+(`tolokaforge/core/grading/combine_weights.py`) refuses the fold when a
+component in `combine.weights` with its matching config section arrives with a
+score of `-1.0` (the "not evaluated" sentinel), and marks the verdict with
+`FoldedGrade.refusal = True`. The runner's `GradeTrial` reads that flag and
+returns `success = False` with a reason naming the missing component; the
+grader-service dispatch raises `GradingFailedError` with the same reason. The
+grader-service `Grade` handler translates that raise to
+`GradeResponse(success = False)`, so both substrates surface the same wire
+shape.
+
+Two failure modes reach this branch today:
+
+| mode | how the component ended up unscored |
+|---|---|
+| `llm_judge` declared and errored | the judge returned `JudgeStatus.ERRORED` with no numeric score (a provider outage, a rubric the judge could not parse, a submit_report the judge refused after retries), leaving `llm_judge_score` at `-1.0` |
+| `state_checks` declared and its golden replay errored | `_execute_hash_grading` recorded a per-action failure on `golden_replay.failures`; `HashGradingResult.hash_unscorable` reads `True`; the runner call site at `runner/service.py:_grade_trial_async` skips the `components.hash_score` write, leaving it at the `-1.0` not-evaluated sentinel; the composed `state_checks` slot is empty |
+
+Folding on the remaining components would silently redistribute the missing
+component's declared weight onto whatever else scored. A judge-errored trial
+that happened to score `state_checks: 1.0` beside a `-1.0` `llm_judge_score`
+would otherwise surface as `score=1.0, binary_pass=True`, indistinguishable
+from a trial the judge actually confirmed. A golden-replay-errored trial
+whose replay left partial state behind would otherwise hash equal to that
+partial world and score `hash_score: 0.0` — indistinguishable from a real
+hash mismatch the agent's actions produced, and the golden-path defect would
+be recorded only as a string appended to `reasons`. The refusal removes that
+ambiguity: the trial's downstream trace is the same one a
+state_checks-unanswerable trial already had — `Trajectory.grading_error`
+records the reason, `classify_trial_outcome` returns `UNGRADEABLE`, the trial
+reaches `measured_trials` while staying out of `scored_trials`, and the
+process exits non-zero once the run has otherwise completed.
+
+The refusal fires on the `-1.0` sentinel alone. A judge that scored `0.0` (or
+a required-criterion gate that zeroed the judge's aggregate) still folds in
+normally, because that zero is a real measured verdict rather than a missing
+one. A hash grade that ran whole and returned `hash_match=False` also folds
+in as a real `state_checks: 0.0` — the replay ran, the world it produced is
+the one the pack asked for, and the agent did not reach it.
+
+#### Harness auto-fail synthesis
+
+A trial the harness auto-fails before any evaluator runs — `TrialStatus.ERROR`
+/ `TrialStatus.TIMEOUT`, `TerminationReason.STUCK_DETECTED`,
+`TerminationReason.EMPTY_COMPLETION`,
+`TerminationReason.CONTEXT_WINDOW_EXCEEDED` — has no evaluator output to compose. The
+`TrialGrader` synthesises a `Grade` for it so the trial still reaches
+`measured_trials` (nothing was refused: the grader answered), but the grade
+is deliberately shaped to expose its provenance:
+
+- `Grade.components` is empty (`GradeComponents()`) — every component field
+  reads as `None`. Downstream analytics can tell an auto-failed trial from
+  one that measured a real `state_checks: 0.0`.
+- `Grade.synthesized_by_termination_reason` names which `TerminationReason`
+  the grader synthesised from — `TerminationReason.ERROR` for the
+  `ERROR`/`TIMEOUT` fallback (`trajectory.termination_reason` when the
+  trajectory carries one, otherwise `ERROR`), and the matching value on the
+  `STUCK_DETECTED` / `EMPTY_COMPLETION` / `CONTEXT_WINDOW_EXCEEDED` branches.
+- `Grade.binary_pass` is `False` and `Grade.score` is `0.0` — the trial did
+  end unsuccessfully; the marker distinguishes _how_ it ended, not _whether_.
+
+The four registered `TrialGrader` subclasses — `RunnerRPCTrialGrader`,
+`JudgeBackedTrialGrader`, `GraderRPCTrialGrader`, `QueueTrialGrader` — apply
+the same shape on every auto-fail branch, so a downstream reader can
+discriminate on `synthesized_by_termination_reason` regardless of which
+grader ran.
+
+Two downstream properties depend on the marker:
+
+- `failure_attribution.py:attribute_failure` returns `failure_class:
+  harness_autofail` on any synth trial whose termination reason is not
+  otherwise enumerated in the deterministic elif chain (today only
+  `STUCK_DETECTED`). The default `model_reasoning` label from the tool-log
+  scan would misattribute a harness-terminated trial to the model, so the
+  synth marker takes precedence. Every
+  attribution record also carries `synthesized: bool` and
+  `synthesized_by_termination_reason: str | None` as first-class fields.
+- `GradingCompleteness.zero_coverage` fires when
+  `synthesized_trials == measured_trials` on a run that had trials to
+  measure — every "measurement" was harness-synthesised, so
+  `--fail-on-zero-coverage` exits non-zero. The extended formula is in
+  [ADR-0041 § Field derivations](adr/0041-zero-coverage-exit-signal.md).
 
 ### The event
 
@@ -1300,6 +1462,15 @@ has the answer `1.0`, and that fraction of nothing never becomes a component sco
   (one whose `initial_state` declares no `tables`) still grades, and a
   `$.filesystem['/env/fs/agent-visible/<rel>']` assertion resolves to the
   file's current on-disk content.
+
+  `tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`
+  is the single source of truth for the walk contract: symlinks and
+  non-UTF-8-decodable files are skipped, and the five directory basenames
+  named on `AGENT_VISIBLE_EXCLUDES` (`.git`, `.venv`, `node_modules`,
+  `dist`, `.next`) prune subtrees at any depth. A file whose parent path
+  passes through one of those names is not addressable via
+  `$.filesystem['/env/fs/agent-visible/<rel>']`; a task that wants to grade
+  such a file names it under a differently-named directory.
 - **both**: `jsonpath_score × (1 − weight) + hash_score × weight`.
 - **neither** — an empty `jsonpaths` list with hash grading off, or on and unable
   to produce a verdict: the component is **not evaluated**. It is absent from the
@@ -1542,6 +1713,29 @@ expression"` — is detected on neither substrate by design: telling one from le
 output needs substring matching over prose, which false-positives on any tool whose own
 output mentions the word (#855).
 
+### Hash / diff verdict parity
+
+The runner-side pair `compute_stable_hash` and `compute_state_diff` agree on identity:
+whenever the two hashes disagree, `compute_state_diff` reports `identical=False` and its
+`summary` names an offence. `hash_score: 0.0` never sits beside a `state_diff` that
+reads as identical, so an operator reading the record never has to choose which of two
+contradictory verdicts to trust.
+
+The set-diff vocabulary covers three shapes per table. A table that matches by set and
+by order is absent from `state_diff.tables`. A table whose rows differ by set contributes
+`"<table>: N missing, M extra, K different"` to the summary. A table whose rows form the
+same set but appear in a different order sets `TableDiff.order_mismatch=True` and
+contributes `"<table>: rows in wrong order"` — the flag fires only when nothing is
+missing, extra, or different, so combined shapes are impossible by construction.
+
+`compute_stable_hash` remains order-sensitive on list elements — the digest is persisted
+in db-service ETags and the `ResetTrialResponse.state_hash` / `GetStateResponse.stable_hash`
+wire fields, so its serialisation is frozen. The parity invariant therefore holds by
+widening the diff rather than by relaxing the hash. If a task's golden row order is
+coincidental (many tables order rows by insertion time, not by contract), a per-table
+`state_checks.ordered_tables` hint would let the hash ignore that order — tracked in
+[#1472](https://github.com/Toloka/tolokaforge/issues/1472).
+
 ### Best Practices
 
 - Filter non-deterministic fields (timestamps, UUIDs) before hashing
@@ -1712,7 +1906,7 @@ evaluated over the [trial event timeline](#trial-event-timeline). Where
 predicates, nested argument paths, counting, and a call's status or result.
 
 **Both substrates score it through one function.** `evaluate_trace_checks`
-(`tolokaforge/core/grading/trace_checks.py`) is called by the core engine's
+(`tolokaforge/core/grading/trace_checks/`) is called by the core engine's
 `grade_trajectory` and by the runner's `GradeTrial`, over the timeline each
 already builds, so the component score does not depend on which substrate graded
 the trial. The per-constraint verdicts cross the wire on `Grade.trace_checks`,
@@ -1732,10 +1926,10 @@ defaults silently under proto3 (`withheld == False` from an older runner,
 matching every pack that never declared `on_missing: withhold`).
 
 **A trial whose timeline carries no events leaves the component unscored.** Every
-constraint would otherwise be answered by evidence the trial does not have. The
-runner records that as a skip against each declared constraint kind, and — since
-a component the pack configures but nothing scores is not folded in — a pack
-weighted entirely on `trace_checks` fails such a trial rather than passing it.
+constraint would otherwise be answered by evidence the trial does not have. Both
+composite dispatchers record that as a skip against each declared constraint kind,
+and — since a component the pack configures but nothing scores is not folded in —
+a pack weighted entirely on `trace_checks` fails such a trial rather than passing it.
 The guard against a trial that *does* carry events but should not have counted as
 work is `transcript_rules.min_assistant_turns`, which is a separate declaration.
 
@@ -3593,7 +3787,12 @@ default, omitting the key inherits the project value, and a task sets
 `system_prompt: null` to reset a project-level custom prompt back to the default.
 An empty or whitespace-only string is rejected loudly at load. When absent, the
 judge runs with the byte-for-byte default prompt. The full custom text is recorded
-in the bundle's `task.yaml.grading_config`.
+in the bundle's `task.yaml.grading_config`, and the composed prompt the judge
+would have graded under is persisted verbatim in the bundle's
+[`prompts.yaml`](OUTPUT_FORMAT.md#trialstask_idtrial_indexpromptsyaml) `judge_prompt`
+key — so `tolokaforge rejudge` prefers the recorded composed prompt over the
+current engine's default, falling back to the task.yaml body fragment only for
+pre-`judge_prompt` bundles. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md#custom-judge-system-prompt).
 
 ### Gating the agent's policy out of the judge's evidence
 
@@ -3674,7 +3873,7 @@ met, else `0.0`.
 its own says nothing about the gate: on a rubric whose non-required criteria all
 scored full marks, a trial that *failed* a required criterion still aggregates to
 `score: 1.0`. Zeroing the component is
-[`compose_runner_trial_verdict`](#score-combination)'s, and it is what the wire
+[`CompositeFold.finalise`](#score-combination)'s, and it is what the wire
 grade and the reasons string carry — measured on the five bundles under
 `tests/data/migration_corpora/notes_duplicate_check/not_met/`, whose `grade.yaml`
 records `components.llm_judge: 0.0` where the aggregate alone gives `1.0`. Read the
@@ -3728,9 +3927,11 @@ functions from a pack's `checks.py`. It's the deterministic-Python gap
 the other four components don't express: arithmetic over final DB
 rows, invariants that span multiple tables, transcript patterns tied to
 computed values. Each `@check` returns `CheckPassed` / `CheckFailed` /
-`CheckSkipped`; per-check results ride the wire as `CustomCheckResult`
-entries and the aggregate `CheckResultSet.aggregate_score` fills the
-`custom_checks` component.
+`CheckSkipped`; the composite returns a `list[CheckResult]`, and the
+runner's `project_check_result_to_runner_wire` encodes each into
+`pb2.CustomCheckResult` for the wire while the grader constructs
+`CustomCheckDetail` from each directly. The aggregate
+`CheckResultSet.aggregate_score` fills the `custom_checks` component.
 
 `aggregate_score` averages the checks that reached a verdict and excludes the
 skips, so a suite whose **every** check skipped — and one whose file declared no
@@ -3778,7 +3979,7 @@ custom_checks:
 ```
 
 **Where the dispatch lives.** The custom-checks dispatch lives on the composite
-(`core/grading/composite.py: grade_custom_checks`) and reads its evidence through
+(`core/grading/composite/custom_checks.py: grade_custom_checks`) and reads its evidence through
 the `GradingSubstrate` seam: `substrate.initial_state()` feeds
 `ctx.initial_state`, and `substrate.final_state()` (RAW) feeds `ctx.final_state`
 — the shape a check's arithmetic over final DB rows needs. Any failure reaching
@@ -3850,7 +4051,7 @@ infrastructure:
 | `api_error` | measured | Produced by matching provider names in the message text, which also matches a context-window overflow (agent behaviour) and a 400 from a malformed tool schema (our bug) |
 | `error` | harness error | The classifier's fall-through, so usually a defect of ours. Counted — excluding our own bugs would hide them — and reported separately as `harness_errors` so a non-zero count is visible as a run-health signal. A user simulator whose every generation of one turn was flagged by a detector lands here: the reply guard refuses the turn rather than delivering it, and the trajectory's `user_reply_guard_events` carries the evidence (see [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md)) |
 | `trial_lost` | harness error | The runner no longer holds the trial the engine is running, so a tool call reached no tool. The exclusion bar is typed evidence that the *provider or the substrate* killed the trial, and a tool executing agent-supplied input that crashes the runner process is an agent-reachable route to this fault, so it is counted. It is the one counted reason that is **not graded**: the runner that would compute the verdict is the one that lost the trial, so no fabricated `0.0` enters `avg_score` |
-| `stuck_detected` | measured | The agent issued the identical tool call over and over, or repeated the same phrasing back at itself. It auto-fails with `score: 0.0`, and that verdict is correct. An agent that talks without acting is not this — that is a per-task question, asked by `transcript_rules` in the task's `grading.yaml` |
+| `stuck_detected` | measured | The agent issued the identical tool call and got the same result back over and over. It auto-fails with `score: 0.0`, and that verdict is correct. An agent that talks without acting is not this — that is a per-task question, asked by `transcript_rules` in the task's `grading.yaml` |
 | any reason, with `grading_error` set | ungradeable | Grading refused, so no verdict exists. Counted for the same reason a harness error is — the fault is ours — and reported separately as `ungradeable`. This is read **before** the reason, so a refusal is never traded for an exclusion |
 
 The asymmetry decides every borderline case: misclassifying an agent failure as
@@ -4110,18 +4311,30 @@ the denominator — this includes an `llm_judge` component whose judge ERRORED
 as a `0.0`. An *evaluated* component that `combine.weights` declares no weight for is
 neither excluded nor defaulted: the fold raises on both substrates, per the rule above.
 
-**Where the runner-side verdict is composed.** The runner folds a trial through
-`compose_runner_trial_verdict`
-([`tolokaforge/runner/grading.py`](../tolokaforge/runner/grading.py)), which wraps
-`combine_grade_components` and applies **both gates** around it: the judge
-component is zeroed where a required criterion failed, and a failed judge or
-trace gate then forces `binary_pass` false whatever the threshold. It returns the
-gated judge component beside `(score, binary_pass)`, because that component — not
-the judge's raw aggregate — is what the wire grade and the reasons carry. One
-runner-side home, so an offline recomputation reaches the runner's verdict without
-repeating either gate: `tolokaforge reconcile`'s counterfactual
-([`docs/RUBRIC_MIGRATION.md`](RUBRIC_MIGRATION.md)) is that caller, and it is what
-[#775](https://github.com/toloka/tolokaforge/issues/775) would call.
+**Where the runner-side verdict is composed.** The runner drives a trial through
+`CompositeFold.finalise` in
+[`tolokaforge/core/grading/composite_fold.py`](../tolokaforge/core/grading/composite_fold.py) —
+one substrate-neutral entry point that resolves the `state_checks` slot,
+applies **both gates** around `combine_grade_components`, and joins the
+author-facing reasons string in one call. The judge component is zeroed where
+a required criterion failed, and a failed judge or trace gate then forces
+`binary_pass` false whatever the threshold. `finalise` returns a neutral
+`CompositeFoldResult` — score, `binary_pass`, gated judge component,
+`state_checks` slot as ``float | None``, joined reasons — and each dispatcher
+projects it onto its own wire type: the runner encodes into
+`pb2.GradeTrialResponse` and translates the `None` slot into the wire's
+`-1.0` sentinel via `project_state_checks_to_runner_wire`; the grader-side
+`GraderCompositeDispatch` builds the Python `Grade` and keeps the `None`.
+
+The gated judge component — not the judge's raw aggregate — is what the wire
+grade and the reasons carry. Both dispatchers drive one fold definition, so an
+offline recomputation reaches the runner's verdict without repeating either
+gate: `tolokaforge reconcile`'s counterfactual
+([`docs/RUBRIC_MIGRATION.md`](RUBRIC_MIGRATION.md)) reaches
+`compose_trial_verdict` directly (the fold's public verdict primitive) because
+it composes verdicts by historical column and swallows `MissingComponentWeight`
+into an `UnrecomputedTrial` sentinel — the reason-joining path `finalise`
+provides is not the one that caller wants.
 
 **Core composes its own**, in
 [`tolokaforge/core/grading/combine.py`](../tolokaforge/core/grading/combine.py),

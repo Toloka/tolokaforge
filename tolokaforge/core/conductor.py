@@ -22,6 +22,7 @@ body.
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -29,10 +30,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from tolokaforge.adapters import BaseAdapter
-from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.docker_adapter import DockerRunnerAdapter
 from tolokaforge.core.env_identity import describe_environment_identity
 from tolokaforge.core.env_state import EnvironmentState
+from tolokaforge.core.judge_prompt import effective_judge_system_prompt
 from tolokaforge.core.llm import LLMClient, UserSimulator, build_capabilities
 from tolokaforge.core.llm.presets import (
     resolve_effective_preset,
@@ -45,6 +46,7 @@ from tolokaforge.core.models import (
     ModelConfig,
     RateLimitProbeConfig,
     RunConfig,
+    SnapshotStatus,
     TaskConfig,
     Trajectory,
     TrialStatus,
@@ -85,22 +87,40 @@ __all__ = [
 DEFAULT_MAX_TURNS = 50
 
 
-def resolve_max_turns(task_max_turns: int | None, run_cap: int | None) -> int:
-    """Coalesce the task-declared budget and the optional run-level cap into a
-    concrete per-trial turn budget.
+def resolve_max_turns(
+    task_max_turns: int | None,
+    run_cap: int | None,
+    capabilities_default_max_turns: int | None = None,
+) -> int:
+    """Coalesce the task-declared budget, the operator's run-level cap, and the
+    preset-level per-model default into a concrete per-trial turn budget.
 
-    The run cap is an optional operator-side clamp; the task value is
-    authoritative for the task's own semantics. When both are set the effective
-    budget is the tighter of the two. When neither is set the engine default
-    (:data:`DEFAULT_MAX_TURNS`) applies.
+    Precedence:
+
+    * When the task pinned :attr:`TaskConfig.max_turns`, that value is
+      authoritative for the task's own semantics; the operator's ``run_cap``
+      still ceilings it (returns the tighter of the two).
+    * When the task did not pin its own budget, the base value is
+      ``capabilities_default_max_turns`` when set, otherwise the engine-wide
+      fallback :data:`DEFAULT_MAX_TURNS`. The operator's ``run_cap`` still
+      ceilings that base value.
+
+    ``capabilities_default_max_turns`` is threaded from
+    :attr:`ModelCapabilities.default_max_turns` — a preset-level value default
+    that fills the gap when neither the task nor the run config declared one.
     """
-    if task_max_turns is None and run_cap is None:
-        return DEFAULT_MAX_TURNS
-    if task_max_turns is None:
-        return run_cap
+    if task_max_turns is not None:
+        if run_cap is None:
+            return task_max_turns
+        return min(task_max_turns, run_cap)
+    base = (
+        capabilities_default_max_turns
+        if capabilities_default_max_turns is not None
+        else DEFAULT_MAX_TURNS
+    )
     if run_cap is None:
-        return task_max_turns
-    return min(task_max_turns, run_cap)
+        return base
+    return min(base, run_cap)
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +401,17 @@ class InMemoryConductor:
         )
 
 
+def _bundle_dir_size_bytes(bundle_dir: Path) -> int:
+    """Total on-disk bytes below ``bundle_dir``. Authoritative snapshot-mode
+    size measurement (one ``stat`` per file over a bounded parts count).
+
+    Duplicated from ``bundle_producer.bundle_dir_size_bytes`` — the
+    ``grader-detach`` importlinter contract forbids
+    ``tolokaforge.core.conductor`` from reaching ``tolokaforge.core.grading``.
+    """
+    return sum(p.stat().st_size for p in bundle_dir.rglob("*") if p.is_file())
+
+
 # ---------------------------------------------------------------------------
 # InProcessConductor — production implementation
 # ---------------------------------------------------------------------------
@@ -463,6 +494,7 @@ class InProcessConductor:
         trajectory, runner, system_prompt = self._run_agent_loop(spec, task_config, setup)
         self._capture_final_state(spec, setup, trajectory)
         self._grade(spec, task_config, setup, trajectory, runner, system_prompt)
+        self._produce_grade_bundle(spec, setup, trajectory)
         self._write_artifacts(spec, task_config, setup, trajectory, runner)
         return TrialResult.from_trajectory(
             trial_id=setup.trial_id, trajectory=trajectory, worker_id=spec.worker_id
@@ -551,9 +583,11 @@ class InProcessConductor:
 
         adapter_env = self.adapter.create_environment(task.task_id)
 
-        # Sync adapter environment data to env_state for Tau tasks — the adapter
-        # data appears in env.yaml and is available for grading.
-        if adapter_env.data and not isinstance(self.adapter, NativeAdapter):
+        # Adapters that opt in via ``syncs_adapter_env_to_state`` publish their
+        # ``AdapterEnvironment.data`` into the runner's ``TrialState`` so the
+        # runner can read it back during grading. Tau-family adapters flip the
+        # flag; Native and Terminal-bench leave it at the default False.
+        if adapter_env.data and self.adapter.syncs_adapter_env_to_state:
             env_state.db_state = adapter_env.data
             env_state._normalize_db_state()
             self.logger.debug(
@@ -728,7 +762,11 @@ class InProcessConductor:
 
         system_prompt = self._build_system_prompt(task, setup.tool_schemas, setup.task_dir)
 
-        max_turns = resolve_max_turns(task.max_turns, self.config.orchestrator.max_turns)
+        max_turns = resolve_max_turns(
+            task.max_turns,
+            self.config.orchestrator.max_turns,
+            self.agent_client.capabilities.default_max_turns,
+        )
 
         # Scale turn budget for complex multi-app mobile tasks only when task max_turns
         # is not explicitly pinned.
@@ -1015,6 +1053,92 @@ class InProcessConductor:
             binary_pass=grade.binary_pass,
         )
 
+    def _produce_grade_bundle(
+        self,
+        spec: TrialSpec,
+        setup: _TrialSetup,
+        trajectory: Trajectory,
+    ) -> None:
+        """Trial-end snapshot producer seam. No-op unless ``grader.snapshot.enabled``.
+
+        Runs after :meth:`_grade` populated ``trajectory.grade`` and before
+        :meth:`_write_artifacts` serialises the trajectory to disk, so the
+        assignment to ``trajectory.snapshot_status`` here rides the same
+        write as the message trace: :meth:`FileArtifactWriter.write_trajectory`
+        persists it under the ``snapshot_status:`` key on
+        ``trajectory.yaml``. Every snapshot-mode failure — store
+        construction, ``remember_trial_inputs``, ``build_grade_bundle``,
+        size walk, ``store.put`` — records
+        :attr:`SnapshotOutcome.PRODUCE_FAILED` on the trajectory and the
+        trial continues its normal completion path. Only unrecoverable
+        tempfile lifecycle errors from
+        :class:`tempfile.TemporaryDirectory` (``mkdtemp`` on a full/missing
+        ``TMPDIR``; a persistent ``rmtree`` failure on exit) propagate.
+
+        Ungraded trials (``trajectory.grade is None``) skip the producer
+        and leave ``snapshot_status`` unset — snapshot mode records only
+        outcomes the producer actually attempted.
+        """
+        grader = self.config.grader
+        snapshot = grader.snapshot if grader is not None else None
+        if snapshot is None or not snapshot.enabled:
+            return
+        if trajectory.grade is None:
+            return
+        try:
+            store = snapshot.build_store()
+        except Exception as exc:  # noqa: BLE001 — seam-contained
+            self.logger.error(
+                "Snapshot bundle store construction failed",
+                trial_id=setup.trial_id,
+                error=str(exc),
+            )
+            trajectory.snapshot_status = SnapshotStatus.produce_failed(f"store construction: {exc}")
+            return
+        try:
+            with tempfile.TemporaryDirectory(prefix="snapshot-bundle-") as scratch:
+                bundle_dir = Path(scratch) / "bundle"
+                try:
+                    self.runtime_backend.remember_trial_inputs(
+                        setup.trial_id, trajectory, spec.task, spec.judge_model_config
+                    )
+                    self.runtime_backend.build_grade_bundle(setup.trial_id, out_dir=bundle_dir)
+                    size_bytes = _bundle_dir_size_bytes(bundle_dir)
+                    cap_bytes = int(snapshot.max_bundle_mb * 1024 * 1024)
+                    if size_bytes > cap_bytes:
+                        self.logger.warning(
+                            "Snapshot bundle exceeds cap; falling back",
+                            trial_id=setup.trial_id,
+                            bundle_size_mb=round(size_bytes / 1024 / 1024, 3),
+                            cap_mb=snapshot.max_bundle_mb,
+                        )
+                        trajectory.snapshot_status = SnapshotStatus.oversize(
+                            bundle_size_bytes=size_bytes,
+                            cap_bytes=cap_bytes,
+                        )
+                        return
+                    uri = store.put(bundle_dir)
+                    trajectory.snapshot_status = SnapshotStatus.stored(
+                        uri=uri,
+                        bundle_size_bytes=size_bytes,
+                    )
+                except Exception as exc:  # noqa: BLE001 — seam-contained
+                    self.logger.error(
+                        "Snapshot bundle failed",
+                        trial_id=setup.trial_id,
+                        error=str(exc),
+                    )
+                    trajectory.snapshot_status = SnapshotStatus.produce_failed(str(exc))
+        finally:
+            try:
+                store.close()
+            except Exception as exc:  # noqa: BLE001 — teardown must survive
+                self.logger.warning(
+                    "Snapshot bundle store close failed",
+                    trial_id=setup.trial_id,
+                    error=str(exc),
+                )
+
     def _write_artifacts(
         self,
         spec: TrialSpec,
@@ -1054,14 +1178,20 @@ class InProcessConductor:
         )
         writer.write_tools_schemas(setup.trial_dir, sanitized)
 
-        # Persist the agent's effective (post-policy) system prompt and
-        # the user simulator's system prompt as ``prompts.yaml`` — kept
-        # separate from ``trajectory.yaml`` so the message trace stays
-        # easy to scan.
+        # Persist the agent's effective (post-policy) system prompt, the
+        # user simulator's system prompt, and the composed judge system
+        # prompt as ``prompts.yaml`` — kept separate from ``trajectory.yaml``
+        # so the message trace stays easy to scan. The judge prompt is derived
+        # from ``grading_config``, not from the judge itself, so an auto-fail
+        # trial that never invoked a judge still records the contract it
+        # would have graded under.
         writer.write_prompts(
             setup.trial_dir,
             agent_prompt=runner.effective_system_prompt,
             user_prompt=runner.user_system_prompt,
+            judge_prompt=effective_judge_system_prompt(
+                grading_config.llm_judge if grading_config else None
+            ),
         )
 
         # Same condition :meth:`_run_agent_loop` builds the simulator under: an

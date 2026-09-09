@@ -41,7 +41,7 @@ from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision
 from tolokaforge.core.models import MessageRole
 from tolokaforge.core.models.task_config import TaskConfig
-from tolokaforge.core.models.trajectory import TerminationReason, TrialStatus
+from tolokaforge.core.models.trial_status import TerminationReason, TrialStatus
 from tolokaforge.core.plugin_registry import TurnPolicyContext
 
 pytestmark = pytest.mark.canonical

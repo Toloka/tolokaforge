@@ -512,6 +512,33 @@ def test_failure_record_round_trip_carries_provision_stage() -> None:
     _round_trip(FailureRecord, payload)
 
 
+def test_failure_record_round_trip_carries_synth_marker() -> None:
+    """A harness-synthesised auto-fail attribution round-trips its marker fields
+    verbatim.
+
+    Locks the real-value path of ``FailureRecord.synthesized`` +
+    ``FailureRecord.synthesized_by_termination_reason`` beyond the ``False`` /
+    ``None`` defaults the TIMEOUT test above covers: a bundle where the
+    ``TrialGrader`` synthesised the grade on a STUCK_DETECTED trajectory
+    reaches disk with the marker string intact, and the record classifies as
+    ``harness_autofail``.
+    """
+    trajectory = _make_trajectory(
+        binary_pass=False,
+        score=0.0,
+        status=TrialStatus.COMPLETED,
+        termination_reason=TerminationReason.STUCK_DETECTED,
+    )
+    assert trajectory.grade is not None
+    trajectory.grade.synthesized_by_termination_reason = TerminationReason.STUCK_DETECTED
+    payload = attribute_failure(trajectory)
+    assert payload["failure_class"] == "harness_autofail"
+    assert payload["synthesized"] is True
+    assert payload["synthesized_by_termination_reason"] == "stuck_detected"
+
+    _round_trip(FailureRecord, payload)
+
+
 def test_failure_summary_round_trip_zero_failures() -> None:
     """Zero-failure branch — ``deterministic_attribution_coverage`` is
     ``None`` (division-by-zero guarded in the source)."""

@@ -28,6 +28,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.client import GenerationResult, UserSimulator
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
@@ -44,6 +45,7 @@ class _ScriptedAgent:
 
     def __init__(self, *items: GenerationResult) -> None:
         self._items = list(items)
+        self.capabilities = ModelCapabilities()
 
     def generate(
         self,
@@ -57,6 +59,9 @@ class _ScriptedAgent:
 
     def classify_loop_error(self, exc: Exception) -> TerminationDecision:
         return classify_loop_error(exc, ())
+
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
+        return {}
 
 
 def _agent(text: str) -> GenerationResult:

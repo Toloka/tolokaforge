@@ -185,7 +185,10 @@ def test_orchestrator_persists_fingerprint_matching_seam(flat_pack: Path, tmp_pa
     run_id = "fingerprint-orchestrator-lock"
     output_dir = tmp_path / run_id
     config = RunConfig(
-        models={"agent": ModelConfig(**_AGENT)},
+        models={
+            "agent": ModelConfig(**_AGENT),
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+        },
         orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
         evaluation=EvaluationConfig(
             output_dir=str(output_dir),
@@ -231,7 +234,10 @@ def test_prepare_run_records_an_empty_adapter_fingerprint_map(
     run_id = "fingerprint-prepare-lock"
     output_dir = tmp_path / run_id
     config = RunConfig(
-        models={"agent": ModelConfig(**_AGENT)},
+        models={
+            "agent": ModelConfig(**_AGENT),
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+        },
         orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
         evaluation=EvaluationConfig(
             output_dir=str(output_dir),

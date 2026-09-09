@@ -459,10 +459,28 @@ class SubstrateServiceStub:
             response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ListFilesystemDirResponse.FromString,
             _registered_method=True,
         )
+        self.ReadAgentVisibleFilesystem = channel.unary_unary(
+            "/tolokaforge.runner.SubstrateService/ReadAgentVisibleFilesystem",
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.ReadAgentVisibleFilesystemRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ReadAgentVisibleFilesystemResponse.FromString,
+            _registered_method=True,
+        )
         self.KBSearch = channel.unary_unary(
             "/tolokaforge.runner.SubstrateService/KBSearch",
             request_serializer=tolokaforge_dot_runner_dot_runner__pb2.KBSearchRequest.SerializeToString,
             response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.KBSearchResponse.FromString,
+            _registered_method=True,
+        )
+        self.RunDbProbe = channel.unary_unary(
+            "/tolokaforge.runner.SubstrateService/RunDbProbe",
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.RunDbProbeRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.RunDbProbeResponse.FromString,
+            _registered_method=True,
+        )
+        self.RunTestSuite = channel.unary_unary(
+            "/tolokaforge.runner.SubstrateService/RunTestSuite",
+            request_serializer=tolokaforge_dot_runner_dot_runner__pb2.RunTestSuiteRequest.SerializeToString,
+            response_deserializer=tolokaforge_dot_runner_dot_runner__pb2.RunTestSuiteResponse.FromString,
             _registered_method=True,
         )
         self.SubstrateHealthCheck = channel.unary_unary(
@@ -517,19 +535,35 @@ class SubstrateServiceServicer:
         """Read one file under the trial's AGENT_WORK_DIR (path relative). Returns
         exists=false for a missing / non-file / symlink path; is_file=true with
         content_utf8 for text; is_file=true with content_bytes_b64 (base64) for
-        any file that fails UTF-8 decode. Mirrors the same filter
-        _read_agent_visible_filesystem applies today.
+        any file that fails UTF-8 decode. Same filter and exclusion policy as
+        tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem.
+        Refuses reads under any AGENT_VISIBLE_EXCLUDES directory.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
 
     def ListFilesystemDir(self, request, context):
-        """List the trial's agent-visible workspace: relative POSIX paths of every
-        non-symlink UTF-8-decodable file under AGENT_WORK_DIR. Same filter
-        _read_agent_visible_filesystem ships today — no path-component excluder
-        for node_modules / .venv / .git; a coding-harness workspace carries
-        those trees on the wire.
+        """List rel-paths of every non-symlink UTF-8-decodable file under
+        AGENT_WORK_DIR. Same filter and exclusion policy as
+        tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem.
+        Rel-paths returned in alphabetically-sorted order.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def ReadAgentVisibleFilesystem(self, request, context):
+        """Return the whole agent-visible workspace tree in one round trip:
+        workspace_exists plus every UTF-8-decodable file's rel-path and content.
+        Same walker (tolokaforge.core.grading.filesystem_view.
+        read_agent_visible_filesystem) and same exclusion policy the per-path
+        methods use, so the byte content matches what
+        InProcessGradingSubstrate.filesystem_state assembles locally.
+        workspace_exists=false is the first-class "no workspace surface" signal;
+        it maps to None from LiveRunnerCallbackGradingSubstrate.filesystem_state
+        and .filesystem_root, distinct from an empty-but-present workspace
+        (workspace_exists=true, files=[]).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("Method not implemented!")
@@ -540,6 +574,35 @@ class SubstrateServiceServicer:
         first-class signal ("this trial has no KB provisioned"); the callback
         substrate returns None from knowledge_search() when kb_available is
         false rather than dialing an unreachable endpoint.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def RunDbProbe(self, request, context):
+        """Run a task-declared read-only SQL probe against the DSN in the runner
+        container's network context. dsn + query are AUTHOR-DECLARED — the
+        runner does not validate SQL shape; a probe query that mutates state
+        is a pack authoring mistake. Returns rows encoded as a JSON array of
+        objects; asyncpg-native scalars (datetime / Decimal / UUID / bytes)
+        are coerced via json.dumps default=str, matching how
+        ReadStateResponse.state_json handles the same types for DB state
+        reads.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def RunTestSuite(self, request, context):
+        """Execute a pack-declared test suite inside the trial's env container and
+        return its exit code, reward-file bytes, merged stdout/stderr, and two
+        first-class outcome flags (tool_absent, script_exec_error). The servicer
+        does NOT gate on exit_code — a script that exits non-zero but writes a
+        valid reward.txt is scored by the reward, matching the runner-side
+        pre-move contract. Symmetric with RunDbProbe: pack-authored side effects
+        (SQL that mutates state, verifier writes under /logs/verifier/) are a
+        pack authoring bug, not a substrate write, so the read-only invariant
+        holds by construction.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("Method not implemented!")
@@ -582,10 +645,25 @@ def add_SubstrateServiceServicer_to_server(servicer, server):
             request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ListFilesystemDirRequest.FromString,
             response_serializer=tolokaforge_dot_runner_dot_runner__pb2.ListFilesystemDirResponse.SerializeToString,
         ),
+        "ReadAgentVisibleFilesystem": grpc.unary_unary_rpc_method_handler(
+            servicer.ReadAgentVisibleFilesystem,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.ReadAgentVisibleFilesystemRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.ReadAgentVisibleFilesystemResponse.SerializeToString,
+        ),
         "KBSearch": grpc.unary_unary_rpc_method_handler(
             servicer.KBSearch,
             request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.KBSearchRequest.FromString,
             response_serializer=tolokaforge_dot_runner_dot_runner__pb2.KBSearchResponse.SerializeToString,
+        ),
+        "RunDbProbe": grpc.unary_unary_rpc_method_handler(
+            servicer.RunDbProbe,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.RunDbProbeRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.RunDbProbeResponse.SerializeToString,
+        ),
+        "RunTestSuite": grpc.unary_unary_rpc_method_handler(
+            servicer.RunTestSuite,
+            request_deserializer=tolokaforge_dot_runner_dot_runner__pb2.RunTestSuiteRequest.FromString,
+            response_serializer=tolokaforge_dot_runner_dot_runner__pb2.RunTestSuiteResponse.SerializeToString,
         ),
         "SubstrateHealthCheck": grpc.unary_unary_rpc_method_handler(
             servicer.SubstrateHealthCheck,
@@ -769,6 +847,36 @@ class SubstrateService:
         )
 
     @staticmethod
+    def ReadAgentVisibleFilesystem(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/tolokaforge.runner.SubstrateService/ReadAgentVisibleFilesystem",
+            tolokaforge_dot_runner_dot_runner__pb2.ReadAgentVisibleFilesystemRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.ReadAgentVisibleFilesystemResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
     def KBSearch(
         request,
         target,
@@ -787,6 +895,66 @@ class SubstrateService:
             "/tolokaforge.runner.SubstrateService/KBSearch",
             tolokaforge_dot_runner_dot_runner__pb2.KBSearchRequest.SerializeToString,
             tolokaforge_dot_runner_dot_runner__pb2.KBSearchResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def RunDbProbe(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/tolokaforge.runner.SubstrateService/RunDbProbe",
+            tolokaforge_dot_runner_dot_runner__pb2.RunDbProbeRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.RunDbProbeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True,
+        )
+
+    @staticmethod
+    def RunTestSuite(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/tolokaforge.runner.SubstrateService/RunTestSuite",
+            tolokaforge_dot_runner_dot_runner__pb2.RunTestSuiteRequest.SerializeToString,
+            tolokaforge_dot_runner_dot_runner__pb2.RunTestSuiteResponse.FromString,
             options,
             channel_credentials,
             insecure,

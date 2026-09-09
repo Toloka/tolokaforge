@@ -120,10 +120,8 @@ class TestProvisionErrorBranches:
     the exception's ``reason`` in the ``Grade.reasons`` string."""
 
     def test_provision_stage_failure_synthesises_failed_result(self) -> None:
-        backend = InMemoryRuntimeBackend(fail_provision_after_service="db")
+        backend = InMemoryRuntimeBackend(fail_provision_after_service="db-service")
         executor, _, conductor, logger = _make_executor(backend=backend)
-        # environment_manifest with a service named "db" triggers the fake
-        # failure.
         from tolokaforge.core.trial import EnvironmentManifest
 
         fixture = (

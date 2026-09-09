@@ -3,7 +3,9 @@
 import logging
 import os
 import random
+import shutil
 import socket
+import tempfile
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -24,7 +26,6 @@ from tolokaforge.adapters._task_loader import (
     tool_inventory_under_adapter,
     validate_grading_yaml,
 )
-from tolokaforge.core.agent_driver import AgentDriver, EngineLoopDriver
 from tolokaforge.core.budgets import (
     BudgetHit,
     CompositeBudget,
@@ -42,6 +43,7 @@ from tolokaforge.core.engine_run_state import (
     read_persisted_run_id,
     write_engine_run_state,
 )
+from tolokaforge.core.env_var import parse_env_positive_float
 from tolokaforge.core.failure_attribution import (
     TrialOutcomeClass,
     attribute_failure,
@@ -72,6 +74,7 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
     TypeSenseConfig,
+    require_user_simulator_config,
 )
 from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
@@ -100,11 +103,11 @@ from tolokaforge.core.trial import (
     TrialSpec,
 )
 from tolokaforge.core.trial_executor import TrialExecutor
+from tolokaforge.docker.health import HealthProbe, HealthProbeError
 from tolokaforge.runner.models import AdapterType, PlanShape, StackScope, TaskDescription
 from tolokaforge.secrets import register_runtime_secret
 
 if TYPE_CHECKING:
-    from tolokaforge.core.agent_driver import StagedTask
     from tolokaforge.core.search.typesense_server import TypeSenseServerManager
     from tolokaforge.docker.stacks import TypeSenseAddress
 
@@ -198,33 +201,30 @@ def _actor_routes_a_compose_variant(task: Any, actor: ToolActor) -> bool:
     return False
 
 
-def _run_needs_docker_cli(
-    adapter_type: str | None,
-    tasks: list[Any],
-    needs_docker_cli: bool = False,
-) -> bool:
+def _run_needs_docker_cli(adapter_type: str | None, tasks: list[Any]) -> bool:
     """Return True iff the run needs the docker CLI baked into the runner image.
 
-    Three triggers today:
+    Two triggers today:
 
-    - Terminal-bench tasks exec the docker CLI + compose plugin in the runner
-      (against the host daemon via the mounted socket).
+    - The adapter declares ``requires_docker_cli_in_runner = True`` — the
+      class-level capability flag says its grading needs to shell out to
+      docker from the runner container (against the host daemon via the
+      mounted socket). Terminal-bench is the shipped example.
     - Any task that routes a shipped tool through the compose variant (see
       :func:`_tasks_use_compose_variant_tools`) — the runner ``docker exec``\\ s
       into the sibling service.
-    - The selected :class:`~tolokaforge.core.agent_driver.AgentDriver` needs
-      it (``needs_docker_cli``) — a coding-harness CLI's bash tool routes
-      through ``DockerComposeExecToolWrapper`` regardless of adapter (native,
-      terminal-bench, or any future opt-in), so the runner always
-      ``docker exec``\\ s from itself into the sibling task container.
 
     Detected before build so the slim default image ships without the CLI for
-    every other run. Pure function for unit testing.
+    every other run. Pure function for unit testing — the adapter class is
+    resolved from ``adapter_type`` via the registry, no adapter instance
+    required.
     """
-    if adapter_type == AdapterType.TERMINAL_BENCH:
-        return True
-    if needs_docker_cli:
-        return True
+    if adapter_type is not None:
+        from tolokaforge.adapters import adapter_class
+
+        cls = adapter_class(adapter_type)
+        if cls is not None and cls.requires_docker_cli_in_runner:
+            return True
     return _tasks_use_compose_variant_tools(tasks)
 
 
@@ -567,6 +567,7 @@ class GradingCompleteness:
     measured_trials: int = 0
     scored_trials: int = 0
     judge_errored_trials: int = 0
+    synthesized_trials: int = 0
 
     @property
     def ungradeable(self) -> int:
@@ -578,11 +579,19 @@ class GradingCompleteness:
 
     @property
     def zero_coverage(self) -> bool:
-        """No trial reached the agent measurement point on a run that had trials.
+        """No trial produced an agent-measured verdict on a run that had trials.
 
-        See ``docs/adr/0041-zero-coverage-exit-signal.md``.
+        Two triggers, both fail-loud on the CLI when
+        ``--fail-on-zero-coverage`` is set: nothing reached the measurement
+        point (``measured_trials == 0``), or every measurement was a
+        harness-synthesised auto-fail from
+        ``ERROR``/``TIMEOUT``/``STUCK_DETECTED``/``EMPTY_COMPLETION``
+        (``synthesized_trials == measured_trials``). See
+        ``docs/adr/0041-zero-coverage-exit-signal.md``.
         """
-        return self.total_attempts > 0 and self.measured_trials == 0
+        return self.total_attempts > 0 and (
+            self.measured_trials == 0 or self.synthesized_trials == self.measured_trials
+        )
 
     @property
     def zero_judge_graded(self) -> bool:
@@ -639,18 +648,6 @@ class Orchestrator:
         self.results: list[Trajectory] = []
         self.state_manager: RunStateManager | None = None
         self.adapter: BaseAdapter | None = None
-        # The selected AgentDriver Strategy — "how the agent produces turns
-        # during a trial". Lazily resolved by ``_get_driver()`` from
-        # ``self.config`` alone, so it never needs ``load_tasks()`` to have
-        # run; ``load_tasks()`` still populates it eagerly (right after the
-        # adapter) so its ``attach()`` compatibility check runs before any
-        # task work.
-        self._driver: AgentDriver | None = None
-        # Per-task staging root a container-needing driver layers onto,
-        # keyed by task_id. ``stage_task()`` writes to disk, so this cache
-        # keeps repeated resolution (description decoration, stack-build
-        # merge) from re-staging the same task.
-        self._staged: dict[str, StagedTask] = {}
         # Trial graders whose ``close()`` must fire at run teardown. Populated
         # by :meth:`_build_conductor`; drained in reverse order at the end of
         # :meth:`run` / :meth:`run_worker` so a broker + worker-pool grader
@@ -740,68 +737,6 @@ class Orchestrator:
         adapter_type = adapter_config.type if adapter_config else AdapterType.NATIVE.value
         return {adapter_type: payload}
 
-    def _select_driver(self, config: RunConfig) -> AgentDriver:
-        """Select the AgentDriver this run applies around adapter output.
-
-        ``models.agent.coding_harness`` set → a vendor coding-agent CLI
-        drives every trial (:class:`~tolokaforge.core.drivers.coding_harness.CodingHarnessDriver`).
-        Absent → the engine's own LLM turn loop
-        (:class:`~tolokaforge.core.agent_driver.EngineLoopDriver`), the default.
-
-        Pure function of *config* — no adapter or task state required — so
-        ``_get_driver()`` can resolve it without ``load_tasks()`` having run.
-        """
-        agent_model_config = config.models.get("agent") if config.models else None
-        if agent_model_config is None or agent_model_config.coding_harness is None:
-            return EngineLoopDriver()
-        from tolokaforge.core.drivers.coding_harness import CodingHarnessDriver, HarnessSelection
-
-        adapter_config = config.evaluation.harness_adapter
-        params = adapter_config.params if adapter_config else {}
-        return CodingHarnessDriver(
-            HarnessSelection(
-                agent_harness=agent_model_config.coding_harness,
-                agent_model=agent_model_config.name,
-                version_override=agent_model_config.coding_harness_version,
-                provider_env_declared=params.get("agent_provider_env") or {},
-                presets_file=params.get("harness_presets_file"),
-                plugin_discovery=not params.get("disable_harness_plugins", False),
-                disable_credential_gateway=agent_model_config.disable_credential_gateway,
-                gateway_route=agent_model_config.gateway_route,
-            )
-        )
-
-    def _get_driver(self) -> AgentDriver:
-        """The run's selected driver, resolved once and cached.
-
-        Callers that never ran ``load_tasks()`` (a narrow test seam that
-        hand-populates ``self.tasks``/``self.adapter``) still get the
-        correct driver here, since selection depends only on ``self.config``.
-        """
-        if self._driver is None:
-            self._driver = self._select_driver(self.config)
-        return self._driver
-
-    def _staged_for(self, task_id: str) -> "StagedTask | None":
-        """*task_id*'s staged compose root, materialised once and cached.
-
-        ``None`` when the active driver needs no container stage (the
-        engine loop) or when the adapter itself stages nothing for this
-        task (:meth:`~tolokaforge.adapters.base.BaseAdapter.stage_task`
-        returning ``None``).
-        """
-        if not self._get_driver().needs_container_stage():
-            return None
-        cached = self._staged.get(task_id)
-        if cached is not None:
-            return cached
-        if self.adapter is None:
-            raise RuntimeError("Task staging cannot run before the adapter is loaded.")
-        staged = self.adapter.stage_task(task_id)
-        if staged is not None:
-            self._staged[task_id] = staged
-        return staged
-
     def _create_adapter(self) -> BaseAdapter:
         """Create adapter based on configuration"""
         adapter_config = self.config.evaluation.harness_adapter
@@ -812,6 +747,18 @@ class Orchestrator:
         else:
             adapter_type = AdapterType.NATIVE
             params = {}
+
+        # Coding-harness selector: canonical home is ``models.agent.harness``
+        # (adapter-agnostic). Inject it into adapter params here so adapters
+        # that already read ``params["agent_harness"]`` keep working; the
+        # legacy ``harness_adapter.params.agent_harness`` shape is lifted to
+        # ``models.agent`` at parse time, so nothing else in this method sees
+        # the old location. ``models.agent.name`` doubles as the model the
+        # CLI receives — the same field the engine loop reads.
+        agent_model_config = self.config.models.get("agent") if self.config.models else None
+        if agent_model_config is not None and agent_model_config.harness is not None:
+            params.setdefault("agent_harness", agent_model_config.harness)
+            params.setdefault("agent_model", agent_model_config.name)
 
         # Add tasks_glob to params for both native and other adapters
         params["tasks_glob"] = self.config.evaluation.tasks_glob
@@ -1029,21 +976,6 @@ class Orchestrator:
                 runtime_backend=in_process_backend_shim,
             )
         )
-        # Per-trial runtime backends serve per-trial runner addresses that
-        # cannot be captured on the single ``runner_address`` field of the
-        # grader context. Their ``grade_trial(trial_id, ...)`` matches the
-        # signature the grader's ``runner_client`` calls, so drop the
-        # backend in as the client. Same duck-type; per-trial routing
-        # happens inside ``PerTrialRuntimeBackend._client_for(trial_id)``.
-        # The context's ``runner_address is None`` is the "per-trial"
-        # signal — ``getattr(runtime_backend, "runner_address", None)``
-        # returns ``None`` for those backends by design.
-        if (
-            not runner_address
-            and hasattr(runtime_backend, "grade_trial")
-            and hasattr(trial_grader, "runner_client")
-        ):
-            trial_grader.runner_client = runtime_backend  # type: ignore[assignment]
         # Drain any leftover from a prior aborted run on this orchestrator
         # instance before recording the fresh grader — a re-entered ``run()``
         # on the same instance must never close a stale grader from the
@@ -1096,9 +1028,6 @@ class Orchestrator:
             return cached
         description = self.adapter.to_task_description(task_id)
         ensure_registered_adapter(description.adapter_type)
-        description = self._get_driver().decorate_task_description(
-            description, staged=self._staged_for(task_id)
-        )
         self._task_desc_cache[task_id] = description
         return description
 
@@ -1360,6 +1289,74 @@ class Orchestrator:
             on_success=compute.capture_logs_on_success,
         )
 
+    def _resolve_runtime_connect_budget(self) -> tuple[float, float]:
+        """Resolve the runner health-check budget (env → YAML → default).
+
+        Same precedence at every use site (host-side prewarm probe +
+        RuntimeBackendBuildContext plumbing). Env-var values that fail
+        to parse fall back to the YAML block with a warning.
+        """
+        runtime_connect = self.config.orchestrator.runtime_connect
+        timeout_s = parse_env_positive_float(
+            "TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S",
+            default=runtime_connect.timeout_s,
+            logger=self.logger,
+        )
+        retry_interval_s = parse_env_positive_float(
+            "TOLOKAFORGE_RUNNER_CONNECT_RETRY_INTERVAL_S",
+            default=runtime_connect.retry_interval_s,
+            logger=self.logger,
+        )
+        assert timeout_s is not None and retry_interval_s is not None
+        return timeout_s, retry_interval_s
+
+    def _prewarm_runner_host_endpoint(self, runner_address: str) -> None:
+        """Probe the runner's PUBLISHED host port before constructing the backend.
+
+        Compose's internal ``HEALTHCHECK`` says the gRPC server bound
+        its port inside the container, but the published host port has
+        propagation lag (particularly under Docker Desktop). Doing the
+        readiness gate here means ``runtime_backend.connect()`` never
+        races the port-publish — it dials a socket already listening
+        from the host.
+
+        TCP-level probe (not gRPC) because the runner service does not
+        implement the standard ``grpc.health.v1.Health/Check`` interface
+        — its own health check lives on ``RunnerService.HealthCheck``.
+        Port reachability is what closes the compose-vs-host-publish gap
+        anyway; gRPC-level health is covered by the client-side connect
+        retry.
+
+        Budget is the operator-configured ``orchestrator.runtime_connect``
+        (env-var-overridable). A refusal here raises an actionable
+        ``RuntimeError`` naming the resolved host:port and the knob to
+        raise; the downstream ``connect()`` would otherwise surface a
+        confusing ``Runner service not healthy after 30.1s``.
+        """
+        timeout_s, retry_interval_s = self._resolve_runtime_connect_budget()
+        host, port_str = runner_address.rsplit(":", 1)
+        port = int(port_str)
+        try:
+            HealthProbe.tcp(
+                host=host,
+                port=port,
+                timeout_s=timeout_s,
+                interval_s=retry_interval_s,
+            ).wait()
+        except HealthProbeError as exc:
+            raise RuntimeError(
+                f"Runner host-side readiness probe failed at {host}:{port} after "
+                f"{timeout_s}s. Raise orchestrator.runtime_connect.timeout_s in the "
+                f"run config, or set TOLOKAFORGE_RUNNER_CONNECT_TIMEOUT_S, if the "
+                f"container needs longer to cold-boot. Detail: {exc}"
+            ) from exc
+        self.logger.info(
+            "Runner host-side readiness confirmed",
+            host=host,
+            port=port,
+            budget_s=timeout_s,
+        )
+
     def _construct_runtime_backend(
         self,
         runner_address: str,
@@ -1418,6 +1415,7 @@ class Orchestrator:
             and override != "shared"
             and self._any_task_declares_environment_manifest()
         )
+        connect_timeout_s, connect_retry_interval_s = self._resolve_runtime_connect_budget()
         backend = factory(
             RuntimeBackendBuildContext(
                 runner_address=runner_address,
@@ -1426,12 +1424,10 @@ class Orchestrator:
                 seeds=self._project_seed_registry(),
                 log_capture=log_capture,
                 events=self._events,
-                mount_docker_socket=_run_needs_docker_cli(
-                    adapter_type,
-                    self.tasks,
-                    needs_docker_cli=self._get_driver().needs_docker_cli(),
-                ),
+                mount_docker_socket=_run_needs_docker_cli(adapter_type, self.tasks),
                 per_trial_mode=per_trial_mode,
+                connect_timeout_s=connect_timeout_s,
+                connect_retry_interval_s=connect_retry_interval_s,
             )
         )
         self.logger.info(
@@ -1511,59 +1507,6 @@ class Orchestrator:
                     error=str(e),
                 )
                 continue
-
-    def _apply_driver_container_layers(self, stack_requirements: Any) -> None:
-        """Layer the selected driver's per-task container needs onto
-        *stack_requirements*, in place.
-
-        A container-staging driver (coding-harness mode) needs one
-        ``apply_container_layers`` call per task — writing the harness
-        install Dockerfile and rewriting the staged compose file in place
-        — before any declared image build runs. The driver's per-task
-        image builds *replace* the adapter's own builds on the same
-        ``(compose_file, agent_service)`` because the driver's rewrite
-        turned that service into a layered build ``FROM`` a companion
-        ``<agent>_base`` service; building it first would fail with a
-        pull-not-found on the base tag. The adapter's own build entries
-        that the driver superseded are dropped in place; ones the driver
-        did not touch stay.
-
-        No-op for the engine loop, or when the adapter declared no
-        requirements object at all.
-
-        Raises:
-            RuntimeError: A task fails to stage under a driver that needs
-                a container — ``attach()`` already proved the adapter
-                stages *some* task, so a task-specific ``None`` here means
-                that task's own compose declaration is missing.
-        """
-        driver = self._get_driver()
-        if stack_requirements is None or not driver.needs_container_stage():
-            return
-        superseded: set[tuple[Any, str]] = set()
-        driver_builds: list[Any] = []
-        for task in self.tasks:
-            staged = self._staged_for(task.task_id)
-            if staged is None:
-                raise RuntimeError(
-                    f"coding-harness driver active but stage_task({task.task_id!r}) "
-                    "returned None — every task must stage a compose file under "
-                    "this driver."
-                )
-            layers = driver.apply_container_layers(staged=staged)
-            driver_builds.extend(layers.stack_requirements)
-            # The driver rewrote ``agent_service`` on the staged compose
-            # to be a layered build; the adapter's engine-loop-shaped
-            # build on the same tuple no longer resolves and must not
-            # run before the base.
-            superseded.add((staged.compose_file, staged.agent_service))
-        adapter_builds = [
-            build
-            for build in stack_requirements.image_builds
-            if (getattr(build, "compose_file", None), getattr(build, "service", None))
-            not in superseded
-        ]
-        stack_requirements.image_builds = adapter_builds + driver_builds
 
     def _perform_declared_compose_image_builds(self, stack_requirements: Any) -> None:
         """Build adapter-declared compose images once per run, before any
@@ -1721,6 +1664,94 @@ class Orchestrator:
                 "`trial`-scope stack (per-trial materialisation handles every "
                 "label uniformly)."
             )
+
+    def _validate_snapshot_mode_compatibility(self, runtime_backend: RuntimeBackend) -> None:
+        """Refuse ``grader.snapshot.enabled=true`` on backends / configs that
+        cannot honour it.
+
+        Runs once at run-start after the backend is resolved. Three guards:
+
+        * ``grader.expose_substrate`` must be ``True`` — the runtime
+          backend composes bundle reads over the runner's
+          ``SubstrateService``; a runner started with the surface
+          disabled returns ``UNIMPLEMENTED`` and every trial would
+          record ``produce_failed``.
+        * The resolved backend must implement
+          :meth:`RuntimeBackend.build_grade_bundle` — probed with a
+          fake ``__snapshot_probe__`` trial id. A backend that raises
+          :class:`NotImplementedError` opts out; two named "backend
+          supports it, probe trial isn't set up" errors are treated as
+          "backend is snapshot-capable" and every other exception
+          re-raises so genuine bugs surface loudly here rather than
+          per-trial at grade time.
+        * The resolved bundle store must be reachable — a single
+          ``store.probe()`` at run-start (S3 ``head_bucket`` /
+          LocalDisk sentinel write+delete) fails loud on bad credentials,
+          missing bucket, or non-writeable ``root_dir``. Without this,
+          a misconfigured store surfaces as ``produce_failed`` on every
+          trial inside :meth:`Conductor._produce_grade_bundle`'s
+          seam-contained ``try/except``.
+
+        Actionable :class:`ValueError` names the failing condition and
+        the concrete fix.
+        """
+        grader = self.config.grader
+        if grader is None or grader.snapshot is None or not grader.snapshot.enabled:
+            return
+        if not grader.expose_substrate:
+            raise ValueError(
+                "grader.snapshot.enabled=true requires grader.expose_substrate=true "
+                "so the producer can compose SubstrateService reads at trial-end. "
+                "Set grader.expose_substrate: true in your run config."
+            )
+        probe_dir = Path(tempfile.mkdtemp(prefix="tolokaforge-snapshot-probe-"))
+        try:
+            runtime_backend.build_grade_bundle(trial_id="__snapshot_probe__", out_dir=probe_dir)
+        except NotImplementedError as exc:
+            raise ValueError(
+                "grader.snapshot.enabled=true requires a runtime backend that "
+                "implements RuntimeBackend.build_grade_bundle. The resolved "
+                f"backend {type(runtime_backend).__name__!r} does not. "
+                "Use SharedStackRuntimeBackend or PerTrialRuntimeBackend, or "
+                "extend your custom backend with a real implementation of the hook."
+            ) from exc
+        except (KeyError, RuntimeError):
+            # The two named "backend implements the hook but the probe
+            # trial isn't set up" errors: ``KeyError`` for the missing
+            # ``__snapshot_probe__`` entry in ``_pending_trajectories``
+            # (both shared-stack and per-trial backends), and
+            # ``RuntimeError("build_grade_bundle called before
+            # connect()")`` for the shared-stack backend when the probe
+            # fires before the runner connect completes. Both mean the
+            # backend IS snapshot-capable. Any other exception re-raises
+            # (importlinter forbids reaching runner-side error types
+            # from ``core.orchestrator``, so the tighter set stays at
+            # stdlib), so a genuine backend bug fails loudly at
+            # run-start rather than silently per-trial at grade time.
+            pass
+        finally:
+            shutil.rmtree(probe_dir, ignore_errors=True)
+        store = grader.snapshot.build_store()
+        try:
+            try:
+                store.probe()
+            except Exception as exc:
+                # Broad ``except`` is load-bearing: three failure families
+                # (``BundleStoreUnreachableError`` from a shipped store,
+                # ``RuntimeError`` from the missing ``bundle-store-s3``
+                # extra, ``AttributeError`` from an out-of-tree plugin
+                # without ``probe()``) all collapse into one message.
+                # Naming any of them here would import from
+                # ``core.grading.bundle_store`` and break the
+                # orchestration-surface plug-in seam.
+                raise ValueError(
+                    f"grader.snapshot.store (type={grader.snapshot.store.type!r}) "
+                    f"is not reachable at run-start: {exc}. Verify the store "
+                    "config and credentials before re-running; snapshot mode "
+                    "cannot record bundles until the store answers."
+                ) from exc
+        finally:
+            store.close()
 
     def _build_pending_trials(
         self,
@@ -1988,13 +2019,81 @@ class Orchestrator:
         ts_container = client.containers.get(ts_container_obj.container_id)
         docker_network = client.networks.get(runner_net.network_id)
 
-        docker_network.connect(ts_container, aliases=[_TYPESENSE_NETWORK_ALIAS])
-        self.logger.info(
-            "Connected TypeSense to runner network",
-            network=runner_net.name,
-            container=ts_container.name,
-            alias=injected,
-        )
+        # Idempotent connect: a prior run left the TypeSense container on
+        # runner-net if cleanup_on_exit was disabled or the run aborted
+        # mid-teardown, and Docker's ``network.connect`` raises 403 "already
+        # exists" on a second attempt. Skip re-connecting and confirm the
+        # alias is bound; a stale membership without our alias would still
+        # fail the runner-side ``initialize_typesense_for_domain`` lookup at
+        # register_trial time (closes #1516).
+        docker_network.reload()
+        connected_names = {
+            svc.get("Name")
+            for svc in (docker_network.attrs.get("Containers") or {}).values()
+            if isinstance(svc, dict)
+        }
+        if ts_container.name in connected_names:
+            self.logger.info(
+                "TypeSense already bridged onto runner network (idempotent skip)",
+                network=runner_net.name,
+                container=ts_container.name,
+                alias=injected,
+            )
+        else:
+            try:
+                docker_network.connect(ts_container, aliases=[_TYPESENSE_NETWORK_ALIAS])
+            except docker_lib.errors.APIError as exc:
+                # 403 "endpoint … already exists" — the container is on
+                # the network but the ``reload()`` cache above missed it.
+                # Fall through and verify the alias post-hoc rather than
+                # blowing up.
+                if "already exists" not in str(exc):
+                    raise
+                self.logger.warning(
+                    "TypeSense bridge reported 'already exists' — verifying",
+                    network=runner_net.name,
+                    container=ts_container.name,
+                    error=str(exc),
+                )
+            self.logger.info(
+                "Connected TypeSense to runner network",
+                network=runner_net.name,
+                container=ts_container.name,
+                alias=injected,
+            )
+
+        # Post-connect verification: confirm the alias resolves inside
+        # runner-net BEFORE the first trial tries and fails at
+        # ``initialize_typesense_for_domain``. A missing alias here surfaces
+        # as an actionable RuntimeError at run start instead of a per-trial
+        # ``TypeSense at typesense:8108 … server is unreachable`` refusal.
+        docker_network.reload()
+        endpoint_ok = False
+        for endpoint in (docker_network.attrs.get("Containers") or {}).values():
+            if not isinstance(endpoint, dict):
+                continue
+            if endpoint.get("Name") != ts_container.name:
+                continue
+            # Docker's per-network ``Endpoint`` doesn't list aliases in the
+            # network's Containers view; inspect the container instead.
+            ts_container.reload()
+            net_settings = ts_container.attrs.get("NetworkSettings", {}).get("Networks", {})
+            for net_name, net_info in net_settings.items():
+                if net_name != runner_net.name:
+                    continue
+                aliases = net_info.get("Aliases") or []
+                if _TYPESENSE_NETWORK_ALIAS in aliases:
+                    endpoint_ok = True
+                    break
+            break
+        if not endpoint_ok:
+            raise RuntimeError(
+                f"orchestrator.typesense: bridged the container onto {runner_net.name} "
+                f"but the alias {_TYPESENSE_NETWORK_ALIAS!r} did not attach — the runner "
+                f"would still fail to resolve {injected} at register_trial time. Check "
+                f"`docker network inspect {runner_net.name}` and the TypeSense "
+                f"container's Networks settings."
+            )
 
     def load_tasks(self) -> None:
         """Load tasks using configured adapter"""
@@ -2006,24 +2105,38 @@ class Orchestrator:
         if self.adapter is None:
             self.adapter = self._create_adapter()
 
+        # Coding-harness capability gate: refuse a run declaring
+        # ``models.agent.harness`` on an adapter that has not opted into the
+        # harness surface (``supports_coding_harness`` class attr from
+        # ``CodingHarnessAdapterMixin``). Fail here — before any container
+        # work — with a message that names the adapter and the harness slug
+        # so the operator sees which side of the pair does not match.
+        agent_model_config = self.config.models.get("agent") if self.config.models else None
+        if agent_model_config is not None and agent_model_config.harness is not None:
+            if not getattr(self.adapter, "supports_coding_harness", False):
+                adapter_type_name = (
+                    getattr(
+                        self.config.evaluation.harness_adapter,
+                        "type",
+                        "native",
+                    )
+                    if self.config.evaluation.harness_adapter
+                    else "native"
+                )
+                raise RuntimeError(
+                    f"models.agent.harness={agent_model_config.harness!r} but "
+                    f"adapter {adapter_type_name!r} does not opt into coding-"
+                    "harness mode. An adapter opts in by inheriting "
+                    "``tolokaforge_coding_harnesses.adapter_support."
+                    "CodingHarnessAdapterMixin`` (which sets "
+                    "``supports_coding_harness = True``). Either drop "
+                    "``models.agent.harness`` to run the engine's LLM loop, "
+                    "or switch to an adapter that supports the harness "
+                    "surface (currently: terminal_bench, native)."
+                )
+
         # Get task IDs from adapter
         task_ids = self.adapter.get_task_ids()
-
-        # Driver/adapter compatibility gate: a driver that needs a per-task
-        # container stage (coding-harness mode) requires the adapter to
-        # actually stage one. Probed against the first task, before any
-        # container work; ``attach`` raises naming the adapter and the
-        # compatible ones when the probe fails.
-        adapter_type_name = (
-            getattr(self.config.evaluation.harness_adapter, "type", "native")
-            if self.config.evaluation.harness_adapter
-            else "native"
-        )
-        driver = self._get_driver()
-        staged_ok = False
-        if driver.needs_container_stage() and task_ids:
-            staged_ok = self._staged_for(task_ids[0]) is not None
-        driver.attach(adapter_type_name, staged_ok=staged_ok)
 
         # Load each task
         strict = self.config.orchestrator.strict_task_load
@@ -2069,7 +2182,7 @@ class Orchestrator:
         offending = [
             task.task_id
             for task in self.tasks
-            if self._task_description(task.task_id).grading.llm_judge is not None
+            if self.adapter.to_task_description(task.task_id).grading.llm_judge is not None
         ]
         if offending:
             raise ValueError(
@@ -2148,23 +2261,10 @@ class Orchestrator:
         otherwise finds out while the trial's artifacts are written, with every
         token already spent.
         """
-        description = self._task_description(task.task_id)
-        adapter_type = description.adapter_type
+        adapter_type = self._task_description(task.task_id).adapter_type
         task_dir = self.adapter.get_task_dir(task.task_id)
         source = grading_source_under_adapter(task, task_dir, adapter_type)
         if source.kind is GradingSourceKind.WITHHELD:
-            # A driver whose ``decorate_task_description`` overrides
-            # ``grading`` owns the verdict without reading the pack's
-            # grading source. The coding-harness driver's
-            # ``test_execution`` grade comes from the verifier the
-            # trial writes, not from a ``grading.yaml`` on disk, so
-            # the pre-run source-file check has nothing to say. The
-            # engine-loop driver (default) grades from the pack's
-            # declared source, so the WITHHELD refusal still fires.
-            from tolokaforge.core.drivers.coding_harness import CodingHarnessDriver
-
-            if isinstance(self._get_driver(), CodingHarnessDriver):
-                return None
             return f"* {task.task_id} — {source.reason}"
         if source.path is None:
             self._warn_grading_unchecked(task.task_id, "grading", source.reason)
@@ -2313,17 +2413,7 @@ class Orchestrator:
             self.logger.error("Agent model configuration required")
             raise ValueError("Agent model configuration required")
 
-        # Apply default user model if not configured
-        if user_config is None:
-            user_config = ModelConfig(
-                provider="openrouter",
-                name="anthropic/claude-sonnet-4.6",
-                temperature=0.2,
-            )
-            self.logger.info(
-                "Using default user model",
-                user_model="openrouter/anthropic/claude-sonnet-4.6",
-            )
+        user_config = require_user_simulator_config(user_config)
 
         # Resolve the run-level judge model and reject the run up front if any
         # selected task needs a judge but none is configured (fail loud).
@@ -2368,7 +2458,6 @@ class Orchestrator:
                 stack_requirements = (
                     self.adapter.docker_stack_requirements() if self.adapter is not None else None
                 )
-                self._apply_driver_container_layers(stack_requirements)
                 core_stack_kwargs = (
                     stack_requirements.to_core_stack_kwargs() if stack_requirements else {}
                 )
@@ -2393,11 +2482,7 @@ class Orchestrator:
                     if self.config.evaluation.harness_adapter
                     else None
                 )
-                if _run_needs_docker_cli(
-                    adapter_type,
-                    self.tasks,
-                    needs_docker_cli=self._get_driver().needs_docker_cli(),
-                ):
+                if _run_needs_docker_cli(adapter_type, self.tasks):
                     self.logger.info(
                         "Docker CLI required in runner image "
                         "(terminal-bench adapter or compose-variant tools detected)"
@@ -2518,6 +2603,10 @@ class Orchestrator:
                     # get_service_url returns "http://localhost:{port}" — strip scheme for gRPC
                     runner_address = runner_url.replace("http://", "")
                     self.logger.info("EngineStack started", runner_address=runner_address)
+                    # Compose's per-container HEALTHCHECK doesn't cover the published
+                    # host port's propagation lag; probe it here so
+                    # runtime_backend.connect() below never races the port publish.
+                    self._prewarm_runner_host_endpoint(runner_address)
 
                 # Connect TypeSense to core stack network so Runner can reach it
                 if self._typesense_server is not None:
@@ -2576,6 +2665,7 @@ class Orchestrator:
         runtime_backend.connect()
         self.logger.info("Runtime backend connected")
         self._verify_isolation_compatibility(runtime_backend)
+        self._validate_snapshot_mode_compatibility(runtime_backend)
 
         from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
@@ -2932,20 +3022,6 @@ class Orchestrator:
             return resolved_output_dir
         finally:
             self._close_trial_graders()
-            self._close_driver()
-
-    def _close_driver(self) -> None:
-        """Release whatever the run's :class:`AgentDriver` holds open.
-
-        A coding-harness driver may have launched a credential-shielding
-        gateway (a background HTTP server thread + port) at ``attach()``;
-        ``close()`` is a no-op for every other driver and idempotent
-        everywhere, so it is safe to call unconditionally at teardown.
-        """
-        try:
-            self._get_driver().close()
-        except Exception as exc:  # noqa: BLE001 — teardown must survive
-            self.logger.warning("Driver close() raised", error=str(exc))
 
     def _close_trial_graders(self) -> None:
         """Release every ``TrialGrader`` built during this orchestrator's
@@ -2991,17 +3067,7 @@ class Orchestrator:
         if not agent_config:
             raise ValueError("Agent model configuration required")
 
-        # Apply default user model if not configured
-        if user_config is None:
-            user_config = ModelConfig(
-                provider="openrouter",
-                name="anthropic/claude-sonnet-4.6",
-                temperature=0.2,
-            )
-            self.logger.info(
-                "Using default user model",
-                user_model="openrouter/anthropic/claude-sonnet-4.6",
-            )
+        user_config = require_user_simulator_config(user_config)
 
         # Resolve the run-level judge model and reject the run up front if any
         # selected task needs a judge but none is configured (fail loud).
@@ -3061,6 +3127,7 @@ class Orchestrator:
             runtime_backend = self._construct_runtime_backend(runner_address)
         runtime_backend.connect()
         self._verify_isolation_compatibility(runtime_backend)
+        self._validate_snapshot_mode_compatibility(runtime_backend)
 
         from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
@@ -3211,7 +3278,6 @@ class Orchestrator:
             # teardown; each failure is logged rather than raised so the
             # outer flow still surfaces the original exception.
             self._close_trial_graders()
-            self._close_driver()
 
         self._publish_grading_completeness()
         summary = {
@@ -3368,6 +3434,13 @@ class Orchestrator:
                 for trajectory in self.results
                 if trajectory.grade is not None
                 and trajectory.grade.judge_status is JudgeStatus.ERRORED
+            ),
+            synthesized_trials=sum(
+                1
+                for trajectory in self.results
+                if trajectory.grade is not None
+                and trajectory.grade.synthesized_by_termination_reason is not None
+                and classify_trial_outcome(trajectory) is TrialOutcomeClass.MEASURED
             ),
         )
 

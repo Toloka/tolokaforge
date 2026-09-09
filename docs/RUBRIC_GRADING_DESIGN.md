@@ -45,7 +45,7 @@ orchestrator ◀──GradeTrialResponse── proto Grade ── shared_stack_r
                                                                                           grade.yaml + judge_trajectory.yaml
 ```
 
-The judge dispatch lives on the composite (`core/grading/composite.py:
+The judge dispatch lives on the composite (`core/grading/composite/llm_judge.py:
 grade_llm_judge`) and reads through the `GradingSubstrate` seam: DB tools
 bridge through `substrate.db_reader()`, the `initial → final` state-diff is
 built from `substrate.initial_state()` + `substrate.final_state()`, KB tools

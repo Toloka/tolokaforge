@@ -134,19 +134,38 @@ service SubstrateService {
   // reads STABLE.
   rpc ReadFinalDBStateStable(ReadFinalDBStateStableRequest) returns (ReadStateResponse);
 
-  // One file under AGENT_WORK_DIR. Symlinks / non-files / missing paths
-  // return exists=false.
+  // One file under AGENT_WORK_DIR. Same filter and exclusion policy as
+  // tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem;
+  // refuses reads under any AGENT_VISIBLE_EXCLUDES directory. Symlinks /
+  // non-files / missing paths return exists=false.
   rpc ReadFilesystemPath(ReadFilesystemPathRequest) returns (ReadFilesystemPathResponse);
 
   // Relative POSIX paths of every non-symlink UTF-8-decodable file under
-  // AGENT_WORK_DIR. Same filter _read_agent_visible_filesystem ships
-  // today — no path-component excluder.
+  // AGENT_WORK_DIR, alphabetically sorted. Same filter and exclusion policy
+  // as tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem.
   rpc ListFilesystemDir(ListFilesystemDirRequest) returns (ListFilesystemDirResponse);
+
+  // Whole agent-visible workspace tree in one round trip: workspace_exists
+  // plus every UTF-8-decodable file's rel-path and content. Same walker and
+  // exclusion policy as read_agent_visible_filesystem — the byte content
+  // matches what InProcessGradingSubstrate.filesystem_state assembles
+  // locally. workspace_exists=false is the "no workspace surface" signal
+  // (LiveRunnerCallbackGradingSubstrate maps it to None from its
+  // filesystem_state / filesystem_root accessors), distinct from an empty
+  // present workspace (workspace_exists=true, files=[]).
+  rpc ReadAgentVisibleFilesystem(ReadAgentVisibleFilesystemRequest) returns (ReadAgentVisibleFilesystemResponse);
 
   // Trial's per-trial KB. kb_available=false is a first-class "no KB
   // provisioned" signal; the callback substrate returns None from
   // knowledge_search() when it is false.
   rpc KBSearch(KBSearchRequest) returns (KBSearchResponse);
+
+  // Run a task-declared read-only SQL probe against the DSN in the runner
+  // container's network context. Returns rows as a JSON array of objects
+  // (json.dumps(rows, default=str) — same coercion ReadStateResponse.
+  // state_json applies to DB state reads). Drives DbProbesStateCheckBackend
+  // on the grader side.
+  rpc RunDbProbe(RunDbProbeRequest) returns (RunDbProbeResponse);
 
   // Substrate liveness + capacity. Distinct from RunnerService.HealthCheck.
   rpc SubstrateHealthCheck(SubstrateHealthCheckRequest) returns (SubstrateHealthCheckResponse);
@@ -774,9 +793,8 @@ The Runner executes this grading algorithm:
 def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
     # 0. Join the transcript and the tool-call record into the trial's timeline.
     #    Raises TimelineInconsistencyError -> success=false, before any component.
-    _, transcript = split_leading_system_message(llm_messages)
-    timeline = build_trial_timeline(
-        decode_transcript_wire(transcript), trial_context.tool_call_history, termination_reason
+    timeline = build_timeline_from_wire(
+        llm_messages, trial_context.tool_call_history, termination_reason
     )
 
     # 1. Resolve every golden-action name against the tools RegisterTrial registered.

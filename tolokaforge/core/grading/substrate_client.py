@@ -29,7 +29,10 @@ from typing import Any
 import grpc
 
 from tolokaforge.core.grading.kb_search import SearchHit
-from tolokaforge.core.grading.substrate import SubstrateUnreachableError
+from tolokaforge.core.grading.substrate import (
+    RunTestSuiteResult,
+    SubstrateUnreachableError,
+)
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc as pb2_grpc
 from tolokaforge.runner.db_client import TrialNotFoundError as DBTrialNotFoundError
@@ -41,8 +44,9 @@ class FilesystemEntry:
 
     ``content_utf8`` and ``content_bytes`` are mutually exclusive — the servicer
     populates one branch or the other per the same UTF-8-decode filter
-    ``_read_agent_visible_filesystem`` ships today. A missing / symlink /
-    non-file target yields ``exists=False`` with both branches empty.
+    :func:`~tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`
+    ships. A missing / symlink / non-file target yields ``exists=False`` with
+    both branches empty.
     """
 
     exists: bool
@@ -50,6 +54,24 @@ class FilesystemEntry:
     is_dir: bool = False
     content_utf8: str = ""
     content_bytes: bytes = b""
+
+
+@dataclass(frozen=True)
+class AgentVisibleFilesystemSnapshot:
+    """One :func:`GrpcSubstrateClient.snapshot_agent_visible_filesystem` response.
+
+    ``workspace_exists=False`` is the first-class "no workspace surface" signal
+    the LIVE substrate maps to ``None`` from its ``filesystem_state`` /
+    ``filesystem_root`` accessors, distinct from an empty-but-present workspace
+    (``workspace_exists=True`` with ``files={}``). ``files`` maps each POSIX
+    rel-path under AGENT_WORK_DIR to its UTF-8 content — same walker and
+    exclusion policy
+    :func:`~tolokaforge.core.grading.filesystem_view.read_agent_visible_filesystem`
+    applies, so the byte content matches the local walk.
+    """
+
+    workspace_exists: bool
+    files: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -141,6 +163,18 @@ class GrpcSubstrateClient:
             raise SubstrateUnreachableError(str(err)) from err
         return list(response.rel_paths)
 
+    def snapshot_agent_visible_filesystem(self) -> AgentVisibleFilesystemSnapshot:
+        try:
+            response = self._stub.ReadAgentVisibleFilesystem(
+                pb2.ReadAgentVisibleFilesystemRequest(trial_id=self._trial_id)
+            )
+        except grpc.RpcError as err:
+            raise SubstrateUnreachableError(str(err)) from err
+        return AgentVisibleFilesystemSnapshot(
+            workspace_exists=response.workspace_exists,
+            files={f.rel_path: f.content_utf8 for f in response.files},
+        )
+
     def kb_search(self, query: str, top_k: int, alpha: float) -> KBSearchResult:
         try:
             response = self._stub.KBSearch(
@@ -164,6 +198,46 @@ class GrpcSubstrateClient:
         ]
         return KBSearchResult(kb_available=response.kb_available, hits=hits)
 
+    def run_db_probe(self, dsn: str, query: str) -> list[dict[str, Any]]:
+        try:
+            response = self._stub.RunDbProbe(pb2.RunDbProbeRequest(dsn=dsn, query=query))
+        except grpc.RpcError as err:
+            raise SubstrateUnreachableError(str(err)) from err
+        decoded = json.loads(response.rows_json) if response.rows_json else []
+        if not isinstance(decoded, list):
+            raise SubstrateUnreachableError(
+                f"SubstrateService returned a non-array rows_json: {decoded!r}"
+            )
+        return decoded
+
+    def run_test_suite(
+        self,
+        script_path: str,
+        reward_path: str,
+        timeout_s: float,
+        reward_read_timeout_s: float,
+    ) -> RunTestSuiteResult:
+        try:
+            response = self._stub.RunTestSuite(
+                pb2.RunTestSuiteRequest(
+                    trial_id=self._trial_id,
+                    script_path=script_path,
+                    reward_path=reward_path,
+                    timeout_s=timeout_s,
+                    reward_read_timeout_s=reward_read_timeout_s,
+                )
+            )
+        except grpc.RpcError as err:
+            raise SubstrateUnreachableError(str(err)) from err
+        return RunTestSuiteResult(
+            exit_code=response.exit_code,
+            reward_bytes=response.reward_bytes,
+            stdout=response.stdout,
+            tool_absent=response.tool_absent,
+            tool_absent_reason=response.tool_absent_reason,
+            script_exec_error=response.script_exec_error,
+        )
+
     def health_check(self) -> str:
         try:
             response = self._stub.SubstrateHealthCheck(pb2.SubstrateHealthCheckRequest())
@@ -184,6 +258,7 @@ class GrpcSubstrateClient:
 
 
 __all__ = [
+    "AgentVisibleFilesystemSnapshot",
     "FilesystemEntry",
     "GrpcSubstrateClient",
     "KBSearchResult",

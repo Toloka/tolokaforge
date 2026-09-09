@@ -1067,10 +1067,15 @@ class TestRunnerClientAndEndpointsResolution:
         assert composer.runner_client_for(run_sub, env_handle) is run_client
         assert composer.endpoints_for(run_sub, env_handle).runner_url == "http://run:1"
 
-    def test_raises_runtime_error_when_neither_scope_owns_the_runner(self, tmp_path: Path) -> None:
+    def test_raises_provision_error_when_neither_scope_owns_the_runner(
+        self, tmp_path: Path
+    ) -> None:
         """A plan that declares no runner (neither on a run-scope nor a
         trial-scope stack) leaves both fields ``None`` — resolving a
-        runner is a caller misuse and raises loudly."""
+        runner is a caller misuse and raises :class:`ProvisionError` at
+        the provision-time boundary, so :class:`PerTrialRuntimeBackend`
+        and callers that catch ``ProvisionError`` see a typed failure
+        instead of a bare ``RuntimeError`` slipping through untyped."""
         composer = DefaultSubstrateComposer(
             materialiser=_FakeMaterialiser(),
             runner_client_factory=_fake_client_factory,
@@ -1082,10 +1087,15 @@ class TestRunnerClientAndEndpointsResolution:
             trial_endpoints=None,
             trial_runner_client=None,
         )
-        with pytest.raises(RuntimeError, match="no runner_service"):
+        with pytest.raises(ProvisionError, match="no runner_service") as excinfo:
             composer.runner_client_for(run_sub, env_handle)
-        with pytest.raises(RuntimeError, match="no runner_service"):
+        assert excinfo.value.stage == "provision"
+        assert excinfo.value.trial_id == "t"
+
+        with pytest.raises(ProvisionError, match="no runner_service") as excinfo:
             composer.endpoints_for(run_sub, env_handle)
+        assert excinfo.value.stage == "provision"
+        assert excinfo.value.trial_id == "t"
 
 
 # ---------------------------------------------------------------------------

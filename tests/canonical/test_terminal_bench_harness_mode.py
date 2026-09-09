@@ -185,15 +185,21 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
         config = MagicMock()
         config.orchestrator.timeouts.episode_s = episode_s
+        config.orchestrator.max_turns = None
         # A real config value: the turn-loop branch validates the probe budget
         # against the episode budget, and a MagicMock reads as enabled.
         config.orchestrator.rate_limit_probe = RateLimitProbeConfig()
         config.models = {"agent": {"name": "stub", "provider": "anthropic"}}
+        # Snapshot mode is opt-in; a MagicMock reads truthy which would trip
+        # the trial-end producer seam on a stub runtime backend that lacks
+        # ``remember_trial_inputs`` / ``build_grade_bundle``.
+        config.grader = None
 
         runtime = _RecordingRuntime(tools)
         grader = _RecordingGrader()
         agent_client = MagicMock()
         agent_client.capabilities.schema_sanitizer.sanitize.side_effect = lambda s: s
+        agent_client.capabilities.default_max_turns = None
         agent_client.classify_loop_error.side_effect = lambda exc: classify_loop_error(exc, ())
 
         conductor = InProcessConductor(

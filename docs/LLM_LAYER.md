@@ -267,7 +267,7 @@ The extractor never raises — missing attributes default to `0`, so
 observability degrades gracefully when a provider returns a partial
 usage block.
 
-### Dual-path Anthropic cache counters (Stage 6 follow-up)
+### Dual-path Anthropic cache counters
 
 Anthropic cache counters are surfaced under two different usage paths
 depending on provider routing. `UsageExtractor` reads both and normalises
@@ -367,6 +367,18 @@ Three concrete sanitizers ship today:
   `enum`. Paired with `response_policy: array_dict_map` to reverse the
   dict-map → array transform. See [`AGENTS.md`](../AGENTS.md) gotcha #21
   for the wire-level symptom.
+
+**Executor validates against the sanitized surface.** The parameters
+schema the model was shown for a tool is the schema
+[`ToolExecutor.execute`](../tolokaforge/tools/registry.py) validates the
+model's argument dict against — not the tool's original
+`get_schema()["function"]["parameters"]`. The seam is
+[`ToolCallingLoop.validation_schemas_by_tool`](../tolokaforge/core/loop.py),
+wired at construction from `LLMClient.sanitize_tools_for_execution(tools)`.
+This invariant applies wherever `ToolExecutor` runs (LLM-judge tool loop,
+harness CLI invocations that go through the loop, direct instantiations).
+The runner-side gRPC path does no jsonschema validation at all; closing
+that asymmetry is tracked at [#976](https://github.com/Toloka/tolokaforge/issues/976).
 
 ### `StrictSchema` contract — preserve information by default, fail loudly on hazards
 
@@ -1171,6 +1183,32 @@ shape (see below).
 On a header-name collision the gateway's configured header wins, since that is
 explicit operator configuration and the other is an engine default.
 
+### Preset-level `openrouter_defaults`
+
+`ModelCapabilities.openrouter_defaults: OpenRouterConfig | None` is the
+preset-level default for `ModelConfig.openrouter`: when a preset declares a
+provider pin it does not need every operator to re-declare it per run.
+`_build_kwargs` resolves the effective routing **field-by-field** — `user or
+preset` short-circuits are wrong here, because an `OpenRouterConfig` with only
+`allow_fallbacks` set is truthy and would silently drop the preset's
+`provider_order`:
+
+- `provider_order` — user's list when non-empty; else the preset default; else
+  no pin lands.
+- `allow_fallbacks` — user's value when the `openrouter:` block is present at
+  all (a bool has no `None` sentinel); else the preset default; else `True`.
+
+The gateway pin-drop rule above applies unchanged to preset-sourced pins: a
+route into another provider namespace still drops the pin, once per client,
+with the same warning. `moonshot_kimi_k3` is the shipped opt-in — its
+`openrouter_defaults: {provider_order: [moonshotai], allow_fallbacks: false}`
+restricts the request to Moonshot direct so its `message_assembly_policy`
+filler reaches the endpoint it was written for. Preset routing pinned by
+[`tests/canonical/test_openrouter_defaults_routing.py`](../tests/canonical/test_openrouter_defaults_routing.py);
+the field-by-field merge and the critic-verified partial-user-config lock live
+in
+[`tests/unit/llm/test_openrouter_defaults_merge.py`](../tests/unit/llm/test_openrouter_defaults_merge.py).
+
 ### Verifying a gateway from CI
 
 [`tests/integration/llm/test_gateway_live.py`](../tests/integration/llm/test_gateway_live.py)
@@ -1324,11 +1362,17 @@ for auditability".
 
 ## `cache_policy`
 
-Explicit prompt-caching marker injection. The policy is invoked inside
-[`LLMClient.generate`](../tolokaforge/core/llm/client.py) **after** prompt
-enrichment + tool-schema sanitisation, **before** `_convert_messages` —
-so the sanitizer never sees a `cache_control` key, and the wire-level request
-carries the marker on the final cacheable prefix.
+Explicit prompt-caching marker injection. The policy runs in two phases
+inside [`LLMClient.generate`](../tolokaforge/core/llm/client.py):
+
+1. `apply` runs **after** prompt enrichment + tool-schema sanitisation and
+   **before** `_convert_messages`, so the sanitizer never sees a
+   `cache_control` key and the wire-level system + tools carry markers on
+   their final cacheable prefix.
+2. `apply_messages` runs on the wire-shape messages **after**
+   `_convert_messages` populates them (inside `_build_kwargs`), since
+   message-block marker attachment needs the exact list
+   `litellm.completion` will receive.
 
 ```python
 class CachePolicy(Protocol):
@@ -1338,23 +1382,30 @@ class CachePolicy(Protocol):
         tools: list[dict] | None,
         messages: list[dict],
     ) -> tuple[str | list[dict] | None, list[dict] | None, list[dict]]: ...
+
+    def apply_messages(
+        self, wire_messages: list[dict]
+    ) -> list[dict]: ...
 ```
 
 Two concrete policies ship today.
 
 | Policy | Default for | Effect |
 |---|---|---|
-| `NoCache` | `default` / `openai_gpt5` / `xai_grok` / `qwen` / `aws_nova` | Pure passthrough — inputs returned verbatim. |
-| `AnthropicEphemeralCache` | `anthropic` / `anthropic_claude_4_7` | Marks the **last** system content-block + **last** tools entry with `cache_control: {type: ephemeral}` (5-minute TTL, Anthropic default). |
+| `NoCache` | `default` / `openai_gpt5` / `xai_grok` / `qwen` / `aws_nova` | Pure passthrough on both hooks — inputs returned verbatim. |
+| `AnthropicEphemeralCache` | `anthropic` / `anthropic_claude_4_7` | `apply` marks the **last** system content-block + **last** tools entry with `cache_control: {type: ephemeral}` (5-minute TTL, Anthropic default). `apply_messages` marks up to two message positions: the tail message (when its role is `user` or `tool`) and the most-recent `user` message distinct from the tail. |
 
-### `AnthropicEphemeralCache` contract (Stage 6, fixes P8)
+### `AnthropicEphemeralCache` contract
 
-Per Part 4.R4 of
-[`plans/eval_output_new_diagnosis.md`](../plans/eval_output_new_diagnosis.md:390),
-every Claude turn pre-Stage-6 re-billed the 18 k-token system prompt + 8 k-token
-tool schemas because we never emitted a `cache_control` hint. Observable via
-zero `Metrics.usage.cache_read_input_tokens` on any second call with an
-identical system prompt.
+The policy attaches Anthropic's ephemeral (5-minute TTL) `cache_control`
+markers on three attach sites — system, tools, and up to two message
+positions — so a second request with the same cacheable prefix reads from
+the Anthropic cache. Observable via non-zero
+`Metrics.usage.cache_read_input_tokens` on the second call.
+
+**4-breakpoint budget.** Anthropic's Messages API caps at 4 `cache_control`
+markers per request. The policy uses at most:
+system (1) + tools (1) + messages (up to 2) = **4** — exactly at the ceiling.
 
 `AnthropicEphemeralCache.apply`:
 
@@ -1369,21 +1420,47 @@ identical system prompt.
 * Tools: when non-empty, marks the **last** entry with `cache_control` —
   this caches the whole tools-array prefix. Also replaces any caller-supplied
   `cache_control` on the last entry (idempotent).
-* Messages are returned unchanged — Stage 6 caches system + tools only.
-  Message-level caching is deferred (see Residual risk in the Stage 6
-  report).
 * Operates on shallow copies — caller dicts are never mutated.
-* The 5 m TTL is the Anthropic default; Stage 6 exposes no TTL knob.
+* The 5 m TTL is the Anthropic default; the policy exposes no TTL knob.
+
+`AnthropicEphemeralCache.apply_messages` selects up to two message anchors
+by walking the wire-shape list backward:
+
+* **Tail anchor.** The last message, if its role is `user` or `tool`. These
+  are the two roles litellm's Anthropic adapter routes onto user-side
+  content blocks that accept `cache_control` verbatim.
+* **Last-user anchor.** The most-recent `role: user` message distinct from
+  the tail. In coding-agent trajectories the initial task message rarely
+  changes, so this becomes a long-lived anchor that every subsequent turn's
+  request re-marks at the same position — Anthropic's cache lookup hits
+  the identical hash and reads the cached prefix.
+
+`assistant` messages are skipped: they carry `tool_calls` alongside
+`content` and litellm's adapter merges those into Anthropic's
+content-blocks list in a version-sensitive way. `system` is already marked
+upstream by `apply`. Empty-content anchors keep their position but no
+marker is attached — Anthropic rejects an empty `text` block.
+
+Marker attachment on a message: a string `content` becomes
+`[{"type": "text", "text": <s>, "cache_control": {"type": "ephemeral"}}]`;
+an already-list `content` gains `cache_control` on the last block only
+(prior markers on that block are replaced, not stacked). Anchor messages
+are shallow-copied so the caller's list and inner dicts stay untouched.
 
 ### Example — Anthropic request transformation
 
-Input to `apply`:
+Input trajectory sent through `LLMClient.generate`:
 
 ```python
 system = "You are a helpful assistant."
 tools = [
     {"type": "function", "function": {"name": "a", "parameters": {}}},
     {"type": "function", "function": {"name": "b", "parameters": {}}},
+]
+messages = [
+    Message(role=USER, content="task"),
+    Message(role=ASSISTANT, content="thinking", tool_calls=[tc]),
+    Message(role=TOOL, content="result", tool_call_id=tc.id),
 ]
 ```
 
@@ -1396,7 +1473,16 @@ Output sent to `litellm.completion`:
         {"type": "text", "text": "You are a helpful assistant.",
          "cache_control": {"type": "ephemeral"}},
     ]},
-    # ... user / assistant turns unchanged
+    {"role": "user", "content": [
+        {"type": "text", "text": "task",
+         "cache_control": {"type": "ephemeral"}},
+    ]},
+    {"role": "assistant", "content": "thinking",
+     "tool_calls": [{"id": "...", "type": "function", "function": {...}}]},
+    {"role": "tool", "tool_call_id": "...", "content": [
+        {"type": "text", "text": "result",
+         "cache_control": {"type": "ephemeral"}},
+    ]},
   ],
   "tools": [
     {"type": "function", "function": {"name": "a", "parameters": {}}},
@@ -1406,9 +1492,10 @@ Output sent to `litellm.completion`:
 }
 ```
 
-LiteLLM forwards the content-blocks list untouched to the Anthropic provider —
-this is the canonical Messages-API shape for prompt caching (verified against
-context7).
+Four `cache_control` markers total: system + tools + first user + tail
+tool_result. LiteLLM forwards the content-blocks list untouched to the
+Anthropic provider — this is the canonical Messages-API shape for prompt
+caching.
 
 ### `effective_system_prompt` on `GenerationResult`
 
@@ -1422,11 +1509,12 @@ list-of-blocks back to text.
 
 ### User-visible configuration
 
-`cache_policy` is preset-driven, not user-overridable via `ModelConfig.capabilities`
-in Stage 6. To disable caching for an ablation study, override the preset in
+`cache_policy` is preset-driven, not user-overridable via
+`ModelConfig.capabilities`. To disable caching for an ablation study,
+override the preset in
 [`tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml:22)
 with `cache_policy: none`. The override path contract is documented in
-`docs/ADD_NEW_MODEL.md` (Stage 8).
+`docs/ADD_NEW_MODEL.md`.
 
 ## `prompt_policy`
 
@@ -1681,6 +1769,371 @@ without touching engine code (registry key `"nova"` is preserved verbatim
 as a compatibility surface — user overlay syntax and the
 `resolve_policy_names` fingerprint). Routing pinned by
 [`tests/canonical/test_message_assembly_filler_routing.py`](../tests/canonical/test_message_assembly_filler_routing.py).
+
+### Provider-side empty completion
+
+A generation that comes back with both `text == ""` and `tool_calls == []`
+is a *provider-side empty completion*: the request round-tripped and the
+provider chose to return nothing. `ToolCallingLoop._run_turn` recognises
+that shape immediately after `_generate` — before the assistant message
+would be appended — and resamples up to `capabilities.empty_retry_count`
+times without appending the empty message and without advancing the outer
+turn counter; on the `(N + 1)`-th empty result it terminates the trial with
+`TerminationReason.EMPTY_COMPLETION` and `TrialStatus.FAILED`. The metrics
+sink records every generation, resampled ones included, because the trial
+paid for each call. The default `empty_retry_count = 0` keeps the preset
+one-shot terminal for models that do not opt in. Presets that observably
+recover on a resample opt in through `empty_retry_count: <N>` on the model
+preset overlay; a `LoopConfig(empty_retry_count=N)` flows from
+`capabilities.empty_retry_count` at `runner.py` construction time.
+
+The distinction from `empty_assistant_filler` above is where the empty
+content lives. `empty_assistant_filler` handles empty **content the loop
+is about to send back to the provider on a tool-call turn** — Bedrock/Nova
+and Moonshot direct reject a request whose assistant turn has empty
+`content` alongside `tool_calls`, so those provider families opt in to a
+non-empty filler string. `EMPTY_COMPLETION` handles empty **content the
+provider produced**: appending it would send a request whose tail is a
+`role=model` turn with empty `content` and no `tool_calls` on the next
+iteration, and Gemini rejects that as an API error. The Gemini-legal-tail
+invariant holds across resamples because the empty assistant message is
+still not appended on any of them; only the recovered non-empty result
+lands on `messages`. The engine consumes this one wire-shape observation
+directly rather than routing it through `classify_loop_error` so post-run
+analysis can tell "the model produced nothing" apart from the API-error
+class that would otherwise absorb it.
+
+### Output-length retry
+
+A generation that comes back with content and `finish_reason == "length"`
+is a *max-tokens truncation*: the model produced tokens but the provider
+cut the response at its output budget. `ToolCallingLoop._run_turn` reads
+this signal directly from `GenerationResult.finish_reason` — sourced in
+`_assemble_result` from `choice.finish_reason`, which litellm post-maps
+every current provider's max-tokens reason (native OpenAI `"length"`,
+Gemini `MAX_TOKENS`, Anthropic `max_tokens`) to the OpenAI-compatible
+string `"length"`. When `capabilities.output_length_retry_count > 0`, the
+loop discards the truncated response, appends a `role=user` feedback turn
+advising the model that its previous reply was truncated at `max_tokens`
+and asking it to split the next action into smaller pieces, and resamples
+without appending the truncated assistant message and without advancing
+the outer turn counter. On budget exhaustion the loop falls through to
+accept-and-continue — the last (still-truncated) response lands as the
+assistant turn and the trial continues — so the seam is strictly
+recoverable and never a new terminal reason. The metrics sink records
+every resampled generation because the trial paid for each call. The
+default `output_length_retry_count = 0` accepts the truncated response
+as the assistant turn unchanged — the seam is opt-in per preset.
+
+The feedback turn is `MessageRole.USER` — not `MessageRole.SYSTEM` — and
+this is load-bearing. Every other inline marker `_run_turn` inserts via
+`_append_both` (the empty-completion terminal message, the
+`TerminationDecision` system message, the summarize marker, the
+`MAX_TURNS` marker) either terminates the loop or advances the outer
+turn, so litellm's Anthropic-adapter convention of hoisting an inline
+`role=system` message into the top-level `system` parameter of the next
+request is inert for them. The output-length retry is the first
+`_run_turn` path that inserts a marker *and continues the loop*, so a
+`role=system` feedback turn here would be hoisted into the initial
+system prompt on the resample rather than landing mid-conversation —
+defeating the seam's intent. The `role=user` shape stays positional on
+every adapter and mirrors the tool-response pattern that is already
+provider-safe on Anthropic / OpenAI / Gemini / Bedrock. A future edit
+that reshapes the feedback turn "for consistency" with the other markers
+must preserve this constraint or move all four seams onto a shared
+positional shape.
+
+Orthogonal to `empty_retry_count` (which fires on empty-shape results
+with no content and terminates on exhaustion) and to the loop-level
+API-error retry (which replays a raised exception). Each retry class
+owns a distinct trigger — content-carrying truncation, empty-shape
+completion, raised transient exception — and a dedicated `LoopConfig`
+field so a preset can tune them independently. The strictly-empty branch
+of `_run_turn` still handles a `finish_reason == "length"` result whose
+content is empty (reasoning-budget exhaustion) via `empty_retry_count`,
+because the output-length branch nests *inside* the outer
+content-carrying gate.
+
+`LoopConfig.output_length_retry_count` flows from
+`capabilities.output_length_retry_count` at
+[`runner.py`](../tolokaforge/core/runner.py) construction time. No
+preset opts in today; canonical
+[`tests/canonical/test_output_length_retry_count_preset_routing.py`](../tests/canonical/test_output_length_retry_count_preset_routing.py)
+enumerates every currently-registered preset and pins the default. An
+observed-evidence opt-in for a specific preset requires the per-workload
+truncation rate recorded in the preset comment (matching the discipline
+`empty_retry_count`'s `moonshot_kimi_k3` / `anthropic_claude_opus_5`
+opt-ins use).
+
+### Parser-error retry
+
+A generation whose `tool_call.function.arguments` string cannot be decoded
+by `LLMClient._try_parse_tool_arguments`'s JSON / YAML / repair-JSON /
+repair-YAML ladder is structurally malformed: the model produced a
+tool_call, but its serialised arguments are not a dict any parser accepted.
+`_assemble_result` records one `ParserError(tool_name, raw_arguments,
+reason)` per failing call on the sidecar tuple `GenerationResult.parser_errors`
+alongside the tolerant `{}` coercion the parser applies. The raw arguments
+excerpt is bounded by `PARSER_ERROR_RAW_ARGS_EXCERPT_MAX_CHARS` (500 chars)
+so a long garbage payload does not inflate the feedback turn.
+
+When `capabilities.parser_error_retry_count > 0`, the loop discards the
+assistant response, appends a `role=user` feedback turn naming the failing
+tools, quoting the raw arguments excerpt, and reporting the parse reason,
+and resamples without appending the discarded assistant message and without
+advancing the outer turn counter. On budget exhaustion the loop falls
+through to accept-and-continue — the last (still-malformed) response lands
+as the assistant turn with its `{}`-coerced tool_calls preserved, and the
+executor either surfaces an `INVALID_ARGUMENTS` tool_result (for tools with
+a real schema that rejects `{}`) or runs the tool against empty args (for
+no-arg tools). The seam is strictly recoverable and never a new terminal
+reason. The metrics sink records every resampled generation because the
+trial paid for each call. The default `parser_error_retry_count = 0`
+accepts the `{}`-coerced response as the assistant turn unchanged — the
+seam is opt-in per preset.
+
+The feedback turn is `MessageRole.USER` — not `MessageRole.SYSTEM` — for
+the same load-bearing reason § *Output-length retry* documents above: this
+is the second `_run_turn` path that inserts a marker via `_append_both` AND
+continues the loop, so a `role=system` marker would be hoisted into the
+initial system prompt by litellm's Anthropic-adapter convention rather
+than landing mid-conversation, defeating the seam's intent. The `role=user`
+shape stays positional on every adapter and mirrors both the tool-response
+pattern and the output-length-retry pattern already provider-safe there.
+
+Orthogonal to `empty_retry_count` (empty-shape completion, terminates on
+exhaustion), `output_length_retry_count` (content-carrying max-tokens
+truncation), and the loop-level API-error retry (raised transient
+exception). Each retry class owns a distinct trigger — structurally
+malformed args, empty-shape completion, content-carrying truncation,
+raised transient exception — and a dedicated `LoopConfig` field so a
+preset can tune them independently. The parser-error branch nests
+*inside* the outer `if result.text or result.tool_calls:` gate and fires
+*before* the output-length branch, so a response that carries both
+signals (parser errors AND `finish_reason == "length"`) resamples under
+the parser-error budget first — the malformed args are the stronger
+signal because the response is structurally broken, not just cut off.
+
+`LoopConfig.parser_error_retry_count` flows from
+`capabilities.parser_error_retry_count` at
+[`runner.py`](../tolokaforge/core/runner.py) construction time. No
+preset opts in today; canonical
+[`tests/canonical/test_parser_error_retry_count_preset_routing.py`](../tests/canonical/test_parser_error_retry_count_preset_routing.py)
+enumerates every currently-registered preset and pins the default. An
+observed-evidence opt-in for a specific preset requires the per-workload
+parse-error rate recorded in the preset comment (matching the discipline
+`empty_retry_count`'s `moonshot_kimi_k3` / `anthropic_claude_opus_5`
+opt-ins use).
+
+### Context-window handoff
+
+`ModelCapabilities.max_context_tokens: int | None` and
+`ModelCapabilities.context_watermark: int | None` arm a first-class engine
+seam: when the previous generation's `Usage.prompt_tokens +
+context_watermark >= max_context_tokens`, `ToolCallingLoop._run_turn`
+invokes its `SummarizePolicy` (see
+[`tolokaforge/core/summarize_policy.py`](../tolokaforge/core/summarize_policy.py))
+before the next `_generate` call and rewrites the wire message list to
+`[first_user_message, Message(USER, content=recap)]`. The recorded
+`Trajectory.messages` list keeps the full pre-summarize view — the grader's
+timeline builder reads that, and every existing timeline construction rule
+still holds. Both `None` disable the pre-turn watermark check; a preset
+that declares only `max_context_tokens` (for other uses) but not
+`context_watermark` never fires summarize either.
+
+The reactive path catches `litellm.exceptions.ContextWindowExceededError`
+inside the same turn: with summarize armed, the loop calls the policy and
+retries `_generate` once inline; without it, the exception reaches
+`classify_loop_error`, which routes it to a typed
+`TerminationReason.CONTEXT_WINDOW_EXCEEDED` rather than the generic
+`ERROR` bucket.
+
+Three loud-fail terminals all map to
+`TerminationReason.CONTEXT_WINDOW_EXCEEDED` and `TrialStatus.FAILED`:
+
+* The summarize policy returned an empty recap (`SummarizerFailedError`).
+* The summarize policy's own `generate` raised
+  `ContextWindowExceededError` — the pre-summarize history alone
+  exceeds the window.
+* The post-summarize `_generate` retry raised
+  `ContextWindowExceededError` — the compacted wire prompt still
+  exceeds the window.
+
+The engine does not iterate summarize: one summarize is one summarize.
+
+`LoopConfig.max_context_tokens`, `LoopConfig.context_watermark` and
+`LoopConfig.summarize_policy` flow from `ModelCapabilities` at
+[`runner.py`](../tolokaforge/core/runner.py) construction time. The
+default `SummarizePolicy` implementation `LLMSummarizer` reuses the
+trial's own `LLMClient` — the same reasoning model that produced the
+history summarizes it. The summarize `generate` call is billed through
+the shared `MetricsSink` so its `Usage` and `cost_usd` land in the
+trial's `Metrics` alongside the agent's turns; the `MetricsSink`
+Protocol exposes `last_prompt_tokens: int | None` for the pre-turn
+watermark check and defaults to `None` for subclasses that do not
+override.
+
+Composes above the turn budget: a summarize event does not reset the
+turn counter, and the `_maybe_summarize` hook fires at the top of every
+turn before `_generate`. A summarize on turn `N` records a `role: system`
+message `"Context summarized before turn N (...); wire history reset."`
+in `Trajectory.messages`; per `docs/GRADING.md` G3/N3 that message is not
+an event and the grader threads through it. Grading reads
+`Trajectory.messages` (the recorded view), so the pre-summarize timeline
+survives end-to-end. Only the wire prompt on subsequent turns sees the
+compacted view.
+
+Compatibility surface: the two `ModelCapabilities` slots and the three
+`LoopConfig` fields are additive with `None`/no-op defaults, so a preset
+that does not name them inherits current behaviour byte-for-byte. The
+new `TerminationReason.CONTEXT_WINDOW_EXCEEDED` enum value counts against
+the measured denominator (not excluded — a summarize-opted preset that
+failed here failed on a measurable in-scope condition; a non-opted
+preset had no recovery path so its failure is the model's real long-tail
+behaviour). Loop and preset-routing behaviour are pinned by
+[`tests/unit/test_tool_calling_loop.py`](../tests/unit/test_tool_calling_loop.py)
+and
+[`tests/unit/test_failure_attribution.py`](../tests/unit/test_failure_attribution.py).
+
+**Preset opt-ins.** Two shipped presets declare the capability today:
+
+* `moonshot_kimi_k3` — `max_context_tokens: 128000`,
+  `context_watermark: 8000`. Kimi K3's documented 128 K window is the
+  provider ceiling; the 8 K free-token watermark is ~6 % headroom sized
+  for one reasoning turn plus its tool-call reply. Reasoning-heavy
+  multi-turn trajectories on tool-rich packs exhaust the window before
+  the turn budget does, and the preset's earlier defences
+  (`empty_retry_count`, `tool_output_max_chars`, provider pin) attack
+  the growth rate rather than the reset-when-full case.
+* `anthropic_claude_4_7` (Opus + Sonnet) — `max_context_tokens:
+  200000`, `context_watermark: 12000`. Claude 4.7's documented 200 K
+  window fills on signed-thinking-heavy trajectories even under the
+  `anthropic_ephemeral` cache (cache read savings do not shrink the
+  prompt). 12 K free tokens is ~6 % headroom sized for one
+  adaptive-thinking turn (8 K default extended-thinking budget + 4 K
+  reply).
+
+Preset routing pinned by
+[`tests/canonical/test_context_window_preset_routing.py`](../tests/canonical/test_context_window_preset_routing.py).
+Every other shipped preset resolves to both slots `None`; new opt-ins
+land alongside the run data that justified the chosen watermark.
+
+### Tool-output truncation
+
+`ModelCapabilities.tool_output_max_chars: int | None` is the loop-layer cap
+on the `content` a `role=tool` message carries into the next prompt. When
+it is set, `ToolCallingLoop._execute_tool_calls` middle-elides the content
+via `keep_head_and_tail` from
+[`tolokaforge/core/tool_output_truncation.py`](../tolokaforge/core/tool_output_truncation.py:1)
+before the tool message is appended, so accumulated context stays
+predictable across trials whose tools return unbounded strings (browser
+tool DOM dumps, database result sets, RAG hit lists, task-pack MCP tool
+output). Reasoning-heavy models are the norm; a first-class engine policy
+for bounding tool-output size that lands on the message history is a
+general improvement rather than a per-model workaround. `None` (the
+default) threads every tool message through verbatim — the pre-opt-in
+baseline for presets that do not name the key.
+
+The cap sits **below** the trial's recorder and the grader. The recorder
+call inside `_execute_tool_calls` reads the full text through
+`resolve_tool_output(tool_result)` before the truncation runs, so the
+trial's ordered tool-call record and the grader inputs carry the
+untruncated tool output regardless of the cap. Only the string the model
+sees on the next prompt is capped.
+
+The marker splices between the preserved head and tail:
+
+```
+\n...[{N} chars omitted]...\n
+```
+
+`{N}` is the number of chars removed. Head and tail are each
+`tool_output_max_chars // 2` chars long, taken verbatim from the input —
+so a compilation output whose first failure is at the top and whose final
+error is at the bottom keeps both edges (the two most common tool-output
+patterns). Only `Message.content` is capped: `Message.content_blocks`
+(multimodal payloads like browser-tool screenshots) passes through
+untouched, because a fixed-size per-call image would break if partially
+clipped. The `Error: ...` branch — a failed tool call whose message text
+prefixes `Error:` for the model — flows through the same cap, so a
+runaway error string cannot silently blow past the guarantee.
+
+The cap is a **defensive backstop** above per-tool truncation, not a
+replacement. `persistent_shell` and `str_replace_editor` truncate their
+own output at 16 KB chars inside the tool, with a tool-authored marker
+that names actionable recovery intent (`"[…output truncated…]" — re-run
+with a narrower selector`). A per-tool cap owns intent the loop cannot
+supply, so the two layers compose: the tool's own truncation runs first,
+and the loop cap absorbs whatever text still reaches the message-append
+site. Tools that do not cap themselves (browser DOM, RAG search, MCP tool
+output) rely on the loop cap alone. A future tool whose per-call cap
+exceeds the loop's would see a double-truncation shape — the outer cap
+wins and the inner marker survives in whichever half retained it.
+
+`LoopConfig.tool_output_max_chars` flows from
+`ModelCapabilities.tool_output_max_chars` at
+[`runner.py`](../tolokaforge/core/runner.py:1) construction time, so a
+preset that names the key applies uniformly to every trial that runs on
+that model. Preset routing is pinned by
+[`tests/canonical/test_tool_output_max_chars_preset_routing.py`](../tests/canonical/test_tool_output_max_chars_preset_routing.py);
+the loop-layer behaviour and the helper contract are pinned by
+[`tests/unit/test_tool_calling_loop.py`](../tests/unit/test_tool_calling_loop.py)
+and
+[`tests/unit/test_tool_output_truncation.py`](../tests/unit/test_tool_output_truncation.py).
+
+### Per-model turn-budget default
+
+`ModelCapabilities.default_max_turns: int | None` is the preset-level value
+default for the per-trial turn budget when the task did not declare its own
+`TaskConfig.max_turns`. Different models converge to a done state in
+different numbers of steps on the same task: a model whose per-turn edit
+style is more granular (more per-turn tool calls, smaller diffs per call)
+exhausts a given absolute budget on a task that a coarser-grained model
+completes in fewer turns. A first-class preset knob for the per-trial base
+budget is a general-harness improvement rather than a per-model workaround.
+`None` (the default) leaves the engine-wide fallback
+`DEFAULT_MAX_TURNS = 50` in place for presets that do not name the key.
+
+The conductor's
+[`resolve_max_turns`](../tolokaforge/core/conductor.py) composes three
+inputs into the effective per-trial budget:
+
+* `TaskConfig.max_turns` — task-declared. When set, it is authoritative for
+  the task's own semantics.
+* `OrchestratorConfig.max_turns` — the operator's run-level ceiling. Always
+  applies as a `min(base, run_cap)` clamp when set.
+* `ModelCapabilities.default_max_turns` — the preset-level value default.
+  Consulted only when the task did not pin its own budget; it supplies the
+  base value that the operator's cap then ceilings.
+
+Precedence:
+
+1. Task pinned `max_turns` → effective = `min(task_max_turns, run_cap)` when
+   both set, else `task_max_turns`.
+2. Task did not pin `max_turns` → base = `default_max_turns` when set, else
+   `DEFAULT_MAX_TURNS = 50`; effective = `min(base, run_cap)` when the run
+   cap is set, else `base`.
+
+Preset routing is pinned by
+[`tests/canonical/test_default_max_turns_preset_routing.py`](../tests/canonical/test_default_max_turns_preset_routing.py);
+the precedence body is pinned by
+[`tests/unit/test_conductor.py`](../tests/unit/test_conductor.py)
+(`TestResolveMaxTurns`).
+
+The `gemini_31_pro_preview` preset opts in at
+`default_max_turns: 90`. Gemini 3.1 Pro's per-turn edit style is more
+granular than the framework baseline, so the same absolute budget
+exhausts earlier on tasks a coarser-grained model completes in fewer
+turns; 90 is the conservative lift over the 50-turn framework default.
+The overlay carries the generic `gemini` policy trio (`reasoning_codec`,
+`schema_sanitizer`, `response_policy`) verbatim, so the preset's only
+functional divergence from the shared `gemini` route is the turn-budget
+default. Exact-match globs (`google/gemini-3.1-pro-preview` and its
+OpenRouter-prefixed variant) sit BEFORE the generic `gemini` block in
+[`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)
+so first-match-wins picks up the overlay; adjacent Pro slugs (2.5, 3.0,
+3.1 GA) and every Flash lineage member continue to route through the
+generic `gemini` preset and inherit the framework default.
 
 ## `response_policy`
 
@@ -2094,6 +2547,65 @@ module boundary. `ToolCallingLoop` receives it via
 `classify_error=llm_client.classify_loop_error`. The remaining text-matching
 classifiers (`core/runner.py`'s user-simulator retry, `core/resume.py`) are
 separate and unaffected — `AllApiKeysExhaustedError` subclasses `RuntimeError`.
+
+### Bounded API-error retry
+
+`ToolCallingLoop.run` retries a classified `TerminationReason.API_ERROR` in
+place, without incrementing the outer turn counter. `LoopConfig.api_error_retries`
+bounds the retry budget (default `1` — one retry, then fail loud);
+`LoopConfig.api_error_backoff_s` is the sleep between attempts (default
+`1.0` s). Sleep is dispatched through `ToolCallingLoop.retry_sleep`, which
+defaults to `time.sleep` and is swapped for a no-op in unit tests.
+
+The retry class at this layer is `API_ERROR` only. `RATE_LIMIT`, `API_TIMEOUT`
+and `TRIAL_LOST` stay one-shot terminal because each already owns a dedicated
+path — typed 429 handling in the `_build_retrying` / `_build_probe_retrying`
+outer controllers above, transport-timeout retry in
+`_call_completion_with_timeout_retry`, substrate re-registration in the runner
+protocol. Retrying them at the loop level would double-count the exclusion and
+confuse the denominator.
+
+The empty-completion retry, the output-length retry and the parser-error
+retry are three separate classes that live in `_run_turn`, each under its
+own budget on `LoopConfig.empty_retry_count`,
+`LoopConfig.output_length_retry_count` and
+`LoopConfig.parser_error_retry_count`. The four retry classes are
+orthogonal — each fires on a distinct trigger: the API-error retry
+replays a *raised exception*, the empty-completion retry resamples a
+*returned empty-shape result* (see § *Provider-side empty completion*
+above for the resample mechanics and the Gemini-legal-tail invariant),
+the output-length retry appends a `role=user` feedback turn and
+resamples a *returned content-carrying truncation* under its own budget
+before falling through to accept-and-continue (see § *Output-length
+retry* above), and the parser-error retry appends a `role=user` feedback
+turn naming the failing tools and resamples a *returned response with
+un-parseable tool_call arguments* under its own budget before falling
+through to accept the `{}`-coerced response (see § *Parser-error retry*
+above). Each owns a dedicated `LoopConfig` field so a preset can tune
+them independently.
+
+`TerminationReason.CONTEXT_WINDOW_EXCEEDED` is a third wire-shape reason
+(parallel to `EMPTY_COMPLETION`), not routed through the API-error retry.
+It fires when the provider returns
+`litellm.exceptions.ContextWindowExceededError`, and — with the summarize
+seam armed — after one loud-fail summarize+retry attempt. See §
+*Context-window handoff* above.
+
+The retry budget resets to zero at the start of every outer iteration, so a
+successful turn 0 followed by an API-error turn 1 gets a fresh budget. The
+`messages` mutation invariant on a failed attempt is what makes replay safe:
+`_run_turn` mutates `messages` only after `_generate` succeeds
+(`messages.append(self._assistant_message(...))` sits after the `_generate`
+call), so a raise before that line leaves `messages` unchanged and the retry
+attempts against the same prefix.
+
+Composition with the judge's own retry: `RubricJudge` runs a bounded retry loop
+around `submit_report` validation errors inside its `LLMJudge` shell; a bad
+provider response inside one rubric turn retries once at the loop level, and the
+outer judge loop retries `submit_report` semantics on top. The two retries are
+orthogonal — one covers wire-level API-error transience, the other covers
+grader-contract validation — so composing them does not double-count the
+budget.
 
 ### Probe telemetry recording sites
 

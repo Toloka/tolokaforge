@@ -136,6 +136,14 @@ def enumerate_harness_commits(repo_root: Path) -> list[HarnessCommit]:
             "log",
             "HEAD",
             "--no-merges",
+            # `--full-history` disables `git log`'s default history
+            # simplification for path-scoped queries. Without it, on a PR-merge
+            # commit CI checks out (`refs/pull/<N>/merge`), history walkers can
+            # prune a commit only reachable through a merge parent that git
+            # considers TREESAME relative to the "chosen" parent — the same
+            # SHA is reachable locally on the branch tip yet missing from CI's
+            # simplified view, and the baseline unreachable-check fires.
+            "--full-history",
             f"--format={_LOG_FORMAT}",
             "--reverse",
             "--",

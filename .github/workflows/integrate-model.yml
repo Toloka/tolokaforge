@@ -248,6 +248,13 @@ jobs:
         # simulator too, so the gateway must serve BOTH models.
         run: |
           set -euo pipefail
+          # Cost accounting: the effective route (the summary reads it - on the gateway route
+          # the probes are billed elsewhere) and the first key snapshot, kept OUTSIDE
+          # observation/ so the key's lifetime usage never lands in an artifact.
+          # docs/AUTO_INTEGRATION.md § Cost summary.
+          mkdir -p observation/cost "$RUNNER_TEMP/cost"
+          printf 'openrouter\n' > observation/cost/route.txt
+          OPENROUTER_API_KEY="$ARENA_KEY" uv run automation key-snapshot --out "$RUNNER_TEMP/cost/key_start.json" || true
           printf '%s\n' "OPENROUTER_API_KEY=$ARENA_KEY" > .env
           if [ "$ROUTE" = "litellm" ]; then
             if [ -n "$PROXY_BASE_URL" ] && [ -n "$PROXY_API_KEY" ]; then
@@ -279,6 +286,7 @@ jobs:
               if [ -n "$PROXY_PREFERRED_ROUTE" ]; then
                 printf '%s\n' "LLM_PROXY_PREFERRED_ROUTE=$PROXY_PREFERRED_ROUTE" >> .env
               fi
+              printf 'litellm\n' > observation/cost/route.txt
               echo "every openrouter/openai call in this run (candidate + user simulator) goes through the LLM gateway"
             else
               echo "::warning title=Gateway route unavailable::route=litellm was requested but ARENA_AUTOMATION_LLM_PROXY_BASE_URL / _API_KEY are not set; probing over OpenRouter instead"
@@ -553,6 +561,9 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
         run: |
           set -euo pipefail
+          # Second key snapshot: observe is over, resolve has not started, so the delta against
+          # key_start is the observe stage's billed spend. docs/AUTO_INTEGRATION.md § Cost summary.
+          uv run automation key-snapshot --out "$RUNNER_TEMP/cost/key_after_observe.json" || true
           printf 'model_list:\n  - model_name: %s\n    litellm_params:\n      model: %s\n      api_key: os.environ/OPENROUTER_API_KEY\nlitellm_settings:\n  drop_params: true\n' \
             "$AGENT_MODEL" "$RESOLVE_AGENT_OR_MODEL" > /tmp/litellm.config.yaml
           echo "--- gateway config ---"; cat /tmp/litellm.config.yaml
@@ -642,10 +653,16 @@ jobs:
             # include candidate-model output, and GATEWAY_RUNNER_KEY is a network-admission
             # credential rather than a budget-bounded one. The step needs those values only
             # for `automation reprobe`, not for the agent.
+            # stream-json + tee: the transcript still reaches the job log (one JSON event per
+            # line) and the final `result` event lands in the file with the run's cost + turn
+            # count for `automation cost-summary`. docs/AUTO_INTEGRATION.md § Cost summary.
             env -u LLM_PROXY_SUNDAY_ORDER_ID -u LLM_PROXY_GATEWAY_RUNNER_KEY \
               claude -p "$(cat /tmp/compose_$i.md)" --model "$AGENT_MODEL" \
               --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
-              --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
+              --max-turns "${RESOLVE_MAX_TURNS}" --verbose --output-format stream-json \
+              | tee "observation/resolve/agent_iter_$i.jsonl" || true
+            uv run automation agent-digest "observation/resolve/agent_iter_$i.jsonl" \
+              --out "observation/cost/agent_iter_$i.json" || true
             # Agent-requested escalation: if it lacks the data to produce a CORRECT policy (a
             # data-bound quirk whose scope needs real-domain evidence the observe never surfaced),
             # it sets `needs_human: true` in decision.json. Break immediately - no wasted
@@ -725,10 +742,14 @@ jobs:
           fill "$P/resolve_finalize.md" > /tmp/finalize.md
           # `|| true`: if the agent hits --max-turns it exits non-zero; do not abort - the commit
           # step below decides success by whether files changed.
+          # Same capture as the resolve loop: transcript to the log, result event to the file.
           env -u LLM_PROXY_SUNDAY_ORDER_ID -u LLM_PROXY_GATEWAY_RUNNER_KEY \
             claude -p "$(cat /tmp/finalize.md)" --model "$AGENT_MODEL" \
             --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
-            --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
+            --max-turns "${RESOLVE_MAX_TURNS}" --verbose --output-format stream-json \
+            | tee observation/resolve/agent_finalize.jsonl || true
+          uv run automation agent-digest observation/resolve/agent_finalize.jsonl \
+            --out observation/cost/agent_finalize.json || true
 
       - name: Finalize - verify + commit + report (holds GH_TOKEN; no agent)
         id: finalize
@@ -1015,3 +1036,58 @@ jobs:
             --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
             --icon pipeline_error --text 'Pipeline error: unexpected failure, PR left mid-state' \
             --pr-url "$PR_URL" --run-url "$RUN_URL" || true
+
+      - name: Cost summary (agents + probes + key usage)
+        # The accounting tail, whatever the outcome once the model is known: what this run
+        # spent, attributed per stage. Agent cost is the Claude Code CLI's own report (Anthropic
+        # list price; cache writes are not surfaced on the gateway route, so a lower bound), wire
+        # cost comes from the run aggregates, and the key snapshots give the billed delta on
+        # ARENA_AUTOMATION_OPENROUTER_API_KEY - the only figure that covers the capability
+        # probes, and one that includes any concurrent run on the same key (on the litellm
+        # route the probes bill the gateway key instead; the summary reads cost/route.txt and
+        # says so). Informational and unable to fail the job: no mention, every call `|| true`,
+        # continue-on-error. A run with nothing spent on record writes no md/txt, so nothing is
+        # posted. The key reaches `uv run automation` here under the same accepted-risk envelope
+        # as the post-agent `automation reprobe` calls above. docs/AUTO_INTEGRATION.md § Cost summary.
+        if: always() && steps.parse.outcome == 'success'
+        continue-on-error: true
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+          CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          mkdir -p observation/cost "$RUNNER_TEMP/cost"
+          uv run automation key-snapshot --out "$RUNNER_TEMP/cost/key_end.json" || true
+          uv run automation cost-summary observation \
+            --key-dir "$RUNNER_TEMP/cost" \
+            --out observation/cost/cost_summary.json \
+            --md-out observation/cost/cost_summary.md \
+            --line-out observation/cost/cost_summary.txt \
+            --run-url "$RUN_URL" || true
+          if [ -s observation/cost/cost_summary.md ]; then
+            gh pr comment "$PR" -R "$REPO" --body-file observation/cost/cost_summary.md || true
+          fi
+          if [ -s observation/cost/cost_summary.txt ]; then
+            uv run automation slack reply \
+              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" \
+              --icon cost_summary --text "$(cat observation/cost/cost_summary.txt)" \
+              --run-url "$RUN_URL" || true
+          fi
+
+      - name: Upload cost bundle (summary + normalized agent result events)
+        # ONLY the summary and the normalized result events (cost, turns, usage, ending). Never
+        # the raw agent transcripts: a `Bash(env)` or `cat .env` tool result in there would
+        # carry the run's keys, and GitHub masks the job log, not an artifact of a public repo.
+        # Never the key snapshots either: they hold the key's lifetime usage (they live in
+        # RUNNER_TEMP; only the deltas are in the summary).
+        if: always() && steps.parse.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-cost-pr${{ github.event.pull_request.number || inputs.pr }}
+          path: |
+            observation/cost/cost_summary.json
+            observation/cost/cost_summary.md
+            observation/cost/cost_summary.txt
+            observation/cost/agent_*.json
+          if-no-files-found: ignore
+          retention-days: 30

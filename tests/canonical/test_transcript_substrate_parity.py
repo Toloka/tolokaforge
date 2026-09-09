@@ -513,10 +513,10 @@ def _core_eventless_grade(adapter: NativeAdapter, pack: str, task_dir: Path) -> 
     return GradingEngine(config, task_dir=task_dir).grade_trajectory(trajectory, {})
 
 
-def _runner_eventless_grade(
+def _runner_eventless_response(
     adapter: NativeAdapter, pack: str, servicer: RunnerServiceImpl, context: object
-) -> pb2.Grade:
-    """``GradeTrial``'s verdict on a trial that sent no transcript at all.
+) -> pb2.GradeTrialResponse:
+    """``GradeTrial``'s response for a trial that sent no transcript at all.
 
     An empty ``llm_messages_json`` is the runner's own events-less timeline: with
     no calls executed either, the RPC builds a timeline with nothing on it — the
@@ -528,39 +528,52 @@ def _runner_eventless_grade(
     registered = servicer.RegisterTrial(register_request(spec, trial_id=trial_id), context)
     assert registered.success is True, registered.error
 
-    response = servicer.GradeTrial(
+    return servicer.GradeTrial(
         pb2.GradeTrialRequest(trial_id=trial_id, llm_messages_json=""), context
     )
+
+
+def _runner_eventless_grade(
+    adapter: NativeAdapter, pack: str, servicer: RunnerServiceImpl, context: object
+) -> pb2.Grade:
+    """A graded ``GradeTrial`` response for an events-less trial — the caller
+    asserts the RPC succeeded, so this only returns the grade.
+    """
+    response = _runner_eventless_response(adapter, pack, servicer, context)
     assert response.success is True, response.error
     return response.grade
 
 
-def test_an_events_less_trial_leaves_transcript_rules_unscored_on_both_substrates(
+def test_an_events_less_trial_refuses_the_declared_transcript_rules_on_both_substrates(
     parity_adapter: NativeAdapter, tmp_path: Path, runner_service, mock_grpc_context
 ):
-    """A trial that left no trace scores no ``transcript_rules`` on either substrate.
+    """A trial that left no trace refuses ``transcript_rules`` on either substrate.
 
     Every rule ``must_contain_one`` declares would be scored against evidence the
-    trial does not carry, so the component is left out of the fold rather than
-    recorded as a failure the agent earned. Both substrates are driven through
-    their own integration point — ``grade_trajectory`` and the ``GradeTrial`` RPC —
-    so a substrate reaching the decision only inside the shared evaluator, or not
-    reaching it at all, fails here.
+    trial does not carry, so the component is left out of the fold — a declared
+    component with no verdict. Both substrates surface the same refusal through
+    their own integration point: the runner's ``GradeTrial`` RPC returns
+    ``success=False`` naming the component; the core engine's ``grade_trajectory``
+    returns a ``Grade`` with the component ``None``, score ``0.0``, and the
+    refusal reason on ``Grade.reasons`` — so a substrate reaching the decision
+    only inside the shared evaluator, or not reaching it at all, fails here.
     """
     pack = "must_contain_one"
-    core_component = _core_eventless_grade(
-        parity_adapter, pack, tmp_path
-    ).components.transcript_rules
-    runner_grade = _runner_eventless_grade(parity_adapter, pack, runner_service, mock_grpc_context)
-
-    assert core_component is None, (
-        f"the core engine scored transcript_rules {core_component} on a trial whose "
-        "timeline carries no events"
+    core_grade = _core_eventless_grade(parity_adapter, pack, tmp_path)
+    runner_response = _runner_eventless_response(
+        parity_adapter, pack, runner_service, mock_grpc_context
     )
-    assert runner_grade.components.transcript_rules == _UNSCORED_ON_THE_WIRE, (
-        f"the runner scored transcript_rules {runner_grade.components.transcript_rules} "
+
+    assert core_grade.components.transcript_rules is None, (
+        f"the core engine scored transcript_rules {core_grade.components.transcript_rules} "
         "on a trial whose timeline carries no events"
     )
+    assert core_grade.score == 0.0, core_grade.reasons
+    assert core_grade.binary_pass is False, core_grade.reasons
+    assert "transcript_rules" in core_grade.reasons, core_grade.reasons
+
+    assert runner_response.success is False, runner_response.error
+    assert "transcript_rules" in runner_response.error, runner_response.error
 
 
 def test_an_events_less_trial_with_a_declared_floor_is_scored_by_the_floor_alone(

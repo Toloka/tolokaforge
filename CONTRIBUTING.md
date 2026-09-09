@@ -37,6 +37,50 @@ uv run pytest tests/unit/ -v
    and PR titles (`feat(scope): …`, `fix(scope): …`, `chore: …`). The release
    tooling derives the version bump and CHANGELOG from these.
 
+## Issue Lifecycle
+
+Every open issue lands via one of the three Issue Forms in
+`.github/ISSUE_TEMPLATE/` — `bug.yml`, `enhancement.yml`, or `chore.yml`.
+Each form requires a `priority` (P0–P3) and stamps a matching `type`
+label on submit; milestone assignment is a triage decision, not an
+intake gate.
+
+### Priority
+
+| Level | Meaning |
+| --- | --- |
+| P0 | Blocks production, a shipped commitment, or a core user flow. |
+| P1 | Important UX / stability / correctness gap; schedule soon. |
+| P2 | Improvement or hardening, not user-blocking. |
+| P3 | Cleanup, nitpick, deferred improvement. |
+
+### Umbrella epic closure
+
+An umbrella epic tracks a milestone or a themed set of child issues.
+Because feature-half work and downstream measurement typically ship on
+different cadences, umbrellas need an explicit closure rule:
+
+- **Close when** all child issues are closed **and** one of these is
+  true: the feature has landed, the measurement is complete, or the
+  remainder has been explicitly deferred to a new umbrella.
+- **Keep open** while the feature-half PR has shipped but sub-issues
+  remain, **or** while a downstream measurement task is still pending.
+- **Split** when the umbrella has been open more than 90 days with the
+  feature done but measurement pending — split the measurement into a
+  fresh issue, then close the umbrella.
+
+Closing an umbrella by hand: comment the consolidation PR number and
+name the closure condition that was met (`all child issues closed`,
+`feature landed`, `measurement complete`, or `deferred to <new epic>`).
+
+### Weekly triage
+
+The backlog is triaged weekly by the maintainer. Triage is advisory —
+it never auto-closes issues. A quarterly deep pass adds duplicate
+clustering and adversarially-verified "already solved" closure
+candidates; each candidate carries its evidence and is confirmed by a
+human before the issue is closed.
+
 ## Cutting a Release
 
 Tolokaforge ships on three independent tag axes: the `tolokaforge` PyPI

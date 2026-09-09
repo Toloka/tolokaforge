@@ -2,6 +2,57 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.24.0 (2026-09-08)
+
+### Feat
+
+- **automation**: cost summary for the integration run (agents, wire probes, key deltas) (#1542)
+- **engine-loop**: scaffold improvements for reasoning-heavy models (#1519)
+
+## v0.23.1 (2026-09-07)
+
+### Fix
+
+- **grader-v3**: carry tolokaforge.grading_methods + grader_kinds into the runner-subset wheel (#1527)
+
+## v0.23.0 (2026-09-07)
+
+### Feat
+
+- **grading**: Grader v3 — detached mode, typed grader kinds, adapter grading contract (Milestone #39) (#1490)
+
+## v0.22.5 (2026-09-04)
+
+### Fix
+
+- **runtime**: composition-plan integration-test rewiring + Bucket B (#1423 follow-up, closes #335) (#1488)
+
+## v0.22.4 (2026-09-03)
+
+### Fix
+
+- **grading**: surrogate-id-aware row pairing on _records_might_match (#1483)
+
+## v0.22.3 (2026-09-03)
+
+### Feat
+
+- **grading**: engine-eval-hardening — hash/diff parity + schema-executor parity + bundle-native judge replay (M#43) (#1481)
+
+### Fix
+
+- **tests**: unstick pre-existing test-smoke failures on main (#1475)
+
+## v0.22.2 (2026-09-02)
+
+### Feat
+
+- **grading**: engine-eval-repin-blockers — widened fail-loud contract (M#42) (#1471)
+
+### Fix
+
+- **orchestrator**: user-simulator config fails loud instead of silent Anthropic fallback (#1451)
+
 ## v0.22.1 (2026-09-02)
 
 ## v0.22.0 (2026-09-02)

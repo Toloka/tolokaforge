@@ -2,7 +2,7 @@
 
 Adapters provide a unified interface for loading tasks and environments from different sources.
 
-For contributor-facing contract details, see `docs/ADAPTER_INTERFACE.md`.
+For contributor-facing contract details, see `docs/ADAPTER_INTERFACE.md`. For the end-to-end adoption walkthrough that consumes this architecture, see [AUTHORING_AN_ADAPTER.md](AUTHORING_AN_ADAPTER.md).
 
 ## Adapter families
 
@@ -195,33 +195,21 @@ defaults:
 | Declaration | Default | Description |
 |--------|--------|-------------|
 | `trial_grader_name` (class attr) | `"runner_rpc"` | Name of the `TrialGrader` the orchestrator loads for this adapter's runs (from the `tolokaforge.trial_graders` entry-point group). Override to ship a custom grader. |
+| `supports_coding_harness` (class attr) | `False` | Whether the adapter accepts `models.agent.harness` (see § Adapter capabilities). |
 
-## Hosting coding-harness runs
+## Adapter capabilities
 
-Coding-harness mode is an [`AgentDriver`](../tolokaforge/core/agent_driver.py)
-Strategy — the orchestrator selects `CodingHarnessDriver` from
-`models.agent.coding_harness` and applies it around adapter output. The
-driver replaces the engine's LLM turn loop with one invocation of a
-vendor CLI (`claude-code`, `codex`, `kimi-code`, `opencode`,
-`grok-build`, `gemini-cli`) inside the trial container, and adds a
-`tolokaforge-llm-gateway` sidecar service alongside it to shield the
-real provider credential — the CLI's service sees only a dummy token
-and the sidecar's docker-DNS URL. New agent loops (Harbor as an
-embedded library, an ACP driver, a custom loop) plug in as a new
-`AgentDriver` implementation with no adapter edit.
-
-An adapter opts in by overriding
-`BaseAdapter.stage_task(task_id) -> StagedTask | None` to materialise
-a per-trial staging directory with a synthesised compose file the
-driver layers the CLI install onto. The orchestrator refuses
-`models.agent.coding_harness` against an adapter whose `stage_task`
-returns `None`, naming the currently opted-in set (today: `native`,
-`terminal_bench`). Adapters carry no coding-harness state and never
-import driver code. Design records:
-[ADR-0039](adr/0039-coding-harness-adapter-agnostic.md) (driver
-protocol) and
-[ADR-0041](adr/0041-coding-harness-credential-gateway.md) (credential
-shield).
+`CodingHarnessAdapterMixin` is a shipped capability adapters compose with
+alongside `BaseAdapter`. Inheriting it confers `supports_coding_harness = True`
+(the flag the orchestrator's config-validation gate reads before it will route
+a `models.agent.harness` run to the adapter) plus seven helpers that produce
+the wire artefacts a harness trial needs — spec resolution, command
+assembly, the metadata handshake, the bash tool schema payload, the
+`test_execution` grading payload, the standalone install-script Dockerfile
+layer, and the instance-aware `preferred_grader_kind()` answer that agrees
+with the grading payload under an active harness. See
+[ADR-0039](adr/0039-coding-harness-adapter-agnostic.md) and
+[`tolokaforge_coding_harnesses/README.md § Adopting the mixin`](../tolokaforge_coding_harnesses/README.md#adopting-the-mixin).
 
 ## Adapter-Specific Details
 

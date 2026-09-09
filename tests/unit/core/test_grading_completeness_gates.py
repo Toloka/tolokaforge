@@ -53,6 +53,39 @@ def test_zero_coverage_only_fires_when_a_run_had_trials_to_measure() -> None:
     assert on_a_run_with_no_trials_at_all.zero_coverage is False
 
 
+def test_zero_coverage_fires_when_every_measured_trial_is_synthesized() -> None:
+    """The widened trigger: a run whose every measured trial carries a
+    harness-synthesised auto-fail grade fires ``zero_coverage``. The run
+    passed the classifier (``measured_trials > 0``) but every measurement
+    was an artefact of the harness — no evaluator ran on any trial — so
+    ``--fail-on-zero-coverage`` exits non-zero. See ADR-0041.
+    """
+    on_a_run_of_only_synth_grades = GradingCompleteness(
+        total_attempts=3,
+        ungradeable_trial_ids=(),
+        measured_trials=3,
+        scored_trials=3,
+        synthesized_trials=3,
+    )
+    assert on_a_run_of_only_synth_grades.zero_coverage is True
+
+
+def test_zero_coverage_holds_when_at_least_one_trial_is_real_measured() -> None:
+    """The control: one measured trial that produced a real (non-synth) grade
+    keeps the run out of ``zero_coverage``. The widening does not swallow a
+    run that reached its evaluator at least once, even when most trials
+    auto-failed.
+    """
+    on_a_run_with_one_real_measurement = GradingCompleteness(
+        total_attempts=3,
+        ungradeable_trial_ids=(),
+        measured_trials=3,
+        scored_trials=3,
+        synthesized_trials=2,
+    )
+    assert on_a_run_with_one_real_measurement.zero_coverage is False
+
+
 def test_zero_judge_graded_requires_all_scored_trials_to_have_errored_judges() -> None:
     every_scored_grade_errored = GradingCompleteness(
         total_attempts=3,

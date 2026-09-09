@@ -107,6 +107,19 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         "tolokaforge/core/grading/default_transcript_rule_matcher.py",
         "tolokaforge/core/grading/judge.py",
         "tolokaforge/core/grading/rubric.py",
+        # JSONPath + SQL-probe evaluators reached from
+        # ``default_state_check_backends`` at grade time, so the boot closure
+        # never sees them. Shipped in the subset because ``jsonpath`` /
+        # ``db_probes`` backends call them on the grading path.
+        "tolokaforge/core/grading/db_probes.py",
+        "tolokaforge/core/grading/jsonpath_evaluators.py",
+        # Seam-neutral judge-prompt composition helpers (body + marker
+        # contract, ``effective_judge_system_prompt``). Reached at grade
+        # time from ``core.grading.judge`` (runner-side, via the lazy
+        # dispatch above) and at bundle-write time from
+        # ``core.conductor`` (orchestrator-side, host-only). Boot-time
+        # closure never observes it.
+        "tolokaforge/core/judge_prompt.py",
         # Shared tool-artifact extraction helper. ``RunnerServiceImpl``
         # reaches it via a function-local import at ``RegisterTrial`` time
         # (``runner/service.py::_extract_tool_artifacts``) so a task packing
@@ -650,6 +663,8 @@ _LOADER_TO_GROUP: dict[str, str] = {
     "load_state_check_backend": "tolokaforge.state_check_backends",
     "load_trace_check_operator": "tolokaforge.trace_check_operators",
     "load_grading_substrate": "tolokaforge.grading_substrates",
+    "load_grading_method": "tolokaforge.grading_methods",
+    "load_grader_kind": "tolokaforge.grader_kinds",
 }
 
 

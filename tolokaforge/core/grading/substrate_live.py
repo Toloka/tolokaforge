@@ -17,11 +17,13 @@ files inside the slim image. See :mod:`tolokaforge.core._runner_subset`.
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import grpc
 
+from tolokaforge.core.grading.substrate import RunTestSuiteResult
 from tolokaforge.core.grading.substrate_client import GrpcSubstrateClient
 
 if TYPE_CHECKING:
@@ -78,9 +80,11 @@ class LiveRunnerCallbackGradingSubstrate:
     :class:`SubstrateService` on demand.
 
     Reads are lazy and cached: each accessor fires at most one RPC per grade
-    call; a second call returns the cached value. ``filesystem_root`` eagerly
-    materialises the agent-visible tree to a :class:`tempfile.TemporaryDirectory`
-    on first use.
+    call; a second call returns the cached value. ``filesystem_root`` and
+    ``filesystem_state`` each fire one ``ReadAgentVisibleFilesystem`` RPC on
+    first use — the whole agent-visible tree ships in one batch response
+    regardless of pack file count. ``filesystem_root`` materialises that tree
+    to a :class:`tempfile.TemporaryDirectory`.
 
     A grader losing the runner mid-grade raises
     :class:`SubstrateUnreachableError`; the seam translates that into
@@ -154,6 +158,45 @@ class LiveRunnerCallbackGradingSubstrate:
             self._filesystem_root_cache = self._materialise_filesystem_root()
         return self._filesystem_root_cache
 
+    def db_probe(self, dsn: str, query: str) -> list[dict[str, Any]]:
+        return self._client.run_db_probe(dsn, query)
+
+    def run_test_suite(
+        self,
+        *,
+        script_path: str,
+        reward_path: str,
+        timeout_s: float,
+        reward_read_timeout_s: float,
+    ) -> RunTestSuiteResult:
+        return self._client.run_test_suite(
+            script_path=script_path,
+            reward_path=reward_path,
+            timeout_s=timeout_s,
+            reward_read_timeout_s=reward_read_timeout_s,
+        )
+
+    def trajectory(self) -> Mapping[str, Any] | None:
+        """LIVE substrate does not carry a serialised trajectory.
+
+        The LIVE grading dispatchers (``RunnerServiceImpl._grade_trial_async``
+        and ``GraderCompositeDispatch``) thread ``llm_messages`` directly
+        into the composite helpers; nothing on the LIVE path reads this
+        accessor. Only the offline ``CompositeGraderKind.evaluate`` does,
+        and it runs against ``SnapshotGradingSubstrate`` — never LIVE.
+        """
+        return None
+
+    def task_description(self) -> Mapping[str, Any] | None:
+        """LIVE substrate does not carry a task description — the LIVE
+        dispatchers thread ``TaskDescription`` directly."""
+        return None
+
+    def judge_model_config(self) -> Mapping[str, Any] | None:
+        """LIVE substrate does not carry a judge model config — the LIVE
+        dispatchers thread ``judge_model_config`` directly."""
+        return None
+
     def close(self) -> None:
         if self._closed:
             return
@@ -165,33 +208,19 @@ class LiveRunnerCallbackGradingSubstrate:
             self._channel.close()
 
     def _read_filesystem_state(self) -> dict[str, str] | None:
-        rel_paths = self._client.list_filesystem_dir()
-        if not rel_paths and not self._workspace_root_exists():
+        result = self._client.snapshot_agent_visible_filesystem()
+        if not result.workspace_exists:
             return None
-        fs: dict[str, str] = {}
-        for rel in rel_paths:
-            entry = self._client.read_filesystem_path(rel)
-            if entry.is_file:
-                fs[f"/env/fs/agent-visible/{rel}"] = entry.content_utf8
-        return fs
+        return {f"/env/fs/agent-visible/{rel}": content for rel, content in result.files.items()}
 
     def _materialise_filesystem_root(self) -> Path | None:
-        rel_paths = self._client.list_filesystem_dir()
-        if not rel_paths and not self._workspace_root_exists():
+        result = self._client.snapshot_agent_visible_filesystem()
+        if not result.workspace_exists:
             return None
         self._filesystem_tmpdir = tempfile.TemporaryDirectory(prefix="grader-workspace-")
         root = Path(self._filesystem_tmpdir.name)
-        for rel in rel_paths:
-            entry = self._client.read_filesystem_path(rel)
-            if not entry.is_file:
-                continue
+        for rel, content in result.files.items():
             dest = root / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            if entry.content_bytes:
-                dest.write_bytes(entry.content_bytes)
-            else:
-                dest.write_text(entry.content_utf8, encoding="utf-8")
+            dest.write_text(content, encoding="utf-8")
         return root
-
-    def _workspace_root_exists(self) -> bool:
-        return self._client.read_filesystem_path("").exists

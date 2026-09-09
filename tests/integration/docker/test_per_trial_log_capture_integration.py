@@ -76,7 +76,9 @@ def _make_trial_spec(trial_id: str, *, manifest: EnvironmentManifest | None = No
     if manifest is None:
         manifest = EnvironmentManifest(
             compose_file=_FIXTURE,
-            services={"db": ServiceSpec(isolation="reset", reset=ResetSpec(seed="absent-seed"))},
+            services={
+                "db-service": ServiceSpec(isolation="reset", reset=ResetSpec(seed="absent-seed"))
+            },
         )
     return TrialSpec(
         trial_id=trial_id,
@@ -123,7 +125,7 @@ class TestProvisionFailureLogCapture:
         assert services_dir.is_dir()
 
         # Both declared services were healthy, so both produced logs.
-        for service in ("db", "default"):
+        for service in ("db-service", "default"):
             log_file = services_dir / f"{service}.log"
             assert log_file.is_file(), f"missing {service}.log"
             assert log_file.stat().st_size > 0, f"empty {service}.log"
@@ -248,11 +250,11 @@ class TestGradedFailLogCapture:
 
         metrics = yaml.safe_load(metrics_path.read_text())
         captured = metrics["captured_service_logs"]
-        assert set(captured) == {"db", "default"}
+        assert set(captured) == {"db-service", "default"}
 
         # Both declared services were healthy, so both produced non-empty logs,
         # and the amended byte counts match the files actually written.
-        for service in ("db", "default"):
+        for service in ("db-service", "default"):
             log_file = services_dir / f"{service}.log"
             assert log_file.is_file(), f"missing {service}.log"
             size = log_file.stat().st_size

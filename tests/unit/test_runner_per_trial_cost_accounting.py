@@ -99,6 +99,12 @@ def _run_trial(results: list[GenerationResult]) -> Trajectory:
     """
     agent = MagicMock()
     agent.generate.side_effect = results
+    # Pin new-capability numeric slots to None so the loop's opt-in branches
+    # (empty_retry_count, tool_output_max_chars, default_max_turns,
+    # max_context_tokens, context_watermark) short-circuit to their pre-opt-in
+    # code paths instead of consuming MagicMock instances as ints.
+    agent.capabilities.max_context_tokens = None
+    agent.capabilities.context_watermark = None
     runner = TrialRunner(
         task_id="trial-001",
         trial_index=0,

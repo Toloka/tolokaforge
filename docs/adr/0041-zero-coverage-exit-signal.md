@@ -177,8 +177,28 @@ from `self.results`:
 - `judge_errored_trials = sum(1 for t in self.results if t.grade is not None and t.grade.judge_status == JudgeStatus.ERRORED)`
   — the judge-level observable at
   [`grade.py:152`](../../tolokaforge/core/models/grade.py).
-- `zero_coverage = measured_trials == 0 and total_trials > 0`.
+- `synthesized_trials = sum(1 for t in self.results if t.grade is not None and t.grade.synthesized_by_termination_reason is not None and classify_trial_outcome(t) == TrialOutcomeClass.MEASURED)`
+  — MEASURED-outcome trials whose `Grade` was synthesised by a
+  `TrialGrader` auto-fail branch
+  (`ERROR` / `TIMEOUT` / `STUCK_DETECTED` / `EMPTY_COMPLETION`). No
+  evaluator ran on these trials; the marker is on
+  [`grade.py`](../../tolokaforge/core/models/grade.py). The MEASURED
+  filter is what keeps the count aligned with `measured_trials` on a
+  mixed run — a HARNESS_ERROR-classified synth grade sits in neither
+  side of the `synthesized_trials == measured_trials` comparison.
+- `zero_coverage = total_trials > 0 and (measured_trials == 0 or synthesized_trials == measured_trials)`.
 - `zero_judge_graded = judge_errored_trials > 0 and judge_errored_trials == scored_trials`.
+
+`zero_coverage` fires on two triggers, both fail-loud when
+`--fail-on-zero-coverage` is set. The first — `measured_trials == 0` —
+covers a run whose every attempt classified as an infrastructure abort.
+The second — `synthesized_trials == measured_trials` — covers a run
+whose every measured trial was harness-synthesised from a
+non-agent-observation termination reason: the run reached its
+`TrialGrader` at least once but the grader never ran any evaluator,
+so no measurement describes agent behaviour. Both cases exit `2` with
+the same signal because both answer the same operator question
+("did the run measure anything?") with the same answer.
 
 The `judge_errored_trials > 0` guard is what makes
 `zero_judge_graded` read judge-status, not grade-presence: a run whose

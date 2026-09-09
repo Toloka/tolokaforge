@@ -17,6 +17,7 @@ import pytest
 
 from tolokaforge.core.grading.trace_timeline import TraceEventKind, build_trial_timeline
 from tolokaforge.core.llm import GenerationResult
+from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.loop import (
@@ -178,9 +179,18 @@ class _CallIdWatchingExecutor(ToolExecutor):
         super().__init__(registry)
         self.call_ids: list[str] = []
 
-    def execute(self, tool_name: str, arguments: dict[str, Any], *, call_id: str) -> ToolResult:
+    def execute(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        call_id: str,
+        validation_schema: dict[str, Any] | None = None,
+    ) -> ToolResult:
         self.call_ids.append(call_id)
-        return super().execute(tool_name, arguments, call_id=call_id)
+        return super().execute(
+            tool_name, arguments, call_id=call_id, validation_schema=validation_schema
+        )
 
 
 class _ScriptedClient:
@@ -189,6 +199,7 @@ class _ScriptedClient:
     def __init__(self, results: list[GenerationResult]) -> None:
         self._results = list(results)
         self.calls = 0
+        self.capabilities = ModelCapabilities()
 
     def generate(self, system, messages, tools, tool_choice="auto", observation=None):
         self.calls += 1
@@ -196,6 +207,13 @@ class _ScriptedClient:
 
     def classify_loop_error(self, exc: Exception) -> TerminationDecision:
         return classify_loop_error(exc, ())
+
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
+        """Return an empty map: the loop's per-tool ``.get()`` yields ``None``,
+        so arguments are validated against each tool's own declared schema —
+        the reference behaviour these recording-shape tests pin.
+        """
+        return {}
 
 
 class _CountingSink(MetricsSink):

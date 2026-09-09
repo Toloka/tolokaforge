@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from tolokaforge.core.actors.actor import Actor, Message
 from tolokaforge.core.loop import TerminationDecision
-from tolokaforge.core.models.trajectory import TerminationReason, TrialStatus
+from tolokaforge.core.models.trial_status import TerminationReason, TrialStatus
 
 if TYPE_CHECKING:
     from tolokaforge.core.models.task_config import TaskConfig

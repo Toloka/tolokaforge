@@ -20,6 +20,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from tolokaforge.core.logging import get_logger
+
+_logger = get_logger(__name__)
+
 MISSING_HASH_WEIGHT_MESSAGE = (
     "state_checks.hash.weight is required when a hash source and a non-empty "
     "state_checks.jsonpaths are both configured — there is no defensible default. "
@@ -87,31 +91,47 @@ fields translates *into* these rather than restating which keys count as a sourc
 
 
 def refuse_retired_hash_keys(hash_block: Any, *, context: str) -> None:
-    """Raise the migration a populated retired ``state_checks.hash`` key draws.
+    """Warn — but do not refuse — on a populated retired ``state_checks.hash`` key.
 
     Every read a pack passes through calls this — the authoring gate, and both of
     :class:`~tolokaforge.adapters.native.NativeAdapter`'s grading reads — because they
     share a file and not an object: ``tolokaforge run-trial`` runs no grading pre-flight,
     so the description build is the only read a trial there reaches.
 
-    A block :data:`RETIRED_HASH_KEYS` names *inertly* is left to
-    :class:`StateHashConfig`, which drops it: an author who can act meets the raise, and a
-    recorded bundle serialized against the old schema still loads.
+    A truthy retired key logs a structured warning naming the migration
+    (``:data:`RETIRED_HASH_KEYS```) so a pack author reading their logs sees the
+    actionable guidance; the key is subsequently dropped by
+    :class:`StateHashConfig._drop_retired_hash_keys` — the hash-source block goes
+    unread and grading proceeds against whatever other state_checks the pack
+    declared. Falsy / inert values pass silently: same "the substrate never read
+    it, dropping changes nothing" rationale as
+    :meth:`StateHashConfig._drop_retired_hash_keys`.
+
+    Warn-only (was raise before #1514) so tolokaforge-tasks packs authored against
+    a v0.18.1-era schema — including the six under
+    ``tasks/sampled/state_checks_examples/**/grading.yaml`` still declaring
+    ``state_checks.hash.expected_state_hash: <64-hex>`` — load without a
+    task-side migration. Grading with the block dropped is degraded, not
+    misgraded: the trial scores against remaining state_checks (jsonpaths,
+    transcript_rules, etc). Migrate to ``expect_initial_state: true`` (refusal
+    task) or ``golden_actions: [...]`` (state-changing task) to restore hash
+    scoring.
 
     Args:
         hash_block: The authored ``state_checks.hash`` block. Anything that is not a
-            mapping declares no key to refuse and is the shape validation's business.
+            mapping declares no key to warn on and is the shape validation's business.
         context: Where the author reads the offending block from, prefixed to the
-            migration.
-
-    Raises:
-        ValueError: If *hash_block* declares a retired key with a value.
+            warning.
     """
     if not isinstance(hash_block, Mapping):
         return
     for key, migration in RETIRED_HASH_KEYS.items():
         if hash_block.get(key):
-            raise ValueError(f"{context}: {migration}")
+            _logger.warning(
+                f"{context}: {migration}",
+                context=context,
+                retired_key=key,
+            )
 
 
 def validate_hash_weight(value: object, *, context: str) -> float:

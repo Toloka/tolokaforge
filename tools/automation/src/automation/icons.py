@@ -65,6 +65,8 @@ DEFAULT_ICONS: dict[str, str] = {
     "request_unresolved": ":x:",
     # A `via <route>` directive that could not be honoured.
     "route_downgraded": ":warning:",
+    # The accounting tail: what the run spent (docs/AUTO_INTEGRATION.md § Cost summary).
+    "cost_summary": ":moneybag:",
 }
 
 # Slack emoji names are lowercase letters, digits, and - _ +. Anything else

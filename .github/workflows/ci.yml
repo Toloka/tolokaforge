@@ -198,6 +198,15 @@ jobs:
           fi
         done
 
+    - name: Run external adapter tests
+      run: |
+        for adapter_dir in external_adapters/*/; do
+          if [ -d "${adapter_dir}tests" ]; then
+            echo "=== Testing ${adapter_dir} ==="
+            (cd "${adapter_dir}" && uv run pytest tests/ -v --tb=short -p no:cacheprovider) || exit 1
+          fi
+        done
+
     - name: Validate public example suites
       run: |
         uv run tolokaforge validate --tasks "examples/native/*/dataset/**/task.yaml"
@@ -301,6 +310,15 @@ jobs:
           if [ -d "${tool_dir}tests" ]; then
             echo "=== Testing ${tool_dir} ==="
             (cd "${tool_dir}" && uv run pytest tests/ -v --tb=short -p no:cacheprovider) || exit 1
+          fi
+        done
+
+    - name: Run external adapter tests
+      run: |
+        for adapter_dir in external_adapters/*/; do
+          if [ -d "${adapter_dir}tests" ]; then
+            echo "=== Testing ${adapter_dir} ==="
+            (cd "${adapter_dir}" && uv run pytest tests/ -v --tb=short -p no:cacheprovider) || exit 1
           fi
         done
 

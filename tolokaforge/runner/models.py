@@ -15,7 +15,7 @@ The types in this module fall into three tiers:
 - **Runner-only wire types with a ``Runner`` prefix** —
   ``RunnerGradingConfig`` / ``RunnerStateChecksConfig`` /
   ``RunnerInitialStateConfig`` / ``RunnerInitializationAction`` /
-  ``RunnerUserSimulatorConfig`` / ``RunnerGradeComponents``. Each is the
+  ``RunnerUserSimulatorConfig``. Each is the
   strict, wire-shaped Pydantic model the runner produces or consumes;
   ``tolokaforge.core.models`` carries the sibling YAML-authoring shape under
   the unprefixed name for the same concern. The two live side by side
@@ -429,12 +429,18 @@ _RETIRED_EXPECTED_HASH_MESSAGE: str = (
 class RunnerStateChecksConfig(BaseModel):
     """State-based grading configuration on the runner wire.
 
-    Declares no ``expected_hash`` field; a ``mode="before"`` validator refuses the
-    retired key with a ``ValidationError`` naming the two current sources
+    Declares no ``expected_hash`` field. A ``mode="before"`` validator refuses
+    the retired key with a ``ValidationError`` naming the two current sources
     (``golden_actions``, ``expect_initial_state``) and the retirement tracker
-    (#1304). The ``state_checks.hash.expected_state_hash`` author-surface
-    retirement is separately handled in
-    :mod:`tolokaforge.core.grading.state_composition`.
+    (#1304) **when the value is truthy** — a stored digest coerced through
+    would grade under a rule the emitting engine never chose. A falsy value
+    (``None``, ``""``, ``False``, ``0``) is silently dropped: it carries no
+    digest and no semantic — matching the author-facing sibling
+    ``_drop_retired_hash_keys`` on ``StateHashConfig`` in
+    :mod:`tolokaforge.core.grading.state_composition`. The narrow drop unblocks
+    stale emitters (e.g. an adapter kwargs-list still threading
+    ``expected_hash=hash_cfg.get("expected_state_hash")``) without ever letting
+    a real digest through.
     """
 
     # Hash comparison
@@ -469,16 +475,21 @@ class RunnerStateChecksConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _refuse_retired_expected_hash(cls, data: Any) -> Any:
-        """Raise the migration a caller that declares ``expected_hash`` reads.
+        """Raise on a truthy retired ``expected_hash``; silently drop a falsy one.
 
         Fires before Pydantic's ``extra_forbidden`` sweep, so the actionable
-        migration message wins over the generic "Extra inputs are not permitted".
-        Presence of the key at all — populated, falsy, or ``None`` — is enough:
-        a caller that even declares it is speaking the retired schema.
+        migration message wins over the generic "Extra inputs are not permitted"
+        when the caller passed a real digest. A falsy value (``None``, ``""``,
+        ``False``, ``0``) is stripped from the input mapping and construction
+        continues — a stale adapter kwargs-list threading a defaulted-``None``
+        never emitted a digest and carries no semantic (mirror of
+        ``_drop_retired_hash_keys`` on ``StateHashConfig``).
         """
-        if isinstance(data, Mapping) and "expected_hash" in data:
+        if not isinstance(data, Mapping) or "expected_hash" not in data:
+            return data
+        if data["expected_hash"]:
             raise ValueError(_RETIRED_EXPECTED_HASH_MESSAGE)
-        return data
+        return {key: value for key, value in data.items() if key != "expected_hash"}
 
     @field_validator("id_fields")
     @classmethod
@@ -703,9 +714,11 @@ class ValuePredicate(BaseModel):
     """A conjunction of operators over one field of one event.
 
     Every declared operator must hold, so ``{gt: 0, lt: 100}`` is a range. This is
-    deliberately unlike ``evaluate_jsonpath_state_checks``, which rejects a second
-    operator: there two operators had no conjunctive reading, while here the range
-    is the common case and a misspelled operator is already a load error.
+    deliberately unlike
+    :func:`~tolokaforge.core.grading.jsonpath_evaluators.evaluate_jsonpath_state_checks`,
+    which rejects a second operator: there two operators had no conjunctive reading,
+    while here the range is the common case and a misspelled operator is already a
+    load error.
 
     An operator counts as declared when its value is not ``None``, so a predicate
     means the same thing after the gRPC round trip that dumps every unset field as
@@ -2057,22 +2070,14 @@ class RunnerGradingConfig(BaseModel):
         return validate_combine_method(value, context="TaskDescription grading.combine_method")
 
     # Declarative grading dispatch — adapters tell the runner *how* to grade in data,
-    # so the runner never infers it from the adapter's identity.
-    #
-    # Values:
-    #   ``None`` (default)
-    #     Standard grading: combine state checks / transcript rules / LLM judge
-    #     using ``weights`` and ``pass_threshold``. Most adapters want this.
-    #   ``"test_execution"``
-    #     Run a reference test suite inside the trial env via an exec-capable
-    #     lifecycle tool (today: ``DockerComposeExecToolWrapper``) and score by
-    #     reading the reward written to ``/logs/verifier/reward.txt``. Requires
-    #     such a tool to be present in ``TaskDescription.agent_tools`` — without
-    #     one the runner returns a clear error at ``GradeTrial`` time.
-    #   ``"hash"`` / ``"transcript"`` / ``"llm"``
-    #     Reserved names for future single-method dispatch; not currently used
-    #     for dispatch (today their behaviour is part of the default path).
-    grading_method: Literal["hash", "test_execution", "transcript", "llm"] | None = None
+    # so the runner never infers it from the adapter's identity. The registered
+    # names live in the ``tolokaforge.grading_methods`` entry-point group
+    # (:mod:`tolokaforge.core.grading.grading_method`); read the current set with
+    # :func:`~tolokaforge.core.plugin_registry.available_grading_methods`.
+    # ``None`` (the default) picks the composite dispatch — same as
+    # ``"composite"``. Unknown names are refused at ``RegisterTrial`` with an
+    # error naming both the offending key and the registered set.
+    grading_method: str | None = None
 
     state_checks: RunnerStateChecksConfig | None = None
     transcript_rules: TranscriptRulesConfig | None = None
@@ -3468,11 +3473,19 @@ class HealthCheckResponse(BaseModel):
 
 
 class TableDiff(BaseModel):
-    """Diff for a single table."""
+    """Diff for a single table.
+
+    ``order_mismatch`` fires exclusively on the same-set-different-order class:
+    the ordered ``record_to_tuple`` sequences differ while ``missing`` / ``extra``
+    / ``different`` are all empty. It stays ``False`` whenever any set-diff list
+    is non-empty, so the summary vocabulary is finite — a table is absent, in
+    wrong order, or set-different, never a combination.
+    """
 
     missing: list[dict[str, Any]] = Field(default_factory=list)
     extra: list[dict[str, Any]] = Field(default_factory=list)
     different: list[dict[str, Any]] = Field(default_factory=list)
+    order_mismatch: bool = False
 
     model_config = {"extra": "forbid"}
 
@@ -3489,7 +3502,12 @@ class StateDiff(BaseModel):
     def identical(self) -> bool:
         """Check if states are identical (no differences)."""
         for table_diff in self.tables.values():
-            if table_diff.missing or table_diff.extra or table_diff.different:
+            if (
+                table_diff.missing
+                or table_diff.extra
+                or table_diff.different
+                or table_diff.order_mismatch
+            ):
                 return False
         return True
 
@@ -3680,25 +3698,6 @@ class TraceChecksResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class RunnerGradeComponents(BaseModel):
-    """Component scores for grading."""
-
-    hash_match: bool | None = None
-    hash_score: float = -1.0  # -1.0 means not evaluated
-    jsonpath_score: float = -1.0  # -1.0 means not evaluated
-    jsonpath_reasons: str = ""
-    db_probe_score: float = -1.0  # -1.0 means not evaluated
-    db_probe_reasons: str = ""
-    transcript_pass: bool | None = None
-    transcript_score: float = -1.0
-    trace_checks_score: float = -1.0  # -1.0 means not evaluated
-    llm_judge_score: float = -1.0  # -1.0 means not evaluated
-    llm_judge_reasons: str = ""
-    custom_checks_score: float = -1.0  # -1.0 means not evaluated
-
-    model_config = {"extra": "forbid"}
-
-
 class HashGradingResult(BaseModel):
     """Result of hash-based grading."""
 
@@ -3723,8 +3722,28 @@ class HashGradingResult(BaseModel):
 
     @property
     def hash_score(self) -> float:
-        """Derived from ``hash_match``, so a non-binary or contradictory verdict cannot exist."""
+        """Derived from ``hash_match``, so a non-binary or contradictory verdict cannot exist.
+
+        Meaningful only when :attr:`hash_unscorable` is ``False``: a broken replay hashed
+        the trial against a state no author asked for, so the caller reads
+        :attr:`hash_unscorable` before writing this into the runner components — the write
+        skipped, the ``hash_score`` field stays at the ``-1.0`` not-evaluated sentinel, and
+        the fold refuses the trial rather than composing a fabricated verdict.
+        """
         return 1.0 if self.hash_match else 0.0
+
+    @property
+    def hash_unscorable(self) -> bool:
+        """Whether the golden replay left the trial's state hashable against a real world.
+
+        ``True`` when :attr:`golden_replay.failures` is non-empty — one or more per-action
+        failures during replay left partial state behind, so a hash against it would grade
+        the trial against a world no author asked for. The runner call site reads this bit
+        before writing :attr:`hash_score` into the runner components, so the ``-1.0``
+        not-evaluated sentinel survives and the fold's declared-but-unscored refusal fires
+        downstream.
+        """
+        return bool(self.golden_replay.failures)
 
 
 _DEPRECATED_MODEL_ALIASES: dict[str, str] = {

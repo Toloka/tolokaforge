@@ -1,9 +1,9 @@
 """``GradingSubstrate`` — Protocol shape + shipped-impl contract locks.
 
-Locks the seam ADR-0040 introduces: one Protocol, two implementations
-shipped today (``in_process``, ``live_callback``), three reserved future
-implementations raising ``NotImplementedError`` with a pointer to the ADR
-recipe.
+Locks the seam ADR-0040 introduces: one Protocol, three implementations
+shipped today (``in_process``, ``live_callback``, ``snapshot``), two
+reserved future implementations raising ``NotImplementedError`` with a
+pointer to the ADR recipe.
 
 Also locks the entry-point group ``tolokaforge.grading_substrates`` — the
 future trajectory-storage service will register itself via one entry-point
@@ -12,7 +12,8 @@ line, and this test proves discovery works.
 ``TestLiveCallbackSubstrateReads`` exercises the live-callback impl over an
 in-process gRPC channel wired to a real :class:`RunnerServiceImpl` +
 :class:`SubstrateServicer`, asserting the wire path returns the same values
-:class:`InProcessGradingSubstrate` would over the same runner.
+:class:`InProcessGradingSubstrate` would over the same runner. The snapshot
+impl's per-Protocol-method locks live in :mod:`tests.unit.grading.test_snapshot_substrate`.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from unittest.mock import MagicMock
 import grpc
 import pytest
 
+from tolokaforge.core.grading.filesystem_view import read_agent_visible_filesystem
 from tolokaforge.core.grading.kb_search import SearchHit
 from tolokaforge.core.grading.substrate import (
     GradingSubstrate,
@@ -35,6 +37,7 @@ from tolokaforge.core.grading.substrate import (
     SubstrateUnreachableError,
     TrajectoryStorageGradingSubstrate,
 )
+from tolokaforge.core.grading.substrate_client import GrpcSubstrateClient
 from tolokaforge.core.grading.substrate_live import LiveRunnerCallbackGradingSubstrate
 from tolokaforge.runner import (
     add_RunnerServiceServicer_to_server,
@@ -363,6 +366,32 @@ def _running_runner(
             runner._loop.call_soon_threadsafe(runner._loop.stop)
 
 
+def _wire_call_counters(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """Patch the filesystem RPCs on :class:`SubstrateServicer` with counting
+    wrappers. Returns a dict keyed by RPC name that grows on every dispatch —
+    lets a perf-lock test assert exactly which surface the substrate wrapper
+    reaches for without inspecting the wire.
+    """
+    counts: dict[str, int] = {
+        "ReadAgentVisibleFilesystem": 0,
+        "ListFilesystemDir": 0,
+        "ReadFilesystemPath": 0,
+    }
+
+    def _wrap(name: str):
+        original = getattr(SubstrateServicer, name)
+
+        def counting(self, request, context):  # type: ignore[no-untyped-def]
+            counts[name] += 1
+            return original(self, request, context)
+
+        return counting
+
+    for name in counts:
+        monkeypatch.setattr(SubstrateServicer, name, _wrap(name))
+    return counts
+
+
 class TestLiveCallbackSubstrateReads:
     """Every LiveCallback read returns the same value :class:`InProcessGrading
     Substrate` would over the same runner. Locked here per-accessor over an
@@ -471,7 +500,7 @@ class TestLiveCallbackSubstrateReads:
             finally:
                 substrate.close()
 
-    def test_filesystem_root_matches_read_agent_visible_filesystem(
+    def test_filesystem_root_matches_agent_visible_filesystem(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         (tmp_path / "notes").mkdir()
@@ -481,7 +510,7 @@ class TestLiveCallbackSubstrateReads:
         fake_db = _FakeDBServiceClient(raw=_RAW_FINAL_TABLES, stable=_STABLE_FINAL_TABLES)
         with _running_runner(
             fake_db=fake_db, kb=None, workspace_root=tmp_path, monkeypatch=monkeypatch
-        ) as (runner, _trial, channel, _server):
+        ) as (_runner, _trial, channel, _server):
             substrate = LiveRunnerCallbackGradingSubstrate(
                 runner_substrate_address="unused", trial_id=_TRIAL_ID, channel=channel
             )
@@ -495,7 +524,7 @@ class TestLiveCallbackSubstrateReads:
                 }
                 shipped = {
                     key.removeprefix("/env/fs/agent-visible/"): value
-                    for key, value in runner._read_agent_visible_filesystem().items()
+                    for key, value in read_agent_visible_filesystem(tmp_path).items()
                 }
                 assert materialised == shipped
                 assert materialised == {"top.md": "# top", "notes/one.txt": "hello"}
@@ -517,6 +546,142 @@ class TestLiveCallbackSubstrateReads:
                 assert substrate.filesystem_root() is None
             finally:
                 substrate.close()
+
+    def test_snapshot_agent_visible_filesystem_matches_local_walk(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The batch RPC returns the same ``{rel: content}`` map
+        :func:`read_agent_visible_filesystem` assembles locally, with the
+        ``/env/fs/agent-visible/`` prefix stripped. A ``.git/HEAD`` under the
+        workspace is excluded by the walker and MUST NOT appear in the
+        response — proves the servicer routes through the shared walker
+        rather than re-inlining a raw ``rglob`` chain.
+        """
+        (tmp_path / "notes").mkdir()
+        (tmp_path / "notes" / "one.txt").write_text("hello", encoding="utf-8")
+        (tmp_path / "top.md").write_text("# top", encoding="utf-8")
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+        fake_db = _FakeDBServiceClient(raw=_RAW_FINAL_TABLES, stable=_STABLE_FINAL_TABLES)
+        with _running_runner(
+            fake_db=fake_db, kb=None, workspace_root=tmp_path, monkeypatch=monkeypatch
+        ) as (_runner, _trial, channel, _server):
+            client = GrpcSubstrateClient(channel, _TRIAL_ID)
+            result = client.snapshot_agent_visible_filesystem()
+
+        assert result.workspace_exists is True
+        expected = {
+            key.removeprefix("/env/fs/agent-visible/"): value
+            for key, value in read_agent_visible_filesystem(tmp_path).items()
+        }
+        assert result.files == expected
+        assert result.files == {"top.md": "# top", "notes/one.txt": "hello"}
+
+    def test_snapshot_agent_visible_filesystem_reports_missing_workspace(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An AGENT_WORK_DIR that does not exist as a directory returns
+        ``workspace_exists=False`` with an empty ``files`` map — the
+        first-class "no workspace surface" signal the LIVE substrate maps to
+        ``None`` from its accessors, distinct from an empty-but-present
+        workspace.
+        """
+        missing = tmp_path / "does-not-exist"
+        fake_db = _FakeDBServiceClient(raw=_RAW_FINAL_TABLES, stable=_STABLE_FINAL_TABLES)
+        with _running_runner(
+            fake_db=fake_db, kb=None, workspace_root=missing, monkeypatch=monkeypatch
+        ) as (_runner, _trial, channel, _server):
+            client = GrpcSubstrateClient(channel, _TRIAL_ID)
+            result = client.snapshot_agent_visible_filesystem()
+
+        assert result.workspace_exists is False
+        assert result.files == {}
+
+    def test_filesystem_state_fires_exactly_one_rpc_regardless_of_file_count(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``substrate.filesystem_state()`` fires one ``ReadAgentVisibleFilesystem``
+        RPC and zero per-path walks, regardless of pack file count. Byte-parity
+        with :func:`read_agent_visible_filesystem` guards the count assertion
+        from silently drifting off correctness.
+        """
+        for i in range(6):
+            (tmp_path / f"top_{i}.md").write_text(f"top {i}", encoding="utf-8")
+        (tmp_path / "nested").mkdir()
+        for i in range(6):
+            (tmp_path / "nested" / f"child_{i}.txt").write_text(f"child {i}", encoding="utf-8")
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+        counters = _wire_call_counters(monkeypatch)
+        fake_db = _FakeDBServiceClient(raw=_RAW_FINAL_TABLES, stable=_STABLE_FINAL_TABLES)
+        with _running_runner(
+            fake_db=fake_db, kb=None, workspace_root=tmp_path, monkeypatch=monkeypatch
+        ) as (_runner, _trial, channel, _server):
+            substrate = LiveRunnerCallbackGradingSubstrate(
+                runner_substrate_address="unused", trial_id=_TRIAL_ID, channel=channel
+            )
+            try:
+                fs = substrate.filesystem_state()
+            finally:
+                substrate.close()
+
+        assert counters["ReadAgentVisibleFilesystem"] == 1
+        assert counters["ListFilesystemDir"] == 0
+        assert counters["ReadFilesystemPath"] == 0
+        expected = {
+            f"/env/fs/agent-visible/{p.relative_to(tmp_path).as_posix()}": p.read_text(
+                encoding="utf-8"
+            )
+            for p in tmp_path.rglob("*")
+            if p.is_file() and ".git" not in p.parts
+        }
+        assert fs == expected
+
+    def test_filesystem_root_fires_exactly_one_rpc_regardless_of_file_count(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``substrate.filesystem_root()`` fires one ``ReadAgentVisibleFilesystem``
+        RPC and zero per-path walks. Byte-parity of the materialised tree with
+        :func:`read_agent_visible_filesystem` guards the count assertion from
+        silently drifting off correctness.
+        """
+        for i in range(6):
+            (tmp_path / f"top_{i}.md").write_text(f"top {i}", encoding="utf-8")
+        (tmp_path / "nested").mkdir()
+        for i in range(6):
+            (tmp_path / "nested" / f"child_{i}.txt").write_text(f"child {i}", encoding="utf-8")
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+        counters = _wire_call_counters(monkeypatch)
+        fake_db = _FakeDBServiceClient(raw=_RAW_FINAL_TABLES, stable=_STABLE_FINAL_TABLES)
+        with _running_runner(
+            fake_db=fake_db, kb=None, workspace_root=tmp_path, monkeypatch=monkeypatch
+        ) as (_runner, _trial, channel, _server):
+            substrate = LiveRunnerCallbackGradingSubstrate(
+                runner_substrate_address="unused", trial_id=_TRIAL_ID, channel=channel
+            )
+            try:
+                root = substrate.filesystem_root()
+                assert root is not None
+                materialised = {
+                    p.relative_to(root).as_posix(): p.read_text(encoding="utf-8")
+                    for p in root.rglob("*")
+                    if p.is_file()
+                }
+            finally:
+                substrate.close()
+
+        assert counters["ReadAgentVisibleFilesystem"] == 1
+        assert counters["ListFilesystemDir"] == 0
+        assert counters["ReadFilesystemPath"] == 0
+        expected = {
+            key.removeprefix("/env/fs/agent-visible/"): value
+            for key, value in read_agent_visible_filesystem(tmp_path).items()
+        }
+        assert materialised == expected
 
     def test_reads_are_cached_across_calls(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake_db = _FakeDBServiceClient(raw=_RAW_FINAL_TABLES, stable=_STABLE_FINAL_TABLES)
@@ -558,14 +723,15 @@ class TestLiveCallbackSubstrateReads:
 
 
 class TestReservedFutureSubstratesRaiseWithAdrPointer:
-    """The three reserved future substrates (``TrajectoryStorage``,
-    ``Snapshot``, ``SharedMount``) each raise ``NotImplementedError`` with
-    a pointer to ADR-0040. A contributor reaching for them sees the recipe
-    rather than a mystery stub."""
+    """A substrate is "reserved" iff its no-arg ``__init__`` raises
+    ``NotImplementedError`` with a pointer to ADR-0040 — a contributor
+    reaching for it sees the recipe rather than a mystery stub. Activating
+    a reserved substrate replaces the stub with a real constructor and
+    removes it from this parametrize list."""
 
     @pytest.mark.parametrize(
         "cls",
-        [TrajectoryStorageGradingSubstrate, SnapshotGradingSubstrate, SharedMountGradingSubstrate],
+        [TrajectoryStorageGradingSubstrate, SharedMountGradingSubstrate],
     )
     def test_construction_raises_with_adr_pointer(self, cls: type) -> None:
         with pytest.raises(NotImplementedError, match="ADR-0040|0040-standalone-grader"):
@@ -574,19 +740,22 @@ class TestReservedFutureSubstratesRaiseWithAdrPointer:
 
 class TestEntryPointGroupResolves:
     """The ``tolokaforge.grading_substrates`` entry-point group resolves
-    ``in_process`` and ``live_callback`` by name. Trajectory-storage adds
-    itself with a one-line entry point at land time.
+    ``in_process``, ``live_callback``, and ``snapshot`` by name.
+    Trajectory-storage adds itself with a one-line entry point at land time.
     """
 
-    def test_in_process_is_registered_and_resolves(self) -> None:
+    def test_shipped_substrates_are_registered_and_resolve(self) -> None:
         import importlib.metadata
 
         eps = list(importlib.metadata.entry_points(group="tolokaforge.grading_substrates"))
         names = {ep.name for ep in eps}
         assert "in_process" in names
         assert "live_callback" in names
+        assert "snapshot" in names
         in_process_ep = next(ep for ep in eps if ep.name == "in_process")
         assert in_process_ep.load() is InProcessGradingSubstrate
+        snapshot_ep = next(ep for ep in eps if ep.name == "snapshot")
+        assert snapshot_ep.load() is SnapshotGradingSubstrate
 
 
 class TestSubstrateUnreachableError:

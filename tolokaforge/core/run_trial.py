@@ -37,6 +37,7 @@ from tolokaforge.core.models import (
     RunConfig,
     TaskConfig,
     TimeoutConfig,
+    require_user_simulator_config,
 )
 from tolokaforge.core.orchestrator import _tasks_use_compose_variant_tools
 from tolokaforge.core.output.artifacts import FileArtifactWriter, InMemoryArtifactWriter
@@ -54,14 +55,6 @@ from tolokaforge.runner.models import TaskDescription
 
 _RUN_ID = "run_trial"
 _PRELOADED_TASKS_GLOB = "**/task.yaml"
-
-# Mirrors the orchestrator's default user model (orchestrator.py) so a
-# library call that omits ``user`` drives the same simulator as a batch run.
-_DEFAULT_USER_MODEL = ModelConfig(
-    provider="openrouter",
-    name="anthropic/claude-sonnet-4.6",
-    temperature=0.2,
-)
 
 
 class _RunTrialModels(BaseModel):
@@ -156,9 +149,13 @@ def run_trial(
     trial_grader = load_trial_grader(grader)(
         TrialGraderContext(runner_address=runner_address, logger=logger)
     )
+    # Resolve the conductor factory before validating the user-simulator config
+    # so an unknown ``conductor`` name surfaces the registry error rather than
+    # the (fail-loud but less actionable) missing-user-model error.
+    conductor_factory = load_conductor(conductor)
 
     agent_client = LLMClient(resolved_models.agent, rate_limit_probe=rate_limit_probe)
-    user_config = resolved_models.user or _DEFAULT_USER_MODEL
+    user_config = require_user_simulator_config(resolved_models.user)
     judge_config = resolved_models.judge
 
     output_path = Path(output_dir) if output_dir is not None else Path(_RUN_ID)
@@ -171,7 +168,7 @@ def run_trial(
         rate_limit_probe,
     )
 
-    conductor_impl = load_conductor(conductor)(
+    conductor_impl = conductor_factory(
         ConductorContext(
             adapter=adapter,
             artifact_writer=artifact_writer,

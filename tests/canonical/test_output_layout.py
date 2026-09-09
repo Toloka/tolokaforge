@@ -291,10 +291,13 @@ def test_task_yaml_carries_resolved_preset_for_user_simulator(tmp_path: Path) ->
     assert user_resolved["cache_policy"] == "none"
 
 
-def test_prompts_yaml_carries_both_system_prompts(tmp_path: Path) -> None:
-    """``prompts.yaml`` is now the home of both the agent system prompt
-    and the user simulator's system prompt — moved out of
-    ``trajectory.yaml`` to keep the message trace lean."""
+def test_prompts_yaml_carries_agent_user_and_judge_system_prompts(tmp_path: Path) -> None:
+    """``prompts.yaml`` is the home of every system prompt a trial ran under
+    — the agent's, the user simulator's, and the composed judge prompt the
+    trial's ``LLMJudgeConfig`` would have graded under. Kept out of
+    ``trajectory.yaml`` so the message trace stays lean. The layout driver
+    passes no ``judge_prompt`` (no ``LLMJudgeConfig`` in scope for these
+    fixtures), so the key is present as ``null`` — the tri-state contract."""
     writer = FileArtifactWriter()
     _drive_trial(writer, tmp_path, "task_A", 0, _AGENT1, _USER_SIM)
 
@@ -304,6 +307,7 @@ def test_prompts_yaml_carries_both_system_prompts(tmp_path: Path) -> None:
     assert data == {
         "system_prompt": _AGENT_PROMPT,
         "user_system_prompt": _USER_SIM_PROMPT,
+        "judge_prompt": None,
     }
 
 

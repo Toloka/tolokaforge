@@ -310,8 +310,11 @@ def _orchestrator(
     conductor = InMemoryConductor()
     orchestrator = Orchestrator(
         RunConfig(
+            # models.user is required — the orchestrator fails loud otherwise
+            # (see require_user_simulator_config).
             models={
                 "agent": ModelConfig(provider="openai", name="gpt-4"),
+                "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
                 "judge": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
             },
             orchestrator=OrchestratorConfig(

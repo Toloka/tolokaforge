@@ -131,8 +131,14 @@ def _task_description(task_id: str) -> TaskDescription:
 
 
 def _make_run_config(*, tmp_path: Path, workers: int = 1) -> RunConfig:
+    # models.user is required — the orchestrator fails loud without it (see
+    # require_user_simulator_config); pick a non-Anthropic placeholder so
+    # the fixture matches the docs example.
     return RunConfig(
-        models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+        models={
+            "agent": ModelConfig(provider="openai", name="gpt-4"),
+            "user": ModelConfig(provider="openrouter", name="anthropic/claude-sonnet-4.6"),
+        },
         orchestrator=OrchestratorConfig(
             repeats=1,
             auto_start_services=False,

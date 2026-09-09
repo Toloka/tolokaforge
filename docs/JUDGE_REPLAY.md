@@ -144,20 +144,42 @@ state so the offline judge can inspect it is tracked separately (issue #525).
 
 ## Custom judge system prompt
 
-If the recorded run's judge used a custom system prompt
-(`grading.llm_judge.customization.system_prompt`), replay reconstructs it from the
-bundle's `task.yaml` — the same source as the rubric — and re-runs the judge with
-it (the marker contract is always appended, so the reconstructed prompt still
-validates `submit_report`). An old bundle with no recorded customization replays
-with the default prompt (the declared fallback).
+Replay resolves the judge's system prompt from three ordered sources.
 
-The rubric and the custom prompt resolve **independently**. A `--grading` override
-replaces the prompt **only when its own `llm_judge.customization.system_prompt` is
-set**; a rubric-only override leaves the recorded prompt in effect and never
-resets it to the default. `replay_provenance.yaml` stamps both
-`custom_system_prompt` (whether one was in effect) and `custom_prompt_source`
-(`recorded` / `override`), so a rubric-only override over a custom-prompted bundle
-reads `rubric_source: override` while `custom_prompt_source: recorded`.
+1. **Bundle-recorded composed prompt** (`prompts.yaml.judge_prompt`). Every trial
+   bundle written by the current engine records the exact composed prompt (body +
+   marker contract) the judge would have graded under. When present and non-null,
+   replay uses that string **verbatim** — no re-composition, no marker
+   re-appended — so the replayed judge grades under the same contract the
+   original run's engine version defined, even if the current engine's default
+   body has since changed. `replay_provenance.yaml` stamps
+   `judge_prompt_source: bundle`, and `custom_system_prompt` / `custom_prompt_source`
+   both fall to `false` / `null` (the bundle-recorded prompt supersedes any
+   task.yaml customization).
+2. **Task.yaml customization body fragment**
+   (`grading_config.llm_judge.customization.system_prompt`). Reached only when the
+   bundle predates the `judge_prompt` key (old bundles) or recorded `null`
+   (grading with no LLM judge). The recorded body is a fragment; the marker
+   contract is appended at run time, so `submit_report` validation is never
+   silently broken. Stamped `custom_system_prompt: true` /
+   `custom_prompt_source: recorded`, `judge_prompt_source: null`.
+3. **`--grading` override body fragment**
+   (`llm_judge.customization.system_prompt` in the override document). Wins over
+   source (2) only when the override document actually carries a
+   `customization.system_prompt`; a rubric-only override leaves the recorded body
+   in effect and never resets it to the default. Stamped
+   `custom_system_prompt: true` / `custom_prompt_source: override`,
+   `judge_prompt_source: null`.
+
+Absence at all three sources — a legacy pre-`judge_prompt` bundle with no
+customization anywhere and no override carrying one — replays under the engine
+default composed prompt, with `judge_prompt_source: null`,
+`custom_prompt_source: null`, `custom_system_prompt: false`.
+
+The rubric and the judge system prompt resolve **independently**. A rubric-only
+override leaves the recorded prompt path (bundle or task.yaml) in effect, so a
+custom-prompted bundle re-run under a rubric override reads
+`rubric_source: override` while the prompt source stays `bundle` or `recorded`.
 
 ## Agent-policy evidence gating
 
@@ -202,8 +224,9 @@ trial:
 - `grade.yaml`, `judge_trajectory.yaml`, `judge_inputs.yaml` — the same formats as
   a normal trial bundle (so a replay bundle is itself replayable).
 - `replay_provenance.yaml` — the judge model used, whether each of the judge
-  model / rubric / KB-gating / custom prompt came from the bundle or an override,
-  and the fidelity mode.
+  model / rubric / KB-gating / judge system prompt / agent-policy gating came
+  from the bundle (`prompts.yaml.judge_prompt` verbatim, or task.yaml
+  customization) or an override, and the fidelity mode.
 
 Under a redacting artifact-write policy both judge sidecars are withheld and a
 `metrics.yaml` appears carrying the redaction stamp alone — the writer's

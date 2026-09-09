@@ -80,6 +80,8 @@ RUNNER_REACHABLE_ENTRY_POINT_GROUPS: tuple[str, ...] = (
     "tolokaforge.transcript_rule_matchers",
     "tolokaforge.state_check_backends",
     "tolokaforge.trace_check_operators",
+    "tolokaforge.grading_methods",
+    "tolokaforge.grader_kinds",
 )
 
 

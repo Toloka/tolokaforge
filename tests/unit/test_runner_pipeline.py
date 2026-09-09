@@ -210,16 +210,15 @@ class TestRunnerPipeline:
             "scored and nothing was owed"
         )
 
-    def test_grade_trial_joins_the_segments_a_skipped_component_leaves(
+    def test_grade_trial_refuses_when_a_declared_component_left_no_verdict(
         self, runner_service, mock_grpc_context
     ):
-        """Two segments and no renderer output: the join is what puts them together.
-
-        A pack declaring a transcript rule over a trial whose timeline carries no
-        events reaches ``GradeTrial`` with a skip note and a fold sentence and nothing
-        from the components' renderer, which is the shape that catches a composition
-        appending to that renderer's output — one segment would not, the separator
-        landing where the empty output was.
+        """A pack declaring a transcript rule over a trial whose timeline carries no
+        events reaches ``GradeTrial`` with ``transcript_score`` at the ``-1.0``
+        sentinel — the rule was configured but never produced a numeric verdict.
+        The fold's declared-but-unscored refusal fires and the RPC returns
+        ``success=False`` naming the missing component, so the trial lands
+        UNGRADEABLE rather than passing on a redistributed weighted mean.
         """
         trial_id = "skipped_component_test:0"
         task_description = {
@@ -249,12 +248,8 @@ class TestRunnerPipeline:
             pb2.GradeTrialRequest(trial_id=trial_id), mock_grpc_context
         )
 
-        assert response.success is True
-        assert response.grade.reasons == (
-            "transcript_rules.must_contain skipped: the trial's timeline carries no events"
-            " | no scored component carries any weight, so the trial earned nothing: "
-            "transcript_rules produced no verdict"
-        )
+        assert response.success is False, response.error
+        assert "transcript_rules" in response.error, response.error
 
     def test_grade_trial_not_found(self, runner_service, mock_grpc_context):
         """Test GradeTrial returns error for non-existent trial."""

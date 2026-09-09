@@ -63,6 +63,7 @@ class DockerRunnerAdapter:
         arguments: dict[str, Any] | None = None,
         *,
         call_id: str,
+        validation_schema: dict[str, Any] | None = None,
         **kwargs,
     ) -> ToolResult:
         """Execute a tool via the runtime backend under the bound
@@ -71,9 +72,11 @@ class DockerRunnerAdapter:
         Matches the :class:`~tolokaforge.tools.registry.ToolExecuting.execute`
         contract :class:`~tolokaforge.core.runner.TrialRunner` calls.
 
-        ``call_id`` is named explicitly rather than left to ``**kwargs``: this
-        method folds ``kwargs`` into the tool's own arguments, so an id arriving
-        that way would be sent to the tool as a parameter.
+        ``call_id`` and ``validation_schema`` are named explicitly rather than
+        left to ``**kwargs``: this method folds ``kwargs`` into the tool's own
+        arguments, so a name arriving that way would be sent to the tool as a
+        parameter. ``validation_schema`` is discarded — the runner-side gRPC
+        path does no jsonschema validation, tracked separately at #976.
         """
         if arguments is None:
             arguments = {}

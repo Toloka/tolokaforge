@@ -1010,81 +1010,62 @@ class GradingSource:
 def grading_source_under_adapter(
     task: TaskConfig, task_dir: Path, adapter_type: str
 ) -> GradingSource:
-    """Where *task*'s grading block is read from, under *adapter_type*.
+    """Where *task*'s grading block is read from, resolved under *adapter_type*.
 
-    A task naming a grading file that is on disk is :attr:`GradingSourceKind.ON_DISK`
-    whatever the adapter — that file is the block any adapter reading the field reads.
-
-    Every other case is an absence, and which absence it is is answered off
-    *adapter_type*, because :meth:`BaseAdapter.get_grading_config` is abstract and the
-    implementations disagree: :class:`NativeAdapter` refuses a task it has no block to
-    read, while an external adapter may synthesise a whole config without reading the
-    field. So a task naming no file and a task naming one that is not there are both
-    :attr:`~GradingSourceKind.WITHHELD` under the native adapter and
-    :attr:`~GradingSourceKind.UNINTERROGABLE` under any other, differing in the sentence
-    they carry, which names the fix each needs. Under an adapter that answers for itself
-    a dangling ``grading:`` path is therefore reported unchecked rather than refused,
-    since nothing here can say whether that adapter reads the field at all.
-
-    Which adapter that is, is the caller's to resolve, and the two gates resolve it
-    differently on purpose. ``validate`` builds no description and reads the type the
-    ``task.yaml`` declares. The pre-run gate reads the type the description it is
-    about to run carries, which is the adapter that will actually be asked for a
-    grading config — so a pack declaring an external adapter but loaded natively is
-    refused there and passed by ``validate``, since the native adapter is the one that
-    would have to grade it.
+    A file the task names that is on disk is :attr:`GradingSourceKind.ON_DISK`
+    whatever the adapter — that file is the block any adapter reading the field
+    reads. Every other case is answered off the adapter, through
+    :meth:`~tolokaforge.adapters.base.BaseAdapter.grading_source`: native
+    reports a :attr:`~GradingSourceKind.WITHHELD` absence naming the
+    author-facing fix, and an adapter that grades from its own source
+    pronounces on the absence through its own registered kind. The two
+    :attr:`~GradingSourceKind.UNINTERROGABLE` shapes — an adapter type no
+    class resolves for (not installed, or misspelled), and a resolved class
+    whose own default is the honest "cannot say" — are written here, because
+    ``adapter_type`` is the registry key naming the adapter in a way an author
+    can act on. The dangling-file variant also names the declared path, so
+    the sentence points at what to write next.
     """
-    from tolokaforge.runner.models import AdapterType
+    from tolokaforge.adapters import adapter_class
 
-    grades_from_the_file = adapter_type == AdapterType.NATIVE.value
+    declared: Path | None = None
     if task.grading is not None:
         declared = task_dir / task.grading
         if declared.exists():
             return GradingSource(kind=GradingSourceKind.ON_DISK, path=declared)
-        if not grades_from_the_file:
-            return GradingSource(
-                kind=GradingSourceKind.UNINTERROGABLE,
-                path=None,
-                reason=(
-                    f"this task declares grading source {task.grading!r} and no file is at "
-                    f"{declared}, and adapter {adapter_type!r} decides for itself what a task "
-                    "grades by, so whether it would ever have read that path is not checkable "
-                    "here"
-                ),
+
+    resolved = adapter_class(adapter_type)
+    if resolved is None:
+        if declared is not None:
+            reason = (
+                f"grading source {str(declared)!r} declared but adapter "
+                f"{adapter_type!r} does not resolve to a class here — not "
+                "installed, or misspelled — so whether this task's grading "
+                "source is what its author intended is not checkable here. "
+                "Install the adapter package or correct the `adapter_type` "
+                "value"
             )
-        return GradingSource(
-            kind=GradingSourceKind.WITHHELD,
-            path=None,
-            reason=(
-                f"task {task.task_id!r} declares grading source {task.grading!r} and no "
-                f"file is at {declared}. Adapter {adapter_type!r} grades from that file, so "
-                "this task cannot be graded and is refused before any trial is scheduled. "
-                "Correct the `grading:` path to the block this task grades by, or create "
-                "that file."
-            ),
-        )
-    if not grades_from_the_file:
+        else:
+            reason = (
+                f"adapter {adapter_type!r} does not resolve to a class here "
+                "— not installed, or misspelled — so whether this task's "
+                "grading source is what its author intended is not checkable "
+                "here. Install the adapter package or correct the "
+                "`adapter_type` value"
+            )
+        return GradingSource(kind=GradingSourceKind.UNINTERROGABLE, path=None, reason=reason)
+    source = resolved.grading_source(task, task_dir)
+    if source.kind is GradingSourceKind.UNINTERROGABLE:
         return GradingSource(
             kind=GradingSourceKind.UNINTERROGABLE,
             path=None,
             reason=(
-                "this task declares no grading source — no `grading:` field and no sibling "
-                f"grading.yaml — and adapter {adapter_type!r} decides for itself what a task "
-                "with none grades by, so whether that absence is an authoring defect is not "
-                "checkable here"
+                f"adapter {adapter_type!r} decides for itself what a task "
+                "grades by, so whether this task's grading source is what "
+                "its author intended is not checkable here"
             ),
         )
-    return GradingSource(
-        kind=GradingSourceKind.WITHHELD,
-        path=None,
-        reason=(
-            f"task {task.task_id!r} declares no grading source: no `grading:` field and no "
-            f"sibling grading.yaml. Adapter {adapter_type!r} grades from that file, so this "
-            "task cannot be graded and is refused before any trial is scheduled. "
-            "Declare `grading:` pointing at the block this task grades by, or add a "
-            "grading.yaml beside its task.yaml."
-        ),
-    )
+    return source
 
 
 def _builtin_tool_schemas(

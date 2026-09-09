@@ -25,6 +25,7 @@ from pydantic import (
 from tolokaforge.core.llm.reasoning import StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 from tolokaforge.core.models.grade import Grade
+from tolokaforge.core.models.trial_status import TerminationReason, TrialStatus
 from tolokaforge.runner.models import RecordedToolCall
 
 __all__ = [
@@ -37,11 +38,12 @@ __all__ = [
     "RateLimitProbeBucketMetrics",
     "RateLimitProbeRoleMetrics",
     "ReplyDefect",
+    "SnapshotOutcome",
+    "SnapshotStatus",
     "TerminationReason",
     "ToolCall",
     "ToolUsage",
     "Trajectory",
-    "TrialStatus",
     "UserReplyGuardEvent",
     "UserReplyOutcome",
 ]
@@ -84,36 +86,79 @@ class MessageRole(str, Enum):
     TOOL = "tool"
 
 
-class TrialStatus(str, Enum):
-    """Trial execution status"""
-
-    COMPLETED = "completed"
-    FAILED = "failed"
-    TIMEOUT = "timeout"
-    ERROR = "error"
-
-
-class TerminationReason(str, Enum):
-    """Reason why the dialogue was terminated"""
-
-    AGENT_DONE = "agent_done"  # Agent had no further action and no party could ask for one
-    USER_STOP = "user_stop"  # User signaled ###STOP###
-    STUCK_DETECTED = "stuck_detected"  # Stuck condition detected
-    TIMEOUT = "timeout"  # Episode timeout reached
-    MAX_TURNS = "max_turns"  # Maximum turns limit reached
-    ERROR = "error"  # Runtime error occurred
-    RATE_LIMIT = "rate_limit"  # API rate limit error
-    API_TIMEOUT = "api_timeout"  # API call timed out after retries
-    API_ERROR = "api_error"  # Other API errors
-    PROVISION_ERROR = "provision_error"  # Substrate provisioning failed before the trial body ran
-    TRIAL_LOST = "trial_lost"  # The substrate no longer holds the trial the engine was running
-
-
 class FirstUserMessageSource(str, Enum):
     """Where message index 0 came from."""
 
     PINNED = "pinned"  # The task's initial_user_message, delivered verbatim
     SIMULATOR = "simulator"  # A user-simulator dispatch produced it
+
+
+class SnapshotOutcome(str, Enum):
+    """Trial-end grade-bundle produce outcome tag.
+
+    Written to :attr:`SnapshotStatus.outcome` by the orchestrator's
+    trial-end producer seam. Downstream reporting code imports the symbol
+    and compares by identity (``status.outcome is SnapshotOutcome.STORED``)
+    rather than by string literal — string comparisons drift when a new
+    outcome is added.
+    """
+
+    STORED = "stored"
+    OVERSIZE = "oversize"
+    PRODUCE_FAILED = "produce_failed"
+    UNGRADED = "ungraded"
+
+
+class SnapshotStatus(BaseModel):
+    """Grade-bundle produce outcome for a trial.
+
+    Populated when the orchestrator's snapshot mode is enabled
+    (``grader.snapshot.enabled=true``) and the trial reached the
+    producer seam. ``uri`` / ``bundle_size_bytes`` / ``cap_bytes`` /
+    ``reason`` are keyed by ``outcome``: :attr:`SnapshotOutcome.STORED`
+    carries ``uri`` + ``bundle_size_bytes``; :attr:`SnapshotOutcome.OVERSIZE`
+    carries ``bundle_size_bytes`` + ``cap_bytes`` + ``reason``;
+    :attr:`SnapshotOutcome.PRODUCE_FAILED` carries ``reason``;
+    :attr:`SnapshotOutcome.UNGRADED` carries no side data. Consumers gate on
+    ``outcome`` before reading the optional fields.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    outcome: SnapshotOutcome
+    uri: str | None = None
+    bundle_size_bytes: int | None = None
+    cap_bytes: int | None = None
+    reason: str | None = None
+
+    @classmethod
+    def stored(cls, *, uri: str, bundle_size_bytes: int) -> Self:
+        return cls(
+            outcome=SnapshotOutcome.STORED,
+            uri=uri,
+            bundle_size_bytes=bundle_size_bytes,
+        )
+
+    @classmethod
+    def oversize(cls, *, bundle_size_bytes: int, cap_bytes: int) -> Self:
+        return cls(
+            outcome=SnapshotOutcome.OVERSIZE,
+            bundle_size_bytes=bundle_size_bytes,
+            cap_bytes=cap_bytes,
+            reason=(
+                f"Snapshot bundle exceeded cap "
+                f"({bundle_size_bytes / 1024 / 1024:.1f} MB > "
+                f"{cap_bytes / 1024 / 1024:.1f} MB); fell back."
+            ),
+        )
+
+    @classmethod
+    def produce_failed(cls, reason: str) -> Self:
+        return cls(outcome=SnapshotOutcome.PRODUCE_FAILED, reason=reason)
+
+    @classmethod
+    def ungraded(cls) -> Self:
+        return cls(outcome=SnapshotOutcome.UNGRADED)
 
 
 class ToolCall(BaseModel):
@@ -621,6 +666,11 @@ class Trajectory(BaseModel):
     # ``ProvisionStage`` is exhaustive over the raise sites, so this is a
     # defensive default, not a documented gap).
     provision_stage: ProvisionStage | None = None
+    # Grade-bundle produce outcome for this trial. ``None`` iff snapshot
+    # mode is disabled for the run OR the trial ended before grading.
+    # Populated by the orchestrator's trial-end producer seam after
+    # ``_grade`` completes when ``grader.snapshot.enabled=true``.
+    snapshot_status: SnapshotStatus | None = None
     # Monotonic integer stamped on every trajectory; bumped whenever the
     # simulator prompt shape or the conversation context the simulator sees
     # is revised so that downstream analytics can gate comparisons across

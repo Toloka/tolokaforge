@@ -118,6 +118,166 @@ class TestAutoFailBranches:
         assert logger.info.call_args.kwargs["termination_reason"] == "stuck_detected"
 
 
+def _make_auto_fail_grader(kind: str) -> Any:
+    """One :class:`TrialGrader` per registered subclass, wired with a stub
+    dispatch that must not be reached — every auto-fail branch here refuses to
+    dispatch to its evaluator, so any recorded call is a defect.
+    """
+    from tolokaforge.core.trial_grader import (
+        GraderRPCTrialGrader,
+        JudgeBackedTrialGrader,
+        QueueTrialGrader,
+        RunnerRPCTrialGrader,
+    )
+    from tolokaforge.grader.queue import InMemoryGradeBroker
+
+    logger = MagicMock()
+    if kind == "runner_rpc":
+
+        class _RecordingBackend:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
+
+            def grade_trial(self, **kwargs: Any) -> dict[str, Any]:  # pragma: no cover
+                self.calls.append(kwargs)
+                return {"success": True, "grade": None}
+
+        return RunnerRPCTrialGrader(
+            runner_address="stub:0", logger=logger, runner_client=_RecordingBackend()
+        )
+    if kind == "judge_backed":
+
+        def _refusing_judge(*_args: Any, **_kwargs: Any) -> Grade:  # pragma: no cover
+            raise AssertionError("judge_fn must not be called on an auto-fail branch")
+
+        return JudgeBackedTrialGrader(judge_fn=_refusing_judge, logger=logger)
+    if kind == "grader_rpc":
+
+        class _RefusingGraderClient:
+            def grade(self, **_kwargs: Any) -> dict[str, Any]:  # pragma: no cover
+                raise AssertionError("grader_client.grade must not be called on auto-fail")
+
+            def close(self) -> None:
+                return None
+
+        return GraderRPCTrialGrader(
+            grader_address="stub:0",
+            logger=logger,
+            runner_substrate_address="runner:50051",
+            grader_client=_RefusingGraderClient(),  # type: ignore[arg-type]
+        )
+    if kind == "queue":
+        return QueueTrialGrader(
+            broker=InMemoryGradeBroker(),
+            logger=logger,
+            runner_substrate_address="runner:50051",
+            timeout_s=1.0,
+        )
+    raise AssertionError(f"unknown TrialGrader kind: {kind}")
+
+
+_SYNTH_ROWS: tuple[tuple[str, TrialStatus, TerminationReason | None, TerminationReason], ...] = (
+    # (subclass_kind, trial_status, trajectory_termination_reason, expected_marker)
+    ("runner_rpc", TrialStatus.ERROR, None, TerminationReason.ERROR),
+    ("runner_rpc", TrialStatus.TIMEOUT, None, TerminationReason.ERROR),
+    (
+        "runner_rpc",
+        TrialStatus.COMPLETED,
+        TerminationReason.STUCK_DETECTED,
+        TerminationReason.STUCK_DETECTED,
+    ),
+    (
+        "runner_rpc",
+        TrialStatus.FAILED,
+        TerminationReason.EMPTY_COMPLETION,
+        TerminationReason.EMPTY_COMPLETION,
+    ),
+    ("judge_backed", TrialStatus.ERROR, None, TerminationReason.ERROR),
+    ("judge_backed", TrialStatus.TIMEOUT, None, TerminationReason.ERROR),
+    (
+        "judge_backed",
+        TrialStatus.COMPLETED,
+        TerminationReason.STUCK_DETECTED,
+        TerminationReason.STUCK_DETECTED,
+    ),
+    (
+        "judge_backed",
+        TrialStatus.FAILED,
+        TerminationReason.EMPTY_COMPLETION,
+        TerminationReason.EMPTY_COMPLETION,
+    ),
+    ("grader_rpc", TrialStatus.ERROR, None, TerminationReason.ERROR),
+    ("grader_rpc", TrialStatus.TIMEOUT, None, TerminationReason.ERROR),
+    (
+        "grader_rpc",
+        TrialStatus.COMPLETED,
+        TerminationReason.STUCK_DETECTED,
+        TerminationReason.STUCK_DETECTED,
+    ),
+    (
+        "grader_rpc",
+        TrialStatus.FAILED,
+        TerminationReason.EMPTY_COMPLETION,
+        TerminationReason.EMPTY_COMPLETION,
+    ),
+    ("queue", TrialStatus.ERROR, None, TerminationReason.ERROR),
+    ("queue", TrialStatus.TIMEOUT, None, TerminationReason.ERROR),
+    (
+        "queue",
+        TrialStatus.COMPLETED,
+        TerminationReason.STUCK_DETECTED,
+        TerminationReason.STUCK_DETECTED,
+    ),
+    (
+        "queue",
+        TrialStatus.FAILED,
+        TerminationReason.EMPTY_COMPLETION,
+        TerminationReason.EMPTY_COMPLETION,
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("kind", "status", "reason", "expected_marker"),
+    _SYNTH_ROWS,
+    ids=[f"{k}-{s.value}-{r.value if r else 'none'}" for k, s, r, _ in _SYNTH_ROWS],
+)
+def test_auto_fail_synthesis_carries_marker_and_empty_components(
+    kind: str,
+    status: TrialStatus,
+    reason: TerminationReason | None,
+    expected_marker: TerminationReason,
+) -> None:
+    """Every ``TrialGrader`` subclass on every auto-fail branch synthesises a
+    :class:`Grade` with ``GradeComponents()`` (all fields ``None``) and the
+    ``synthesized_by_termination_reason`` marker set to the trajectory's
+    ``TerminationReason`` (or ``ERROR`` when the status is ERROR/TIMEOUT with
+    no matching reason). ``binary_pass=False``, ``score=0.0``.
+
+    The parametrisation covers four subclasses × four branches so a subclass
+    that quietly resurrects the fabricated ``state_checks=0.0`` shape reds
+    here rather than in a downstream analytics-consumer test.
+    """
+    grader = _make_auto_fail_grader(kind)
+    trajectory = make_trajectory(status=status, termination_reason=reason)
+
+    grade = grader.grade(make_trial_spec(), trajectory, "sysprompt")
+
+    assert grade is not None, f"{kind} refused to grade instead of synthesising"
+    assert grade.binary_pass is False
+    assert grade.score == 0.0
+    assert grade.synthesized_by_termination_reason is expected_marker
+    # Every component field reads as ``None`` — nothing was measured.
+    # Downstream analytics can tell an auto-failed trial from one that
+    # measured ``state_checks: 0.0``.
+    components = grade.components
+    assert components.state_checks is None
+    assert components.transcript_rules is None
+    assert components.trace_checks is None
+    assert components.llm_judge is None
+    assert components.custom_checks is None
+
+
 class TestNoVerdictProducesNoGrade:
     """A trial no verdict can be computed for is not graded at all.
 

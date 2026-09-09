@@ -8,7 +8,33 @@ the same machinery.
 The engine is deliberately behaviour-light: it owns turn structure (episode
 timeout, generate, accumulate, append assistant, terminate, execute tools,
 optional user turn, error classification, max-turns), and delegates every
-*policy* decision to pluggable seams:
+*policy* decision to pluggable seams. The engine consumes three wire-shape
+observations directly: the provider-shaped *empty completion* —
+``result.text == "" and not result.tool_calls`` — resamples up to
+``LoopConfig.empty_retry_count`` times without appending the empty assistant
+message, and on the ``(N + 1)``-th empty result terminates the trial with
+:attr:`TerminationReason.EMPTY_COMPLETION` (the Gemini-legal-tail invariant is
+preserved end-to-end because the empty message is never appended — appending
+it would send a request whose tail is an empty ``role=model`` turn on the
+next iteration and providers such as Gemini reject that as an API error
+rather than pass it through); the content-carrying *max-tokens truncation* —
+``result.finish_reason == "length"`` on a content-carrying result —
+resamples with a ``role=user`` feedback turn under
+``LoopConfig.output_length_retry_count`` before falling through to
+accept-and-continue; and the *un-parseable tool_call arguments* —
+``result.parser_errors`` non-empty — resamples with a ``role=user``
+feedback turn naming the failing tools and quoting the raw arguments under
+``LoopConfig.parser_error_retry_count`` before falling through to accept the
+``{}``-coerced response.
+
+The loop also owns a defensive bound on tool-output size that lands in the
+message history: when ``LoopConfig.tool_output_max_chars`` is set,
+:meth:`ToolCallingLoop._execute_tool_calls` middle-elides the ``role=tool``
+message ``content`` via
+:func:`~tolokaforge.core.tool_output_truncation.keep_head_and_tail` before the
+message is appended, so accumulated context stays predictable across turns.
+The recorder and the grader still see the full text — the cap sits below the
+recorder's :func:`resolve_tool_output` read.
 
 * :class:`LoopLLMClient` — the provider-agnostic generate seam (the agent's
   :class:`~tolokaforge.core.llm.client.LLMClient` already satisfies it).
@@ -41,9 +67,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+import litellm.exceptions
+
 from tolokaforge.core.llm.client import (
     GenerationResult,
     LLMApiTimeoutError,
+    ParserError,
     is_typed_rate_limit_exception,
     matches_rate_limit_text,
 )
@@ -58,7 +87,9 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.run_display_events import LLMCallObservation
+from tolokaforge.core.summarize_policy import SummarizePolicy, SummarizerFailedError
 from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
+from tolokaforge.core.tool_output_truncation import keep_head_and_tail
 from tolokaforge.runner.protocol import TrialNotRegisteredError
 from tolokaforge.tools.registry import ToolExecuting, resolve_tool_output, resolve_tool_status
 
@@ -89,10 +120,56 @@ class LoopConfig:
     There is deliberately no per-turn timeout: per-turn LLM timeouts are handled
     inside :class:`~tolokaforge.core.llm.client.LLMClient` (``api_call_timeout_s``
     + bounded retry), so episode wall-time is the only loop-level time bound.
+
+    ``api_error_retries`` and ``api_error_backoff_s`` set the loop-level bounded
+    retry that fires only on :attr:`TerminationReason.API_ERROR` — a transient
+    provider fault the classifier could not attribute to a typed reason.
+    ``empty_retry_count`` sets the resample budget for a returned empty
+    completion; ``output_length_retry_count`` sets the resample budget for a
+    content-carrying max-tokens truncation; ``parser_error_retry_count`` sets
+    the resample budget for a response whose ``tool_call.function.arguments``
+    string could not be decoded. The four retry classes are orthogonal — the
+    API-error retry replays a raised exception, the empty-completion retry
+    resamples a returned empty-shape result without appending the empty
+    assistant message and without advancing the outer turn counter, the
+    output-length retry appends a ``role=user`` feedback turn and resamples a
+    truncated content-carrying result under its own budget before falling
+    through to accept-and-continue, and the parser-error retry appends a
+    ``role=user`` feedback turn naming the failing tools and resamples under
+    its own budget before falling through to accept the ``{}``-coerced
+    response. Each owns a dedicated ``LoopConfig`` field and each fires on a
+    distinct trigger. ``RATE_LIMIT``, ``API_TIMEOUT`` and ``TRIAL_LOST`` stay
+    one-shot terminal because each owns a dedicated path (typed 429 handling,
+    transport-timeout retry, substrate re-registration) and retrying them
+    here would double-count them.
+
+    ``tool_output_max_chars`` caps the ``role=tool`` message ``content`` at
+    that many chars via
+    :func:`~tolokaforge.core.tool_output_truncation.keep_head_and_tail` before
+    the message is appended; ``None`` (the default) threads tool output
+    through verbatim. The cap is a defensive backstop above any per-tool
+    truncation the tool applies to its own output.
+
+    ``max_context_tokens``, ``context_watermark`` and ``summarize_policy``
+    arm the context-window summarize seam (see
+    :mod:`tolokaforge.core.summarize_policy`). The pre-turn watermark check
+    fires only when **all three** are set and
+    ``MetricsSink.last_prompt_tokens + context_watermark >=
+    max_context_tokens``; any ``None`` leaves the loop's pre-opt-in
+    behaviour intact.
     """
 
     max_turns: int = 50
     episode_timeout_s: int = 1200
+    api_error_retries: int = 1
+    api_error_backoff_s: float = 1.0
+    empty_retry_count: int = 0
+    output_length_retry_count: int = 0
+    parser_error_retry_count: int = 0
+    tool_output_max_chars: int | None = None
+    max_context_tokens: int | None = None
+    context_watermark: int | None = None
+    summarize_policy: SummarizePolicy | None = None
 
 
 @dataclass(frozen=True)
@@ -154,11 +231,20 @@ class MetricsSink(Protocol):
 
     Parameterised so the agent threads its trial ``Metrics`` while a future
     judge threads its own accounting object.
+
+    ``last_prompt_tokens`` exposes the ``prompt_tokens`` charged on the most
+    recent ``record_generation`` call. The engine reads it to arm the
+    pre-turn summarize check; a subclass that never overrides inherits
+    ``None`` and never trips the check.
     """
 
     def record_generation(self, result: GenerationResult) -> None: ...
 
     def record_tool_call(self) -> None: ...
+
+    @property
+    def last_prompt_tokens(self) -> int | None:
+        return None
 
 
 ErrorClassifier = Callable[[Exception], TerminationDecision]
@@ -201,6 +287,12 @@ def classify_loop_error(
             reason=TerminationReason.TRIAL_LOST,
             system_message=f"{error_str} Dialogue terminated.",
             status=TrialStatus.ERROR,
+        )
+    if isinstance(exc, litellm.exceptions.ContextWindowExceededError):
+        return TerminationDecision(
+            reason=TerminationReason.CONTEXT_WINDOW_EXCEEDED,
+            system_message=f"Context window exceeded: {error_str}. Dialogue terminated.",
+            status=TrialStatus.FAILED,
         )
     if isinstance(exc, LLMApiTimeoutError):
         return TerminationDecision(
@@ -279,6 +371,20 @@ class ToolCallingLoop:
         None
     )
     call_observation: LLMCallObservation | None = None
+    # Per-tool ``parameters`` schema the model was shown for this loop's tools,
+    # keyed by tool name. Wired at construction from
+    # :meth:`LLMClient.sanitize_tools_for_execution`. When present, the executor
+    # validates arguments against the schema for each call's tool; a call whose
+    # tool name is absent from the map falls back to the tool's own declared
+    # schema. When the whole field is ``None``, no schema is passed and the
+    # executor validates against the tool's declared schema — the path taken by
+    # tests that construct the loop without an LLM in scope.
+    validation_schemas_by_tool: dict[str, dict[str, Any]] | None = None
+    # Bounded API-error retry sleep seam. Parallels ``LLMClient._retry_sleep``:
+    # tests bind a no-op so the loop's retry backoff is instant. See
+    # :attr:`LoopConfig.api_error_backoff_s` for the wait, and the retry class
+    # rules in the config docstring for which classified reasons trigger it.
+    retry_sleep: Callable[[float], None] = time.sleep
     # The episode's id assigner. Injected rather than owned: a trial's second
     # actor executes tool calls outside this loop and must draw from the same
     # sequence, while a rubric judge's loop takes the default and disambiguates
@@ -288,6 +394,11 @@ class ToolCallingLoop:
     # Captured from the first generation's effective system prompt.
     _captured_effective_prompt: str | None = field(default=None, init=False)
     _captured: bool = field(default=False, init=False)
+    # Wire message list sent to the provider. Distinct from the caller-owned
+    # ``messages`` (which becomes ``Trajectory.messages``) so a summarize event
+    # can rewrite the wire view while the recorded history keeps the full
+    # pre-summarize timeline for grading.
+    _wire_messages: list[Message] = field(default_factory=list, init=False)
 
     def run(self, system_prompt: str, messages: list[Message], start_time: float) -> LoopOutcome:
         """Run the turn loop, mutating ``messages`` in place.
@@ -298,17 +409,88 @@ class ToolCallingLoop:
         """
         status = TrialStatus.COMPLETED
         termination_reason: TerminationReason | None = None
+        self._wire_messages = list(messages)
 
         for turn in range(self.config.max_turns):
+            outcome = self._attempt_turn(turn, system_prompt, messages, start_time)
+            if isinstance(outcome, TerminationDecision):
+                self._append_both(messages, self._system_message(outcome.system_message))
+                status = outcome.status or status
+                termination_reason = outcome.reason
+                break
+            turn_status, turn_reason, stop = outcome
+            if turn_status is not None:
+                status = turn_status
+            if stop:
+                termination_reason = turn_reason
+                break
+        else:
+            termination_reason = TerminationReason.MAX_TURNS
+            self._append_both(
+                messages,
+                self._system_message(
+                    f"Maximum turns ({self.config.max_turns}) reached. Dialogue terminated."
+                ),
+            )
+
+        return LoopOutcome(
+            status=status,
+            termination_reason=termination_reason,
+            captured_effective_system_prompt=self._captured_effective_prompt,
+        )
+
+    def _append_both(self, messages: list[Message], message: Message) -> None:
+        """Append to the caller-owned recorded list and the wire list.
+
+        A summarize event rewrites ``_wire_messages`` in place and appends a
+        ``role=system`` reset marker to both lists; the pre-summarize turn
+        content stays in ``messages`` so grading reads the full history via
+        ``Trajectory.messages``.
+        """
+        messages.append(message)
+        self._wire_messages.append(message)
+
+    def _attempt_turn(
+        self,
+        turn: int,
+        system_prompt: str,
+        messages: list[Message],
+        start_time: float,
+    ) -> TerminationDecision | tuple[TrialStatus | None, TerminationReason | None, bool]:
+        """Run one turn with the bounded API-error retry budget.
+
+        Returns the turn's ``(status_override, reason, stop)`` triple when the
+        attempt produced a result the outer loop should consume. Returns a
+        :class:`TerminationDecision` when the outer loop must stop — either
+        because the episode wall-time budget is spent, or because a classified
+        exception cannot be recovered by another attempt.
+
+        The API-error retry budget resets to zero on every call, so a
+        successful turn followed by an API-error turn gets a fresh budget.
+        Only :attr:`TerminationReason.API_ERROR` triggers a retry at this
+        layer: rate limits, API timeouts and trial-lost stay one-shot
+        terminal. Empty completions, content-carrying max-tokens truncations
+        and un-parseable tool_call arguments are resampled inside
+        :meth:`_run_turn` under their own budgets
+        (:attr:`LoopConfig.empty_retry_count`,
+        :attr:`LoopConfig.output_length_retry_count` and
+        :attr:`LoopConfig.parser_error_retry_count`), so the four retry
+        classes stay orthogonal — the API-error retry replays a raised
+        exception, the empty-completion retry resamples a returned
+        empty-shape result, the output-length retry appends a ``role=user``
+        feedback turn and resamples a returned truncated content-carrying
+        result before falling through to accept-and-continue, and the
+        parser-error retry appends a ``role=user`` feedback turn naming the
+        failing tools and resamples before falling through to accept the
+        ``{}``-coerced response.
+        """
+        api_error_attempts = 0
+        while True:
             timeout_decision = self._check_episode_timeout(start_time)
             if timeout_decision is not None:
-                status = timeout_decision.status or status
-                termination_reason = timeout_decision.reason
-                messages.append(self._system_message(timeout_decision.system_message))
-                break
-
+                return timeout_decision
             try:
-                turn_status, turn_reason, stop = self._run_turn(turn, system_prompt, messages)
+                return self._run_turn(turn, system_prompt, messages)
             except Exception as exc:  # noqa: BLE001 — classified, then surfaced via status
                 self.logger.error(
                     "Error during turn execution",
@@ -317,29 +499,21 @@ class ToolCallingLoop:
                     error_type=type(exc).__name__,
                 )
                 decision = self.classify_error(exc)
-                messages.append(self._system_message(decision.system_message))
-                status = decision.status or TrialStatus.ERROR
-                termination_reason = decision.reason
-                break
-
-            if turn_status is not None:
-                status = turn_status
-            if stop:
-                termination_reason = turn_reason
-                break
-        else:
-            termination_reason = TerminationReason.MAX_TURNS
-            messages.append(
-                self._system_message(
-                    f"Maximum turns ({self.config.max_turns}) reached. Dialogue terminated."
-                )
-            )
-
-        return LoopOutcome(
-            status=status,
-            termination_reason=termination_reason,
-            captured_effective_system_prompt=self._captured_effective_prompt,
-        )
+                if (
+                    decision.reason is TerminationReason.API_ERROR
+                    and api_error_attempts < self.config.api_error_retries
+                ):
+                    api_error_attempts += 1
+                    self.logger.info(
+                        "Retrying turn after classified API error",
+                        turn=turn,
+                        attempt=api_error_attempts,
+                        max_attempts=self.config.api_error_retries + 1,
+                        backoff_s=self.config.api_error_backoff_s,
+                    )
+                    self.retry_sleep(self.config.api_error_backoff_s)
+                    continue
+                return decision
 
     def _run_turn(
         self, turn: int, system_prompt: str, messages: list[Message]
@@ -350,16 +524,118 @@ class ToolCallingLoop:
         ``status_override`` promotes the trial status. Raised exceptions are
         classified by the caller.
         """
-        result = self._generate(turn, system_prompt, messages)
-        self._assign_call_ids(result)
-        self._capture_effective_prompt(result)
-        self.metrics.record_generation(result)
-        self._log_generation(turn, result)
-        messages.append(self._assistant_message(result))
+        summarize_decision = self._maybe_summarize(turn, system_prompt, messages)
+        if summarize_decision is not None:
+            self._append_both(messages, self._system_message(summarize_decision.system_message))
+            return summarize_decision.status, summarize_decision.reason, True
+
+        empty_attempts = 0
+        output_length_attempts = 0
+        parser_error_attempts = 0
+        while True:
+            try:
+                result = self._generate(turn, system_prompt)
+            except litellm.exceptions.ContextWindowExceededError:
+                reactive_decision = self._maybe_reactive_summarize(turn, system_prompt, messages)
+                if reactive_decision is not None:
+                    self._append_both(
+                        messages, self._system_message(reactive_decision.system_message)
+                    )
+                    return reactive_decision.status, reactive_decision.reason, True
+                if not self._summarize_armed():
+                    raise
+                try:
+                    result = self._generate(turn, system_prompt)
+                except litellm.exceptions.ContextWindowExceededError as retry_exc:
+                    self._append_both(
+                        messages,
+                        self._system_message(
+                            "Context window exceeded on the post-summarize retry: "
+                            f"{retry_exc}. Dialogue terminated."
+                        ),
+                    )
+                    return (
+                        TrialStatus.FAILED,
+                        TerminationReason.CONTEXT_WINDOW_EXCEEDED,
+                        True,
+                    )
+            self._assign_call_ids(result)
+            self._capture_effective_prompt(result)
+            self.metrics.record_generation(result)
+            self._log_generation(turn, result)
+
+            if result.text or result.tool_calls:
+                if (
+                    result.parser_errors
+                    and parser_error_attempts < self.config.parser_error_retry_count
+                ):
+                    parser_error_attempts += 1
+                    self._append_both(
+                        messages,
+                        Message(
+                            role=MessageRole.USER,
+                            content=self._format_parser_error_feedback(result.parser_errors),
+                            ts=_now(),
+                        ),
+                    )
+                    self.logger.info(
+                        "Resampling after tool_call argument parse errors",
+                        turn=turn,
+                        attempt=parser_error_attempts,
+                        max_attempts=self.config.parser_error_retry_count + 1,
+                        tool_names=[e.tool_name for e in result.parser_errors],
+                    )
+                    continue
+                if (
+                    result.finish_reason == "length"
+                    and output_length_attempts < self.config.output_length_retry_count
+                ):
+                    output_length_attempts += 1
+                    self._append_both(
+                        messages,
+                        Message(
+                            role=MessageRole.USER,
+                            content=(
+                                "The previous response was truncated at max_tokens "
+                                "(finish_reason: length). Please split the next "
+                                "action into smaller pieces (fewer tool calls per "
+                                "turn, shorter text) and try again."
+                            ),
+                            ts=_now(),
+                        ),
+                    )
+                    self.logger.info(
+                        "Resampling after truncated completion",
+                        turn=turn,
+                        attempt=output_length_attempts,
+                        max_attempts=self.config.output_length_retry_count + 1,
+                    )
+                    continue
+                break
+
+            if empty_attempts >= self.config.empty_retry_count:
+                self._append_both(
+                    messages,
+                    self._system_message(
+                        "Model returned an empty completion (no text, no tool calls); "
+                        "trial terminated to keep the next request provider-legal."
+                    ),
+                )
+                return TrialStatus.FAILED, TerminationReason.EMPTY_COMPLETION, True
+
+            empty_attempts += 1
+            self.logger.info(
+                "Resampling after provider-side empty completion",
+                turn=turn,
+                attempt=empty_attempts,
+                max_attempts=self.config.empty_retry_count + 1,
+            )
+
+        self._append_both(messages, self._assistant_message(result))
 
         decision = self.should_terminate(result, turn, messages)
         if decision is not None:
-            messages.append(self._system_message(decision.system_message))
+            self._append_both(messages, self._system_message(decision.system_message))
             return decision.status, decision.reason, True
 
         if result.tool_calls:
@@ -367,6 +643,105 @@ class ToolCallingLoop:
             return None, None, False
 
         return self._advance_user_turn(messages)
+
+    def _summarize_armed(self) -> bool:
+        return (
+            self.config.max_context_tokens is not None
+            and self.config.context_watermark is not None
+            and self.config.summarize_policy is not None
+        )
+
+    def _maybe_summarize(
+        self, turn: int, system_prompt: str, messages: list[Message]
+    ) -> TerminationDecision | None:
+        """Rewrite ``_wire_messages`` when the previous turn crossed the watermark.
+
+        Returns a :class:`TerminationDecision` when summarize was fired and
+        failed loud (empty recap, or the summarize call itself raised
+        :class:`~litellm.exceptions.ContextWindowExceededError`). Returns
+        ``None`` when summarize was not armed, when the watermark was not
+        crossed, or when summarize succeeded and the loop should continue.
+        """
+        if not self._summarize_armed():
+            return None
+        last = self.metrics.last_prompt_tokens
+        if last is None:
+            return None
+        watermark = self.config.context_watermark
+        max_ctx = self.config.max_context_tokens
+        if last + watermark < max_ctx:
+            return None
+        return self._perform_summarize(
+            turn=turn,
+            system_prompt=system_prompt,
+            messages=messages,
+            trigger=(
+                f"pre-turn watermark (prev prompt_tokens={last}, watermark={watermark}, "
+                f"max_context={max_ctx})"
+            ),
+        )
+
+    def _maybe_reactive_summarize(
+        self, turn: int, system_prompt: str, messages: list[Message]
+    ) -> TerminationDecision | None:
+        """Summarize in response to a raised
+        :class:`~litellm.exceptions.ContextWindowExceededError`.
+
+        Returns a :class:`TerminationDecision` on loud-fail, or ``None`` when
+        the caller should retry ``_generate`` once inline. Returns ``None``
+        with no side effect when summarize is not armed — the caller
+        propagates the exception so the classifier handles it.
+        """
+        if not self._summarize_armed():
+            return None
+        return self._perform_summarize(
+            turn=turn,
+            system_prompt=system_prompt,
+            messages=messages,
+            trigger="reactive context_window_exceeded",
+        )
+
+    def _perform_summarize(
+        self,
+        *,
+        turn: int,
+        system_prompt: str,
+        messages: list[Message],
+        trigger: str,
+    ) -> TerminationDecision | None:
+        assert self.config.summarize_policy is not None  # gated by _summarize_armed
+        policy = self.config.summarize_policy
+        self.logger.info("Summarizing wire history", turn=turn, trigger=trigger)
+        try:
+            recap = policy.summarize(system_prompt, list(messages))
+        except litellm.exceptions.ContextWindowExceededError as exc:
+            return TerminationDecision(
+                reason=TerminationReason.CONTEXT_WINDOW_EXCEEDED,
+                system_message=(
+                    "Summarize call itself exceeded the context window "
+                    f"({trigger}): {exc}. Dialogue terminated."
+                ),
+                status=TrialStatus.FAILED,
+            )
+        except SummarizerFailedError as exc:
+            return TerminationDecision(
+                reason=TerminationReason.CONTEXT_WINDOW_EXCEEDED,
+                system_message=(
+                    f"Summarize policy produced no recap ({trigger}): {exc}. Dialogue terminated."
+                ),
+                status=TrialStatus.FAILED,
+            )
+        first_user_message = self._wire_messages[0]
+        self._wire_messages = [
+            first_user_message,
+            Message(role=MessageRole.USER, content=recap, ts=_now()),
+        ]
+        marker = self._system_message(
+            f"Context summarized before turn {turn} ({trigger}); wire history reset."
+        )
+        self._wire_messages.append(marker)
+        messages.append(marker)
+        return None
 
     def _assign_call_ids(self, result: GenerationResult) -> None:
         """Give every parsed call the episode-unique id, before anything reads it.
@@ -393,13 +768,13 @@ class ToolCallingLoop:
             assigned.append(call.model_copy(update={"id": key}))
         result.tool_calls = assigned
 
-    def _generate(self, turn: int, system_prompt: str, messages: list[Message]) -> GenerationResult:
+    def _generate(self, turn: int, system_prompt: str) -> GenerationResult:
         self.logger.debug("Requesting agent response", turn=turn)
         if self.request_limiter is not None:
             self.request_limiter.acquire()
         return self.llm_client.generate(
             system=system_prompt,
-            messages=messages,
+            messages=self._wire_messages,
             tools=self.tool_schemas,
             tool_choice="auto",
             observation=self.call_observation,
@@ -418,18 +793,26 @@ class ToolCallingLoop:
 
         outcome = self.user_turn(messages)
         if outcome.termination is not None:
-            messages.append(self._system_message(outcome.termination.system_message))
+            self._append_both(messages, self._system_message(outcome.termination.system_message))
             return outcome.termination.status, outcome.termination.reason, True
 
         if outcome.message is not None:
-            messages.append(outcome.message)
+            self._append_both(messages, outcome.message)
         return None, None, False
 
     def _execute_tool_calls(self, result: GenerationResult, messages: list[Message]) -> None:
         for tc in result.tool_calls:
             self._maybe_recover_arguments(tc, result.text)
             tool_start = time.time()
-            tool_result = self.tool_executor.execute(tc.name, tc.arguments, call_id=tc.id)
+            if self.validation_schemas_by_tool is None:
+                tool_result = self.tool_executor.execute(tc.name, tc.arguments, call_id=tc.id)
+            else:
+                tool_result = self.tool_executor.execute(
+                    tc.name,
+                    tc.arguments,
+                    call_id=tc.id,
+                    validation_schema=self.validation_schemas_by_tool.get(tc.name),
+                )
             tool_duration = time.time() - tool_start
             self.metrics.record_tool_call()
 
@@ -451,19 +834,47 @@ class ToolCallingLoop:
             else:
                 self.logger.warning("Tool execution failed", tool=tc.name, error=tool_result.error)
 
-            messages.append(
+            raw_content = (
+                tool_result.output
+                if tool_result.success
+                else f"Error: {resolve_tool_output(tool_result)}"
+            )
+            content = self._cap_tool_message_content(tc.name, raw_content)
+
+            self._append_both(
+                messages,
                 Message(
                     role=MessageRole.TOOL,
-                    content=(
-                        tool_result.output
-                        if tool_result.success
-                        else f"Error: {resolve_tool_output(tool_result)}"
-                    ),
+                    content=content,
                     content_blocks=(tool_result.content_blocks if tool_result.success else None),
                     tool_call_id=tc.id,
                     ts=_now(),
-                )
+                ),
             )
+
+    def _cap_tool_message_content(self, tool_name: str, raw: str) -> str:
+        """Apply the loop's tool-output cap to a ``role=tool`` message content.
+
+        Runs :func:`keep_head_and_tail` when
+        :attr:`LoopConfig.tool_output_max_chars` is set; a ``None`` cap threads
+        the content verbatim. The recorder read at
+        :meth:`_execute_tool_calls` runs earlier against the untruncated tool
+        result, so the trial's ordered record and the grader inputs are
+        unaffected by the cap.
+        """
+        cap = self.config.tool_output_max_chars
+        if cap is None:
+            return raw
+        capped, omitted = keep_head_and_tail(raw, cap)
+        if omitted:
+            self.logger.info(
+                "Capped tool output before append",
+                tool=tool_name,
+                cap_chars=cap,
+                omitted_chars=omitted,
+                original_chars=len(raw),
+            )
+        return capped
 
     def _maybe_recover_arguments(self, tc: Any, assistant_text: str) -> None:
         if self.normalize_tool_arguments is None:
@@ -531,3 +942,24 @@ class ToolCallingLoop:
     @staticmethod
     def _system_message(content: str) -> Message:
         return Message(role=MessageRole.SYSTEM, content=content, ts=_now())
+
+    @staticmethod
+    def _format_parser_error_feedback(errors: tuple[ParserError, ...]) -> str:
+        """Render the ``role=user`` feedback body for the parser-error retry.
+
+        Lists every failing tool_call so a multi-error response does not
+        silently drop one of the parse failures — the model would otherwise
+        re-emit whichever one it did not see. Kept as a static method so a
+        unit test can call it directly with a synthesised
+        :class:`ParserError` tuple.
+        """
+        lines = [
+            "The previous response had tool_call argument parse errors and could not be executed:"
+        ]
+        for e in errors:
+            lines.append(f"- tool={e.tool_name!r}: {e.reason}. Raw arguments: {e.raw_arguments!r}")
+        lines.append(
+            "Please fix these issues and provide valid JSON arguments "
+            "for each tool call, then try again."
+        )
+        return "\n".join(lines)

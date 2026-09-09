@@ -404,9 +404,20 @@ class FailureRecord(BaseModel):
 
     ``evidence`` stays as a list of dicts; the entries are heterogeneous
     (`kind` acts as a tag — ``tool_log`` / ``state_diff`` /
-    ``termination_reason`` / …) and locking the union here would
-    over-constrain the classifier. A future ticket can promote each
-    ``kind`` to its own model.
+    ``termination_reason`` / ``synthesized_grade`` / …) and locking the
+    union here would over-constrain the classifier. A future ticket can
+    promote each ``kind`` to its own model.
+
+    ``synthesized`` + ``synthesized_by_termination_reason`` name the
+    harness auto-fail branches of :class:`~tolokaforge.core.trial_grader.TrialGrader`:
+    a trial whose grade was fabricated by the harness (no evaluator ran
+    on it — ``ERROR`` / ``TIMEOUT`` / ``STUCK_DETECTED`` /
+    ``EMPTY_COMPLETION``) carries ``synthesized: true`` and the reason
+    name, and the record's ``failure_class`` is ``harness_autofail``
+    when the synth reason is not otherwise enumerated in
+    :func:`~tolokaforge.core.failure_attribution.attribute_failure`.
+    Present-but-null off the synth path so a downstream consumer can
+    read ``record["synthesized"]`` unconditionally.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -428,6 +439,12 @@ class FailureRecord(BaseModel):
     deterministic: bool
     confidence: float
     evidence: list[dict[str, Any]] = Field(default_factory=list)
+    # Whether the grade was harness-synthesised on an auto-fail branch (no
+    # evaluator ran). Additive-with-default so a bundle written before this
+    # field existed round-trips as ``synthesized: false``,
+    # ``synthesized_by_termination_reason: None``.
+    synthesized: bool = False
+    synthesized_by_termination_reason: str | None = None
 
 
 class FailureSummary(BaseModel):

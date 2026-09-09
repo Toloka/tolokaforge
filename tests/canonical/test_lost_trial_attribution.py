@@ -36,6 +36,7 @@ from tolokaforge.core.grading.trace_timeline import (
     build_trial_timeline,
 )
 from tolokaforge.core.llm import GenerationResult
+from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.loop import TerminationDecision, classify_loop_error
 from tolokaforge.core.metrics import calculate_task_metrics
@@ -77,6 +78,7 @@ class _CallingAgent:
 
     def __init__(self) -> None:
         self._turns = count(1)
+        self.capabilities = ModelCapabilities()
 
     def generate(self, system, messages, tools, tool_choice="auto", observation=None):
         return GenerationResult(
@@ -89,6 +91,9 @@ class _CallingAgent:
 
     def classify_loop_error(self, exc: Exception) -> TerminationDecision:
         return classify_loop_error(exc, ())
+
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
+        return {}
 
 
 def _calling_simulator() -> MagicMock:

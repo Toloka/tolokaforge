@@ -1,29 +1,31 @@
 """``composite.grade_custom_checks`` — end-to-end tuple parity lock.
 
 The composite owns ``custom_checks`` end-to-end (config normalisation,
-artifacts-dir gating, degrade-to-empty on DB failure, executor drive,
-wire-result wrapping). This suite constructs an
+artifacts-dir gating, degrade-to-empty on DB failure, executor drive) and
+returns ``(score, list[CheckResult], reason)``. This suite constructs an
 :class:`InProcessGradingSubstrate` over a hand-built ``{initial_tables,
 final_tables}`` pair, drives :func:`composite.grade_custom_checks` against
 a fixture pack whose ``checks.py`` decides ``passed`` / ``failed`` /
-``skipped`` on the trial's evidence, and asserts the returned
-``(score, wire_results, reason)`` tuple is the byte-for-byte expected
-value for the same evidence.
+``skipped`` on the trial's evidence, and asserts the returned tuple is the
+byte-for-byte expected value for the same evidence. Projection to
+``pb2.CustomCheckResult`` for the wire happens runner-side in
+:func:`tolokaforge.runner.grading.project_check_result_to_runner_wire`.
 
 The four shapes :func:`composite.grade_custom_checks` returns:
 
 - **disabled** — the pack declared ``enabled: false`` (or no block). The
   tuple is ``(-1.0, [], None)`` — no suite to describe.
 - **verdicts** — the executor ran and every check reached
-  ``passed`` / ``failed``. Score is ``CheckResultSet.aggregate_score``, wire
-  entries mirror the results, and ``reasons`` renders per
-  :func:`custom_checks_reason`.
+  ``passed`` / ``failed``. Score is ``CheckResultSet.aggregate_score``, the
+  results list mirrors :attr:`CheckResultSet.results`, and ``reasons``
+  renders per :func:`custom_checks_reason`.
 - **all-skipped** — the executor ran and every check skipped. Score is
-  ``-1.0`` (the ``decided_something`` gate); the wire keeps the skip
-  entries for audit.
+  ``-1.0`` (the ``decided_something`` gate); the results list keeps the
+  skip entries for audit.
 - **missing-artifacts** — ``enabled: true`` but no ``checks.py`` delivered.
-  Score follows ``fail_on_error``; wire carries one ``__executor__``
-  sentinel; ``reasons`` opens with the ``failed to run`` sentence.
+  Score follows ``fail_on_error``; the results list carries one
+  ``__executor__`` sentinel; ``reasons`` opens with the ``failed to run``
+  sentence.
 """
 
 from __future__ import annotations
@@ -130,17 +132,17 @@ def _write_checks(tmp_path: Path, body: str) -> Path:
 
 
 class TestGradeCustomChecksTupleParity:
-    """Every ``(score, wire_results, reason)`` tuple the composite emits
-    matches the runner's shipped output for the same evidence.
+    """Every ``(score, list[CheckResult], reason)`` tuple the composite
+    emits matches the shipped output for the same evidence.
     """
 
-    def test_verdicts_return_scored_tuple_with_per_check_wire(self, tmp_path: Path) -> None:
+    def test_verdicts_return_scored_tuple_with_per_check_result(self, tmp_path: Path) -> None:
         artifacts_dir = _write_checks(tmp_path, _CHECKS_PY)
         final_state = {
             "orders": [{"id": "o1", "status": "shipped"}],
             "users": [{"id": "u1", "name": "Alice"}],
         }
-        score, wire, reason = composite.grade_custom_checks(
+        score, results, reason = composite.grade_custom_checks(
             trial_id="reconcile:0",
             config={"enabled": True, "file": "checks.py", "interface_version": "1.0"},
             substrate=_substrate(final_tables=final_state),
@@ -151,8 +153,8 @@ class TestGradeCustomChecksTupleParity:
             logger=_logger(),
         )
         assert score == pytest.approx(1.0)
-        assert [entry.check_name for entry in wire] == ["orders_shipped", "user_named_alice"]
-        assert all(entry.status == "passed" for entry in wire)
+        assert [entry.check_name for entry in results] == ["orders_shipped", "user_named_alice"]
+        assert all(entry.status == "passed" for entry in results)
         assert reason is not None
         assert reason == "Custom checks: score=1.00, all 2 checks passed"
 
@@ -162,7 +164,7 @@ class TestGradeCustomChecksTupleParity:
             "orders": [{"id": "o1", "status": "pending"}],
             "users": [{"id": "u1", "name": "Alice"}],
         }
-        score, wire, reason = composite.grade_custom_checks(
+        score, results, reason = composite.grade_custom_checks(
             trial_id="reconcile:0",
             config={"enabled": True, "file": "checks.py", "interface_version": "1.0"},
             substrate=_substrate(final_tables=final_state),
@@ -173,7 +175,7 @@ class TestGradeCustomChecksTupleParity:
             logger=_logger(),
         )
         assert score == pytest.approx(0.5)
-        by_name = {entry.check_name: entry for entry in wire}
+        by_name = {entry.check_name: entry for entry in results}
         assert by_name["orders_shipped"].status == "failed"
         assert by_name["user_named_alice"].status == "passed"
         assert reason is not None
@@ -182,7 +184,7 @@ class TestGradeCustomChecksTupleParity:
 
     def test_all_skipped_returns_not_evaluated_sentinel(self, tmp_path: Path) -> None:
         artifacts_dir = _write_checks(tmp_path, _ALL_SKIP_CHECKS_PY)
-        score, wire, reason = composite.grade_custom_checks(
+        score, results, reason = composite.grade_custom_checks(
             trial_id="reconcile:0",
             config={"enabled": True, "file": "checks.py", "interface_version": "1.0"},
             substrate=_substrate(),
@@ -193,11 +195,11 @@ class TestGradeCustomChecksTupleParity:
             logger=_logger(),
         )
         assert score == -1.0
-        assert [entry.status for entry in wire] == ["skipped", "skipped"]
+        assert [entry.status for entry in results] == ["skipped", "skipped"]
         assert reason == "Custom checks: no check reached a verdict — all 2 skipped"
 
     def test_disabled_config_short_circuits_to_none_tuple(self) -> None:
-        score, wire, reason = composite.grade_custom_checks(
+        score, results, reason = composite.grade_custom_checks(
             trial_id="reconcile:0",
             config={"enabled": False, "file": "checks.py"},
             substrate=_substrate(),
@@ -207,10 +209,10 @@ class TestGradeCustomChecksTupleParity:
             check_executor=CheckRunner(),
             logger=_logger(),
         )
-        assert (score, wire, reason) == (-1.0, [], None)
+        assert (score, results, reason) == (-1.0, [], None)
 
     def test_missing_artifacts_dir_emits_zero_sentinel_under_fail_on_error(self) -> None:
-        score, wire, reason = composite.grade_custom_checks(
+        score, results, reason = composite.grade_custom_checks(
             trial_id="reconcile:0",
             config={
                 "enabled": True,
@@ -226,9 +228,9 @@ class TestGradeCustomChecksTupleParity:
             logger=_logger(),
         )
         assert score == 0.0
-        assert len(wire) == 1
-        assert wire[0].check_name == "__executor__"
-        assert wire[0].status == "error"
-        assert "no artifacts_dir" in wire[0].message
+        assert len(results) == 1
+        assert results[0].check_name == "__executor__"
+        assert results[0].status == "error"
+        assert "no artifacts_dir" in results[0].message
         assert reason is not None
         assert reason.startswith("Custom checks: the suite failed to run —")

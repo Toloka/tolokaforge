@@ -6,8 +6,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
+from tolokaforge.adapters._task_loader import GradingSource, GradingSourceKind
 from tolokaforge.core.grading.config_validation import (
     CombineLayer,
     HashSourceLayer,
@@ -19,7 +20,6 @@ from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Grade, GradingConfig, TaskConfig, Trajectory
 
 if TYPE_CHECKING:
-    from tolokaforge.core.agent_driver import StagedTask
     from tolokaforge.tools.registry import Tool
 
 logger = get_logger(__name__)
@@ -381,6 +381,33 @@ class BaseAdapter(ABC):
         """
         return SeededTablesLayer.unresolvable()
 
+    @classmethod
+    def grading_source(cls, task: TaskConfig, task_dir: Path) -> GradingSource:
+        """The grading block one run of *task* reads, resolved against this adapter.
+
+        The honest default: an :attr:`~GradingSourceKind.UNINTERROGABLE` source
+        with no path and a sentence saying the adapter has not declared where
+        its grading block comes from. An adapter that grades from a file the
+        task names (native) overrides to answer :attr:`~GradingSourceKind.ON_DISK`
+        with the resolved path; an adapter that grades from a source the pack
+        does not carry (external) leaves the default in place and pronounces on
+        the absence through its own registered kind.
+
+        A classmethod, matching the sibling readers: the fact reported here is
+        a function of *task* and *task_dir* alone (no instance state), so the
+        static ``tolokaforge validate`` gate reaches the source through the
+        same dispatch helper. The dispatch helper
+        (:func:`~tolokaforge.adapters._task_loader.grading_source_under_adapter`)
+        rewrites the sentence for the UNINTERROGABLE default so the caller
+        reads which registered adapter answered — the registry key is not on
+        the class, and the ``unchecked`` channel needs it. See ADR-0042.
+        """
+        return GradingSource(
+            kind=GradingSourceKind.UNINTERROGABLE,
+            path=None,
+            reason="adapter has not declared its grading source",
+        )
+
     @abstractmethod
     def get_task_ids(self) -> list[str]:
         """
@@ -535,6 +562,49 @@ class BaseAdapter(ABC):
     # keeps runner-owned RPC grading.
     trial_grader_name: str = "runner_rpc"
 
+    requires_docker_cli_in_runner: ClassVar[bool] = False
+    """The runner needs the host Docker CLI to grade this adapter's trials.
+
+    Adapters whose grading runs commands against Docker daemons (build/exec)
+    flip this to ``True``; the harness reads the flag to decide whether the
+    runner stack must carry a Docker socket bind.
+    """
+
+    grades_from_task_grading_file: ClassVar[bool] = False
+    """This adapter grades from the ``grading:`` block the task names on disk.
+
+    Native-shaped adapters flip this to ``True``; external adapters that
+    synthesise grading config from their own fixtures leave it ``False``. The
+    ``grading:`` presence gate reads the flag to decide whether an absent
+    block is a refusal or an unchecked pronouncement.
+    """
+
+    syncs_adapter_env_to_state: ClassVar[bool] = False
+    """The conductor should sync :class:`AdapterEnvironment` into runner state.
+
+    Adapters whose environment holds runtime facts the runner reads back into
+    ``TrialState`` (Tau-family) flip this to ``True``; adapters whose runner
+    owns the state end-to-end leave it ``False``.
+    """
+
+    def emit_runner_grading_payload(self, task_id: str) -> dict[str, Any]:
+        """The payload this adapter emits for ``RunnerGradingConfig`` construction.
+
+        Default: empty — the runner falls through to the historical dispatch.
+        Adapters that grade by their own registered kind (``test_execution``,
+        ``preference_pair``, …) override to return the payload their grader
+        reads at trial time.
+        """
+        return {}
+
+    def preferred_grader_kind(self) -> str:
+        """The registered ``tolokaforge.grader_kinds`` key this adapter prefers.
+
+        Default: ``composite``, the shipped default kind. Adapters shipping
+        their own kind override to return its registered name.
+        """
+        return "composite"
+
     def docker_stack_requirements(self) -> DockerStackRequirements:
         """Declare extra Docker stack needs for this adapter.
 
@@ -543,24 +613,6 @@ class BaseAdapter(ABC):
         a Docker socket, or a DinD sidecar override this.
         """
         return DockerStackRequirements()
-
-    def stage_task(self, task_id: str) -> "StagedTask | None":
-        """Return the per-task staging root a driver can layer onto.
-
-        Adapters that ship container-based tasks (a per-task compose file
-        + pack directory) override this to materialise a staging dir with
-        a synthesised compose file the driver can rewrite in place. See
-        :class:`~tolokaforge.core.agent_driver.StagedTask` for the fields
-        the driver reads.
-
-        The default returns ``None`` — this adapter has no container a
-        driver can target. The orchestrator refuses a run whose driver
-        needs staging (see
-        :meth:`~tolokaforge.core.agent_driver.AgentDriver.needs_container_stage`)
-        against an adapter that does not stage.
-        """
-        del task_id
-        return None
 
     def fingerprint(self) -> dict[str, Any] | None:
         """What this adapter reports about the resolved inputs it ran on.

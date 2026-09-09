@@ -1,21 +1,43 @@
-"""Client-side pre-flight refusal for hash-enabled tasks on ``grader_rpc``.
+"""Hash-family refusals — client-side pre-flight and runner-side broken-replay.
 
-Hash grading depends on the runner's substrate reset / replay path — the
-``LiveRunnerCallbackGradingSubstrate`` the grader-side dispatcher builds
-is read-only and cannot back it. Both grader-side transports
-(:class:`GraderRPCTrialGrader` and :class:`QueueTrialGrader`) refuse a
-hash-enabled trial at the client so the misconfiguration surfaces
-without a gRPC round-trip and the error names the operator's
-actionable branch (``grader: runner_rpc`` or ``hash_enabled: false``).
+Hash grading has two failure surfaces the runner and the grader-side transports
+must both surface fail-loud rather than by fabricating a score:
+
+- **Client-side pre-flight** — ``grader_rpc`` and ``queue`` cannot back
+  hash grading (the ``LiveRunnerCallbackGradingSubstrate`` the grader-side
+  dispatcher builds is read-only), so :class:`GraderRPCTrialGrader` and
+  :class:`QueueTrialGrader` refuse a hash-enabled trial at the client before
+  any gRPC round-trip. The error names the operator's actionable branch
+  (``grader: runner_rpc`` or ``hash_enabled: false``).
+
+- **Runner-side broken replay** — ``runner_rpc`` executes hash grading over
+  the runner's substrate, and a per-action failure during golden replay leaves
+  ``golden_replay.failures`` non-empty. :attr:`HashGradingResult.hash_unscorable`
+  reads ``True``, the runner call site keeps ``components.hash_score`` at the
+  ``-1.0`` not-evaluated sentinel, and the fold's declared-but-unscored refusal
+  fires downstream: ``GradeTrial`` returns ``success=False`` naming the missing
+  ``state_checks`` component.
 """
 
 from __future__ import annotations
 
+import json
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from tests.canonical._factories import make_task_description, make_trajectory, make_trial_spec
+from tests.utils.runner_requests import (
+    register_request,
+    simple_task_description,
+    trial_spec_json,
+)
+from tolokaforge.core.grading.golden_replay import (
+    FailedGoldenAction,
+    GoldenActionFailure,
+    GoldenReplayRecord,
+)
 from tolokaforge.core.models import TrialStatus
 from tolokaforge.core.trial_grader import (
     GraderRPCTrialGrader,
@@ -23,7 +45,13 @@ from tolokaforge.core.trial_grader import (
     QueueTrialGrader,
 )
 from tolokaforge.grader.queue import InMemoryGradeBroker
-from tolokaforge.runner.models import RunnerGradingConfig, RunnerStateChecksConfig
+from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner.models import (
+    HashComparisonBasis,
+    HashGradingResult,
+    RunnerGradingConfig,
+    RunnerStateChecksConfig,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -127,3 +155,66 @@ class TestMissingSubstrateAddressIsRefused:
                 make_trajectory(status=TrialStatus.COMPLETED),
                 "sys",
             )
+
+
+class TestRunnerRPCGoldenReplayRefusal:
+    """The runner's own ``GradeTrial`` refuses a hash-enabled trial whose golden replay
+    left the trial's state hashable against a world no author asked for.
+
+    A per-action failure during replay populates ``golden_replay.failures``;
+    :attr:`HashGradingResult.hash_unscorable` reads ``True`` and the runner keeps
+    ``components.hash_score`` at the ``-1.0`` not-evaluated sentinel. The fold's
+    declared-but-unscored refusal fires downstream because ``state_checks`` is in
+    the config's requested set but the component slot is empty — ``GradeTrial``
+    returns ``success=False`` naming the missing component.
+    """
+
+    def test_hash_enabled_task_refuses_when_golden_replay_errors(
+        self, runner_service, mock_grpc_context
+    ) -> None:
+        trial_id = "hash_replay_errors:0"
+
+        registration = register_request(
+            trial_spec_json(simple_task_description(), trial_id=trial_id),
+            trial_id=trial_id,
+        )
+        register_response = runner_service.RegisterTrial(registration, mock_grpc_context)
+        assert register_response.success is True
+
+        broken_result = HashGradingResult(
+            hash_match=False,
+            basis=HashComparisonBasis.GOLDEN_REPLAY,
+            golden_replay=GoldenReplayRecord(
+                authored=1,
+                failures=(
+                    FailedGoldenAction(
+                        index=0,
+                        name="create_order",
+                        kind=GoldenActionFailure.RAISED,
+                        error="RuntimeError: substrate lost mid-replay",
+                    ),
+                ),
+            ),
+        )
+
+        async def _stubbed_hash_grading(
+            _trial_id: str,
+            _trial_context: Any,
+            _state_checks: Any,
+        ) -> HashGradingResult:
+            return broken_result
+
+        runner_service._execute_hash_grading = _stubbed_hash_grading  # type: ignore[method-assign]
+
+        grade_request = pb2.GradeTrialRequest(
+            trial_id=trial_id,
+            llm_messages_json=json.dumps(
+                [{"role": "assistant", "content": "attempted to create the order"}]
+            ),
+        )
+        response = runner_service.GradeTrial(grade_request, mock_grpc_context)
+
+        error = response.error
+        grade = response.grade
+        assert response.success is False, f"broken replay must refuse; got grade={grade}"
+        assert "state_checks" in error, f"refusal must name the component: {error!r}"

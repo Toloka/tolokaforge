@@ -61,9 +61,11 @@
     "tags": []
   },
   "name": "echo-hello",
-  "policies": {},
+  "policies": {
+    "agent_system_prompt": "You are an expert developer working inside a Linux container. Use the bash tool to execute commands. Fix the issues described in the user message."
+  },
   "stuck_heuristics": null,
-  "system_prompt": "__adapter__",
+  "system_prompt": null,
   "task_id": "echo-hello",
   "timeouts": null,
   "tools": {

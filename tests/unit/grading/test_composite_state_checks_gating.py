@@ -97,11 +97,16 @@ class TestGatingByConfigShape:
     """(a) path-glob-only, (b) DB-only, (c) filesystem-only-`path:` — each
     reads only the substrate slots the pack's assertions address."""
 
-    def test_a_path_glob_only_pack_touches_neither_db_nor_filesystem(self, tmp_path) -> None:
+    def test_a_path_glob_only_pack_fires_filesystem_once_and_not_db(self, tmp_path) -> None:
+        """path_glob checks now route through ``substrate.filesystem_state()``
+        so a grader consuming the substrate from outside the runner container
+        (LIVE-callback, snapshot) sees the files. The runner-side path with
+        the raw ``glob.glob('/work/...')`` fallback still works when
+        ``filesystem_state`` is empty. Closes #1517."""
         target = tmp_path / "output.txt"
         target.write_text("done", encoding="utf-8")
         stable_factory = _Counter("stable")
-        fs_factory = _Counter("filesystem")
+        fs_factory = _Counter("filesystem", {})  # non-None value so it may fire
         raw_factory = _Counter("raw")
         substrate = InProcessGradingSubstrate(
             db_reader=MagicMock(),
@@ -123,7 +128,7 @@ class TestGatingByConfigShape:
         )
         _run(config=config, substrate=substrate)
         assert stable_factory.calls == 0
-        assert fs_factory.calls == 0
+        assert fs_factory.calls == 1
         assert raw_factory.calls == 0
 
     def test_b_db_addressing_only_pack_fires_stable_once_and_not_raw(self) -> None:

@@ -6,6 +6,22 @@ its release cadence is orthogonal to the `tolokaforge` engine wheel's own
 `vX.Y.Z` tag axis. See
 [`docs/RELEASING.md`](https://github.com/Toloka/tolokaforge/blob/main/docs/RELEASING.md#pypi-package--tolokaforge-models-models-vxyz-automated).
 
+## models-v1.5.0 (2026-09-07)
+
+### Feat
+
+- **grading**: Grader v3 — detached mode, typed grader kinds, adapter grading contract (Milestone #39) (#1490)
+- **grading**: engine-eval-hardening — hash/diff parity + schema-executor parity + bundle-native judge replay (M#43) (#1481)
+- **grading**: engine-eval-repin-blockers — widened fail-loud contract (M#42) (#1471)
+
+### Fix
+
+- **grader-v3**: carry tolokaforge.grading_methods + grader_kinds into the runner-subset wheel (#1527)
+- **runtime**: composition-plan integration-test rewiring + Bucket B (#1423 follow-up, closes #335) (#1488)
+- **grading**: surrogate-id-aware row pairing on _records_might_match (#1483)
+- **tests**: unstick pre-existing test-smoke failures on main (#1475)
+- **orchestrator**: user-simulator config fails loud instead of silent Anthropic fallback (#1451)
+
 ## models-v1.4.0 (2026-09-02)
 
 ### Feat

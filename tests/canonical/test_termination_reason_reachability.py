@@ -39,7 +39,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from litellm.exceptions import RateLimitError
+from litellm.exceptions import ContextWindowExceededError, RateLimitError
 
 from tests.canonical._factories import make_task_config, make_trajectory, make_trial_spec
 from tests.canonical.test_lost_trial_attribution import drive_lost_trial
@@ -49,6 +49,7 @@ from tolokaforge.core.failure_attribution import (
     TrialOutcomeClass,
     classify_trial_outcome,
 )
+from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.client import (
     GenerationResult,
     LLMApiTimeoutError,
@@ -139,6 +140,7 @@ class _ScriptedAgent:
 
     def __init__(self, *items: GenerationResult | Exception) -> None:
         self._items = list(items)
+        self.capabilities = ModelCapabilities()
 
     def generate(
         self,
@@ -155,6 +157,9 @@ class _ScriptedAgent:
 
     def classify_loop_error(self, exc: Exception) -> TerminationDecision:
         return classify_loop_error(exc, ())
+
+    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
+        return {}
 
 
 def _text(body: str) -> GenerationResult:
@@ -225,6 +230,8 @@ def observed_outcomes() -> frozenset[tuple[TrialStatus, TerminationReason]]:
         _run_trial(_wrapped_rate_limit()),
         _run_trial(RuntimeError("OpenAI returned 500")),
         _run_trial(RuntimeError("something the classifier cannot name")),
+        _run_trial(GenerationResult(text="", tool_calls=[], usage=Usage(prompt_tokens=1))),
+        _run_trial(ContextWindowExceededError("input too large", "anthropic/claude", "anthropic")),
         _provision_failure_trajectory(),
         drive_lost_trial()[0],
     ]

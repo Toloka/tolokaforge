@@ -261,6 +261,9 @@ examples/             # Reference task layouts with runnable run_config.yaml
 | Coding-harness mode (vendor CLIs) | [docs/CODING_HARNESSES.md](docs/CODING_HARNESSES.md) |
 | Running terminal-bench (harness + engine loop) | [docs/RUNNING_TERMINAL_BENCH.md](docs/RUNNING_TERMINAL_BENCH.md) |
 | Adapter architecture | [docs/ADAPTER_ARCHITECTURE.md](docs/ADAPTER_ARCHITECTURE.md) |
+| Adapter interface reference | [docs/ADAPTER_INTERFACE.md](docs/ADAPTER_INTERFACE.md) |
+| Authoring an adapter (third-party package walkthrough) | [docs/AUTHORING_AN_ADAPTER.md](docs/AUTHORING_AN_ADAPTER.md) |
+| Native adapter deep reference | [docs/NATIVE_ADAPTER.md](docs/NATIVE_ADAPTER.md) |
 | Analytics & failure attribution | [docs/ANALYTICS.md](docs/ANALYTICS.md) |
 | Python package API | [docs/PYTHON_PACKAGE.md](docs/PYTHON_PACKAGE.md) |
 | Task packs | [docs/TASK_PACKS.md](docs/TASK_PACKS.md) |

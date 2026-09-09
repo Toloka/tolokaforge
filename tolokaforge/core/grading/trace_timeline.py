@@ -36,6 +36,10 @@ from typing import Any
 # own it: ``runner.models`` declares ``TraceMatcher`` and reaching in here for the
 # kind would close a cycle through ``core.models``.
 from tolokaforge.core.grading.trace_event_kind import TraceEventKind as TraceEventKind
+from tolokaforge.core.grading.transcript_wire import (
+    decode_transcript_wire,
+    split_leading_system_message,
+)
 from tolokaforge.core.models import (
     Message,
     MessageRole,
@@ -55,6 +59,7 @@ __all__ = [
     "TrialTimeline",
     "assistant_texts",
     "attempted_calls",
+    "build_timeline_from_wire",
     "build_trial_timeline",
 ]
 
@@ -214,6 +219,40 @@ def build_trial_timeline(
         message_view_present=bool(turns),
         records_present=bool(recorded_calls),
     )
+
+
+def build_timeline_from_wire(
+    llm_messages: list[dict[str, Any]],
+    recorded: Sequence[RecordedToolCall],
+    termination_reason: TerminationReason | None,
+) -> TrialTimeline:
+    """Build a :class:`TrialTimeline` from the wire's ``llm_messages`` plus optional records.
+
+    Both grading substrates reach the timeline through the same recipe: split
+    the leading ``role: system`` message off the wire, decode the remaining
+    transcript into :class:`Message` objects, and join it with any tool-call
+    records the caller can offer. The message view is the only view the wire
+    carries; the runner supplies records from its live ``trial_context``, and
+    the grader — which has no live view of the trial by the time it grades —
+    supplies an empty sequence.
+
+    An empty ``llm_messages`` short-circuits to a records-only timeline
+    (``build_trial_timeline([], recorded, termination_reason)``) rather than
+    running the transcript decode over nothing. A records-empty, message-empty
+    call reconciles without raising and returns an events-empty timeline; that
+    is the grader-side preflight shape locked by
+    ``tests/canonical/test_grader_timeline_from_wire_alone.py``.
+
+    Raises:
+        TimelineInconsistencyError: the message view and the record view cannot
+            be joined (propagates from :func:`build_trial_timeline`). The caller
+            translates this to a ``GradingFailedError`` per
+            ``docs/GRADING.md`` § "Trial event timeline".
+    """
+    if not llm_messages:
+        return build_trial_timeline([], recorded, termination_reason)
+    _, transcript = split_leading_system_message(llm_messages)
+    return build_trial_timeline(decode_transcript_wire(transcript), recorded, termination_reason)
 
 
 def assistant_texts(timeline: TrialTimeline) -> tuple[str, ...]:
