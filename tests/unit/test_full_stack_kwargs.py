@@ -233,11 +233,14 @@ def test_full_stack_rag_service_pins_build_context():
     stack = full_stack()
     rag_service = stack.services.get("rag-service")
     assert rag_service is not None
-    ctx = set(rag_service.context_files)
-    wheel_entries = {e for e in ctx if e.endswith(".whl")}
-    assert len(wheel_entries) == 1, f"expected one wheel entry, got {sorted(wheel_entries)}"
-    assert ctx - wheel_entries == {
-        "tolokaforge/env/rag_service/",
-        "tolokaforge_models/",
-        "tolokaforge_coding_harnesses/",
-    }
+    ctx = list(rag_service.context_files)
+    wheel_entries = [e for e in ctx if e.endswith(".whl")]
+    non_wheel_entries = sorted(e for e in ctx if not e.endswith(".whl"))
+    assert len(wheel_entries) == 1, f"expected exactly one wheel entry, got {wheel_entries}"
+    assert non_wheel_entries == sorted(
+        [
+            "tolokaforge/env/rag_service/",
+            "tolokaforge_models/",
+            "tolokaforge_coding_harnesses/",
+        ]
+    ), f"non-wheel context entries drifted: {non_wheel_entries}"

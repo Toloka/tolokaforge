@@ -87,9 +87,7 @@ class TestWidgetsIdFieldsCanon:
     declares the ordered-list form (``id_fields: {widgets: [line, slot]}``).
     The invariant that crosses to the runner is the shape of that value —
     a bare string for the single-key form, a JSON array for the composite
-    form. Asserted directly here rather than via a snapshot of the whole
-    ``GradingConfig`` dump; unrelated additions to the config schema
-    (e.g. new default fields) do not affect this test.
+    form.
     """
 
     def test_grading_config(self, native_adapter):
@@ -153,28 +151,18 @@ class TestNativeAdapterDomainCanon:
         assert actual == test_data_dir / "tasks" / "example_domain"
 
     def test_domain_layout_grading_config(self, native_adapter):
-        """The case-relative ``grading.yaml`` resolves to a valid
-        :class:`GradingConfig` via the domain-merge / path-rewrite pipeline.
+        """The case-relative ``grading.yaml`` loads as a valid
+        :class:`GradingConfig` via the domain-merge / path-rewrite pipeline,
+        with the case's own ``combine`` block surviving the merge.
 
-        The invariant is that the case can be loaded at all: if the merge
-        drops fields, the rewrite mis-resolves a path, or the schema
-        rejects the merged result, ``get_grading_config`` raises and this
-        fails clearly. Snapshotting the whole ``model_dump`` on top locked
-        every unrelated default field alongside — every future addition
-        of an optional default to :class:`GradingConfig` used to churn
-        this snapshot for no signal.
-
-        The load itself does the schema validation
-        (``GradingConfig.model_validate`` runs inside ``get_grading_config``);
-        we assert a couple of the case's own declared properties as a
-        smoke that the merged config is actually the case's config, not
-        an empty default.
+        A dropped ``combine`` field is the classic F3 (path-field coverage)
+        regression shape — the merge silently dropping a top-level block —
+        so it doubles as a smoke that the merged config is the case's,
+        not an empty default. Schema validity is checked implicitly by
+        ``GradingConfig.model_validate`` inside ``get_grading_config``:
+        a load-time failure raises before this test can assert anything.
         """
         grading = native_adapter.get_grading_config("example_domain_case_a")
-        assert grading is not None, "case-relative grading.yaml did not resolve"
-        # The example_domain_case_a fixture declares a combine block; a
-        # dropped combine field is the classic F3 (path-field coverage)
-        # regression shape.
         assert grading.combine is not None, "combine block did not survive the merge"
 
     def test_domain_layout_bundle_artifact_keys(self, native_adapter, canon_snapshot):
@@ -206,14 +194,9 @@ class TestShopOrders02Canon:
 
         snap.assert_match(task.model_dump(mode="json"), "task_config.json")
 
-    # ``test_grading_config`` intentionally omitted. The invariants that
-    # snapshot originally locked — combine weights, golden-action
-    # names+kwargs, jsonpath dicts, communicate_info sets, arithmetic
-    # consistency — are asserted semantically by
-    # ``TestShopOrders02SnapshotIntegrity`` below (test_grading_snapshot_
-    # mirrors_source, test_grading_arithmetic_consistency). A byte-equal
-    # dump of the whole GradingConfig on top adds only churn on unrelated
-    # schema evolution.
+    # Grading config coverage lives in ``TestShopOrders02SnapshotIntegrity``
+    # (below): ``test_grading_snapshot_mirrors_source`` +
+    # ``test_grading_arithmetic_consistency``.
 
     def test_tool_schemas(self, native_adapter, canon_snapshot):
         """Agent tool schemas: names, descriptions, and parameter JSON Schemas.
