@@ -73,7 +73,6 @@ from tolokaforge.core.grading.trace_timeline import (
 )
 from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcher
 from tolokaforge.core.hash import apply_compare_columns_extras, compute_stable_hash
-from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     CriterionResult,
     LLMJudgeConfig,
@@ -1387,10 +1386,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 else:
                     error_message = f"Tool '{tool_name}' not found. Did you mean: {hint}?"
                 logger.warning(
-                    "ExecuteTool: Tool not found",
-                    tool_name=tool_name,
-                    executor=executor.value,
-                    candidates=hint,
+                    "ExecuteTool: Tool not found: %s (%s). Candidates: %s",
+                    tool_name,
+                    executor.value,
+                    hint,
                 )
             else:
                 error_message = f"Tool '{tool_name}' not found"
@@ -1802,11 +1801,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # Reward-cat is a diagnostic read; the fallback bytes match the shell
             # ``|| echo 0.0`` path so the kind renders the same "0.0" reward.
             logger.warning(
-                "RunnerServiceImpl._run_test_suite_via_agent_tools: reward-cat raised; "
-                "falling back to b'0.0\\n'",
-                trial_id=trial_id,
-                error=str(exc),
-                error_type=type(exc).__name__,
+                "RunnerServiceImpl._run_test_suite_via_agent_tools: reward-cat raised "
+                "for trial %r: %s: %s; falling back to b'0.0\\n'",
+                trial_id,
+                type(exc).__name__,
+                exc,
             )
             reward_bytes = b"0.0\n"
 
@@ -2414,7 +2413,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             else True
         )
         judge_kind = load_judge_kind("single_shot_rubric")()
-        judge_logger = get_logger("rubric_judge")
+        from tolokaforge.core import logging as _tolokaforge_logging
+
+        judge_logger = _tolokaforge_logging.get_logger("rubric_judge")
 
         def _run() -> "JudgeResult":
             state_diff_text = composite.build_judge_state_diff(
