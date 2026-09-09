@@ -1387,10 +1387,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 else:
                     error_message = f"Tool '{tool_name}' not found. Did you mean: {hint}?"
                 logger.warning(
-                    "ExecuteTool: Tool not found: %s (%s). Candidates: %s",
-                    tool_name,
-                    executor.value,
-                    hint,
+                    "ExecuteTool: Tool not found",
+                    tool_name=tool_name,
+                    executor=executor.value,
+                    candidates=hint,
                 )
             else:
                 error_message = f"Tool '{tool_name}' not found"
@@ -1802,11 +1802,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # Reward-cat is a diagnostic read; the fallback bytes match the shell
             # ``|| echo 0.0`` path so the kind renders the same "0.0" reward.
             logger.warning(
-                "RunnerServiceImpl._run_test_suite_via_agent_tools: reward-cat raised "
-                "for trial %r: %s: %s; falling back to b'0.0\\n'",
-                trial_id,
-                type(exc).__name__,
-                exc,
+                "RunnerServiceImpl._run_test_suite_via_agent_tools: reward-cat raised; "
+                "falling back to b'0.0\\n'",
+                trial_id=trial_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
             )
             reward_bytes = b"0.0\n"
 
