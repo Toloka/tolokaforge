@@ -117,6 +117,21 @@ Everything in that skill applies except:
 
 Runs once the milestone has zero open issues (and every closed-as-completed issue has a `#<issue> →` line on the umbrella).
 
+0. **Follow-up milestone-routing check (guardrail).** Before touching the integration branch, verify every issue filed during this milestone run is either assigned to milestone M<N> or carries an explicit deferral. Run:
+
+    ```bash
+    # Every issue that references the integration branch or a per-issue branch in comments,
+    # OR was filed as a follow-up during the run, must satisfy one of:
+    #  (a) .milestone.number == <N>
+    #  (b) has label `deferred:M<N>` AND body contains a rationale line + cross-link to the source PR/milestone.
+    gh issue list --repo Toloka/tolokaforge --state all \
+        --search "created:>=<milestone-start-date> in:comments feat/<slug>" \
+        --json number,title,milestone,labels,body \
+        --jq '.[] | select(.milestone.number != <N> and ((.labels | map(.name) | index("deferred:M<N>")) | not))'
+    ```
+
+    Any row returned is a bookkeeping leak — an issue that surfaced during the milestone but never got routed. **Halt the consolidation** and surface the list to the user with the two options: fold each into M<N> (`gh issue edit <n> --milestone <N>`) or label as `deferred:M<N>` after adding a rationale + cross-link to its body. Only resume Step 4.1 once the query returns empty.
+
 1. **Rebase the integration branch on `main`.** `git checkout feat/<slug> && git fetch origin && git rebase origin/main`. Squash-merged per-issue commits stay individual on the integration branch — the rebase only shifts them onto the current `main` tip so the final PR presents as linear history. If the rebase conflicts, resolve inside `feat/<slug>` (never on `main`); push with `--force-with-lease` since only this skill writes to the integration branch. If conflicts are non-trivial, stop and ask.
 2. **Finalize the design journal.** Complete every stub in `~/.claude/plans/toloka-tolokaforge/milestone-<N>-integration.md`:
    - **TL;DR** — one paragraph naming the compatibility impact (or lack thereof) and ending with the roll-up of every `Closes #<n>` in the milestone.
@@ -144,12 +159,17 @@ The full template with placeholders and worked-example headings lives in `pr-tem
 
 ## Follow-ups and discovered work
 
-File everything you discover (bugs, improvements, deferred edge cases) as issues per the `writing-development-tickets` conventions — type label always, priority stated in the body. Then triage:
+**Every issue discovered during this milestone run is filed AGAINST milestone M<N> by default** — pass `milestone=<N>` on every `mcp__github__issue_write` and `gh issue create` call, and on retroactive `gh issue edit --milestone <N>` when a filed issue turned out to be in-scope. File per the `writing-development-tickets` conventions — type label always, priority stated in the body. Triage:
 
-- **High-priority and in-scope** → assign to the milestone and insert into the queue (implement this session).
-- **Low-priority or out-of-scope** → file, cross-link from the source issue/PR, leave for later. Note it in the final report and in the design journal's `## What's next` section.
+- **In-milestone** (the default): either absorb into the current session's queue (high-priority, small blast radius) or run as a fresh sub-ticket under the same milestone. Either way the issue carries `milestone=M<N>`.
+- **Deferred** (the only route out of the milestone) requires ALL of:
+  1. A one-sentence rationale explaining why this can't ship with milestone N — recorded in the source PR body's `## Discovered issues` section AND in the deferred issue's body.
+  2. A `deferred:M<N>` label on the deferred issue.
+  3. A cross-link naming the source PR + milestone in the deferred issue's body.
 
-Never let discovered work die in a PR comment or the conversation — if it isn't an issue, it didn't happen.
+A deferral without all three is a bookkeeping bug — the consolidation-PR guardrail (Step 4.0) will halt the run until it is corrected.
+
+Never let discovered work die in a PR comment or the conversation — if it isn't an issue, it didn't happen. Never file un-milestoned during an active-milestone run without recording a deferral rationale.
 
 ## Durable state — the session will outlive its context
 

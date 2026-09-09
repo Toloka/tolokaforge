@@ -97,8 +97,11 @@ Drive your standard planning workflow:
 2. Reproduce the current behaviour by running it: dev MCP run_tests / run_python,
    `make docker-up` for env services, a targeted `tolokaforge run` if the behaviour
    only shows end-to-end. For a bugfix, capture the reproducing failure.
-3. File any out-of-scope "Discovered issues" via the GitHub MCP and reference the
-   numbers in the plan.
+3. File any out-of-scope "Discovered issues" via the GitHub MCP; **when issue #<N>
+   has a milestone, pass `milestone=<that milestone number>` on every filing so
+   follow-ups fold into the same milestone.** Deferral out of the milestone requires
+   a one-sentence rationale in the plan's "Deferred" bullet and label
+   `deferred:M<N>` on the deferred issue. Reference the numbers in the plan.
 4. Write the plan to ~/.claude/plans/toloka-tolokaforge/issue-<N>-<short-name>.md
    (a scratch path outside the repo — plans are never committed to the tree; the
    plan's durable home is the per-issue PR body).
@@ -237,7 +240,7 @@ The "one stage = one commit" contract, the drift-handling rules, and the correct
    - Behaviour-locking test exists: open the file, confirm it exercises real behaviour at the named tier (not mocks), and carries the right pytest marker.
    - Docs updated in the same commit — verify with `git show --stat HEAD`.
    - Verification commands ran cleanly (dev MCP `lint_check` + `format_check`, targeted `run_tests`).
-   - "Discovered issues" surfaced. For each: fix-in-this-PR (note for next stage or follow-up) or `mcp__github__issue_write` to file it.
+   - "Discovered issues" surfaced. For each: fix-in-this-PR (note for next stage or follow-up) or `mcp__github__issue_write` to file it. **When issue #<N> has a milestone, every filed follow-up MUST pass `milestone=<that milestone number>` so it folds into the same milestone.** Deferral out of the milestone requires (a) a one-sentence rationale recorded in the PR body's Discovered-issues section, (b) label `deferred:M<N>` on the deferred issue, and (c) cross-link the source PR + milestone in the deferred issue's body. If you can't decide, ask the user — do not file un-milestoned by default during an active-milestone run.
 3. **Drift handling.**
    - **Justified drift** (the plan was wrong in a way the implementer caught): update the plan file yourself, show the diff to the user, continue.
    - **Unjustified drift** (implementer expanded scope, weakened a check, suppressed a lint, mocked something that should exercise real behaviour): launch a corrective `plan-stage-implementer` with explicit revert instructions. Don't accept the drift silently.
@@ -297,7 +300,7 @@ If the reviewer returns 🔴 Blocker or 🟠 Major findings:
 3. Re-launch the three sharded reviewers (`reviewer-correctness`, `reviewer-hygiene`, `reviewer-type-fit`) in parallel on the updated branch, same as Step 8. Merge findings the same way.
 4. Loop until every lane's verdict is `APPROVE` or `APPROVE WITH NITS`. **Cap: 2 fix rounds.** If any lane keeps finding the same Blocker, stop and ask the user — don't grind the implementer.
 
-Nit / Minor findings: surface to the user as optional follow-ups; don't block the PR on them.
+Nit / Minor findings: if they represent real work, file them under the milestone-routing rule from Step 7 (inherit the source issue's milestone; deferral needs a rationale + `deferred:M<N>` label). If they don't represent real work, drop them entirely — do not leave findings in a "surface to user" limbo where they age untracked. Nit findings never block the PR on their own, but the filing itself is not optional when the finding is a real defect.
 
 ### Step 10 — Open the PR
 
@@ -318,8 +321,11 @@ gh pr create --base <base_branch> --title "<concise title from plan>" --body "$(
 <the staged plan, pasted from ~/.claude/plans/toloka-tolokaforge/issue-<N>-<short-name>.md — plans have no in-repo home, so the PR body is the plan's durable record>
 
 ## Discovered issues
-- Filed: #<n>, #<m>
-- Fixed in this PR: <one-line each>
+- **Filed as in-milestone follow-ups:** `#<n> [M<milestone>] — <one-line summary>`
+- **Deferred (rationale required):** `#<n> [deferred:M<milestone>] — <one-sentence reason it can't ship with this milestone>`
+- **Fixed in this PR:** <one-line each>
+
+If issue #<N> has no milestone, the "Filed" bullet drops the `[M<milestone>]` tag and issues land in the general backlog; the "Deferred" bullet does not apply outside an active-milestone run.
 
 ## Test plan
 - <bullets — what to verify post-merge>
