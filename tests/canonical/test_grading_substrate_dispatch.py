@@ -56,7 +56,6 @@ from tolokaforge.core.grading.composite_fold import (
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, CompositeGradeComponents
 from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.grading.key_manifest import EVALUATED
-from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorContext
 from tolokaforge.core.grading.state_diff import render_state_diff
 from tolokaforge.core.grading.substrate_live import LiveRunnerCallbackGradingSubstrate
 from tolokaforge.core.grading.trace_checks import TraceChecksResult
@@ -69,7 +68,7 @@ from tolokaforge.core.plugin_registry import (
     GRADING_SUBSTRATES_GROUP,
     _clear_discovery_cache,
     load_grading_substrate,
-    load_rubric_evaluator,
+    load_judge_kind,
     load_state_check_backend,
     load_transcript_rule_matcher,
 )
@@ -442,12 +441,7 @@ def _reassemble_grade_from_composite(
         judge_reasons: str | None = None
         judge_gate_failed = False
         judge_report: pb2.JudgeReport | None = None
-        rubric_evaluator = load_rubric_evaluator("llm_judge")(
-            RubricEvaluatorContext(
-                judge_model_provider=runner._judge_model_provider,
-                logger=logger,  # type: ignore[arg-type]
-            )
-        )
+        judge_kind = load_judge_kind("single_shot_rubric")()
         initial_tables = substrate.initial_state()
         state_diff_text: str | None = None
         if initial_tables:
@@ -464,7 +458,12 @@ def _reassemble_grade_from_composite(
             trial_id=_TRIAL_ID,
             config=grading_config.llm_judge,
             substrate=substrate,
-            rubric_evaluator=rubric_evaluator,
+            judge_kind=judge_kind,
+            judge_model_provider=runner._judge_model_provider,
+            disable_knowledge_search=False,
+            custom_system_prompt=None,
+            include_agent_system_prompt=True,
+            kind_config=None,
             llm_messages=llm_messages,
             judge_model_config=_JUDGE_MODEL,
             extra_read_tools=[],

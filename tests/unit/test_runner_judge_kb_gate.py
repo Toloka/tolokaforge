@@ -424,7 +424,7 @@ def test_grade_llm_judge_constructs_with_effective_disable_flag(
                 status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
             )
 
-    monkeypatch.setattr("tolokaforge.core.grading.default_rubric_evaluator.LLMJudge", _SpyJudge)
+    monkeypatch.setattr("tolokaforge.core.grading.judge_kinds.single_shot.LLMJudge", _SpyJudge)
 
     service = _service(None)
     try:
@@ -476,7 +476,7 @@ def test_grade_llm_judge_constructs_with_effective_custom_prompt(
                 status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
             )
 
-    monkeypatch.setattr("tolokaforge.core.grading.default_rubric_evaluator.LLMJudge", _SpyJudge)
+    monkeypatch.setattr("tolokaforge.core.grading.judge_kinds.single_shot.LLMJudge", _SpyJudge)
 
     service = _service(None)
     try:
@@ -531,7 +531,7 @@ def test_grade_llm_judge_constructs_with_effective_include_agent_system_prompt(
                 status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
             )
 
-    monkeypatch.setattr("tolokaforge.core.grading.default_rubric_evaluator.LLMJudge", _SpyJudge)
+    monkeypatch.setattr("tolokaforge.core.grading.judge_kinds.single_shot.LLMJudge", _SpyJudge)
 
     service = _service(None)
     try:
@@ -590,7 +590,7 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
                 include_agent_system_prompt=False,
             )
 
-    monkeypatch.setattr("tolokaforge.core.grading.default_rubric_evaluator.LLMJudge", _SpyJudge)
+    monkeypatch.setattr("tolokaforge.core.grading.judge_kinds.single_shot.LLMJudge", _SpyJudge)
 
     rubric = Rubric(criteria=[{"id": "a", "description": "d", "kind": "binary", "weight": 1.0}])
     task_desc = TaskDescription(

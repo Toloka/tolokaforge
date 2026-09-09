@@ -655,6 +655,7 @@ _LOADER_TO_GROUP: dict[str, str] = {
     "load_grading_substrate": "tolokaforge.grading_substrates",
     "load_grading_method": "tolokaforge.grading_methods",
     "load_grader_kind": "tolokaforge.grader_kinds",
+    "load_judge_kind": "tolokaforge.judge_kinds",
 }
 
 

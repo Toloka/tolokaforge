@@ -556,7 +556,7 @@ import anywhere under `composite/` trips at pytest collection.
 | --- | --- | --- | --- |
 | `tolokaforge.custom_check_executors` | [`check_runner.py::CheckExecutor`](../tolokaforge/core/grading/check_runner.py) | `CheckRunner` (production), `InMemoryCheckExecutor` (test fixture) | holistic |
 | `tolokaforge.judge_model_providers` | [`judge_model_provider.py::JudgeModelProvider`](../tolokaforge/core/grading/judge_model_provider.py) | `LiteLLMJudgeModelProvider` (fronts `LLMClient`) | holistic |
-| `tolokaforge.rubric_evaluators` | [`rubric_evaluator.py::RubricEvaluator`](../tolokaforge/core/grading/rubric_evaluator.py) | `LLMJudgeRubricEvaluator` (wraps `LLMJudge`) | holistic |
+| `tolokaforge.judge_kinds` | [`judge_kinds/_protocol.py::JudgeKind`](../tolokaforge/core/grading/judge_kinds/_protocol.py) | `SingleShotRubricJudgeKind` (wraps `LLMJudge` in one shot) | holistic |
 | `tolokaforge.transcript_rule_matchers` | [`transcript_rule_matcher.py::TranscriptRuleMatcher`](../tolokaforge/core/grading/transcript_rule_matcher.py) | `DefaultTranscriptRuleMatcher` (wraps `evaluate_transcript_rules`) | holistic |
 | `tolokaforge.trace_check_operators` | [`trace_check_operator.py::TraceCheckOperator`](../tolokaforge/core/grading/trace_check_operator.py) | the shipped trace-check operators — non-binding and binding forms — registered via the entry-point group; see [`GRADING.md` § Operators](GRADING.md#operators) for the authored vocabulary | per-operator |
 | `tolokaforge.state_check_backends` | [`state_check_backend.py::StateCheckBackend`](../tolokaforge/core/grading/state_check_backend.py) | `JsonpathStateCheckBackend`, `DbProbesStateCheckBackend` (hash is NOT a backend — runner-integrated) | per-source |
@@ -568,8 +568,8 @@ Register a downstream impl the same way as a `TrialGrader`:
 [project.entry-points."tolokaforge.judge_model_providers"]
 openai_direct = "acme_judge:_openai_direct_provider_factory"
 
-[project.entry-points."tolokaforge.rubric_evaluators"]
-deterministic_rules = "acme_grader:_rules_evaluator_factory"
+[project.entry-points."tolokaforge.judge_kinds"]
+chunked_rubric = "acme_grader:ChunkedRubricJudgeKind"
 
 [project.entry-points."tolokaforge.state_check_backends"]
 s3_diff = "acme_grader:_s3_diff_state_check_backend_factory"
@@ -582,11 +582,13 @@ The runner resolves the shipping defaults at startup via
 `load_state_check_backend("jsonpath")` + `load_state_check_backend("db_probes")`,
 and caches the resulting instances on `RunnerServiceImpl`. The check
 executor is threaded through the composite `grade_custom_checks`
-dispatch. The judge model provider is threaded into the
-`RubricEvaluatorContext` that the runner constructs at grade time —
-`load_rubric_evaluator("llm_judge")(ctx)` — and the composite
-`grade_llm_judge` receives the resolved evaluator; no LLM transport ever
-appears in composite. The transcript-rule matcher is threaded through the
+dispatch. The judge model provider and the resolved
+`load_judge_kind("single_shot_rubric")()` class are handed to the
+composite `grade_llm_judge` at grade time — the kind builds its own
+:class:`LLMJudge` per call from the caller's `ModelConfig` +
+customization (KB gate, custom system-prompt,
+include-agent-system-prompt); no LLM transport ever appears in
+composite. The transcript-rule matcher is threaded through the
 composite `grade_transcript_rules` dispatch; the events-less-trial gate
 (`scored_transcript_rules`) and the per-key accounting stay in the
 composite so every deployment topology applies them identically. The
@@ -676,20 +678,20 @@ routes those trials to a live-callback path in the caller.
 
 <a id="extension-points-the-nine-plug-in-groups"></a>
 
-## Extension points — the nine plug-in groups
+## Extension points — the ten plug-in groups
 
-Nine `importlib.metadata` entry-point groups let a downstream package
+Ten `importlib.metadata` entry-point groups let a downstream package
 extend the grader without a framework change: one runner-side dispatch
 selector (paired with the typed-kind registry), one substrate group, and
-six sub-component seams. Each group has a matching loader on
+seven sub-component seams. Each group has a matching loader on
 [`tolokaforge.core.plugin_registry`](../tolokaforge/core/plugin_registry.py):
 
 - `tolokaforge.grading_methods` — `load_grading_method(name)` returns the `GradingMethod` marker **class**. Names in this group are the values `RunnerGradingConfig.grading_method` accepts at `RegisterTrial`; the marker carries `NAME: ClassVar[str]` so a downstream typo in `pyproject.toml` fails at discovery. Every shipped name also registers in `tolokaforge.grader_kinds` below — `RegisterTrial` validates the wire name against both groups.
 - `tolokaforge.grader_kinds` — `load_grader_kind(name)` returns the typed `GraderKind` **class**, whose `evaluate(*, substrate, task_config, kind_config, trial_id, agent_tools, logger) -> Grade | None` drives runtime dispatch for every non-composite name at `RunnerServiceImpl._dispatch_via_grader_kind`. Composite (or `None`) stays on the runner-side fold. Two built-ins ship: `composite` (a reference impl over `CompositeFold`) and `test_execution` (reads through `substrate.run_test_suite(...)`).
+- `tolokaforge.judge_kinds` — `load_judge_kind(name)` returns the typed `JudgeKind` **class**, whose `evaluate(*, rubric, agent_system_prompt, transcript, db_reader, kb_search, workspace_dir, extra_read_tools, state_diff, judge_model_config, judge_model_provider, disable_knowledge_search, custom_system_prompt, include_agent_system_prompt, kind_config, logger) -> JudgeResult` drives runner-side LLM-judge dispatch. One built-in ships: `single_shot_rubric` (wraps `LLMJudge` byte-identically). Downstream kinds (chunked, agentic, jury) register alongside without a framework PR.
 - `tolokaforge.grading_substrates` — `load_grading_substrate(name)` returns the `GradingSubstrate` **class** (the caller instantiates it with per-trial arguments).
 - `tolokaforge.custom_check_executors` — `load_custom_check_executor(name)` returns a factory.
 - `tolokaforge.judge_model_providers` — `load_judge_model_provider(name)` returns a factory.
-- `tolokaforge.rubric_evaluators` — `load_rubric_evaluator(name)` returns a factory.
 - `tolokaforge.transcript_rule_matchers` — `load_transcript_rule_matcher(name)` returns a factory.
 - `tolokaforge.state_check_backends` — `load_state_check_backend(name)` returns a factory.
 - `tolokaforge.trace_check_operators` — `load_trace_check_operator(name)` returns the **operator callable** directly (no factory wrapper; the callable itself is the contract).
@@ -703,6 +705,9 @@ my_grading_method = "my_package:my_grading_method_marker"
 [project.entry-points."tolokaforge.grader_kinds"]
 my_grading_method = "my_package:MyGraderKind"
 
+[project.entry-points."tolokaforge.judge_kinds"]
+my_judge_kind = "my_package:MyJudgeKind"
+
 [project.entry-points."tolokaforge.grading_substrates"]
 my_substrate = "my_package:my_substrate_class"
 
@@ -711,9 +716,6 @@ my_check_executor = "my_package:my_check_executor_factory"
 
 [project.entry-points."tolokaforge.judge_model_providers"]
 my_judge = "my_package:my_judge_provider_factory"
-
-[project.entry-points."tolokaforge.rubric_evaluators"]
-my_rubric = "my_package:my_rubric_evaluator_factory"
 
 [project.entry-points."tolokaforge.transcript_rule_matchers"]
 my_matcher = "my_package:my_matcher_factory"
