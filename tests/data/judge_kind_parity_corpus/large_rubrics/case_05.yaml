@@ -94,3 +94,40 @@ judge_scripts:
             intent_clarified_justification: "because intent_clarified\nVERDICT: NOT MET"
             escalation_appropriate: false
             escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: NOT MET"
+judge_scripts_per_chunk:
+  chunked_rubric:
+    - - - name: submit_report
+          arguments:
+              reasons: 'overall summary — chunked'
+              summary_provided: 0.2
+              summary_provided_justification: "because summary_provided\nSCORE: 0.2"
+              channel_appropriate: false
+              channel_appropriate_justification: "because channel_appropriate\nVERDICT: NOT MET"
+              outcome_communicated: 0.2
+              outcome_communicated_justification: "because outcome_communicated\nSCORE: 0.2"
+              refund_done: false
+              refund_done_justification: "because refund_done\nVERDICT: NOT MET"
+              tone: 0.2
+              tone_justification: "because tone\nSCORE: 0.2"
+    - - - name: submit_report
+          arguments:
+              reasons: 'overall summary — chunked'
+              policy_check: false
+              policy_check_justification: "because policy_check\nVERDICT: NOT MET"
+              identity_verified: false
+              identity_verified_justification: "because identity_verified\nVERDICT: NOT MET"
+              stock_updated: false
+              stock_updated_justification: "because stock_updated\nVERDICT: NOT MET"
+              order_shipped: false
+              order_shipped_justification: "because order_shipped\nVERDICT: NOT MET"
+              cancellation_confirmed: false
+              cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: NOT MET"
+    - - - name: submit_report
+          arguments:
+              reasons: 'overall summary — chunked'
+              question_answered: 0.2
+              question_answered_justification: "because question_answered\nSCORE: 0.2"
+              intent_clarified: false
+              intent_clarified_justification: "because intent_clarified\nVERDICT: NOT MET"
+              escalation_appropriate: false
+              escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: NOT MET"
