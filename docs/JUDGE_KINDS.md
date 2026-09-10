@@ -25,8 +25,161 @@ self-critique pass before the final verdict). Downstream packages
 register further alternatives (e.g. jury) alongside without a
 framework PR.
 
-> This document currently covers the parity gate and all three shipped
-> kinds; the live-A/B κ narrative and its ADR are TODO (#1572).
+The agentic-judge and registry decision is recorded in
+[`docs/adr/0046-agentic-llm-judge-and-judgekind-registry.md`](adr/0046-agentic-llm-judge-and-judgekind-registry.md).
+
+## Protocol contract
+
+Every `tolokaforge.judge_kinds` entry resolves to a class satisfying
+[`JudgeKind`](../tolokaforge/core/grading/judge_kinds/_protocol.py), a
+`runtime_checkable` `Protocol`:
+
+```python
+@runtime_checkable
+class JudgeKind(Protocol):
+    NAME: ClassVar[str]
+
+    def evaluate(
+        self,
+        *,
+        rubric: Rubric,
+        agent_system_prompt: str,
+        transcript: list[dict[str, Any]],
+        db_reader: DBReader | None,
+        kb_search: KnowledgeSearch | None,
+        workspace_dir: Path | None,
+        extra_read_tools: list[Tool],
+        state_diff: str | None,
+        judge_model_config: ModelConfig,
+        judge_model_provider: JudgeModelProvider,
+        disable_knowledge_search: bool,
+        custom_system_prompt: str | None,
+        include_agent_system_prompt: bool,
+        kind_config: Mapping[str, Any] | None,
+        logger: StructuredLogger,
+    ) -> JudgeResult: ...
+```
+
+**`NAME`** MUST equal the entry-point name the kind registers under — a
+`pyproject.toml` typo surfaces at discovery time (`load_judge_kind`
+raises), never silently at judge time.
+
+**`evaluate` is kwargs-only.** Every field on the per-trial evidence
+surface (`rubric` through `state_diff`) mirrors `LLMJudge.run`'s own
+inputs verbatim, so a kind that just wraps `LLMJudge` (`single_shot_rubric`)
+needs no translation layer. `judge_model_config` + `judge_model_provider`
+are construction inputs — the kind builds its own judge client(s) from
+them, once or many times per `evaluate` call. `disable_knowledge_search`,
+`custom_system_prompt`, and `include_agent_system_prompt` are per-trial
+customization every kind must honor identically to `LLMJudge`.
+
+**`kind_config: Mapping[str, Any] | None`** is an opaque bag the Protocol
+itself does not interpret — each kind owns its own schema and validation.
+The shipping pattern (`chunked_rubric`, `agentic_rubric`) is a
+module-level `frozenset` of accepted keys, a `frozen @dataclass` holding
+the resolved, typed config, and a `_resolve_kind_config` function that
+raises `ValueError` naming the kind, the bad key, and the accepted set on
+any unknown key or a wrong-typed/out-of-range value — validated eagerly,
+before any judge dispatch or `judge_model_provider.build()` call runs. A
+kind that takes no options (`single_shot_rubric`) still receives
+`kind_config` on the Protocol and explicitly discards it
+(`del kind_config  # reserved on the Protocol for downstream kinds`)
+rather than silently ignoring an unused parameter.
+
+**Return contract.** `evaluate` MUST produce a `JudgeResult`. A judge
+malfunction — a malformed `submit_report`/`draft_report` past its retry
+budget, turn or wall-clock budget exhaustion, or any loop-terminal
+exception — surfaces as `JudgeStatus.ERRORED` with `score=None` and
+`criterion_results=()`, never a `0.0`/`0.5` fallback and never a partial
+verdict for a subset of criteria. Every shipped kind reuses the same
+`parse_submit_report` / `aggregate_rubric` validation, so this contract
+holds identically across kinds — see § Fail-loud contract under
+§ Agentic kind and the fail-loud paragraphs under § Chunked kind for the
+two non-trivial cases (a bad chunk, an exhausted episode).
+
+## Authoring a new judge kind
+
+1. **Implement the Protocol.** Write a class with
+   `NAME: ClassVar[str]` and an `evaluate(...)` method matching the
+   signature in § Protocol contract above. If your kind takes options,
+   resolve `kind_config` eagerly at the top of `evaluate` into your own
+   validated, typed shape — raise `ValueError` on anything unrecognised,
+   before touching `judge_model_provider`.
+2. **Register the entry point.** Add one line to your package's
+   `pyproject.toml` under `[project.entry-points."tolokaforge.judge_kinds"]`:
+   `your_kind_name = "your_package.module:YourJudgeKind"`. `NAME` and the
+   entry-point name must match — mismatches are caught at discovery.
+3. **Add corpus fixtures.** Every fixture under
+   `tests/data/judge_kind_parity_corpus/` needs a cassette for your kind
+   — `judge_scripts.<your_kind_name>` for a kind that builds one judge
+   client per `evaluate` call, or `judge_scripts_per_chunk.<your_kind_name>`
+   for a kind that builds N. See § Adding a new judge kind (under
+   § Parity gate below) for the exact registration mechanics and
+   § Corpus authoring rules for the per-fixture cassette shape.
+4. **Clear the parity gate.** Run the canonical parity lane
+   (`tests/canonical/test_judge_kind_parity.py`) with your kind named in
+   its parametrise list. Every criterion must land `pass` or `warn` under
+   both cross-kind agreement (vs. `single_shot_rubric`) and
+   self-consistency (§ Three-level thresholds) before the kind is
+   default-eligible for any task pack.
+5. **Document the kind.** Add a `## <Your kind> kind` section to this
+   file, in the shape of § Chunked kind / § Agentic kind (config schema,
+   fail-loud behaviour, any state machine or persistence notes), and a
+   short entry under § Worked examples.
+
+## Worked examples
+
+One minimal `grading.llm_judge` snippet per shipped kind. Each cross-refers
+its detailed section rather than repeating it.
+
+### `single_shot_rubric`
+
+```yaml
+grading:
+  llm_judge:
+    judge_kind: single_shot_rubric
+```
+
+No `kind_config` — the kind receives it on the Protocol and discards it
+unread. One `LLMJudge` call produces the whole rubric's verdict in a
+single `submit_report`; this is the default, byte-identical with the
+pre-seam evaluator, and every task pack that predates the `JudgeKind`
+seam runs this kind unchanged.
+
+### `chunked_rubric`
+
+```yaml
+grading:
+  llm_judge:
+    judge_kind: chunked_rubric
+    kind_config:
+      chunk_size: 8
+```
+
+Splits the rubric into contiguous 8-criterion chunks, runs one
+`LLMJudge` per chunk against a scoped sub-rubric, and folds the merged
+per-criterion results through `aggregate_rubric` on the original rubric.
+Opt in for rubrics whose single `submit_report` payload would overflow
+the judge model's output-token ceiling — see § Chunked kind for the
+fail-loud and persistence contract.
+
+### `agentic_rubric`
+
+```yaml
+grading:
+  llm_judge:
+    judge_kind: agentic_rubric
+    kind_config:
+      critique_turn_budget: 3
+      enable_critique_tool: true
+```
+
+Runs a draft → critique → submit episode over the same `ToolCallingLoop`
+machinery every other kind uses, with a wider turn/timeout budget (50
+turns / 480s) than `LLMJudge`'s own defaults to cover the extra phases.
+Opt in for rubrics that benefit from a self-critique pass before the
+final verdict — see § Agentic kind for the state machine, the critique
+tool, and the `ModelCapabilities` opt-in.
 
 ## Chunked kind
 
@@ -356,12 +509,22 @@ The lane runs keyless, network-free, and under a hard runtime budget
 (inner-sum < 60 s, full wall-clock < 90 s), so it stays cheap enough
 for every CI run.
 
-`pytest --live-parity` is a flag-parity contract only today: passing
-the flag opts into live-mode, and the runner then requires
-`OPENAI_API_KEY` or `ANTHROPIC_API_KEY` in the environment. The
-cassette-refresh writeback against a real `LiteLLMJudgeModelProvider`
-is TODO (#1572); with the flag set the lane skips with a message
-naming the missing writeback. CI never passes `--live-parity`.
+`pytest --live-parity` opts into live mode: passing the flag requires
+`OPENAI_API_KEY` or `ANTHROPIC_API_KEY` in the environment, then drives
+every corpus entry against a real `LiteLLMJudgeModelProvider`-backed
+`RecordingLLMClient` for every kind under test, and writes the recorded
+script back into the originating
+`tests/data/judge_kind_parity_corpus/**/*.yaml` fixture's
+`judge_scripts[kind_name]` (or `judge_scripts_per_chunk[kind_name]` for a
+multi-client kind) — every other key in the fixture file is preserved
+byte-identical. This is the cassette-refresh mechanism: it keeps the
+20-fixture corpus in sync with what a shipped kind's real judge model
+actually says today, so the cassette-mode lane above keeps replaying a
+faithful script. It is a distinct mechanism from § Live A/B below, which
+measures cross-kind agreement on real trials rather than refreshing this
+fixed corpus. CI never passes `--live-parity` — refreshing cassettes is a
+manual step run against real budget when a kind's prompt or behaviour
+changes.
 
 ### Adding a new judge kind
 
@@ -438,3 +601,45 @@ call (the critique prompt between them is engine-injected, not a
 scripted turn) — with the `submit_report` turn's per-criterion verdicts
 matching the fixture's `single_shot_rubric` cassette for identical
 cross-kind κ.
+
+## Live A/B: cross-kind κ and cost on real trials
+
+The 20-fixture corpus above proves a candidate kind agrees with the
+reference on synthetic, hand-authored transcripts. It cannot answer
+whether that agreement holds on real task variety, nor what a kind
+actually costs per trial. `tools/judge-kind-ab` answers both: it drives
+the same κ-agreement harness (`measure_cross_kind_agreement`,
+`measure_self_consistency`) against a live judge model over real
+completed trials instead of committed cassettes.
+
+It assembles one `ParityCorpusEntry` per completed trial's grade bundle
+(`judge_kind_ab.bundle_corpus.corpus_entry_from_bundle` /
+`load_corpus_from_run`), reading `grading_config.json`,
+`task_description.json`, and `trajectory.json` the same way
+`CompositeGraderKind.evaluate` does for offline regrade — see
+[`docs/GRADE_BUNDLE.md`](GRADE_BUNDLE.md). For every unordered pair of
+the kinds under test it measures cross-kind agreement; for every kind it
+measures self-consistency across replays; then it renders a
+per-criterion κ table (annotated via `decide_parity_gate`, § Three-level
+thresholds) and a per-task-family cost table (calls, tokens, `cost_usd`,
+from `JudgeUsage` aggregation).
+
+CLI:
+
+```
+judge-kind-ab run <bundles-dir> \
+  --model-ref <provider/model> \
+  --kinds single_shot_rubric,chunked_rubric,agentic_rubric \
+  --replays 5 \
+  --out-dir <dir>
+```
+
+The command always exits 0 — a below-threshold κ is an annotation on the
+rendered table, not a hard failure; this is a one-off evidence-gathering
+tool, not a CI gate any task pack depends on. It writes `<out-dir>/report.md`
+(the exact fragment meant for a PR body) and `<out-dir>/report.json` (raw
+numbers). Running it against real trials spends real LLM budget across
+≥100 trials from ≥4 task families and is not part of any implementer
+stage or CI job: the executed `report.md` is attached directly to the
+consolidation PR's body once run — no κ or cost numbers are claimed in
+this document.
