@@ -1,0 +1,42 @@
+entry_id: small_rubrics_case_08
+rubric:
+  criteria:
+    - id: stock_updated
+      description: 'Stock levels were adjusted in the ledger.'
+      kind: binary
+      weight: 1.0
+    - id: order_shipped
+      description: 'Order marked as shipped in the system.'
+      kind: binary
+      weight: 1.0
+    - id: cancellation_confirmed
+      description: 'Cancellation was confirmed to the customer.'
+      kind: binary
+      weight: 1.0
+    - id: question_answered
+      description: 'Customer question was answered directly.'
+      kind: graded
+      weight: 1.0
+agent_system_prompt: 'You are a customer-service assistant. (small_rubrics_case_08)'
+transcript:
+  - role: user
+    content: 'Hi, I need help with order 42 — I never got the refund. (small_rubrics_case_08)'
+  - role: assistant
+    content: 'Confirmed — the refund of $19.99 is processed. Anything else?'
+state_diff: null
+disable_knowledge_search: false
+custom_system_prompt: null
+include_agent_system_prompt: true
+judge_scripts:
+  single_shot_rubric:
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — fixture-authored deterministic verdict'
+            stock_updated: true
+            stock_updated_justification: "because stock_updated\nVERDICT: MET"
+            order_shipped: true
+            order_shipped_justification: "because order_shipped\nVERDICT: MET"
+            cancellation_confirmed: true
+            cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: MET"
+            question_answered: 0.9
+            question_answered_justification: "because question_answered\nSCORE: 0.9"

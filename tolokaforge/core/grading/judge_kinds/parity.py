@@ -248,12 +248,10 @@ def measure_self_consistency(
     A fresh kind is built per replay via ``kind_factory(replay_index)``
     and a fresh provider via ``provider_factory(replay_index)``. Two
     factories rather than a shared kind and a shared provider because a
-    fixture kind that models non-determinism (like the parity lane's
-    ``_FlakyJudgeKind``) reads its own replay index off its
-    constructor so it can vary its verdict across replays — keeping
-    the affordance on the fixture kind's constructor keeps the
-    :class:`JudgeKind` Protocol free of a test-only ``replay_index``
-    kwarg. For stateless kinds
+    fixture kind that models non-determinism needs its own replay index
+    to vary its verdict across replays — keeping that affordance on the
+    fixture kind's constructor keeps the :class:`JudgeKind` Protocol
+    free of a test-only ``replay_index`` kwarg. For stateless kinds
     (``kind_factory=lambda _i: SingleShotRubricJudgeKind()``) the index
     is simply ignored.
 

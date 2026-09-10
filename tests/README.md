@@ -439,6 +439,16 @@ too, so they are the shared corpus rather than one lane's golden. See
 packs pin; the resulting diff belongs in the same commit as the code change that
 motivated it.
 
+The `--live-parity` flag is the sibling affordance for the JudgeKind κ-parity
+lane (`tests/canonical/test_judge_kind_parity.py`). Without the flag the lane
+runs entirely from committed cassettes under
+`tests/data/judge_kind_parity_corpus/` and asserts a runtime budget (inner-sum
+< 60 s, wall-clock < 90 s). With `--live-parity` and either `OPENAI_API_KEY`
+or `ANTHROPIC_API_KEY` present, the lane regenerates each cassette against the
+real `LiteLLMJudgeModelProvider` and skips the runtime-budget assertions
+because live dispatch has no bounded latency; see `docs/JUDGE_KINDS.md §
+Parity gate` for the gate contract and the corpus-authoring rules.
+
 ### Integration Tests (`tests/integration/`)
 
 Require Docker daemon, API keys, or both. Auto-skipped when prerequisites are missing.
