@@ -1,6 +1,6 @@
 {
   "bucket_a_count": 4,
-  "bucket_b_count": 7,
+  "bucket_b_count": 8,
   "integrations": [
     {
       "bucket": "B",
@@ -210,6 +210,25 @@
       "reason": "all touched paths in Bucket-A allow-list",
       "sha": "e8f837d760111f70afeb41a5dbe6302cdc3c7f99",
       "touched_files": [
+        "tolokaforge_models/src/tolokaforge_models/certificates/registry.py",
+        "tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml",
+        "tolokaforge_models/src/tolokaforge_models/data/pricing.json"
+      ]
+    },
+    {
+      "bucket": "B",
+      "date": "2026-09-07",
+      "engine_paths": [
+        "tests/canonical/snapshots/certify_suite_collection/collection.json",
+        "tests/canonical/test_certify_excluded_capabilities.py"
+      ],
+      "model": "openai/gpt-6-astra",
+      "pr": 1511,
+      "reason": "2 engine-side path(s) outside Bucket-A allow-list",
+      "sha": "0122c985c36fd9a95735139bca318b0c62d1a569",
+      "touched_files": [
+        "tests/canonical/snapshots/certify_suite_collection/collection.json",
+        "tests/canonical/test_certify_excluded_capabilities.py",
         "tolokaforge_models/src/tolokaforge_models/certificates/registry.py",
         "tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml",
         "tolokaforge_models/src/tolokaforge_models/data/pricing.json"

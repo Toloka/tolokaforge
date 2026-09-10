@@ -241,10 +241,19 @@ def _synthesise_compose(
     # posture as tbench's ``provider_env_keys`` path.
     from tolokaforge.secrets import expand_secret_refs
     from tolokaforge.secrets import get_default as _get_default_secrets
+    from tolokaforge.secrets.expand import UnresolvedReferenceError
 
     secret_manager = _get_default_secrets()
     for key, value in sorted(harness_spec.provider_env.items()):
-        resolved = expand_secret_refs(value, secret_manager, where=f"harness.provider_env[{key!r}]")
+        try:
+            resolved = expand_secret_refs(
+                value, secret_manager, where=f"harness.provider_env[{key!r}]"
+            )
+        except UnresolvedReferenceError:
+            # Secret not in scope (e.g. canonical tests that render the YAML
+            # without runtime credentials). Keep the literal ``${secret:...}``
+            # reference; real trial launch resolves it or fails loudly there.
+            resolved = value
         agent_body_env = _set_env(agent_body_env, key, resolved)
     agent_body["environment"] = agent_body_env
     services[agent_service] = agent_body
