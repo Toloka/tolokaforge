@@ -2,6 +2,30 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.24.3 (2026-09-10)
+
+### Fix
+
+- **examples**: declare on_missing: fail on the notes gate constraint (#1576)
+
+## v0.24.2 (2026-09-09)
+
+### Feat
+
+- **adapter**: bridge Tool.policy.timeout_s to ToolSchema.timeout_s (#1556) (#1573)
+- **adapter**: task-yaml override for per-tool output_max_chars (#1563)
+
+### Fix
+
+- **docker**: make image builds work on default macOS Docker Desktop (#1574)
+
+## v0.24.1 (2026-09-09)
+
+### Feat
+
+- arena v3 engine residuals — tool-name hint, state-hash compare_columns (both substrates), trace_checks gate advisory (#1560)
+- **engine**: M48 — post-M44 follow-ups (adapter sentinel deletion, per-tool cap, truncation + parser-error metrics, replay-snapshot fix) (#1559)
+
 ## v0.24.0 (2026-09-08)
 
 ### Feat

@@ -67,6 +67,7 @@ from tolokaforge.core.grading.state_composition import (
 )
 from tolokaforge.core.grading.trace_event_kind import TraceEventKind
 from tolokaforge.core.grading.turn_bounds import validate_turn_window
+from tolokaforge.core.hash import ColumnCompareRule
 from tolokaforge.core.netpolicy_constants import HARNESS_RESERVED_NETWORKS
 
 # ``ToolExecutionStatus`` is declared beside ``ToolResult`` in the true leaf
@@ -159,6 +160,21 @@ class ToolSchema(BaseModel):
     # whose construction needs task-side data (e.g. ``MobileTool.apps``); MCP
     # server tools and tau/MCP-async tools leave it empty.
     tool_config: dict[str, Any] = Field(default_factory=dict)
+
+    output_max_chars: int | None = None
+    """Per-tool cap on the ``role=tool`` message content the engine loop appends.
+
+    The adapter composes two inputs into this value —
+    :attr:`tolokaforge.tools.registry.ToolPolicy.output_max_chars` (the
+    tool-declared bound) and the task-yaml override
+    ``tools.<actor>.<tool_name>.output_max_chars`` — as ``min`` of whichever
+    are set. The runner returns the composed value to the harness, and the
+    engine loop composes it in turn with the per-model
+    :attr:`~tolokaforge.core.model_capabilities.ModelCapabilities.tool_output_max_chars`
+    as ``min(tool_cap, capability_cap)``. ``None`` defers to the per-model cap;
+    a tool with no declared bound, no task-yaml override, and no preset naming
+    the per-model cap passes the tool message through verbatim.
+    """
 
     model_config = {"extra": "forbid"}
 
@@ -465,6 +481,22 @@ class RunnerStateChecksConfig(BaseModel):
     # (id_fields keys must appear in initial_state.tables) from a raise to a warning.
     # New tasks should fix typos or add the table, not enable this.
     relaxed_validation: bool = False
+
+    # Opt-in, PER-(TABLE, COLUMN): asymmetric compare mode for column values that
+    # are themselves dicts (typically tool-call param objects). Declaring
+    # ``{table: {column: {mode: subset, extras_allowed_for: [k1, k2]}}}`` lets the
+    # model include ``k1``/``k2`` in ``column`` where the golden does not, without
+    # failing the state hash. Keys the golden declares are still compared
+    # value-for-value; extras outside the allowlist still fail. Mirrors the trace
+    # comparator's ``compare_args`` shape (see :class:`ColumnCompareRule`).
+    #
+    # Consumed on both substrates. Core path:
+    # ``combine.py`` -> ``state_checks.py::check_hash_against_golden_replay`` —
+    # filter runs before the two-sided digest. Runner path: ``_grade_hash``
+    # detects a non-empty config and switches from the server-side
+    # ``get_stable_hash`` fast path to a client-side raw-state fetch + local
+    # hash so the asymmetric filter has both sides.
+    compare_columns: dict[str, dict[str, ColumnCompareRule]] = Field(default_factory=dict)
 
     # JSONPath assertions
     jsonpath_checks: list[dict[str, Any]] = Field(default_factory=list)

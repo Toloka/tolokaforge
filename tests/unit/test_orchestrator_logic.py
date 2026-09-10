@@ -487,22 +487,6 @@ class TestBuildSystemPrompt:
         result = orch._build_system_prompt(task, [], Path("/fake/dir"))
         assert result == "You are a special assistant."
 
-    def test_adapter_based_prompt(self) -> None:
-        orch = self._make_orchestrator()
-        orch.adapter.get_system_prompt.return_value = "Adapter policy content"
-        task = _make_task_config(system_prompt="__adapter__")
-        result = orch._build_system_prompt(task, [], Path("/fake/dir"))
-        assert "Adapter policy content" in result
-        assert "<policy>" in result
-
-    def test_adapter_prompt_none_fallthrough(self) -> None:
-        """When adapter returns None, should fall through to default."""
-        orch = self._make_orchestrator()
-        orch.adapter.get_system_prompt.return_value = None
-        task = _make_task_config(system_prompt="__adapter__")
-        result = orch._build_system_prompt(task, [], Path("/fake/dir"))
-        assert result == "You are a helpful assistant."
-
     def test_system_prompt_file(self, tmp_path: Path) -> None:
         orch = self._make_orchestrator()
         prompt_file = tmp_path / "prompt.md"

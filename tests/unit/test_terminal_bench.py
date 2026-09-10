@@ -510,16 +510,9 @@ class TestTerminalBenchAdapterEnvironmentManifest:
 
 
 class TestTerminalBenchAgentSystemPromptVerbatim:
-    """T-Bench authors its own agent system prompt via ``policies``, so the
-    engine returns it verbatim without applying the ``<instructions>`` /
-    ``<policy>`` wrap the ``__adapter__`` sentinel triggers.
-
-    The engine's sentinel branch is a customer-service persona wrap
-    (``tolokaforge/core/system_prompt.py:_wrap_policy_document``) — a shape
-    T-Bench's dev-tool tasks do not want.
-    ``TaskConfig.policies["agent_system_prompt"]`` is priority 1 in the
-    engine's chain, returned verbatim; T-Bench opts into that path
-    instead.
+    """T-Bench authors its own agent system prompt via
+    ``TaskConfig.policies["agent_system_prompt"]`` (priority 1 in the
+    engine's chain), returned verbatim.
     """
 
     @pytest.fixture
@@ -534,7 +527,7 @@ class TestTerminalBenchAgentSystemPromptVerbatim:
             {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
         )
 
-    def test_task_config_carries_prompt_in_policies_not_sentinel(self, adapter):
+    def test_task_config_carries_prompt_in_policies(self, adapter):
         task = adapter.get_task("echo-hello")
         assert task.system_prompt is None
         assert task.policies["agent_system_prompt"] == adapter.get_system_prompt("echo-hello")
@@ -543,7 +536,7 @@ class TestTerminalBenchAgentSystemPromptVerbatim:
         from tolokaforge.core.system_prompt import build_system_prompt
 
         task = adapter.get_task("echo-hello")
-        assembled = build_system_prompt(task=task, task_dir=tmp_path, adapter=adapter)
+        assembled = build_system_prompt(task=task, task_dir=tmp_path)
 
         assert assembled == adapter.get_system_prompt("echo-hello")
         assert "<instructions>" not in assembled

@@ -94,6 +94,9 @@ class ToolSchema(BaseModel):
 
     # How to reconstruct this tool at runtime
     source: ToolSource
+
+    # Per-tool cap on the role=tool message content the engine loop appends.
+    output_max_chars: Optional[int] = None        # see below
 ```
 
 `ToolSchema.timeout_s` is the backstop the runner bands a call with **only for a
@@ -102,11 +105,22 @@ shipped one that performs I/O does — is banded at its own budget plus a fixed
 grace instead, and this field plays no part. So a `bash_session` is bounded by
 its `tool_config.timeout_s` (ADR-0017), not by this.
 
-It is not pack-declarable either way: `NativeAdapter` builds every tool's schema
-with the model default, so a pack cannot influence the value — tracked in
-[#1147](https://github.com/Toloka/tolokaforge/issues/1147). The one budget a pack
-can set today is `bash_session`'s `tool_config.timeout_s` (see
-[`docs/TOOLS.md`](TOOLS.md)).
+`NativeAdapter` builds every builtin's schema with the tool's own
+`ToolPolicy.timeout_s`, so a builtin's declared budget reaches the runner as
+its emitted `ToolSchema.timeout_s`. The one budget a pack can set today is
+`bash_session`'s `tool_config.timeout_s` (see [`docs/TOOLS.md`](TOOLS.md)).
+
+`ToolSchema.output_max_chars` is the per-tool cap the runner returns to the
+harness for the tool's `role=tool` message content. The engine loop composes it
+with the per-model
+[`ModelCapabilities.tool_output_max_chars`](LLM_LAYER.md#tool-output-truncation)
+backstop as `min(tool_cap, capability_cap)`: the tighter set cap wins per call.
+The native adapter composes two inputs into the value it emits:
+`ToolPolicy.output_max_chars` (the tool-declared bound) and the task-yaml
+override at `tools.<actor>.<tool_name>.output_max_chars`, as `min` of whichever
+are set. `None` (the default) defers to the per-model cap; a tool that declares
+no cap in a pack that overrides no cap, run under a preset that declares no cap,
+passes its message content through verbatim.
 
 ```python
 # =============================================================================

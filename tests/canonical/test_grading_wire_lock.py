@@ -297,7 +297,11 @@ class _RetiredWireKey:
     lock: _DocLock | None = None
 
 
-_WALK_STOPS: tuple[str, ...] = ("grading.trace_checks", "environment_manifest")
+_WALK_STOPS: tuple[str, ...] = (
+    "grading.trace_checks",
+    "grading.state_checks.compare_columns",
+    "environment_manifest",
+)
 """The paths the model walk records without descending into. Read by the walk and by
 nothing else — the census never reads it, and it never reads the census."""
 
@@ -454,6 +458,25 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         path="grading.state_checks.jsonpath_checks",
         emitted_for="grading.state_checks",
         wire_shape="list[dict[str, Any]]",
+    ),
+    _WireKey(
+        path="grading.state_checks.compare_columns",
+        emitted_for="grading.state_checks",
+        wire_shape="dict[str, dict[str, ColumnCompareRule]]",
+        is_leaf_container=True,
+        since=_UNRELEASED,
+        lock=_DocLock(
+            doc_key="state_checks.compare_columns",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
+        additional_locks=(
+            _DocLock(
+                doc_key='state_checks.compare_columns.<table>.<column>.mode == "subset"',
+                direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+                since=_UNRELEASED,
+                breadth="a pack declaring per-column permitted-extra tool-call params",
+            ),
+        ),
     ),
     _WireKey(
         path="grading.state_checks.db_probes",

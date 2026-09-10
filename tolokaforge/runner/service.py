@@ -72,6 +72,7 @@ from tolokaforge.core.grading.trace_timeline import (
     build_timeline_from_wire,
 )
 from tolokaforge.core.grading.transcript_rule_matcher import TranscriptRuleMatcher
+from tolokaforge.core.hash import apply_compare_columns_extras, compute_stable_hash
 from tolokaforge.core.models import (
     CriterionResult,
     LLMJudgeConfig,
@@ -523,6 +524,48 @@ class TrialContextRuntime:
         if executor is ToolExecutorIdentity.USER:
             return self.user_tools.get(tool_name)
         return self.agent_tools.get(tool_name)
+
+    def nearest_tool_names(
+        self,
+        tool_name: str,
+        executor: ToolExecutorIdentity = ToolExecutorIdentity.AGENT,
+        limit: int = 5,
+    ) -> tuple[list[str], int]:
+        """Registered tool names that could plausibly be what the caller meant.
+
+        Ranked suffix-first (``_{tool_name}`` — catches the common pack-side
+        ``<system>_<tool>_<tool>`` doubled-prefix shape when a model calls the bare
+        short name), then substring (``_{tool_name}_``). Suffix-first specifically
+        (rather than :func:`difflib.get_close_matches`) because the shape this
+        rescues has a known signature: the model asked for the short name, and the
+        registered name is the short name with a system prefix. Edit distance would
+        return arbitrarily similar names for a typo, which is not the failure this
+        method exists for; if a typo-rescue is ever needed, add a lower-rank tier.
+
+        Tools currently marked unusable (:meth:`unusable_reason`) are excluded —
+        pointing a model at a name it also cannot call would waste a retry turn.
+
+        Returns ``(candidates, total_matches)``. ``candidates`` is sorted for
+        determinism, capped at ``limit``. ``total_matches`` is the count *before*
+        truncation, so the caller can signal "and N more" when the cap hides
+        equally-plausible names — a stuttered target might otherwise be dropped by
+        the alphabetic tiebreak when many packs share a suffix.
+        """
+        if not tool_name:
+            return [], 0
+        registry = self.user_tools if executor is ToolExecutorIdentity.USER else self.agent_tools
+        suffix = f"_{tool_name}"
+        infix = f"_{tool_name}_"
+        ranked: list[tuple[int, str]] = []
+        for name in registry:
+            if self.unusable_reason(name, executor) is not None:
+                continue
+            if name.endswith(suffix):
+                ranked.append((0, name))
+            elif infix in name:
+                ranked.append((1, name))
+        ranked.sort()
+        return [name for _rank, name in ranked[:limit]], len(ranked)
 
     def record(
         self,
@@ -1152,6 +1195,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 category=tool.category,
                 timeout_s=tool.timeout_s,
             )
+            if tool.output_max_chars is not None:
+                schema.output_max_chars = tool.output_max_chars
             tool_schemas.append(schema)
 
         for tool in task_description.user_tools:
@@ -1162,6 +1207,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 category=tool.category,
                 timeout_s=tool.timeout_s,
             )
+            if tool.output_max_chars is not None:
+                schema.output_max_chars = tool.output_max_chars
             tool_schemas.append(schema)
 
         logger.info(
@@ -1326,7 +1373,27 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         tool = trial_context.get_tool(tool_name, executor)
         if tool is None:
-            logger.warning(f"ExecuteTool: Tool not found: {tool_name} ({executor.value})")
+            candidates, total_matches = trial_context.nearest_tool_names(tool_name, executor)
+            if candidates:
+                hint = ", ".join(candidates)
+                hidden = total_matches - len(candidates)
+                if hidden > 0:
+                    error_message = (
+                        f"Tool '{tool_name}' not found. Did you mean one of: {hint} "
+                        f"(and {hidden} more registered name(s) whose suffix or "
+                        f"infix matches — cap {len(candidates)})?"
+                    )
+                else:
+                    error_message = f"Tool '{tool_name}' not found. Did you mean: {hint}?"
+                logger.warning(
+                    "ExecuteTool: Tool not found: %s (%s). Candidates: %s",
+                    tool_name,
+                    executor.value,
+                    hint,
+                )
+            else:
+                error_message = f"Tool '{tool_name}' not found"
+                logger.warning(f"ExecuteTool: Tool not found: {tool_name} ({executor.value})")
             return None, self._reject_tool_call(
                 trial_context=trial_context,
                 call_id=call_id,
@@ -1334,7 +1401,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 arguments=arguments,
                 executor=executor,
                 status=pb2.EXECUTION_STATUS_TOOL_NOT_FOUND,
-                error_message=f"Tool '{tool_name}' not found",
+                error_message=error_message,
             )
 
         unusable = trial_context.unusable_reason(tool_name, executor)
@@ -2599,6 +2666,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             state_checks.golden_actions if basis is HashComparisonBasis.GOLDEN_REPLAY else []
         )
         numeric_string_fields = state_checks.numeric_string_fields
+        compare_columns = state_checks.compare_columns
+        # When the pack declared per-column subset rules we defer hashing until
+        # after the golden replay so both raw states are in hand and the
+        # asymmetric filter has both sides. Fast server-side get_stable_hash is
+        # preserved for the common empty-compare_columns case AND for the
+        # inert-declaration case (``{table: {}}``) — an outer dict with no rules
+        # inside is behaviourally identical to no config at all.
+        client_side_hash = any(column_rules for column_rules in compare_columns.values())
         resolved_tool_names = resolve_golden_action_names(
             [action.tool_name for action in golden_actions],
             candidates=trial_context.agent_tools.keys(),
@@ -2623,10 +2698,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 logger.error(f"GradeTrial: Failed to sync MCP state before trial_hash: {e}")
                 raise
 
-        trial_hash = await self.db_client.get_stable_hash(
-            trial_id, numeric_string_fields=numeric_string_fields
-        )
-        logger.debug(f"GradeTrial: Trial hash = {trial_hash[:16]}...")
+        # Fast path: hash server-side. Slow path (compare_columns declared):
+        # fetch raw state now and defer hashing until we hold both sides.
+        trial_hash: str | None = None
+        trial_state_raw: dict[str, Any] | None = None
+        if client_side_hash:
+            trial_state_response = await self.db_client.get_stable_state(trial_id)
+            trial_state_raw = trial_state_response.data
+            logger.debug("GradeTrial: Trial state fetched (deferred hashing for compare_columns)")
+        else:
+            trial_hash = await self.db_client.get_stable_hash(
+                trial_id, numeric_string_fields=numeric_string_fields
+            )
+            logger.debug(f"GradeTrial: Trial hash = {trial_hash[:16]}...")
 
         # 2. Snapshot current state
         await self.db_client.create_snapshot(trial_id, "pre_golden")
@@ -2719,12 +2803,35 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         await self.db_client.create_snapshot(trial_id, "golden_result")
         logger.debug("GradeTrial: Created snapshot 'golden_result'")
 
-        # 6. Get golden stable hash
-        # get_stable_hash returns the hash string directly
-        golden_hash = await self.db_client.get_stable_hash(
-            trial_id, numeric_string_fields=numeric_string_fields
-        )
-        logger.debug(f"GradeTrial: Golden hash = {golden_hash[:16]}...")
+        # 6. Get golden stable hash.
+        # Slow path (compare_columns): fetch the golden raw state, apply the
+        # asymmetric filter to trial_state_raw against it, then hash both
+        # client-side so a model-added key the pack declared permitted-extra
+        # does not fail an otherwise-matching state. Fast path unchanged.
+        trial_state_filtered: dict[str, Any] | None = None
+        golden_state_raw: dict[str, Any] | None = None
+        if client_side_hash:
+            golden_state_response = await self.db_client.get_stable_state(trial_id)
+            golden_state_raw = golden_state_response.data
+            assert trial_state_raw is not None  # set in step 1 slow-path branch
+            trial_state_filtered = apply_compare_columns_extras(
+                trial_state_raw, golden_state_raw, compare_columns
+            )
+            trial_hash = compute_stable_hash(
+                trial_state_filtered, numeric_string_fields=numeric_string_fields
+            )
+            golden_hash = compute_stable_hash(
+                golden_state_raw, numeric_string_fields=numeric_string_fields
+            )
+            logger.debug(
+                f"GradeTrial: Client-side hashes computed (compare_columns applied) "
+                f"— trial={trial_hash[:16]}... golden={golden_hash[:16]}..."
+            )
+        else:
+            golden_hash = await self.db_client.get_stable_hash(
+                trial_id, numeric_string_fields=numeric_string_fields
+            )
+            logger.debug(f"GradeTrial: Golden hash = {golden_hash[:16]}...")
 
         # 7. Restore trial state
         await self.db_client.restore_snapshot(trial_id, "pre_golden")
@@ -2733,22 +2840,27 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # 8. Compare hashes
         hash_match = trial_hash == golden_hash
 
-        # 9. If mismatch, compute state diff
+        # 9. If mismatch, compute state diff. Slow path already holds both raw
+        # states — reuse them (and the filtered trial view so the diff matches
+        # what the hash verdict was computed against); fast path fetches now.
         state_diff: StateDiff | None = None
         if not hash_match:
             logger.info("GradeTrial: Hash mismatch, computing state diff")
 
-            # Get trial state
-            trial_state_response = await self.db_client.get_stable_state(trial_id)
-            trial_state = trial_state_response.data
+            if client_side_hash:
+                assert trial_state_filtered is not None
+                assert golden_state_raw is not None
+                trial_state = trial_state_filtered
+                golden_state = golden_state_raw
+            else:
+                trial_state_response = await self.db_client.get_stable_state(trial_id)
+                trial_state = trial_state_response.data
 
-            # Restore golden state and get it
-            await self.db_client.restore_snapshot(trial_id, "golden_result")
-            golden_state_response = await self.db_client.get_stable_state(trial_id)
-            golden_state = golden_state_response.data
+                await self.db_client.restore_snapshot(trial_id, "golden_result")
+                golden_state_response = await self.db_client.get_stable_state(trial_id)
+                golden_state = golden_state_response.data
 
-            # Restore trial state again
-            await self.db_client.restore_snapshot(trial_id, "pre_golden")
+                await self.db_client.restore_snapshot(trial_id, "pre_golden")
 
             # Compute diff using grading module (returns StateDiff model directly)
             state_diff = compute_state_diff(trial_state, golden_state)

@@ -3,6 +3,7 @@
     "category": "compute",
     "description": "List all products currently in stock (stock > 0).",
     "name": "list_products",
+    "output_max_chars": null,
     "parameters": {
       "properties": {},
       "title": "list_productsArguments",
@@ -23,6 +24,7 @@
     "category": "compute",
     "description": "Retrieve a customer record and account balance by customer ID.",
     "name": "get_customer",
+    "output_max_chars": null,
     "parameters": {
       "properties": {
         "customer_id": {
@@ -52,6 +54,7 @@
     "category": "compute",
     "description": "Create a new order for a customer. Validates stock, creates an order record with status 'pending', and decrements stock for each ordered product. Returns the created order including the generated order ID.",
     "name": "place_order",
+    "output_max_chars": null,
     "parameters": {
       "$defs": {
         "OrderItem": {
@@ -117,6 +120,7 @@
     "category": "compute",
     "description": "Mark a pending order as paid and deduct the total from the customer's account balance. Order must have status 'pending'.",
     "name": "confirm_payment",
+    "output_max_chars": null,
     "parameters": {
       "properties": {
         "order_id": {

@@ -311,6 +311,13 @@ class _TrialSetup:
     tool_executor: DockerRunnerAdapter
     user_tool_schemas: list[dict[str, Any]]
     user_tool_executor: DockerRunnerAdapter | None
+    tool_output_max_chars_by_tool: dict[str, int] = field(default_factory=dict)
+    """Per-tool ``output_max_chars`` map lifted from ``register_trial``'s
+    ``ToolSchema`` entries, threaded into :class:`~tolokaforge.core.loop.ToolCallingLoop`
+    so the engine loop composes it with the per-model cap at the message-append
+    site. Empty map = no per-tool caps declared, and the loop's min-of-both
+    selection reduces to the per-model cap alone.
+    """
 
 
 @dataclass
@@ -666,6 +673,12 @@ class InProcessConductor:
             else None
         )
 
+        tool_output_max_chars_by_tool = {
+            ts["name"]: ts["output_max_chars"]
+            for ts in register_result["tool_schemas"]
+            if ts.get("output_max_chars") is not None
+        }
+
         self.logger.info(
             "Docker runtime: Registered trial",
             trial_id=trial_id,
@@ -684,6 +697,7 @@ class InProcessConductor:
             tool_executor=tool_executor,
             user_tool_schemas=user_tool_schemas,
             user_tool_executor=user_tool_executor,
+            tool_output_max_chars_by_tool=tool_output_max_chars_by_tool,
         )
 
     def _run_agent_loop(
@@ -820,6 +834,7 @@ class InProcessConductor:
             events=self.events,
             probe_stats=_build_probe_stats(rate_limit_probe),
             interaction_mode=task.interaction_mode,
+            tool_output_max_chars_by_tool=setup.tool_output_max_chars_by_tool or None,
         )
 
         # "" is the runner's "caller supplied nothing" seed: turn 0 is routed
@@ -1313,7 +1328,7 @@ class InProcessConductor:
     def _build_system_prompt(
         self, task: TaskConfig, tool_schemas: list[dict[str, Any]], task_dir: Path
     ) -> str:
-        return build_system_prompt(task=task, task_dir=task_dir, adapter=self.adapter)
+        return build_system_prompt(task=task, task_dir=task_dir)
 
 
 def in_process_conductor_factory(ctx: ConductorContext) -> InProcessConductor:

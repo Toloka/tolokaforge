@@ -666,6 +666,40 @@ _RULES: tuple[_Rule, ...] = (
         message="the weight weighs nothing",
         combine=GradingCombineConfig(weights={"state_checks": 1.0}),
     ),
+    _Rule(
+        label="severity_gate_with_defaulted_on_missing_is_risky",
+        task=_HELPDESK,
+        grading={
+            "trace_checks": {
+                "constraints": [
+                    {
+                        "id": "probe",
+                        "description": "a probe constraint",
+                        "severity": "gate",
+                        # Anchored kind (``before``) so the advisory fires — the
+                        # advisory is scoped to constraints that read an anchor
+                        # whose tool can silently error. Two different matchers
+                        # so the two-quantifier validator accepts the shape.
+                        "require": {
+                            "before": {
+                                "left": {
+                                    "quantifier": "any",
+                                    "match": _tool_call("http_request"),
+                                },
+                                "right": {
+                                    "quantifier": "first",
+                                    "match": _tool_call("write_file"),
+                                },
+                            }
+                        },
+                    }
+                ]
+            }
+        },
+        checker="_check_severity_gate_default_on_missing_is_risky",
+        channel="advisories",
+        message="severity: gate with default on_missing: fail",
+    ),
 )
 
 _FINDING_CHANNELS = ("errors", "advisories")

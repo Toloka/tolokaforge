@@ -696,13 +696,29 @@ def declared_tool_names(task: Any) -> frozenset[str]:
     return frozenset().union(*(enabled_tool_names(task, actor) for actor in ToolActor))
 
 
+TOOL_BLOCK_RESERVED_KEYS: frozenset[str] = frozenset({"output_max_chars"})
+"""Keys the harness reads from a ``tools.<actor>.<tool_name>`` block for its own
+composition, not as tool ``__init__`` kwargs.
+
+The runner's builtin factory splats ``ToolSchema.tool_config`` into the tool
+class and refuses unknown keys, so a reserved key that reached the runner would
+raise ``ToolConfigurationError`` at trial registration. Stripping in
+:func:`tool_configs` keeps that seam clean; each key has its own lifter
+(:func:`tool_output_max_chars_overrides` for ``output_max_chars``) that returns
+the harness-side value."""
+
+
 def tool_configs(task: TaskConfig, actor: ToolActor) -> dict[str, dict]:
     """Per-tool init kwargs lifted from the ``tools.<actor>.<name>`` blocks.
 
-    Only enabled tools are read. The kwargs reach the runner via
-    ``ToolSchema.tool_config`` and drive the builtin instantiation whose schema
-    depends on them (``MobileTool(apps={…})`` populates
-    ``actions[].app_name.enum``).
+    Only enabled tools are read. Keys in :data:`TOOL_BLOCK_RESERVED_KEYS` are
+    stripped — they are harness-side knobs (read by dedicated lifters such as
+    :func:`tool_output_max_chars_overrides`), not tool constructor kwargs. A
+    block that names only reserved keys yields no entry in the returned mapping.
+
+    The kwargs reach the runner via ``ToolSchema.tool_config`` and drive the
+    builtin instantiation whose schema depends on them (``MobileTool(apps={…})``
+    populates ``actions[].app_name.enum``).
 
     Raises:
         ValueError: If a block is present but is not a mapping — an author typo
@@ -720,8 +736,43 @@ def tool_configs(task: TaskConfig, actor: ToolActor) -> dict[str, dict]:
                 f"tools.{actor.value}.{tool_name} must be a mapping of init kwargs "
                 f"(got {type(raw).__name__}={raw!r}) in task {task.task_id!r}"
             )
-        configs[tool_name] = dict(raw)
+        kwargs = {k: v for k, v in raw.items() if k not in TOOL_BLOCK_RESERVED_KEYS}
+        if kwargs:
+            configs[tool_name] = kwargs
     return configs
+
+
+def tool_output_max_chars_overrides(task: TaskConfig, actor: ToolActor) -> dict[str, int]:
+    """Per-tool ``output_max_chars`` overrides declared on ``tools.<actor>.<name>``.
+
+    Returns ``{tool_name: cap}`` for every enabled tool whose block names a
+    positive-int ``output_max_chars`` sibling. The value composes with the
+    tool's own :attr:`~tolokaforge.tools.registry.ToolPolicy.output_max_chars`
+    (adapter-side ``min``) into the emitted ``ToolSchema.output_max_chars``; the
+    loop then composes that with the per-model backstop. An absent key or
+    ``None`` value leaves the tool out of the returned mapping.
+
+    Raises:
+        ValueError: If ``output_max_chars`` is present with a non-int or a
+            non-positive value. Task YAML is authoring surface, so a typo
+            fails loud rather than reaching the wire as a nonsense cap.
+    """
+    block = actor_tool_block(task, actor)
+    overrides: dict[str, int] = {}
+    for tool_name in block.get("enabled", []):
+        raw = block.get(tool_name)
+        if not isinstance(raw, dict):
+            continue
+        value = raw.get("output_max_chars")
+        if value is None:
+            continue
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(
+                f"tools.{actor.value}.{tool_name}.output_max_chars must be a positive int "
+                f"(got {type(value).__name__}={value!r}) in task {task.task_id!r}"
+            )
+        overrides[tool_name] = value
+    return overrides
 
 
 def resolve_tool_schemas(
@@ -1094,6 +1145,8 @@ def _builtin_tool_schemas(
             schemas[name] = {
                 "description": func_def.get("description", f"Builtin tool: {name}"),
                 "parameters": func_def.get("parameters", {"type": "object", "properties": {}}),
+                "output_max_chars": tool.policy.output_max_chars,
+                "timeout_s": tool.policy.timeout_s,
             }
         except Exception as exc:
             logger.debug("Could not load builtin schema", tool_name=name, error=str(exc))

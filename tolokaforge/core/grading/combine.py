@@ -413,6 +413,7 @@ class GradingEngine:
                     mcp_server_path=world.mcp_server_path,
                     task_domain=self.task_domain,
                     numeric_string_fields=checks.numeric_string_fields,
+                    compare_columns=checks.compare_columns,
                 )
             )
             reasons = [reason]

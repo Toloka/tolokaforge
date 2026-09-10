@@ -1319,6 +1319,8 @@ reject it.
 | `trace_checks` nullness operators (`is_null`, `omitted`) | a pack declaring one under a matcher's `args` or `text` predicate | `unreleased` | new engine → old image |
 | `trace_checks` date operators (`date_gt`, `date_gte`, `date_lt`, `date_lte`) | a pack declaring one under a matcher predicate | `unreleased` | new engine → old image |
 | `state_checks.id_fields` | a pack declaring `state_checks` | `v0.16.1` | new engine → old image |
+| `state_checks.compare_columns` | a pack declaring `state_checks` | `unreleased` | new engine → old image |
+| `state_checks.compare_columns.<table>.<column>.mode == "subset"` | a pack declaring per-column permitted-extra tool-call params | `unreleased` | new engine → old image |
 | `state_checks.expect_initial_state` | a pack declaring `state_checks` | `unreleased` | both directions |
 | `transcript_rules.required_actions[*].name` | a pack declaring `transcript_rules.required_actions` | `unreleased` | both directions |
 | `search.plane` | every pack | `unreleased` | new engine → old image |

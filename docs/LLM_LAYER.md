@@ -2020,19 +2020,40 @@ land alongside the run data that justified the chosen watermark.
 
 ### Tool-output truncation
 
-`ModelCapabilities.tool_output_max_chars: int | None` is the loop-layer cap
-on the `content` a `role=tool` message carries into the next prompt. When
-it is set, `ToolCallingLoop._execute_tool_calls` middle-elides the content
-via `keep_head_and_tail` from
+The `content` a `role=tool` message carries into the next prompt is capped
+along three axes and the tighter set candidate wins. Ordered narrowest-first
+by scope:
+
+- `tools.<actor>.<tool_name>.output_max_chars: int | None` is the task-yaml
+  override — a pack author's per-tool cap on the tool as used in this pack,
+  tighter than the tool's own declared bound. Reserved sibling to the
+  block's per-tool init kwargs; positive int, else the loader rejects it at
+  authoring time.
+- `ToolPolicy.output_max_chars: int | None` is the per-tool declared bound
+  a tool sets on its own output — a status poll that always returns ≤512
+  chars declares that shape once at registration and every loop composes it
+  correctly.
+- `ModelCapabilities.tool_output_max_chars: int | None` is the per-model
+  backstop; a preset that names the key applies its cap uniformly to every
+  trial that runs on that model.
+
+The composition runs at two sites, each using the same shape (`min` of the
+set candidates, `None` when none is set). The adapter site
+(`native._actor_tool_schemas`) folds the task-yaml override and the
+tool-declared bound into the emitted `ToolSchema.output_max_chars`. The
+loop site (`ToolCallingLoop._cap_tool_message_content`) folds that emitted
+value with the per-model backstop into the per-call effective cap.
+
+Middle-elision uses `keep_head_and_tail` from
 [`tolokaforge/core/tool_output_truncation.py`](../tolokaforge/core/tool_output_truncation.py:1)
-before the tool message is appended, so accumulated context stays
-predictable across trials whose tools return unbounded strings (browser
-tool DOM dumps, database result sets, RAG hit lists, task-pack MCP tool
-output). Reasoning-heavy models are the norm; a first-class engine policy
-for bounding tool-output size that lands on the message history is a
-general improvement rather than a per-model workaround. `None` (the
-default) threads every tool message through verbatim — the pre-opt-in
-baseline for presets that do not name the key.
+so accumulated context stays predictable across trials whose tools return
+unbounded strings (browser tool DOM dumps, database result sets, RAG hit
+lists, task-pack MCP tool output). Reasoning-heavy models are the norm; a
+first-class engine policy for bounding tool-output size that lands on the
+message history is a general improvement rather than a per-model
+workaround. Absent all three axes, tool messages pass through verbatim —
+the baseline for presets that do not name the key on tools that do not
+declare a cap in a pack that does not override it.
 
 The cap sits **below** the trial's recorder and the grader. The recorder
 call inside `_execute_tool_calls` reads the full text through
@@ -2048,8 +2069,8 @@ The marker splices between the preserved head and tail:
 ```
 
 `{N}` is the number of chars removed. Head and tail are each
-`tool_output_max_chars // 2` chars long, taken verbatim from the input —
-so a compilation output whose first failure is at the top and whose final
+`effective_cap // 2` chars long, taken verbatim from the input — so a
+compilation output whose first failure is at the top and whose final
 error is at the bottom keeps both edges (the two most common tool-output
 patterns). Only `Message.content` is capped: `Message.content_blocks`
 (multimodal payloads like browser-tool screenshots) passes through
@@ -2058,23 +2079,31 @@ clipped. The `Error: ...` branch — a failed tool call whose message text
 prefixes `Error:` for the model — flows through the same cap, so a
 runaway error string cannot silently blow past the guarantee.
 
-The cap is a **defensive backstop** above per-tool truncation, not a
-replacement. `persistent_shell` and `str_replace_editor` truncate their
-own output at 16 KB chars inside the tool, with a tool-authored marker
-that names actionable recovery intent (`"[…output truncated…]" — re-run
-with a narrower selector`). A per-tool cap owns intent the loop cannot
-supply, so the two layers compose: the tool's own truncation runs first,
-and the loop cap absorbs whatever text still reaches the message-append
-site. Tools that do not cap themselves (browser DOM, RAG search, MCP tool
-output) rely on the loop cap alone. A future tool whose per-call cap
-exceeds the loop's would see a double-truncation shape — the outer cap
-wins and the inner marker survives in whichever half retained it.
+The cap is a **defensive backstop** above per-tool truncation the tool
+itself performs, not a replacement. `persistent_shell` and
+`str_replace_editor` truncate their own output at 16 KB chars inside the
+tool, with a tool-authored marker that names actionable recovery intent
+(`"[…output truncated…]" — re-run with a narrower selector`). Those
+markers own semantics the loop layer cannot supply, so the two layers
+compose: the tool's own truncation runs first, and whichever of the two
+loop caps is tighter absorbs whatever text still reaches the
+message-append site. Tools that do not cap themselves (browser DOM, RAG
+search, MCP tool output) rely on the loop caps alone.
 
 `LoopConfig.tool_output_max_chars` flows from
 `ModelCapabilities.tool_output_max_chars` at
-[`runner.py`](../tolokaforge/core/runner.py:1) construction time, so a
-preset that names the key applies uniformly to every trial that runs on
-that model. Preset routing is pinned by
+[`runner.py`](../tolokaforge/core/runner.py:1) construction time.
+`ToolCallingLoop.tool_output_max_chars_by_tool` — the per-tool map — is
+wired from
+[`ToolRegistry.output_max_chars_by_tool`](../tolokaforge/tools/registry.py:1)
+by the callers that construct the loop over a live registry. Task-pack
+tools reach the harness through the runner: the native adapter composes
+`ToolPolicy.output_max_chars` with the task-yaml override into
+[`ToolSchema.output_max_chars`](GRPC_PROTOCOL.md#toolschemaoutput_max_chars),
+the runner emits it on the wire, the harness reads it back via `HasField`,
+the conductor lifts the set-only subset into a per-trial map on
+`_TrialSetup`, and the map is threaded into `TrialRunner.__init__` and on
+into the loop. Preset routing is pinned by
 [`tests/canonical/test_tool_output_max_chars_preset_routing.py`](../tests/canonical/test_tool_output_max_chars_preset_routing.py);
 the loop-layer behaviour and the helper contract are pinned by
 [`tests/unit/test_tool_calling_loop.py`](../tests/unit/test_tool_calling_loop.py)

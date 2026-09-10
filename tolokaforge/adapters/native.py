@@ -21,6 +21,7 @@ from tolokaforge.adapters._task_loader import (
     resolve_tool_schemas,
     seeded_tables_from_task,
     tool_configs,
+    tool_output_max_chars_overrides,
 )
 from tolokaforge.adapters.base import (
     AdapterEnvironment,
@@ -197,6 +198,7 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
         raise RuntimeError(f"MCP server script not found: {task_dir / mcp_server_ref}")
 
     configs = tool_configs(task, actor)
+    overrides = tool_output_max_chars_overrides(task, actor)
     rich_schemas = resolve_tool_schemas(task, task_dir, actor, allow_subprocess=True)
 
     schemas: list[ToolSchema] = []
@@ -205,7 +207,15 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
             # The runner reconstructs search_kb as a RAGSearchToolWrapper
             # (source-less, RAG dispatch). Carry the canonical schema so
             # the LLM sees the real {query, top_k, alpha} parameters.
-            schemas.append(create_search_kb_schema())
+            # The task-yaml override composes with the schema's existing
+            # ``output_max_chars`` under the same tighter-wins rule the
+            # generic branch below applies to every other tool.
+            base = create_search_kb_schema()
+            cap_candidates = [
+                c for c in (base.output_max_chars, overrides.get(tool_name)) if c is not None
+            ]
+            emitted_cap = min(cap_candidates) if cap_candidates else None
+            schemas.append(base.model_copy(update={"output_max_chars": emitted_cap}))
             continue
         if mcp_server_ref is None and not builtin_registry.is_builtin(tool_name):
             raise NativeAdapterMisconfigurationError(
@@ -223,6 +233,10 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
             if mcp_server_ref
             else None
         )
+        cap_candidates = [
+            c for c in (rich.get("output_max_chars"), overrides.get(tool_name)) if c is not None
+        ]
+        emitted_cap = min(cap_candidates) if cap_candidates else None
         schemas.append(
             ToolSchema(
                 name=tool_name,
@@ -231,9 +245,10 @@ def _actor_tool_schemas(task: TaskConfig, task_dir: Path, actor: ToolActor) -> l
                 ),
                 parameters=rich.get("parameters", {"type": "object", "properties": {}}),
                 category="compute",
-                timeout_s=30.0,
+                timeout_s=rich.get("timeout_s", 30.0),
                 source=source,
                 tool_config=configs.get(tool_name, {}),
+                output_max_chars=emitted_cap,
             )
         )
     return schemas
@@ -932,6 +947,7 @@ class NativeAdapter(CodingHarnessAdapterMixin, BaseAdapter):
                     numeric_string_fields=list(state_checks_data.get("numeric_string_fields", [])),
                     id_fields=id_fields_declared,
                     relaxed_validation=relaxed_validation,
+                    compare_columns=state_checks_data.get("compare_columns", {}),
                 )
 
             # Build transcript rules. One model serves the authored block and the

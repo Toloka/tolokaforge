@@ -1295,9 +1295,11 @@ def _run_capped_tool_output_loop(
     cap: int | None,
     *,
     recorder: _RecordingRecorder | None = None,
+    tool_cap: int | None = None,
+    tool_name: str = "read_file",
 ) -> tuple[list[Message], _ScriptedOutputExecutor]:
     executor = _ScriptedOutputExecutor([tool_result])
-    client = _one_tool_call_then_stop()
+    client = _one_tool_call_then_stop(name=tool_name)
     messages: list[Message] = []
     loop = ToolCallingLoop(
         llm_client=client,
@@ -1314,6 +1316,7 @@ def _run_capped_tool_output_loop(
         logger=_logger(),
         recorder=recorder,
         retry_sleep=lambda _s: None,
+        tool_output_max_chars_by_tool=({tool_name: tool_cap} if tool_cap is not None else None),
     )
     loop.run("sys", messages, time.time())
     return messages, executor
@@ -1372,6 +1375,43 @@ def test_tool_output_content_blocks_left_untouched_when_capped():
     assert tool_message.content_blocks == blocks
     assert len(tool_message.content) < 40_000
     assert "chars omitted" in tool_message.content
+
+
+@pytest.mark.parametrize(
+    ("tool_cap", "cap_cap", "expected_effective"),
+    [
+        pytest.param(500, None, 500, id="only-tool-set"),
+        pytest.param(500, 1000, 500, id="tool-tighter-than-capability"),
+        pytest.param(1000, 500, 500, id="capability-tighter-than-tool"),
+    ],
+)
+def test_tool_output_cap_takes_tighter_of_tool_and_capability(
+    tool_cap: int | None,
+    cap_cap: int | None,
+    expected_effective: int,
+) -> None:
+    """The tighter set cap wins per call, and the recorder still sees the
+    full untruncated text under every combination.
+
+    Pairs with the ``capability_set`` and ``capability_none`` cases upstream:
+    together they exercise every ``(tool_cap, cap_cap)`` combination
+    :meth:`ToolCallingLoop._cap_tool_message_content` distinguishes.
+    """
+    recorder = _RecordingRecorder()
+    huge = "X" * 4_000
+    messages, _ = _run_capped_tool_output_loop(
+        ToolResult(success=True, output=huge),
+        cap=cap_cap,
+        recorder=recorder,
+        tool_cap=tool_cap,
+    )
+    tool_message = _only_tool_message(messages)
+    half = expected_effective // 2
+    chars_omitted = len(huge) - 2 * half
+    expected_content = "X" * half + f"\n...[{chars_omitted} chars omitted]...\n" + "X" * half
+    assert tool_message.content == expected_content
+    assert len(recorder.records) == 1
+    assert recorder.records[0]["output"] == huge
 
 
 def test_tool_output_error_path_also_capped():
