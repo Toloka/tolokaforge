@@ -40,7 +40,10 @@ import pytest
 import yaml
 
 from tests.utils.scripted_llm_client import ScriptedLLMClient
-from tolokaforge.core.grading.judge_kinds import SingleShotRubricJudgeKind
+from tolokaforge.core.grading.judge_kinds import (
+    ChunkedRubricJudgeKind,
+    SingleShotRubricJudgeKind,
+)
 from tolokaforge.core.grading.judge_kinds.parity import (
     ParityCorpusEntry,
     ParityGateThresholds,
@@ -65,6 +68,12 @@ _LIVE_API_KEYS = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 # corpus load and CI jitter.
 _INNER_SUM_BUDGET_S = 60.0
 _FULL_WALLCLOCK_BUDGET_S = 90.0
+
+#: Fixed chunk size the parity-lane chunked measurements use. Matches
+#: ``ChunkedRubricJudgeKind``'s ``DEFAULT_CHUNK_SIZE = 5``; large-rubric
+#: cassettes are authored against this value.
+_CHUNK_SIZE = 5
+_CHUNKED_KIND_CONFIG: dict[str, Any] = {"chunk_size": _CHUNK_SIZE}
 
 
 # ---------------------------------------------------------------------------
@@ -113,11 +122,18 @@ def _load_corpus_entry(path: Path) -> ParityCorpusEntry:
     the fixture kind's script still loads (kind-specific scripts, like
     fixture kinds such as ``_FlakyJudgeKind``, are authored inline in
     the test file; corpus YAML ships ``single_shot_rubric`` only).
+    ``judge_scripts_per_chunk`` (optional) carries one script per chunk
+    for kinds that dispatch a fresh client per chunk (``chunked_rubric``).
     """
     data = yaml.safe_load(path.read_text())
     raw_scripts = data.get("judge_scripts", {}) or {}
     normalised_scripts = {
         kind_name: _normalise_cassette(list(script)) for kind_name, script in raw_scripts.items()
+    }
+    raw_per_chunk = data.get("judge_scripts_per_chunk", {}) or {}
+    normalised_per_chunk = {
+        kind_name: [_normalise_cassette(list(script)) for script in scripts]
+        for kind_name, scripts in raw_per_chunk.items()
     }
     return ParityCorpusEntry(
         entry_id=str(data["entry_id"]),
@@ -129,6 +145,7 @@ def _load_corpus_entry(path: Path) -> ParityCorpusEntry:
         custom_system_prompt=data.get("custom_system_prompt"),
         include_agent_system_prompt=bool(data.get("include_agent_system_prompt", True)),
         judge_scripts=normalised_scripts,
+        judge_scripts_per_chunk=normalised_per_chunk,
     )
 
 
@@ -174,23 +191,42 @@ class _ScriptedJudgeModelProvider:
         return self._client
 
 
+def _entry_client_scripts(entry: ParityCorpusEntry, kind_name: str) -> list[list[Any]]:
+    """Return one client-script per :meth:`JudgeModelProvider.build` call
+    the kind will make on this entry.
+
+    Dispatches on cassette shape (NOT on kind name), so the harness stays
+    kind-agnostic: an entry carrying ``judge_scripts_per_chunk[kind_name]``
+    yields N scripts (one per chunk); otherwise it yields one script from
+    ``judge_scripts[kind_name]`` — the single-client shape.
+    """
+    if kind_name in entry.judge_scripts_per_chunk:
+        return list(entry.judge_scripts_per_chunk[kind_name])
+    return [_cassette_for(entry, kind_name)]
+
+
 def _cassette_provider_factory(
     corpus: list[ParityCorpusEntry], kind_name: str
 ) -> Callable[[int], JudgeModelProvider]:
     """Return a provider_factory that lands a fresh
-    :class:`ScriptedLLMClient` for each corpus entry on every replay.
+    :class:`ScriptedLLMClient` for each :meth:`build` call the kind makes
+    on the corpus in every replay.
 
     The harness calls the returned factory ONCE per replay and reuses the
     provider for every entry in that replay; the factory delegates to a
     provider whose :meth:`build` pops the next scripted client off a
-    per-replay pool. Each pool is seeded from the fixed
-    ``entry.judge_scripts[kind_name]`` cassette, so replay N's client
-    stream is a byte-for-byte clone of replay 0's.
+    per-replay pool. The pool is flat-mapped from
+    :func:`_entry_client_scripts` for each entry — one client per
+    :meth:`build` call the kind is expected to make — so replay N's
+    client stream is a byte-for-byte clone of replay 0's.
     """
 
     def _factory(_replay_index: int) -> JudgeModelProvider:
-        clients = [ScriptedLLMClient(_cassette_for(entry, kind_name)) for entry in corpus]
-        remaining = list(clients)
+        remaining = [
+            ScriptedLLMClient(script)
+            for entry in corpus
+            for script in _entry_client_scripts(entry, kind_name)
+        ]
 
         class _PoolProvider:
             def build(self, model_config: ModelConfig) -> JudgeModel:  # noqa: ARG002
@@ -203,7 +239,7 @@ def _cassette_provider_factory(
 
 def _cassette_provider(corpus: list[ParityCorpusEntry], kind_name: str) -> JudgeModelProvider:
     """Single-replay provider for cross-kind dispatch — pops one scripted
-    client per entry in corpus order."""
+    client per :meth:`build` call in corpus order."""
     return _cassette_provider_factory(corpus, kind_name)(0)
 
 
@@ -282,14 +318,41 @@ class _InnerBudget:
 def test_corpus_has_twenty_entries() -> None:
     """Twenty fixtures, every one parses cleanly into
     :class:`ParityCorpusEntry`, every one ships a
-    ``judge_scripts.single_shot_rubric`` cassette. A malformed rubric
-    fails Pydantic validation right here — never at replay time."""
+    ``judge_scripts.single_shot_rubric`` cassette AND a
+    ``judge_scripts_per_chunk.chunked_rubric`` cassette with the
+    correct chunk count for ``chunk_size=5``. A malformed rubric fails
+    Pydantic validation right here — never at replay time."""
     corpus = _load_corpus()
     assert len(corpus) == 20, f"corpus size drift: {len(corpus)} entries"
     for entry in corpus:
         assert entry.rubric.criteria, f"{entry.entry_id}: empty rubric"
         missing_cassette_msg = f"{entry.entry_id}: missing single_shot_rubric cassette"
         assert "single_shot_rubric" in entry.judge_scripts, missing_cassette_msg
+        missing_chunked_msg = f"{entry.entry_id}: missing chunked_rubric per-chunk cassette"
+        assert "chunked_rubric" in entry.judge_scripts_per_chunk, missing_chunked_msg
+        expected_chunks = (len(entry.rubric.criteria) + _CHUNK_SIZE - 1) // _CHUNK_SIZE
+        actual_chunks = len(entry.judge_scripts_per_chunk["chunked_rubric"])
+        chunk_count_msg = (
+            f"{entry.entry_id}: chunked_rubric cassette has {actual_chunks} scripts, "
+            f"expected {expected_chunks} for chunk_size={_CHUNK_SIZE} over "
+            f"{len(entry.rubric.criteria)} criteria"
+        )
+        assert actual_chunks == expected_chunks, chunk_count_msg
+
+
+def test_missing_chunked_cassette_raises_with_entry_and_kind_name() -> None:
+    """Constructing a pool provider for a kind the entry never authored
+    a chunked cassette for → :func:`_cassette_for` (fallback path) raises
+    with both the entry_id and the kind name. Silent skips are the
+    failure mode the parity contract refuses — a new chunking kind whose
+    cassette is missing must fail lane collection, not silently pair a
+    zero-turn judge against a real one."""
+    corpus = _load_corpus()
+    with pytest.raises(KeyError) as excinfo:
+        _entry_client_scripts(corpus[0], "no_such_chunked_kind")
+    message = str(excinfo.value)
+    assert corpus[0].entry_id in message
+    assert "no_such_chunked_kind" in message
 
 
 def test_missing_cassette_raises_with_entry_and_kind_name() -> None:
@@ -317,6 +380,10 @@ def _thresholds() -> ParityGateThresholds:
 
 def _single_shot_kind() -> SingleShotRubricJudgeKind:
     return SingleShotRubricJudgeKind()
+
+
+def _chunked_kind() -> ChunkedRubricJudgeKind:
+    return ChunkedRubricJudgeKind()
 
 
 def test_single_shot_self_parity_ships() -> None:
@@ -403,6 +470,52 @@ def test_cross_kind_flaky_vs_single_shot_blocks() -> None:
     assert decision.blocking_criteria, "flaky-vs-single_shot must land at least one block"
 
 
+def test_chunked_self_parity_ships() -> None:
+    """Five deterministic replays of ``chunked_rubric`` (K=5) on the
+    corpus produce identical per-criterion verdicts across replays —
+    per-criterion κ = 1.0, the self-consistency arm ships. Locks that
+    the chunked kind is deterministic under the cassette contract."""
+    corpus = _load_corpus()
+    report = measure_self_consistency(
+        kind_factory=lambda _i: _chunked_kind(),
+        corpus=corpus,
+        replays=5,
+        judge_model_config=_JUDGE_MODEL,
+        provider_factory=_cassette_provider_factory(corpus, "chunked_rubric"),
+        kind_config=_CHUNKED_KIND_CONFIG,
+    )
+    decision = decide_parity_gate(report, thresholds=_thresholds(), measurement="self_consistency")
+    self_blocked_msg = f"chunked self-parity blocked on {decision.blocking_criteria!r}"
+    assert decision.shippable is True, self_blocked_msg
+    assert decision.blocking_criteria == ()
+    assert decision.warning_criteria == ()
+
+
+def test_cross_kind_chunked_vs_single_shot_ships() -> None:
+    """``chunked_rubric`` (K=5) vs ``single_shot_rubric`` on the same
+    corpus — the per-chunk cassettes carry the identical per-criterion
+    verdicts the single-shot cassettes carry, so cross-kind κ = 1.0
+    everywhere and the gate ships. Locks that the chunked kind
+    surfaces the same verdicts the reference kind does on identical
+    evidence."""
+    corpus = _load_corpus()
+    report = measure_cross_kind_agreement(
+        reference_kind=_single_shot_kind(),
+        candidate_kind=_chunked_kind(),
+        corpus=corpus,
+        judge_model_config=_JUDGE_MODEL,
+        reference_provider=_cassette_provider(corpus, "single_shot_rubric"),
+        candidate_provider=_cassette_provider(corpus, "chunked_rubric"),
+        kind_config=_CHUNKED_KIND_CONFIG,
+    )
+    decision = decide_parity_gate(report, thresholds=_thresholds(), measurement="cross_kind")
+    cross_blocked_msg = (
+        f"chunked vs single-shot cross-kind blocked on {decision.blocking_criteria!r}"
+    )
+    assert decision.shippable is True, cross_blocked_msg
+    assert decision.blocking_criteria == ()
+
+
 def test_report_reports_per_criterion_not_aggregate() -> None:
     """Cross-kind identity → :class:`ParityGateDecision` carries a
     per-criterion verdict for every criterion id in the pool, and
@@ -487,6 +600,29 @@ def test_cassette_lane_runtime_budget(request: pytest.FixtureRequest) -> None:
             judge_model_config=_JUDGE_MODEL,
             reference_provider=_cassette_provider(corpus, "single_shot_rubric"),
             candidate_provider=MagicMock(spec=JudgeModelProvider),
+        ),
+    )
+    budget.measure(
+        "chunked_self",
+        lambda: measure_self_consistency(
+            kind_factory=lambda _i: _chunked_kind(),
+            corpus=corpus,
+            replays=5,
+            judge_model_config=_JUDGE_MODEL,
+            provider_factory=_cassette_provider_factory(corpus, "chunked_rubric"),
+            kind_config=_CHUNKED_KIND_CONFIG,
+        ),
+    )
+    budget.measure(
+        "cross_kind_chunked_vs_single_shot",
+        lambda: measure_cross_kind_agreement(
+            reference_kind=_single_shot_kind(),
+            candidate_kind=_chunked_kind(),
+            corpus=corpus,
+            judge_model_config=_JUDGE_MODEL,
+            reference_provider=_cassette_provider(corpus, "single_shot_rubric"),
+            candidate_provider=_cassette_provider(corpus, "chunked_rubric"),
+            kind_config=_CHUNKED_KIND_CONFIG,
         ),
     )
 

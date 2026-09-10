@@ -28,3 +28,12 @@ judge_scripts:
             cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: NOT MET"
             question_answered: 0.2
             question_answered_justification: "because question_answered\nSCORE: 0.2"
+judge_scripts_per_chunk:
+  chunked_rubric:
+    - - - name: submit_report
+          arguments:
+              reasons: 'overall summary — chunked'
+              cancellation_confirmed: false
+              cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: NOT MET"
+              question_answered: 0.2
+              question_answered_justification: "because question_answered\nSCORE: 0.2"
