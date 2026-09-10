@@ -34,3 +34,14 @@ judge_scripts:
             identity_verified_justification: "because identity_verified\nVERDICT: NOT MET"
             stock_updated: false
             stock_updated_justification: "because stock_updated\nVERDICT: NOT MET"
+judge_scripts_per_chunk:
+  chunked_rubric:
+    - - - name: submit_report
+          arguments:
+              reasons: 'overall summary — chunked'
+              policy_check: false
+              policy_check_justification: "because policy_check\nVERDICT: NOT MET"
+              identity_verified: false
+              identity_verified_justification: "because identity_verified\nVERDICT: NOT MET"
+              stock_updated: false
+              stock_updated_justification: "because stock_updated\nVERDICT: NOT MET"

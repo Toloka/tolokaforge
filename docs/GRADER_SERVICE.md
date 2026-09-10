@@ -582,9 +582,9 @@ The runner resolves the shipping defaults at startup via
 `load_state_check_backend("jsonpath")` + `load_state_check_backend("db_probes")`,
 and caches the resulting instances on `RunnerServiceImpl`. The check
 executor is threaded through the composite `grade_custom_checks`
-dispatch. The judge model provider and the resolved
-`load_judge_kind("single_shot_rubric")()` class are handed to the
-composite `grade_llm_judge` at grade time — the kind builds its own
+dispatch. The judge model provider and the JudgeKind resolved from
+`llm_judge_config.judge_kind` are handed to the composite
+`grade_llm_judge` at grade time — the kind builds its own
 :class:`LLMJudge` per call from the caller's `ModelConfig` +
 customization (KB gate, custom system-prompt,
 include-agent-system-prompt); no LLM transport ever appears in
@@ -688,7 +688,7 @@ seven sub-component seams. Each group has a matching loader on
 
 - `tolokaforge.grading_methods` — `load_grading_method(name)` returns the `GradingMethod` marker **class**. Names in this group are the values `RunnerGradingConfig.grading_method` accepts at `RegisterTrial`; the marker carries `NAME: ClassVar[str]` so a downstream typo in `pyproject.toml` fails at discovery. Every shipped name also registers in `tolokaforge.grader_kinds` below — `RegisterTrial` validates the wire name against both groups.
 - `tolokaforge.grader_kinds` — `load_grader_kind(name)` returns the typed `GraderKind` **class**, whose `evaluate(*, substrate, task_config, kind_config, trial_id, agent_tools, logger) -> Grade | None` drives runtime dispatch for every non-composite name at `RunnerServiceImpl._dispatch_via_grader_kind`. Composite (or `None`) stays on the runner-side fold. Two built-ins ship: `composite` (a reference impl over `CompositeFold`) and `test_execution` (reads through `substrate.run_test_suite(...)`).
-- `tolokaforge.judge_kinds` — `load_judge_kind(name)` returns the typed `JudgeKind` **class**, whose `evaluate(*, rubric, agent_system_prompt, transcript, db_reader, kb_search, workspace_dir, extra_read_tools, state_diff, judge_model_config, judge_model_provider, disable_knowledge_search, custom_system_prompt, include_agent_system_prompt, kind_config, logger) -> JudgeResult` drives runner-side LLM-judge dispatch. One built-in ships: `single_shot_rubric` (wraps `LLMJudge` byte-identically). Downstream kinds (chunked, agentic, jury) register alongside without a framework PR. The kind is selected per-task via `grading.llm_judge.judge_kind`; per-kind options ride `grading.llm_judge.kind_config` as an opaque dict each kind validates itself. Every new kind must clear the κ-parity gate at `tests/canonical/test_judge_kind_parity.py` before selection as a task default — contract, thresholds, and authoring recipe are in [`docs/JUDGE_KINDS.md § Parity gate`](JUDGE_KINDS.md#parity-gate).
+- `tolokaforge.judge_kinds` — `load_judge_kind(name)` returns the typed `JudgeKind` **class**, whose `evaluate(*, rubric, agent_system_prompt, transcript, db_reader, kb_search, workspace_dir, extra_read_tools, state_diff, judge_model_config, judge_model_provider, disable_knowledge_search, custom_system_prompt, include_agent_system_prompt, kind_config, logger) -> JudgeResult` drives runner-side LLM-judge dispatch. Two built-ins ship: `single_shot_rubric` (wraps `LLMJudge` byte-identically) and `chunked_rubric` (one `LLMJudge` invocation per fixed-K chunk of the rubric's criteria — see [`docs/JUDGE_KINDS.md § Chunked kind`](JUDGE_KINDS.md#chunked-kind)). Downstream kinds (agentic, jury) register alongside without a framework PR. The kind is selected per-task via `grading.llm_judge.judge_kind`; per-kind options ride `grading.llm_judge.kind_config` as an opaque dict each kind validates itself. Every new kind must clear the κ-parity gate at `tests/canonical/test_judge_kind_parity.py` before selection as a task default — contract, thresholds, and authoring recipe are in [`docs/JUDGE_KINDS.md § Parity gate`](JUDGE_KINDS.md#parity-gate).
 - `tolokaforge.grading_substrates` — `load_grading_substrate(name)` returns the `GradingSubstrate` **class** (the caller instantiates it with per-trial arguments).
 - `tolokaforge.custom_check_executors` — `load_custom_check_executor(name)` returns a factory.
 - `tolokaforge.judge_model_providers` — `load_judge_model_provider(name)` returns a factory.

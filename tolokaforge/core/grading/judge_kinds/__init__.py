@@ -1,12 +1,14 @@
 """``tolokaforge.judge_kinds`` — typed judge-kind package.
 
 Every entry in ``[project.entry-points."tolokaforge.judge_kinds"]``
-resolves to a class satisfying :class:`JudgeKind`. One built-in ships:
-:class:`SingleShotRubricJudgeKind`, wrapping today's :class:`LLMJudge`
-invocation byte-identically.
+resolves to a class satisfying :class:`JudgeKind`. Two built-ins ship:
+:class:`SingleShotRubricJudgeKind` (wraps today's :class:`LLMJudge`
+invocation byte-identically) and :class:`ChunkedRubricJudgeKind` (one
+:class:`LLMJudge` invocation per fixed-K chunk of the rubric's criteria,
+removing the truncation failure class on 30+ criterion rubrics).
 
-Downstream packages register alternative kinds (chunked, agentic, jury,
-downstream-specific) alongside the shipping reference impl without a
+Downstream packages register alternative kinds (agentic, jury,
+downstream-specific) alongside the shipping reference impls without a
 framework PR — see ``docs/GRADER_SERVICE.md`` § Extension points.
 
 The κ-parity surface (``ParityCorpusEntry``, ``ParityGateThresholds``,
@@ -20,9 +22,15 @@ and not part of the runner subset.
 """
 
 from tolokaforge.core.grading.judge_kinds._protocol import JudgeKind
+from tolokaforge.core.grading.judge_kinds.chunked import (
+    DEFAULT_CHUNK_SIZE,
+    ChunkedRubricJudgeKind,
+)
 from tolokaforge.core.grading.judge_kinds.single_shot import SingleShotRubricJudgeKind
 
 __all__ = [
+    "DEFAULT_CHUNK_SIZE",
+    "ChunkedRubricJudgeKind",
     "JudgeKind",
     "SingleShotRubricJudgeKind",
 ]

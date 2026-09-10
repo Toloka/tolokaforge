@@ -13,12 +13,55 @@ documented in [`docs/GRADER_SERVICE.md § Sub-component plug-in seams`](GRADER_S
 the composite fold that dispatches into the kind is documented in
 [`docs/GRADING.md`](GRADING.md).
 
-One kind ships in the reference distribution: `single_shot_rubric`
+Two kinds ship in the reference distribution: `single_shot_rubric`
 (wraps `LLMJudge` in one shot, byte-identical with the pre-seam
-`LLMJudgeRubricEvaluator`). Downstream packages register alternatives
-(chunked, agentic, jury) alongside without a framework PR.
+`LLMJudgeRubricEvaluator`) and `chunked_rubric` (one `LLMJudge`
+invocation per fixed-K chunk of the rubric's criteria — the opt-in kind
+for large rubrics where a single `submit_report` payload would exceed
+the judge model's output-token ceiling). Downstream packages register
+alternatives (agentic, jury) alongside without a framework PR.
 
-> This document currently covers the parity gate only; wider catalog is TODO (#1572).
+> This document currently covers the parity gate and the chunked kind;
+> a wider catalog is TODO (#1572).
+
+## Chunked kind
+
+`chunked_rubric` splits the rubric's criteria into fixed-K contiguous
+chunks (`rubric.criteria[i*K:(i+1)*K]`), runs one `LLMJudge` per chunk
+against a scoped sub-rubric (each chunk sees the original `reference`
+verbatim), and merges the per-chunk `CriterionResult` maps into the
+original full rubric — folded through `aggregate_rubric` on the
+original rubric so `score` / `binary_pass` / `gate_failed` come out of
+the same math the single-shot kind uses. Opt in via
+`grading.llm_judge.judge_kind: chunked_rubric`; the default remains
+`single_shot_rubric`.
+
+`kind_config` schema: `{"chunk_size": int}`. `chunk_size` must be `>= 1`
+(a `chunk_size >= len(criteria)` degenerates to a single call, which is
+deliberate). Missing key or a `None` config → `DEFAULT_CHUNK_SIZE = 5`;
+follow-up [#1581](https://github.com/Toloka/tolokaforge/issues/1581)
+tunes this default from live measurement. Any unknown key or a
+non-positive `chunk_size` raises `ValueError` inside `evaluate` before
+any judge call runs.
+
+Per-chunk fail-loud (#1471): any chunk whose `JudgeResult.status` is
+not `COMPLETED` — or whose `criterion_results` is missing one of its
+chunk's criterion ids — yields a whole-trial `JudgeResult` with
+`status=ERRORED`, `score=None`, `criterion_results=()`, and a `reasons`
+naming the failing chunk index + its criterion ids + the underlying
+reason. `chunk_boundaries` is still populated with every boundary
+attempted, so #1569 can persist them and offline replay can retry only
+the failing chunk. There is never a silent partial-rubric score.
+
+Chunk boundaries are emitted on the in-memory `JudgeResult` today via
+`chunk_boundaries: tuple[tuple[str, ...], ...]` — one inner tuple per
+chunk, with criterion ids in original order. Bundle-manifest persistence
+is deferred to #1569.
+
+Cost note: a rubric split into N chunks consumes up to `N ×` the
+single-shot per-trial wall-clock and system-prompt tokens. This is the
+acknowledged cost of removing the truncation failure class; the trade
+between chunk size and reliability is measured in follow-up #1581.
 
 ## Parity gate
 
@@ -123,6 +166,18 @@ and iterate on the kind until every per-criterion verdict lands as
 `KeyError` at lane collection naming the entry_id and the missing
 kind — silent skips are the failure mode the contract refuses.
 
+**Kinds that need N clients per fixture.** A kind that calls
+`judge_model_provider.build(...)` more than once per `evaluate` (the
+chunked kind is the shipping example) authors its cassette under
+`judge_scripts_per_chunk.<your_kind_name>` — a list of scripts, one per
+`build` call. The parity lane's pool provider dispatches on cassette
+shape (presence of `judge_scripts_per_chunk[NAME]`), so no harness
+change is needed: pop the N scripts as N `ScriptedLLMClient` instances
+for that fixture. See the `chunked_rubric` cassettes under
+`tests/data/judge_kind_parity_corpus/large_rubrics/` for the multi-chunk
+authoring shape (three `-` levels: per-chunk scripts list → the script's
+single turn → the turn's single tool call).
+
 ### Corpus authoring rules
 
 The 20 committed fixtures split across three shape families to
@@ -143,11 +198,23 @@ verdicts to keep its per-criterion pool label-variant.
 Every fixture is one `entry.yaml` file in `ParityCorpusEntry` shape:
 `{entry_id, rubric, agent_system_prompt, transcript, state_diff,
 disable_knowledge_search, custom_system_prompt,
-include_agent_system_prompt, judge_scripts}`. The
-`judge_scripts.<kind_name>` value is a list of turns; each turn is
+include_agent_system_prompt, judge_scripts, judge_scripts_per_chunk}`.
+The `judge_scripts.<kind_name>` value is a list of turns; each turn is
 either a string (assistant text) or a list of tool-call dicts
 (`{name, arguments}`). The `single_shot_rubric` cassette is one turn
 calling `submit_report` with per-criterion verdict + justification
 args; the justification MUST use YAML double-quoted syntax so `\n`
 is interpreted as a real newline (the judge's verdict-consistency
 regex needs the marker on its own line).
+
+Kinds that dispatch a fresh client per chunk (`chunked_rubric`) author
+their cassette under `judge_scripts_per_chunk.<kind_name>` — a
+list of scripts, one per chunk. Every fixture MUST ship a
+`judge_scripts_per_chunk.chunked_rubric` block with
+`ceil(len(criteria) / chunk_size)` scripts at `chunk_size = 5` — the
+`test_corpus_has_twenty_entries` loader lock asserts the count.
+Small-rubric and multi-turn fixtures (2–4 criteria) ship a
+single-script cassette (single-chunk degenerate case); large-rubric
+fixtures (8–15 criteria) ship 2–3 scripts. Per-criterion verdicts
+across the chunk scripts MUST match the single-shot cassette's for
+identical cross-kind κ.
