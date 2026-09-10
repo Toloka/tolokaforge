@@ -6,7 +6,7 @@ into fixed-size contiguous chunks of ``chunk_size`` (default 5), runs one
 :class:`LLMJudge` per chunk against a scoped sub-rubric (sharing the
 original ``reference``), and merges the per-chunk
 :class:`~tolokaforge.runner.models.CriterionResult` maps above
-:class:`~tolokaforge.core.grading.judge._SubmitReportTermination` before
+:class:`~tolokaforge.core.grading.judge.SubmitReportTermination` before
 folding them through :func:`aggregate_rubric` on the ORIGINAL full rubric.
 
 The kind exists to remove the truncation failure class large rubrics

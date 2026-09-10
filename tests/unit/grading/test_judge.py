@@ -13,7 +13,7 @@ import pytest
 
 from tolokaforge.core.grading.judge import (
     LLMJudge,
-    _build_opening_message,
+    build_opening_message,
 )
 from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.judge_prompt import (
@@ -1145,8 +1145,8 @@ def test_opening_message_default_embeds_agent_policy_byte_for_byte():
     """The default embeds the agent-policy section, and passing the default kwarg
     explicitly changes nothing — byte-for-byte the ungated call."""
     transcript = [{"role": "user", "content": "do the thing"}]
-    ungated = _build_opening_message("AGENT-POLICY-MARKER", transcript, "orders: 1 modified")
-    explicit_default = _build_opening_message(
+    ungated = build_opening_message("AGENT-POLICY-MARKER", transcript, "orders: 1 modified")
+    explicit_default = build_opening_message(
         "AGENT-POLICY-MARKER",
         transcript,
         "orders: 1 modified",
@@ -1162,7 +1162,7 @@ def test_opening_message_gated_omits_agent_policy_section():
     policy-framing sentence nor the agent prompt text appears — while the
     transcript and state sections are untouched."""
     transcript = [{"role": "user", "content": "do the thing"}]
-    gated = _build_opening_message(
+    gated = build_opening_message(
         "AGENT-POLICY-MARKER",
         transcript,
         "orders: 1 modified",
@@ -1195,9 +1195,9 @@ def test_opening_message_ignores_the_tool_call_id_on_the_wire():
         result_message,
     ]
 
-    rendered = _build_opening_message("POLICY", with_id, "orders: 1 modified")
+    rendered = build_opening_message("POLICY", with_id, "orders: 1 modified")
 
-    assert rendered == _build_opening_message("POLICY", without_id, "orders: 1 modified")
+    assert rendered == build_opening_message("POLICY", without_id, "orders: 1 modified")
     assert 'tool_call refund({"payment_id": "PAY-1"})' in rendered
     assert "call_A" not in rendered
 
