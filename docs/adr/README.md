@@ -78,3 +78,4 @@ Note: number 0043 is intentionally skipped — reserved for a draft that never l
 | [0043](0043-detached-mode-grader-and-typed-grader-kinds.md) | Detached-mode grader, typed grader kinds, adapter grading contract | Accepted |
 | [0044](0044-composition-plan-runtime.md) | Composition-plan runtime — redesigned `SharedStackRuntimeBackend` with per-stack lifecycle scopes and detachable adapters | Proposed |
 | [0045](0045-content-loop-heuristic-deleted.md) | StuckDetector runs one heuristic — repeated identical result | Accepted |
+| [0046](0046-agentic-llm-judge-and-judgekind-registry.md) | Agentic LLM-as-judge and the `JudgeKind` registry | Accepted |
