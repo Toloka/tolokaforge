@@ -63,6 +63,8 @@ The `task_description.json` and `judge_model_config.json` parts are optional add
 
 Chunk boundaries from a chunking judge kind (e.g. `chunked_rubric`) live on the produced `grade.yaml` (`judge_chunk_boundaries`), not on the bundle: the bundle records grading INPUTS, and the boundaries are a judge OUTPUT deterministically re-derivable on regrade from `grading_config.json`'s `llm_judge.kind_config.chunk_size` + the rubric's criteria. See [`docs/JUDGE_KINDS.md`](JUDGE_KINDS.md) and [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md).
 
+These same three parts — `grading_config.json`, `task_description.json`, `trajectory.json` — are the corpus [`tools/judge-kind-ab`](../tools/judge-kind-ab) reads for its live cross-kind A/B: it replays a committed bundle through a candidate `JudgeKind` the same way `CompositeGraderKind.evaluate` does for an offline regrade, just against a different registered kind. See [docs/JUDGE_KINDS.md § Live A/B](JUDGE_KINDS.md#live-ab-cross-kind-κ-and-cost-on-real-trials).
+
 ## Deterministic serialisation rules
 
 The bundle is content-addressable, which requires bit-exact serialisation. Every producer — Python, or a re-implementation in any other language — MUST follow these rules exactly.

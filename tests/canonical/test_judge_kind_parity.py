@@ -17,10 +17,18 @@ to a :class:`ScriptedLLMClient` seeded from each fixture's
 network-free, and under a hard runtime budget (inner-sum < 60 s, full
 wall-clock < 90 s).
 
-**Live mode** (``pytest --live-parity``) is a flag-parity contract
-only today: passing the flag requires ``OPENAI_API_KEY`` or
-``ANTHROPIC_API_KEY``. Cassette-refresh writeback against the real
-``litellm`` judge is TODO (#1572); with the flag set the lane skips.
+**Live mode** (``pytest --live-parity``) drives every corpus entry and
+every kind under test against a real judge model, records each turn
+via :class:`~tests.utils.recording_llm_client.RecordingLLMClient`, and
+rewrites the fixture's ``judge_scripts``/``judge_scripts_per_chunk``
+cassette in place, preserving every other key. Requires
+``OPENAI_API_KEY`` or ``ANTHROPIC_API_KEY``; see
+``test_live_mode_writeback`` (``@pytest.mark.integration``, never runs
+in CI — see that test's docstring). The writeback mechanics themselves
+are locked keyless by two ``unit``-tier tests:
+:mod:`tests.utils.test_recording_llm_client` (script-capture fidelity)
+and ``test_writeback_rewrites_cassette_preserving_other_keys`` below
+(YAML rewrite mechanics against a scripted, not live, recorder).
 
 The corpus loader raises loudly (``KeyError``) when a fixture is missing
 a cassette for a kind under test — silent skips are the failure mode
@@ -31,7 +39,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import MagicMock
@@ -39,15 +47,18 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
+from tests.utils.recording_llm_client import RecordingLLMClient
 from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.judge_kinds import (
     AgenticRubricJudgeKind,
     ChunkedRubricJudgeKind,
+    JudgeKind,
     SingleShotRubricJudgeKind,
 )
 from tolokaforge.core.grading.judge_kinds.parity import (
     ParityCorpusEntry,
     ParityGateThresholds,
+    _evaluate_kwargs,
     decide_parity_gate,
     measure_cross_kind_agreement,
     measure_self_consistency,
@@ -150,10 +161,15 @@ def _load_corpus_entry(path: Path) -> ParityCorpusEntry:
     )
 
 
+def _load_corpus_paths() -> list[Path]:
+    """Enumerate every corpus fixture path, sorted — the writeback path
+    needs the originating file, not just the parsed entry."""
+    return sorted(_CORPUS_ROOT.glob("*/*.yaml"))
+
+
 def _load_corpus() -> list[ParityCorpusEntry]:
     """Enumerate every ``*.yaml`` under the corpus root, sorted."""
-    yaml_paths = sorted(_CORPUS_ROOT.glob("*/*.yaml"))
-    return [_load_corpus_entry(p) for p in yaml_paths]
+    return [_load_corpus_entry(p) for p in _load_corpus_paths()]
 
 
 def _cassette_for(entry: ParityCorpusEntry, kind_name: str) -> list[Any]:
@@ -172,6 +188,43 @@ def _cassette_for(entry: ParityCorpusEntry, kind_name: str) -> list[Any]:
             "before naming the kind in the parametrise list."
         )
     return list(entry.judge_scripts[kind_name])
+
+
+def _serialise_cassette_step(step: Any) -> Any:
+    """Inverse of :func:`_normalise_cassette`'s per-step transform:
+    :class:`ScriptedLLMClient`'s tuple shape back to the YAML-writable
+    dict shape ``judge_scripts`` cassettes are authored in."""
+    if isinstance(step, str):
+        return step
+    return [{"name": name, "arguments": dict(arguments)} for name, arguments in step]
+
+
+def _write_cassette(
+    yaml_path: Path,
+    kind_name: str,
+    recorded_scripts: list[list[Any]],
+    *,
+    per_chunk: bool,
+) -> None:
+    """Rewrite one fixture's ``judge_scripts[kind_name]`` (or
+    ``judge_scripts_per_chunk[kind_name]`` for a per-chunk kind) cassette
+    in place, preserving every other top-level key.
+
+    ``recorded_scripts`` carries one script per
+    :meth:`JudgeModelProvider.build` call the kind made — matching
+    :func:`_entry_client_scripts`'s shape, a single-client kind supplies
+    exactly one script and a per-chunk kind supplies one per chunk."""
+    data = yaml.safe_load(yaml_path.read_text())
+    if per_chunk:
+        data.setdefault("judge_scripts_per_chunk", {})[kind_name] = [
+            [_serialise_cassette_step(step) for step in script] for script in recorded_scripts
+        ]
+    else:
+        (script,) = recorded_scripts
+        data.setdefault("judge_scripts", {})[kind_name] = [
+            _serialise_cassette_step(step) for step in script
+        ]
+    yaml_path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +295,54 @@ def _cassette_provider(corpus: list[ParityCorpusEntry], kind_name: str) -> Judge
     """Single-replay provider for cross-kind dispatch — pops one scripted
     client per :meth:`build` call in corpus order."""
     return _cassette_provider_factory(corpus, kind_name)(0)
+
+
+class _RecordingJudgeModelProvider:
+    """:class:`JudgeModelProvider` that wraps a real (live) provider so
+    every :meth:`build` call's client is a :class:`RecordingLLMClient`,
+    collected in call order — matching :func:`_entry_client_scripts`'s
+    one-recorder-per-build-call convention (one for a single-client kind,
+    one per chunk for ``chunked_rubric``)."""
+
+    def __init__(self, delegate: JudgeModelProvider) -> None:
+        self._delegate = delegate
+        self.recorders: list[RecordingLLMClient] = []
+
+    def build(self, model_config: ModelConfig) -> JudgeModel:
+        recorder = RecordingLLMClient(self._delegate.build(model_config))
+        self.recorders.append(recorder)
+        return recorder
+
+
+def _record_live_scripts(
+    entry: ParityCorpusEntry,
+    kind: JudgeKind,
+    *,
+    judge_model_config: ModelConfig,
+    kind_config: Mapping[str, Any] | None,
+    logger: StructuredLogger,
+) -> list[list[Any]]:
+    """Drive ``kind.evaluate()`` against a real (live) judge model for one
+    corpus entry, recording every dispatched client's turns. Returns one
+    script per :meth:`JudgeModelProvider.build` call the kind made, in
+    the shape :func:`_write_cassette` expects."""
+    from tolokaforge.core.plugin_registry import load_judge_model_provider
+
+    provider = _RecordingJudgeModelProvider(load_judge_model_provider("litellm")())
+    kind.evaluate(
+        **_evaluate_kwargs(
+            entry=entry,
+            judge_model_config=judge_model_config,
+            judge_model_provider=provider,
+            db_reader=None,
+            kb_search=None,
+            workspace_dir=None,
+            extra_read_tools=(),
+            kind_config=kind_config,
+            logger=logger,
+        )
+    )
+    return [recorder.recorded_script for recorder in provider.recorders]
 
 
 class _FlakyJudgeKind:
@@ -712,25 +813,99 @@ def test_cassette_lane_runtime_budget(request: pytest.FixtureRequest) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Writeback mechanics — locked keyless (no live client involved).
+# ---------------------------------------------------------------------------
+
+
+def test_writeback_rewrites_cassette_preserving_other_keys(tmp_path: Path) -> None:
+    """:func:`_write_cassette` rewrites only ``judge_scripts[kind_name]``
+    (or ``judge_scripts_per_chunk[kind_name]``) and leaves every other
+    top-level key byte-for-byte equal to the source fixture — the
+    contract the live ``--live-parity`` writeback path depends on to
+    avoid clobbering unrelated cassettes when it refreshes one kind."""
+    source_path = _load_corpus_paths()[0]
+    original = yaml.safe_load(source_path.read_text())
+    working_copy = tmp_path / source_path.name
+    working_copy.write_text(source_path.read_text())
+
+    script = [
+        "plain text verdict",
+        [("submit_report", {"criteria": [{"id": "c1", "met": True}]})],
+    ]
+    recorder = RecordingLLMClient(ScriptedLLMClient(list(script)))
+    for _ in script:
+        recorder.generate(system="sys", messages=[], tools=[])
+
+    _write_cassette(working_copy, "single_shot_rubric", [recorder.recorded_script], per_chunk=False)
+
+    rewritten = yaml.safe_load(working_copy.read_text())
+    assert rewritten["judge_scripts"]["single_shot_rubric"] == [
+        "plain text verdict",
+        [{"name": "submit_report", "arguments": {"criteria": [{"id": "c1", "met": True}]}}],
+    ]
+    for key in original:
+        if key == "judge_scripts":
+            continue
+        assert rewritten[key] == original[key], f"unrelated key {key!r} was rewritten"
+    for kind_name in original.get("judge_scripts", {}):
+        if kind_name == "single_shot_rubric":
+            continue
+        assert rewritten["judge_scripts"][kind_name] == original["judge_scripts"][kind_name]
+
+
+# ---------------------------------------------------------------------------
 # Live mode — opt-in via --live-parity, gated behind an API key.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-def test_live_mode_flag_skips_when_no_api_key(request: pytest.FixtureRequest) -> None:
-    """``--live-parity`` is a flag-parity contract today: passed →
-    live-mode opt-in, missing ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY``
-    skips. Cassette-refresh writeback is TODO (#1572). Marked
-    ``integration`` so the canonical lane stays keyless."""
+def test_live_mode_writeback(request: pytest.FixtureRequest) -> None:
+    """Last-mile sanity check, not the sole lock (see the keyless
+    ``unit``-tier :mod:`tests.utils.test_recording_llm_client` and
+    :func:`test_writeback_rewrites_cassette_preserving_other_keys` above
+    for the behaviour this test only re-confirms end-to-end).
+
+    Skips unless both ``--live-parity`` is passed AND one of
+    ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` is set — never runs in CI.
+    Drives every corpus entry through every kind under test against a
+    real judge model, rewrites each fixture's cassette, then repeats the
+    whole pass a second time and asserts the second pass's recorded
+    scripts equal the first pass's — the writeback is idempotent under
+    repeated live runs."""
     if not request.config.getoption("--live-parity"):
         pytest.skip("live-parity mode disabled — pass --live-parity to opt in")
     if not any(os.environ.get(k) for k in _LIVE_API_KEYS):
         pytest.skip(f"live-parity requires one of {_LIVE_API_KEYS!r} in the process env")
-    # Cassette-refresh writeback not wired yet (TODO #1572).
-    pytest.skip(
-        "live-parity cassette-refresh writeback not wired (TODO #1572); "
-        "flag is parsed and honoured."
-    )
+
+    corpus_paths = _load_corpus_paths()
+    kinds: list[tuple[str, JudgeKind, Mapping[str, Any] | None]] = [
+        ("single_shot_rubric", _single_shot_kind(), None),
+        ("chunked_rubric", _chunked_kind(), _CHUNKED_KIND_CONFIG),
+        ("agentic_rubric", _agentic_kind(), None),
+    ]
+    logger = StructuredLogger(name="test-judge-kind-parity-live")
+
+    def _run_pass() -> dict[tuple[str, str], list[list[Any]]]:
+        recorded: dict[tuple[str, str], list[list[Any]]] = {}
+        for path in corpus_paths:
+            entry = _load_corpus_entry(path)
+            for kind_name, kind, kind_config in kinds:
+                per_chunk = kind_name in entry.judge_scripts_per_chunk
+                scripts = _record_live_scripts(
+                    entry,
+                    kind,
+                    judge_model_config=_JUDGE_MODEL,
+                    kind_config=kind_config,
+                    logger=logger,
+                )
+                _write_cassette(path, kind_name, scripts, per_chunk=per_chunk)
+                recorded[(entry.entry_id, kind_name)] = scripts
+        return recorded
+
+    first_pass = _run_pass()
+    second_pass = _run_pass()
+    idempotence_msg = "--live-parity writeback is not idempotent across repeated live runs"
+    assert second_pass == first_pass, idempotence_msg
 
 
 # ---------------------------------------------------------------------------

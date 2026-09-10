@@ -340,6 +340,7 @@ When extending an existing contract, follow the existing choice unless you have 
 - `tools/dev-mcp` — Dev MCP server (run tests, lint, format, validate tasks)
 - `tools/pricing-updater` — LLM pricing data updates
 - `tools/rubric-calibrator` — Rubric-judge calibration: agreement metrics + trust gate
+- `tools/judge-kind-ab` — Live cross-kind κ-parity + cost A/B for JudgeKinds against real trial bundles
 - `external_adapters/tolokaforge-adapter-terminal-bench` — Terminal-Bench adapter
 - `tolokaforge_models` — model data + per-model policy subclasses
 - `tolokaforge_coding_harnesses` — coding-harness registry, installer, middleware proxy

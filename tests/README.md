@@ -444,11 +444,18 @@ lane (`tests/canonical/test_judge_kind_parity.py`). Without the flag the lane
 runs entirely from committed cassettes under
 `tests/data/judge_kind_parity_corpus/` and asserts a runtime budget (inner-sum
 < 60 s, wall-clock < 90 s). With `--live-parity` and either `OPENAI_API_KEY`
-or `ANTHROPIC_API_KEY` present, live-mode is opt-in; the cassette-refresh
-writeback against the real `LiteLLMJudgeModelProvider` is TODO (#1572), so
-the lane currently skips with a message naming the missing writeback. See
-`docs/JUDGE_KINDS.md § Parity gate` for the gate contract and the
-corpus-authoring rules.
+or `ANTHROPIC_API_KEY` present, live mode drives every corpus entry against a
+real `LiteLLMJudgeModelProvider`-backed `RecordingLLMClient` for every kind
+under test, then rewrites the recorded script back into the originating
+fixture's `judge_scripts.<kind_name>` block (or `judge_scripts_per_chunk.
+<kind_name>` block for a multi-client kind) in place — every other key in
+the fixture file is preserved byte-identical. The keyless `unit`-tier
+`tests/utils/test_recording_llm_client.py` and the canonical
+`test_writeback_rewrites_cassette_preserving_other_keys` lock this recording
+and rewrite behaviour without a live key; the integration-tier
+`test_live_mode_writeback` only re-confirms it end-to-end, including
+writeback idempotency across repeated live runs. See `docs/JUDGE_KINDS.md §
+Parity gate` for the gate contract and the corpus-authoring rules.
 
 ### Integration Tests (`tests/integration/`)
 
