@@ -110,6 +110,99 @@ def test_corpus_entry_from_bundle_round_trips_rubric_transcript_and_state_diff(
     assert entry.judge_scripts == {}
 
 
+def test_corpus_entry_from_bundle_state_diff_matches_live_grading_path(
+    tmp_path: Path,
+) -> None:
+    """Non-``id`` primary key + ``unstable_fields``: the reconstructed diff must
+    match :func:`build_judge_state_diff`'s output for the same inputs — the
+    live grading path merges schema-declared primary keys with
+    ``state_checks.id_fields`` AND threads ``unstable_fields`` to strip noise,
+    and the corpus reconstruction must do the same, not just apply
+    ``state_checks.id_fields`` alone.
+    """
+    from unittest.mock import MagicMock
+
+    from tolokaforge.core.grading.composite import build_judge_state_diff
+    from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
+    from tolokaforge.core.logging import StructuredLogger
+    from tolokaforge.runner.models import TableSchema
+
+    initial_state = {
+        "positions": [
+            {"account_id": "A1", "symbol": "MSFT", "qty": 5, "last_synced_at": "2020-01-01"},
+            {"account_id": "A1", "symbol": "AAPL", "qty": 2, "last_synced_at": "2020-01-01"},
+        ]
+    }
+    final_state = {
+        "positions": [
+            {"account_id": "A1", "symbol": "MSFT", "qty": 7, "last_synced_at": "2020-06-01"},
+            {"account_id": "A1", "symbol": "AAPL", "qty": 2, "last_synced_at": "2020-06-01"},
+        ]
+    }
+    task_description = {
+        **_TASK_DESCRIPTION,
+        "initial_state": {
+            "schemas": [
+                {
+                    "table_name": "positions",
+                    "fields": {"account_id": "string", "symbol": "string", "qty": "integer"},
+                    "primary_key": "account_id",
+                }
+            ],
+            "unstable_fields": [
+                {"table_name": "positions", "field_name": "last_synced_at", "reason": "timestamp"}
+            ],
+        },
+    }
+    grading_config = {
+        "llm_judge": {"rubric": _RUBRIC},
+        "state_checks": {"id_fields": {"positions": ["account_id", "symbol"]}},
+    }
+
+    out_dir = tmp_path / "bundle"
+    serialize_grade_bundle(
+        out_dir,
+        trial_id="trial-99",
+        initial_state=initial_state,
+        final_state=final_state,
+        final_state_stable=final_state,
+        filesystem_root=tmp_path / "workspace",
+        checks=None,
+        kb=None,
+        trajectory=_TRAJECTORY,
+        grading_config=grading_config,
+        task_description=task_description,
+    )
+
+    entry = corpus_entry_from_bundle(out_dir)
+
+    expected = build_judge_state_diff(
+        trial_id="trial-99",
+        substrate=InProcessGradingSubstrate(
+            db_reader=MagicMock(),
+            knowledge_search=None,
+            filesystem_root=None,
+            initial_state=initial_state,
+            final_state=final_state,
+        ),
+        initial_state_schemas=[
+            TableSchema(
+                table_name="positions",
+                fields={"account_id": "string", "symbol": "string", "qty": "integer"},
+                primary_key="account_id",
+            )
+        ],
+        id_fields={"positions": ["account_id", "symbol"]},
+        unstable_fields={("positions", "last_synced_at")},
+        logger=StructuredLogger(name="test-corpus-entry-state-diff"),
+    )
+
+    assert entry.state_diff == expected
+    assert entry.state_diff is not None
+    assert "last_synced_at" not in entry.state_diff
+    assert "positions: 1 modified" in entry.state_diff
+
+
 def test_corpus_entry_from_bundle_reports_no_state_diff_with_empty_initial_state(
     tmp_path: Path,
 ) -> None:

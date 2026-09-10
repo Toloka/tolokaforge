@@ -871,8 +871,7 @@ def test_live_mode_writeback(request: pytest.FixtureRequest) -> None:
     real judge model, rewrites each fixture's cassette, then repeats the
     whole pass a second time and asserts the second pass's recorded
     scripts equal the first pass's — the writeback is idempotent under
-    repeated live runs, per the plan's explicit placement of this check
-    at the integration tier."""
+    repeated live runs."""
     if not request.config.getoption("--live-parity"):
         pytest.skip("live-parity mode disabled — pass --live-parity to opt in")
     if not any(os.environ.get(k) for k in _LIVE_API_KEYS):

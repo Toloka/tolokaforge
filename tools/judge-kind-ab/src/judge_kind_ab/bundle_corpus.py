@@ -70,8 +70,17 @@ def corpus_entry_from_bundle(bundle_dir: Path) -> ParityCorpusEntry:
     state_diff = None
     if initial_state:
         final_state = json.loads(bundle.open_part("final_state.json"))
-        primary_keys = grading_config.state_checks.id_fields if grading_config.state_checks else {}
-        state_diff = render_state_diff(initial_state, final_state, primary_keys=primary_keys)
+        primary_keys: dict[str, str | list[str]] = {
+            s.table_name: s.primary_key for s in task_description.initial_state.schemas
+        }
+        if grading_config.state_checks:
+            primary_keys.update(grading_config.state_checks.id_fields)
+        unstable_fields = {
+            (u.table_name, u.field_name) for u in task_description.initial_state.unstable_fields
+        }
+        state_diff = render_state_diff(
+            initial_state, final_state, primary_keys=primary_keys, unstable_fields=unstable_fields
+        )
 
     customization = grading_config.llm_judge.customization
 

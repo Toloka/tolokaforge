@@ -13,8 +13,7 @@ corpus fixture's YAML cassette.
 A turn carrying both text AND tool calls is recorded as its tool-call
 list only (text discarded) — the same limitation
 :class:`ScriptedLLMClient` itself has, since today's three shipped judge
-kinds never emit mixed turns. See the plan's "Risks / open questions"
-for issue #1572.
+kinds never emit mixed turns.
 """
 
 from __future__ import annotations

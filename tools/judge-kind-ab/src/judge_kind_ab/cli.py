@@ -1,10 +1,9 @@
 """CLI for judge-kind-ab — live kappa-parity + cost A/B across JudgeKinds.
 
-Phase C4 of ``docs/JUDGE_KINDS.md`` § Live A/B. Drives the kappa-parity harness
-(``measure_cross_kind_agreement``, ``measure_self_consistency``) against a live
-judge model over real completed trials, instead of the canonical lane's
-committed cassettes, and renders the resulting per-criterion kappa + cost
-tables.
+Drives the kappa-parity harness (``measure_cross_kind_agreement``,
+``measure_self_consistency``) against a live judge model over real completed
+trials, instead of the canonical lane's committed cassettes, and renders the
+resulting per-criterion kappa + cost tables.
 
 Why a ``tools/`` workspace member (not a ``tolokaforge`` CLI subcommand):
 mirrors ``rubric-calibrator`` — self-contained Python with its own deps that
