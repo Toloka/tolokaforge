@@ -43,7 +43,13 @@ def _build_metric() -> dict[str, Any]:
                 "touched_files": list(c.touched),
             }
         )
-    entries.sort(key=lambda e: (e["date"], e["pr"] or "", e["subject"]))
+    # ``pr`` is str for commits parsed from the `(#nnnn)` merge-commit
+    # pattern and int for those parsed from the `feat/... #nnnn` pattern
+    # that enumerate_harness_commits also handles; coerce so the sort key
+    # is uniformly str and Python's ordering doesn't refuse the mix.
+    entries.sort(
+        key=lambda e: (e["date"], str(e["pr"]) if e["pr"] is not None else "", e["subject"])
+    )
     return {
         "bucket_a_count": sum(1 for e in entries if e["bucket"] == "A"),
         "bucket_b_count": sum(1 for e in entries if e["bucket"] == "B"),
