@@ -1,0 +1,42 @@
+entry_id: multi_turn_case_01
+rubric:
+  criteria:
+    - id: question_answered
+      description: 'Customer question was answered directly.'
+      kind: graded
+      weight: 1.0
+    - id: intent_clarified
+      description: 'Assistant clarified ambiguous intent before acting.'
+      kind: binary
+      weight: 1.0
+    - id: escalation_appropriate
+      description: 'Escalation happened at the right point.'
+      kind: binary
+      weight: 1.0
+agent_system_prompt: 'You are a customer-service assistant. (multi_turn_case_01)'
+transcript:
+  - role: user
+    content: 'I want to cancel my subscription. (multi_turn_case_01)'
+  - role: assistant
+    content: 'I can help. Which subscription — the Basic or the Pro plan?'
+  - role: user
+    content: 'The Pro plan.'
+  - role: assistant
+    content: 'Understood. Cancelling the Pro plan effective end of billing cycle.'
+  - role: user
+    content: 'Perfect, thank you.'
+state_diff: null
+disable_knowledge_search: false
+custom_system_prompt: null
+include_agent_system_prompt: true
+judge_scripts:
+  single_shot_rubric:
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — fixture-authored deterministic verdict'
+            question_answered: 0.2
+            question_answered_justification: "because question_answered\nSCORE: 0.2"
+            intent_clarified: false
+            intent_clarified_justification: "because intent_clarified\nVERDICT: NOT MET"
+            escalation_appropriate: false
+            escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: NOT MET"

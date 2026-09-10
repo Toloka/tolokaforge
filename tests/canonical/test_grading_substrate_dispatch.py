@@ -47,6 +47,7 @@ import grpc
 import pytest
 
 from tests.utils.dummy_grading_substrate import DummyGradingSubstrate
+from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading import composite
 from tolokaforge.core.grading.composite_fold import (
     build_grade_reasons,
@@ -61,9 +62,8 @@ from tolokaforge.core.grading.substrate_live import LiveRunnerCallbackGradingSub
 from tolokaforge.core.grading.trace_checks import TraceChecksResult
 from tolokaforge.core.grading.trace_timeline import build_timeline_from_wire
 from tolokaforge.core.llm.client import GenerationResult
-from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import StructuredLogger
-from tolokaforge.core.models import ModelConfig, ToolCall
+from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.plugin_registry import (
     GRADING_SUBSTRATES_GROUP,
     _clear_discovery_cache,
@@ -202,52 +202,6 @@ class _FakeDBServiceClient:
         return None
 
 
-class _ScriptedClient:
-    """A scripted ``LoopLLMClient`` — returns queued ``GenerationResult``s.
-
-    Both parity legs share this client via a monkeypatched ``LLMClient``
-    constructor, so the judge draws from the same finite script both times.
-    Two calls to ``generate`` are exhausted in order.
-    """
-
-    def __init__(self, script: list[Any]) -> None:
-        self._script = list(script)
-        self._i = 0
-
-    def generate(
-        self,
-        system,  # noqa: ARG002
-        messages,  # noqa: ARG002
-        tools,  # noqa: ARG002
-        tool_choice="auto",  # noqa: ARG002
-        observation=None,  # noqa: ARG002
-    ) -> GenerationResult:
-        if self._i >= len(self._script):
-            return GenerationResult(text="(exhausted)", tool_calls=[], usage=Usage())
-        step = self._script[self._i]
-        self._i += 1
-        if isinstance(step, str):
-            return GenerationResult(text=step, tool_calls=[], usage=Usage())
-        tool_calls = [
-            ToolCall(id=f"call_{self._i}_{j}", name=name, arguments=args)
-            for j, (name, args) in enumerate(step)
-        ]
-        return GenerationResult(
-            text="",
-            tool_calls=tool_calls,
-            usage=Usage(prompt_tokens=10, completion_tokens=5),
-            cost_usd=0.001,
-        )
-
-    def classify_loop_error(self, exc: Exception):
-        from tolokaforge.core.loop import classify_loop_error
-
-        return classify_loop_error(exc, ())
-
-    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
-        return {}
-
-
 _JUDGE_MODEL = ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0)
 
 
@@ -364,7 +318,7 @@ def _install_scripted_client(monkeypatch: pytest.MonkeyPatch, script: list[Any])
     dispatch is driven directly against the same provider."""
     monkeypatch.setattr(
         "tolokaforge.core.grading.default_judge_model_provider.LLMClient",
-        lambda *args, **kwargs: _ScriptedClient(script),
+        lambda *args, **kwargs: ScriptedLLMClient(script),
     )
 
 

@@ -1,0 +1,30 @@
+entry_id: small_rubrics_case_09
+rubric:
+  criteria:
+    - id: cancellation_confirmed
+      description: 'Cancellation was confirmed to the customer.'
+      kind: binary
+      weight: 1.0
+    - id: question_answered
+      description: 'Customer question was answered directly.'
+      kind: graded
+      weight: 1.0
+agent_system_prompt: 'You are a customer-service assistant. (small_rubrics_case_09)'
+transcript:
+  - role: user
+    content: 'Hi, I need help with order 42 — I never got the refund. (small_rubrics_case_09)'
+  - role: assistant
+    content: 'Confirmed — the refund of $19.99 is processed. Anything else?'
+state_diff: null
+disable_knowledge_search: false
+custom_system_prompt: null
+include_agent_system_prompt: true
+judge_scripts:
+  single_shot_rubric:
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — fixture-authored deterministic verdict'
+            cancellation_confirmed: false
+            cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: NOT MET"
+            question_answered: 0.2
+            question_answered_justification: "because question_answered\nSCORE: 0.2"

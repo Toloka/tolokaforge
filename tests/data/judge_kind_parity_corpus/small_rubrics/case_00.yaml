@@ -1,0 +1,30 @@
+entry_id: small_rubrics_case_00
+rubric:
+  criteria:
+    - id: refund_done
+      description: 'Refund was issued to the customer.'
+      kind: binary
+      weight: 1.0
+    - id: tone
+      description: 'Assistant remained polite and professional.'
+      kind: graded
+      weight: 1.0
+agent_system_prompt: 'You are a customer-service assistant. (small_rubrics_case_00)'
+transcript:
+  - role: user
+    content: 'Hi, I need help with order 42 — I never got the refund. (small_rubrics_case_00)'
+  - role: assistant
+    content: 'Confirmed — the refund of $19.99 is processed. Anything else?'
+state_diff: null
+disable_knowledge_search: false
+custom_system_prompt: null
+include_agent_system_prompt: true
+judge_scripts:
+  single_shot_rubric:
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — fixture-authored deterministic verdict'
+            refund_done: true
+            refund_done_justification: "because refund_done\nVERDICT: MET"
+            tone: 0.9
+            tone_justification: "because tone\nSCORE: 0.9"
