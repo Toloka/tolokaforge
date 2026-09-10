@@ -82,6 +82,7 @@ RUNNER_REACHABLE_ENTRY_POINT_GROUPS: tuple[str, ...] = (
     "tolokaforge.trace_check_operators",
     "tolokaforge.grading_methods",
     "tolokaforge.grader_kinds",
+    "tolokaforge.judge_kinds",
 )
 
 

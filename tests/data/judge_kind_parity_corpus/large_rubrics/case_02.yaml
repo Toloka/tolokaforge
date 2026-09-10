@@ -1,0 +1,153 @@
+entry_id: large_rubrics_case_02
+rubric:
+  criteria:
+    - id: cancellation_confirmed
+      description: 'Cancellation was confirmed to the customer.'
+      kind: binary
+      weight: 1.0
+    - id: question_answered
+      description: 'Customer question was answered directly.'
+      kind: graded
+      weight: 1.0
+    - id: intent_clarified
+      description: 'Assistant clarified ambiguous intent before acting.'
+      kind: binary
+      weight: 1.0
+    - id: escalation_appropriate
+      description: 'Escalation happened at the right point.'
+      kind: binary
+      weight: 1.0
+    - id: sla_within
+      description: 'Response landed within the SLA window.'
+      kind: graded
+      weight: 1.0
+    - id: greeting_present
+      description: 'Response opened with a greeting.'
+      kind: binary
+      weight: 1.0
+    - id: field_validated
+      description: 'Input fields were validated.'
+      kind: binary
+      weight: 1.0
+    - id: no_pii_leaked
+      description: 'No PII appeared in the response.'
+      kind: binary
+      weight: 1.0
+    - id: tool_called_once
+      description: 'The relevant tool was called exactly once.'
+      kind: binary
+      weight: 1.0
+    - id: summary_provided
+      description: 'A concise summary was provided to the customer.'
+      kind: graded
+      weight: 1.0
+agent_system_prompt: 'You are a customer-service assistant. (large_rubrics_case_02)'
+transcript:
+  - role: user
+    content: 'Hi, I need help with order 42 — I never got the refund. (large_rubrics_case_02)'
+  - role: assistant
+    content: 'Confirmed — the refund of $19.99 is processed. Anything else?'
+state_diff: null
+disable_knowledge_search: false
+custom_system_prompt: null
+include_agent_system_prompt: true
+judge_scripts:
+  single_shot_rubric:
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — fixture-authored deterministic verdict'
+            cancellation_confirmed: true
+            cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: MET"
+            question_answered: 0.9
+            question_answered_justification: "because question_answered\nSCORE: 0.9"
+            intent_clarified: true
+            intent_clarified_justification: "because intent_clarified\nVERDICT: MET"
+            escalation_appropriate: true
+            escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: MET"
+            sla_within: 0.9
+            sla_within_justification: "because sla_within\nSCORE: 0.9"
+            greeting_present: true
+            greeting_present_justification: "because greeting_present\nVERDICT: MET"
+            field_validated: true
+            field_validated_justification: "because field_validated\nVERDICT: MET"
+            no_pii_leaked: true
+            no_pii_leaked_justification: "because no_pii_leaked\nVERDICT: MET"
+            tool_called_once: true
+            tool_called_once_justification: "because tool_called_once\nVERDICT: MET"
+            summary_provided: 0.9
+            summary_provided_justification: "because summary_provided\nSCORE: 0.9"
+  agentic_rubric:
+    - - name: draft_report
+        arguments:
+            reasons: 'draft summary — agentic (pre-critique)'
+            cancellation_confirmed: true
+            cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: MET"
+            question_answered: 0.9
+            question_answered_justification: "because question_answered\nSCORE: 0.9"
+            intent_clarified: true
+            intent_clarified_justification: "because intent_clarified\nVERDICT: MET"
+            escalation_appropriate: true
+            escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: MET"
+            sla_within: 0.9
+            sla_within_justification: "because sla_within\nSCORE: 0.9"
+            greeting_present: true
+            greeting_present_justification: "because greeting_present\nVERDICT: MET"
+            field_validated: true
+            field_validated_justification: "because field_validated\nVERDICT: MET"
+            no_pii_leaked: true
+            no_pii_leaked_justification: "because no_pii_leaked\nVERDICT: MET"
+            tool_called_once: true
+            tool_called_once_justification: "because tool_called_once\nVERDICT: MET"
+            summary_provided: 0.9
+            summary_provided_justification: "because summary_provided\nSCORE: 0.9"
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — agentic (post-critique)'
+            cancellation_confirmed: true
+            cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: MET"
+            question_answered: 0.9
+            question_answered_justification: "because question_answered\nSCORE: 0.9"
+            intent_clarified: true
+            intent_clarified_justification: "because intent_clarified\nVERDICT: MET"
+            escalation_appropriate: true
+            escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: MET"
+            sla_within: 0.9
+            sla_within_justification: "because sla_within\nSCORE: 0.9"
+            greeting_present: true
+            greeting_present_justification: "because greeting_present\nVERDICT: MET"
+            field_validated: true
+            field_validated_justification: "because field_validated\nVERDICT: MET"
+            no_pii_leaked: true
+            no_pii_leaked_justification: "because no_pii_leaked\nVERDICT: MET"
+            tool_called_once: true
+            tool_called_once_justification: "because tool_called_once\nVERDICT: MET"
+            summary_provided: 0.9
+            summary_provided_justification: "because summary_provided\nSCORE: 0.9"
+judge_scripts_per_chunk:
+  chunked_rubric:
+    - - - name: submit_report
+          arguments:
+              reasons: 'overall summary — chunked'
+              cancellation_confirmed: true
+              cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: MET"
+              question_answered: 0.9
+              question_answered_justification: "because question_answered\nSCORE: 0.9"
+              intent_clarified: true
+              intent_clarified_justification: "because intent_clarified\nVERDICT: MET"
+              escalation_appropriate: true
+              escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: MET"
+              sla_within: 0.9
+              sla_within_justification: "because sla_within\nSCORE: 0.9"
+    - - - name: submit_report
+          arguments:
+              reasons: 'overall summary — chunked'
+              greeting_present: true
+              greeting_present_justification: "because greeting_present\nVERDICT: MET"
+              field_validated: true
+              field_validated_justification: "because field_validated\nVERDICT: MET"
+              no_pii_leaked: true
+              no_pii_leaked_justification: "because no_pii_leaked\nVERDICT: MET"
+              tool_called_once: true
+              tool_called_once_justification: "because tool_called_once\nVERDICT: MET"
+              summary_provided: 0.9
+              summary_provided_justification: "because summary_provided\nSCORE: 0.9"

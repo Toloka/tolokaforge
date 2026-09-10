@@ -18,7 +18,7 @@ Two-mode dispatch:
    ``judge_model_config`` via the substrate accessors added in bundle
    format v1.1; loads the five shipped sub-component plug-ins
    (state_check_backends, transcript_rule_matcher,
-   custom_check_executor, judge_model_provider, rubric_evaluator);
+   custom_check_executor, judge_model_provider, judge_kind);
    drives ``composite.grade_state_checks_reads`` /
    ``grade_transcript_rules`` / ``grade_trace_checks`` /
    ``build_judge_state_diff`` + ``grade_llm_judge`` /
@@ -196,8 +196,8 @@ class CompositeGraderKind:
         from tolokaforge.core.models.trajectory import Trajectory as _Trajectory
         from tolokaforge.core.plugin_registry import (
             load_custom_check_executor,
+            load_judge_kind,
             load_judge_model_provider,
-            load_rubric_evaluator,
             load_state_check_backend,
             load_transcript_rule_matcher,
         )
@@ -309,7 +309,7 @@ class CompositeGraderKind:
                     logger=logger,
                     composite_mod=composite,
                     composite_components_cls=CompositeGradeComponents,
-                    load_rubric_evaluator=load_rubric_evaluator,
+                    load_judge_kind=load_judge_kind,
                     judge_status_cls=JudgeStatus,
                     trace_summary_cls=TraceChecksSummary,
                     trace_constraint_cls=TraceConstraintResult,
@@ -348,7 +348,7 @@ class CompositeGraderKind:
         logger: Any,
         composite_mod: Any,
         composite_components_cls: Any,
-        load_rubric_evaluator: Any,
+        load_judge_kind: Any,
         judge_status_cls: Any,
         trace_summary_cls: Any,
         trace_constraint_cls: Any,
@@ -360,7 +360,6 @@ class CompositeGraderKind:
         which we cannot import directly (importlinter contract
         ``grader-kinds-purity`` forbids reaching ``tolokaforge.grader``)."""
         from tolokaforge.core.grading.judge_result import JudgeStatus as JudgeRunStatus
-        from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorContext
         from tolokaforge.runner.models import TraceChecksResult
 
         components = composite_components_cls()
@@ -420,14 +419,7 @@ class CompositeGraderKind:
                 if customization and customization.include_agent_system_prompt is not None
                 else True
             )
-            rubric_evaluator = load_rubric_evaluator("llm_judge")(
-                RubricEvaluatorContext(
-                    judge_model_provider=judge_model_provider,
-                    disable_knowledge_search=disable_kb,
-                    custom_system_prompt=custom_prompt,
-                    include_agent_system_prompt=include_agent_prompt,
-                )
-            )
+            judge_kind = load_judge_kind(task_config.llm_judge.judge_kind)()
             state_diff_text = composite_mod.build_judge_state_diff(
                 trial_id=trial_id,
                 substrate=substrate,
@@ -440,7 +432,12 @@ class CompositeGraderKind:
                 trial_id=trial_id,
                 config=task_config.llm_judge,
                 substrate=substrate,
-                rubric_evaluator=rubric_evaluator,
+                judge_kind=judge_kind,
+                judge_model_provider=judge_model_provider,
+                disable_knowledge_search=disable_kb,
+                custom_system_prompt=custom_prompt,
+                include_agent_system_prompt=include_agent_prompt,
+                kind_config=task_config.llm_judge.kind_config,
                 llm_messages=llm_messages,
                 judge_model_config=judge_model_config,
                 extra_read_tools=[],
@@ -534,6 +531,11 @@ class CompositeGraderKind:
                 ],
             ),
             judge_status=judge_status,
+            judge_chunk_boundaries=(
+                [list(chunk) for chunk in judge_result.chunk_boundaries]
+                if judge_result is not None and judge_result.chunk_boundaries
+                else None
+            ),
         )
 
 

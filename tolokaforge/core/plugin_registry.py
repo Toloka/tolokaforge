@@ -8,6 +8,7 @@ External code discovers and loads alternative implementations of the
 :class:`~tolokaforge.core.actors.turn_policy.TurnPolicy`,
 :class:`~tolokaforge.core.grading.grading_method.GradingMethod`,
 :class:`~tolokaforge.core.grading.kinds.GraderKind`,
+:class:`~tolokaforge.core.grading.judge_kinds.JudgeKind`,
 :class:`~tolokaforge.core.grading.substrate.GradingSubstrate`,
 :class:`~tolokaforge.core.grading.check_runner.CheckExecutor`,
 :class:`~tolokaforge.core.grading.judge_model_provider.JudgeModelProvider`,
@@ -53,6 +54,7 @@ The groups:
 * ``tolokaforge.turn_policies`` → :data:`TurnPolicyFactory`
 * ``tolokaforge.grading_methods`` → ``type[GradingMethod]``
 * ``tolokaforge.grader_kinds`` → ``type[GraderKind]``
+* ``tolokaforge.judge_kinds`` → ``type[JudgeKind]``
 * ``tolokaforge.bundle_stores`` → ``type[BundleStore]``
 * ``tolokaforge.compose_materialisers`` → ``type[ComposeMaterialiser]``
 * ``tolokaforge.service_lifecycle_dispatchers`` → ``type[ServiceLifecycleDispatcher]``
@@ -90,6 +92,7 @@ from typing import TYPE_CHECKING, cast
 
 from tolokaforge.core.grading.check_runner import CheckExecutor
 from tolokaforge.core.grading.grading_method import GradingMethod
+from tolokaforge.core.grading.judge_kinds import JudgeKind
 from tolokaforge.core.grading.judge_model_provider import JudgeModelProviderFactory
 from tolokaforge.core.grading.kinds import GraderKind
 from tolokaforge.core.grading.rubric_evaluator import RubricEvaluatorFactory
@@ -154,6 +157,7 @@ __all__ = [
     "available_grader_kinds",
     "available_grading_methods",
     "available_grading_substrates",
+    "available_judge_kinds",
     "available_judge_model_providers",
     "available_readiness_probes",
     "available_rubric_evaluators",
@@ -173,6 +177,7 @@ __all__ = [
     "load_grader_kind",
     "load_grading_method",
     "load_grading_substrate",
+    "load_judge_kind",
     "load_judge_model_provider",
     "load_readiness_probe",
     "load_rubric_evaluator",
@@ -193,6 +198,7 @@ SERVICE_READINESS_PROBES_GROUP = "tolokaforge.service_readiness_probes"
 TURN_POLICIES_GROUP = "tolokaforge.turn_policies"
 GRADING_METHODS_GROUP = "tolokaforge.grading_methods"
 GRADER_KINDS_GROUP = "tolokaforge.grader_kinds"
+JUDGE_KINDS_GROUP = "tolokaforge.judge_kinds"
 GRADING_SUBSTRATES_GROUP = "tolokaforge.grading_substrates"
 CUSTOM_CHECK_EXECUTORS_GROUP = "tolokaforge.custom_check_executors"
 JUDGE_MODEL_PROVIDERS_GROUP = "tolokaforge.judge_model_providers"
@@ -551,6 +557,25 @@ def load_grader_kind(name: str) -> type[GraderKind]:
     return cast(type[GraderKind], _load(GRADER_KINDS_GROUP, name))
 
 
+def load_judge_kind(name: str) -> type[JudgeKind]:
+    """Resolve a registered judge-kind name to its implementation class.
+
+    Returns the class object itself, matching :func:`load_grader_kind`.
+    The runner-side composite dispatch resolves this loader to reach the
+    LLM-judge implementation named by ``grading.llm_judge.judge_kind``.
+    Two built-ins ship under this group: ``single_shot_rubric`` (wraps
+    :class:`LLMJudge` byte-identically — the default) and
+    ``chunked_rubric`` (one :class:`LLMJudge` invocation per fixed-K
+    chunk of the rubric's criteria). Downstream packages register
+    alternative kinds (agentic, jury, downstream-specific) under this
+    group.
+
+    Fail-loud on unknown names via :class:`UnknownImplementationError`,
+    matching every other loader in this module.
+    """
+    return cast(type[JudgeKind], _load(JUDGE_KINDS_GROUP, name))
+
+
 def load_bundle_store(name: str) -> type[BundleStore]:
     """Resolve a registered bundle-store name to its implementation class.
 
@@ -646,6 +671,11 @@ def available_grading_methods() -> list[str]:
 def available_grader_kinds() -> list[str]:
     """Sorted names registered in the ``tolokaforge.grader_kinds`` group."""
     return sorted(discover_entry_points(GRADER_KINDS_GROUP))
+
+
+def available_judge_kinds() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.judge_kinds`` group."""
+    return sorted(discover_entry_points(JUDGE_KINDS_GROUP))
 
 
 def available_grading_substrates() -> list[str]:

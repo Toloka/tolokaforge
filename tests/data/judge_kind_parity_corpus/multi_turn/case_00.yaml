@@ -1,0 +1,60 @@
+entry_id: multi_turn_case_00
+rubric:
+  criteria:
+    - id: order_shipped
+      description: 'Order marked as shipped in the system.'
+      kind: binary
+      weight: 1.0
+    - id: cancellation_confirmed
+      description: 'Cancellation was confirmed to the customer.'
+      kind: binary
+      weight: 1.0
+agent_system_prompt: 'You are a customer-service assistant. (multi_turn_case_00)'
+transcript:
+  - role: user
+    content: 'I want to cancel my subscription. (multi_turn_case_00)'
+  - role: assistant
+    content: 'I can help. Which subscription — the Basic or the Pro plan?'
+  - role: user
+    content: 'The Pro plan.'
+  - role: assistant
+    content: 'Understood. Cancelling the Pro plan effective end of billing cycle.'
+  - role: user
+    content: 'Perfect, thank you.'
+state_diff: null
+disable_knowledge_search: false
+custom_system_prompt: null
+include_agent_system_prompt: true
+judge_scripts:
+  single_shot_rubric:
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — fixture-authored deterministic verdict'
+            order_shipped: true
+            order_shipped_justification: "because order_shipped\nVERDICT: MET"
+            cancellation_confirmed: true
+            cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: MET"
+  agentic_rubric:
+    - - name: draft_report
+        arguments:
+            reasons: 'draft summary — agentic (pre-critique)'
+            order_shipped: true
+            order_shipped_justification: "because order_shipped\nVERDICT: MET"
+            cancellation_confirmed: true
+            cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: MET"
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — agentic (post-critique)'
+            order_shipped: true
+            order_shipped_justification: "because order_shipped\nVERDICT: MET"
+            cancellation_confirmed: true
+            cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: MET"
+judge_scripts_per_chunk:
+  chunked_rubric:
+    - - - name: submit_report
+          arguments:
+              reasons: 'overall summary — chunked'
+              order_shipped: true
+              order_shipped_justification: "because order_shipped\nVERDICT: MET"
+              cancellation_confirmed: true
+              cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: MET"

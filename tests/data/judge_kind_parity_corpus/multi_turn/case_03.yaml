@@ -1,0 +1,60 @@
+entry_id: multi_turn_case_03
+rubric:
+  criteria:
+    - id: greeting_present
+      description: 'Response opened with a greeting.'
+      kind: binary
+      weight: 1.0
+    - id: refund_done
+      description: 'Refund was issued to the customer.'
+      kind: binary
+      weight: 1.0
+agent_system_prompt: 'You are a customer-service assistant. (multi_turn_case_03)'
+transcript:
+  - role: user
+    content: 'I want to cancel my subscription. (multi_turn_case_03)'
+  - role: assistant
+    content: 'I can help. Which subscription — the Basic or the Pro plan?'
+  - role: user
+    content: 'The Pro plan.'
+  - role: assistant
+    content: 'Understood. Cancelling the Pro plan effective end of billing cycle.'
+  - role: user
+    content: 'Perfect, thank you.'
+state_diff: null
+disable_knowledge_search: false
+custom_system_prompt: null
+include_agent_system_prompt: true
+judge_scripts:
+  single_shot_rubric:
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — fixture-authored deterministic verdict'
+            greeting_present: false
+            greeting_present_justification: "because greeting_present\nVERDICT: NOT MET"
+            refund_done: false
+            refund_done_justification: "because refund_done\nVERDICT: NOT MET"
+  agentic_rubric:
+    - - name: draft_report
+        arguments:
+            reasons: 'draft summary — agentic (pre-critique)'
+            greeting_present: false
+            greeting_present_justification: "because greeting_present\nVERDICT: NOT MET"
+            refund_done: false
+            refund_done_justification: "because refund_done\nVERDICT: NOT MET"
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — agentic (post-critique)'
+            greeting_present: false
+            greeting_present_justification: "because greeting_present\nVERDICT: NOT MET"
+            refund_done: false
+            refund_done_justification: "because refund_done\nVERDICT: NOT MET"
+judge_scripts_per_chunk:
+  chunked_rubric:
+    - - - name: submit_report
+          arguments:
+              reasons: 'overall summary — chunked'
+              greeting_present: false
+              greeting_present_justification: "because greeting_present\nVERDICT: NOT MET"
+              refund_done: false
+              refund_done_justification: "because refund_done\nVERDICT: NOT MET"

@@ -34,6 +34,11 @@ from tolokaforge.core.grading.grading_method import (
     CompositeGradingMethod,
     TestExecutionGradingMethod,
 )
+from tolokaforge.core.grading.judge_kinds import (
+    AgenticRubricJudgeKind,
+    ChunkedRubricJudgeKind,
+    SingleShotRubricJudgeKind,
+)
 from tolokaforge.core.grading.kinds import CompositeGraderKind, TestExecutionGraderKind
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.plugin_registry import (
@@ -41,6 +46,7 @@ from tolokaforge.core.plugin_registry import (
     COMPOSE_MATERIALISERS_GROUP,
     GRADER_KINDS_GROUP,
     GRADING_METHODS_GROUP,
+    JUDGE_KINDS_GROUP,
     RUNTIME_BACKENDS_GROUP,
     SERVICE_LIFECYCLE_DISPATCHERS_GROUP,
     SERVICE_READINESS_PROBES_GROUP,
@@ -55,6 +61,7 @@ from tolokaforge.core.plugin_registry import (
     available_conductors,
     available_grader_kinds,
     available_grading_methods,
+    available_judge_kinds,
     available_readiness_probes,
     available_runtime_backends,
     available_service_lifecycle_dispatchers,
@@ -66,6 +73,7 @@ from tolokaforge.core.plugin_registry import (
     load_conductor,
     load_grader_kind,
     load_grading_method,
+    load_judge_kind,
     load_readiness_probe,
     load_runtime_backend,
     load_service_lifecycle_dispatcher,
@@ -211,6 +219,20 @@ def test_grader_kind_names_resolve_to_their_class(name: str, expected_cls: type)
 @pytest.mark.parametrize(
     ("name", "expected_cls"),
     [
+        ("agentic_rubric", AgenticRubricJudgeKind),
+        ("chunked_rubric", ChunkedRubricJudgeKind),
+        ("single_shot_rubric", SingleShotRubricJudgeKind),
+    ],
+)
+def test_judge_kind_names_resolve_to_their_class(name: str, expected_cls: type) -> None:
+    kind_cls = load_judge_kind(name)
+    assert kind_cls is expected_cls
+    assert name == kind_cls.NAME
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_cls"),
+    [
         ("local_disk", LocalDiskBundleStore),
         ("s3", S3BundleStore),
     ],
@@ -227,6 +249,7 @@ def test_available_listings_match_the_builtin_set() -> None:
     assert available_turn_policies() == ["agent_only", "conversational"]
     assert available_grading_methods() == ["composite", "test_execution"]
     assert available_grader_kinds() == ["composite", "test_execution"]
+    assert available_judge_kinds() == ["agentic_rubric", "chunked_rubric", "single_shot_rubric"]
     assert available_bundle_stores() == ["local_disk", "s3"]
     assert available_compose_materialisers() == ["docker_compose"]
     assert available_service_lifecycle_dispatchers() == ["ephemeral", "reset", "shared"]
@@ -258,6 +281,11 @@ def test_raw_entry_point_probe_lists_grading_methods() -> None:
 def test_raw_entry_point_probe_lists_grader_kinds() -> None:
     names = sorted(ep.name for ep in importlib.metadata.entry_points(group=GRADER_KINDS_GROUP))
     assert names == ["composite", "test_execution"]
+
+
+def test_raw_entry_point_probe_lists_judge_kinds() -> None:
+    names = sorted(ep.name for ep in importlib.metadata.entry_points(group=JUDGE_KINDS_GROUP))
+    assert names == ["agentic_rubric", "chunked_rubric", "single_shot_rubric"]
 
 
 def test_raw_entry_point_probe_lists_bundle_stores() -> None:

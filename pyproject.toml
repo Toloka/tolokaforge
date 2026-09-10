@@ -238,6 +238,20 @@ test_execution = "tolokaforge.core.grading.grading_method:TestExecutionGradingMe
 composite = "tolokaforge.core.grading.kinds.composite:CompositeGraderKind"
 test_execution = "tolokaforge.core.grading.kinds.test_execution:TestExecutionGraderKind"
 
+# Typed judge-kind Protocol registry. Every entry resolves to a class with a
+# kwargs-only ``evaluate(*, rubric, agent_system_prompt, transcript, db_reader,
+# kb_search, workspace_dir, extra_read_tools, state_diff, judge_model_config,
+# judge_model_provider, disable_knowledge_search, custom_system_prompt,
+# include_agent_system_prompt, kind_config, logger) -> JudgeResult``. The
+# runner-side composite dispatch resolves this loader to reach the LLM-judge
+# implementation registered as ``single_shot_rubric``; downstream packages
+# register alternative kinds (jury, downstream-specific) alongside without a
+# framework PR. See :mod:`tolokaforge.core.grading.judge_kinds`.
+[project.entry-points."tolokaforge.judge_kinds"]
+agentic_rubric = "tolokaforge.core.grading.judge_kinds.agentic:AgenticRubricJudgeKind"
+chunked_rubric = "tolokaforge.core.grading.judge_kinds.chunked:ChunkedRubricJudgeKind"
+single_shot_rubric = "tolokaforge.core.grading.judge_kinds.single_shot:SingleShotRubricJudgeKind"
+
 # ADR-0044 composition-plan adapter Protocols
 # (``tolokaforge/core/composition_runtime.py``). Each entry point resolves
 # directly to the impl class — the class is arg-less-constructible, so the
@@ -466,6 +480,7 @@ exclude = [
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/config_validation.py",
     "tolokaforge/core/grading/corpus_curation.py",
+    "tolokaforge/core/grading/judge_kinds/parity.py",
     "tolokaforge/core/grading/judge_only_helpers.py",
     "tolokaforge/core/grading/migration_declaration.py",
     "tolokaforge/core/grading/replay.py",
@@ -735,12 +750,14 @@ members = [
     "tools/dev-mcp",
     "tools/pricing-updater",
     "tools/rubric-calibrator",
+    "tools/judge-kind-ab",
     "external_adapters/tolokaforge-adapter-terminal-bench",
 ]
 
 [tool.uv.sources]
 automation = { workspace = true }
 dev-mcp = { workspace = true }
+judge-kind-ab = { workspace = true }
 rubric-calibrator = { workspace = true }
 tolokaforge = { workspace = true }
 tolokaforge-adapter-terminal-bench = { workspace = true }

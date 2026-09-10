@@ -36,10 +36,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.substrate import SubstrateUnreachableError
-from tolokaforge.core.llm.client import GenerationResult
-from tolokaforge.core.llm.usage import Usage
-from tolokaforge.core.models import JudgeStatus, ModelConfig, ToolCall
+from tolokaforge.core.models import JudgeStatus, ModelConfig
 from tolokaforge.core.trial_grader import GradingFailedError
 from tolokaforge.grader.composite_dispatch import GraderCompositeDispatch
 from tolokaforge.grader.service import GradeDispatch
@@ -123,51 +122,10 @@ class _StubSubstrate:
         self.closed = True
 
 
-class _ScriptedClient:
-    """A scripted ``LoopLLMClient``: returns queued ``GenerationResult`` in order."""
-
-    def __init__(self, script: list[Any]) -> None:
-        self._script = list(script)
-        self._i = 0
-
-    def generate(
-        self,
-        system,  # noqa: ARG002
-        messages,  # noqa: ARG002
-        tools,  # noqa: ARG002
-        tool_choice="auto",  # noqa: ARG002
-        observation=None,  # noqa: ARG002
-    ) -> GenerationResult:
-        if self._i >= len(self._script):
-            return GenerationResult(text="(exhausted)", tool_calls=[], usage=Usage())
-        step = self._script[self._i]
-        self._i += 1
-        if isinstance(step, str):
-            return GenerationResult(text=step, tool_calls=[], usage=Usage())
-        tool_calls = [
-            ToolCall(id=f"call_{self._i}_{j}", name=name, arguments=args)
-            for j, (name, args) in enumerate(step)
-        ]
-        return GenerationResult(
-            text="",
-            tool_calls=tool_calls,
-            usage=Usage(prompt_tokens=10, completion_tokens=5),
-            cost_usd=0.001,
-        )
-
-    def classify_loop_error(self, exc: Exception):
-        from tolokaforge.core.loop import classify_loop_error
-
-        return classify_loop_error(exc, ())
-
-    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
-        return {}
-
-
 def _install_scripted_client(monkeypatch: pytest.MonkeyPatch, script: list[Any]) -> None:
     monkeypatch.setattr(
         "tolokaforge.core.grading.default_judge_model_provider.LLMClient",
-        lambda *args, **kwargs: _ScriptedClient(script),
+        lambda *args, **kwargs: ScriptedLLMClient(script),
     )
 
 

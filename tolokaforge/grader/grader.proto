@@ -199,6 +199,7 @@ message JudgeReport {
   repeated string read_tools_offered = 13;
   bool custom_system_prompt = 14;
   optional bool include_agent_system_prompt = 15;
+  string chunk_boundaries_json = 16;
 }
 
 // TraceConstraintResult — mirrors runner.TraceConstraintResult including

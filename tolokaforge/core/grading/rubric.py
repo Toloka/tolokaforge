@@ -34,6 +34,14 @@ from tolokaforge.runner.models import Criterion, CriterionResult, Rubric
 #: Name of the terminal tool the judge calls to submit its rubric verdict.
 SUBMIT_REPORT_TOOL_NAME = "submit_report"
 
+#: Name of the tool an agentic judge kind calls to submit a draft verdict for
+#: critique before the terminal :data:`SUBMIT_REPORT_TOOL_NAME` call.
+DRAFT_REPORT_TOOL_NAME = "draft_report"
+
+#: Name of the tool an agentic judge kind calls to fetch evidence pointers for
+#: its own draft verdict before finalizing it.
+CRITIQUE_TOOL_NAME = "critique"
+
 #: Threshold a graded criterion's ``score`` must clear for ``met`` to be True.
 #: ``met`` is only consulted by the required-gate, so this is the bar at which a
 #: graded criterion counts as "passed" for gating purposes.
@@ -180,18 +188,14 @@ def _criterion_justification_property(criterion: Criterion) -> dict:
     }
 
 
-def build_submit_report_tool(rubric: Rubric) -> dict:
-    """Generate the terminal ``submit_report`` tool whose args derive from the rubric.
+def _build_report_tool_parameters(rubric: Rubric) -> dict:
+    """Build the shared ``parameters`` JSON schema for a rubric-report tool.
 
-    The tool follows the project's OpenAI function-calling shape
-    (``{"type": "function", "function": {...}}``) — the same shape every other
-    judge read-tool (``judge_tools.py``) uses, so the LLM layer accepts it directly.
-
-    Argument schema (all fields required). Per criterion, the
-    ``<criterion.id>_justification`` string is emitted **before** its verdict
-    field in both ``properties`` insertion order and the ``required`` list, so a
-    provider that generates tool arguments in schema order writes the reasoning
-    before committing the verdict token (reason-then-answer):
+    Per criterion, the ``<criterion.id>_justification`` string is emitted
+    **before** its verdict field in both ``properties`` insertion order and the
+    ``required`` list, so a provider that generates tool arguments in schema
+    order writes the reasoning before committing the verdict token
+    (reason-then-answer):
 
     - one ``<criterion.id>_justification`` string per criterion, which must end
       with a ``VERDICT: MET`` / ``VERDICT: NOT MET`` (binary) or ``SCORE: <value>``
@@ -210,6 +214,11 @@ def build_submit_report_tool(rubric: Rubric) -> dict:
     ``<id>_justification`` key — so this builder need not re-check collisions.
     The reserved-key contract (``_REASONS_KEY`` / ``_JUSTIFICATION_SUFFIX``) is
     duplicated in that validator; keep the two in sync.
+
+    Shared by every rubric-report tool (:func:`build_submit_report_tool`,
+    :func:`build_draft_report_tool`) — they differ only in ``function.name`` /
+    ``function.description``, never in argument shape, so ``parse_submit_report``
+    validates either tool's ``tool_args`` identically.
     """
     properties: dict[str, dict] = {}
     required: list[str] = []
@@ -228,6 +237,22 @@ def build_submit_report_tool(rubric: Rubric) -> dict:
     required.append(_REASONS_KEY)
 
     return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+    }
+
+
+def build_submit_report_tool(rubric: Rubric) -> dict:
+    """Generate the terminal ``submit_report`` tool whose args derive from the rubric.
+
+    The tool follows the project's OpenAI function-calling shape
+    (``{"type": "function", "function": {...}}``) — the same shape every other
+    judge read-tool (``judge_tools.py``) uses, so the LLM layer accepts it directly.
+
+    Argument schema (all fields required) — see :func:`_build_report_tool_parameters`.
+    """
+    return {
         "type": "function",
         "function": {
             "name": SUBMIT_REPORT_TOOL_NAME,
@@ -236,10 +261,66 @@ def build_submit_report_tool(rubric: Rubric) -> dict:
                 "and a justification for every criterion, plus overall reasons. "
                 "Call this exactly once when you have finished evaluating."
             ),
+            "parameters": _build_report_tool_parameters(rubric),
+        },
+    }
+
+
+def build_draft_report_tool(rubric: Rubric) -> dict:
+    """Generate the ``draft_report`` tool an agentic judge calls before critique.
+
+    Same OpenAI function-calling shape and argument schema as
+    :func:`build_submit_report_tool` — see :func:`_build_report_tool_parameters`
+    — so ``parse_submit_report`` validates a ``draft_report`` payload identically
+    to a ``submit_report`` one. Differs only in ``function.name`` /
+    ``function.description``: this call is a non-final, draft verdict that the
+    engine will critique (an injected re-prompt over the read tools) before the
+    judge calls the real :data:`SUBMIT_REPORT_TOOL_NAME`.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": DRAFT_REPORT_TOOL_NAME,
+            "description": (
+                "Submit a DRAFT per-criterion rubric verdict for critique. This is "
+                "not final — after this call you will be asked to re-examine your "
+                "draft before calling submit_report with your final verdict. "
+                "Provide a verdict and a justification for every criterion, plus "
+                "overall reasons, exactly as you would for submit_report."
+            ),
+            "parameters": _build_report_tool_parameters(rubric),
+        },
+    }
+
+
+def build_critique_tool_schema(rubric: Rubric) -> dict:
+    """Generate the ``critique`` tool an agentic judge calls to fetch evidence.
+
+    The inner ``verdict_draft`` object is byte-identical to
+    :func:`_build_report_tool_parameters`'s output — the same schema
+    :func:`build_submit_report_tool` / :func:`build_draft_report_tool` use — so
+    a judge's draft verdict validates identically to a ``submit_report`` /
+    ``draft_report`` call once unwrapped. The top-level ``verdict_draft``
+    wrapper key (absent from ``submit_report`` / ``draft_report``) is what
+    makes a flat, ``submit_report``-shaped call structurally rejectable by
+    ``ToolExecutor``'s ``jsonschema`` validation before ``critique.execute``
+    ever runs (see ``judge_kinds/critique.py``).
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": CRITIQUE_TOOL_NAME,
+            "description": (
+                "Fetch evidence pointers (transcript spans, state-diff excerpts, "
+                "and any prior search_kb hits) for your own DRAFT verdict before "
+                "finalizing it with submit_report. Wrap your draft verdict — the "
+                "exact same fields you would pass to submit_report — inside a "
+                "single 'verdict_draft' object."
+            ),
             "parameters": {
                 "type": "object",
-                "properties": properties,
-                "required": required,
+                "properties": {"verdict_draft": _build_report_tool_parameters(rubric)},
+                "required": ["verdict_draft"],
             },
         },
     }
