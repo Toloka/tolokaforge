@@ -13,12 +13,55 @@ documented in [`docs/GRADER_SERVICE.md § Sub-component plug-in seams`](GRADER_S
 the composite fold that dispatches into the kind is documented in
 [`docs/GRADING.md`](GRADING.md).
 
-One kind ships in the reference distribution: `single_shot_rubric`
+Two kinds ship in the reference distribution: `single_shot_rubric`
 (wraps `LLMJudge` in one shot, byte-identical with the pre-seam
-`LLMJudgeRubricEvaluator`). Downstream packages register alternatives
-(chunked, agentic, jury) alongside without a framework PR.
+`LLMJudgeRubricEvaluator`) and `chunked_rubric` (one `LLMJudge`
+invocation per fixed-K chunk of the rubric's criteria — the opt-in kind
+for large rubrics where a single `submit_report` payload would exceed
+the judge model's output-token ceiling). Downstream packages register
+alternatives (agentic, jury) alongside without a framework PR.
 
-> This document currently covers the parity gate only; wider catalog is TODO (#1572).
+> This document currently covers the parity gate and the chunked kind;
+> a wider catalog is TODO (#1572).
+
+## Chunked kind
+
+`chunked_rubric` splits the rubric's criteria into fixed-K contiguous
+chunks (`rubric.criteria[i*K:(i+1)*K]`), runs one `LLMJudge` per chunk
+against a scoped sub-rubric (each chunk sees the original `reference`
+verbatim), and merges the per-chunk `CriterionResult` maps into the
+original full rubric — folded through `aggregate_rubric` on the
+original rubric so `score` / `binary_pass` / `gate_failed` come out of
+the same math the single-shot kind uses. Opt in via
+`grading.llm_judge.judge_kind: chunked_rubric`; the default remains
+`single_shot_rubric`.
+
+`kind_config` schema: `{"chunk_size": int}`. `chunk_size` must be `>= 1`
+(a `chunk_size >= len(criteria)` degenerates to a single call, which is
+deliberate). Missing key or a `None` config → `DEFAULT_CHUNK_SIZE = 5`;
+follow-up [#1581](https://github.com/Toloka/tolokaforge/issues/1581)
+tunes this default from live measurement. Any unknown key or a
+non-positive `chunk_size` raises `ValueError` inside `evaluate` before
+any judge call runs.
+
+Per-chunk fail-loud (#1471): any chunk whose `JudgeResult.status` is
+not `COMPLETED` — or whose `criterion_results` is missing one of its
+chunk's criterion ids — yields a whole-trial `JudgeResult` with
+`status=ERRORED`, `score=None`, `criterion_results=()`, and a `reasons`
+naming the failing chunk index + its criterion ids + the underlying
+reason. `chunk_boundaries` is still populated with every boundary
+attempted, so #1569 can persist them and offline replay can retry only
+the failing chunk. There is never a silent partial-rubric score.
+
+Chunk boundaries are emitted on the in-memory `JudgeResult` today via
+`chunk_boundaries: tuple[tuple[str, ...], ...]` — one inner tuple per
+chunk, with criterion ids in original order. Bundle-manifest persistence
+is deferred to #1569.
+
+Cost note: a rubric split into N chunks consumes up to `N ×` the
+single-shot per-trial wall-clock and system-prompt tokens. This is the
+acknowledged cost of removing the truncation failure class; the trade
+between chunk size and reliability is measured in follow-up #1581.
 
 ## Parity gate
 
