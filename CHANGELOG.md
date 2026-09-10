@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.24.3 (2026-09-10)
+
+### Fix
+
+- **examples**: declare on_missing: fail on the notes gate constraint (#1576)
+
 ## v0.24.2 (2026-09-09)
 
 ### Feat
