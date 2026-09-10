@@ -160,7 +160,7 @@ on `Grade.judge_chunk_boundaries` in the replay's `grade.yaml` via
 that identity.
 
 `replay_provenance.yaml` stamps `judge_kind` (the resolved kind name)
-and `judge_kind_source: recorded` (Stage 2 has no `OVERRIDE` case —
+and `judge_kind_source: recorded` (there is no `OVERRIDE` case today —
 `--judge-kind` at replay time is deliberately out of scope; κ-parity
 kind A/B lives in the parity harness, not on the offline replay CLI).
 

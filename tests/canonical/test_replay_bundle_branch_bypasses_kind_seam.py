@@ -11,8 +11,7 @@ the kind seam is the correct dispatch. A future contributor deleting
 the ``if inputs.explicit_system_prompt is not None`` short-circuit
 would silently route every bundle-branch trial through
 :meth:`JudgeKind.evaluate`, which has no matching
-``explicit_system_prompt`` kwarg today; this test fails loudly instead
-(:meth:`JudgeKind.evaluate` widening tracked at #1583).
+``explicit_system_prompt`` kwarg; this test fails loudly instead.
 """
 
 from __future__ import annotations

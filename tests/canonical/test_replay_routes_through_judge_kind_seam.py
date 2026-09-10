@@ -6,11 +6,10 @@ the recorded ``judge_kind`` + ``kind_config`` off the bundle's
 ``load_judge_kind(inputs.judge_kind)()`` — a recorded ``chunked_rubric``
 run replays through :class:`ChunkedRubricJudgeKind` (returned
 ``JudgeResult.chunk_boundaries`` is non-empty and matches the recorded
-partition, and Stage 1's :func:`build_replay_grade` populator projects
-it onto ``Grade.judge_chunk_boundaries``), while a legacy trial
-artifact without the two fields defaults to ``single_shot_rubric`` (the
-byte-parity anchor). Stage 2 lock; the fifth-site (composite recompute)
-populator lock lives at
+partition, and :func:`build_replay_grade` projects it onto
+``Grade.judge_chunk_boundaries``), while a legacy trial artifact
+without the two fields defaults to ``single_shot_rubric`` (the
+byte-parity anchor). The composite-recompute populator lock lives at
 ``tests/canonical/test_composite_recompute_carries_chunk_boundaries.py``.
 """
 
@@ -115,8 +114,8 @@ def _submit_report_step(chunk_ids: tuple[str, ...]) -> list[tuple[str, dict]]:
 
 class TestChunkedRubricReplaysThroughKindSeam:
     """A recorded chunked_rubric trial replays through
-    :class:`ChunkedRubricJudgeKind`, and Stage 1's populator projects the
-    partition onto ``Grade.judge_chunk_boundaries``."""
+    :class:`ChunkedRubricJudgeKind`, and :func:`build_replay_grade`
+    projects the partition onto ``Grade.judge_chunk_boundaries``."""
 
     def test_chunked_replay_carries_recorded_chunk_boundaries(self, tmp_path: Path) -> None:
         trial_dir = tmp_path / "trials" / "refund_task" / "0"
@@ -158,8 +157,8 @@ class TestChunkedRubricReplaysThroughKindSeam:
 
 
 class TestLegacyArtifactDefaultsToSingleShot:
-    """A trial artifact whose ``grading_config.llm_judge`` predates #1567
-    lacks both ``judge_kind`` and ``kind_config``; the resolver defaults
+    """A trial artifact whose ``grading_config.llm_judge`` lacks both
+    ``judge_kind`` and ``kind_config``; the resolver defaults
     them to ``("single_shot_rubric", None)`` with
     ``ProvenanceSource.RECORDED`` and the reference kind grades the trial."""
 

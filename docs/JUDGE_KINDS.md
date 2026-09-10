@@ -50,8 +50,9 @@ chunk's criterion ids — yields a whole-trial `JudgeResult` with
 `status=ERRORED`, `score=None`, `criterion_results=()`, and a `reasons`
 naming the failing chunk index + its criterion ids + the underlying
 reason. `chunk_boundaries` is still populated with every boundary
-attempted, so #1569 can persist them and offline replay can retry only
-the failing chunk. There is never a silent partial-rubric score.
+attempted, so `build_replay_grade` and every other `Grade`-writing path
+persist them (see § Persistence below) and offline replay can retry
+only the failing chunk. There is never a silent partial-rubric score.
 
 ### Persistence
 
@@ -93,8 +94,8 @@ through `ChunkedRubricJudgeKind`; a legacy trial artifact predating
 `("single_shot_rubric", None)` — byte-identical to prior behaviour, and
 the byte-parity anchor `tests/canonical/test_judge_kind_single_shot_byte_parity.py`
 guards it. `ReplayProvenance.judge_kind_source` stamps the origin
-(`RECORDED` at Stage 2 — no CLI `--judge-kind` override; kind A/B
-comparison lives in the parity harness, not on the offline replay CLI).
+(`RECORDED` — no CLI `--judge-kind` override; kind A/B comparison lives
+in the parity harness, not on the offline replay CLI).
 
 The bundle-branch prompt escape hatch: when the bundle recorded a
 composed judge prompt via `prompts.yaml.judge_prompt`

@@ -282,15 +282,15 @@ class ReplayProvenance(BaseModel):
     agent_prompt_source: ProvenanceSource | None
     fidelity_mode: FidelityMode
     # Which :class:`JudgeKind` this replay dispatched through and where the
-    # decision came from. ``RECORDED`` at Stage 2 — the value came from the
-    # bundle's ``task.yaml.grading_config.llm_judge`` (either an explicit
-    # ``judge_kind`` key or, for legacy artifacts predating #1567,
-    # ``LLMJudgeConfig``'s ``"single_shot_rubric"`` default). No ``OVERRIDE``
-    # case yet: ``--judge-kind`` at replay time is out of scope (κ-parity kind
-    # A/B lives in the parity harness, not on the offline replay CLI). The
-    # ``single_shot_rubric`` default here mirrors ``LLMJudgeConfig``'s field
-    # default so an older ``ReplayProvenance()`` construction that predates
-    # this field parses to the legacy-artifact shape it stamped for.
+    # decision came from. RECORDED — resolved from the bundle's
+    # task.yaml.grading_config.llm_judge (an explicit judge_kind key, or
+    # LLMJudgeConfig's 'single_shot_rubric' default for legacy artifacts
+    # that carry neither). ``--judge-kind`` at replay time is out of scope
+    # (κ-parity kind A/B lives in the parity harness, not on the offline
+    # replay CLI), so no OVERRIDE case exists. The ``single_shot_rubric``
+    # default here mirrors ``LLMJudgeConfig``'s field default so a
+    # ``ReplayProvenance()`` construction that omits this field parses to
+    # the legacy-artifact shape it stamps for.
     judge_kind: str = "single_shot_rubric"
     judge_kind_source: ProvenanceSource = ProvenanceSource.RECORDED
 
@@ -373,12 +373,11 @@ class ReplayInputs:
     include_agent_system_prompt: bool
     # Which :class:`JudgeKind` this replay dispatches through, resolved from the
     # bundle's ``task.yaml.grading_config.llm_judge.judge_kind`` (defaulting to
-    # ``"single_shot_rubric"`` for legacy artifacts predating that field).
+    # ``"single_shot_rubric"`` for legacy artifacts that omit that field).
     # ``kind_config`` is the opaque per-kind bag the resolved kind validates on
     # its own ``evaluate`` entry. The bundle-branch ``explicit_system_prompt``
     # short-circuit in :func:`replay_trial` bypasses this seam — see the escape
-    # hatch there and the follow-up (#1583) tracking widening of
-    # :meth:`JudgeKind.evaluate` with an optional ``explicit_system_prompt`` kwarg.
+    # hatch mechanics in that function's docstring.
     judge_kind: str
     kind_config: Mapping[str, Any] | None
     provenance: ReplayProvenance
@@ -519,23 +518,42 @@ def _resolve_judge_kind(
     surface their own field-shape errors, and pre-validating the whole
     mapping here would collapse those into a single confusing message.
     Legacy trial artifacts without either field land on
-    ``LLMJudgeConfig``'s ``("single_shot_rubric", None)`` defaults (#1567); an
+    ``LLMJudgeConfig``'s ``("single_shot_rubric", None)`` defaults; an
     unknown ``judge_kind`` string fails loud via :func:`load_judge_kind` at
-    the same seam the runner + host use.
+    the same seam the runner + host use. A ``judge_kind`` value that is
+    present but not a non-empty string, or a ``kind_config`` value that is
+    present but not a mapping, fails loud via
+    :class:`MissingReplayInputError` — matching the sibling resolvers'
+    shape so a corrupted or hand-edited bundle never silently substitutes
+    a default.
 
-    Provenance is always ``RECORDED`` at Stage 2: whether the bundle carried
-    the fields explicitly or fell back to the defaults, the values came from
-    the recorded config with no CLI override in play (no ``--judge-kind`` at
-    replay time — see Non-goals).
+    Provenance is always ``RECORDED``: whether the bundle carried the
+    fields explicitly or fell back to the defaults, the values came from
+    the recorded config with no CLI override in play (no ``--judge-kind``
+    at replay time — see Non-goals).
     """
     llm_judge = ((task or {}).get("grading_config") or {}).get("llm_judge")
     if not isinstance(llm_judge, dict):
         return "single_shot_rubric", None, ProvenanceSource.RECORDED
     raw_kind = llm_judge.get("judge_kind")
-    judge_kind = raw_kind if isinstance(raw_kind, str) and raw_kind else "single_shot_rubric"
+    if raw_kind is None:
+        judge_kind = "single_shot_rubric"
+    elif isinstance(raw_kind, str) and raw_kind:
+        judge_kind = raw_kind
+    else:
+        raise MissingReplayInputError(
+            f"recorded grading_config.llm_judge.judge_kind is blank or not a string: {raw_kind!r}"
+        )
     load_judge_kind(judge_kind)  # fail loud on an unregistered name
     raw_kind_config = llm_judge.get("kind_config")
-    kind_config = raw_kind_config if isinstance(raw_kind_config, Mapping) else None
+    if raw_kind_config is None:
+        kind_config: Mapping[str, Any] | None = None
+    elif isinstance(raw_kind_config, Mapping):
+        kind_config = raw_kind_config
+    else:
+        raise MissingReplayInputError(
+            f"recorded grading_config.llm_judge.kind_config is not a mapping: {raw_kind_config!r}"
+        )
     return judge_kind, kind_config, ProvenanceSource.RECORDED
 
 
@@ -826,11 +844,9 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
     ``prompts.yaml.judge_prompt`` (``inputs.explicit_system_prompt is not
     None``), :func:`replay_trial` short-circuits to a direct
     :class:`LLMJudge` construction. :meth:`JudgeKind.evaluate` has no
-    ``explicit_system_prompt`` kwarg today, and the recorded composed prompt
+    ``explicit_system_prompt`` kwarg, and the recorded composed prompt
     supersedes both the task customization and the kind's default
-    composition. Widening the Protocol with an optional
-    ``explicit_system_prompt`` keyword-only argument is tracked as #1583; the
-    short-circuit here disappears once that lands.
+    composition.
     """
     from tolokaforge.core.grading.judge_only_helpers import _FixedClientJudgeModelProvider
 
