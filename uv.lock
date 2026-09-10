@@ -2151,11 +2151,19 @@ name = "judge-kind-ab"
 version = "0.1.0"
 source = { editable = "tools/judge-kind-ab" }
 dependencies = [
+    { name = "click" },
+    { name = "rich" },
     { name = "tolokaforge" },
+    { name = "typer" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "tolokaforge", editable = "." }]
+requires-dist = [
+    { name = "click", specifier = ">=8.0.0,<8.2.0" },
+    { name = "rich", specifier = ">=13.0.0" },
+    { name = "tolokaforge", editable = "." },
+    { name = "typer", specifier = ">=0.12.5,<0.13" },
+]
 
 [[package]]
 name = "librt"

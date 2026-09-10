@@ -5,7 +5,13 @@ description = "Assemble real trial bundles into a parity corpus and drive JudgeK
 requires-python = ">=3.10"
 dependencies = [
     "tolokaforge",
+    "typer>=0.12.5,<0.13",
+    "click>=8.0.0,<8.2.0",
+    "rich>=13.0.0",
 ]
+
+[project.scripts]
+judge-kind-ab = "judge_kind_ab.cli:app"
 
 [build-system]
 requires = ["hatchling"]
@@ -17,9 +23,18 @@ build-backend = "hatchling.build"
 # `-m integration`. The conftest.py auto-skip additionally guards the no-key
 # path, mirroring the repo's tests/conftest.py.
 addopts = ["-m", "not integration"]
+# Repo root, so the canonical dry-run test can import the shared
+# tests.utils.scripted_llm_client.ScriptedLLMClient test double the canonical
+# parity lane (tests/canonical/test_judge_kind_parity.py) also uses. This
+# tool's tests/ dir intentionally has NO __init__.py (unlike sibling tools'
+# tests/ dirs): with one, pytest's rootdir-walk names test modules
+# "tests.<name>", registering "tests" in sys.modules and permanently
+# shadowing the real root tests/utils package for the rest of the run.
+pythonpath = ["../.."]
 markers = [
     "unit: marks tests as unit tests (fast, isolated)",
     "integration: marks tests as integration tests (real LLM call)",
     "requires_api: marks tests requiring API keys",
     "llm: marks tests that call real LLM providers",
+    "canonical: marks canonization snapshot tests",
 ]
