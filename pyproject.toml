@@ -750,12 +750,14 @@ members = [
     "tools/dev-mcp",
     "tools/pricing-updater",
     "tools/rubric-calibrator",
+    "tools/judge-kind-ab",
     "external_adapters/tolokaforge-adapter-terminal-bench",
 ]
 
 [tool.uv.sources]
 automation = { workspace = true }
 dev-mcp = { workspace = true }
+judge-kind-ab = { workspace = true }
 rubric-calibrator = { workspace = true }
 tolokaforge = { workspace = true }
 tolokaforge-adapter-terminal-bench = { workspace = true }

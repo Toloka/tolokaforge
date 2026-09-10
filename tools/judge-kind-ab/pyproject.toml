@@ -1,0 +1,25 @@
+[project]
+name = "judge-kind-ab"
+version = "0.1.0"
+description = "Assemble real trial bundles into a parity corpus and drive JudgeKind kappa-agreement + cost A/B against a live judge model."
+requires-python = ">=3.10"
+dependencies = [
+    "tolokaforge",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+# Integration tests are OPT-IN: a bare `uv run pytest tests/` (incl. CI's
+# per-tool loop) must NOT make a real paid LLM call. Run them explicitly with
+# `-m integration`. The conftest.py auto-skip additionally guards the no-key
+# path, mirroring the repo's tests/conftest.py.
+addopts = ["-m", "not integration"]
+markers = [
+    "unit: marks tests as unit tests (fast, isolated)",
+    "integration: marks tests as integration tests (real LLM call)",
+    "requires_api: marks tests requiring API keys",
+    "llm: marks tests that call real LLM providers",
+]
