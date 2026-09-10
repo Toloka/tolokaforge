@@ -1,10 +1,12 @@
 """Unit tests for :class:`AgenticRubricJudgeKind` and :class:`_DraftReportTermination`.
 
 Exercises the ``kind_config`` schema, the draft -> critique -> submit state
-machine's six transitions (valid/invalid draft, repeat draft, premature
-submit, real submit, pure-text turns), the injected critique message's
-content, the cross-``.run()``-resumption turn-budget backstop, and the
-capability-threading contract into the judge's own ``LoopConfig``.
+machine's transitions (valid/invalid draft, repeat draft, premature submit,
+valid/invalid post-critique submit and its retry exhaustion, pure-text
+turns), the injected critique message's content, the cross-``.run()``-
+resumption turn-budget backstop, the ``JudgeUsage`` cost-measurement
+plumbing, and the capability-threading contract into the judge's own
+``LoopConfig``.
 
 Every case drives a single scripted :class:`ScriptedLLMClient` (the kind
 builds its judge model exactly once per episode, unlike ``chunked_rubric``
@@ -19,6 +21,7 @@ from typing import Any
 import pytest
 
 from tests.utils.scripted_llm_client import ScriptedLLMClient
+from tolokaforge.core.grading.judge import DEFAULT_SUBMIT_REPORT_RETRIES
 from tolokaforge.core.grading.judge_kinds import agentic
 from tolokaforge.core.grading.judge_kinds.agentic import (
     AGENTIC_JUDGE_MAX_TURNS,
@@ -26,6 +29,7 @@ from tolokaforge.core.grading.judge_kinds.agentic import (
     AgenticRubricJudgeKind,
 )
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
+from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import ModelConfig
@@ -99,6 +103,7 @@ def _evaluate(
     *,
     provider: _SingleClientProvider,
     kind_config: dict[str, Any] | None = None,
+    extra_read_tools: list[Any] | None = None,
 ) -> JudgeResult:
     """Drive :meth:`AgenticRubricJudgeKind.evaluate` with a minimal input surface."""
     kind = AgenticRubricJudgeKind()
@@ -109,7 +114,7 @@ def _evaluate(
         db_reader=None,
         kb_search=None,
         workspace_dir=None,
-        extra_read_tools=[],
+        extra_read_tools=extra_read_tools or [],
         state_diff=None,
         judge_model_config=_JUDGE_MODEL,
         judge_model_provider=provider,
@@ -178,6 +183,38 @@ def test_draft_then_submit_flow_completes() -> None:
     assert result.score == pytest.approx(1.0)
     assert [cr.id for cr in result.criterion_results] == [c.id for c in rubric.criteria]
     assert provider.build_calls == 1
+    assert result.usage.calls >= 2
+
+
+def test_usage_counts_llm_calls_and_an_executed_read_tool_call() -> None:
+    """``JudgeResult.usage`` tallies every LLM call and every tool that actually ran.
+
+    ``draft_report``/``submit_report`` calls terminate their turn before
+    ``ToolCallingLoop`` executes any tool, so they never increment
+    ``usage.tool_calls`` themselves — a real read tool exercised during the
+    critique phase is what proves the tool-call side of the counter works.
+    """
+    rubric = _binary_rubric(1)
+    peek_calls: list[dict[str, Any]] = []
+    peek_tool = DelegatingReadTool(
+        name="peek",
+        description="Peek at something",
+        parameters={"type": "object", "properties": {}},
+        invoke=lambda args: (peek_calls.append(args) or "peeked"),
+    )
+    script = [
+        _report_call("draft_report", rubric.criteria),
+        [("peek", {})],
+        _report_call("submit_report", rubric.criteria),
+    ]
+    provider = _SingleClientProvider(ScriptedLLMClient(script))
+
+    result = _evaluate(rubric, provider=provider, extra_read_tools=[peek_tool])
+
+    assert result.status is JudgeStatus.COMPLETED
+    assert peek_calls == [{}]
+    assert result.usage.calls >= 3
+    assert result.usage.tool_calls >= 1
 
 
 def test_injected_critique_message_echoes_draft_verdicts_and_budget() -> None:
@@ -249,6 +286,42 @@ def test_invalid_draft_args_triggers_retry_via_answer_terminating_submit_report(
     assert result.status is JudgeStatus.COMPLETED
     tool_messages = _tool_message_contents(result)
     assert any("draft_report was rejected" in m for m in tool_messages)
+
+
+def test_invalid_submit_args_triggers_retry_via_answer_terminating_submit_report() -> None:
+    """A malformed post-critique submit_report is rejected, then retried, to COMPLETED."""
+    rubric = _binary_rubric(1)
+    script = [
+        _report_call("draft_report", rubric.criteria),
+        _report_call("submit_report", rubric.criteria, invalid_ids={"c0"}),
+        _report_call("submit_report", rubric.criteria),
+    ]
+    provider = _SingleClientProvider(ScriptedLLMClient(script))
+
+    result = _evaluate(rubric, provider=provider)
+
+    assert result.status is JudgeStatus.COMPLETED
+    tool_messages = _tool_message_contents(result)
+    assert any("submit_report was rejected" in m for m in tool_messages)
+
+
+def test_invalid_submit_args_exhausts_retries_to_errored() -> None:
+    """Post-critique submit_report invalid on every attempt exhausts retries -> ERRORED."""
+    rubric = _binary_rubric(1)
+    script = [
+        _report_call("draft_report", rubric.criteria),
+        *(
+            _report_call("submit_report", rubric.criteria, invalid_ids={"c0"})
+            for _ in range(DEFAULT_SUBMIT_REPORT_RETRIES + 1)
+        ),
+    ]
+    provider = _SingleClientProvider(ScriptedLLMClient(script))
+
+    result = _evaluate(rubric, provider=provider)
+
+    assert result.status is JudgeStatus.ERRORED
+    assert result.score is None
+    assert f"submit_report invalid after {DEFAULT_SUBMIT_REPORT_RETRIES} retries" in result.reasons
 
 
 def test_no_tool_call_pure_text_turn_silently_continues() -> None:

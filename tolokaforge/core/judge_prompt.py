@@ -61,7 +61,7 @@ _JUDGE_MARKER_CONTRACT = (
 _JUDGE_SYSTEM_PROMPT = f"{_JUDGE_SYSTEM_PROMPT_BODY} {_JUDGE_MARKER_CONTRACT}"
 
 
-def _compose_judge_system_prompt(custom_system_prompt: str | None) -> str:
+def compose_judge_system_prompt(custom_system_prompt: str | None) -> str:
     """Compose the judge system prompt, always ending with the marker contract.
 
     ``None`` yields the byte-for-byte default prompt; a custom body replaces the
@@ -86,7 +86,7 @@ def effective_judge_system_prompt(llm_judge_config: LLMJudgeConfig | None) -> st
     if llm_judge_config is None:
         return None
     customization = llm_judge_config.customization
-    return _compose_judge_system_prompt(customization.system_prompt if customization else None)
+    return compose_judge_system_prompt(customization.system_prompt if customization else None)
 
 
-__all__ = ["effective_judge_system_prompt"]
+__all__ = ["compose_judge_system_prompt", "effective_judge_system_prompt"]

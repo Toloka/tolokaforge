@@ -50,7 +50,7 @@ from tolokaforge.core.grading.rubric import (
     build_draft_report_tool,
     parse_submit_report,
 )
-from tolokaforge.core.judge_prompt import _compose_judge_system_prompt
+from tolokaforge.core.judge_prompt import compose_judge_system_prompt
 from tolokaforge.core.loop import LoopConfig, TerminationDecision, ToolCallingLoop
 from tolokaforge.core.models import Message, MessageRole, TerminationReason
 from tolokaforge.core.summarize_policy import LLMSummarizer
@@ -357,6 +357,7 @@ def _handle_draft_call(
             call_id,
             "draft_report already submitted; continue critiquing your draft with "
             "your read tools, then call submit_report with your final verdict.",
+            terminating_tool="draft_report",
         )
         return None
 
@@ -379,10 +380,13 @@ def _handle_draft_call(
             f"Your draft_report was rejected: {exc}\n"
             "Fix the issue and call draft_report again with a verdict and "
             "justification for every criterion.",
+            terminating_tool="draft_report",
         )
         return None
 
-    answer_terminating_submit_report(messages, call_id, "Draft received.")
+    answer_terminating_submit_report(
+        messages, call_id, "Draft received.", terminating_tool="draft_report"
+    )
     messages.append(
         Message(
             role=MessageRole.USER,
@@ -492,7 +496,7 @@ def _build_episode_setup(
         )
     ]
     system_prompt = (
-        f"{_compose_judge_system_prompt(custom_system_prompt)}\n\n{build_rubric_brief(rubric)}"
+        f"{compose_judge_system_prompt(custom_system_prompt)}\n\n{build_rubric_brief(rubric)}"
     )
     return _EpisodeSetup(
         judge_model=judge_model,

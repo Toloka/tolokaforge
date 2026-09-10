@@ -61,7 +61,7 @@ from tolokaforge.core.grading.rubric import (
     parse_submit_report,
 )
 from tolokaforge.core.judge_prompt import (
-    _compose_judge_system_prompt,
+    compose_judge_system_prompt,
     effective_judge_system_prompt,
 )
 from tolokaforge.core.llm.client import GenerationResult, LLMClient
@@ -193,30 +193,37 @@ class SubmitReportTermination:
         return None
 
 
-#: Tool result for a non-``submit_report`` call that shared the terminating turn.
-#: Termination fires the instant ``submit_report`` appears, before any tool runs
-#: (``loop.py``: ``should_terminate`` precedes ``_execute_tool_calls``), so the
-#: sibling genuinely never executed — this is an honest "not run" note, not a
-#: fabricated tool output, and it nudges the judge to read before submitting.
-_SIBLING_NOT_EXECUTED = (
-    "not executed: submit_report ended the turn; gather evidence with your read "
-    "tools *before* calling submit_report."
-)
+#: Termination fires the instant the terminating tool appears, before any tool
+#: runs (``loop.py``: ``should_terminate`` precedes ``_execute_tool_calls``), so
+#: a sibling call on that same turn genuinely never executed — this returns an
+#: honest "not run" note, not a fabricated tool output, naming whichever tool
+#: actually ended the turn so the judge isn't told a falsehood about which call
+#: pre-empted its siblings.
+def _sibling_not_executed(terminating_tool: str) -> str:
+    return (
+        f"not executed: {terminating_tool} ended the turn; gather evidence with "
+        "your read tools *before* calling submit_report."
+    )
 
 
 def answer_terminating_submit_report(
-    messages: list[Message], captured_call_id: str, rejection: str
+    messages: list[Message],
+    captured_call_id: str,
+    rejection: str,
+    *,
+    terminating_tool: str = "submit_report",
 ) -> None:
     """Rewrite the retry tail into a provider-valid tool-call/tool-result cycle.
 
     Locates the assistant message bearing ``captured_call_id`` (the terminating
-    ``submit_report`` turn), drops the loop's trailing ``"submit_report received;
-    judge terminating."`` system message (false on a continued run and what
-    breaks tool-result adjacency), then answers **every** ``tool_call_id`` on that
-    turn with an adjacent ``role=tool`` result: the ``submit_report`` id carries
-    ``rejection``; each sibling id carries :data:`_SIBLING_NOT_EXECUTED`. No
-    non-tool message separates the assistant call from its (contiguous) results,
-    which is what OpenAI/Azure-family providers require.
+    ``terminating_tool`` turn), drops the loop's trailing system message
+    announcing that termination (false on a continued run and what breaks
+    tool-result adjacency), then answers **every** ``tool_call_id`` on that turn
+    with an adjacent ``role=tool`` result: the id matching ``captured_call_id``
+    carries ``rejection``; each sibling id carries the honest "not executed"
+    note naming ``terminating_tool``. No non-tool message separates the
+    assistant call from its (contiguous) results, which is what
+    OpenAI/Azure-family providers require.
     """
     asst_idx = next(
         (
@@ -235,7 +242,9 @@ def answer_terminating_submit_report(
     terminating = messages[asst_idx]
     del messages[asst_idx + 1 :]
     for tc in terminating.tool_calls or []:
-        content = rejection if tc.id == captured_call_id else _SIBLING_NOT_EXECUTED
+        content = (
+            rejection if tc.id == captured_call_id else _sibling_not_executed(terminating_tool)
+        )
         messages.append(Message(role=MessageRole.TOOL, tool_call_id=tc.id, content=content))
 
 
@@ -535,7 +544,7 @@ class LLMJudge:
     Two prompt seams, mutually exclusive:
 
     * ``custom_system_prompt`` — a body fragment that replaces the default grading
-      stance; :func:`_compose_judge_system_prompt` appends the marker contract at
+      stance; :func:`compose_judge_system_prompt` appends the marker contract at
       :meth:`run` time. The eval flow and legacy replay use this seam (they carry
       the body, not the composed string).
     * ``explicit_system_prompt`` — the already-composed prompt used verbatim in
@@ -660,7 +669,7 @@ class LLMJudge:
         base_prompt = (
             self._explicit_system_prompt
             if self._explicit_system_prompt is not None
-            else _compose_judge_system_prompt(self._custom_system_prompt)
+            else compose_judge_system_prompt(self._custom_system_prompt)
         )
         system_prompt = f"{base_prompt}\n\n{rubric_brief}"
 

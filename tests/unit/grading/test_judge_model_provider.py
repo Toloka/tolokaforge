@@ -67,7 +67,7 @@ def test_scripted_llm_client_satisfies_the_widened_judge_model_protocol() -> Non
     (``schema_sanitizer``, ``prompt_policy``, ...) are stateless classes
     with no ``__eq__`` of their own, so even two freshly constructed
     ``ModelCapabilities()`` are not ``==``. This pins the scalar knobs the
-    ``agentic_rubric`` kind actually threads (Stage 3) instead.
+    ``agentic_rubric`` kind actually threads instead.
     """
     client = ScriptedLLMClient(script=[])
     assert isinstance(client, JudgeModel)
@@ -81,7 +81,7 @@ def test_scripted_llm_client_satisfies_the_widened_judge_model_protocol() -> Non
 
 
 def test_scripted_llm_client_accepts_a_non_default_capabilities_override() -> None:
-    """The ``capabilities`` kwarg is settable — later stages need a client
+    """The ``capabilities`` kwarg is settable, so a test can construct a client
     whose capabilities opt into retry/summarization behaviour."""
     caps = ModelCapabilities(empty_retry_count=2)
     client = ScriptedLLMClient(script=[], capabilities=caps)

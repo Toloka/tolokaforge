@@ -195,7 +195,7 @@ Written via [`tolokaforge.core.budgets.write_limit_hit_marker`](../tolokaforge/c
   that never called the judge
   still records the contract it would have graded under. Same source of
   truth as the judge's own composition
-  (`_compose_judge_system_prompt`), so the recorded string is
+  (`compose_judge_system_prompt`), so the recorded string is
   byte-for-byte what the judge ran under. The rubric-brief the judge
   appends at run time is NOT persisted here — the rubric already lives
   in `task.yaml.grading_config.llm_judge.rubric`.

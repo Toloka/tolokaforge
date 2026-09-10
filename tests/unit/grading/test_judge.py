@@ -19,7 +19,7 @@ from tolokaforge.core.grading.judge_result import JudgeStatus
 from tolokaforge.core.judge_prompt import (
     _JUDGE_MARKER_CONTRACT,
     _JUDGE_SYSTEM_PROMPT,
-    _compose_judge_system_prompt,
+    compose_judge_system_prompt,
 )
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
@@ -1244,14 +1244,14 @@ _MARKER_TOKENS = ("VERDICT: MET", "VERDICT: NOT MET", "SCORE:")
 
 def test_compose_none_is_byte_for_byte_default():
     """No custom prompt yields the default prompt unchanged, byte-for-byte."""
-    assert _compose_judge_system_prompt(None) == _JUDGE_SYSTEM_PROMPT
+    assert compose_judge_system_prompt(None) == _JUDGE_SYSTEM_PROMPT
 
 
 def test_compose_custom_body_replaces_and_appends_marker():
     """A custom body leads the prompt but cannot drop the marker contract: the
     composed prompt starts with the custom text and still carries the full marker
     contract with every enforced token."""
-    composed = _compose_judge_system_prompt("Custom judge voice.")
+    composed = compose_judge_system_prompt("Custom judge voice.")
 
     assert composed.startswith("Custom judge voice.")
     assert _JUDGE_MARKER_CONTRACT in composed
