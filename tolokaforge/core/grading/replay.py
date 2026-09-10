@@ -676,7 +676,7 @@ def _offline_read_surface(
     the KB surface is the union of ``grade.yaml`` ``judge_kb_gating`` ``offered`` +
     ``withheld`` — a KB the recorded run withheld must still yield a shim, so a
     forced ``--knowledge-search on`` can offer it and a ``recorded`` replay can
-    re-withhold it (:func:`_build_judge_registry`'s disable flag does the gating).
+    re-withhold it (:func:`build_judge_registry`'s disable flag does the gating).
     Old bundles lack both — ``env.yaml`` presence is the only signal that the
     judge had DB reads.
     """

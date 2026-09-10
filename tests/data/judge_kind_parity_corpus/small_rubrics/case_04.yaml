@@ -34,6 +34,25 @@ judge_scripts:
             escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: MET"
             sla_within: 0.9
             sla_within_justification: "because sla_within\nSCORE: 0.9"
+  agentic_rubric:
+    - - name: draft_report
+        arguments:
+            reasons: 'draft summary — agentic (pre-critique)'
+            intent_clarified: true
+            intent_clarified_justification: "because intent_clarified\nVERDICT: MET"
+            escalation_appropriate: true
+            escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: MET"
+            sla_within: 0.9
+            sla_within_justification: "because sla_within\nSCORE: 0.9"
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — agentic (post-critique)'
+            intent_clarified: true
+            intent_clarified_justification: "because intent_clarified\nVERDICT: MET"
+            escalation_appropriate: true
+            escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: MET"
+            sla_within: 0.9
+            sla_within_justification: "because sla_within\nSCORE: 0.9"
 judge_scripts_per_chunk:
   chunked_rubric:
     - - - name: submit_report

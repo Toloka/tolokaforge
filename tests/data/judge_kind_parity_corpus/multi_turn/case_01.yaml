@@ -40,6 +40,25 @@ judge_scripts:
             intent_clarified_justification: "because intent_clarified\nVERDICT: NOT MET"
             escalation_appropriate: false
             escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: NOT MET"
+  agentic_rubric:
+    - - name: draft_report
+        arguments:
+            reasons: 'draft summary — agentic (pre-critique)'
+            question_answered: 0.2
+            question_answered_justification: "because question_answered\nSCORE: 0.2"
+            intent_clarified: false
+            intent_clarified_justification: "because intent_clarified\nVERDICT: NOT MET"
+            escalation_appropriate: false
+            escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: NOT MET"
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — agentic (post-critique)'
+            question_answered: 0.2
+            question_answered_justification: "because question_answered\nSCORE: 0.2"
+            intent_clarified: false
+            intent_clarified_justification: "because intent_clarified\nVERDICT: NOT MET"
+            escalation_appropriate: false
+            escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: NOT MET"
 judge_scripts_per_chunk:
   chunked_rubric:
     - - - name: submit_report

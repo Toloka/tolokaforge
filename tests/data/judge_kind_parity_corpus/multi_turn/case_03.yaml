@@ -34,6 +34,21 @@ judge_scripts:
             greeting_present_justification: "because greeting_present\nVERDICT: NOT MET"
             refund_done: false
             refund_done_justification: "because refund_done\nVERDICT: NOT MET"
+  agentic_rubric:
+    - - name: draft_report
+        arguments:
+            reasons: 'draft summary — agentic (pre-critique)'
+            greeting_present: false
+            greeting_present_justification: "because greeting_present\nVERDICT: NOT MET"
+            refund_done: false
+            refund_done_justification: "because refund_done\nVERDICT: NOT MET"
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — agentic (post-critique)'
+            greeting_present: false
+            greeting_present_justification: "because greeting_present\nVERDICT: NOT MET"
+            refund_done: false
+            refund_done_justification: "because refund_done\nVERDICT: NOT MET"
 judge_scripts_per_chunk:
   chunked_rubric:
     - - - name: submit_report

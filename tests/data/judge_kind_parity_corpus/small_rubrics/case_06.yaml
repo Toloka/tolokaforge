@@ -28,6 +28,21 @@ judge_scripts:
             refund_done_justification: "because refund_done\nVERDICT: MET"
             tone: 0.9
             tone_justification: "because tone\nSCORE: 0.9"
+  agentic_rubric:
+    - - name: draft_report
+        arguments:
+            reasons: 'draft summary — agentic (pre-critique)'
+            refund_done: true
+            refund_done_justification: "because refund_done\nVERDICT: MET"
+            tone: 0.9
+            tone_justification: "because tone\nSCORE: 0.9"
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — agentic (post-critique)'
+            refund_done: true
+            refund_done_justification: "because refund_done\nVERDICT: MET"
+            tone: 0.9
+            tone_justification: "because tone\nSCORE: 0.9"
 judge_scripts_per_chunk:
   chunked_rubric:
     - - - name: submit_report

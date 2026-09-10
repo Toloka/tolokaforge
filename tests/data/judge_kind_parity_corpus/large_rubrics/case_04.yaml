@@ -88,6 +88,61 @@ judge_scripts:
             stock_updated_justification: "because stock_updated\nVERDICT: MET"
             order_shipped: true
             order_shipped_justification: "because order_shipped\nVERDICT: MET"
+  agentic_rubric:
+    - - name: draft_report
+        arguments:
+            reasons: 'draft summary — agentic (pre-critique)'
+            field_validated: true
+            field_validated_justification: "because field_validated\nVERDICT: MET"
+            no_pii_leaked: true
+            no_pii_leaked_justification: "because no_pii_leaked\nVERDICT: MET"
+            tool_called_once: true
+            tool_called_once_justification: "because tool_called_once\nVERDICT: MET"
+            summary_provided: 0.9
+            summary_provided_justification: "because summary_provided\nSCORE: 0.9"
+            channel_appropriate: true
+            channel_appropriate_justification: "because channel_appropriate\nVERDICT: MET"
+            outcome_communicated: 0.9
+            outcome_communicated_justification: "because outcome_communicated\nSCORE: 0.9"
+            refund_done: true
+            refund_done_justification: "because refund_done\nVERDICT: MET"
+            tone: 0.9
+            tone_justification: "because tone\nSCORE: 0.9"
+            policy_check: true
+            policy_check_justification: "because policy_check\nVERDICT: MET"
+            identity_verified: true
+            identity_verified_justification: "because identity_verified\nVERDICT: MET"
+            stock_updated: true
+            stock_updated_justification: "because stock_updated\nVERDICT: MET"
+            order_shipped: true
+            order_shipped_justification: "because order_shipped\nVERDICT: MET"
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — agentic (post-critique)'
+            field_validated: true
+            field_validated_justification: "because field_validated\nVERDICT: MET"
+            no_pii_leaked: true
+            no_pii_leaked_justification: "because no_pii_leaked\nVERDICT: MET"
+            tool_called_once: true
+            tool_called_once_justification: "because tool_called_once\nVERDICT: MET"
+            summary_provided: 0.9
+            summary_provided_justification: "because summary_provided\nSCORE: 0.9"
+            channel_appropriate: true
+            channel_appropriate_justification: "because channel_appropriate\nVERDICT: MET"
+            outcome_communicated: 0.9
+            outcome_communicated_justification: "because outcome_communicated\nSCORE: 0.9"
+            refund_done: true
+            refund_done_justification: "because refund_done\nVERDICT: MET"
+            tone: 0.9
+            tone_justification: "because tone\nSCORE: 0.9"
+            policy_check: true
+            policy_check_justification: "because policy_check\nVERDICT: MET"
+            identity_verified: true
+            identity_verified_justification: "because identity_verified\nVERDICT: MET"
+            stock_updated: true
+            stock_updated_justification: "because stock_updated\nVERDICT: MET"
+            order_shipped: true
+            order_shipped_justification: "because order_shipped\nVERDICT: MET"
 judge_scripts_per_chunk:
   chunked_rubric:
     - - - name: submit_report
