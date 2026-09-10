@@ -357,6 +357,16 @@ message JudgeReport {
   // (legacy sender)" from "present and false" to avoid recording a false
   // "gated out" for a run that included the policy.
   optional bool include_agent_system_prompt = 15;
+  // Per-chunk criterion ids for chunking judge kinds (``chunked_rubric`` and
+  // any future kind that partitions the rubric), JSON-encoded as
+  // ``[[criterion_id, ...], ...]`` in original rubric order. Empty string is
+  // the wire encoding of "the judge kind did not chunk" (single_shot_rubric,
+  // or any future non-chunking kind), which the host materialiser maps to
+  // ``None`` on host Grade. JSON on a string field mirrors the ``transcript_json``
+  // and ``state_diff_text`` precedents on this same message; a nested proto
+  // message would add a schema type both grader.proto and runner.proto must
+  // stay in lock-step on for no per-consumer benefit.
+  string chunk_boundaries_json = 16;
 }
 
 // Outcome of running the rubric judge. Keeps a judge malfunction distinct from a

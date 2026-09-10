@@ -709,6 +709,7 @@ class GrpcRunnerClient:
                                 if grade.judge_report.HasField("include_agent_system_prompt")
                                 else {}
                             ),
+                            "chunk_boundaries_json": grade.judge_report.chunk_boundaries_json,
                         }
                         if grade.HasField("judge_report")
                         else None

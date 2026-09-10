@@ -197,3 +197,13 @@ class Grade(BaseModel):
     # ``state_checks: 0.0`` verdict. Serialized inline in ``grade.yaml``. See
     # docs/OUTPUT_FORMAT.md.
     synthesized_by_termination_reason: TerminationReason | None = None
+    # Per-chunk criterion ids for the judge run that produced this grade, in
+    # original rubric order. ``None`` when no judge ran or when a non-chunking
+    # kind (``single_shot_rubric``) produced the grade; populated by
+    # ``chunked_rubric`` and any future chunking kind. Populated even on a
+    # whole-trial ERRORED chunked run (records every boundary attempted, per the
+    # chunked kind's fail-loud contract) so an offline replay can retry the
+    # failing chunk without re-planning boundaries. Serialised inline in
+    # ``grade.yaml`` — the payload is small (N * a few short strings). See
+    # docs/OUTPUT_FORMAT.md.
+    judge_chunk_boundaries: list[list[str]] | None = None

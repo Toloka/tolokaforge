@@ -50,13 +50,69 @@ chunk's criterion ids — yields a whole-trial `JudgeResult` with
 `status=ERRORED`, `score=None`, `criterion_results=()`, and a `reasons`
 naming the failing chunk index + its criterion ids + the underlying
 reason. `chunk_boundaries` is still populated with every boundary
-attempted, so #1569 can persist them and offline replay can retry only
-the failing chunk. There is never a silent partial-rubric score.
+attempted, so `build_replay_grade` and every other `Grade`-writing path
+persist them (see § Persistence below) and offline replay can retry
+only the failing chunk. There is never a silent partial-rubric score.
 
-Chunk boundaries are emitted on the in-memory `JudgeResult` today via
-`chunk_boundaries: tuple[tuple[str, ...], ...]` — one inner tuple per
-chunk, with criterion ids in original order. Bundle-manifest persistence
-is deferred to #1569.
+### Persistence
+
+Chunk boundaries land on `Grade.judge_chunk_boundaries` (inline in
+`grade.yaml` as a list-of-lists of criterion ids in original rubric
+order), populated by every path that produces a `Grade` from a
+`JudgeResult`: the runner-service composite, the grader-service
+composite, `CompositeGraderKind._recompute_from_substrate` (offline
+regrade via `tolokaforge grade`), and `build_replay_grade` (the
+judge-only + `replay.replay_trial` seam). `None` when no judge ran or
+when a non-chunking kind produced the grade; a non-empty list otherwise
+— even on a whole-trial ERRORED chunked run (every boundary attempted
+is recorded, per the fail-loud contract, so an offline replay can retry
+the failing chunk without re-planning boundaries).
+
+Wire: field 16 `string chunk_boundaries_json` on both `runner.proto` and
+`grader.proto`'s `JudgeReport`, JSON-encoded as `[[criterion_id, ...],
+...]`. Empty string is the proto3 default and the "no chunking" wire
+encoding — the host materialiser maps it to `None`.
+
+Bundle-side: `chunk_boundaries` is a judge OUTPUT, not a grading INPUT,
+so it lives on the grade side (`grade.yaml`), not on the v1.1 bundle.
+The bundle's `grading_config.json` records `kind_config.chunk_size` from
+which the chunked kind re-derives the same boundaries deterministically
+on regrade.
+
+### Replay routing
+
+Offline replay (`tolokaforge.core.grading.replay::replay_trial`)
+dispatches through `load_judge_kind(inputs.judge_kind)()` — the same
+seam the runner-side composite, the grader-service composite, the
+offline `CompositeGraderKind` recompute, and `judge_only_helpers` all
+use. `inputs.judge_kind` + `inputs.kind_config` are resolved from the
+bundle's `task.yaml.grading_config.llm_judge` at
+`read_replay_inputs` time. A recorded trial with
+`judge_kind: chunked_rubric` + `kind_config: {chunk_size: N}` replays
+through `ChunkedRubricJudgeKind`; a legacy trial artifact predating
+[#1567][pr-1567] lacks both fields and defaults to
+`("single_shot_rubric", None)` — byte-identical to prior behaviour, and
+the byte-parity anchor `tests/canonical/test_judge_kind_single_shot_byte_parity.py`
+guards it. `ReplayProvenance.judge_kind_source` stamps the origin
+(`RECORDED` — no CLI `--judge-kind` override; kind A/B comparison lives
+in the parity harness, not on the offline replay CLI).
+
+The bundle-branch prompt escape hatch: when the bundle recorded a
+composed judge prompt via `prompts.yaml.judge_prompt`
+(`inputs.explicit_system_prompt` is set), `replay_trial`
+short-circuits to a direct `LLMJudge` construction —
+`JudgeKind.evaluate` has no `explicit_system_prompt` kwarg today, and
+the recorded composed prompt supersedes both the task customization
+and the kind's default composition. The escape hatch keeps
+`test_bundle_judge_prompt_persistence.py` green and is directly locked
+by `test_replay_bundle_branch_bypasses_kind_seam.py`. Widening
+`JudgeKind.evaluate` with an optional `explicit_system_prompt`
+keyword-only argument is tracked at [#1583][issue-1583]; when that
+lands the short-circuit disappears and every bundle-branch trial
+re-routes through the seam.
+
+[pr-1567]: https://github.com/Toloka/tolokaforge/pull/1567
+[issue-1583]: https://github.com/Toloka/tolokaforge/issues/1583
 
 Cost note: a rubric split into N chunks consumes up to `N ×` the
 single-shot per-trial wall-clock and system-prompt tokens. This is the
