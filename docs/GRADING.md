@@ -38,16 +38,27 @@ dispatch beneath every composite / judge-only path.
 `tolokaforge.judge_kinds` is the entry-point group; every registered
 kind implements the `JudgeKind` Protocol (see
 [GRADER_SERVICE.md § Extension points](GRADER_SERVICE.md#extension-points-the-nine-plug-in-groups)).
-Two built-ins ship: `single_shot_rubric` (the shipping reference impl
-wrapping today's `LLMJudge` in one shot) and `chunked_rubric` (one
+Three built-ins ship: `single_shot_rubric` (the shipping reference impl
+wrapping today's `LLMJudge` in one shot), `chunked_rubric` (one
 `LLMJudge` invocation per fixed-K chunk — the alternative kind for large
-rubrics where a single `submit_report` would truncate; see
+rubrics where a single `submit_report` would truncate), and
+`agentic_rubric` (a draft → critique → submit loop where the judge
+revises its own verdict before committing it; see
 [JUDGE_KINDS.md](JUDGE_KINDS.md)). Per-kind options ride on
 `task.grading.llm_judge.kind_config` — an opaque `dict[str, Any]` the
 framework never inspects; each kind validates its own slice inside
 `evaluate`. Unknown `judge_kind` names are refused at parse time with a
 message naming the registered set — mirrors `grading_method`'s
 resolution shape.
+
+Cross-kind trust — whether a candidate kind's verdicts actually agree
+with the reference kind, on both the committed cassette corpus and real
+trials — is not asserted here. See
+[JUDGE_KINDS.md § Parity gate](JUDGE_KINDS.md#parity-gate) for the
+cassette-mode κ gate every registered kind clears, and
+[JUDGE_KINDS.md § Live A/B](JUDGE_KINDS.md#live-ab-cross-kind-κ-and-cost-on-real-trials)
+for the live cross-kind κ/cost framework; [ADR-0046](adr/0046-agentic-llm-judge-and-judgekind-registry.md)
+records the registry + agentic-kind decision this seam is built on.
 
 ---
 
