@@ -40,6 +40,7 @@ from tolokaforge.core.grading.judge import (
     build_rubric_brief,
     serialize_judge_transcript,
 )
+from tolokaforge.core.grading.judge_kinds.critique import CritiqueTool
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.judge_tools import SubmitReportTool
 from tolokaforge.core.grading.rubric import (
@@ -93,33 +94,62 @@ AGENTIC_JUDGE_EPISODE_TIMEOUT_S = 480
 DEFAULT_CRITIQUE_TURN_BUDGET = 3
 
 #: Accepted ``kind_config`` keys; every other key raises ``ValueError``.
-_ACCEPTED_KIND_CONFIG_KEYS = frozenset({"critique_turn_budget"})
+_ACCEPTED_KIND_CONFIG_KEYS = frozenset({"critique_turn_budget", "enable_critique_tool"})
 
 
-def _resolve_critique_turn_budget(kind_config: Mapping[str, Any] | None) -> int:
-    """Validate ``kind_config`` and return the effective critique turn budget.
+@dataclass(frozen=True)
+class _AgenticKindConfig:
+    """Validated ``kind_config`` for one ``agentic_rubric`` episode."""
 
-    Raises :class:`ValueError` on any unknown key or a non-positive
-    ``critique_turn_budget`` before any judge dispatch runs.
+    critique_turn_budget: int = DEFAULT_CRITIQUE_TURN_BUDGET
+    enable_critique_tool: bool = True
+
+
+def _resolve_kind_config(kind_config: Mapping[str, Any] | None) -> _AgenticKindConfig:
+    """Validate ``kind_config`` and return the effective, typed episode config.
+
+    Raises :class:`ValueError` on any unknown key, a non-positive
+    ``critique_turn_budget``, or a non-``bool`` ``enable_critique_tool`` —
+    before any judge dispatch runs.
     """
     if kind_config is None:
-        return DEFAULT_CRITIQUE_TURN_BUDGET
+        return _AgenticKindConfig()
     unknown = set(kind_config) - _ACCEPTED_KIND_CONFIG_KEYS
     if unknown:
         raise ValueError(
             f"agentic_rubric kind_config contains unknown key(s): {sorted(unknown)}. "
             f"Accepted keys: {sorted(_ACCEPTED_KIND_CONFIG_KEYS)}."
         )
-    raw = kind_config.get("critique_turn_budget")
-    if raw is None:
-        return DEFAULT_CRITIQUE_TURN_BUDGET
-    if not isinstance(raw, int) or isinstance(raw, bool):
+
+    raw_turn_budget = kind_config.get("critique_turn_budget")
+    if raw_turn_budget is None:
+        critique_turn_budget = DEFAULT_CRITIQUE_TURN_BUDGET
+    elif not isinstance(raw_turn_budget, int) or isinstance(raw_turn_budget, bool):
         raise ValueError(
-            f"agentic_rubric critique_turn_budget must be an int; got {type(raw).__name__} {raw!r}."
+            "agentic_rubric critique_turn_budget must be an int; "
+            f"got {type(raw_turn_budget).__name__} {raw_turn_budget!r}."
         )
-    if raw < 1:
-        raise ValueError(f"agentic_rubric critique_turn_budget must be >= 1; got {raw}.")
-    return raw
+    elif raw_turn_budget < 1:
+        raise ValueError(
+            f"agentic_rubric critique_turn_budget must be >= 1; got {raw_turn_budget}."
+        )
+    else:
+        critique_turn_budget = raw_turn_budget
+
+    raw_enable_critique_tool = kind_config.get("enable_critique_tool")
+    if raw_enable_critique_tool is None:
+        enable_critique_tool = True
+    elif not isinstance(raw_enable_critique_tool, bool):
+        raise ValueError(
+            "agentic_rubric enable_critique_tool must be a bool; "
+            f"got {type(raw_enable_critique_tool).__name__} {raw_enable_critique_tool!r}."
+        )
+    else:
+        enable_critique_tool = raw_enable_critique_tool
+
+    return _AgenticKindConfig(
+        critique_turn_budget=critique_turn_budget, enable_critique_tool=enable_critique_tool
+    )
 
 
 class _JudgeState(str, Enum):
@@ -206,7 +236,10 @@ class _EpisodeSetup:
 
 
 def _build_critique_message(
-    draft_results: list[CriterionResult], overall_reasons: object, critique_turn_budget: int
+    draft_results: list[CriterionResult],
+    overall_reasons: object,
+    critique_turn_budget: int,
+    critique_tool_enabled: bool,
 ) -> str:
     """Compose the injected critique prompt, echoing the draft's own verdicts."""
     lines = [
@@ -224,6 +257,12 @@ def _build_critique_message(
     )
     if isinstance(overall_reasons, str) and overall_reasons.strip():
         lines.append(f"Overall: {overall_reasons.strip()}")
+    if critique_tool_enabled:
+        lines.append(
+            "You may also call critique(verdict_draft=...) to retrieve evidence "
+            "pointers (transcript spans, state-diff excerpts, and any prior "
+            "search_kb hits) for each criterion before finalizing."
+        )
     return "\n".join(lines)
 
 
@@ -340,6 +379,7 @@ def _handle_draft_call(
     rubric: Rubric,
     retry_counts: _RetryCounts,
     critique_turn_budget: int,
+    critique_tool_enabled: bool,
 ) -> JudgeResult | None:
     """Apply transitions 1/2/3 for a captured ``draft_report`` call.
 
@@ -391,7 +431,7 @@ def _handle_draft_call(
         Message(
             role=MessageRole.USER,
             content=_build_critique_message(
-                draft_results, args.get("reasons"), critique_turn_budget
+                draft_results, args.get("reasons"), critique_turn_budget, critique_tool_enabled
             ),
         )
     )
@@ -452,6 +492,7 @@ def _build_episode_setup(
     disable_knowledge_search: bool,
     custom_system_prompt: str | None,
     include_agent_system_prompt: bool,
+    kind_config_resolved: _AgenticKindConfig,
     logger: StructuredLogger,
 ) -> _EpisodeSetup:
     """Build the judge model, tool registry, and opening transcript for one episode."""
@@ -461,6 +502,18 @@ def _build_episode_setup(
     summarize_policy: LLMSummarizer | None = None
     if capabilities.max_context_tokens is not None and capabilities.context_watermark is not None:
         summarize_policy = LLMSummarizer(judge_model, metrics)
+
+    messages: list[Message] = [
+        Message(
+            role=MessageRole.USER,
+            content=build_opening_message(
+                agent_system_prompt,
+                transcript,
+                state_diff,
+                include_agent_system_prompt=include_agent_system_prompt,
+            ),
+        )
+    ]
 
     registry, kb_tools_offered, kb_tools_withheld, read_tools_offered = build_judge_registry(
         rubric,
@@ -472,6 +525,12 @@ def _build_episode_setup(
         logger=logger,
     )
     registry.register(SubmitReportTool(build_draft_report_tool(rubric)))
+    if kind_config_resolved.enable_critique_tool:
+        registry.register(
+            CritiqueTool(
+                rubric=rubric, transcript=transcript, state_diff=state_diff, messages=messages
+            )
+        )
     tool_executor = ToolExecutor(registry)
     tool_schemas = registry.get_schemas(sanitize=False)
 
@@ -484,17 +543,6 @@ def _build_episode_setup(
         read_tools_offered=read_tools_offered,
         state_diff=state_diff,
     )
-    messages: list[Message] = [
-        Message(
-            role=MessageRole.USER,
-            content=build_opening_message(
-                agent_system_prompt,
-                transcript,
-                state_diff,
-                include_agent_system_prompt=include_agent_system_prompt,
-            ),
-        )
-    ]
     system_prompt = (
         f"{compose_judge_system_prompt(custom_system_prompt)}\n\n{build_rubric_brief(rubric)}"
     )
@@ -514,7 +562,9 @@ def _build_episode_setup(
     )
 
 
-def _run_episode(setup: _EpisodeSetup, rubric: Rubric, critique_turn_budget: int) -> JudgeResult:
+def _run_episode(
+    setup: _EpisodeSetup, rubric: Rubric, kind_config_resolved: _AgenticKindConfig
+) -> JudgeResult:
     """Drive the draft/critique/submit state machine to a final :class:`JudgeResult`.
 
     Resumes a fresh :class:`ToolCallingLoop` after every ``draft_report`` /
@@ -578,7 +628,8 @@ def _run_episode(setup: _EpisodeSetup, rubric: Rubric, critique_turn_budget: int
                 setup.messages,
                 rubric,
                 retry_counts,
-                critique_turn_budget,
+                kind_config_resolved.critique_turn_budget,
+                kind_config_resolved.enable_critique_tool,
             )
             if result is not None:
                 return result
@@ -594,7 +645,15 @@ def _run_episode(setup: _EpisodeSetup, rubric: Rubric, critique_turn_budget: int
 
 
 class AgenticRubricJudgeKind:
-    """Grade a rubric via a draft-then-critique-then-submit judge episode."""
+    """Grade a rubric via a draft-then-critique-then-submit judge episode.
+
+    ``kind_config.enable_critique_tool`` (default ``True``) controls whether
+    the judge is also given the ``critique(verdict_draft=...)`` tool during
+    the critique phase, letting it fetch deterministic evidence pointers for
+    its own draft verdict before calling ``submit_report``. Set to ``False``
+    to withhold it; the injected critique message and the tool schema list
+    both omit any mention of the tool in that case.
+    """
 
     NAME: ClassVar[str] = "agentic_rubric"
 
@@ -617,7 +676,7 @@ class AgenticRubricJudgeKind:
         kind_config: Mapping[str, Any] | None,
         logger: StructuredLogger,
     ) -> JudgeResult:
-        critique_turn_budget = _resolve_critique_turn_budget(kind_config)
+        kind_config_resolved = _resolve_kind_config(kind_config)
         setup = _build_episode_setup(
             rubric=rubric,
             agent_system_prompt=agent_system_prompt,
@@ -632,6 +691,7 @@ class AgenticRubricJudgeKind:
             disable_knowledge_search=disable_knowledge_search,
             custom_system_prompt=custom_system_prompt,
             include_agent_system_prompt=include_agent_system_prompt,
+            kind_config_resolved=kind_config_resolved,
             logger=logger,
         )
-        return _run_episode(setup, rubric, critique_turn_budget)
+        return _run_episode(setup, rubric, kind_config_resolved)

@@ -253,12 +253,16 @@ def answer_terminating_submit_report(
 # ---------------------------------------------------------------------------
 
 
-def _format_transcript(transcript: list[dict[str, Any]]) -> str:
+def format_transcript(transcript: list[dict[str, Any]]) -> str:
     """Render the agent transcript to a compact, judge-readable string.
 
     Receives the same ``llm_messages`` list the runner already decoded for
     grading (role/content/tool_calls dicts). Tool calls are summarised inline so
     the judge sees what the agent *did*, not just what it said.
+
+    Public: also reused by ``judge_kinds/critique.py``'s ``resolve_evidence``
+    to re-derive the same lines it scans for transcript evidence, so the two
+    callers can never drift on how a transcript line renders.
     """
     lines: list[str] = []
     for msg in transcript:
@@ -376,7 +380,7 @@ def build_opening_message(
         f"{policy_block}"
         "Here is the full transcript of the agent's interaction:\n"
         "===== TRANSCRIPT =====\n"
-        f"{_format_transcript(transcript)}\n"
+        f"{format_transcript(transcript)}\n"
         "===== END TRANSCRIPT =====\n\n"
         f"{state_block}"
         f"{closing}"
@@ -981,6 +985,7 @@ __all__ = [
     "answer_terminating_submit_report",
     "build_opening_message",
     "build_rubric_brief",
+    "format_transcript",
     "build_judge_registry",
     "serialize_judge_transcript",
     "build_errored_judge_result",
