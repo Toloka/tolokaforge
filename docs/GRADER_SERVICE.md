@@ -582,9 +582,9 @@ The runner resolves the shipping defaults at startup via
 `load_state_check_backend("jsonpath")` + `load_state_check_backend("db_probes")`,
 and caches the resulting instances on `RunnerServiceImpl`. The check
 executor is threaded through the composite `grade_custom_checks`
-dispatch. The judge model provider and the resolved
-`load_judge_kind("single_shot_rubric")()` class are handed to the
-composite `grade_llm_judge` at grade time — the kind builds its own
+dispatch. The judge model provider and the JudgeKind resolved from
+`llm_judge_config.judge_kind` are handed to the composite
+`grade_llm_judge` at grade time — the kind builds its own
 :class:`LLMJudge` per call from the caller's `ModelConfig` +
 customization (KB gate, custom system-prompt,
 include-agent-system-prompt); no LLM transport ever appears in

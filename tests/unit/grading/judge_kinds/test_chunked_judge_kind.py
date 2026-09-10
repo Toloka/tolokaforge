@@ -1,9 +1,11 @@
 """Unit tests for :class:`ChunkedRubricJudgeKind`.
 
-Exercises the chunking loop, the merge composition spec (Full-composition
-spec in the plan's Goal bullet 3), the ``kind_config`` schema, and the
-fail-loud contract (any chunk ERRORED or missing a chunk-id verdict yields
-a whole-trial ERRORED result with ``chunk_boundaries`` still populated).
+Exercises the chunking loop, the merge contract (joined ``reasons``,
+concatenated ``transcript``, ``failed_required_ids`` re-derived on the
+original rubric, construction-flag fields taken from chunk 0), the
+``kind_config`` schema, and the fail-loud contract (any chunk ERRORED
+or missing a chunk-id verdict yields a whole-trial ERRORED result
+with ``chunk_boundaries`` still populated).
 
 Every case drives a scripted :class:`JudgeModelProvider` that pops one
 fresh :class:`ScriptedLLMClient` per chunk-client build — so the loop is
@@ -142,8 +144,13 @@ def test_partial_last_chunk_shape() -> None:
 
 
 def test_merges_composition_fields_per_spec() -> None:
-    """Locks the Full-composition spec on ``reasons`` / ``transcript`` /
-    ``failed_required_ids`` / chunk[0]-flag pick, plus the mismatch guard."""
+    """Locks the cross-chunk merge: ``reasons`` joined by blank line,
+    ``failed_required_ids`` re-derived from the original rubric (so the
+    gate flag comes out of the whole-rubric fold, not any single chunk),
+    ``transcript`` concatenated in chunk order, construction-flag
+    fields (``custom_system_prompt`` etc.) taken from chunk 0, plus the
+    RuntimeError guard when those construction fields disagree across
+    chunks."""
     rubric = Rubric(
         criteria=[
             Criterion(id="a0", description="a0", kind="binary", weight=1.0),

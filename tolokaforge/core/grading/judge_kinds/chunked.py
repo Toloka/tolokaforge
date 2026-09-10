@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from tolokaforge.core.grading.judge import LLMJudge
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.rubric import aggregate_rubric
-from tolokaforge.runner.models import CriterionResult, Rubric
+from tolokaforge.runner.models import Criterion, CriterionResult, Rubric
 
 if TYPE_CHECKING:
     from tolokaforge.core.grading.judge import DBReader
@@ -52,8 +52,7 @@ __all__ = [
 ]
 
 #: Default number of criteria per chunk when ``kind_config`` omits ``chunk_size``.
-#: Aligned with the source ticket's "start at 5" guidance; measurement-driven
-#: tuning is deferred to follow-up #1581.
+#: Live A/B tuning tracked in #1581.
 DEFAULT_CHUNK_SIZE = 5
 
 #: Accepted ``kind_config`` keys; every other key raises ``ValueError``.
@@ -98,7 +97,7 @@ class ChunkedRubricJudgeKind:
         logger: StructuredLogger,
     ) -> JudgeResult:
         chunk_size = _resolve_chunk_size(kind_config)
-        chunks: list[list] = [
+        chunks: list[list[Criterion]] = [
             list(rubric.criteria[i : i + chunk_size])
             for i in range(0, len(rubric.criteria), chunk_size)
         ]
