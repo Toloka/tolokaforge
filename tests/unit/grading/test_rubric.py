@@ -12,11 +12,13 @@ from pathlib import Path
 import pytest
 
 from tolokaforge.core.grading.rubric import (
+    DRAFT_REPORT_TOOL_NAME,
     GRADED_MET_THRESHOLD,
     SUBMIT_REPORT_TOOL_NAME,
     SubmitReportValidationError,
     VerdictConsistencyError,
     aggregate_rubric,
+    build_draft_report_tool,
     build_submit_report_tool,
     parse_submit_report,
 )
@@ -139,6 +141,51 @@ class TestBuildSubmitReportTool:
         # Graded justification instructs the SCORE marker; verdict field says it must match.
         assert "SCORE:" in props["tone_justification"]["description"]
         assert "SCORE:" in props["tone"]["description"]
+
+
+# ===================================================================
+# build_draft_report_tool — same schema shape as submit_report, different name
+# ===================================================================
+
+
+class TestBuildDraftReportTool:
+    def test_tool_name_is_draft_report(self) -> None:
+        tool = build_draft_report_tool(_mixed_rubric())
+        assert tool["type"] == "function"
+        assert tool["function"]["name"] == DRAFT_REPORT_TOOL_NAME
+        assert DRAFT_REPORT_TOOL_NAME != SUBMIT_REPORT_TOOL_NAME
+
+    def test_description_differs_from_submit_report(self) -> None:
+        draft = build_draft_report_tool(_mixed_rubric())
+        submit = build_submit_report_tool(_mixed_rubric())
+        assert draft["function"]["description"] != submit["function"]["description"]
+        assert "draft" in draft["function"]["description"].lower()
+
+    def test_properties_and_required_match_submit_report_field_for_field(self) -> None:
+        draft_params = build_draft_report_tool(_mixed_rubric())["function"]["parameters"]
+        submit_params = build_submit_report_tool(_mixed_rubric())["function"]["parameters"]
+        assert draft_params["type"] == submit_params["type"]
+        assert draft_params["properties"] == submit_params["properties"]
+        assert draft_params["required"] == submit_params["required"]
+
+    def test_parse_submit_report_validates_draft_shaped_payload_like_submit(self) -> None:
+        # parse_submit_report is generic over tool_args + rubric — a payload built
+        # against draft_report's schema validates identically to one built against
+        # submit_report's, since the two schemas are field-for-field identical.
+        rubric = _mixed_rubric()
+        valid_results = parse_submit_report(_valid_args(refund_met=True, tone_score=0.9), rubric)
+        by_id = {r.id: r for r in valid_results}
+        assert by_id["refund_amount"].met is True
+        assert by_id["tone"].score == pytest.approx(0.9)
+
+    def test_parse_submit_report_rejects_invalid_draft_shaped_payload_like_submit(self) -> None:
+        rubric = _mixed_rubric()
+        args = _valid_args()
+        del args["tone"]  # invalid regardless of which tool produced it
+        with pytest.raises(SubmitReportValidationError) as exc:
+            parse_submit_report(args, rubric)
+        assert "tone" in str(exc.value)
+        assert "missing" in str(exc.value).lower()
 
 
 # ===================================================================
