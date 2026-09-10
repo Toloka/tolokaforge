@@ -2038,9 +2038,9 @@ class LLMJudgeConfig(BaseModel):
     names are refused at parse time. ``kind_config`` is an opaque per-kind
     options bag — the framework performs zero shape checks on it; each kind
     validates its own slice inside :meth:`JudgeKind.evaluate`. Note that
-    :func:`~tolokaforge.core.grading.secrets.expand_secret_refs` is never
-    walked over ``kind_config``; a kind that stores ``${secret:NAME}`` values
-    must expand them itself.
+    :func:`~tolokaforge.secrets.expand_secret_refs` is never walked over
+    ``kind_config``; a kind that stores ``${secret:NAME}`` values must
+    expand them itself.
     """
 
     rubric: Rubric  # Structured grading rubric
@@ -2055,9 +2055,8 @@ class LLMJudgeConfig(BaseModel):
     def _validate_judge_kind_registered(cls, value: str) -> str:
         # Fast-path the shipped default: it is validated by construction —
         # ``tolokaforge.judge_kinds`` registers ``single_shot_rubric`` in
-        # ``pyproject.toml`` and ``tests/canonical/test_judge_kinds_registry.py``
-        # locks the registration — so we skip the ``importlib.metadata`` scan
-        # for the overwhelming majority of parses.
+        # ``pyproject.toml`` and a canonical test locks the registration —
+        # so we skip the ``importlib.metadata`` scan on the hot path.
         if value == "single_shot_rubric":
             return value
         # Delayed import: ``plugin_registry`` reaches ``core.models.grade``

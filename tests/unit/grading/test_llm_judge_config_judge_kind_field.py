@@ -1,16 +1,16 @@
 """``LLMJudgeConfig.judge_kind`` / ``kind_config`` — parse-time contract.
 
-Locks three parse-time behaviours on the two new fields added at
-:issue:`1567`:
+Locks three parse-time behaviours on the two new ``LLMJudgeConfig``
+fields:
 
-- The defaults preserve the pre-#1567 shape byte-identically (any old
-  task-pack that never authored either field parses to the same effective
-  config and dumps the same JSON body it always did — new keys emit with
-  their defaults).
+- The defaults preserve the prior shape byte-identically (any task-pack
+  that never authored either field parses to the same effective config
+  and dumps the same JSON body it always did — new keys emit with their
+  defaults).
 - An unknown ``judge_kind`` value is refused by Pydantic
   ``model_validate`` with a message that names both the offending value
-  and the registered set — the actionable authoring signal the ticket's
-  "fails at parse time, not at run time" acceptance criterion demands.
+  and the registered set — an actionable authoring signal that fails at
+  parse time, not at run time.
 - ``kind_config`` is accepted as an opaque ``dict[str, Any]`` — the
   framework performs no shape checks; the model round-trips whatever the
   author put in.
@@ -39,7 +39,7 @@ def _rubric() -> Rubric:
     )
 
 
-def test_defaults_preserve_the_pre_1567_shape() -> None:
+def test_defaults_preserve_the_prior_shape() -> None:
     config = LLMJudgeConfig(rubric=_rubric())
 
     assert config.judge_kind == "single_shot_rubric"
@@ -56,8 +56,9 @@ def test_the_json_dump_carries_both_new_fields_at_their_defaults() -> None:
 
 
 def test_an_old_task_pack_dict_without_either_new_field_parses_cleanly() -> None:
-    """Old task packs / bundles that omit both fields keep round-tripping —
-    the additive-with-defaults migration invariant this stage commits to."""
+    """Old task packs / bundles that omit both fields keep round-tripping:
+    the two new fields are additive with defaults, so omitting them yields
+    the same effective config as authoring the defaults explicitly."""
     payload = {"rubric": _rubric().model_dump(mode="json")}
 
     parsed = LLMJudgeConfig.model_validate(payload)

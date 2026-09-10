@@ -1,7 +1,7 @@
 """Grade bundle's ``grading_config.json`` round-trips
 ``LLMJudgeConfig.judge_kind`` + ``kind_config``.
 
-Locks that the two fields introduced at :issue:`1567` survive the
+Locks that the two new ``LLMJudgeConfig`` fields survive the
 grade-bundle producer → reader path with no producer / reader / manifest
 / schema-version edits: they ride the existing ``grading_config.json``
 part via ``TaskDescription.grading.model_dump(mode="json")``, and the

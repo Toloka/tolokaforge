@@ -1,7 +1,7 @@
 """Every LLM-judge dispatch site reads ``LLMJudgeConfig.judge_kind`` from config.
 
 Four parametrised sub-tests drive one LLM-judge dispatch each through
-the four call sites the runner + grader package rewired at :issue:`1567`:
+the four call sites the runner + grader package expose:
 
 - Runner-side composite (``RunnerServiceImpl._grade_llm_judge``)
 - Grader-service composite dispatch
@@ -10,13 +10,13 @@ the four call sites the runner + grader package rewired at :issue:`1567`:
 - ``run_judge_only_for_trajectory`` (judge_only helper)
 
 A fake ``JudgeKind`` (``NAME = "call_site_probe"``) is registered
-alongside the shipped kinds via the ``importlib.metadata.entry_points``
-monkey-patch fixture (mirrors the pattern in
-``tests/canonical/test_judge_kinds_third_party_registration.py``); the
-probe records every ``.evaluate(**kwargs)`` call so the sub-tests can
-assert BOTH the name-resolution (the site read ``judge_kind`` from
-config, not a hardcoded string) AND, on the runner-side sub-test, the
-verbatim identity of ``kind_config`` (the site forwarded
+alongside the shipped kinds via an ``importlib.metadata.entry_points``
+monkey-patch fixture that injects a stub entry-point into the
+``tolokaforge.judge_kinds`` group; the probe records every
+``.evaluate(**kwargs)`` call so the sub-tests can assert BOTH the
+name-resolution (the site read ``judge_kind`` from config, not a
+hardcoded string) AND, on the runner-side sub-test, the verbatim
+identity of ``kind_config`` (the site forwarded
 ``llm_judge_config.kind_config``, not ``None``). A future hardcode
 regression at any one site fails loudly here.
 """
@@ -216,8 +216,9 @@ def test_grader_service_composite_dispatch_reads_judge_kind(
     """The standalone grader's composite dispatch
     (:meth:`GraderCompositeDispatch._grade_llm_judge_block`) reads
     ``judge_kind`` off ``LLMJudgeConfig`` and drives the resolved kind's
-    ``evaluate``. ``kind_config`` opacity is proven at the runner-side
-    sub-test above — this sub-test only verifies the field is read."""
+    ``evaluate``. This sub-test only verifies the field is read; the
+    verbatim ``kind_config`` passthrough is locked separately in the
+    runner-side sub-test."""
     from tolokaforge.core.grading.grade_components import CompositeGradeComponents
 
     dispatch = GraderCompositeDispatch(logger=MagicMock())
