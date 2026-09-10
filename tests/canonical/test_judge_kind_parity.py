@@ -41,6 +41,7 @@ import yaml
 
 from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.judge_kinds import (
+    AgenticRubricJudgeKind,
     ChunkedRubricJudgeKind,
     SingleShotRubricJudgeKind,
 )
@@ -318,7 +319,8 @@ class _InnerBudget:
 def test_corpus_has_twenty_entries() -> None:
     """Twenty fixtures, every one parses cleanly into
     :class:`ParityCorpusEntry`, every one ships a
-    ``judge_scripts.single_shot_rubric`` cassette AND a
+    ``judge_scripts.single_shot_rubric`` cassette, a
+    ``judge_scripts.agentic_rubric`` cassette, AND a
     ``judge_scripts_per_chunk.chunked_rubric`` cassette with the
     correct chunk count for ``chunk_size=5``. A malformed rubric fails
     Pydantic validation right here — never at replay time."""
@@ -328,6 +330,8 @@ def test_corpus_has_twenty_entries() -> None:
         assert entry.rubric.criteria, f"{entry.entry_id}: empty rubric"
         missing_cassette_msg = f"{entry.entry_id}: missing single_shot_rubric cassette"
         assert "single_shot_rubric" in entry.judge_scripts, missing_cassette_msg
+        missing_agentic_msg = f"{entry.entry_id}: missing agentic_rubric cassette"
+        assert "agentic_rubric" in entry.judge_scripts, missing_agentic_msg
         missing_chunked_msg = f"{entry.entry_id}: missing chunked_rubric per-chunk cassette"
         assert "chunked_rubric" in entry.judge_scripts_per_chunk, missing_chunked_msg
         expected_chunks = (len(entry.rubric.criteria) + _CHUNK_SIZE - 1) // _CHUNK_SIZE
@@ -384,6 +388,10 @@ def _single_shot_kind() -> SingleShotRubricJudgeKind:
 
 def _chunked_kind() -> ChunkedRubricJudgeKind:
     return ChunkedRubricJudgeKind()
+
+
+def _agentic_kind() -> AgenticRubricJudgeKind:
+    return AgenticRubricJudgeKind()
 
 
 def test_single_shot_self_parity_ships() -> None:
@@ -516,6 +524,51 @@ def test_cross_kind_chunked_vs_single_shot_ships() -> None:
     assert decision.blocking_criteria == ()
 
 
+def test_agentic_self_parity_ships() -> None:
+    """Five deterministic replays of ``agentic_rubric`` on the corpus produce
+    identical per-criterion verdicts across replays (the draft and submit
+    turns are both scripted, so the draft/critique/submit cycle is fully
+    deterministic under the cassette contract) — per-criterion κ = 1.0, the
+    self-consistency arm ships."""
+    corpus = _load_corpus()
+    report = measure_self_consistency(
+        kind_factory=lambda _i: _agentic_kind(),
+        corpus=corpus,
+        replays=5,
+        judge_model_config=_JUDGE_MODEL,
+        provider_factory=_cassette_provider_factory(corpus, "agentic_rubric"),
+    )
+    decision = decide_parity_gate(report, thresholds=_thresholds(), measurement="self_consistency")
+    self_blocked_msg = f"agentic self-parity blocked on {decision.blocking_criteria!r}"
+    assert decision.shippable is True, self_blocked_msg
+    assert decision.blocking_criteria == ()
+    assert decision.warning_criteria == ()
+
+
+def test_cross_kind_agentic_vs_single_shot_ships() -> None:
+    """``agentic_rubric`` vs ``single_shot_rubric`` on the same corpus — the
+    agentic cassette's ``submit_report`` turn carries the identical
+    per-criterion verdicts the single-shot cassette carries, so cross-kind
+    κ = 1.0 everywhere and the gate ships. Locks that the agentic kind's
+    final verdict (post-critique) matches the reference kind's on identical
+    evidence."""
+    corpus = _load_corpus()
+    report = measure_cross_kind_agreement(
+        reference_kind=_single_shot_kind(),
+        candidate_kind=_agentic_kind(),
+        corpus=corpus,
+        judge_model_config=_JUDGE_MODEL,
+        reference_provider=_cassette_provider(corpus, "single_shot_rubric"),
+        candidate_provider=_cassette_provider(corpus, "agentic_rubric"),
+    )
+    decision = decide_parity_gate(report, thresholds=_thresholds(), measurement="cross_kind")
+    cross_blocked_msg = (
+        f"agentic vs single-shot cross-kind blocked on {decision.blocking_criteria!r}"
+    )
+    assert decision.shippable is True, cross_blocked_msg
+    assert decision.blocking_criteria == ()
+
+
 def test_report_reports_per_criterion_not_aggregate() -> None:
     """Cross-kind identity → :class:`ParityGateDecision` carries a
     per-criterion verdict for every criterion id in the pool, and
@@ -623,6 +676,27 @@ def test_cassette_lane_runtime_budget(request: pytest.FixtureRequest) -> None:
             reference_provider=_cassette_provider(corpus, "single_shot_rubric"),
             candidate_provider=_cassette_provider(corpus, "chunked_rubric"),
             kind_config=_CHUNKED_KIND_CONFIG,
+        ),
+    )
+    budget.measure(
+        "agentic_self",
+        lambda: measure_self_consistency(
+            kind_factory=lambda _i: _agentic_kind(),
+            corpus=corpus,
+            replays=5,
+            judge_model_config=_JUDGE_MODEL,
+            provider_factory=_cassette_provider_factory(corpus, "agentic_rubric"),
+        ),
+    )
+    budget.measure(
+        "cross_kind_agentic_vs_single_shot",
+        lambda: measure_cross_kind_agreement(
+            reference_kind=_single_shot_kind(),
+            candidate_kind=_agentic_kind(),
+            corpus=corpus,
+            judge_model_config=_JUDGE_MODEL,
+            reference_provider=_cassette_provider(corpus, "single_shot_rubric"),
+            candidate_provider=_cassette_provider(corpus, "agentic_rubric"),
         ),
     )
 

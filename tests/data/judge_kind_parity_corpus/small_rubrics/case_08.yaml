@@ -40,6 +40,29 @@ judge_scripts:
             cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: MET"
             question_answered: 0.9
             question_answered_justification: "because question_answered\nSCORE: 0.9"
+  agentic_rubric:
+    - - name: draft_report
+        arguments:
+            reasons: 'draft summary — agentic (pre-critique)'
+            stock_updated: true
+            stock_updated_justification: "because stock_updated\nVERDICT: MET"
+            order_shipped: true
+            order_shipped_justification: "because order_shipped\nVERDICT: MET"
+            cancellation_confirmed: true
+            cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: MET"
+            question_answered: 0.9
+            question_answered_justification: "because question_answered\nSCORE: 0.9"
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — agentic (post-critique)'
+            stock_updated: true
+            stock_updated_justification: "because stock_updated\nVERDICT: MET"
+            order_shipped: true
+            order_shipped_justification: "because order_shipped\nVERDICT: MET"
+            cancellation_confirmed: true
+            cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: MET"
+            question_answered: 0.9
+            question_answered_justification: "because question_answered\nSCORE: 0.9"
 judge_scripts_per_chunk:
   chunked_rubric:
     - - - name: submit_report
