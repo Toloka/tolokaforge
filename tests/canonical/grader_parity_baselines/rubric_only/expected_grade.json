@@ -18,6 +18,7 @@
   "custom_checks": [],
   "judge_report": {
     "calls": 1,
+    "chunk_boundaries_json": "",
     "completion_tokens": 5,
     "consistency_rejections": 0,
     "cost_usd": 0.001,

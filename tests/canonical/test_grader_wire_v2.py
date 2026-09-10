@@ -47,6 +47,7 @@ import pytest
 from google.protobuf.descriptor import FieldDescriptor
 
 from tolokaforge.core.models import Grade, GradeComponents
+from tolokaforge.core.trial_grader import _parse_grade_result
 from tolokaforge.grader import grader_pb2, grader_pb2_grpc
 from tolokaforge.grader.client import GrpcGraderClient
 from tolokaforge.grader.service import GradeDispatch, GraderServiceImpl
@@ -229,6 +230,40 @@ def test_client_grade_defaults_v2_fields_to_empty_strings() -> None:
         task_description_json="",
         runner_substrate_address="",
     )
+
+
+def test_client_grade_round_trips_judge_chunk_boundaries_symmetrically() -> None:
+    """A chunked-rubric ``Grade.judge_chunk_boundaries`` survives the full
+    grader-service round trip: :func:`_grade_to_wire` /
+    :func:`_populate_judge_report` encode it onto ``JudgeReport
+    .chunk_boundaries_json`` over a real gRPC call, and the client's
+    :func:`_judge_report_from_wire` + :func:`_parse_grade_result` decode it
+    back losslessly. Guards against the encoder/decoder pair going
+    asymmetric — a decoder omission here would silently drop every replayed
+    chunked-rubric trial's chunk partition.
+    """
+    verdict = Grade(
+        binary_pass=True,
+        score=1.0,
+        components=GradeComponents(llm_judge=1.0),
+        reasons="stub",
+        judge_chunk_boundaries=[["a", "b"], ["c"]],
+    )
+
+    def _judge_fn(dispatch: GradeDispatch) -> Grade | None:
+        return verdict
+
+    with _running_service(_judge_fn) as client:
+        result = client.grade(
+            trial_id="task_id:0",
+            llm_messages_json="[]",
+            termination_reason="",
+            task_config_json='{"llm_judge":{"criteria":[]}}',
+        )
+
+    assert result["success"] is True
+    grade = _parse_grade_result(result["grade"])
+    assert grade.judge_chunk_boundaries == [["a", "b"], ["c"]]
 
 
 def test_client_grade_signature_is_keyword_only() -> None:

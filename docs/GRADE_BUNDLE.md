@@ -61,6 +61,8 @@ The `checks/` and `kb/` subtrees are optional. When present, each carries its ow
 
 The `task_description.json` and `judge_model_config.json` parts are optional additions in schema v1.1. Producers writing a v1.0-shape bundle omit them and the manifest simply skips the entries. Consumers guard on `view.has_part("task_description.json")` / `view.has_part("judge_model_config.json")` before reading. The offline `CompositeGraderKind.evaluate` uses both to recompute sub-components from the substrate; a v1.0 bundle without them falls back to `kind_config["components"]`-driven grading or refuses actionably naming the missing part.
 
+Chunk boundaries from a chunking judge kind (e.g. `chunked_rubric`) live on the produced `grade.yaml` (`judge_chunk_boundaries`), not on the bundle: the bundle records grading INPUTS, and the boundaries are a judge OUTPUT deterministically re-derivable on regrade from `grading_config.json`'s `llm_judge.kind_config.chunk_size` + the rubric's criteria. See [`docs/JUDGE_KINDS.md`](JUDGE_KINDS.md) and [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md).
+
 ## Deterministic serialisation rules
 
 The bundle is content-addressable, which requires bit-exact serialisation. Every producer — Python, or a re-implementation in any other language — MUST follow these rules exactly.
