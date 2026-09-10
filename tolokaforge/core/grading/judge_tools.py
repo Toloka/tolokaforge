@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from tolokaforge.core.grading.kb_search import KnowledgeSearch
 
 __all__ = [
+    "SEARCH_KB_TOOL_NAME",
     "DelegatingReadTool",
     "GetDbStateTool",
     "QueryDbTool",
@@ -37,6 +38,12 @@ __all__ = [
     "SearchKbTool",
     "SubmitReportTool",
 ]
+
+#: Name of the harness-owned knowledge-base search tool. Referenced by
+#: ``critique.py`` to match ``search_kb`` tool calls when replaying prior
+#: episode evidence, so the two modules share one constant instead of two
+#: independently-typed magic strings.
+SEARCH_KB_TOOL_NAME = "search_kb"
 
 #: Cap on file/db output returned to the judge so a huge state can't blow the
 #: context window. Truncation is flagged in the output, never silent.
@@ -210,7 +217,7 @@ class SearchKbTool(Tool):
 
     def __init__(self, kb_search: KnowledgeSearch):
         super().__init__(
-            name="search_kb",
+            name=SEARCH_KB_TOOL_NAME,
             description="Search the knowledge base for relevant information",
             policy=_read_only_policy(),
         )
