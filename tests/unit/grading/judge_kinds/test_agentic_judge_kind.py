@@ -16,6 +16,7 @@ deterministic end to end.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -30,6 +31,7 @@ from tolokaforge.core.grading.judge_kinds.agentic import (
 )
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
+from tolokaforge.core.grading.kb_search import SearchHit
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import ModelConfig
@@ -40,6 +42,18 @@ pytestmark = pytest.mark.unit
 
 
 _JUDGE_MODEL = ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0)
+
+
+class _FakeKnowledgeSearch:
+    """A real ``KnowledgeSearch``-conforming stub — no mock, a genuine object."""
+
+    def __init__(self, hits: list[SearchHit]) -> None:
+        self._hits = hits
+
+    def search(
+        self, query: str, top_k: int = 5, alpha: float = 0.5
+    ) -> list[SearchHit]:  # noqa: ARG002
+        return self._hits[:top_k]
 
 
 class _SingleClientProvider:
@@ -104,6 +118,7 @@ def _evaluate(
     provider: _SingleClientProvider,
     kind_config: dict[str, Any] | None = None,
     extra_read_tools: list[Any] | None = None,
+    kb_search: Any | None = None,
 ) -> JudgeResult:
     """Drive :meth:`AgenticRubricJudgeKind.evaluate` with a minimal input surface."""
     kind = AgenticRubricJudgeKind()
@@ -112,7 +127,7 @@ def _evaluate(
         agent_system_prompt="you are an agent",
         transcript=[{"role": "user", "content": "hi"}],
         db_reader=None,
-        kb_search=None,
+        kb_search=kb_search,
         workspace_dir=None,
         extra_read_tools=extra_read_tools or [],
         state_diff=None,
@@ -222,6 +237,54 @@ def test_critique_tool_call_between_draft_and_submit_resumes_loop() -> None:
     assert result.status is JudgeStatus.COMPLETED
     tool_messages = _tool_message_contents(result)
     assert "{}" in tool_messages, "critique found no evidence in the minimal test transcript"
+
+
+def _tool_result_for_call(result: JudgeResult, tool_name: str) -> str:
+    """Content of the ``role=tool`` message answering the first call to ``tool_name``."""
+    call_id = next(
+        tc["id"]
+        for msg in result.transcript
+        for tc in msg.get("tool_calls") or []
+        if tc["name"] == tool_name
+    )
+    return next(
+        str(msg["content"]) for msg in result.transcript if msg.get("tool_call_id") == call_id
+    )
+
+
+def test_critique_replays_live_search_kb_hit_through_full_episode_path() -> None:
+    """A real ``search_kb`` hit, run earlier in the SAME episode, survives to ``critique``.
+
+    Drives ``draft_report -> search_kb -> critique -> submit_report`` through the
+    real ``_build_episode_setup`` -> ``ToolCallingLoop.run`` -> tool-execute path
+    with a genuine ``KnowledgeSearch`` stub — not a hand-built static ``messages``
+    list — proving the ``CritiqueTool`` sees the ``search_kb`` call/result the
+    loop appends in place to the very list it was constructed with.
+    """
+    rubric = _binary_rubric(1)
+    hit = SearchHit(
+        doc_id="criterion-0-policy",
+        source="kb",
+        score=0.9,
+        text="Policy note covering criterion 0 in detail.",
+    )
+    kb_search = _FakeKnowledgeSearch([hit])
+    script = [
+        _report_call("draft_report", rubric.criteria),
+        [("search_kb", {"query": "criterion 0"})],
+        _critique_call(rubric.criteria),
+        _report_call("submit_report", rubric.criteria),
+    ]
+    provider = _SingleClientProvider(ScriptedLLMClient(script))
+
+    result = _evaluate(rubric, provider=provider, kb_search=kb_search)
+
+    assert result.status is JudgeStatus.COMPLETED
+    critique_output = json.loads(_tool_result_for_call(result, "critique"))
+    pointers = critique_output["c0"]
+    assert any(
+        p["source"] == "kb" and p["kb_doc_id"] == "criterion-0-policy" for p in pointers
+    ), f"expected a kb-source pointer for c0, got {pointers}"
 
 
 def test_draft_then_submit_flow_completes() -> None:

@@ -37,6 +37,7 @@ __all__ = [
     "ReadFileTool",
     "SearchKbTool",
     "SubmitReportTool",
+    "read_only_policy",
 ]
 
 #: Name of the harness-owned knowledge-base search tool. Referenced by
@@ -50,7 +51,7 @@ SEARCH_KB_TOOL_NAME = "search_kb"
 _MAX_OUTPUT_CHARS = 50_000
 
 
-def _read_only_policy(timeout_s: float = 15.0) -> ToolPolicy:
+def read_only_policy(timeout_s: float = 15.0) -> ToolPolicy:
     return ToolPolicy(timeout_s=timeout_s, category=ToolCategory.READ)
 
 
@@ -74,7 +75,7 @@ class GetDbStateTool(Tool):
                 "whole table the diff does not cover; pass a list of table names to "
                 "narrow the result. Read-only."
             ),
-            policy=_read_only_policy(),
+            policy=read_only_policy(),
         )
         self._reader = db_reader
 
@@ -118,7 +119,7 @@ class QueryDbTool(Tool):
                 "'$.orders[*].status' for a whole column. Returns matching values. "
                 "Read-only."
             ),
-            policy=_read_only_policy(),
+            policy=read_only_policy(),
         )
         self._reader = db_reader
 
@@ -161,7 +162,7 @@ class ReadFileTool(Tool):
                 "Read a text file the agent produced, relative to its workspace. "
                 "Read-only; paths are sandboxed to the workspace."
             ),
-            policy=_read_only_policy(),
+            policy=read_only_policy(),
         )
         self._workspace = workspace_dir.resolve()
 
@@ -219,7 +220,7 @@ class SearchKbTool(Tool):
         super().__init__(
             name=SEARCH_KB_TOOL_NAME,
             description="Search the knowledge base for relevant information",
-            policy=_read_only_policy(),
+            policy=read_only_policy(),
         )
         self._kb = kb_search
 
@@ -325,7 +326,7 @@ class DelegatingReadTool(Tool):
         *,
         knowledge_search: bool = False,
     ):
-        super().__init__(name=name, description=description, policy=_read_only_policy())
+        super().__init__(name=name, description=description, policy=read_only_policy())
         self._parameters = parameters
         self._invoke = invoke
         # Declared knowledge-search tag: the runner sets this True for the

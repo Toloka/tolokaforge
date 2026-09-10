@@ -23,7 +23,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from tolokaforge.core.grading.judge import format_transcript
-from tolokaforge.core.grading.judge_tools import SEARCH_KB_TOOL_NAME
+from tolokaforge.core.grading.judge_tools import SEARCH_KB_TOOL_NAME, read_only_policy
 from tolokaforge.core.grading.rubric import (
     SubmitReportValidationError,
     VerdictConsistencyError,
@@ -210,7 +210,11 @@ class CritiqueTool(Tool):
         messages: list[Message],
     ):
         schema = build_critique_tool_schema(rubric)["function"]
-        super().__init__(name=schema["name"], description=schema["description"])
+        super().__init__(
+            name=schema["name"],
+            description=schema["description"],
+            policy=read_only_policy(),
+        )
         self._rubric = rubric
         self._transcript = transcript
         self._state_diff = state_diff
