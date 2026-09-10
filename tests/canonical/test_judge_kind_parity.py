@@ -40,10 +40,10 @@ import pytest
 import yaml
 
 from tests.utils.scripted_llm_client import ScriptedLLMClient
-from tolokaforge.core.grading.judge_kinds import (
+from tolokaforge.core.grading.judge_kinds import SingleShotRubricJudgeKind
+from tolokaforge.core.grading.judge_kinds.parity import (
     ParityCorpusEntry,
     ParityGateThresholds,
-    SingleShotRubricJudgeKind,
     decide_parity_gate,
     measure_cross_kind_agreement,
     measure_self_consistency,
