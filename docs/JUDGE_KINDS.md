@@ -53,10 +53,30 @@ reason. `chunk_boundaries` is still populated with every boundary
 attempted, so #1569 can persist them and offline replay can retry only
 the failing chunk. There is never a silent partial-rubric score.
 
-Chunk boundaries are emitted on the in-memory `JudgeResult` today via
-`chunk_boundaries: tuple[tuple[str, ...], ...]` — one inner tuple per
-chunk, with criterion ids in original order. Bundle-manifest persistence
-is deferred to #1569.
+### Persistence
+
+Chunk boundaries land on `Grade.judge_chunk_boundaries` (inline in
+`grade.yaml` as a list-of-lists of criterion ids in original rubric
+order), populated by every path that produces a `Grade` from a
+`JudgeResult`: the runner-service composite, the grader-service
+composite, `CompositeGraderKind._recompute_from_substrate` (offline
+regrade via `tolokaforge grade`), and `build_replay_grade` (the
+judge-only + `replay.replay_trial` seam). `None` when no judge ran or
+when a non-chunking kind produced the grade; a non-empty list otherwise
+— even on a whole-trial ERRORED chunked run (every boundary attempted
+is recorded, per the fail-loud contract, so an offline replay can retry
+the failing chunk without re-planning boundaries).
+
+Wire: field 16 `string chunk_boundaries_json` on both `runner.proto` and
+`grader.proto`'s `JudgeReport`, JSON-encoded as `[[criterion_id, ...],
+...]`. Empty string is the proto3 default and the "no chunking" wire
+encoding — the host materialiser maps it to `None`.
+
+Bundle-side: `chunk_boundaries` is a judge OUTPUT, not a grading INPUT,
+so it lives on the grade side (`grade.yaml`), not on the v1.1 bundle.
+The bundle's `grading_config.json` records `kind_config.chunk_size` from
+which the chunked kind re-derives the same boundaries deterministically
+on regrade.
 
 Cost note: a rubric split into N chunks consumes up to `N ×` the
 single-shot per-trial wall-clock and system-prompt tokens. This is the

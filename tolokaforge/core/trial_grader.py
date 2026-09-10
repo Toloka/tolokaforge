@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from pydantic import ValidationError
 
 from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
+from tolokaforge.core.grading.chunk_boundaries_wire import decode_chunk_boundaries
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.judge_only_helpers import run_judge_only_for_trajectory
 from tolokaforge.core.grading.transcript_wire import encode_transcript_wire
@@ -483,6 +484,7 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
     judge_inputs: JudgeInputs | None = None
     judge_custom_prompt: bool | None = None
     judge_agent_prompt_included: bool | None = None
+    judge_chunk_boundaries: list[list[str]] | None = None
     raw_report = raw_grade.get("judge_report")
     if raw_report:
         judge_custom_prompt = raw_report.get("custom_system_prompt", False)
@@ -517,6 +519,13 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
                     judge_transcript = parsed
             except (json.JSONDecodeError, TypeError):
                 pass
+        # Empty string is the wire encoding of "no chunking" (proto3 default
+        # from a runner predating field 16, or a non-chunking kind); the wire
+        # helper maps that to ``None`` so the host Grade only carries an
+        # explicit partition when a chunking kind produced one.
+        judge_chunk_boundaries = decode_chunk_boundaries(
+            raw_report.get("chunk_boundaries_json", "")
+        )
 
     return Grade(
         binary_pass=raw_grade["binary_pass"],
@@ -538,6 +547,7 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         judge_inputs=judge_inputs,
         judge_custom_prompt=judge_custom_prompt,
         judge_agent_prompt_included=judge_agent_prompt_included,
+        judge_chunk_boundaries=judge_chunk_boundaries,
         trace_check_results=trace_check_results,
         trace_checks_summary=trace_checks_summary,
     )

@@ -850,6 +850,9 @@ def build_replay_grade(result: JudgeResult) -> Grade:
         ),
         judge_custom_prompt=result.custom_system_prompt,
         judge_agent_prompt_included=result.include_agent_system_prompt,
+        judge_chunk_boundaries=(
+            [list(chunk) for chunk in result.chunk_boundaries] if result.chunk_boundaries else None
+        ),
     )
 
 

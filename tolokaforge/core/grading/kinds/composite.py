@@ -531,6 +531,11 @@ class CompositeGraderKind:
                 ],
             ),
             judge_status=judge_status,
+            judge_chunk_boundaries=(
+                [list(chunk) for chunk in judge_result.chunk_boundaries]
+                if judge_result is not None and judge_result.chunk_boundaries
+                else None
+            ),
         )
 
 

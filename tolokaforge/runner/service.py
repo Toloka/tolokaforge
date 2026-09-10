@@ -41,6 +41,7 @@ from tolokaforge.core.grading.check_runner import (
 )
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.grading.checks_interface import CustomChecksConfig
+from tolokaforge.core.grading.chunk_boundaries_wire import encode_chunk_boundaries
 from tolokaforge.core.grading.composite_fold import CompositeFold
 from tolokaforge.core.grading.filesystem_view import read_agent_visible_filesystem
 from tolokaforge.core.grading.golden_replay import (
@@ -2130,6 +2131,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     read_tools_offered=list(judge_result.read_tools_offered),
                     custom_system_prompt=judge_result.custom_system_prompt,
                     include_agent_system_prompt=judge_result.include_agent_system_prompt,
+                    chunk_boundaries_json=encode_chunk_boundaries(judge_result.chunk_boundaries),
                 )
                 if judge_result.status is JudgeStatus.ERRORED:
                     # Fail loud: the judge component is incomplete, NOT zero. Leave
