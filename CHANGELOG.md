@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Added
+
+- **grading**: LLM-judge dispatch is selectable via `grading.llm_judge.judge_kind` (default `single_shot_rubric`, defined by the `tolokaforge.judge_kinds` entry-point group) with an opaque `kind_config` bag for per-kind options; unknown kinds are refused at parse time (#1567).
+
 ## v0.24.3 (2026-09-10)
 
 ### Fix

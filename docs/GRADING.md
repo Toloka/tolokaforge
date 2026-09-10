@@ -32,6 +32,20 @@ external surface unchanged. For the accepted-record naming the substrate / kind 
 transport product and the operator regrade CLI, see
 [ADR-0043](adr/0043-detached-mode-grader-and-typed-grader-kinds.md).
 
+**Judge kind is a plug-in seam too.** `task.grading.llm_judge.judge_kind`
+selects the `JudgeKind` — the typed evaluator that drives LLM-judge
+dispatch beneath every composite / judge-only path.
+`tolokaforge.judge_kinds` is the entry-point group; every registered
+kind implements the `JudgeKind` Protocol (see
+[GRADER_SERVICE.md § Extension points](GRADER_SERVICE.md#extension-points-the-nine-plug-in-groups)).
+One built-in ships: `single_shot_rubric` (the shipping reference impl
+wrapping today's `LLMJudge` in one shot). Per-kind options ride on
+`task.grading.llm_judge.kind_config` — an opaque `dict[str, Any]` the
+framework never inspects; each kind validates its own slice inside
+`evaluate`. Unknown `judge_kind` names are refused at parse time with a
+message naming the registered set — mirrors `grading_method`'s
+resolution shape.
+
 ---
 
 ## Substrate Parity
@@ -1324,6 +1338,8 @@ reject it.
 | `state_checks.expect_initial_state` | a pack declaring `state_checks` | `unreleased` | both directions |
 | `transcript_rules.required_actions[*].name` | a pack declaring `transcript_rules.required_actions` | `unreleased` | both directions |
 | `search.plane` | every pack | `unreleased` | new engine → old image |
+| `grading.llm_judge.judge_kind` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
+| `grading.llm_judge.kind_config` | a pack declaring `llm_judge` | `unreleased` | new engine → old image |
 
 `emitted for` is what the adapter puts on the wire, not what the pack asks for: a key
 whose cell reads **every pack** is emitted as `null` when the pack declares nothing

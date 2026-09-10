@@ -138,7 +138,7 @@ def run_judge_only_for_trajectory(
         if llm_client is not None
         else load_judge_model_provider("litellm")()
     )
-    judge_kind = load_judge_kind("single_shot_rubric")()
+    judge_kind = load_judge_kind(llm_judge_config.judge_kind)()
     result = judge_kind.evaluate(
         rubric=llm_judge_config.rubric,
         agent_system_prompt=judge_agent_prompt,
@@ -155,7 +155,7 @@ def run_judge_only_for_trajectory(
         include_agent_system_prompt=(
             include_agent_resolved if include_agent_resolved is not None else True
         ),
-        kind_config=None,
+        kind_config=llm_judge_config.kind_config,
         logger=logger,
     )
     if result.status is JudgeRunStatus.ERRORED:
