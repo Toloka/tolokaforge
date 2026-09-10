@@ -48,6 +48,7 @@ import pytest
 import yaml
 from google.protobuf import json_format
 
+from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading import db_probes as db_probes_module
 from tolokaforge.core.grading.bundle import load_grade_bundle, normalise_floats
 from tolokaforge.core.grading.bundle_producer import serialize_bundle_from_substrate
@@ -56,10 +57,8 @@ from tolokaforge.core.grading.substrate import (
     SnapshotGradingSubstrate,
 )
 from tolokaforge.core.grading.transcript_wire import decode_transcript_wire
-from tolokaforge.core.llm.client import GenerationResult
-from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import StructuredLogger
-from tolokaforge.core.models import ModelConfig, ToolCall, Trajectory
+from tolokaforge.core.models import ModelConfig, Trajectory
 from tolokaforge.core.trial_grader import GradingFailedError
 from tolokaforge.grader import grader_pb2
 from tolokaforge.grader.composite_dispatch import GraderCompositeDispatch
@@ -237,7 +236,7 @@ def _normalise_db_probe_rows(raw: Any) -> dict[str, list[dict[str, Any]]]:
 
 def _normalise_judge_script(raw: list[Any]) -> list[Any]:
     """Translate the authored ``judge_script`` (YAML) into the shape
-    :class:`_ScriptedClient` consumes: each entry is either a plain
+    :class:`ScriptedLLMClient` consumes: each entry is either a plain
     string (assistant text) or a list of ``(tool_name, arguments)``
     tuples for a tool-call turn.
     """
@@ -253,65 +252,13 @@ def _normalise_judge_script(raw: list[Any]) -> list[Any]:
             calls: list[tuple[str, dict[str, Any]]] = []
             for call in step:
                 assert isinstance(call, dict), f"tool-call step must be mapping, got {call!r}"
-                assert (
-                    "name" in call and "arguments" in call
-                ), f"tool-call step must carry name+arguments, got {call!r}"
+                missing_fields_msg = f"tool-call step must carry name+arguments, got {call!r}"
+                assert "name" in call and "arguments" in call, missing_fields_msg
                 calls.append((str(call["name"]), dict(call["arguments"])))
             normalised.append(calls)
             continue
         raise ValueError(f"unrecognised judge_script step shape: {step!r}")
     return normalised
-
-
-class _ScriptedClient:
-    """Deterministic scripted stand-in for
-    :class:`tolokaforge.core.llm.client.LLMClient`.
-
-    Both parity legs share this client via a monkeypatched constructor at
-    :mod:`tolokaforge.core.grading.default_judge_model_provider`. Each leg's
-    :class:`GraderCompositeDispatch` / runner-side judge picks up its own
-    fresh scripted client instance drawing from a copy of the script list.
-    Two calls to :meth:`generate` are exhausted in order; a third yields the
-    ``(exhausted)`` sentinel so a runaway loop surfaces distinctively rather
-    than deadlocking against an empty queue.
-    """
-
-    def __init__(self, script: list[Any]) -> None:
-        self._script = list(script)
-        self._i = 0
-
-    def generate(
-        self,
-        system,  # noqa: ARG002 — protocol arg, unused by the script
-        messages,  # noqa: ARG002
-        tools,  # noqa: ARG002
-        tool_choice="auto",  # noqa: ARG002
-        observation=None,  # noqa: ARG002
-    ) -> GenerationResult:
-        if self._i >= len(self._script):
-            return GenerationResult(text="(exhausted)", tool_calls=[], usage=Usage())
-        step = self._script[self._i]
-        self._i += 1
-        if isinstance(step, str):
-            return GenerationResult(text=step, tool_calls=[], usage=Usage())
-        tool_calls = [
-            ToolCall(id=f"call_{self._i}_{j}", name=name, arguments=args)
-            for j, (name, args) in enumerate(step)
-        ]
-        return GenerationResult(
-            text="",
-            tool_calls=tool_calls,
-            usage=Usage(prompt_tokens=10, completion_tokens=5),
-            cost_usd=0.001,
-        )
-
-    def classify_loop_error(self, exc: Exception):
-        from tolokaforge.core.loop import classify_loop_error
-
-        return classify_loop_error(exc, ())
-
-    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
-        return {}
 
 
 class _FakeDBServiceClient:
@@ -455,13 +402,13 @@ def _running_runner(pack: ParityPack) -> Iterator[_RunningRunner]:
 def _install_scripted_client(monkeypatch: pytest.MonkeyPatch, script: list[Any]) -> None:
     """Route :class:`LiteLLMJudgeModelProvider`'s
     :class:`~tolokaforge.core.llm.client.LLMClient` construction to a
-    fresh :class:`_ScriptedClient`. Each call to the constructor gets its
+    fresh :class:`ScriptedLLMClient`. Each call to the constructor gets its
     own copy of the script, so the runner and grader legs each run a
     complete judge dispatch against the same deterministic responses.
     """
     monkeypatch.setattr(
         "tolokaforge.core.grading.default_judge_model_provider.LLMClient",
-        lambda *args, **kwargs: _ScriptedClient(script),
+        lambda *args, **kwargs: ScriptedLLMClient(script),
     )
 
 
@@ -895,7 +842,7 @@ def produce_snapshot_bundle(
     N times to lock the regrade-parity property. The ``monkeypatch``
     argument is required for API symmetry with the other snapshot-leg
     helpers, but bundle production reaches no monkeypatched seams —
-    :class:`_ScriptedClient` and the probe-rows fake are grade-time only.
+    :class:`ScriptedLLMClient` and the probe-rows fake are grade-time only.
     """
     _produce_bundle_into(pack, out_dir=bundle_dir)
 

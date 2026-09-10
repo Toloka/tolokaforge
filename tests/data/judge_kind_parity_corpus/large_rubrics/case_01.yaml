@@ -1,0 +1,72 @@
+entry_id: large_rubrics_case_01
+rubric:
+  criteria:
+    - id: identity_verified
+      description: 'Assistant verified the customer identity before acting.'
+      kind: binary
+      weight: 1.0
+    - id: stock_updated
+      description: 'Stock levels were adjusted in the ledger.'
+      kind: binary
+      weight: 1.0
+    - id: order_shipped
+      description: 'Order marked as shipped in the system.'
+      kind: binary
+      weight: 1.0
+    - id: cancellation_confirmed
+      description: 'Cancellation was confirmed to the customer.'
+      kind: binary
+      weight: 1.0
+    - id: question_answered
+      description: 'Customer question was answered directly.'
+      kind: graded
+      weight: 1.0
+    - id: intent_clarified
+      description: 'Assistant clarified ambiguous intent before acting.'
+      kind: binary
+      weight: 1.0
+    - id: escalation_appropriate
+      description: 'Escalation happened at the right point.'
+      kind: binary
+      weight: 1.0
+    - id: sla_within
+      description: 'Response landed within the SLA window.'
+      kind: graded
+      weight: 1.0
+    - id: greeting_present
+      description: 'Response opened with a greeting.'
+      kind: binary
+      weight: 1.0
+agent_system_prompt: 'You are a customer-service assistant. (large_rubrics_case_01)'
+transcript:
+  - role: user
+    content: 'Hi, I need help with order 42 — I never got the refund. (large_rubrics_case_01)'
+  - role: assistant
+    content: 'Confirmed — the refund of $19.99 is processed. Anything else?'
+state_diff: null
+disable_knowledge_search: false
+custom_system_prompt: null
+include_agent_system_prompt: true
+judge_scripts:
+  single_shot_rubric:
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — fixture-authored deterministic verdict'
+            identity_verified: false
+            identity_verified_justification: "because identity_verified\nVERDICT: NOT MET"
+            stock_updated: false
+            stock_updated_justification: "because stock_updated\nVERDICT: NOT MET"
+            order_shipped: false
+            order_shipped_justification: "because order_shipped\nVERDICT: NOT MET"
+            cancellation_confirmed: false
+            cancellation_confirmed_justification: "because cancellation_confirmed\nVERDICT: NOT MET"
+            question_answered: 0.2
+            question_answered_justification: "because question_answered\nSCORE: 0.2"
+            intent_clarified: false
+            intent_clarified_justification: "because intent_clarified\nVERDICT: NOT MET"
+            escalation_appropriate: false
+            escalation_appropriate_justification: "because escalation_appropriate\nVERDICT: NOT MET"
+            sla_within: 0.2
+            sla_within_justification: "because sla_within\nSCORE: 0.2"
+            greeting_present: false
+            greeting_present_justification: "because greeting_present\nVERDICT: NOT MET"

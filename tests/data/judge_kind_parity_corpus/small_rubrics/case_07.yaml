@@ -1,0 +1,36 @@
+entry_id: small_rubrics_case_07
+rubric:
+  criteria:
+    - id: policy_check
+      description: 'Assistant followed the refund policy.'
+      kind: binary
+      weight: 1.0
+    - id: identity_verified
+      description: 'Assistant verified the customer identity before acting.'
+      kind: binary
+      weight: 1.0
+    - id: stock_updated
+      description: 'Stock levels were adjusted in the ledger.'
+      kind: binary
+      weight: 1.0
+agent_system_prompt: 'You are a customer-service assistant. (small_rubrics_case_07)'
+transcript:
+  - role: user
+    content: 'Hi, I need help with order 42 — I never got the refund. (small_rubrics_case_07)'
+  - role: assistant
+    content: 'Confirmed — the refund of $19.99 is processed. Anything else?'
+state_diff: null
+disable_knowledge_search: false
+custom_system_prompt: null
+include_agent_system_prompt: true
+judge_scripts:
+  single_shot_rubric:
+    - - name: submit_report
+        arguments:
+            reasons: 'overall summary — fixture-authored deterministic verdict'
+            policy_check: false
+            policy_check_justification: "because policy_check\nVERDICT: NOT MET"
+            identity_verified: false
+            identity_verified_justification: "because identity_verified\nVERDICT: NOT MET"
+            stock_updated: false
+            stock_updated_justification: "because stock_updated\nVERDICT: NOT MET"

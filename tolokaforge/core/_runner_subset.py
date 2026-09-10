@@ -133,6 +133,7 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/config_validation.py",
     "tolokaforge/core/grading/corpus_curation.py",
+    "tolokaforge/core/grading/judge_kinds/parity.py",
     "tolokaforge/core/grading/judge_only_helpers.py",
     "tolokaforge/core/grading/migration_declaration.py",
     "tolokaforge/core/grading/replay.py",
@@ -207,6 +208,16 @@ runtime backend's ``build_grade_bundle`` hook delegates to. It composes
 substrate reads plus caller-supplied trajectory and task-description
 inputs into a v1.0 bundle via ``serialize_grade_bundle``; the runner
 never invokes it. Excluded on the same grounds as ``core.grading.bundle``.
+
+``core.grading.judge_kinds.parity`` is the κ-parity measurement harness
+the canonical ``test_judge_kind_parity`` lane calls to prove every
+:class:`JudgeKind` agrees with the reference kind on a shared corpus.
+Its imports reach the already-excluded ``core.grading.agreement``
+(for :class:`CalibrationReport` and :func:`build_report`), and it is
+test-time code only: no runner boot-closure module reaches it, and the
+package-level :mod:`tolokaforge.core.grading.judge_kinds` init deliberately
+does not re-export the parity surface so importing the package on the
+slim image does not drag ``agreement`` in transitively.
 """
 
 

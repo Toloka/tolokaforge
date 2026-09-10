@@ -10,13 +10,13 @@ Asserts both :class:`JudgeResult` instances match field-by-field on the
 same seed + same scripted judge model. Locks the "no observable
 behaviour change" contract this seam rewire commits to.
 
-**State-sharing warning:** ``_ScriptedClient._i`` advances on each
-``.generate()`` and ``_ScriptedJudgeModelProvider.build()`` caches its
-client, so the two legs MUST NOT share one provider instance — this
-suite builds a fresh ``_ScriptedClient`` (seeded from the same script
-list) and a fresh ``_ScriptedJudgeModelProvider(client)`` for each leg,
-otherwise the second leg reads exhausted-script output and byte-parity
-is spuriously violated.
+**State-sharing warning:** :class:`ScriptedLLMClient` advances an index
+on each ``.generate()`` and ``_ScriptedJudgeModelProvider.build()``
+caches its client, so the two legs MUST NOT share one provider instance
+— this suite builds a fresh :class:`ScriptedLLMClient` (seeded from the
+same script list) and a fresh ``_ScriptedJudgeModelProvider(client)``
+for each leg, otherwise the second leg reads exhausted-script output
+and byte-parity is spuriously violated.
 """
 
 from __future__ import annotations
@@ -26,13 +26,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tests.utils.scripted_llm_client import ScriptedLLMClient
 from tolokaforge.core.grading.default_rubric_evaluator import LLMJudgeRubricEvaluator
 from tolokaforge.core.grading.judge_result import JudgeResult, JudgeStatus
 from tolokaforge.core.grading.substrate import InProcessGradingSubstrate
-from tolokaforge.core.llm.client import GenerationResult
-from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import StructuredLogger
-from tolokaforge.core.models import ModelConfig, ToolCall
+from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.plugin_registry import load_judge_kind
 from tolokaforge.runner.models import (
     Criterion,
@@ -46,52 +45,12 @@ pytestmark = pytest.mark.canonical
 _JUDGE_MODEL = ModelConfig(provider="openai", name="gpt-4o-mini", temperature=0.0)
 
 
-class _ScriptedClient:
-    """A scripted ``LoopLLMClient``: returns queued ``GenerationResult`` in order.
-
-    Each script entry is either a list of ``(tool_name, arguments)`` tuples
-    (emitted as tool calls) or a plain string (assistant text, no tool calls).
-    """
-
-    def __init__(self, script: list[Any]) -> None:
-        self._script = list(script)
-        self._i = 0
-
-    def generate(
-        self, system, messages, tools, tool_choice="auto", observation=None
-    ) -> GenerationResult:
-        if self._i >= len(self._script):
-            return GenerationResult(text="(exhausted)", tool_calls=[], usage=Usage())
-        step = self._script[self._i]
-        self._i += 1
-        if isinstance(step, str):
-            return GenerationResult(text=step, tool_calls=[], usage=Usage())
-        tool_calls = [
-            ToolCall(id=f"call_{self._i}_{j}", name=name, arguments=args)
-            for j, (name, args) in enumerate(step)
-        ]
-        return GenerationResult(
-            text="",
-            tool_calls=tool_calls,
-            usage=Usage(prompt_tokens=10, completion_tokens=5),
-            cost_usd=0.001,
-        )
-
-    def classify_loop_error(self, exc: Exception):
-        from tolokaforge.core.loop import classify_loop_error
-
-        return classify_loop_error(exc, ())
-
-    def sanitize_tools_for_execution(self, tools: list[dict]) -> dict[str, dict]:
-        return {}
-
-
 class _ScriptedJudgeModelProvider:
     """Test :class:`JudgeModelProvider` — returns a preloaded scripted client
     as the ``JudgeModel``. Bypasses the shipped ``litellm`` transport so the
     canonical suite drives the judge loop deterministically."""
 
-    def __init__(self, client: _ScriptedClient) -> None:
+    def __init__(self, client: ScriptedLLMClient) -> None:
         self._client = client
 
     def build(self, model_config: ModelConfig):
@@ -156,7 +115,7 @@ def _run_pre_seam(config: LLMJudgeConfig) -> JudgeResult:
     """Pre-seam path: :class:`LLMJudgeRubricEvaluator` (still registered
     under ``tolokaforge.rubric_evaluators`` — the group is intentionally
     kept live so this parity check can drive both paths side by side)."""
-    client = _ScriptedClient(_script())
+    client = ScriptedLLMClient(_script())
     evaluator = LLMJudgeRubricEvaluator(
         _ScriptedJudgeModelProvider(client),
         disable_knowledge_search=False,
@@ -182,9 +141,9 @@ def _run_new_seam(config: LLMJudgeConfig) -> JudgeResult:
     """New seam: ``load_judge_kind("single_shot_rubric")()`` — the
     :class:`SingleShotRubricJudgeKind` wraps the same
     :class:`LLMJudge` construction the pre-seam path uses. A fresh
-    ``_ScriptedClient`` is required so ``.generate()`` starts from
-    script index 0 on this leg — see module docstring."""
-    client = _ScriptedClient(_script())
+    :class:`ScriptedLLMClient` is required so ``.generate()`` starts
+    from script index 0 on this leg — see module docstring."""
+    client = ScriptedLLMClient(_script())
     kind = load_judge_kind("single_shot_rubric")()
     substrate = _substrate()
     return kind.evaluate(
