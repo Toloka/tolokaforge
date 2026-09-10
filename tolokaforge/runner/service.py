@@ -2360,11 +2360,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     ) -> "JudgeResult":
         """Delegate to :func:`composite.grade_llm_judge` over the runner's substrate.
 
-        Resolves ``load_judge_kind("single_shot_rubric")()`` and hands the kind
-        together with the run-level :attr:`_judge_model_provider` and the
-        per-trial customization kwargs (``disable_knowledge_search``,
-        ``custom_system_prompt``, ``include_agent_system_prompt``, plus
-        ``kind_config=None``) to :func:`composite.grade_llm_judge`. This wrapper
+        Resolves ``load_judge_kind(llm_judge_config.judge_kind)()`` and hands
+        the kind together with the run-level :attr:`_judge_model_provider` and
+        the per-trial customization kwargs (``disable_knowledge_search``,
+        ``custom_system_prompt``, ``include_agent_system_prompt``, plus the
+        opaque ``kind_config`` from ``llm_judge_config.kind_config``) to
+        :func:`composite.grade_llm_judge`. This wrapper
         also collects the trial-context passthroughs (judge ``ModelConfig``,
         ``search_policy`` connector reuse) and renders the
         ``initial → final`` state diff for the judge's opening message. The
@@ -2412,7 +2413,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             if customization and customization.include_agent_system_prompt is not None
             else True
         )
-        judge_kind = load_judge_kind("single_shot_rubric")()
+        judge_kind = load_judge_kind(llm_judge_config.judge_kind)()
         from tolokaforge.core import logging as _tolokaforge_logging
 
         judge_logger = _tolokaforge_logging.get_logger("rubric_judge")
@@ -2435,7 +2436,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 disable_knowledge_search=disable_knowledge_search,
                 custom_system_prompt=custom_system_prompt,
                 include_agent_system_prompt=include_agent_system_prompt,
-                kind_config=None,
+                kind_config=llm_judge_config.kind_config,
                 llm_messages=llm_messages,
                 judge_model_config=judge_model_config,
                 extra_read_tools=extra_read_tools,

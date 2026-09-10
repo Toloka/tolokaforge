@@ -319,14 +319,21 @@ class Rubric(BaseModel):
 class LLMJudgeConfig(BaseModel):
     """LLM-based grading configuration.
 
-    The judge's structured-output schema is derived from the rubric's criteria;
-    the old `rubric: str` and `output_schema` fields were removed. The judge
-    MODEL is no longer pinned here — it moved to the run config under
-    `models.judge` (an optional ModelConfig role) and rides each trial as
-    `TrialSpec.judge_model_config`. There is no default and no fallback to the
-    agent model.
+    The judge's structured-output schema is derived from the rubric's criteria.
+    The judge MODEL lives at the run level under `models.judge` (an optional
+    ModelConfig role) and rides each trial as `TrialSpec.judge_model_config`;
+    there is no default and no fallback to the agent model.
+
+    `judge_kind` names the registered `JudgeKind` the runner dispatches to
+    (registered names live in the `tolokaforge.judge_kinds` entry-point group);
+    unknown names are refused at parse time. `kind_config` is an opaque
+    per-kind options bag — the framework performs no shape checks on it; each
+    kind validates its own slice inside `JudgeKind.evaluate`.
     """
-    rubric: Rubric                                # structured rubric (see above)
+    rubric: Rubric                                          # structured rubric (see above)
+    customization: JudgeCustomization | None = None         # per-run judge style overrides
+    judge_kind: str = "single_shot_rubric"                  # registered JudgeKind name
+    kind_config: dict[str, Any] | None = None               # opaque per-kind options bag
 
 
 class GradingConfig(BaseModel):

@@ -2030,12 +2030,56 @@ class LLMJudgeConfig(BaseModel):
     ``RunConfig.models["judge"]`` and rides ``TrialSpec.judge_model_config``.
     ``customization`` is attached only when a config layer sets it, so a task
     with no customization block serializes an identical config.
+
+    ``judge_kind`` selects the :class:`~tolokaforge.core.grading.judge_kinds.JudgeKind`
+    seam the runner dispatches to (registered names live in the
+    ``tolokaforge.judge_kinds`` entry-point group; read the current set with
+    :func:`~tolokaforge.core.plugin_registry.available_judge_kinds`). Unknown
+    names are refused at parse time. ``kind_config`` is an opaque per-kind
+    options bag — the framework performs zero shape checks on it; each kind
+    validates its own slice inside :meth:`JudgeKind.evaluate`. Note that
+    :func:`~tolokaforge.secrets.expand_secret_refs` is never walked over
+    ``kind_config``; a kind that stores ``${secret:NAME}`` values must
+    expand them itself.
     """
 
     rubric: Rubric  # Structured grading rubric
     customization: JudgeCustomization | None = None
+    judge_kind: str = "single_shot_rubric"
+    kind_config: dict[str, Any] | None = None
 
     model_config = {"extra": "forbid"}
+
+    @field_validator("judge_kind")
+    @classmethod
+    def _validate_judge_kind_registered(cls, value: str) -> str:
+        # Fast-path the shipped default: it is validated by construction —
+        # ``tolokaforge.judge_kinds`` registers ``single_shot_rubric`` in
+        # ``pyproject.toml`` and a canonical test locks the registration —
+        # so we skip the ``importlib.metadata`` scan on the hot path.
+        if value == "single_shot_rubric":
+            return value
+        # Delayed import: ``plugin_registry`` reaches ``core.models.grade``
+        # via ``JudgeKind`` → ``LLMJudge`` → ``loop`` → ``core.actors.actor``
+        # → ``core.models`` at module load, and ``core.models.grade``
+        # re-imports from this module for ``CriterionResult`` / the
+        # ``TraceCheck*`` result types. A top-level import would cycle.
+        from tolokaforge.core.plugin_registry import (
+            UnknownImplementationError,
+            available_judge_kinds,
+            load_judge_kind,
+        )
+
+        try:
+            load_judge_kind(value)
+        except UnknownImplementationError as exc:
+            known = sorted(available_judge_kinds())
+            raise ValueError(
+                f"Unknown grading.llm_judge.judge_kind {value!r}; registered "
+                f"names in tolokaforge.judge_kinds: {known}. Register a new "
+                "kind under the entry-point group or fix the typo."
+            ) from exc
+        return value
 
     @model_validator(mode="before")
     @classmethod
