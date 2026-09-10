@@ -24,6 +24,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -50,6 +51,7 @@ from tolokaforge.core.grading.transcript_wire import (
     split_leading_system_message,
 )
 from tolokaforge.core.llm.client import LLMClient
+from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     CriterionResult,
     Grade,
@@ -75,6 +77,7 @@ from tolokaforge.core.output_writer import (
     TASK_FILENAME,
     TRAJECTORY_FILENAME,
 )
+from tolokaforge.core.plugin_registry import load_judge_kind, load_judge_model_provider
 from tolokaforge.runner.models import LLMJudgeConfig, Rubric
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
@@ -278,6 +281,18 @@ class ReplayProvenance(BaseModel):
     include_agent_system_prompt: bool
     agent_prompt_source: ProvenanceSource | None
     fidelity_mode: FidelityMode
+    # Which :class:`JudgeKind` this replay dispatched through and where the
+    # decision came from. ``RECORDED`` at Stage 2 — the value came from the
+    # bundle's ``task.yaml.grading_config.llm_judge`` (either an explicit
+    # ``judge_kind`` key or, for legacy artifacts predating #1567,
+    # ``LLMJudgeConfig``'s ``"single_shot_rubric"`` default). No ``OVERRIDE``
+    # case yet: ``--judge-kind`` at replay time is out of scope (κ-parity kind
+    # A/B lives in the parity harness, not on the offline replay CLI). The
+    # ``single_shot_rubric`` default here mirrors ``LLMJudgeConfig``'s field
+    # default so an older ``ReplayProvenance()`` construction that predates
+    # this field parses to the legacy-artifact shape it stamped for.
+    judge_kind: str = "single_shot_rubric"
+    judge_kind_source: ProvenanceSource = ProvenanceSource.RECORDED
 
     model_config = {"extra": "forbid"}
 
@@ -356,6 +371,16 @@ class ReplayInputs:
     custom_system_prompt: str | None
     explicit_system_prompt: str | None
     include_agent_system_prompt: bool
+    # Which :class:`JudgeKind` this replay dispatches through, resolved from the
+    # bundle's ``task.yaml.grading_config.llm_judge.judge_kind`` (defaulting to
+    # ``"single_shot_rubric"`` for legacy artifacts predating that field).
+    # ``kind_config`` is the opaque per-kind bag the resolved kind validates on
+    # its own ``evaluate`` entry. The bundle-branch ``explicit_system_prompt``
+    # short-circuit in :func:`replay_trial` bypasses this seam — see the escape
+    # hatch there and the follow-up (#1583) tracking widening of
+    # :meth:`JudgeKind.evaluate` with an optional ``explicit_system_prompt`` kwarg.
+    judge_kind: str
+    kind_config: Mapping[str, Any] | None
     provenance: ReplayProvenance
     db_reader: DBReader | None = None
     kb_search: KnowledgeSearch | None = None
@@ -481,6 +506,37 @@ def _resolve_rubric(
         "no rubric: the bundle's task.yaml has no grading_config.llm_judge.rubric "
         "and no --grading override was supplied"
     )
+
+
+def _resolve_judge_kind(
+    task: dict[str, Any] | None,
+) -> tuple[str, Mapping[str, Any] | None, ProvenanceSource]:
+    """Resolve the recorded :class:`JudgeKind` name + opaque ``kind_config``.
+
+    Reads ``judge_kind`` and ``kind_config`` off ``task.yaml.grading_config.llm_judge``
+    directly rather than through :meth:`LLMJudgeConfig.model_validate` — the
+    isolated resolvers for the rubric, custom prompt, and agent gating each
+    surface their own field-shape errors, and pre-validating the whole
+    mapping here would collapse those into a single confusing message.
+    Legacy trial artifacts without either field land on
+    ``LLMJudgeConfig``'s ``("single_shot_rubric", None)`` defaults (#1567); an
+    unknown ``judge_kind`` string fails loud via :func:`load_judge_kind` at
+    the same seam the runner + host use.
+
+    Provenance is always ``RECORDED`` at Stage 2: whether the bundle carried
+    the fields explicitly or fell back to the defaults, the values came from
+    the recorded config with no CLI override in play (no ``--judge-kind`` at
+    replay time — see Non-goals).
+    """
+    llm_judge = ((task or {}).get("grading_config") or {}).get("llm_judge")
+    if not isinstance(llm_judge, dict):
+        return "single_shot_rubric", None, ProvenanceSource.RECORDED
+    raw_kind = llm_judge.get("judge_kind")
+    judge_kind = raw_kind if isinstance(raw_kind, str) and raw_kind else "single_shot_rubric"
+    load_judge_kind(judge_kind)  # fail loud on an unregistered name
+    raw_kind_config = llm_judge.get("kind_config")
+    kind_config = raw_kind_config if isinstance(raw_kind_config, Mapping) else None
+    return judge_kind, kind_config, ProvenanceSource.RECORDED
 
 
 def _resolve_bundle_judge_prompt(
@@ -674,6 +730,7 @@ def read_replay_inputs(
 
     rubric_override = grading_override.rubric if grading_override is not None else None
     rubric, rubric_source = _resolve_rubric(task, rubric_override)
+    judge_kind, kind_config, judge_kind_source = _resolve_judge_kind(task)
     explicit_system_prompt, judge_prompt_source = _resolve_bundle_judge_prompt(trial_dir, prompts)
     if explicit_system_prompt is not None:
         # Bundle-recorded composed prompt wins over any legacy customization: the
@@ -723,6 +780,8 @@ def read_replay_inputs(
         include_agent_system_prompt=include_agent_system_prompt,
         agent_prompt_source=agent_prompt_source,
         fidelity_mode=fidelity_mode,
+        judge_kind=judge_kind,
+        judge_kind_source=judge_kind_source,
     )
 
     return ReplayInputs(
@@ -735,6 +794,8 @@ def read_replay_inputs(
         custom_system_prompt=custom_system_prompt,
         explicit_system_prompt=explicit_system_prompt,
         include_agent_system_prompt=include_agent_system_prompt,
+        judge_kind=judge_kind,
+        kind_config=kind_config,
         db_reader=db_reader,
         kb_search=kb_search,
         extra_read_tools=extra_read_tools,
@@ -751,28 +812,70 @@ def _load_judge_inputs(trial_dir: Path) -> JudgeInputs | None:
 def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None) -> JudgeResult:
     """Re-execute the rubric-judge stage over reconstructed inputs.
 
-    Constructs the one production :class:`LLMJudge` and calls its ``run()`` — no
-    reimplementation of prompt construction, tool surface, validation, retry, or
-    aggregation. ``judge_client`` injects a scripted client for tests (no network);
-    production passes ``None`` and the judge builds its own client.
+    Dispatches through the :class:`JudgeKind` seam
+    (``load_judge_kind(inputs.judge_kind)()``) so a recorded trial with
+    ``judge_kind: chunked_rubric`` replays through
+    :class:`ChunkedRubricJudgeKind` and one graded originally with
+    ``single_shot_rubric`` (or a legacy artifact predating the field) replays
+    through :class:`SingleShotRubricJudgeKind`. ``judge_client`` injects a
+    scripted client for tests (no network) via
+    :class:`_FixedClientJudgeModelProvider`; production passes ``None`` and
+    the shipped ``litellm`` provider builds one.
+
+    Escape hatch: when the bundle recorded a composed judge prompt via
+    ``prompts.yaml.judge_prompt`` (``inputs.explicit_system_prompt is not
+    None``), :func:`replay_trial` short-circuits to a direct
+    :class:`LLMJudge` construction. :meth:`JudgeKind.evaluate` has no
+    ``explicit_system_prompt`` kwarg today, and the recorded composed prompt
+    supersedes both the task customization and the kind's default
+    composition. Widening the Protocol with an optional
+    ``explicit_system_prompt`` keyword-only argument is tracked as #1583; the
+    short-circuit here disappears once that lands.
     """
-    judge = LLMJudge(
-        inputs.judge_model_config,
-        disable_knowledge_search=inputs.disable_knowledge_search,
-        custom_system_prompt=inputs.custom_system_prompt,
-        explicit_system_prompt=inputs.explicit_system_prompt,
-        include_agent_system_prompt=inputs.include_agent_system_prompt,
-        llm_client=judge_client,
+    from tolokaforge.core.grading.judge_only_helpers import _FixedClientJudgeModelProvider
+
+    if inputs.explicit_system_prompt is not None:
+        judge = LLMJudge(
+            inputs.judge_model_config,
+            disable_knowledge_search=inputs.disable_knowledge_search,
+            custom_system_prompt=inputs.custom_system_prompt,
+            explicit_system_prompt=inputs.explicit_system_prompt,
+            include_agent_system_prompt=inputs.include_agent_system_prompt,
+            llm_client=judge_client,
+        )
+        return judge.run(
+            rubric=inputs.rubric,
+            agent_system_prompt=inputs.agent_system_prompt,
+            transcript=inputs.transcript,
+            db_reader=inputs.db_reader,
+            kb_search=inputs.kb_search,
+            extra_read_tools=inputs.extra_read_tools or None,
+            workspace_dir=inputs.workspace_dir,
+            state_diff=inputs.state_diff,
+        )
+
+    judge_model_provider = (
+        _FixedClientJudgeModelProvider(judge_client)
+        if judge_client is not None
+        else load_judge_model_provider("litellm")()
     )
-    return judge.run(
+    judge_kind = load_judge_kind(inputs.judge_kind)()
+    return judge_kind.evaluate(
         rubric=inputs.rubric,
         agent_system_prompt=inputs.agent_system_prompt,
         transcript=inputs.transcript,
         db_reader=inputs.db_reader,
         kb_search=inputs.kb_search,
-        extra_read_tools=inputs.extra_read_tools or None,
         workspace_dir=inputs.workspace_dir,
+        extra_read_tools=list(inputs.extra_read_tools),
         state_diff=inputs.state_diff,
+        judge_model_config=inputs.judge_model_config,
+        judge_model_provider=judge_model_provider,
+        disable_knowledge_search=inputs.disable_knowledge_search,
+        custom_system_prompt=inputs.custom_system_prompt,
+        include_agent_system_prompt=inputs.include_agent_system_prompt,
+        kind_config=inputs.kind_config,
+        logger=get_logger("tolokaforge.core.grading.replay"),
     )
 
 

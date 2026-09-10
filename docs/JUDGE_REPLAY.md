@@ -142,6 +142,42 @@ judge therefore grades knowing what it could not inspect, and the marker is
 visible in the replay's `judge_trajectory.yaml`. Reconstructing real recorded
 state so the offline judge can inspect it is tracked separately (issue #525).
 
+## Judge kind dispatch
+
+`replay_trial` dispatches through the same
+[`JudgeKind`](JUDGE_KINDS.md) seam every other Grade-writing path uses:
+`load_judge_kind(inputs.judge_kind)()` resolves the recorded kind by
+name and drives its `evaluate` with `inputs.kind_config`. A recorded
+trial with `grading_config.llm_judge.judge_kind: chunked_rubric` +
+`kind_config: {chunk_size: N}` replays through
+`ChunkedRubricJudgeKind` and its `JudgeResult.chunk_boundaries` lands
+on `Grade.judge_chunk_boundaries` in the replay's `grade.yaml` via
+`build_replay_grade`. A legacy trial artifact whose
+`grading_config.llm_judge` predates the `judge_kind` field defaults to
+`("single_shot_rubric", None)` and replays through the reference kind
+— byte-identical to prior behaviour, and the anchor
+`tests/canonical/test_judge_kind_single_shot_byte_parity.py` guards
+that identity.
+
+`replay_provenance.yaml` stamps `judge_kind` (the resolved kind name)
+and `judge_kind_source: recorded` (Stage 2 has no `OVERRIDE` case —
+`--judge-kind` at replay time is deliberately out of scope; κ-parity
+kind A/B lives in the parity harness, not on the offline replay CLI).
+
+The bundle-branch prompt escape hatch: when
+`prompts.yaml.judge_prompt` is present and non-null (source 1 below),
+`replay_trial` short-circuits to a direct `LLMJudge` construction
+instead of resolving through the kind seam.
+`JudgeKind.evaluate` has no `explicit_system_prompt` kwarg today, and
+the recorded composed prompt supersedes both the task customization
+and the kind's default composition — a legitimate case the kind seam
+does not yet accommodate. Widening the Protocol with an optional
+`explicit_system_prompt` keyword-only argument is tracked at
+[#1583][issue-1583]; when that lands the short-circuit disappears and
+every bundle-branch trial re-routes through the seam.
+
+[issue-1583]: https://github.com/Toloka/tolokaforge/issues/1583
+
 ## Custom judge system prompt
 
 Replay resolves the judge's system prompt from three ordered sources.
